@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 
+import { SimpleCharacterUpload } from "./SimpleCharacterUpload";
 import {
   type CharacterAsset,
   type CharacterGenerationTask,
@@ -79,6 +80,7 @@ export function CharacterLibrary({ userRole }: { userRole: UserRole }) {
   const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [showSimpleUpload, setShowSimpleUpload] = useState(false);
   const [identityWizardIdentity, setIdentityWizardIdentity] = useState<
     PersonIdentity | null | undefined
   >(undefined);
@@ -539,14 +541,54 @@ export function CharacterLibrary({ userRole }: { userRole: UserRole }) {
         <div>
           <h2>人物身份与角色版本</h2>
         </div>
-        {isAdmin ? (
-          <button type="button" onClick={() => setIdentityWizardIdentity(null)}>
-            创建人物身份
+        <div className="toolbar-actions">
+          <button
+            type="button"
+            onClick={() => setShowSimpleUpload(true)}
+            style={{ marginRight: "12px" }}
+          >
+            ⚡ 极简上传（单图→多视角）
           </button>
-        ) : (
-          <span className="read-only-badge">只读</span>
-        )}
+          {isAdmin ? (
+            <button type="button" onClick={() => setIdentityWizardIdentity(null)}>
+              创建人物身份
+            </button>
+          ) : (
+            <span className="read-only-badge">只读</span>
+          )}
+        </div>
       </div>
+
+      {showSimpleUpload && (
+        <SimpleCharacterUpload
+          projectId={selectedIdentityId || "default"}
+          onComplete={(result) => {
+            // Refresh identities to show the newly created character
+            listPersonIdentities()
+              .then((result) => {
+                setIdentities(result);
+                // Find and select the new identity
+                const newIdentity = result.find(
+                  (i) => i.id === result.identity_id,
+                );
+                if (newIdentity) {
+                  setSelectedIdentityId(newIdentity.id);
+                  // Also select the persona
+                  listCharacterPersonas(newIdentity.id).then((personas) => {
+                    setPersonas(personas);
+                    if (personas.length > 0) {
+                      setSelectedPersonaId(personas[0].id);
+                    }
+                  });
+                }
+              })
+              .catch(console.error);
+            setShowSimpleUpload(false);
+            setMessage("人物已通过极简上传创建，可在下方查看生成的 7 视角资产。");
+          }}
+          onCancel={() => setShowSimpleUpload(false)}
+        />
+      )}
 
       {error ? (
         <div className="character-alert character-alert--error" role="alert">
