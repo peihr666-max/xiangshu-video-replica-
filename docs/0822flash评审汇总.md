@@ -28,14 +28,25 @@
 | fix(P0) | `30f0d39` | 修复 | C1 追加 025 + H2 CI 内嵌 PG16 | ✅ 通过 |
 | fix(P1/P2) | `0fa8516` | 修复 | H1 worker 退出 + H3 迁移 DSN + M1–M6 | ✅ 通过 |
 | fix(docs) | `35e3418` | 文档 | 证据文件归位 + 台账补齐 | ✅ 通过 |
+| T08 | `14e0b1f` → `e50f931`(#39 squash) | 核心代码 | PG 账务约束扩展（provider/pricing_scope 条件约束） | ✅ 通过，干净基线 636 全绿（无 HIGH/MEDIUM，2 项观察） |
+| fix(t08 review) | `572649f` → 并入 `e50f931` | 修复 | 026 补齐 admin_sessions（T09 schema 落地）+ trade_no 绑定 paid + T07 PG-only 表例外 | ✅ 通过，干净基线 638 全绿，**T09R/TC08-O1 均已解决** |
+
+> 注：2026-08-22 开发窗口将 T08 分支（含 `14e0b1f` + `e5d1b82` 评审文件 + `572649f`）squash 为 PR #39 的 `e50f931` 合并进 main。**代码内容与已评审版本逐字节一致**（已核 `admin_sessions`/`PG_ONLY_TABLES`），squash 不改变实现；旧版评审文件（T01–T07 内容）随之进入 main。当前工作区评审文件为更新版（含 T08/T08-review 评审），尚未提交。
+| chore | `7e00854` | 工作流 | AGENTS.md pre-push 提交清单（防外部/评审提交混入任务分支，即本文件旧版被 squash 进 #39 的教训） | ✅ 已查看，纯文档无代码风险 |
 
 ## 3. 验证证据
 
-### 3.1 干净基线全量回归（HEAD 9f60eea，worktree 隔离，真实 PG16 fixture）
+### 3.1 干净基线全量回归（HEAD 9f60ea=T07 合并点；HEAD 14e0b1f=T08 合并点，均 worktree 隔离 + 真实 PG16 fixture）
 
 ```text
-uv run pytest tests -q
+uv run pytest tests -q          # T01–T07 基线（9f60eea）
 634 passed, 1 warning in 109s   # 1 warning = StarletteDeprecationWarning（httpx，非本项目代码）
+
+uv run pytest tests -q          # T08 干净基线（14e0b1f，不含工作区 T09 开发代码）
+636 passed, 1 warning in 103s   # 与 T08-EVIDENCE 声称一致，确认 T08 无回归
+
+uv run pytest tests -q          # T08 review 修复（572649f，主工作区已同步提交）
+638 passed, 1 warning in 102s   # 与提交声称一致；T09 的 admin_sessions + PG_ONLY_TABLES 例外落地
 ```
 
 专项：
@@ -43,9 +54,9 @@ uv run pytest tests -q
 | --- | --- |
 | `tests/test_db_pg.py`（T05） | 20 passed |
 | `tests/test_sqlite_to_postgres.py`（T07，含 5 项真实 PG16 集成） | 24 passed |
-| `tests/test_postgres_migrations.py`（T03/T06） | 8 passed（T08 未提交用例除外） |
+| `tests/test_postgres_migrations.py`（T03/T06/T08） | 11 passed（T08 + admin_sessions + trade_no 用例全过） |
 
-> 注：`test_postgres_migrations.py` 另有 `test_pg_billing_provider_shapes_accepted_and_rejected` 属于**未提交的 T08 开发中代码**（工作区 `026_customer_security_and_billing.py` + 测试修改），不在 T01–T07 评审范围，见 §7。
+> 历史备注：`572649f` 提交前，工作区 T09 的 admin_sessions 未提交改动曾导致全量 3 个 T07 测试失败（`table contract differs extra=1`）——提交后已通过（PG_ONLY_TABLES 例外生效）。
 
 ### 3.2 实机复现验证
 
@@ -83,6 +94,11 @@ uv run pytest tests -q
 | F3 | LOW | T06 | `migrations/env.py:54-76` | `widen_postgres_version_table` 每次 upgrade 都执行 `ALTER TYPE`，幂等但冗余 | 观察 |
 | F4 | LOW | T04 | `T04-SQLITE-INVENTORY.md` | M0 H4 补强后已覆盖 `sqlite_where` 部分索引，但清单仍可补充 025 追加式修复的登记 | 观察 |
 | F5 | INFO | T07 | 全表 `created_at` 类列 | `CURRENT_TIMESTAMP` 作为 TEXT 存储时，SQLite 产 `YYYY-MM-DD HH:MM:SS`（无微秒/时区），PG 产 `...ffffff+00`；迁移原样拷贝故对账一致，但迁移后**新老数据时间文本格式漂移**，若未来按 ISO 解析/排序需统一 | 观察 |
+| T09R | ~~阻断风险~~ **已解决** | T09→`572649f` | 026 `admin_sessions` + T07 `PG_ONLY_TABLES` | 上轮发现：T09 将 admin_sessions 仅 PG 建表会破坏 T07 对账契约。**`572649f` 已解决**：T07 工具新增 `PG_ONLY_TABLES` 例外（reconcile + sqlite_to_postgres 双处），空表预期、非空 fail-closed（`test_real_pg_import_rejects_non_empty_target_only_table`）；已实测提交后 T07 测试恢复通过 | ✅ 已解决 |
+| TC08-O1 | INFO→**已解决** | T08→`572649f` | 026 `_PROVIDER_TRADE_NO` | 上轮发现：zpay 非 PAID 状态可携带 trade_no，可能占用全局唯一 trade_no 导致真实回调失败（squatting）。**`572649f` 已修复**：trade_no 严格绑定 paid 状态（paid⇒present，非 paid⇒absent），与 `confirm_recharge_payment` 原子 UPDATE 一致 | ✅ 已修复 |
+| TC08-O3 | LOW | `572649f` | 026 `ck_admin_sessions_expires_after_created` | `expires_at > created_at` 为 TEXT 字典序比较，依赖两端格式一致：`created_at` 用 `CURRENT_TIMESTAMP`（`YYYY-MM-DD HH:MM:SS.ffffff+00` 空格分隔），若 T09 应用写入 `expires_at` 用 ISO `T` 分隔（`datetime.isoformat()`），字典序 `T`(0x54) > 空格(0x20) 可能产生假阴性。T09 实现时需统一写入格式 | T09 时注意 |
+| TC08-O4 | LOW | `572649f` | reconcile + sqlite_to_postgres `PG_ONLY_TABLES` | PG-only 表例外在 `reconcile_connection_pair` 与 `_validate_schema` 双处重复实现（未来新增 PG-only 表需改两处）；`_pg_table_row_count` 用 f-string 拼表名（当前 table ∈ 常量集安全，用 `sql.Identifier` 更严谨） | 观察 |
+| TC08-O2 | INFO | T08/T07 | 026 设计 | T07 导入前 SQLite 源必须 `alembic upgrade head` 到 026（revision 一致性校验强制；026 对 SQLite 为 no-op 但版本会被记录）。T07-EVIDENCE 维护窗口流程未明示此步骤，可补一句 | 文档补充 |
 
 ## 5. 分任务评审详情
 
@@ -151,6 +167,32 @@ uv run pytest tests -q
 - H1/H3/M1–M6/LOW-1/3 逐项代码核对全部落地（见 §5.5 与提交说明）。
 - M8（证据文件归位 `docs/evidence/`）与 M9（任务清单 header 纠偏）在 `35e3418` 完成。
 
+### 5.9 T08 — PG 账务约束扩展（`14e0b1f`）
+
+**026 迁移（PG-only，025 先例）评审：**
+
+- 替换 022 的 4 个约束（provider / pricing_scope / amount_minimum / amount_step），新增 provider_scope 配对、provider_status、provider_trade_no、customer_price_floor 共 4 个条件约束。
+- **保留的 022 不变量核对无误**：`status IN ('PENDING','PAID','CLOSED','FAILED')` 四态、`amount % charged = 0`、`credits * charged = amount`、price snapshots > 0、trade_no 非空白、全部部分唯一索引。026 只收窄/条件化 zpay 专属约束，activation_code/admin_adjustment 仍需满足账务一致性（`credit_calculation` 等）——测试基线数据（credits=10, charged=1000, amount=10000）逐条满足。
+- **downgrade 守卫**：存在 `provider != 'zpay' OR pricing_scope != 'INTERNAL'` 行时显式拒绝降级（与 025 的 No-Go 禁删流水一致）；空账本对称恢复 022 约束。
+- **跨任务兼容（T07 ↔ T08）已实测**：SQLite 跑 026 为 no-op，但 alembic_version 记录为 026；schema 保持 022 形状（仍含 `provider='zpay'` 约束）。故 T07 导入对账的 revision 一致性（SQLite=PG=026）与行指纹均保持。前提是 SQLite 源 upgrade 到 head（见 TC08-O2）。
+
+**验证证据：** 4 合法形状 + 12 非法形状（PG `CheckViolation`）+ downgrade 守卫测试；`test_pg_billing_provider_shapes_accepted_and_rejected` 单独复跑幂等通过；干净基线全量 **636 passed**（与 T08-EVIDENCE 一致，确认无回归）。之前工作区复现的顺序不稳定已随 T08 提交消失（根因是 T08 未提交时的中间状态）。
+
+**发现：** 无 HIGH/MEDIUM。观察项 TC08-O1/O2（见 §4）。证据文档 `T08-EVIDENCE.md` 约束模型表与实现一致，证据层级 `AUTOMATED_VERIFIED` 合理。
+
+### 5.10 T08 review 修复（`572649f`）— 026 补齐 + trade_no 绑定 + T07 PG-only 例外
+
+回应上轮评审 T09R / TC08-O1 的修复提交：
+
+1. **T09R 解决**：`admin_sessions` 数据层落地 026（PG-only），T07 工具新增 `PG_ONLY_TABLES` 概念——空表在 target head 上预期，非空即分歧状态 fail-closed。`reconcile_connection_pair` 与 `_validate_schema` 双处实现，语义一致（空表不进对账 digest，非空拒绝）。已实测：提交后之前失败的 3 个 T07 测试恢复通过。
+2. **TC08-O1 解决**：`_PROVIDER_TRADE_NO` 收紧为「paid⇒必有 trade_no，非 paid⇒必无」——消除非 PAID 行占用全局唯一 trade_no 的 squatting 风险，与 `confirm_recharge_payment` 原子 UPDATE 匹配。
+3. **admin_sessions 表设计评审**：digest-only（session_digest/csrf_digest/ip/ua digest，明文 secret 不进库）、`actor_user_id` FK→users（真实 actor 可追溯）、`session_digest` 全局 UNIQUE、过期/撤销字段、`idx_admin_sessions_actor_status` 审计索引、downgrade 对称删除。符合 dev doc §11.2/§15。
+4. **测试**：`test_pg_admin_sessions_schema_and_invariants`（unique/expiry/FK/索引）、trade_no squatting 拒绝、非空 target-only 表拒绝。
+
+**验证：** 受影响 35 passed；全量 **638 passed**（与提交声称一致）。**无回归，无 HIGH/MEDIUM**。
+
+**发现：** TC08-O3/O4（见 §4，LOW 观察）。T09 实现时需注意 admin_sessions 时间列 TEXT 比较的格式一致性（TC08-O3）。
+
 ## 6. 专项评审补充
 
 ### 6.1 安全专项（security-reviewer，25s 全文件扫描）
@@ -176,19 +218,17 @@ uv run pytest tests -q
 | --- | --- | --- |
 | P0 | SH1：`main.py` `_lifespan` 加进程内 fail-closed 校验 | 任何客户生产部署前 |
 | P0 | TC-H1：补齐 3 个资金不变量 + 5 个 schema/行级 mismatch 的最小夹具测试 | T07 收尾/下一轮评审前 |
-| P1 | SM1/SM2：backup/restore 权限与 symlink（复用 `_create_private_file`） | T08 前 |
-| P1 | TC-M1：Float/Numeric/NaN 端到端或单测 | T08 前 |
+| P1 | SM1/SM2：backup/restore 权限与 symlink（复用 `_create_private_file`） | 客户生产迁移演练前 |
+| P1 | TC-M1：Float/Numeric/NaN 端到端或单测 | 客户生产迁移演练前 |
 | P1 | SM3：CLI DSN 改环境变量 | 迁移演练前 |
-| P2 | TC-M2~M5、SL1~3、F1（T19 前）、F2~F5 | 随迭代排期 |
+| P2 | TC-M2~M5、SL1~3、F1（T19 前）、F2~F5、TC08-O1~O4 | 随迭代排期 |
 
-> 评审结论：T01–T07 实现质量与既有测试整体扎实（634 全量绿、证据一致），但 **SH1 与 TC-H1 两项 HIGH 建议在 T07 合并或客户生产联调前处理**。其余为 MEDIUM/LOW 迭代项。
+> 评审结论：T01–T08（含 review 修复）实现质量与既有测试整体扎实（干净基线 638 全绿、证据一致），上轮 **T09R/TC08-O1 两项已由 `572649f` 解决**。剩余 **SH1 与 TC-H1 两项 HIGH 建议在客户生产联调前处理**，其余为 MEDIUM/LOW 迭代项。
 
 ## 7. 后续监控与追加机制
 
 - **自动监控**：已建立持久化 cron 任务（ID `f7da335b`，cron `13,43 * * * *`，每 30 分钟），检查 git 是否出现晚于评审基线的新中文 Lore 提交，发现即深度评审并追加到本文件；无新提交则不动。任务 7 天后自动过期，需续期时重新创建；取消可用 CronDelete。
-- **评审基线（状态真源）**：§2 提交清单最后一行 = 已评审到的最新 SHA。当前基线 `9f60eea`（T07）。
-- 开发窗口在 `feat/customer-v3-t08-billing-provider-constraints` 分支进行 **T08（DB-07）**，当前工作区有未提交代码：
-  - `server/migrations/versions/026_customer_security_and_billing.py`（未跟踪）
-  - `server/tests/test_postgres_migrations.py`（已修改，头部断言从 025 更新为 026，并新增 T08 用例）
-  - 其中 `test_pg_billing_provider_shapes_accepted_and_rejected` 已在本地 PG fixture 上**复现 1 次失败 / 单独重跑通过**，疑为数据库残留状态导致的顺序相关不稳定，建议 T08 提交前重点复核该用例的独立性与幂等性。
+- **评审基线（状态真源）**：§2 提交清单最后一行 = 已评审到的最新 SHA。当前基线 `7e00854`（HEAD；任务代码基线为 `e50f931` = T08 PR #39 squash，代码内容与已评审的 `14e0b1f`+`572649f` 一致）。
+- **T08 已提交**（`14e0b1f` + review 修复 `572649f`）：评审见 §5.9/§5.10，干净基线 638 全绿。上轮 T09R（admin_sessions 破坏 T07 对账）已由 PG_ONLY_TABLES 例外解决；TC08-O1（trade_no squatting）已由约束收紧解决。
+- **开发窗口进行中：T09（DB-08，per-operator admin session）应用层**。`admin_sessions` 数据层已随 `572649f` 落地 026（PG-only）；T09 剩余工作为 session/CSRF/RBAC/fail-closed 应用层。工作区当前仅剩评审文件修改（未提交）。
 - 每个新任务的中文 Lore 提交合并后，对照 §2 提交清单追加一行，并在 §4 追加该任务的发现，评审详情按 §5 样式新增小节。
