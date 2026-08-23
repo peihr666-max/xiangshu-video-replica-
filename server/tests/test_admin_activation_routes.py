@@ -125,9 +125,13 @@ def clean_state(activation_pg_dsn: str) -> Iterator[str]:
         # 036 refuses TRUNCATE of the append-only audit tables; the replica
         # role suspends triggers for this cleanup sweep only.
         conn.execute("SET session_replication_role = replica")
+        # device_pairing_requests (revision 037) references customer_devices
+        # and activation_codes: it must ride the same TRUNCATE, or PostgreSQL
+        # refuses to truncate the referenced tables.
         conn.execute(
             "TRUNCATE customer_session_events, customer_session_state, "
-            "customer_idempotency_envelopes, customer_devices, "
+            "customer_idempotency_envelopes, device_pairing_requests, "
+            "customer_devices, "
             "activation_code_events, activation_code_activations, "
             "activation_code_deliveries, activation_code_exports, activation_codes, "
             "activation_code_batches, admin_write_idempotency, admin_sessions"
