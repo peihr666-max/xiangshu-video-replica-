@@ -125,9 +125,19 @@ app.add_middleware(
         "http://tauri.localhost",
         "tauri://localhost",
     ],
-    allow_credentials=False,
+    # T09 admin sessions ride an HttpOnly cookie on /api/control; the browser
+    # only sends cross-origin cookies when the response opts in here (dev
+    # topology: vite 5173 -> API 8000). Origins stay an explicit allow-list,
+    # never "*", which is required whenever credentials are allowed.
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Dev-User-Id", "X-Admin-CSRF"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Dev-User-Id",
+        "X-Admin-CSRF",
+        "Idempotency-Key",
+    ],
 )
 app.include_router(generation_router)
 app.include_router(rbac_router)

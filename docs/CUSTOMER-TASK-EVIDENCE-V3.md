@@ -356,3 +356,42 @@ Owner / Reviewer：后端/管理（Agent 执行）/ 会话内代码评审
 未测试项：首次激活原子事务（T13）；AEAD 幂等恢复（T14）；共享限流与防枚举（T15）；管理端前端页面（T32）；多实例部署形态（T36+）；STAGING/REAL_CHAIN/PRODUCTION
 Lore 提交 SHA：见 PR squash 合并 SHA
 ```
+
+## T32 — Admin Activation Code Management Frontend (ADM-01)
+
+| Field | Content |
+| --- | --- |
+| **Owner** | Frontend/Admin |
+| **Reviewer** | session-internal code review + security review |
+| **Branch / Base SHA** | `feat/customer-v3-t32-admin-frontend` / `main@83a5bb2` (T12, PR #43 squash) |
+| **Verified Implementation SHA** | PR squash merge result (see `docs/evidence/T32-EVIDENCE.md`) |
+| **Upstream Spec Sections** | Task list §6 T32, §12.4 ADM-01; code checklist §4.2/§4.4/§10.3 (frozen page names); activation-code dev doc §15 (admin write contract), §4.3 (AdminApp tab evolution); acceptance spec §2 |
+| **Files Changed** | `client/src/api.admin.ts` (new, 458 lines: control-plane adapter, in-memory CSRF, §15 write contract) + `api.admin.test.ts` (new, 416 lines, 9 cases); `client/src/admin/AdminActivationSection.tsx` (new, 230: T09 session facade + sub-nav) + test (7 cases); `ActivationCodeBatchesPage.tsx` (new, 352) + test (6); `ActivationCodesPage.tsx` (new, 272) + test (7); `DeliveriesPage.tsx` (new, 163) + test (6); `AdminApp.tsx` (+「激活码」tab); `AdminApp.test.tsx` (+401 session branch + tab-gate case); `styles.css` (+admin session/result/filters styles); `docs/evidence/T32-EVIDENCE.md`; task + evidence ledgers |
+| **Failure Test or Regression Lock** | 40 new red→green cases: CSRF token never reaches persistent storage (Storage.setItem spy, zero calls); byte-exact write contract on create/generate/download/deliver/suspend (body `JSON.stringify({...fields, confirm: true, reason})`, fresh Idempotency-Key per write, X-Admin-CSRF header); one-time plaintext download (second download 409 → deterministic message, export block dropped after download, plaintext never re-rendered); mandatory reason + confirmation refusal paths; deliver optional refs omitted from body when blank; 409 code-specific message overrides; 401 collapses every page back to the sign-in gate via onSessionExpired; refresh → read-only downgrade (GET session 200 without in-memory CSRF); auditor read-only; readOnly write-button disable / action column hidden; masked codes only in lists |
+| **Implementation Result** | T09 session facade (exchange / sign-out DELETE / refresh downgrade / auditor notice) + the three frozen §4.2 pages (batch create / generate / one-time download; masked-only list with suspend/resume/revoke and local row refresh; deliver) + §15 write contract end-to-end (reason / confirmation / idempotency key / CSRF / audit request id surfaced in every result panel); plaintext codes exist only in the one-shot download panel |
+| **Verification Command and Pass Count** | `npx vitest run src/api.admin.test.ts src/admin src/AdminApp.test.tsx` → 40 passed; client full `npm run check` → biome clean, tsc clean, vitest 360 passed (29 files); secret scan / e2e biome / cargo fmt+check / ruff / format / mypy green (zero server/Tauri changes, baseline regression on 83a5bb2) |
+| **Evidence Level** | `AUTOMATED_VERIFIED` (component-level; real browser × real server chain is T34 scope) |
+| **Security and Observability** | csrf_token module-memory only (ADM-01 No-Go locked by test); HttpOnly cookie browser-managed, unreadable from JS; lists masked-only; one-shot plaintext panel with server-side 409 anti-replay; 401 unified sign-in-gate recovery; every write surfaces the audit request id |
+| **Migration and Rollback** | pure frontend task; no migrations; no server/Tauri changes |
+| **External Authorization Record** | None; no real ZPay/COS/paid provider/code issuance/gray release/public launch |
+| **Untested Items** | real browser × real server full chain (T34); CustomersPage/DevicesPage/SessionsPage/AuditEventsPage (T33); real ASX1 credential issuance flow (ops manual scope); STAGING/REAL_CHAIN/PRODUCTION |
+| **Lore Commit SHA** | PR squash merge SHA |
+
+### T32 Section 14 Ledger Record
+
+```text
+任务/工作包：T32 / ADM-01
+Owner / Reviewer：前端/管理（Agent 执行）/ 会话内代码评审 + 安全评审
+分支 / 基线 SHA：feat/customer-v3-t32-admin-frontend / 基线 83a5bb2（T12 PR #43 squash）
+上游规格段落：客户版任务清单 V3 §6 T32 行、§12.4 ADM-01；代码开发清单 V3 §4.2/§4.4/§10.3；激活码开发文档 §15（管理写合同）、§4.3（AdminApp 页签演进）；测试与验收规格 §2
+改动文件：client/src/api.admin.ts（新增 458 行控制面 adapter）+ api.admin.test.ts（新增 9 用例）、client/src/admin/AdminActivationSection.tsx（新增 230 行会话门面）+ 测试 7 用例、client/src/admin/ActivationCodeBatchesPage.tsx（新增 352 行）+ 测试 6 用例、client/src/admin/ActivationCodesPage.tsx（新增 272 行）+ 测试 7 用例、client/src/admin/DeliveriesPage.tsx（新增 163 行）+ 测试 6 用例、client/src/AdminApp.tsx（第四页签「激活码」）、client/src/AdminApp.test.tsx（+401 分支与页签门面用例）、client/src/styles.css（admin 系列样式）、docs/evidence/T32-EVIDENCE.md、任务与证据账本
+失败测试或回归锁定：先红后绿——40 个新用例覆盖：CSRF 永不落持久存储（Storage.setItem spy 断言零调用）、写合同逐字节断言（confirm:true+reason 顺序、Idempotency-Key 每写新 UUID、X-Admin-CSRF 头）、明文一次性下载（二次 409 确定性文案、结果块仅渲染一次）、六态转换（暂停矩阵/原因强制/未勾选拒）、发放（可选引用留空则不入 body、409 覆盖文案）、401 全页面回收登录门、刷新后只读降级、auditor 只读、readOnly 按钮禁用/操作列隐藏
+实现结果：T09 会话门面（交换/退出/刷新降级/auditor）+ 三冻结页面（批次创建/生成/一次性下载、掩码列表/暂停/恢复/作废、发放）+ §15 写合同全链路（原因/确认/幂等键/CSRF/request id 展示）；明文码仅存在于一次性下载结果面板，不入任何持久存储
+验证命令与通过数：vitest admin 目标套件 40 passed；前端全量 360 passed（29 文件）；biome/tsc 全绿；secret 扫描/e2e biome/cargo fmt+check/ruff/format/mypy 全绿（服务端零改动基线回归）
+证据层级：AUTOMATED_VERIFIED（组件级自动化验证；真实浏览器×真实服务端联调属 T34 E2E 范围）
+安全与可观测性：csrf_token 仅模块内存（No-Go 红线锁定）；HttpOnly cookie 由浏览器管理不可被 JS 读取；列表仅掩码码；明文码仅一次性面板展示且服务端 409 防重放；401 统一回收登录门；所有写操作展示 request id 审计入口
+迁移与回滚：纯前端任务，无迁移、无服务端/Tauri 改动
+外部授权记录：无；未调用真实 ZPay/COS/付费 Provider/对外发码/灰度/公网发布
+未测试项：真实浏览器与真实服务端全链路（T34）；CustomersPage/DevicesPage/SessionsPage/AuditEventsPage（T33）；管理登录凭据真实签发流程（运维手册范围）；STAGING/REAL_CHAIN/PRODUCTION
+Lore 提交 SHA：见 PR squash 合并 SHA
+```
