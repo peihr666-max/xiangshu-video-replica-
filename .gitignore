@@ -50,4 +50,6 @@ AGENTS_副本.md
 .verify/
 # 后台服务日志
 nohup.out
+# Git worktree 多任务并行开发工具（本地专用，不上传远程仓库）
 .worktrees/
+worktree/
