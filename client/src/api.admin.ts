@@ -553,3 +553,69 @@ export async function listCustomers(
 
   return response.json() as Promise<CustomerListResponse>;
 }
+
+// ---------------------------------------------------------------------------
+// T33 — Device management APIs (ADM-02)
+// ---------------------------------------------------------------------------
+
+export class AdminDeviceError extends Error {
+  readonly status: number | undefined;
+  readonly code: string | undefined;
+
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.name = "AdminDeviceError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export interface DeviceListItem {
+  device_id: string;
+  activation_code_id: string;
+  user_id: string;
+  slot_no: number;
+  display_name: string | null;
+  platform: string;
+  status: string;
+  bound_at: string | null;
+  unbound_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface DeviceListResponse {
+  items: DeviceListItem[];
+  limit: number;
+  offset: number;
+}
+
+export interface DeviceListOptions {
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Fetch the device list with offset-based pagination.
+ *
+ * GET /api/control/devices?status=&limit=&offset=
+ */
+export async function listDevices(
+  options: DeviceListOptions = {},
+): Promise<DeviceListResponse> {
+  const params = new URLSearchParams();
+  if (options.status) params.set("status", options.status);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+
+  const response = await requestControl(
+    `/api/control/devices?${params.toString()}`,
+    { method: "GET" },
+  );
+
+  if (!response.ok) {
+    throw await parseActivationError(response, "读取设备列表失败");
+  }
+
+  return response.json() as Promise<DeviceListResponse>;
+}
