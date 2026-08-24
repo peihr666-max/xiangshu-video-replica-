@@ -13,6 +13,9 @@ import os
 import secrets
 import uuid
 
+# Set HMAC key before importing app modules
+os.environ.setdefault("VIDEO_REPLICA_ADMIN_SESSION_HMAC_KEY", "test-key-for-t34-audit-tests-minimum-48-bytes-long-1234567890")
+
 import psycopg
 import pytest
 from fastapi import FastAPI
