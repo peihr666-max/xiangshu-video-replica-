@@ -138,7 +138,7 @@ def _create_admin_user(conn: psycopg.Connection, email: str, role: str) -> str:
 
 
 def _create_admin_session(conn: psycopg.Connection, admin_user_id: str) -> dict:
-    credential = issue_exchange_credential(admin_user_id)
+    credential = issue_exchange_credential(admin_user_id, ttl_seconds=3600)
     session_token = secrets.token_urlsafe(32)
     csrf_token = secrets.token_urlsafe(32)
     
