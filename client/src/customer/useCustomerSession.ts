@@ -10,6 +10,7 @@ import {
   customerHeartbeat,
   customerLogin,
   customerLogout,
+  customerSwitch,
 } from "../api";
 
 /** The persistent-credential boundary for the customer lane (dev doc §14).
@@ -82,8 +83,11 @@ export function useCustomerSession(
   user: CustomerWorkspaceUser | null;
   activate(input: CustomerActivationFormInput): Promise<void>;
   retryLogin(): Promise<void>;
+  switchSession(): Promise<void>;
+  cancelSessionSwitch(): void;
   logout(): Promise<void>;
   restartAfterExpiry(): void;
+  restartAfterReplaced(): void;
   restartAfterRevocation(): void;
 } {
   const [screen, dispatch] = useReducer(
@@ -172,6 +176,7 @@ export function useCustomerSession(
               slotNo: cause.onlineSlotNo ?? 0,
               leaseExpiresAt: cause.leaseExpiresAt ?? "",
             });
+            dispatch({ type: "conflict-detected" });
           }
         } else {
           setError(credentialStoreError(cause));
@@ -306,6 +311,7 @@ export function useCustomerSession(
             slotNo: cause.onlineSlotNo ?? 0,
             leaseExpiresAt: cause.leaseExpiresAt ?? "",
           });
+          dispatch({ type: "conflict-detected" });
         }
       } else {
         setError(credentialStoreError(cause));
@@ -314,6 +320,54 @@ export function useCustomerSession(
       setIsBusy(false);
     }
   }, [establishSession, store]);
+
+  // Explicit device switch (FE-03): the customer confirms the takeover in the
+  // conflict dialog; the server atomically replaces the lease and mints a
+  // fresh session token (§14). The UI must never assume the switch succeeded
+  // before the server confirms it — only this action transitions to the
+  // workspace.
+  const switchSession = useCallback(async () => {
+    setIsBusy(true);
+    setError(null);
+    try {
+      const deviceToken = await store.loadDeviceCredentialToken();
+      if (deviceToken === null) {
+        dispatch({ type: "credential-missing" });
+        return;
+      }
+      const previousSessionToken = await store.loadSessionToken();
+      const result = await customerSwitch(
+        { kind: "device", token: deviceToken },
+        {
+          idempotencyKey: newIdempotencyKey(),
+          sessionToken: previousSessionToken ?? undefined,
+        },
+      );
+      try {
+        await store.saveSessionToken(result.session.session_token);
+      } catch (cause) {
+        throw credentialStoreError(cause);
+      }
+      sessionTokenRef.current = result.session.session_token;
+      setSessionToken(result.session.session_token);
+      setUser({ userId: result.session.user_id, username: null });
+      setConflict(null);
+      dispatch({ type: "login-succeeded" });
+    } catch (cause) {
+      if (cause instanceof CustomerApiError) {
+        setError(cause);
+      } else {
+        setError(credentialStoreError(cause));
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  }, [store]);
+
+  const cancelSessionSwitch = useCallback(() => {
+    setConflict(null);
+    dispatch({ type: "conflict-cancelled" });
+  }, []);
 
   const logout = useCallback(async () => {
     setIsBusy(true);
@@ -352,6 +406,10 @@ export function useCustomerSession(
     dispatch({ type: "session-expired" });
   }, []);
 
+  const restartAfterReplaced = useCallback(() => {
+    dispatch({ type: "session-replaced" });
+  }, []);
+
   const restartAfterRevocation = useCallback(() => {
     dispatch({ type: "device-revoked" });
   }, []);
@@ -364,8 +422,11 @@ export function useCustomerSession(
     user,
     activate,
     retryLogin,
+    switchSession,
+    cancelSessionSwitch,
     logout,
     restartAfterExpiry,
+    restartAfterReplaced,
     restartAfterRevocation,
   };
 }
@@ -386,6 +447,8 @@ type CustomerScreenEvent =
   | { type: "activation-succeeded" }
   | { type: "login-succeeded" }
   | { type: "credential-missing" }
+  | { type: "conflict-detected" }
+  | { type: "conflict-cancelled" }
   | { type: "logout" }
   | { type: "session-expired" }
   | { type: "session-replaced" }
@@ -401,17 +464,27 @@ export function customerScreenReducer(
     case "activation-succeeded":
       return "workspace";
     case "login-succeeded":
-      return screen === "login" ? "workspace" : screen;
+      return screen === "login" || screen === "binding-conflict"
+        ? "workspace"
+        : screen;
+    case "conflict-detected":
+      return screen === "login" ? "binding-conflict" : screen;
+    case "conflict-cancelled":
+      return screen === "binding-conflict" ? "login" : screen;
     case "credential-missing":
       return screen === "login" ? "activation" : screen;
     case "logout":
       return "login";
+    // Re-entering a terminal state means the customer tapped the recovery
+    // button on the notice: expired/replaced keep the device credential and
+    // return to login (§13.2), revoked clears everything and starts a fresh
+    // activation (§10.1 recovery flow).
     case "session-expired":
-      return "session-expired";
+      return screen === "session-expired" ? "login" : "session-expired";
     case "session-replaced":
-      return "session-replaced";
+      return screen === "session-replaced" ? "login" : "session-replaced";
     case "device-revoked":
-      return "device-revoked";
+      return screen === "device-revoked" ? "activation" : "device-revoked";
     default:
       return screen;
   }

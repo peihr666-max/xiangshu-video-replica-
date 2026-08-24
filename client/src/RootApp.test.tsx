@@ -33,6 +33,21 @@ describe("RootApp", () => {
     },
   );
 
+  it.each(["/customer", "/customer/"])(
+    "routes %s to the customer app",
+    async (path) => {
+      render(<RootApp path={path} />);
+
+      expect(
+        await screen.findByRole("heading", { name: "激活" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: "内部运营管理" }),
+      ).toBeNull();
+      expect(screen.queryByRole("heading", { name: "镜序 Studio" })).toBeNull();
+    },
+  );
+
   it("keeps normal paths on the user workspace", async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.endsWith("/api/auth/me")) {

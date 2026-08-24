@@ -1,53 +1,36 @@
 import { type JSX, useState } from "react";
+import { type CustomerEnrollResult, customerEnrollDevice } from "../api";
 
 /** Second-device pairing enrollment page (FE-03 / T30).
- * Collects device fingerprint and name, calls the enroll API.
+ * Collects the activation code, device fingerprint and name, and calls the
+ * typed customer adapter — not a raw fetch: the idempotency key and the
+ * 202 pending / 201 consumed distinction live in the transport.
  */
 export function DevicePairingPage({
   onSuccess,
   onError,
   onCancel,
 }: {
-  onSuccess: (result: {
-    status: "pending" | "consumed";
-    data: unknown;
-  }) => void;
+  onSuccess: (result: CustomerEnrollResult) => void;
   onError: (error: Error) => void;
   onCancel: () => void;
 }): JSX.Element {
   const [isBusy, setIsBusy] = useState(false);
+  const [activationCode, setActivationCode] = useState("");
   const [deviceFingerprint, setDeviceFingerprint] = useState("");
   const [deviceName, setDeviceName] = useState("");
 
   const handleEnroll = async () => {
     setIsBusy(true);
     try {
-      // In production this would call customerEnrollDevice()
-      const response = await fetch("/api/customer/devices/enroll", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          activation_code: "", // Would come from user input
-          device_fingerprint: deviceFingerprint,
-          device_name: deviceName,
-          device_platform: "web",
-        }),
+      const result = await customerEnrollDevice({
+        activationCode,
+        deviceFingerprint,
+        deviceName,
+        devicePlatform: "web",
+        idempotencyKey: crypto.randomUUID(),
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({
-          message: "Failed to enroll device",
-        }));
-        throw new Error(errorData.message || "Failed to enroll device");
-      }
-
-      const data = await response.json();
-      onSuccess({
-        status: data.status === "pending" ? "pending" : "consumed",
-        data,
-      });
+      onSuccess(result);
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
       onError(error);
@@ -66,6 +49,19 @@ export function DevicePairingPage({
       </header>
 
       <form onSubmit={(e) => e.preventDefault()} className="pairing-form">
+        <div className="form-group">
+          <label htmlFor="activation-code">Activation Code</label>
+          <input
+            type="text"
+            id="activation-code"
+            value={activationCode}
+            onChange={(e) => setActivationCode(e.target.value)}
+            placeholder="e.g., XXXX-XXXX-XXXX"
+            required
+            aria-required="true"
+          />
+        </div>
+
         <div className="form-group">
           <label htmlFor="device-fingerprint">Device Fingerprint</label>
           <input
