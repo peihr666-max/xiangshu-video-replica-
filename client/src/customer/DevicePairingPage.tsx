@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type JSX, useState } from "react";
 
 /** Second-device pairing enrollment page (FE-03 / T30).
  * Collects device fingerprint and name, calls the enroll API.
@@ -10,7 +10,7 @@ export function DevicePairingPage({
 }: {
   onSuccess: (result: {
     status: "pending" | "consumed";
-    data: any;
+    data: unknown;
   }) => void;
   onError: (error: Error) => void;
   onCancel: () => void;
@@ -49,8 +49,7 @@ export function DevicePairingPage({
         data,
       });
     } catch (cause) {
-      const error =
-        cause instanceof Error ? cause : new Error(String(cause));
+      const error = cause instanceof Error ? cause : new Error(String(cause));
       onError(error);
     } finally {
       setIsBusy(false);
@@ -58,7 +57,7 @@ export function DevicePairingPage({
   };
 
   return (
-    <div className="device-pairing-page" role="main" aria-labelledby="page-title">
+    <main className="device-pairing-page" aria-labelledby="page-title">
       <header>
         <h1 id="page-title">Pair New Device</h1>
         <p className="page-subtitle">
@@ -113,6 +112,6 @@ export function DevicePairingPage({
           </button>
         </div>
       </form>
-    </div>
+    </main>
   );
 }

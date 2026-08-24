@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { PairingApprovalCard } from "./PairingApprovalCard";
 
 describe("PairingApprovalCard (FE-03 / T30)", () => {
@@ -28,7 +28,9 @@ describe("PairingApprovalCard (FE-03 / T30)", () => {
 
   it("displays masked device fingerprint without exposing plaintext identity", () => {
     renderWithProps();
-    expect(screen.getByText(/Android \u2022\u2022\u2022\u2022 XY78/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Android \u2022\u2022\u2022\u2022 XY78/i),
+    ).toBeInTheDocument();
   });
 
   it("shows slot number clearly as Slot #2", () => {
@@ -62,11 +64,11 @@ describe("PairingApprovalCard (FE-03 / T30)", () => {
 
     // Card exists but no automatic action occurs
     expect(screen.getByRole("article")).toBeInTheDocument();
-    
+
     // Verify callbacks were NOT called during render
     expect(mockApprove).not.toHaveBeenCalled();
     expect(mockReject).not.toHaveBeenCalled();
-    
+
     // Only after clicking approve does state change happen
     fireEvent.click(screen.getByRole("button", { name: /approve pairing/i }));
     expect(mockApprove).toHaveBeenCalledWith("test-pairing-id");
@@ -75,6 +77,8 @@ describe("PairingApprovalCard (FE-03 / T30)", () => {
   it("indicates pending status visually with appropriate messaging", () => {
     renderWithProps();
     expect(screen.getByText(/slot #2/i)).toBeInTheDocument();
-    expect(screen.getByText(/waiting for your confirmation/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/waiting for your confirmation/i),
+    ).toBeInTheDocument();
   });
 });

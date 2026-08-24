@@ -267,26 +267,19 @@ export function useCustomerSession(
         } catch (cause) {
           throw credentialStoreError(cause);
         }
-        if (!cancelled) {
-          dispatch({ type: "activation-succeeded" });
-          // Restore session immediately after activation completes successfully
-          setSessionToken(response.session_token);
-          sessionTokenRef.current = response.session_token;
-          setUser({ userId: response.user_id, username: null });
-        }
+        dispatch({ type: "activation-succeeded" });
+        // Restore session immediately after activation completes successfully
+        setSessionToken(response.session_token);
+        sessionTokenRef.current = response.session_token;
+        setUser({ userId: response.user_id, username: null });
       } catch (cause) {
-        if (cancelled) {
-          return;
-        }
         if (cause instanceof CustomerApiError) {
           setError(cause);
         } else {
           setError(credentialStoreError(cause));
         }
       } finally {
-        if (!cancelled) {
-          setIsBusy(false);
-        }
+        setIsBusy(false);
       }
     },
     [store],
@@ -353,7 +346,7 @@ export function useCustomerSession(
     } finally {
       setIsBusy(false);
     }
-  }, []);
+  }, [store]);
 
   const restartAfterExpiry = useCallback(() => {
     dispatch({ type: "session-expired" });
@@ -398,7 +391,7 @@ type CustomerScreenEvent =
   | { type: "session-replaced" }
   | { type: "device-revoked" };
 
-function customerScreenReducer(
+export function customerScreenReducer(
   screen: CustomerScreen,
   event: CustomerScreenEvent,
 ): CustomerScreen {
@@ -424,8 +417,4 @@ function customerScreenReducer(
   }
 }
 
-export function initialCustomerScreen(): CustomerScreen {
-  return "checking";
-}
-
-export { customerScreenReducer, initialCustomerScreen };
+export const initialCustomerScreen: CustomerScreen = "checking";
