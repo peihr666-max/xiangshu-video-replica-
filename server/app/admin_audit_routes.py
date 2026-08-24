@@ -10,9 +10,6 @@ instead of falling back to legacy control identity (the T12/T18 precedent).
 
 from __future__ import annotations
 
-import uuid
-
-import psycopg
 from fastapi import APIRouter, HTTPException
 
 from app.admin_auth_routes import AdminReader
@@ -71,7 +68,7 @@ def list_audit_log(
         with pg_transaction() as conn:
             # Query admin adjustments as audit events
             rows = conn.execute(
-                """
+                f"""
                 SELECT aa.id, aa.admin_user_id, aa.target_user_id,
                        aa.source_document_type, aa.source_document_ref,
                        aa.reason, aa.request_id, aa.created_at,
@@ -81,7 +78,7 @@ def list_audit_log(
                 {where}
                 ORDER BY aa.created_at DESC, aa.id
                 LIMIT %s OFFSET %s
-                """.format(where=where),
+                """,
                 (*params, bounded_limit, bounded_offset),
             ).fetchall()
             

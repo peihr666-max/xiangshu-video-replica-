@@ -9,9 +9,6 @@ instead of falling back to legacy control identity (the T12/T18 precedent).
 
 from __future__ import annotations
 
-import uuid
-
-import psycopg
 from fastapi import APIRouter, HTTPException
 
 from app.admin_auth_routes import AdminReader
@@ -59,7 +56,7 @@ def list_customer_sessions(
     try:
         with pg_transaction() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT cs.id, cs.user_id, cs.device_id, cs.session_token,
                        cs.status, cs.created_at, cs.expires_at,
                        cd.display_name, cd.platform, cd.slot_no
@@ -68,7 +65,7 @@ def list_customer_sessions(
                 {where}
                 ORDER BY cs.created_at DESC, cs.id
                 LIMIT %s OFFSET %s
-                """.format(where=where),
+                """,
                 (*params, bounded_limit, bounded_offset),
             ).fetchall()
             
