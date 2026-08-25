@@ -183,12 +183,25 @@ class SettingsRepository:
         max_concurrent_h3_tasks: int,
         active_storage_provider: str,
         actor_user_id: str,
+        fair_queue_enabled: bool | None = None,
     ) -> dict[str, int | str]:
         validate_runtime_settings(
             max_generation_count_per_batch=max_generation_count_per_batch,
             max_concurrent_h3_tasks=max_concurrent_h3_tasks,
             active_storage_provider=active_storage_provider,
         )
+        # M4/M5 review M2: the fair-queue rollout switch (revised ADR §4)
+        # gets an audited write path instead of ad-hoc SQL. The column only
+        # exists on PostgreSQL (migration 041); the desktop SQLite lane keeps
+        # its legacy global FIFO, so a provided value there is a caller error.
+        # ``getattr`` rather than ``is_postgres`` because unit tests inject a
+        # raw sqlite3 connection, which is by definition not the PG lane.
+        # The saved dict deliberately does NOT echo the switch (PR #68 Codex
+        # P2): echoing it would let a stale SettingsPanel round-trip silently
+        # disable the queue on an unrelated limits save. The switch is read
+        # explicitly via read_fair_queue_enabled / the control-plane route.
+        if fair_queue_enabled is not None and not getattr(self.conn, "is_postgres", False):
+            raise ValueError("fair_queue_enabled is only available on the PostgreSQL lane")
         with self.conn:
             self.conn.execute(
                 """
@@ -216,7 +229,30 @@ class SettingsRepository:
                     actor_user_id,
                 ),
             )
+            if fair_queue_enabled is not None:
+                # The upsert above guarantees the id=1 row; flip the switch in
+                # the same transaction so limits and the queue mode commit
+                # (or roll back) together.
+                self.conn.execute(
+                    """
+                    UPDATE runtime_settings
+                    SET fair_queue_enabled = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                    """,
+                    (fair_queue_enabled,),
+                )
         return self.read_runtime_settings()
+
+    def read_fair_queue_enabled(self) -> bool:
+        """The fair-queue switch on the PostgreSQL lane; anything else (the
+        SQLite lane, a missing settings row) is the documented feature-off
+        state (revised ADR §4, mirroring ``_fair_queue_enabled``)."""
+        if not getattr(self.conn, "is_postgres", False):
+            return False
+        row = self.conn.execute(
+            "SELECT fair_queue_enabled FROM runtime_settings WHERE id = 1"
+        ).fetchone()
+        return bool(row[0]) if row is not None else False
 
     def read_runtime_settings(self) -> dict[str, int | str]:
         row = self.conn.execute(
