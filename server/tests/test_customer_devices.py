@@ -427,6 +427,32 @@ def test_list_devices_shows_slot_one_bound_slot_two_free(client: TestClient) -> 
     assert body["history"] == []
 
 
+def test_list_devices_returns_pending_pairings_for_approval(client: TestClient) -> None:
+    """The first device sees PENDING pairings in the devices view so the
+    approval flow is reachable (T30 UI wiring: the pending list drives the
+    approval card)."""
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-dvp-1", suffix="dvp1")
+    enroll = _enroll(client, code=FIRST_CODE, fingerprint="fp-dvp-1-second", key="idem-dvp1")
+    assert enroll.status_code == 202, enroll.text
+    pairing_id = enroll.json()["pairing_request_id"]
+
+    response = client.get(DEVICES_PATH, headers=_bearer(customer["device_token"]))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["pending_pairings"]) == 1
+    pending = body["pending_pairings"][0]
+    assert pending["pairing_request_id"] == pairing_id
+    assert pending["display_name"]
+    assert pending["platform"]
+    assert pending["created_at"]
+
+    # A different customer's devices view must not see this pairing.
+    other = _activated_customer(client, code=SECOND_CODE, fingerprint="fp-dvp-2", suffix="dvp2")
+    response = client.get(DEVICES_PATH, headers=_bearer(other["device_token"]))
+    assert response.status_code == 200, response.text
+    assert response.json()["pending_pairings"] == []
+
+
 # ---------------------------------------------------------------------------
 # DELETE /api/customer/devices/{id} — unbind, history and slot reuse
 # ---------------------------------------------------------------------------
@@ -2404,7 +2430,7 @@ def test_admin_device_events_downgrade_guard(route_state: str) -> None:
         command.downgrade(config, "037_device_pairing_requests")
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "040_fix_provider_settings_constraint"
+    assert version == "041_user_fair_queue"
 
 
 # ---------------------------------------------------------------------------
@@ -2446,7 +2472,7 @@ def test_pairing_downgrade_refuses_once_rows_exist(route_state: str) -> None:
     # the version stays at the current head.
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "040_fix_provider_settings_constraint"
+    assert version == "041_user_fair_queue"
 
     # An emptied table downgrades symmetrically, and upgrading back restores
     # the schema for any rerun of this module. Revision 038 added the

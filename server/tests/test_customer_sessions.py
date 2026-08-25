@@ -67,6 +67,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -108,6 +109,17 @@ SECOND_CODE = "XS04-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF"
 
 COUNTERS_TABLE = "security_rate_limit_counters"
 FAILURES_TABLE = "security_auth_failures"
+
+# T22 recharge tests: the write path decrypts runtime settings with a Fernet
+# key, and conftest disables the local keystore — so a module-stable key must
+# encrypt the ZPay provider row seeded in route_state, and the app fixture
+# must expose the same key (the test_customer_recharge precedent).
+TEST_SETTINGS_FERNET_KEY = Fernet.generate_key()
+TEST_ZPAY_ENCRYPTED_CONFIG = (
+    Fernet(TEST_SETTINGS_FERNET_KEY)
+    .encrypt(b'{"pid":"merchant-123","key":"merchant-secret","enabled_channels":"alipay,wxpay"}')
+    .decode("ascii")
+)
 
 
 def _pg_dsn() -> str:
@@ -265,6 +277,12 @@ def route_state(sessions_dsn: str) -> Iterator[str]:
             "INSERT INTO users (id, username, display_name, role) "
             "VALUES ('admin_u', 'admin_u', 'Admin User', 'admin')"
         )
+        conn.execute(
+            "INSERT INTO provider_settings "
+            "(provider, encrypted_config, updated_by_user_id, created_at, updated_at) "
+            "VALUES ('zpay', %s, 'admin_u', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (TEST_ZPAY_ENCRYPTED_CONFIG,),
+        )
     yield sessions_dsn
     close_pg_pool()
 
@@ -277,18 +295,26 @@ def customer_app(monkeypatch: pytest.MonkeyPatch, route_state: str) -> Iterator[
     from app.admin_activation_routes import router as admin_activation_router
     from app.admin_auth_routes import router as admin_auth_router
     from app.customer_session_routes import router as customer_session_router
+    from app.recharge_routes import router as recharge_router
 
     app = FastAPI()
     app.include_router(activation_code_router)
     app.include_router(admin_auth_router)
     app.include_router(admin_activation_router)
     app.include_router(customer_session_router)
+    app.include_router(recharge_router)
     monkeypatch.setenv(DATABASE_URL_ENV, route_state)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
     monkeypatch.setenv(ACTIVATION_CODE_HMAC_KEY_ENV, TEST_KEY)
     monkeypatch.setenv("VIDEO_REPLICA_ADMIN_SESSION_HMAC_KEY", TEST_KEY)
     monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY", TEST_FINGERPRINT_KEY_V1)
     monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY_V2", TEST_FINGERPRINT_KEY_V2)
+    # conftest disables the local keystore; the recharge write path (T22)
+    # decrypts runtime settings, so the module-stable Fernet key that also
+    # encrypted the seeded ZPay provider row must ride this app too.
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", TEST_SETTINGS_FERNET_KEY.decode("ascii"))
+    monkeypatch.setenv("ZPAY_GATEWAY_URL", "https://zpayz.cn/submit.php")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://callback.example.com")
     monkeypatch.setenv(
         "VIDEO_REPLICA_CUSTOMER_IDEMPOTENCY_AEAD_KEY",
         base64.urlsafe_b64encode(TEST_ENVELOPE_AEAD_KEY).decode("ascii").rstrip("="),
@@ -396,6 +422,184 @@ def _second_device_row(
 
 def _bearer(token: str) -> dict[str, str]:
     return {AUTHORIZATION_HEADER: f"Bearer {token}"}
+
+
+def _second_device_login(
+    client: TestClient,
+    user_id: str,
+    device_id: str,
+    *,
+    suffix: str,
+) -> dict:
+    """Create a session on slot 2 (takeover scenario) for fencing tests.
+
+    Mirrors the T20 switch pattern: a second BOUND device on the same
+    (already activated) code, then the explicit switch endpoint displaces
+    the first device's lease in one transaction (epoch bump). Returns the
+    new session payload with epoch 2.
+    """
+    # Insert second device directly (bypass T17 enroll) on the already ACTIVE
+    # code-a — a fresh code would stay ISSUED and fail the session gate.
+    second_token = _second_device_row(
+        user_id=user_id,
+        activation_code_id="code-a",
+        device_id=device_id,
+        slot_no=2,
+    )
+
+    # The explicit switch (T20/SES-02): the user confirmed the takeover, so
+    # the server displaces the other device's lease atomically.
+    response = client.post(
+        SWITCH_PATH,
+        json={},
+        headers={
+            **_bearer(second_token),
+            IDEMPOTENCY_KEY_HEADER: f"idem-second-switch-{suffix}",
+        },
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    for field in ("user_id", "device_id", "session_token", "session_epoch"):
+        assert isinstance(payload.get(field), str if field != "session_epoch" else int), payload
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# T22 / SES-06 — recharge fencing invariants (customer session top-up gates)
+# ---------------------------------------------------------------------------
+
+
+def test_recharge_requires_a_live_customer_session(client: TestClient) -> None:
+    """T22 core fence: without a live customer session, top-up is refused.
+
+    The recharge endpoint lives behind BusinessDbDep which takes a
+    CustomerSessionSnapshot via customer_session_snapshot() — when the
+    PostgreSQL runtime is configured, missing/invalid tokens answer 401
+    SESSION_TOKEN_REQUIRED/SESSION_REPLACED rather than leaking internal
+    identity paths.
+    """
+    # No Bearer header at all → SESSION_TOKEN_REQUIRED.
+    response = client.post(
+        "/api/customer/recharge-orders",
+        json={"amount_fen": 10000},
+        headers={IDEMPOTENCY_KEY_HEADER: "idem-no-session-1"},
+    )
+    assert response.status_code == 401, response.text
+    assert response.json()["detail"]["code"] == "SESSION_TOKEN_REQUIRED"
+
+    # Create a valid customer but never establish a session.
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+
+    # Wrong token type (device instead of session) → SESSION_REPLACED.
+    response = client.post(
+        "/api/customer/recharge-orders",
+        json={"amount_fen": 10000},
+        headers={
+            **_bearer(customer["device_token"]),
+            IDEMPOTENCY_KEY_HEADER: "idem-device-token-1",
+        },
+    )
+    assert response.status_code == 401, response.text
+    # Device tokens are not session tokens; the snapshot phase rejects them.
+    assert response.json()["detail"]["code"] == "SESSION_REPLACED"
+
+
+def test_recharge_fails_when_admin_revoked_the_session(client: TestClient) -> None:
+    """T22 core fence: admin suspend/revoke logs out the session and the
+    old session token can never revive for write operations including top-up.
+
+    This is the fencing boundary where SES-05 propagates to BILL-01:
+    the recharge order insert must fail with SESSION_EXPIRED once the
+    activation code is suspended or revoked by an admin actor.
+    """
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    session_token = customer["session_token"]
+    session_epoch_before = customer["session_epoch"]
+
+    # Recharge succeeds while session is live.
+    fresh = client.post(
+        "/api/customer/recharge-orders",
+        json={"amount_fen": 10000},
+        headers={
+            **_bearer(session_token),
+            IDEMPOTENCY_KEY_HEADER: "idem-fresh-recharge",
+        },
+    )
+    assert fresh.status_code == 201, fresh.text
+    assert fresh.json()["amount_fen"] == 10000
+
+    # Admin suspends the code: this triggers LOGOUT with code_suspended reason.
+    suspended = _admin_code_action(client, "code-a", "suspend", reason="风控暂停")
+    assert suspended.status_code == 200, suspended.text
+
+    # Verify session event chain: ACTIVATED + LOGIN + HEARTBEAT + LOGOUT(code_suspended).
+    events = _session_events()
+    logout_rows = [e for e in events if e[0] == "LOGOUT"]
+    assert len(logout_rows) == 1
+    assert logout_rows[0][2] == "code_suspended"
+
+    # Recharge now fails with SESSION_EXPIRED: the lease was pulled into the past.
+    stale = client.post(
+        "/api/customer/recharge-orders",
+        json={"amount_fen": 10000},
+        headers={
+            **_bearer(session_token),
+            IDEMPOTENCY_KEY_HEADER: "idem-stale-recharge",
+        },
+    )
+    assert stale.status_code == 401, stale.text
+    assert stale.json()["detail"]["code"] == "SESSION_EXPIRED"
+
+    # The revocation propagation bumps the epoch (T20/SES-03): suspend pulls
+    # the lease into the past and records LOGOUT at the bumped epoch.
+    row_device, _, row_epoch, row_lease, _ = _session_row()
+    assert row_epoch == session_epoch_before + 1
+    assert datetime.fromisoformat(row_lease) <= datetime.now(UTC) + timedelta(seconds=1)
+
+
+def test_recharge_fails_with_session_replaced_after_second_device_login(client: TestClient) -> None:
+    """T22 core fence: second device login takeovers the slot and bumps epoch;
+    the first device's session token becomes invalid for writes (including top-up).
+
+    This tests the SWITCH scenario from T20/SES-02 propagated to BILL-01:
+    the old session answers SESSION_REPLACED when attempting to create
+    a recharge order after being displaced by another device.
+    """
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    session_token_a = customer["session_token"]
+    session_epoch_a = customer["session_epoch"]
+
+    # First, establish second device session.
+    second = _second_device_login(client, customer["user_id"], "device-b", suffix="b")
+    session_token_b = second["session_token"]
+    session_epoch_b = second["session_epoch"]
+
+    # Verify epoch bumped: device A was epoch 1, device B took over with epoch 2.
+    assert session_epoch_b == session_epoch_a + 1
+
+    # Device A's session token is now REPLACED.
+    stale = client.post(
+        "/api/customer/recharge-orders",
+        json={"amount_fen": 10000},
+        headers={
+            **_bearer(session_token_a),
+            IDEMPOTENCY_KEY_HEADER: "idem-old-recharge-after-switch",
+        },
+    )
+    assert stale.status_code == 401, stale.text
+    assert stale.json()["detail"]["code"] == "SESSION_REPLACED"
+
+    # Device B's session works correctly.
+    fresh = client.post(
+        "/api/customer/recharge-orders",
+        json={"amount_fen": 20000},
+        headers={
+            **_bearer(session_token_b),
+            IDEMPOTENCY_KEY_HEADER: "idem-fresh-recharge-after-switch",
+        },
+    )
+    assert fresh.status_code == 201, fresh.text
+    assert fresh.json()["amount_fen"] == 20000
 
 
 def _session_row() -> tuple[str, str, int, str, str]:
