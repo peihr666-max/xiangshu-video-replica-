@@ -1,0 +1,561 @@
+"""T36 deployment and readiness contracts for customer staging.
+
+These tests deliberately prove the repository-owned topology without claiming
+that a laptop is a real HA environment. Live two-API/four-worker/PG-HA/private-
+COS evidence is recorded only after the deployment runbook is executed on the
+staging hosts.
+"""
+
+from __future__ import annotations
+
+import inspect
+import json
+import os
+import subprocess
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _read(path: str) -> str:
+    return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def test_liveness_and_readiness_are_separate_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    from app.main import app
+
+    with TestClient(app) as client:
+        assert client.get("/live").json() == {
+            "status": "ok",
+            "service": "video-replica-api",
+        }
+        assert client.get("/ready").json() == {
+            "status": "ready",
+            "service": "video-replica-api",
+            "database": "internal",
+            "storage": "local",
+        }
+
+
+def test_customer_runtime_dependency_gate_requires_private_cos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import bootstrap
+
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    ready = SimpleNamespace(pool_size=4)
+    monkeypatch.setattr(bootstrap, "check_pg_ready", lambda: ready)
+
+    @contextmanager
+    def fake_transaction() -> Any:
+        yield SimpleNamespace(row_factory=None)
+
+    class MissingCosRepository:
+        def __init__(self, _: object) -> None:
+            pass
+
+        def read_runtime_settings(self) -> dict[str, object]:
+            return {"active_storage_provider": "cos"}
+
+        def load_provider_config(self, provider: str) -> dict[str, str]:
+            assert provider == "cos"
+            return {}
+
+    monkeypatch.setattr(bootstrap, "pg_transaction", fake_transaction)
+    monkeypatch.setattr(bootstrap, "SettingsRepository", MissingCosRepository)
+
+    def unexpected_storage(_: object) -> None:
+        raise AssertionError("storage must not initialize with incomplete COS settings")
+
+    monkeypatch.setattr(bootstrap, "create_storage_adapter", unexpected_storage)
+
+    with pytest.raises(RuntimeError, match="private COS"):
+        bootstrap.check_customer_production_runtime_dependencies()
+
+
+def test_customer_runtime_dependency_gate_accepts_pg_and_cos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import bootstrap
+
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    ready = SimpleNamespace(pool_size=4)
+    monkeypatch.setattr(bootstrap, "check_pg_ready", lambda: ready)
+
+    events: list[str] = []
+
+    @contextmanager
+    def fake_transaction() -> Any:
+        events.append("pg-enter")
+        try:
+            yield SimpleNamespace(row_factory=None)
+        finally:
+            events.append("pg-exit")
+
+    class ConfiguredCosRepository:
+        def __init__(self, _: object) -> None:
+            pass
+
+        def read_runtime_settings(self) -> dict[str, object]:
+            return {"active_storage_provider": "cos"}
+
+        def load_provider_config(self, provider: str) -> dict[str, str]:
+            assert provider == "cos"
+            return {
+                "access_key_id": "placeholder-access-id",
+                "secret_access_key": "placeholder-secret",
+                "bucket": "private-staging-bucket",
+                "region": "ap-shanghai",
+            }
+
+    monkeypatch.setattr(bootstrap, "pg_transaction", fake_transaction)
+    monkeypatch.setattr(bootstrap, "SettingsRepository", ConfiguredCosRepository)
+
+    probes: list[str] = []
+
+    class ReachableStorage:
+        def check_readiness(self) -> None:
+            assert events == ["pg-enter", "pg-exit"]
+            events.append("cos-bucket-head")
+            probes.append("bucket")
+
+    monkeypatch.setattr(
+        bootstrap,
+        "create_storage_adapter",
+        lambda _: ReachableStorage(),
+    )
+
+    assert bootstrap.check_customer_production_runtime_dependencies() is ready
+    assert probes == ["bucket"]
+    assert events == ["pg-enter", "pg-exit", "cos-bucket-head"]
+
+
+def test_empty_customer_bootstrap_provisions_first_admin_and_cos_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import bootstrap
+
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_DATABASE_URL",
+        "postgresql://u:p@db.example.test/customer?sslmode=verify-full",
+    )
+    monkeypatch.setenv("VIDEO_REPLICA_ADMIN_SESSION_HMAC_KEY_V2", "k" * 64)
+    monkeypatch.delenv("VIDEO_REPLICA_DB_PATH", raising=False)
+    monkeypatch.setattr(bootstrap, "assert_customer_production_security", lambda: None)
+    monkeypatch.setattr(
+        bootstrap,
+        "issue_exchange_credential",
+        lambda actor_id, **_: f"credential-for-{actor_id}",
+    )
+
+    events: list[tuple[str, tuple[object, ...]]] = []
+
+    class Cursor:
+        def __init__(self, *, row: tuple[object, ...] | None = None, rowcount: int = 1) -> None:
+            self._row = row
+            self.rowcount = rowcount
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+    class FakeBusinessConnection:
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> Cursor:
+            normalized = " ".join(sql.split())
+            events.append((normalized, params))
+            if "AS has_users" in normalized:
+                return Cursor(row=(False, False, False, True))
+            return Cursor()
+
+    fake_conn = FakeBusinessConnection()
+
+    @contextmanager
+    def fake_transaction(**_: object) -> Any:
+        yield object()
+
+    monkeypatch.setattr(bootstrap, "pg_transaction", fake_transaction)
+    monkeypatch.setattr(
+        bootstrap,
+        "BusinessConnection",
+        SimpleNamespace(postgres=lambda _: fake_conn),
+    )
+
+    saved: list[tuple[dict[str, str], str]] = []
+
+    class FakeSettingsRepository:
+        def __init__(self, conn: object) -> None:
+            assert conn is fake_conn
+
+        def save_provider_config(
+            self,
+            provider: str,
+            config: dict[str, str],
+            *,
+            actor_user_id: str,
+        ) -> dict[str, object]:
+            assert provider == "cos"
+            saved.append((config, actor_user_id))
+            return {"provider": "cos", "configured": True}
+
+    monkeypatch.setattr(bootstrap, "SettingsRepository", FakeSettingsRepository)
+
+    result = bootstrap.provision_empty_customer(
+        admin_username="first-admin",
+        admin_display_name="First Admin",
+        cos_config={
+            "access_key_id": "placeholder-access-id",
+            "secret_access_key": "placeholder-secret",
+            "bucket": "private-staging-bucket",
+            "region": "ap-shanghai",
+        },
+        confirm_empty_database=True,
+    )
+
+    assert result.admin_user_id
+    assert result.exchange_credential == f"credential-for-{result.admin_user_id}"
+    assert saved == [
+        (
+            {
+                "access_key_id": "placeholder-access-id",
+                "secret_access_key": "placeholder-secret",
+                "bucket": "private-staging-bucket",
+                "region": "ap-shanghai",
+            },
+            result.admin_user_id,
+        )
+    ]
+    assert any("pg_advisory_xact_lock" in sql for sql, _ in events)
+    assert any("INSERT INTO users" in sql for sql, _ in events)
+    assert any("INSERT INTO wallets" in sql for sql, _ in events)
+    assert any("UPDATE runtime_settings" in sql for sql, _ in events)
+    audit_params = next(params for sql, params in events if "INSERT INTO audit_logs" in sql)
+    assert "placeholder-secret" not in repr(audit_params)
+
+
+@pytest.mark.parametrize(
+    "bootstrap_state",
+    [
+        (True, False, False, True),
+        (False, True, False, True),
+        (False, False, True, True),
+        (False, False, False, False),
+    ],
+)
+def test_empty_customer_bootstrap_refuses_a_nonpristine_database(
+    monkeypatch: pytest.MonkeyPatch,
+    bootstrap_state: tuple[object, ...],
+) -> None:
+    from app import bootstrap
+
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_DATABASE_URL",
+        "postgresql://u:p@db.example.test/customer?sslmode=verify-full",
+    )
+    monkeypatch.setenv("VIDEO_REPLICA_ADMIN_SESSION_HMAC_KEY_V2", "k" * 64)
+    monkeypatch.delenv("VIDEO_REPLICA_DB_PATH", raising=False)
+    monkeypatch.setattr(bootstrap, "assert_customer_production_security", lambda: None)
+
+    minted: list[str] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "issue_exchange_credential",
+        lambda actor_id, **_kwargs: minted.append(actor_id) or "secret",
+    )
+
+    class ExistingCursor:
+        rowcount = 1
+
+        def fetchone(self) -> tuple[object, ...]:
+            return bootstrap_state
+
+    class ExistingConnection:
+        def execute(self, _sql: str, _params: tuple[object, ...] = ()) -> ExistingCursor:
+            return ExistingCursor()
+
+    @contextmanager
+    def fake_transaction(**_: object) -> Any:
+        yield object()
+
+    monkeypatch.setattr(bootstrap, "pg_transaction", fake_transaction)
+    monkeypatch.setattr(
+        bootstrap,
+        "BusinessConnection",
+        SimpleNamespace(postgres=lambda _: ExistingConnection()),
+    )
+
+    with pytest.raises(RuntimeError, match="pristine, fully migrated PostgreSQL database"):
+        bootstrap.provision_empty_customer(
+            admin_username="first-admin",
+            admin_display_name="First Admin",
+            cos_config={
+                "access_key_id": "placeholder-access-id",
+                "secret_access_key": "placeholder-secret",
+                "bucket": "private-staging-bucket",
+                "region": "ap-shanghai",
+            },
+            confirm_empty_database=True,
+        )
+    assert minted == []
+
+
+def test_customer_readiness_returns_generic_503_without_leaking_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main
+
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+
+    def unavailable() -> None:
+        raise RuntimeError("postgresql://user:secret@db/private")
+
+    monkeypatch.setattr(main, "check_customer_production_runtime_dependencies", unavailable)
+    assert not inspect.iscoroutinefunction(main.ready)
+    response = main.ready()
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "status": "not_ready",
+        "service": "video-replica-api",
+        "code": "RUNTIME_DEPENDENCY_UNAVAILABLE",
+    }
+    assert b"secret" not in response.body
+
+
+def test_direct_customer_worker_fails_before_entering_loop_when_cos_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import bootstrap, generation_worker
+
+    monkeypatch.setattr(sys, "argv", ["generation-worker"])
+    monkeypatch.setattr(
+        generation_worker,
+        "resolve_database_config",
+        lambda: SimpleNamespace(mode=generation_worker.DatabaseMode.POSTGRESQL),
+    )
+    monkeypatch.setattr(generation_worker, "validate_customer_production", lambda _: None)
+    monkeypatch.setattr(bootstrap, "assert_customer_production_security", lambda: None)
+    monkeypatch.setattr(bootstrap, "is_customer_production", lambda: True)
+
+    def unavailable() -> None:
+        raise RuntimeError("customer production requires private COS")
+
+    monkeypatch.setattr(
+        bootstrap,
+        "check_customer_production_runtime_dependencies",
+        unavailable,
+    )
+    monkeypatch.setattr(
+        generation_worker,
+        "run_forever_pg",
+        lambda **_: pytest.fail("worker loop must not start"),
+    )
+
+    with pytest.raises(RuntimeError, match="private COS"):
+        generation_worker.main()
+
+
+def test_nginx_contract_load_balances_two_apis_and_rewrites_forwarding_headers() -> None:
+    nginx = _read("deploy/nginx/customer.conf.example")
+
+    assert "server 127.0.0.1:8001" in nginx
+    assert "server 127.0.0.1:8002" in nginx
+    assert "zone video_replica_customer_api 64k;" in nginx
+    assert "location = /health" in nginx
+    assert "location = /live" in nginx
+    assert "location = /ready" in nginx
+    assert "location ^~ /api/" in nginx
+    assert "try_files $uri $uri/ /index.html;" in nginx
+    assert "proxy_set_header X-Forwarded-For $remote_addr;" in nginx
+    assert "proxy_set_header X-Forwarded-Proto https;" in nginx
+    assert "proxy_set_header Host $host;" in nginx
+    assert "$proxy_add_x_forwarded_for" not in nginx
+    assert "proxy_next_upstream_tries 2;" in nginx
+    assert nginx.count("max_fails=1 fail_timeout=30s") == 2
+    live = nginx.split("location = /live", 1)[1].split("}", 1)[0]
+    assert "proxy_set_header X-Forwarded-For 127.0.0.2;" in live
+    health = nginx.split("location = /health", 1)[1].split("}", 1)[0]
+    assert "proxy_pass http://video_replica_customer_api;" in health
+    assert "proxy_set_header X-Forwarded-For 127.0.0.2;" in health
+    ready = nginx.split("location = /ready", 1)[1].split("}", 1)[0]
+    assert "allow 127.0.0.1;" in ready
+    assert "allow ::1;" in ready
+    assert "deny all;" in ready
+    assert "proxy_set_header X-Forwarded-For 127.0.0.2;" in ready
+    assert "proxy_set_header X-Forwarded-For $remote_addr;" not in ready
+    assert "proxy_next_upstream error timeout http_502 http_503 http_504;" in ready
+    api = nginx.split("location ^~ /api/", 1)[1].split("}", 1)[0]
+    assert "proxy_next_upstream error timeout;" in api
+    assert "http_502" not in api
+    assert "http_503" not in api
+    assert "http_504" not in api
+
+
+def test_systemd_contract_has_two_api_ports_and_four_independent_workers() -> None:
+    api = _read("deploy/systemd/video-replica-api@.service")
+    worker = _read("deploy/systemd/video-replica-worker@.service")
+
+    assert "EnvironmentFile=/etc/video-replica/customer.env" in api
+    assert "python -m app.bootstrap" in api
+    assert "--host 127.0.0.1 --port %i --no-proxy-headers" in api
+    assert "EnvironmentFile=/etc/video-replica/customer.env" in worker
+    assert "python -m app.bootstrap" in worker
+    assert "python -m app.generation_worker" in worker
+    assert "--worker-id %H-worker-%i" in worker
+    assert "Requires=video-replica-api" not in worker
+    assert "PartOf=video-replica-api" not in worker
+
+
+def test_maintenance_and_pg_migration_are_single_owner_fail_closed_jobs() -> None:
+    maintenance = _read("deploy/systemd/video-replica-maintenance.service")
+    migration = _read("deploy/postgres/migrate.sh")
+
+    assert "Type=oneshot" in maintenance
+    assert "EnvironmentFile=/etc/video-replica/customer.env" in maintenance
+    assert maintenance.count("ExecStart=") >= 3
+    assert "flock -n" in migration
+    assert "alembic upgrade head" in migration
+    assert "VIDEO_REPLICA_DATABASE_URL" in migration
+    assert "VIDEO_REPLICA_CUSTOMER_PRODUCTION" in migration
+    assert migration.index("validate_customer_production") < migration.index("alembic upgrade head")
+    assert "set -euo pipefail" in migration
+
+
+def test_customer_deployment_docs_keep_evidence_levels_honest() -> None:
+    runbook = _read("docs/客户版部署与灰度手册.md")
+    evidence = _read("docs/客户版验收证据包模板.md")
+    postgres = _read("deploy/postgres/README.md")
+    customer_env = _read("deploy/customer.env.example")
+
+    for required in (
+        "video-replica-api@8001",
+        "video-replica-api@8002",
+        "video-replica-worker@1",
+        "video-replica-worker@4",
+        "/live",
+        "/ready",
+        "--no-proxy-headers",
+        "STAGING_VERIFIED",
+        "回滚",
+    ):
+        assert required in runbook
+    for level in (
+        "AUTOMATED_VERIFIED",
+        "STAGING_VERIFIED",
+        "REAL_CHAIN_VERIFIED",
+        "PRODUCTION_GO",
+    ):
+        assert level in evidence
+    assert "PostgreSQL 16" in postgres
+    assert "HA" in postgres
+    assert "公网" in postgres
+    assert "T38" in postgres
+    assert "sslmode=verify-full" in customer_env
+    assert "sslrootcert=" in customer_env
+    assert runbook.index("deploy/postgres/migrate.sh") < runbook.index("provision-empty-customer")
+    runtime_dir = "install -d -m 0700 -o root -g root /run/video-replica"
+    credential_output = "> /run/video-replica/first-admin-exchange.json"
+    assert runtime_dir in runbook
+    assert runbook.index(runtime_dir) < runbook.index(credential_output)
+
+
+def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
+    package = _read("package.json")
+    workflow = _read(".github/workflows/ci.yml")
+    origin_guard = _read("scripts/require_customer_api_base.mjs")
+    frozen_map = _read("docs/客户版代码开发清单-V3.md")
+    customer_config = json.loads(_read("client/src-tauri/tauri.customer.conf.json"))
+
+    assert '"check:tauri:customer"' in package
+    assert '"tauri:build:customer"' in package
+    assert '"require:customer-api-base"' in package
+    assert "--ci -- --no-default-features" in package
+    assert "VITE_API_BASE_URL must be a routable, non-loopback HTTPS origin" in origin_guard
+    assert 'addSubnet("127.0.0.0", 8, "ipv4")' in origin_guard
+    assert 'addAddress("::1", "ipv6")' in origin_guard
+    assert "url.port" in origin_guard
+    assert "--config src-tauri/tauri.customer.conf.json" in package
+    assert customer_config["productName"] == "短视频复刻客户云工作台"
+    assert customer_config["identifier"] == "com.xiangshu.video-replica.customer"
+    assert customer_config["app"]["windows"][0]["url"] == "customer"
+    assert customer_config["bundle"]["resources"] == []
+    assert customer_config["bundle"]["publisher"] == "Xiangshu Video Replica"
+    assert (
+        customer_config["bundle"]["windows"]["nsis"]["startMenuFolder"] == "短视频复刻客户云工作台"
+    )
+    assert "127.0.0.1:8000" not in customer_config["app"]["security"]["csp"]
+    assert "npm run check:tauri:customer" in workflow
+    assert "npm run tauri:build -- --bundles nsis --no-sign --ci" in workflow
+    assert "npm run tauri:build:customer" in workflow
+    assert "VITE_API_BASE_URL: https://staging.example.invalid" in workflow
+    assert "unsigned-windows-nsis" in workflow
+    assert "unsigned-customer-cloud-windows-nsis" in workflow
+    assert "Verify customer installer excludes local launchers" in workflow
+    assert "start-backend.bat" in workflow
+    assert "start-backend.sh" in workflow
+    assert "client/src-tauri/tauri.customer.conf.json" in frozen_map
+    assert "scripts/require_customer_api_base.mjs" in frozen_map
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://127.0.0.2",
+        "https://localhost.",
+        "https://api.localhost",
+        "https://[::1]",
+        "https://[::ffff:127.0.0.1]",
+        "https://[::ffff:7f00:1]",
+        "https://0.0.0.0",
+        "https://[::]",
+        "https://[::ffff:0.0.0.0]",
+        "https://169.254.169.254",
+        "https://224.0.0.1",
+        "https://240.0.0.1",
+        "https://192.0.2.1",
+        "https://198.18.0.1",
+        "https://[fe80::1]",
+        "https://[ff02::1]",
+        "https://[2001:db8::1]",
+        "https://staging.example.invalid:8443",
+    ],
+)
+def test_customer_cloud_build_rejects_non_destination_origins(origin: str) -> None:
+    env = os.environ.copy()
+    env["VITE_API_BASE_URL"] = origin
+    result = subprocess.run(
+        ["node", "scripts/require_customer_api_base.mjs"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "non-loopback HTTPS origin" in result.stderr
+
+
+def test_customer_cloud_build_accepts_a_remote_https_origin() -> None:
+    env = os.environ.copy()
+    env["VITE_API_BASE_URL"] = "https://staging.example.invalid"
+    result = subprocess.run(
+        ["node", "scripts/require_customer_api_base.mjs"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr

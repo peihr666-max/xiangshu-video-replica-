@@ -9,6 +9,7 @@ import time
 import zlib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -25,6 +26,7 @@ from app.auth import CurrentUser, get_database
 from app.character_identity import REQUIRED_CHARACTER_VIEW_TYPES
 from app.character_identity_routes import get_character_storage
 from app.character_image_generation import deterministic_png, png_chunk
+from app.customer_fence import BusinessDb
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_image_provider
@@ -549,6 +551,100 @@ def test_approved_character_view_can_use_local_cache(
     cached = client.get(f"{parsed.path}?{parsed.query}")
     assert cached.status_code == 200
     assert cached.headers["content-type"].startswith("image/png")
+
+
+def test_customer_character_cache_is_shared_across_api_replicas(
+    client: TestClient,
+    storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    asset_id = created["contact_sheet_asset_id"]
+    shared_cache = FakeStorageAdapter(provider="cos", bucket="private-customer-cache")
+    first_replica_home = tmp_path / "api-1"
+    second_replica_home = tmp_path / "api-2"
+    monkeypatch.setenv("VIDEO_REPLICA_HOME", str(first_replica_home))
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setattr(rbac_routes, "is_customer_production", lambda: True)
+    monkeypatch.setattr(rbac_routes, "storage_for_asset", lambda conn, storage_uri: storage)
+    monkeypatch.setattr(
+        rbac_routes,
+        "_customer_character_cache_storage",
+        lambda conn: shared_cache,
+    )
+    monkeypatch.setattr(
+        rbac_routes,
+        "_load_customer_character_cache_storage",
+        lambda: shared_cache,
+    )
+    events: list[str] = []
+    original_write = BusinessDb.write
+
+    @contextmanager
+    def traced_write(
+        business_db: BusinessDb,
+        **kwargs: object,
+    ) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+        events.append("pg-enter")
+        with original_write(business_db, **kwargs) as value:
+            yield value
+        events.append("pg-exit")
+
+    def assert_pg_released(event: str) -> None:
+        events.append(event)
+        assert "pg-exit" in events
+        assert events.index("pg-exit") < events.index(event)
+
+    original_head_object = shared_cache.head_object
+    original_put_object = shared_cache.put_object
+    original_get_object = storage.get_object
+
+    def traced_head_object(key: str):
+        assert_pg_released("cos-head")
+        return original_head_object(key)
+
+    def traced_put_object(key: str, content: bytes, *, content_type: str) -> None:
+        assert_pg_released("cos-put")
+        original_put_object(key, content, content_type=content_type)
+
+    def traced_get_object(key: str) -> bytes:
+        assert_pg_released("cos-source-get")
+        return original_get_object(key)
+
+    monkeypatch.setattr(BusinessDb, "write", traced_write)
+    monkeypatch.setattr(shared_cache, "head_object", traced_head_object)
+    monkeypatch.setattr(shared_cache, "put_object", traced_put_object)
+    monkeypatch.setattr(storage, "get_object", traced_get_object)
+
+    response = client.post(
+        f"/api/assets/{asset_id}/cached-url",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 200, response.text
+    parsed = urlsplit(response.json()["url"])
+    cache_key = f"character-cache/{Path(parsed.path).name}"
+    assert shared_cache.head_object(cache_key) is not None
+    assert events[:5] == [
+        "pg-enter",
+        "pg-exit",
+        "cos-head",
+        "cos-source-get",
+        "cos-put",
+    ]
+    assert not first_replica_home.exists()
+
+    monkeypatch.setenv("VIDEO_REPLICA_HOME", str(second_replica_home))
+    with rbac_routes.CHARACTER_CACHE_LOCKS_GUARD:
+        rbac_routes.CHARACTER_CACHE_LOCKS.clear()
+
+    cached = client.get(f"{parsed.path}?{parsed.query}")
+
+    assert cached.status_code == 200, cached.text
+    assert cached.content == b"contact-sheet-image"
+    assert cached.headers["content-type"].startswith("image/png")
+    assert not second_replica_home.exists()
 
 
 def test_character_cache_rejects_source_with_wrong_hash(

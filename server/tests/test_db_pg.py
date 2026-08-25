@@ -143,11 +143,54 @@ def test_production_rejects_leftover_db_path() -> None:
     with _env(
         **{
             "VIDEO_REPLICA_CUSTOMER_PRODUCTION": "true",
-            DATABASE_URL_ENV: "postgresql://u:p@host:5432/db",
+            DATABASE_URL_ENV: "postgresql://u:p@host:5432/db?sslmode=verify-full",
             "VIDEO_REPLICA_DB_PATH": "/leftover/app.db",
         }
     ):
         with pytest.raises(RuntimeError, match="VIDEO_REPLICA_DB_PATH"):
+            validate_customer_production(resolve_database_config())
+
+
+@pytest.mark.parametrize("sslmode", ["", "disable", "allow", "prefer"])
+def test_production_rejects_postgres_without_enforced_tls(sslmode: str) -> None:
+    dsn = "postgresql://u:secret@host:5432/db"
+    if sslmode:
+        dsn = f"{dsn}?sslmode={sslmode}"
+
+    with _env(
+        **{
+            "VIDEO_REPLICA_CUSTOMER_PRODUCTION": "true",
+            DATABASE_URL_ENV: dsn,
+            "VIDEO_REPLICA_DB_PATH": "",
+        }
+    ):
+        with pytest.raises(RuntimeError, match="must enforce TLS") as exc_info:
+            validate_customer_production(resolve_database_config())
+
+    assert "secret" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("sslmode", ["require", "verify-ca", "verify-full"])
+def test_production_accepts_postgres_tls_enforcing_modes(sslmode: str) -> None:
+    with _env(
+        **{
+            "VIDEO_REPLICA_CUSTOMER_PRODUCTION": "true",
+            DATABASE_URL_ENV: f"postgresql://u:p@host:5432/db?sslmode={sslmode}",
+            "VIDEO_REPLICA_DB_PATH": "",
+        }
+    ):
+        validate_customer_production(resolve_database_config())
+
+
+def test_production_rejects_ambiguous_postgres_sslmode() -> None:
+    with _env(
+        **{
+            "VIDEO_REPLICA_CUSTOMER_PRODUCTION": "true",
+            DATABASE_URL_ENV: ("postgresql://u:p@host:5432/db?sslmode=require&sslmode=disable"),
+            "VIDEO_REPLICA_DB_PATH": "",
+        }
+    ):
+        with pytest.raises(RuntimeError, match="must enforce TLS"):
             validate_customer_production(resolve_database_config())
 
 
@@ -176,6 +219,46 @@ def test_check_pg_ready_uses_pool_and_server_time() -> None:
     assert "testpass" not in ready.dsn
     assert isinstance(ready.server_now, datetime)
     assert ready.pool_size >= 1
+
+
+def test_check_pg_ready_rejects_a_read_only_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import db_pg
+
+    statements: list[str] = []
+
+    class ScalarCursor:
+        def __init__(self, value: object) -> None:
+            self._value = value
+
+        def fetchone(self) -> tuple[object]:
+            return (self._value,)
+
+    class ReadOnlyConnection:
+        def execute(self, sql: str) -> ScalarCursor:
+            statements.append(sql)
+            values: dict[str, object] = {
+                "SELECT now()": datetime.now(),
+                "SELECT 1": 1,
+                "SHOW transaction_read_only": "on",
+            }
+            return ScalarCursor(values[sql])
+
+    class ReadOnlyPool:
+        max_size = 4
+
+        @contextmanager
+        def connection(self) -> Iterator[ReadOnlyConnection]:
+            yield ReadOnlyConnection()
+
+    monkeypatch.setenv(DATABASE_URL_ENV, "postgresql://app@pg-ha/customer")
+    monkeypatch.setattr(db_pg, "get_pg_pool", lambda: ReadOnlyPool())
+
+    with pytest.raises(RuntimeError, match="read-only"):
+        db_pg.check_pg_ready()
+
+    assert "SHOW transaction_read_only" in statements
 
 
 @pytestmark_pg
@@ -322,7 +405,7 @@ def test_api_bootstrap_completes_in_pg_mode(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("VIDEO_REPLICA_DATABASE_URL", PG_DSN)
     monkeypatch.delenv("VIDEO_REPLICA_DB_PATH", raising=False)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
-    bootstrap_module.main()  # must return cleanly after check_pg_ready()
+    bootstrap_module.main([])  # must return cleanly after check_pg_ready()
 
 
 @pytestmark_pg

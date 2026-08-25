@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Literal
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit, urlunsplit
 
 import psycopg
 from psycopg_pool import ConnectionPool
@@ -49,6 +49,7 @@ DEFAULT_POOL_TIMEOUT = 30.0
 PG_URL_SCHEMES = ("postgresql://", "postgres://")
 SQLITE_URL_SCHEMES = ("sqlite:///", "sqlite://")
 _TRUTHY = {"1", "true", "yes", "on"}
+_TLS_ENFORCING_SSLMODES = frozenset({"require", "verify-ca", "verify-full"})
 
 # M0 review M3: the isolation level is interpolated into a SET statement, so
 # it must be constrained to a closed set (Literal for callers, frozenset for
@@ -142,7 +143,7 @@ def resolve_database_config() -> DatabaseConfig:
 
 
 def validate_customer_production(config: DatabaseConfig) -> None:
-    """Fail closed when a customer-production boot would run on SQLite.
+    """Fail closed when a customer-production database boundary is unsafe.
 
     ``VIDEO_REPLICA_CUSTOMER_PRODUCTION`` marks the customer boundary. In that
     mode a missing URL or a SQLite target must abort startup instead of
@@ -163,6 +164,19 @@ def validate_customer_production(config: DatabaseConfig) -> None:
             "customer production must not set the legacy "
             f"{DB_PATH_ENV}; remove it and keep only {DATABASE_URL_ENV} "
             "(ambiguous database configuration is rejected)"
+        )
+    if config.dsn is None:
+        raise RuntimeError("customer production PostgreSQL DSN is missing")
+    try:
+        sslmode_values = parse_qs(urlsplit(config.dsn).query, keep_blank_values=True).get(
+            "sslmode", []
+        )
+    except ValueError as exc:
+        raise RuntimeError("customer production PostgreSQL DSN is malformed") from exc
+    if len(sslmode_values) != 1 or sslmode_values[0].strip().lower() not in _TLS_ENFORCING_SSLMODES:
+        raise RuntimeError(
+            "customer production PostgreSQL must enforce TLS: set exactly one "
+            "sslmode=require, sslmode=verify-ca, or sslmode=verify-full"
         )
 
 
@@ -302,11 +316,18 @@ def redact_postgres_dsn(dsn: str) -> str:
 
 
 def check_pg_ready() -> PgReadyInfo:
-    """Ready check for API/Worker startup: pool warm-up + server round-trip."""
+    """Ready check for API/Worker startup: writable endpoint + round-trip."""
     config = resolve_database_config()
     validate_customer_production(config)
     pool = get_pg_pool()
     with pool.connection() as conn:
+        transaction_read_only = (
+            str(_fetch_scalar(conn, "SHOW transaction_read_only")).strip().lower()
+        )
+        if transaction_read_only != "off":
+            raise RuntimeError(
+                "PostgreSQL endpoint is read-only; a read-write primary endpoint is required"
+            )
         server_now = _as_datetime(_fetch_scalar(conn, "SELECT now()"))
         _fetch_scalar(conn, "SELECT 1")
     # PgReadyInfo.dsn carries no credentials: once serialized into a log line
