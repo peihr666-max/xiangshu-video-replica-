@@ -67,8 +67,13 @@ def test_python_quality_commands_survive_a_relocated_virtualenv() -> None:
 
 def test_api_uses_the_project_interpreter_instead_of_a_global_uvicorn() -> None:
     package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
+    customer_e2e_launcher = (REPO_ROOT / "e2e/customer/setup-backend.mjs").read_text(
+        encoding="utf-8"
+    )
 
     assert "python -m uvicorn" in package["scripts"]["dev:server"]
+    assert "--no-proxy-headers" in package["scripts"]["dev:server"]
+    assert '"--no-proxy-headers"' in customer_e2e_launcher
 
 
 def test_local_start_commands_upgrade_the_database_before_api_or_worker() -> None:
@@ -88,6 +93,9 @@ def test_local_start_commands_upgrade_the_database_before_api_or_worker() -> Non
     assert worker_command.index("python -m app.bootstrap") < worker_command.index(
         "python -m app.generation_worker"
     )
+    assert "--no-proxy-headers" in server_command
+    assert "--no-proxy-headers" in posix_launcher
+    assert "--no-proxy-headers" in windows_launcher
     assert posix_launcher.index("python -m app.bootstrap") < posix_launcher.index("start_server")
     assert windows_launcher.index("python -m app.bootstrap") < windows_launcher.index(
         'start "video-replica-api"'
