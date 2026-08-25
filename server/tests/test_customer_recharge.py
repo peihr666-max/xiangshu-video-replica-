@@ -310,6 +310,92 @@ def test_customer_session_recharge_preserves_all_state_with_wallet_credit(
         )
 
 
+def test_customer_wallet_reads_and_order_list(
+    client: TestClient, clean_state: str, recharge_config_fixture
+) -> None:
+    """Task #7: the customer wallet/transactions/order-list reads answer under
+    the customer session. These endpoints are what the customer workspace's
+    wallet view needs — the internal wallet API 401'd for a customer session."""
+    code = generate_activation_code()
+    with psycopg.connect(clean_state) as conn:
+        _insert_code(conn, code_id="code-t22-wread", batch_id="batch-t22-wread", plaintext=code)
+    activation = _activate_customer(client, code, "fp-t22-wread", "key-t22-wread")
+    session_token = activation["session_token"]
+    bearer = {"Authorization": f"Bearer {session_token}"}
+
+    # Wallet read: the activation grant funded this wallet.
+    wallet = client.get("/api/customer/wallet", headers=bearer)
+    assert wallet.status_code == 200, wallet.text
+    payload = wallet.json()
+    assert payload["available_credits"] >= 10
+    assert payload["min_recharge_fen"] > 0
+    assert payload["recharge_step_fen"] > 0
+
+    # Transactions: the activation CHARGE is visible.
+    txn = client.get("/api/customer/wallet/transactions", headers=bearer)
+    assert txn.status_code == 200, txn.text
+    assert "CHARGE" in [t["type"] for t in txn.json()["items"]]
+
+    # Create a recharge order, then list it under the customer session.
+    created = client.post(
+        "/api/customer/recharge-orders",
+        json={"amount_fen": 10000},
+        headers=_recharge_headers(session_token),
+    )
+    assert created.status_code == 201, created.text
+    order_no = created.json()["order_no"]
+
+    orders = client.get("/api/customer/recharge-orders", headers=bearer)
+    assert orders.status_code == 200, orders.text
+    assert order_no in [o["order_no"] for o in orders.json()["items"]]
+
+
+def test_customer_recharge_order_list_survives_fresh_tuple_row_pool_connection(
+    client: TestClient, clean_state: str, recharge_config_fixture
+) -> None:
+    """Codex P1 (PR #65): the order list must not depend on a pooled connection
+    that a previous request already mutated to named rows.
+
+    ``serialize_recharge_order`` reads columns by name, so on a brand-new
+    pooled connection (psycopg's default tuple rows) the old code 500'd with a
+    TypeError; the test only masked it because the earlier wallet read had set
+    the shared connection's row factory through ``BusinessConnection.postgres``.
+    This test forces the shared pool connection back to tuple rows right before
+    the list call, then asserts the endpoint still answers — the route must
+    install the named-row factory itself."""
+    from app.db_pg import get_pg_pool
+
+    code = generate_activation_code()
+    with psycopg.connect(clean_state) as conn:
+        _insert_code(conn, code_id="code-t22-fresh", batch_id="batch-t22-fresh", plaintext=code)
+    activation = _activate_customer(client, code, "fp-t22-fresh", "key-t22-fresh")
+    session_token = activation["session_token"]
+    bearer = {"Authorization": f"Bearer {session_token}"}
+
+    created = client.post(
+        "/api/customer/recharge-orders",
+        json={"amount_fen": 10000},
+        headers=_recharge_headers(session_token),
+    )
+    assert created.status_code == 201, created.text
+    order_no = created.json()["order_no"]
+
+    # The pool is min-size 1 and TestClient requests are serial, so this
+    # returns the exact connection the next request will reuse. Reset it to
+    # psycopg's default tuple rows — the "fresh connection" state the bug
+    # failed on.
+    with get_pg_pool().connection() as conn:
+        conn.row_factory = psycopg.rows.tuple_row
+
+    orders = client.get("/api/customer/recharge-orders", headers=bearer)
+    assert orders.status_code == 200, orders.text
+    assert order_no in [o["order_no"] for o in orders.json()["items"]]
+
+    # A second call keeps working: the route re-installs the named factory.
+    orders_again = client.get("/api/customer/recharge-orders", headers=bearer)
+    assert orders_again.status_code == 200, orders_again.text
+
+
 def test_customer_session_recharge_idempotency_by_idempotency_key(
     client: TestClient, clean_state: str, recharge_config_fixture
 ) -> None:
