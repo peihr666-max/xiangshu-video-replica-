@@ -33,6 +33,7 @@ const SEED_CODES = [
   "XS04-ABCDEFG-HJKLMNP-QRSTVWX-YZ23456",
   "XS04-2345678-9ABCDEF-GHJKLMN-PQRSTVW",
   "XS04-XYZ2345-6789ABC-DEFGHJK-MNPQRST",
+  "XS04-1234567-89ABCDE-FGHJKMN-PQRSTVW",
 ];
 
 /** Throwaway test keys — never a real secret. */
@@ -106,12 +107,23 @@ with psycopg.connect("${adminDsn}", autocommit=True) as c:
     serverDir,
   );
 
-  // 3. Seed admin + activation codes.
-  runSync(python, [path.join(__dirname, "seed_codes.py")], {
+  // 3. Seed admin + activation codes + a throwaway ZPay merchant config (the
+  // wallet recharge route reads it; seed_codes.py prints the Fernet key the
+  // config was encrypted with, and the API process must use the same key to
+  // decrypt it — mirrors test_customer_recharge.recharge_config_fixture).
+  const seedOutput = runSync(python, [path.join(__dirname, "seed_codes.py")], {
     CUSTOMER_E2E_DATABASE_URL: dsn,
     VIDEO_REPLICA_ACTIVATION_CODE_HMAC_KEY: keys.ACTIVATION,
     PYTHONPATH: serverDir,
   });
+  const settingsKey = (seedOutput.match(
+    /VIDEO_REPLICA_SETTINGS_KEY=(.+)\s*$/,
+  ) ?? [])[1];
+  if (!settingsKey) {
+    throw new Error(
+      `seed_codes.py did not print a settings key:\n${seedOutput}`,
+    );
+  }
 
   // 4. Start the API.
   const apiEnv = {
@@ -124,6 +136,11 @@ with psycopg.connect("${adminDsn}", autocommit=True) as c:
     VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_IP: "100000",
     VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE: "100000",
     VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS: "3600",
+    // Recharge lane (PR #65 task #7): the customer wallet view needs the ZPay
+    // config + deployment settings to create orders.
+    VIDEO_REPLICA_SETTINGS_KEY: settingsKey,
+    ZPAY_GATEWAY_URL: "https://zpayz.cn/submit.php",
+    PUBLIC_BASE_URL: "https://callback.example.com",
   };
   const api = spawn(
     python,
