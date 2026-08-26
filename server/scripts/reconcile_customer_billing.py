@@ -35,7 +35,8 @@ EXCLUDED_TABLES = frozenset({"alembic_version"})
 # T12/ACT-04; the shared security rate-limit counters and the append-only
 # auth-failure audit, T15/ACT-08; the append-only admin device operations
 # audit, T18/DEV-03; the append-only audited admin adjustments, T23/BILL-02;
-# the per-user fair-queue cursors, T25/041). They have no SQLite counterpart
+# the per-user fair-queue cursors, T25/041; committed customer-write fencing
+# evidence, T37/042). They have no SQLite counterpart
 # in the T07 import source, so an empty such table on the target is expected;
 # a non-empty one is divergent state and must fail closed.
 PG_ONLY_TABLES: frozenset[str] = frozenset(
@@ -54,6 +55,9 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "customer_session_state",
         "customer_session_events",
         "customer_idempotency_envelopes",
+        "customer_fencing_write_evidence",
+        "customer_authorization_evidence",
+        "ops_alert_state",
         "admin_write_idempotency",
         "security_rate_limit_counters",
         "security_auth_failures",
@@ -62,12 +66,14 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
 )
 
 # Shared tables may carry columns that exist only on the PostgreSQL lane
-# (T25/041 adds runtime_settings.fair_queue_enabled with a server default;
-# the desktop SQLite lane keeps its legacy schema). The column-set contract
-# below must exempt these, or the T07 import would fail closed on its own
-# published migrations.
+# (T25/041 adds runtime_settings.fair_queue_enabled; T37/042 materializes
+# typed probe timestamps while retaining the legacy SQLite audit strings).
+# The column-set contract below must exempt these, or the T07 import would
+# fail closed on its own published migrations.
 PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     "runtime_settings": frozenset({"fair_queue_enabled"}),
+    "audit_logs": frozenset({"occurred_at"}),
+    "generation_tasks": frozenset({"created_at_utc"}),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000
 _DIGEST_MODULUS = 1 << 256
@@ -543,8 +549,8 @@ def _table_reconciliation(
     issues: list[ReconciliationIssue] = []
     source_columns, source_pk = _sqlite_columns(sqlite_conn, table)
     target_columns, target_pk, target_types = _pg_columns(pg_conn, table)
-    # Exempt the PG-only columns (041 runtime_settings.fair_queue_enabled):
-    # the target carries them, the T07 source never does.
+    # Exempt PG-only columns (the 041 fair-queue setting and 042 typed probe
+    # timestamps): the target carries them, the T07 source never does.
     pg_only = PG_ONLY_COLUMNS.get(table, frozenset())
     if set(source_columns) != set(target_columns) - pg_only:
         issues.append(

@@ -32,6 +32,8 @@ Contract under test (task list §12.3 SES-03; dev doc §12.3 / §12.4):
 from __future__ import annotations
 
 import base64
+import json
+import logging
 import os
 import secrets
 import threading
@@ -41,7 +43,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from app.activation_code_service import (
@@ -49,6 +51,7 @@ from app.activation_code_service import (
     compute_code_digest,
 )
 from app.db_pg import DATABASE_URL_ENV, close_pg_pool
+from app.db_portable import BusinessConnection
 
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 SKIP_REASON = "PostgreSQL fixture not reachable; start it via scripts/pg-fixture.sh start"
@@ -129,7 +132,7 @@ def route_state(fencing_dsn: str) -> Iterator[str]:
             "activation_code_deliveries, activation_code_exports, activation_codes, "
             "activation_code_batches, admin_write_idempotency, admin_sessions, "
             "wallet_transactions, recharge_orders, wallets, users, "
-            "projects, audit_logs, "
+            "projects, audit_logs, customer_fencing_write_evidence, "
             "security_rate_limit_counters, security_auth_failures CASCADE"
         )
         conn.execute("SET session_replication_role = DEFAULT")
@@ -718,19 +721,60 @@ def _business_login(client: TestClient, customer: dict, key: str) -> str:
     return str(resp.json()["session_token"])
 
 
-def test_customer_creates_a_project_owned_by_them(client: TestClient) -> None:
-    """The migrated write route runs the customer's session through
-    fenced_pg_transaction and attributes the project to the session's user."""
+def test_successful_project_owner_authorization_persists_digest_evidence(
+    client: TestClient,
+) -> None:
+    """A successful protected owner operation commits only a bounded digest pair."""
+    from app.auth import CurrentUser, get_database
+    from app.permissions import require_project_access
+
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
     token = _business_login(client, customer, "idem-login-a")
     resp = client.post(PROJECTS_PATH, json={"name": "Customer Project"}, headers=_bearer(token))
     assert resp.status_code == 201, resp.text
     assert resp.json()["owner_user_id"] == customer["user_id"]
+    project_id = str(resp.json()["id"])
+
+    app = FastAPI()
+
+    @app.post("/authorized-write")
+    def authorized_write(
+        conn: BusinessConnection = Depends(get_database),
+    ) -> None:
+        require_project_access(
+            conn,
+            actor=CurrentUser(
+                id=customer["user_id"],
+                username=customer["user_id"],
+                display_name="Customer",
+                role="customer",
+            ),
+            project_id=project_id,
+            action="project.rename",
+        )
+        conn.execute(
+            "UPDATE projects SET name = %s WHERE id = %s",
+            ("Customer Project Renamed", project_id),
+        )
+
+    with TestClient(app) as authorized_client:
+        authorized = authorized_client.post("/authorized-write")
+    assert authorized.status_code == 200, authorized.text
     with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
         row = conn.execute(
-            "SELECT owner_user_id FROM projects WHERE name = 'Customer Project'"
+            "SELECT owner_user_id, name FROM projects WHERE id = %s",
+            (project_id,),
+        ).fetchone()
+        evidence = conn.execute(
+            "SELECT resource_type, actor_digest, owner_digest "
+            "FROM customer_authorization_evidence WHERE resource_type = 'project'"
         ).fetchone()
     assert str(row[0]) == customer["user_id"]
+    assert str(row[1]) == "Customer Project Renamed"
+    assert evidence is not None
+    assert str(evidence[0]) == "project"
+    assert str(evidence[1]) == str(evidence[2])
+    assert customer["user_id"] not in repr(evidence)
 
 
 def test_other_customer_cannot_touch_a_foreign_project(client: TestClient) -> None:
@@ -755,7 +799,120 @@ def test_other_customer_cannot_touch_a_foreign_project(client: TestClient) -> No
     assert renamed.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
     with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
         row = conn.execute("SELECT name FROM projects WHERE id = %s", (project_id,)).fetchone()
+        denial = conn.execute(
+            "SELECT actor_user_id, entity_id, metadata_json FROM audit_logs "
+            "WHERE action = 'security.project_denied'"
+        ).fetchone()
     assert str(row[0]) == "Alice Project"
+    assert denial is not None
+    assert (str(denial[0]), str(denial[1])) == (bob["user_id"], project_id)
+    assert json.loads(str(denial[2])) == {"attempted_action": "project.rename"}
+
+
+def test_cluster_probe_detects_heartbeat_from_a_displaced_session_epoch(
+    client: TestClient,
+) -> None:
+    """A heartbeat that commits after a newer session epoch is a P1 even
+    though its old epoch has only one device event."""
+    from scripts import check_ops_alerts as alerts
+
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    old_device_id, old_session_id, old_epoch, _ = _session_row()
+    second_token = _second_device_row(
+        user_id=customer["user_id"],
+        activation_code_id="code-a",
+        device_id="device-b",
+        slot_no=2,
+    )
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO customer_session_events "
+            "(id, event, user_id, activation_code_id, device_id, session_id, "
+            "session_epoch, actor_user_id, request_id) "
+            "VALUES ('heartbeat-before-switch-t37', 'HEARTBEAT', %s, 'code-a', %s, %s, %s, %s, "
+            "'heartbeat-before-switch-t37')",
+            (customer["user_id"], old_device_id, old_session_id, old_epoch, customer["user_id"]),
+        )
+
+    switched = client.post(
+        SWITCH_PATH,
+        json={},
+        headers={
+            **_bearer(second_token),
+            IDEMPOTENCY_KEY_HEADER: "idem-displaced-heartbeat-switch",
+        },
+    )
+    assert switched.status_code == 201, switched.text
+    assert switched.json()["session_epoch"] == old_epoch + 1
+
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        before_regression = alerts.collect_observations(conn)
+        assert (
+            next(item for item in before_regression if item.name == "double_online").observed_count
+            == 0
+        )
+        # ``CURRENT_TIMESTAMP`` is rendered as TEXT in the connection's local
+        # timezone. The probe must compare it as an instant, not lexically
+        # against a UTC cutoff.
+        conn.execute("SET TIME ZONE 'America/Los_Angeles'")
+        conn.execute(
+            "INSERT INTO customer_session_events "
+            "(id, event, user_id, activation_code_id, device_id, session_id, "
+            "session_epoch, actor_user_id, request_id) "
+            "VALUES ('heartbeat-after-switch-t37', 'HEARTBEAT', %s, 'code-a', %s, %s, %s, %s, "
+            "'heartbeat-after-switch-t37')",
+            (customer["user_id"], old_device_id, old_session_id, old_epoch, customer["user_id"]),
+        )
+        observations = alerts.collect_observations(conn)
+
+    assert next(item for item in observations if item.name == "double_online").observed_count == 1
+
+
+def test_request_scoped_pg_reads_persist_denials_after_dependency_rollback(
+    client: TestClient,
+) -> None:
+    from app.auth import CurrentUser, get_database
+    from app.permissions import require_project_access
+
+    alice = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    bob = _activated_customer(client, code=SECOND_CODE, fingerprint="fp-b", suffix="b")
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+            ("project-read-denial", alice["user_id"], "Alice Read Boundary"),
+        )
+
+    app = FastAPI()
+
+    @app.get("/denied-read")
+    def denied_read(
+        conn: BusinessConnection = Depends(get_database),
+    ) -> None:
+        require_project_access(
+            conn,
+            actor=CurrentUser(
+                id=bob["user_id"],
+                username=bob["user_id"],
+                display_name="Bob",
+                role="customer",
+            ),
+            project_id="project-read-denial",
+            action="project.read",
+        )
+
+    with TestClient(app) as read_client:
+        response = read_client.get("/denied-read")
+
+    assert response.status_code == 403
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        denial_count = int(
+            conn.execute(
+                "SELECT count(*) FROM audit_logs "
+                "WHERE action = 'security.project_denied' "
+                "AND entity_id = 'project-read-denial'"
+            ).fetchone()[0]
+        )
+    assert denial_count == 1
 
 
 def test_unknown_session_token_cannot_create_a_project(client: TestClient) -> None:
@@ -898,6 +1055,135 @@ def test_fenced_transaction_yields_the_context_and_commits(client: TestClient) -
     assert _count_projects() == 1
 
 
+def test_successful_fenced_write_commits_expected_and_verified_epoch_evidence(
+    client: TestClient,
+) -> None:
+    from app.customer_fence import fenced_pg_transaction
+    from app.ops_metrics import bind_request_context
+
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    snapshot = _snapshot_for(customer)
+    with bind_request_context(
+        request_id="req-fencing-evidence-match",
+        method="POST",
+        route="/api/projects",
+    ):
+        with fenced_pg_transaction(snapshot, record_write_evidence=True) as (conn, _ctx):
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+                ("p-evidence-match", customer["user_id"], "Evidence Match"),
+            )
+
+    with psycopg.connect(_fencing_dsn()) as conn:
+        row = conn.execute(
+            "SELECT request_id, length(subject_digest), expected_session_epoch, "
+            "verified_session_epoch FROM customer_fencing_write_evidence "
+            "WHERE request_id = 'req-fencing-evidence-match'"
+        ).fetchone()
+    assert row is not None
+    assert (str(row[0]), int(row[1]), int(row[2]), int(row[3])) == (
+        "req-fencing-evidence-match",
+        64,
+        1,
+        1,
+    )
+
+
+def test_successful_fenced_read_does_not_record_committed_write_evidence(
+    client: TestClient,
+) -> None:
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    token = _business_login(client, customer, "idem-login-evidence-read")
+
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        before = int(
+            conn.execute("SELECT count(*) FROM customer_fencing_write_evidence").fetchone()[0]
+        )
+    response = client.get("/api/customer/recharge-orders", headers=_bearer(token))
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        after = int(
+            conn.execute("SELECT count(*) FROM customer_fencing_write_evidence").fetchone()[0]
+        )
+
+    assert response.status_code == 200, response.text
+    assert after == before
+
+
+def test_fencing_evidence_failure_rolls_back_the_business_write(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import customer_fence
+
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    snapshot = _snapshot_for(customer)
+
+    def evidence_unavailable(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("evidence unavailable")
+
+    monkeypatch.setattr(
+        customer_fence,
+        "_record_fencing_commit_evidence",
+        evidence_unavailable,
+    )
+    with pytest.raises(RuntimeError, match="evidence unavailable"):
+        with customer_fence.fenced_pg_transaction(
+            snapshot,
+            record_write_evidence=True,
+        ) as (conn, _ctx):
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+                ("p-evidence-failure", customer["user_id"], "Evidence Failure"),
+            )
+
+    assert _count_projects() == 0
+
+
+def test_regressed_verifier_leaves_a_durable_committed_stale_write_fact(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from app import customer_fence
+    from app.ops_metrics import bind_request_context
+
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    snapshot = _snapshot_for(customer)
+    real_verify = customer_fence.verify_session_context
+
+    def regressed_verify(conn: psycopg.Connection, **kwargs: object) -> object:
+        verified = real_verify(conn, **kwargs)
+        return replace(verified, session_epoch=verified.session_epoch + 1)
+
+    monkeypatch.setattr(customer_fence, "verify_session_context", regressed_verify)
+    with bind_request_context(
+        request_id="req-fencing-evidence-mismatch",
+        method="POST",
+        route="/api/projects",
+    ):
+        with customer_fence.fenced_pg_transaction(
+            snapshot,
+            record_write_evidence=True,
+        ) as (conn, _ctx):
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+                ("p-evidence-mismatch", customer["user_id"], "Evidence Mismatch"),
+            )
+
+    with psycopg.connect(_fencing_dsn()) as conn:
+        row = conn.execute(
+            "SELECT expected_session_epoch, verified_session_epoch "
+            "FROM customer_fencing_write_evidence "
+            "WHERE request_id = 'req-fencing-evidence-mismatch'"
+        ).fetchone()
+        project_count = conn.execute(
+            "SELECT count(*) FROM projects WHERE id = 'p-evidence-mismatch'"
+        ).fetchone()[0]
+    assert row is not None and (int(row[0]), int(row[1])) == (1, 2)
+    assert int(project_count) == 1
+
+
 def test_fenced_transaction_fences_a_stale_snapshot_and_leaves_no_write(
     client: TestClient,
 ) -> None:
@@ -939,3 +1225,120 @@ def test_fenced_transaction_rolls_back_a_failed_business_write(client: TestClien
             )
             raise RuntimeError("boom")
     assert _count_projects() == 0
+
+
+def test_fenced_transaction_records_local_metrics_and_audit_log(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from fastapi import HTTPException
+
+    from app.customer_fence import fenced_pg_transaction
+    from app.ops_metrics import (
+        bind_request_context,
+        render_metrics_document_for_tests,
+        reset_metrics_for_tests,
+    )
+
+    # This assertion is about one rejected transaction, not the cumulative
+    # process total left by earlier fencing tests in the same worker.
+    reset_metrics_for_tests()
+
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    snapshot = _snapshot_for(customer)
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        conn.execute("UPDATE customer_session_state SET session_epoch = session_epoch + 1")
+
+    with caplog.at_level(logging.INFO, logger="app.customer_fence"):
+        with pytest.raises(HTTPException) as ei:
+            with bind_request_context(
+                request_id="req-fenced",
+                method="POST",
+                route="/api/projects",
+            ):
+                with fenced_pg_transaction(snapshot) as (conn, _ctx):
+                    conn.execute(
+                        "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+                        ("p-never", customer["user_id"], "Never Commit"),
+                    )
+
+    assert ei.value.status_code == 401
+    assert ei.value.detail["code"] == "SESSION_REPLACED"
+    text = render_metrics_document_for_tests(is_ready=True)
+    assert 'video_replica_customer_fencing_rejects_total{code="SESSION_REPLACED"} 1' in text
+    assert "video_replica_fencing_lock_wait_seconds_count 1" in text
+    payload = json.loads(caplog.records[-1].getMessage())
+    assert payload["event"] == "customer_session_fenced"
+    assert payload["request_id"] == "req-fenced"
+    assert payload["route"] == "/api/projects"
+    assert payload["result_code"] == "SESSION_REPLACED"
+    assert isinstance(payload["lock_wait_ms"], int)
+    assert customer["session_token"] not in caplog.text
+
+
+def test_fencing_audit_uses_the_matched_route_template(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.customer_fence import _log_fencing_reject_audit
+    from app.ops_metrics import bind_request_context
+
+    raw_path = "/api/projects/attacker-controlled-object/scripts"
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": raw_path,
+            "headers": [],
+            "route": SimpleNamespace(path="/api/projects/{project_id}/scripts"),
+        }
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.customer_fence"):
+        with bind_request_context(
+            request_id="req-route-template",
+            method="POST",
+            route=raw_path,
+            request=request,
+        ):
+            _log_fencing_reject_audit("SESSION_REPLACED", 0.001)
+
+    payload = json.loads(caplog.records[-1].getMessage())
+    assert payload["route"] == "/api/projects/{project_id}/scripts"
+    assert "attacker-controlled-object" not in caplog.text
+
+
+def test_fenced_transaction_keeps_original_401_when_metrics_and_audit_fail(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from fastapi import HTTPException
+
+    import app.customer_fence as customer_fence
+
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    snapshot = _snapshot_for(customer)
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        conn.execute("UPDATE customer_session_state SET session_epoch = session_epoch + 1")
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("postgresql://operator:secret-password@db/private")
+
+    monkeypatch.setattr(customer_fence.ops_metrics, "record_fencing_reject", _boom)
+    monkeypatch.setattr(customer_fence, "_record_fencing_failure_audit", _boom)
+    monkeypatch.setattr(customer_fence, "_log_fencing_reject_audit", _boom)
+
+    with caplog.at_level(logging.WARNING, logger="app.customer_fence"):
+        with pytest.raises(HTTPException) as ei:
+            with customer_fence.fenced_pg_transaction(snapshot) as (conn, _ctx):
+                conn.execute(
+                    "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+                    ("p-mask", customer["user_id"], "Mask Failure"),
+                )
+
+    assert ei.value.status_code == 401
+    assert ei.value.detail["code"] == "SESSION_REPLACED"
+    assert "secret-password" not in caplog.text
+    assert "postgresql://" not in caplog.text

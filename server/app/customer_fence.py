@@ -11,18 +11,24 @@ route uses:
   dependency alone never closes the task). Returns ``None`` when no
   PostgreSQL runtime is configured — the internal/desktop lane has no
   customer sessions and authenticates through ``AuthenticatedUser`` instead.
-- ``fenced_pg_transaction`` — the only customer business-write transaction
-  entry: opens ``pg_transaction()``, re-verifies the session under the row
+- ``fenced_pg_transaction`` — the customer session-verification transaction
+  primitive: opens ``pg_transaction()``, re-verifies the session under the row
   lock inside it (epoch/device/session/lease re-compared, code/device status
   re-checked, lease judged on ``clock_timestamp()``), and yields ``(conn,
-  ctx)`` for the business write. Any business exception rolls the whole
-  transaction back; a ``SessionFencingError`` answers 401 — a request that
-  passed the snapshot can never commit a write after a switch.
+  ctx)``. Business writes opt into same-transaction commit evidence; read-only
+  callers do not. Any business exception rolls the whole transaction back; a
+  ``SessionFencingError`` answers 401 — a request that passed the snapshot can
+  never commit a write after a switch.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import os
+import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -32,6 +38,7 @@ from typing import Annotated
 import psycopg
 from fastapi import Depends, HTTPException, Request
 
+from app import ops_metrics
 from app.activation_code_service import ActivationKeyError
 from app.auth import CurrentUser, authenticate_request
 from app.customer_auth import (
@@ -43,9 +50,13 @@ from app.customer_device_service import _token_digests
 from app.db import connect_database
 from app.db_pg import IsolationLevel, get_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
+from app.permissions import AuditedSecurityDenial, persist_security_denial
+from app.security_rate_limit import record_auth_failure
 
 AUTHORIZATION_HEADER = "Authorization"
 BEARER_SCHEME = "bearer"
+FENCING_FAILURE_DIMENSION = "session:fencing"
+logger = logging.getLogger(__name__)
 
 
 def _bearer_token(request: Request) -> str | None:
@@ -129,6 +140,12 @@ def customer_session_snapshot(request: Request) -> CustomerSessionSnapshot | Non
                 "message": "This session token no longer owns a live session.",
             },
         )
+    ops_metrics.set_current_trace_fields(
+        user_id=str(row[0]),
+        device_id=str(row[1]),
+        session_id=str(row[2]),
+        session_epoch=int(row[3]),
+    )
     return CustomerSessionSnapshot(
         token=token,
         expected_user_id=str(row[0]),
@@ -144,16 +161,24 @@ def fenced_pg_transaction(
     snapshot: CustomerSessionSnapshot,
     *,
     isolation: IsolationLevel | None = None,
+    record_write_evidence: bool = False,
 ) -> Iterator[tuple[psycopg.Connection, CustomerSessionContext]]:
-    """The customer business-write transaction entry (SES-04).
+    """A customer fenced transaction; write callers opt into commit evidence.
 
     Opens the PostgreSQL transaction, runs ``verify_session_context`` under the
     session-row lock inside it (the full §12.4 re-comparison plus the code and
     device status re-check and the ``clock_timestamp()`` lease verdict), then
-    yields ``(conn, ctx)`` for the business write. A business exception rolls
-    the transaction back; a ``SessionFencingError`` raises 401 — so a request
-    that passed the early snapshot can never commit a write after a switch.
+    yields ``(conn, ctx)``. A business exception rolls the transaction back;
+    a ``SessionFencingError`` raises 401. Business-write owners must pass
+    ``record_write_evidence=True``; read-only routes leave it false.
     """
+    ops_metrics.set_current_trace_fields(
+        user_id=snapshot.expected_user_id,
+        device_id=snapshot.expected_device_id,
+        session_id=snapshot.expected_session_id,
+        session_epoch=snapshot.expected_session_epoch,
+    )
+    started = time.perf_counter()
     try:
         with pg_transaction(isolation=isolation) as conn:
             ctx = verify_session_context(
@@ -165,12 +190,136 @@ def fenced_pg_transaction(
                 expected_session_epoch=snapshot.expected_session_epoch,
                 expected_lease_until=snapshot.expected_lease_until,
             )
+            _observe_fencing_lock_wait(time.perf_counter() - started)
             yield conn, ctx
+            if record_write_evidence:
+                _record_fencing_commit_evidence(conn, snapshot, ctx)
+    except AuditedSecurityDenial as exc:
+        # The pg_transaction context has already rolled back the business
+        # transaction. Persist the denial separately so the P1 probe sees it.
+        persist_security_denial(exc)
+        raise
     except SessionFencingError as exc:
+        lock_wait_seconds = time.perf_counter() - started
+        _record_fencing_reject(exc.code, lock_wait_seconds)
+        ops_metrics.set_current_result_code(exc.code)
+        try:
+            _record_fencing_failure_audit(snapshot)
+        except Exception as audit_error:
+            logger.warning(
+                "fencing failure audit hook unavailable (%s)",
+                type(audit_error).__name__,
+            )
+        try:
+            _log_fencing_reject_audit(exc.code, lock_wait_seconds)
+        except Exception as audit_error:
+            logger.warning(
+                "fencing reject audit hook unavailable (%s)",
+                type(audit_error).__name__,
+            )
         raise HTTPException(
             401,
             detail={"code": exc.code, "message": exc.message},
         ) from None
+
+
+def _observe_fencing_lock_wait(lock_wait_seconds: float) -> None:
+    try:
+        ops_metrics.observe_fencing_lock_wait(lock_wait_seconds=lock_wait_seconds)
+    except Exception as metrics_error:
+        logger.warning(
+            "fencing lock wait metrics unavailable (%s)",
+            type(metrics_error).__name__,
+        )
+
+
+def _record_fencing_reject(code: str, lock_wait_seconds: float) -> None:
+    try:
+        ops_metrics.record_fencing_reject(code=code, lock_wait_seconds=lock_wait_seconds)
+    except Exception as metrics_error:
+        logger.warning(
+            "fencing reject metrics unavailable (%s)",
+            type(metrics_error).__name__,
+        )
+
+
+def _log_fencing_reject_audit(code: str, lock_wait_seconds: float) -> None:
+    context = ops_metrics.current_request_context()
+    payload = {
+        "event": "customer_session_fenced",
+        "request_id": context.request_id if context is not None else "-",
+        "method": context.method if context is not None else "-",
+        "route": ops_metrics.current_route_label(),
+        "result_code": code,
+        "lock_wait_ms": max(int(lock_wait_seconds * 1000), 0),
+    }
+    try:
+        logger.info(json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True))
+    except Exception as audit_error:
+        logger.warning(
+            "fencing reject audit unavailable (%s)",
+            type(audit_error).__name__,
+        )
+
+
+def _record_fencing_failure_audit(snapshot: CustomerSessionSnapshot) -> None:
+    context = ops_metrics.current_request_context()
+    request_id = context.request_id if context is not None else None
+    try:
+        with pg_transaction() as conn:
+            record_auth_failure(
+                conn,
+                dimension=FENCING_FAILURE_DIMENSION,
+                identifier=_fencing_failure_identifier(snapshot),
+                request_id=request_id,
+            )
+    except Exception as audit_error:
+        logger.warning(
+            "fencing failure audit row unavailable (%s)",
+            type(audit_error).__name__,
+        )
+
+
+def _fencing_failure_identifier(snapshot: CustomerSessionSnapshot) -> str:
+    payload = "|".join(
+        (
+            snapshot.expected_user_id,
+            snapshot.expected_device_id,
+            snapshot.expected_session_id,
+            str(snapshot.expected_session_epoch),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _record_fencing_commit_evidence(
+    conn: psycopg.Connection,
+    snapshot: CustomerSessionSnapshot,
+    verified: CustomerSessionContext,
+) -> None:
+    """Persist one bounded epoch-pair fact only when the business write commits.
+
+    The row is inserted after the route body succeeds but before the outer PG
+    transaction commits. A route error or commit failure rolls it back with the
+    business write. Repeated writes in one session pair deduplicate, while a
+    regressed verifier returning a different epoch creates a durable P1 fact.
+    """
+    context = ops_metrics.current_request_context()
+    request_id = context.request_id if context is not None else str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO customer_fencing_write_evidence "
+        "(id, request_id, subject_digest, expected_session_epoch, "
+        "verified_session_epoch) VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (subject_digest, expected_session_epoch, verified_session_epoch) "
+        "DO NOTHING",
+        (
+            str(uuid.uuid4()),
+            request_id,
+            _fencing_failure_identifier(snapshot),
+            snapshot.expected_session_epoch,
+            verified.session_epoch,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -196,7 +345,11 @@ class BusinessDb:
     ) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
         """One customer business-write transaction + its acting user."""
         if self.snapshot is not None:
-            with fenced_pg_transaction(self.snapshot, isolation=isolation) as (conn, ctx):
+            with fenced_pg_transaction(
+                self.snapshot,
+                isolation=isolation,
+                record_write_evidence=True,
+            ) as (conn, ctx):
                 bc = BusinessConnection.postgres(conn)
                 bc.ctx = ctx
                 actor = CurrentUser(

@@ -252,7 +252,7 @@ def test_pg_upgrade_from_published_040_head_applies_fair_queue() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "041_user_fair_queue"
+            assert version == "042_t37_observability_indexes"
             fair_queue_column = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.columns "
                 "WHERE table_name = 'runtime_settings' AND column_name = 'fair_queue_enabled'"
@@ -286,7 +286,9 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
 
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "041_user_fair_queue", f"unexpected head revision: {version}"
+            assert version == "042_t37_observability_indexes", (
+                f"unexpected head revision: {version}"
+            )
 
             tables = {
                 row[0]
@@ -365,7 +367,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "041_user_fair_queue"
+            assert version == "042_t37_observability_indexes"
     finally:
         _drop_database("t06_migrate_test")
 
@@ -487,7 +489,7 @@ def test_pg_wallet_downgrade_blocked_when_ledger_has_settled_rounds() -> None:
         # The database must be left exactly at head (no partial rollback).
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "041_user_fair_queue"
+        assert version == "042_t37_observability_indexes"
     finally:
         _drop_database(db_name)
 
@@ -784,7 +786,7 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             command.downgrade(_alembic_config(sqlalchemy_dsn), "025_postgres_runtime_compatibility")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "041_user_fair_queue"
+        assert version == "042_t37_observability_indexes"
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
@@ -873,5 +875,205 @@ def test_pg_low_review_constraint_guards() -> None:
             ):
                 with pytest.raises(psycopg.errors.RaiseException):
                     conn.execute(f"TRUNCATE {table}")
+    finally:
+        _drop_database(db_name)
+
+
+def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
+    """T37's probe has index-backed, append-only rejection and committed-write facts."""
+    from alembic import command
+
+    db_name = "t37_observability_schema"
+    dsn = _t08_database(db_name)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+            assert version == "042_t37_observability_indexes"
+
+            indexes = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'"
+                ).fetchall()
+            }
+            assert {
+                "idx_customer_session_events_event_occurred_at",
+                "idx_customer_session_events_user_event_occurred_at_id",
+                "idx_recharge_orders_status_paid_at",
+                "idx_wallet_transactions_user_created_at",
+                "idx_wallets_updated_at_user",
+                "idx_audit_logs_action_occurred_at",
+                "idx_generation_tasks_created_at_utc_status_batch",
+                "idx_customer_fencing_write_mismatch",
+            } <= indexes
+
+            for table_name, expected_column in (
+                ("customer_session_events", "occurred_at"),
+                ("audit_logs", "occurred_at"),
+                ("generation_tasks", "created_at_utc"),
+            ):
+                columns = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = %s",
+                        (table_name,),
+                    ).fetchall()
+                }
+                assert expected_column in columns
+
+            conn.execute("SET enable_seqscan TO off")
+            event_plan = "\n".join(
+                row[0]
+                for row in conn.execute(
+                    "EXPLAIN (COSTS OFF) SELECT user_id FROM customer_session_events "
+                    "WHERE event = 'HEARTBEAT' "
+                    "AND occurred_at >= clock_timestamp() - interval '2 minutes'"
+                ).fetchall()
+            )
+            successor_plan = "\n".join(
+                row[0]
+                for row in conn.execute(
+                    "EXPLAIN (COSTS OFF) SELECT session_epoch FROM customer_session_events "
+                    "WHERE user_id = 'missing' AND event = 'LOGIN' "
+                    "AND occurred_at <= clock_timestamp() "
+                    "ORDER BY occurred_at DESC, id DESC LIMIT 1"
+                ).fetchall()
+            )
+            audit_plan = "\n".join(
+                row[0]
+                for row in conn.execute(
+                    "EXPLAIN (COSTS OFF) SELECT id FROM audit_logs "
+                    "WHERE action = 'security.project_denied' "
+                    "AND occurred_at >= clock_timestamp() - interval '5 minutes'"
+                ).fetchall()
+            )
+            task_plan = "\n".join(
+                row[0]
+                for row in conn.execute(
+                    "EXPLAIN (COSTS OFF) SELECT id FROM generation_tasks "
+                    "WHERE created_at_utc >= clock_timestamp() - interval '10 minutes' "
+                    "AND created_at_utc < clock_timestamp() - interval '5 minutes' "
+                    "ORDER BY created_at_utc LIMIT 1"
+                ).fetchall()
+            )
+            assert "idx_customer_session_events_event_occurred_at" in event_plan
+            assert "idx_customer_session_events_user_event_occurred_at_id" in successor_plan
+            assert "idx_audit_logs_action_occurred_at" in audit_plan
+            assert "idx_generation_tasks_created_at_utc_status_batch" in task_plan
+
+            evidence_columns = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' "
+                    "AND table_name = 'customer_fencing_write_evidence'"
+                ).fetchall()
+            }
+            assert {
+                "id",
+                "request_id",
+                "subject_digest",
+                "expected_session_epoch",
+                "verified_session_epoch",
+                "committed_at",
+            } <= evidence_columns
+
+            alert_state_columns = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'ops_alert_state'"
+                ).fetchall()
+            }
+            assert {"alert_name", "active", "updated_at"} <= alert_state_columns
+            conn.execute(
+                "INSERT INTO ops_alert_state (alert_name, active) VALUES ('double_online', false)"
+            )
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute(
+                    "INSERT INTO ops_alert_state (alert_name, active) "
+                    "VALUES ('unbounded_dynamic_name', true)"
+                )
+
+            authorization_columns = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' "
+                    "AND table_name = 'customer_authorization_evidence'"
+                ).fetchall()
+            }
+            assert {
+                "id",
+                "request_id",
+                "resource_type",
+                "actor_digest",
+                "owner_digest",
+                "observed_at",
+            } <= authorization_columns
+            conn.execute(
+                "INSERT INTO customer_authorization_evidence "
+                "(id, request_id, resource_type, actor_digest, owner_digest) "
+                "VALUES ('authz-evidence-t37', 'authz-request-t37', 'asset', %s, %s)",
+                ("a" * 64, "b" * 64),
+            )
+            for mutation in (
+                "UPDATE customer_authorization_evidence SET owner_digest = actor_digest",
+                "DELETE FROM customer_authorization_evidence",
+                "TRUNCATE customer_authorization_evidence",
+            ):
+                with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
+                    conn.execute(mutation)
+
+            conn.execute(
+                "INSERT INTO customer_fencing_write_evidence "
+                "(id, request_id, subject_digest, expected_session_epoch, "
+                "verified_session_epoch) VALUES "
+                "('t37-write-1', 'request-write-t37', %s, 1, 2)",
+                ("a" * 64,),
+            )
+            for mutation in (
+                "UPDATE customer_fencing_write_evidence SET verified_session_epoch = 1",
+                "DELETE FROM customer_fencing_write_evidence",
+                "TRUNCATE customer_fencing_write_evidence",
+            ):
+                with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
+                    conn.execute(mutation)
+
+            conn.execute(
+                "INSERT INTO security_auth_failures "
+                "(id, dimension, identifier, request_id, occurred_at) "
+                "VALUES ('t37-fence-1', 'session:fencing', 'sha256-digest', "
+                "'request-t37', '2026-08-26 12:00:00+00')"
+            )
+            conn.execute(
+                "INSERT INTO security_auth_failures "
+                "(id, dimension, identifier, request_id, occurred_at) "
+                "VALUES ('t37-admin-1', 'admin:exchange:ip', 'sha256-ip-digest', "
+                "'request-t37-admin', '2026-08-26 12:00:00+00')"
+            )
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute(
+                    "INSERT INTO security_auth_failures "
+                    "(id, dimension, identifier, occurred_at) "
+                    "VALUES ('t37-invalid', 'unknown:dimension', 'digest', "
+                    "'2026-08-26 12:00:00+00')"
+                )
+
+        sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+        with pytest.raises(RuntimeError, match="cannot downgrade 042"):
+            command.downgrade(_alembic_config(sqlalchemy_dsn), "041_user_fair_queue")
+
+        # Transactional DDL leaves the database at head with all observability
+        # indexes intact when the append-only evidence guard refuses rollback.
+        with psycopg.connect(dsn) as conn:
+            version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+            assert version == "042_t37_observability_indexes"
+            index_count = conn.execute(
+                "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
+                "AND indexname = 'idx_wallets_updated_at_user'"
+            ).fetchone()[0]
+            assert int(index_count) == 1
     finally:
         _drop_database(db_name)

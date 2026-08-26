@@ -1,15 +1,108 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import sqlite3
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any, Literal, Never, cast
 from uuid import uuid4
 
 from fastapi import HTTPException
 
 from app.auth import CurrentUser, Role
 from app.character_policy import identity_values_are_current
+from app.db_pg import pg_transaction
 from app.db_portable import BusinessConnection
+from app.ops_metrics import current_request_context, set_current_result_code
+
+logger = logging.getLogger(__name__)
+ASSET_FORBIDDEN_MESSAGE = (
+    "Employee access is limited to published assets with current portrait authorization."
+)
+
+
+@dataclass(frozen=True)
+class SecurityDenialAudit:
+    id: str
+    actor_user_id: str
+    action: str
+    entity_type: str
+    entity_id: str
+    metadata_json: str
+
+
+class AuditedSecurityDenial(HTTPException):
+    """A PG denial whose audit must commit after the business rollback."""
+
+    def __init__(self, *, code: str, message: str, audit: SecurityDenialAudit) -> None:
+        set_current_result_code(code)
+        super().__init__(status_code=403, detail={"code": code, "message": message})
+        self.audit = audit
+
+
+def persist_security_denial(error: AuditedSecurityDenial) -> None:
+    """Commit a denial fact independently without changing the public 403.
+
+    Transaction owners call this only after their failed business transaction
+    has unwound. The preallocated id makes repeated dependency teardown safe.
+    """
+    fact = error.audit
+    try:
+        with pg_transaction() as conn:
+            conn.execute(
+                "INSERT INTO audit_logs "
+                "(id, actor_user_id, action, entity_type, entity_id, metadata_json) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                (
+                    fact.id,
+                    fact.actor_user_id,
+                    fact.action,
+                    fact.entity_type,
+                    fact.entity_id,
+                    fact.metadata_json,
+                ),
+            )
+    except Exception as audit_error:
+        logger.warning(
+            "security denial audit unavailable (%s)",
+            type(audit_error).__name__,
+        )
+
+
+def _raise_denial_with_audit(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    audit_action: str,
+    entity_type: str,
+    entity_id: str,
+    metadata: dict[str, Any],
+    code: str,
+    message: str,
+) -> Never:
+    if conn.is_postgres:
+        raise AuditedSecurityDenial(
+            code=code,
+            message=message,
+            audit=SecurityDenialAudit(
+                id=str(uuid4()),
+                actor_user_id=actor.id,
+                action=audit_action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                metadata_json=json.dumps(metadata, ensure_ascii=True, sort_keys=True),
+            ),
+        )
+    write_audit(
+        conn,
+        actor=actor,
+        action=audit_action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        metadata=metadata,
+    )
+    raise forbidden(code, message)
 
 
 def insert_audit(
@@ -69,17 +162,15 @@ def require_role(
     if actor.role in allowed_roles:
         return
 
-    write_audit(
+    _raise_denial_with_audit(
         conn,
         actor=actor,
-        action="security.role_denied",
+        audit_action="security.role_denied",
         entity_type=entity_type,
         entity_id=entity_id,
         metadata={"attempted_action": action, "required_roles": sorted(allowed_roles)},
-    )
-    raise forbidden(
-        "ROLE_FORBIDDEN",
-        f"{actor.role} is not allowed to perform {action}.",
+        code="ROLE_FORBIDDEN",
+        message=f"{actor.role} is not allowed to perform {action}.",
     )
 
 
@@ -107,6 +198,7 @@ def require_project_access(
     actor: CurrentUser,
     project_id: str,
     action: str,
+    evidence_type: Literal["project", "asset"] = "project",
 ) -> sqlite3.Row:
     row = conn.execute(
         """
@@ -122,20 +214,29 @@ def require_project_access(
             detail={"code": "PROJECT_NOT_FOUND", "message": "Project does not exist."},
         )
 
-    if actor.role in {"admin", "auditor"} or str(row["owner_user_id"]) == actor.id:
+    if actor.role in {"admin", "auditor"}:
         return cast(sqlite3.Row, row)
 
-    write_audit(
+    owner_user_id = str(row["owner_user_id"])
+    if conn.is_postgres:
+        _record_authorization_evidence(
+            conn,
+            actor_user_id=actor.id,
+            owner_user_id=owner_user_id,
+            resource_type=evidence_type,
+        )
+    if owner_user_id == actor.id:
+        return cast(sqlite3.Row, row)
+
+    _raise_denial_with_audit(
         conn,
         actor=actor,
-        action="security.project_denied",
+        audit_action="security.project_denied",
         entity_type="project",
         entity_id=project_id,
         metadata={"attempted_action": action},
-    )
-    raise forbidden(
-        "PROJECT_FORBIDDEN",
-        "User is not the project owner or an allowed project team member.",
+        code="PROJECT_FORBIDDEN",
+        message="User is not the project owner or an allowed project team member.",
     )
 
 
@@ -162,7 +263,13 @@ def require_asset_access(
         )
 
     if row["project_id"] is not None:
-        require_project_access(conn, actor=actor, project_id=str(row["project_id"]), action=action)
+        require_project_access(
+            conn,
+            actor=actor,
+            project_id=str(row["project_id"]),
+            action=action,
+            evidence_type="asset",
+        )
         return cast(sqlite3.Row, row)
 
     if actor.role in {"admin", "auditor"}:
@@ -206,17 +313,15 @@ def require_asset_access(
     if published_character is not None and character_identity_is_current(published_character):
         return cast(sqlite3.Row, row)
 
-    write_audit(
+    _raise_denial_with_audit(
         conn,
         actor=actor,
-        action="security.asset_denied",
+        audit_action="security.asset_denied",
         entity_type="asset",
         entity_id=asset_id,
         metadata={"attempted_action": action},
-    )
-    raise forbidden(
-        "ASSET_FORBIDDEN",
-        "Employee access is limited to published assets with current portrait authorization.",
+        code="ASSET_FORBIDDEN",
+        message=ASSET_FORBIDDEN_MESSAGE,
     )
 
 
@@ -227,6 +332,40 @@ def character_identity_is_current(row: sqlite3.Row) -> bool:
         authorization_expires_at=row["authorization_expires_at"],
         source_quality_status=row["source_quality_status"],
     )
+
+
+def _record_authorization_evidence(
+    conn: BusinessConnection,
+    *,
+    actor_user_id: str,
+    owner_user_id: str,
+    resource_type: Literal["project", "asset"],
+) -> None:
+    """Write a bounded digest pair in the protected operation's transaction.
+
+    Correct denials roll this candidate row back. If an ownership predicate
+    regresses and a mismatch is allowed to commit, the cluster probe retains
+    an append-only P1 fact without storing either user identifier.
+    """
+    context = current_request_context()
+    request_id = context.request_id if context is not None else str(uuid4())
+    conn.execute(
+        "INSERT INTO customer_authorization_evidence "
+        "(id, request_id, resource_type, actor_digest, owner_digest) "
+        "VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (resource_type, actor_digest, owner_digest) DO NOTHING",
+        (
+            str(uuid4()),
+            request_id,
+            resource_type,
+            _authorization_digest(actor_user_id),
+            _authorization_digest(owner_user_id),
+        ),
+    )
+
+
+def _authorization_digest(user_id: str) -> str:
+    return hashlib.sha256(f"t37-authorization:{user_id}".encode()).hexdigest()
 
 
 def _identity_from_asset_metadata(conn: BusinessConnection, row: sqlite3.Row) -> sqlite3.Row | None:
@@ -302,4 +441,5 @@ def project_id_for_task(conn: BusinessConnection, task_id: str) -> str:
 
 
 def forbidden(code: str, message: str) -> HTTPException:
+    set_current_result_code(code)
     return HTTPException(status_code=403, detail={"code": code, "message": message})
