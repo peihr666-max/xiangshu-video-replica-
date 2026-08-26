@@ -45,7 +45,10 @@ const tabs: Array<{ id: AdminTab; label: string }> = [
 ];
 
 export function AdminApp() {
-  const [activeTab, setActiveTab] = useState<AdminTab>("accounts");
+  // Customer production has no shared proxy administrator.  Start at the
+  // one-time operator sign-in gate so the first visible request is the
+  // session check, not a misleading legacy-identity error from accounts.
+  const [activeTab, setActiveTab] = useState<AdminTab>("activation");
   const [accounts, setAccounts] = useState<ControlAccount[]>([]);
   const [orders, setOrders] = useState<ControlRechargeOrder[]>([]);
   const [transactions, setTransactions] = useState<ControlWalletTransaction[]>(

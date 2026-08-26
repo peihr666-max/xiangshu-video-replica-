@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { updateControlBillingSettings } from "./api";
 import {
   AdminActivationError,
   clearAdminActivationSession,
@@ -154,6 +155,35 @@ describe("admin activation API adapter", () => {
     );
     expect(result.batch_id).toBe("batch-1");
     expect(result.request_id).toBe("req-batch-1");
+  });
+
+  it("shares the transient CSRF token with production control writes", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await signIn(fetchMock);
+    fetchMock.mockImplementationOnce(() =>
+      jsonResponse({
+        internal_base_unit_price_fen: 100,
+        charged_unit_price_fen: 100,
+        min_recharge_fen: 100,
+        recharge_step_fen: 100,
+      }),
+    );
+
+    await updateControlBillingSettings({
+      internal_base_unit_price_fen: 100,
+      min_recharge_fen: 100,
+      recharge_step_fen: 100,
+    });
+
+    const [url, request] = fetchMock.mock.calls.at(-1) ?? [];
+    expect(url).toBe("http://127.0.0.1:8000/api/control/settings/billing");
+    expect(request).toEqual(
+      expect.objectContaining({ method: "PATCH", credentials: "include" }),
+    );
+    expect(
+      new Headers((request as RequestInit).headers).get("X-Admin-CSRF"),
+    ).toBe(CSRF_TOKEN_TEXT);
   });
 
   it("mints a fresh idempotency key per write call", async () => {

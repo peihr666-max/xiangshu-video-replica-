@@ -38,6 +38,7 @@ from app.admin_auth_routes import (
     resolve_admin_session_ttl_seconds,
 )
 from app.bootstrap import assert_customer_production_security
+from app.control_auth import ControlUser
 from app.db_pg import DATABASE_URL_ENV
 
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
@@ -491,6 +492,36 @@ def client(monkeypatch: pytest.MonkeyPatch, clean_sessions: str) -> Iterator[Tes
         yield test_client
 
 
+@pytest.fixture()
+def customer_production_control_client(
+    monkeypatch: pytest.MonkeyPatch, clean_sessions: str
+) -> Iterator[TestClient]:
+    """A production-shaped control plane with the real legacy route set mounted.
+
+    The route implementations remain shared with the internal product, but in
+    customer production they must resolve the current per-operator session,
+    never the retired proxy-token identity.
+    """
+    from app.admin_auth_routes import router as admin_router
+    from app.control_routes import router as control_router
+
+    app = FastAPI()
+    app.include_router(admin_router)
+    app.include_router(control_router)
+
+    @app.patch("/api/control/_test/control-write")
+    def control_write(actor: ControlUser) -> dict[str, str]:
+        return {"actor": actor.id}
+
+    monkeypatch.setenv(DATABASE_URL_ENV, clean_sessions)
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    monkeypatch.setenv(ADMIN_SESSION_HMAC_KEY_ENV, TEST_KEY)
+    monkeypatch.delenv("VIDEO_REPLICA_AUTH_MODE", raising=False)
+    monkeypatch.delenv("VIDEO_REPLICA_ALLOW_DEV_IDENTITY_HEADER", raising=False)
+    with TestClient(app, base_url="https://testserver") as test_client:
+        yield test_client
+
+
 def _issue(actor_user_id: str = "admin_u", ttl: int = 3600) -> str:
     return issue_exchange_credential(actor_user_id, ttl_seconds=ttl)
 
@@ -775,6 +806,62 @@ def test_admin_writer_dependency_allows_admin(
     )
     assert response.status_code == 200, response.text
     assert response.json()["actor"] == "admin_u"
+
+
+@pytestmark_pg
+def test_customer_production_control_routes_use_operator_session(
+    customer_production_control_client: TestClient,
+) -> None:
+    """The original account/wallet screen must be usable after session login.
+
+    This locks the regression that sent the page through ``get_control_user``
+    and therefore rejected every customer-production request as legacy 403.
+    """
+    client = customer_production_control_client
+    exchange = client.post(
+        "/api/control/admin/session/exchange", json={"credential": _issue("admin_u")}
+    )
+    assert exchange.status_code == 201, exchange.text
+
+    accounts = client.get("/api/control/accounts")
+    assert accounts.status_code == 200, accounts.text
+
+    missing_csrf = client.patch("/api/control/_test/control-write")
+    assert missing_csrf.status_code == 403
+    assert missing_csrf.json()["detail"]["code"] == "ADMIN_CSRF_REQUIRED"
+
+    allowed = client.patch(
+        "/api/control/_test/control-write",
+        headers={ADMIN_CSRF_HEADER: exchange.json()["csrf_token"]},
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json() == {"actor": "admin_u"}
+
+    client.cookies.clear()
+    rejected = client.get(
+        "/api/control/accounts", headers={"X-Control-Proxy-Token": "legacy-token"}
+    )
+    assert rejected.status_code == 401
+    assert rejected.json()["detail"]["code"] == "ADMIN_SESSION_INVALID"
+
+
+@pytestmark_pg
+def test_customer_production_control_routes_keep_auditors_read_only(
+    customer_production_control_client: TestClient,
+) -> None:
+    client = customer_production_control_client
+    exchange = client.post(
+        "/api/control/admin/session/exchange", json={"credential": _issue("auditor_u")}
+    )
+    assert exchange.status_code == 201, exchange.text
+
+    assert client.get("/api/control/accounts").status_code == 200
+    blocked = client.patch(
+        "/api/control/_test/control-write",
+        headers={ADMIN_CSRF_HEADER: exchange.json()["csrf_token"]},
+    )
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"]["code"] == "AUDITOR_READ_ONLY"
 
 
 def test_secure_cookie_in_customer_production(

@@ -13,7 +13,12 @@
 // header, alongside the `X-Admin-CSRF` header; responses carry the audit
 // `request_id` that the pages surface to the operator.
 
-import { resolveApiBaseUrl } from "./api";
+import {
+  clearAdminCsrfToken,
+  getAdminCsrfToken,
+  resolveApiBaseUrl,
+  setAdminCsrfToken,
+} from "./api";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CSRF_HEADER = "X-Admin-CSRF";
@@ -31,22 +36,21 @@ export class AdminActivationError extends Error {
   }
 }
 
-let adminCsrfToken: string | null = null;
-
 /** Drop the in-memory session state (logout, expiry, tests). */
 export function clearAdminActivationSession(): void {
-  adminCsrfToken = null;
+  clearAdminCsrfToken();
 }
 
 function requireCsrfToken(): string {
-  if (!adminCsrfToken) {
+  const token = getAdminCsrfToken();
+  if (!token) {
     throw new AdminActivationError(
       "管理登录令牌缺失，请重新登录后再执行写操作",
       401,
       "ADMIN_CSRF_UNAVAILABLE",
     );
   }
-  return adminCsrfToken;
+  return token;
 }
 
 function newIdempotencyKey(): string {
@@ -197,7 +201,7 @@ export async function exchangeAdminSession(
   }
   const payload = (await response.json()) as AdminExchangeResult;
   // Memory only — never persisted (No-Go red line).
-  adminCsrfToken = payload.csrf_token;
+  setAdminCsrfToken(payload.csrf_token);
   return payload;
 }
 
@@ -220,7 +224,7 @@ export async function deleteAdminSession(): Promise<void> {
   if (!response.ok) {
     throw await parseActivationError(response, "退出管理登录失败");
   }
-  adminCsrfToken = null;
+  clearAdminCsrfToken();
 }
 
 // ---------------------------------------------------------------------------

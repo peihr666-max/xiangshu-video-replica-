@@ -176,7 +176,7 @@ def list_accounts(
         LEFT JOIN internal_access_tokens
           ON internal_access_tokens.user_id = users.id
          AND internal_access_tokens.revoked_at IS NULL
-        GROUP BY users.id
+        GROUP BY users.id, wallets.available_credits, wallets.reserved_credits
         ORDER BY users.username, users.id
         LIMIT %s OFFSET %s
         """,

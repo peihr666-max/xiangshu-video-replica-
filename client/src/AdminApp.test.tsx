@@ -180,20 +180,17 @@ describe("AdminApp", () => {
     window.location.hash = "";
   });
 
-  it("shows the three internal admin tabs with read-only accounts and wallets", async () => {
-    installFetch();
+  it("starts at the administrator sign-in gate before loading control data", async () => {
+    const fetchMock = installFetch();
 
     render(<AdminApp />);
 
-    for (const label of ["账号与钱包", "充值订单", "支付与价格"]) {
-      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
-    }
-    expect(await screen.findAllByText("operator-1")).toHaveLength(2);
-    expect(screen.getByText("18")).toBeInTheDocument();
-    expect(screen.getByText("tx-1")).toBeInTheDocument();
+    expect(await screen.findByLabelText("管理登录凭据")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /调整余额|手工加款/ }),
-    ).toBeNull();
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes("/api/control/accounts?"),
+      ),
+    ).toBe(false);
   });
 
   it("keeps order operations to sync and CSV export", async () => {
