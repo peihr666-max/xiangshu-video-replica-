@@ -16,7 +16,8 @@ concurrency:
 jobs:
   secret-scan:
     name: Secret scan
-    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, ci-linux]
     timeout-minutes: 5
     steps:
       - name: Checkout repository
@@ -32,7 +33,8 @@ jobs:
 
   quality-linux:
     name: Linux quality gate
-    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, ci-linux]
     # 2026-08-26: raised 30 -> 60 — the full pytest suite (~1150 tests, PG
     # service + 10k queue load) measures 9-27 minutes depending on the hosted
     # runner's performance; a slow runner previously hit the 30-minute cap at
@@ -64,9 +66,11 @@ jobs:
           persist-credentials: false
       - name: Install Tauri system dependencies
         run: |
-          sudo sed -i \
-            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-            /etc/apt/apt-mirrors.txt
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i \
+              's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/apt-mirrors.txt
+          fi
           sudo apt-get \
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
@@ -120,7 +124,8 @@ jobs:
 
   windows-nsis:
     name: Windows Tauri and NSIS
-    runs-on: windows-2025
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, ci-windows]
     timeout-minutes: 45
     steps:
       - name: Checkout repository
@@ -146,13 +151,22 @@ jobs:
       - name: Record internal installer SHA256
         shell: pwsh
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
-      - name: Upload unsigned internal NSIS installer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: unsigned-windows-nsis-${{ github.sha }}
-          path: .cargo-target/release/bundle/nsis/*.exe
-          if-no-files-found: error
-          retention-days: 7
+      - name: Archive unsigned internal NSIS installer locally
+        shell: pwsh
+        run: |
+          if (-not $env:LOCAL_ARTIFACT_ROOT) {
+            throw 'LOCAL_ARTIFACT_ROOT must be configured on the self-hosted runner'
+          }
+          $installers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
+          if (-not $installers) {
+            throw 'internal NSIS installer was not produced'
+          }
+          $destination = Join-Path $env:LOCAL_ARTIFACT_ROOT '${{ github.sha }}\internal'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          $installers | Copy-Item -Destination $destination -Force
+          $installers | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash) *$(Split-Path $_.Path -Leaf)" } |
+            Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding utf8
       - name: Isolate customer NSIS output
         shell: pwsh
         run: |
@@ -196,10 +210,19 @@ jobs:
       - name: Record customer cloud installer SHA256
         shell: pwsh
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
-      - name: Upload unsigned customer cloud NSIS installer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: unsigned-customer-cloud-windows-nsis-${{ github.sha }}
-          path: .cargo-target/release/bundle/nsis/*.exe
-          if-no-files-found: error
-          retention-days: 7
+      - name: Archive unsigned customer cloud NSIS installer locally
+        shell: pwsh
+        run: |
+          if (-not $env:LOCAL_ARTIFACT_ROOT) {
+            throw 'LOCAL_ARTIFACT_ROOT must be configured on the self-hosted runner'
+          }
+          $installers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
+          if (-not $installers) {
+            throw 'customer NSIS installer was not produced'
+          }
+          $destination = Join-Path $env:LOCAL_ARTIFACT_ROOT '${{ github.sha }}\customer-cloud'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          $installers | Copy-Item -Destination $destination -Force
+          $installers | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash) *$(Split-Path $_.Path -Leaf)" } |
+            Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding utf8

@@ -2,20 +2,37 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import sqlite3
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal, cast
 
-from fastapi import APIRouter, HTTPException, Query
+import psycopg
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
+from app.admin_activation_routes import AdminWriteContract, _write_with_idempotency
 from app.auth import Database, Role
 from app.control_auth import ControlUser
+from app.db_portable import BusinessConnection
+from app.ops_metrics import get_or_create_request_id
 from app.permissions import write_audit
-from app.settings import SettingsRepository
+from app.settings import ProviderName, SettingsRepository
+from app.settings_routes import (
+    ProviderTester,
+    ProviderTestResult,
+    apply_cos_lifecycle_rules,
+    get_provider_tester,
+    merge_provider_config,
+    require_supported_provider,
+)
 from app.zpay import deployment_config_from_environment
 
 router = APIRouter(prefix="/api/control", tags=["control"])
+CUSTOMER_PRODUCTION_ENV = "VIDEO_REPLICA_CUSTOMER_PRODUCTION"
+_TRUTHY = {"1", "true", "yes", "on"}
 
 OrderStatus = Literal["PENDING", "PAID", "FAILED", "CLOSED"]
 TransactionType = Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE"]
@@ -103,7 +120,7 @@ class ReconciliationSummary(BaseModel):
     pending_order_count: int
 
 
-class ZPaySettingsUpdate(BaseModel):
+class ZPaySettingsUpdate(AdminWriteContract):
     model_config = ConfigDict(extra="forbid")
 
     pid: str = Field(min_length=1)
@@ -111,7 +128,7 @@ class ZPaySettingsUpdate(BaseModel):
     enabled_channels: list[Literal["alipay", "wxpay"]] = Field(min_length=1)
 
 
-class BillingSettingsUpdate(BaseModel):
+class BillingSettingsUpdate(AdminWriteContract):
     model_config = ConfigDict(extra="forbid")
 
     internal_base_unit_price_fen: StrictInt
@@ -144,12 +161,251 @@ class DeploymentSettings(BaseModel):
     return_url: str
 
 
+class MaskedProviderSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: ProviderName
+    configured: bool
+    config: dict[str, str]
+
+
+class RuntimeSettingsSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_generation_count_per_batch: int
+    max_concurrent_h3_tasks: int
+    active_storage_provider: Literal["cos", "local"]
+
+
+class RuntimeSettingsUpdate(AdminWriteContract, RuntimeSettingsSnapshot):
+    pass
+
+
+class ControlProviderSettingsUpdate(AdminWriteContract):
+    model_config = ConfigDict(extra="forbid")
+
+    config: dict[str, str] = Field(default_factory=dict)
+
+
 class ControlSettingsSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     billing: BillingSettingsSnapshot
     zpay: MaskedZPaySettings
     deployment: DeploymentSettings
+    providers: dict[ProviderName, MaskedProviderSettings]
+    runtime: RuntimeSettingsSnapshot
+
+
+def _runtime_settings_snapshot(settings: dict[str, int | str]) -> RuntimeSettingsSnapshot:
+    return RuntimeSettingsSnapshot(
+        max_generation_count_per_batch=int(settings["max_generation_count_per_batch"]),
+        max_concurrent_h3_tasks=int(settings["max_concurrent_h3_tasks"]),
+        active_storage_provider=cast(
+            Literal["cos", "local"],
+            str(settings["active_storage_provider"]),
+        ),
+    )
+
+
+def _deployment_settings_snapshot() -> DeploymentSettings:
+    try:
+        deployment = deployment_config_from_environment()
+    except ValueError:
+        return DeploymentSettings(gateway_url="", notify_url="", return_url="")
+    return DeploymentSettings(
+        gateway_url=deployment.gateway_url,
+        notify_url=deployment.notify_url,
+        return_url=deployment.return_url,
+    )
+
+
+def _is_customer_production() -> bool:
+    return os.environ.get(CUSTOMER_PRODUCTION_ENV, "").strip().lower() in _TRUTHY
+
+
+@dataclass(frozen=True)
+class _ControlWriteActor:
+    user_id: str
+
+
+def _run_control_settings_write(
+    request: Request,
+    response: Response,
+    actor: ControlUser,
+    body: AdminWriteContract,
+    conn: Database,
+    business: Callable[[BusinessConnection, str], dict[str, object]],
+) -> dict[str, object]:
+    if not _is_customer_production():
+        return business(conn, get_or_create_request_id(request))
+
+    def pg_business(raw_conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        return business(BusinessConnection.postgres(raw_conn), request_id)
+
+    return _write_with_idempotency(
+        request,
+        response,
+        _ControlWriteActor(user_id=actor.id),
+        body,
+        pg_business,
+        success_status=200,
+        unavailable_code="CONTROL_SETTINGS_UNAVAILABLE",
+        unavailable_message="Control settings writes require the PostgreSQL runtime.",
+    )
+
+
+def _invalid_settings_http(code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=422, detail={"code": code, "message": message})
+
+
+def _update_control_provider_settings_business(
+    conn: BusinessConnection,
+    *,
+    actor: ControlUser,
+    provider_name: ProviderName,
+    config: dict[str, str],
+    reason: str,
+    request_id: str,
+) -> dict[str, object]:
+    try:
+        repo = SettingsRepository(conn)
+        current = repo.load_provider_config(provider_name)
+        merged = merge_provider_config(current, config)
+        saved = repo.save_provider_config(
+            provider_name,
+            merged,
+            actor_user_id=actor.id,
+        )
+    except ValueError as exc:
+        raise _invalid_settings_http("INVALID_SERVICE_SETTINGS", str(exc)) from exc
+    write_audit(
+        conn,
+        actor=actor,
+        action="provider_settings.update",
+        entity_type="provider_settings",
+        entity_id=provider_name,
+        metadata={
+            "provider": provider_name,
+            "reason": reason.strip(),
+            "request_id": request_id,
+        },
+    )
+    if provider_name == "cos":
+        lifecycle = apply_cos_lifecycle_rules(merged, actor_id=actor.id)
+        write_audit(
+            conn,
+            actor=actor,
+            action=f"cos_lifecycle.{lifecycle['status']}",
+            entity_type="provider_settings",
+            entity_id="cos",
+            metadata={
+                "status": lifecycle["status"],
+                "reason": reason.strip(),
+                "request_id": request_id,
+            },
+        )
+    return cast(dict[str, object], saved)
+
+
+def _update_control_runtime_settings_business(
+    conn: BusinessConnection,
+    *,
+    actor: ControlUser,
+    payload: RuntimeSettingsUpdate,
+    request_id: str,
+) -> dict[str, object]:
+    try:
+        saved = SettingsRepository(conn).save_runtime_settings(
+            max_generation_count_per_batch=payload.max_generation_count_per_batch,
+            max_concurrent_h3_tasks=payload.max_concurrent_h3_tasks,
+            active_storage_provider=payload.active_storage_provider,
+            actor_user_id=actor.id,
+        )
+    except ValueError as exc:
+        raise _invalid_settings_http("INVALID_RUNTIME_SETTINGS", str(exc)) from exc
+    write_audit(
+        conn,
+        actor=actor,
+        action="runtime_settings.update",
+        entity_type="runtime_settings",
+        entity_id="1",
+        metadata={
+            "setting": "runtime_limits",
+            "reason": payload.reason.strip(),
+            "request_id": request_id,
+        },
+    )
+    return cast(dict[str, object], saved)
+
+
+def _update_control_zpay_settings_business(
+    conn: BusinessConnection,
+    *,
+    actor: ControlUser,
+    payload: ZPaySettingsUpdate,
+    request_id: str,
+) -> dict[str, object]:
+    try:
+        repo = SettingsRepository(conn)
+        current = repo.load_zpay_config()
+        incoming_key = (payload.key or "").strip()
+        if incoming_key.startswith("********") or not incoming_key:
+            incoming_key = current.get("key", "")
+        result = repo.save_zpay_config(
+            {
+                "pid": payload.pid,
+                "key": incoming_key,
+                "enabled_channels": ",".join(payload.enabled_channels),
+            },
+            actor_user_id=actor.id,
+        )
+    except ValueError as exc:
+        raise _invalid_settings_http("INVALID_ZPAY_SETTINGS", str(exc)) from exc
+    write_audit(
+        conn,
+        actor=actor,
+        action="zpay_settings.update",
+        entity_type="provider_settings",
+        entity_id="zpay",
+        metadata={
+            "enabled_channels": payload.enabled_channels,
+            "reason": payload.reason.strip(),
+            "request_id": request_id,
+        },
+    )
+    return cast(dict[str, object], result)
+
+
+def _update_control_billing_settings_business(
+    conn: BusinessConnection,
+    *,
+    actor: ControlUser,
+    payload: BillingSettingsUpdate,
+    request_id: str,
+) -> dict[str, object]:
+    try:
+        result = SettingsRepository(conn).save_billing_settings(
+            internal_base_unit_price_fen=payload.internal_base_unit_price_fen,
+            min_recharge_fen=payload.min_recharge_fen,
+            recharge_step_fen=payload.recharge_step_fen,
+            actor_user_id=actor.id,
+        )
+    except ValueError as exc:
+        raise _invalid_settings_http("INVALID_BILLING_SETTINGS", str(exc)) from exc
+    write_audit(
+        conn,
+        actor=actor,
+        action="billing_settings.update",
+        entity_type="runtime_settings",
+        entity_id="1",
+        metadata={
+            "scope": "INTERNAL",
+            "reason": payload.reason.strip(),
+            "request_id": request_id,
+        },
+    )
+    return cast(dict[str, object], result)
 
 
 @router.get("/accounts", response_model=AccountWalletPage)
@@ -176,7 +432,7 @@ def list_accounts(
         LEFT JOIN internal_access_tokens
           ON internal_access_tokens.user_id = users.id
          AND internal_access_tokens.revoked_at IS NULL
-        GROUP BY users.id
+        GROUP BY users.id, wallets.available_credits, wallets.reserved_credits
         ORDER BY users.username, users.id
         LIMIT %s OFFSET %s
         """,
@@ -337,17 +593,99 @@ def read_reconciliation(conn: Database, _actor: ControlUser) -> ReconciliationSu
 
 @router.get("/settings", response_model=ControlSettingsSnapshot)
 def read_control_settings(conn: Database, _actor: ControlUser) -> ControlSettingsSnapshot:
-    deployment = deployment_config_from_environment()
     repo = SettingsRepository(conn)
     return ControlSettingsSnapshot(
         billing=BillingSettingsSnapshot(**repo.read_billing_settings()),
         zpay=MaskedZPaySettings(**repo.read_zpay_config()),
-        deployment=DeploymentSettings(
-            gateway_url=deployment.gateway_url,
-            notify_url=deployment.notify_url,
-            return_url=deployment.return_url,
-        ),
+        deployment=_deployment_settings_snapshot(),
+        providers={
+            cast(ProviderName, provider): MaskedProviderSettings(**config)
+            for provider, config in repo.read_all_provider_configs().items()
+        },
+        runtime=_runtime_settings_snapshot(repo.read_runtime_settings()),
     )
+
+
+@router.put(
+    "/settings/providers/{provider}",
+    response_model=MaskedProviderSettings,
+)
+def update_control_provider_settings(
+    provider: str,
+    payload: ControlProviderSettingsUpdate,
+    conn: Database,
+    actor: ControlUser,
+    request: Request,
+    response: Response,
+) -> MaskedProviderSettings:
+    provider_name = require_supported_provider(provider)
+    try:
+        saved = _run_control_settings_write(
+            request,
+            response,
+            actor,
+            payload,
+            conn,
+            lambda current_conn, request_id: _update_control_provider_settings_business(
+                current_conn,
+                actor=actor,
+                provider_name=provider_name,
+                config=payload.config,
+                reason=payload.reason,
+                request_id=request_id,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_SERVICE_SETTINGS", "message": str(exc)},
+        ) from exc
+    return MaskedProviderSettings.model_validate(saved)
+
+
+@router.post(
+    "/settings/providers/{provider}/connection-test",
+    response_model=ProviderTestResult,
+)
+def test_control_provider_connection(
+    provider: str,
+    conn: Database,
+    _actor: ControlUser,
+    tester: ProviderTester = Depends(get_provider_tester),
+) -> ProviderTestResult:
+    provider_name = require_supported_provider(provider)
+    config = SettingsRepository(conn).load_provider_config(provider_name)
+    return tester.connection_test(provider_name, config)
+
+
+@router.patch("/settings/runtime", response_model=RuntimeSettingsSnapshot)
+def update_control_runtime_settings(
+    payload: RuntimeSettingsUpdate,
+    conn: Database,
+    actor: ControlUser,
+    request: Request,
+    response: Response,
+) -> RuntimeSettingsSnapshot:
+    try:
+        saved = _run_control_settings_write(
+            request,
+            response,
+            actor,
+            payload,
+            conn,
+            lambda current_conn, request_id: _update_control_runtime_settings_business(
+                current_conn,
+                actor=actor,
+                payload=payload,
+                request_id=request_id,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_RUNTIME_SETTINGS", "message": str(exc)},
+        ) from exc
+    return RuntimeSettingsSnapshot.model_validate(saved)
 
 
 @router.patch("/settings/zpay", response_model=MaskedZPaySettings)
@@ -355,35 +693,29 @@ def update_zpay_settings(
     payload: ZPaySettingsUpdate,
     conn: Database,
     actor: ControlUser,
+    request: Request,
+    response: Response,
 ) -> MaskedZPaySettings:
-    repo = SettingsRepository(conn)
-    current = repo.load_zpay_config()
-    incoming_key = (payload.key or "").strip()
-    if incoming_key.startswith("********") or not incoming_key:
-        incoming_key = current.get("key", "")
     try:
-        result = repo.save_zpay_config(
-            {
-                "pid": payload.pid,
-                "key": incoming_key,
-                "enabled_channels": ",".join(payload.enabled_channels),
-            },
-            actor_user_id=actor.id,
+        result = _run_control_settings_write(
+            request,
+            response,
+            actor,
+            payload,
+            conn,
+            lambda current_conn, request_id: _update_control_zpay_settings_business(
+                current_conn,
+                actor=actor,
+                payload=payload,
+                request_id=request_id,
+            ),
         )
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail={"code": "INVALID_ZPAY_SETTINGS", "message": str(exc)},
         ) from exc
-    write_audit(
-        conn,
-        actor=actor,
-        action="zpay_settings.update",
-        entity_type="provider_settings",
-        entity_id="zpay",
-        metadata={"enabled_channels": payload.enabled_channels},
-    )
-    return MaskedZPaySettings(**result)
+    return MaskedZPaySettings.model_validate(result)
 
 
 @router.patch("/settings/billing", response_model=BillingSettingsSnapshot)
@@ -391,28 +723,29 @@ def update_control_billing_settings(
     payload: BillingSettingsUpdate,
     conn: Database,
     actor: ControlUser,
+    request: Request,
+    response: Response,
 ) -> BillingSettingsSnapshot:
     try:
-        result = SettingsRepository(conn).save_billing_settings(
-            internal_base_unit_price_fen=payload.internal_base_unit_price_fen,
-            min_recharge_fen=payload.min_recharge_fen,
-            recharge_step_fen=payload.recharge_step_fen,
-            actor_user_id=actor.id,
+        result = _run_control_settings_write(
+            request,
+            response,
+            actor,
+            payload,
+            conn,
+            lambda current_conn, request_id: _update_control_billing_settings_business(
+                current_conn,
+                actor=actor,
+                payload=payload,
+                request_id=request_id,
+            ),
         )
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail={"code": "INVALID_BILLING_SETTINGS", "message": str(exc)},
         ) from exc
-    write_audit(
-        conn,
-        actor=actor,
-        action="billing_settings.update",
-        entity_type="runtime_settings",
-        entity_id="1",
-        metadata={"scope": "INTERNAL"},
-    )
-    return BillingSettingsSnapshot(**result)
+    return BillingSettingsSnapshot.model_validate(result)
 
 
 @router.get("/recharge-orders.csv")

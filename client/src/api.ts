@@ -11,6 +11,23 @@ const CLOUD_OP_TIMEOUT_MS = 60_000;
 const ANALYSIS_TIMEOUT_MS = 300_000;
 export const SESSION_EXPIRED_EVENT = "video-replica:session-expired";
 let internalAccessToken: string | null = null;
+// The customer-production admin session exchanges its CSRF value once and
+// keeps it in memory only.  Control-plane writes share this value so the
+// existing account/billing screens stay behind the same per-operator session
+// rather than a legacy proxy identity.  It is deliberately never persisted.
+let adminCsrfToken: string | null = null;
+
+export function setAdminCsrfToken(token: string): void {
+  adminCsrfToken = token;
+}
+
+export function getAdminCsrfToken(): string | null {
+  return adminCsrfToken;
+}
+
+export function clearAdminCsrfToken(): void {
+  adminCsrfToken = null;
+}
 
 type ApiRuntimeLocation = Pick<Location, "origin" | "protocol">;
 
@@ -116,6 +133,8 @@ export type BillingSettings = {
 };
 
 export type ControlSettings = {
+  providers: Record<ProviderName, ProviderSettings>;
+  runtime: RuntimeSettings;
   billing: BillingSettings;
   zpay: {
     provider: "zpay";
@@ -651,6 +670,32 @@ export async function getControlSettings(): Promise<ControlSettings> {
   );
 }
 
+function newControlWriteIdempotencyKey(): string {
+  const cryptoRef = globalThis.crypto;
+  if (cryptoRef && typeof cryptoRef.randomUUID === "function") {
+    return cryptoRef.randomUUID();
+  }
+  return `control-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function controlWriteInit(
+  method: "PATCH" | "PUT",
+  body: Record<string, unknown>,
+  reason: string,
+): RequestInit {
+  return {
+    method,
+    headers: {
+      "Idempotency-Key": newControlWriteIdempotencyKey(),
+    },
+    body: JSON.stringify({
+      ...body,
+      confirm: true,
+      reason,
+    }),
+  };
+}
+
 export async function updateControlZPaySettings(input: {
   pid: string;
   key: string;
@@ -659,7 +704,7 @@ export async function updateControlZPaySettings(input: {
   return requestControlJson<ControlSettings["zpay"]>(
     "/api/control/settings/zpay",
     "保存 ZPay 设置失败",
-    { method: "PATCH", body: JSON.stringify(input) },
+    controlWriteInit("PATCH", input, "更新 ZPay 支付配置"),
   );
 }
 
@@ -671,7 +716,39 @@ export async function updateControlBillingSettings(input: {
   return requestControlJson<BillingSettings>(
     "/api/control/settings/billing",
     "保存内部价格失败",
-    { method: "PATCH", body: JSON.stringify(input) },
+    controlWriteInit("PATCH", input, "更新后台计费配置"),
+  );
+}
+
+export async function updateControlProviderSettings(
+  provider: ProviderName,
+  config: Record<string, string>,
+): Promise<ProviderSettings> {
+  return requestControlJson<ProviderSettings>(
+    `/api/control/settings/providers/${provider}`,
+    "保存服务设置失败",
+    controlWriteInit("PUT", { config }, `更新 ${provider} 服务配置`),
+  );
+}
+
+export async function testControlProviderConnection(
+  provider: ProviderName,
+): Promise<ProviderTestResult> {
+  return requestControlJson<ProviderTestResult>(
+    `/api/control/settings/providers/${provider}/connection-test`,
+    "连接测试失败",
+    { method: "POST" },
+    CLOUD_OP_TIMEOUT_MS,
+  );
+}
+
+export async function updateControlRuntimeSettings(
+  runtime: RuntimeSettings,
+): Promise<RuntimeSettings> {
+  return requestControlJson<RuntimeSettings>(
+    "/api/control/settings/runtime",
+    "保存运行设置失败",
+    controlWriteInit("PATCH", runtime, "更新后台运行参数"),
   );
 }
 
@@ -2313,12 +2390,27 @@ async function requestControl(
   if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
+  if (
+    init.method &&
+    ["POST", "PUT", "PATCH", "DELETE"].includes(init.method.toUpperCase()) &&
+    !headers.has("X-Admin-CSRF")
+  ) {
+    const csrf = getAdminCsrfToken();
+    if (csrf) {
+      headers.set("X-Admin-CSRF", csrf);
+    }
+  }
   try {
-    return await fetch(`${apiBaseUrl()}${path}`, {
+    const response = await fetch(`${apiBaseUrl()}${path}`, {
       ...init,
       headers,
+      credentials: "include",
       signal: controller.signal,
     });
+    if (response.status === 401) {
+      emitSessionExpired();
+    }
+    return response;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("请求超时，请重试");

@@ -40,6 +40,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -61,7 +62,7 @@ from app.activation_code_service import (
     highest_code_hmac_key_version,
     highest_export_aead_key_version,
 )
-from app.admin_auth_routes import AdminActor, AdminReader, AdminWriter
+from app.admin_auth_routes import AdminReader, AdminWriter
 from app.customer_session_service import (
     REASON_CODE_REVOKED,
     REASON_CODE_SUSPENDED,
@@ -120,6 +121,13 @@ class AdminWriteContract(BaseModel):
 
     confirm: bool = False
     reason: str = ""
+
+
+class _AdminWriteActor(Protocol):
+    """Minimal actor shape required by the shared idempotency envelope."""
+
+    @property
+    def user_id(self) -> str: ...
 
 
 def _require_write_contract(request: Request, body: AdminWriteContract) -> tuple[str, str]:
@@ -271,7 +279,7 @@ class DeferredHTTPWriteError(Exception):
 def _write_with_idempotency(
     request: Request,
     response: Response,
-    actor: AdminActor,
+    actor: _AdminWriteActor,
     body: AdminWriteContract,
     business: Callable[[psycopg.Connection, str], dict[str, object]],
     *,
@@ -483,6 +491,7 @@ def create_activation_code_batch(
 
 class GenerateRequest(AdminWriteContract):
     quantity: int
+    auto_issue: bool = False
 
 
 def _resolve_generation_keys() -> tuple[int, bytes, int, bytes]:
@@ -557,6 +566,33 @@ def generate_activation_codes(
             aead_key=aead_key,
             request_id=request_id,
         )
+        if body.auto_issue:
+            issued_at = _transaction_now_iso(conn)
+            reason = body.reason.strip()
+            for code in generated:
+                conn.execute(
+                    "INSERT INTO activation_code_deliveries "
+                    "(id, code_id, channel, external_order_ref, recipient_ref, "
+                    " delivered_by_user_id, note) "
+                    "VALUES (%s, %s, 'admin_console', NULL, NULL, %s, %s)",
+                    (str(uuid.uuid4()), code.code_id, actor.user_id, reason),
+                )
+                conn.execute(
+                    "UPDATE activation_codes SET status = 'ISSUED', issued_at = %s WHERE id = %s",
+                    (issued_at, code.code_id),
+                )
+                conn.execute(
+                    "INSERT INTO activation_code_events "
+                    "(id, code_id, event, actor_user_id, reason, request_id) "
+                    "VALUES (%s, %s, 'DELIVERED', %s, %s, %s)",
+                    (
+                        str(uuid.uuid4()),
+                        code.code_id,
+                        actor.user_id,
+                        reason,
+                        request_id,
+                    ),
+                )
         expires_row = conn.execute(
             "SELECT expires_at FROM activation_code_exports WHERE id = %s",
             (export_id,),
