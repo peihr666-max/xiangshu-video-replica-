@@ -5,7 +5,6 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -24,6 +23,7 @@ from app.analysis import (
     create_analysis_version,
     create_or_recover_analysis_version,
     create_shot_card_version,
+    enqueue_analysis_task,
     find_analysis_version_for_asset,
     get_version,
     validate_shot_cards,
@@ -344,57 +344,16 @@ def create_project_analysis_task(
             project_id=project_id,
             request=request,
         )
-        existing_task = conn.execute(
-            """
-            SELECT * FROM analysis_tasks
-            WHERE project_id = %s AND asset_id = %s
-              AND status IN ('PENDING', 'RUNNING')
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            """,
-            (project_id, request.asset_id),
-        ).fetchone()
-        if existing_task is not None:
-            return analysis_task_response(existing_task)
-
-        task_id = str(uuid4())
-        conn.execute(
-            """
-            INSERT INTO analysis_tasks (
-                id, project_id, asset_id, created_by_user_id,
-                duration_seconds, status
-            ) VALUES (%s, %s, %s, %s, %s, 'PENDING')
-            ON CONFLICT DO NOTHING
-            """,
-            (task_id, project_id, request.asset_id, actor.id, measured_duration),
+        row, created = enqueue_analysis_task(
+            conn,
+            project_id=project_id,
+            asset_id=request.asset_id,
+            created_by_user_id=actor.id,
+            duration_seconds=measured_duration,
         )
-        inserted_task = conn.execute(
-            "SELECT * FROM analysis_tasks WHERE id = %s",
-            (task_id,),
-        ).fetchone()
-        if inserted_task is None:
-            # A concurrent request won the partial unique index. Return that
-            # durable task instead of surfacing a transient 500 to the client.
-            concurrent_task = conn.execute(
-                """
-                SELECT * FROM analysis_tasks
-                WHERE project_id = %s AND asset_id = %s
-                  AND status IN ('PENDING', 'RUNNING')
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
-                """,
-                (project_id, request.asset_id),
-            ).fetchone()
-            if concurrent_task is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "ANALYSIS_TASK_ENQUEUE_CONFLICT",
-                        "message": "拆解任务状态已变化，请重新提交。",
-                        "retryable": True,
-                    },
-                )
-            return analysis_task_response(concurrent_task)
+        if not created:
+            return analysis_task_response(row)
+        task_id = str(row["id"])
         write_audit(
             conn,
             actor=actor,
@@ -407,7 +366,6 @@ def create_project_analysis_task(
                 "asset_sha256": str(asset["sha256"]),
             },
         )
-        row = load_analysis_task(conn, task_id)
         return analysis_task_response(row)
 
 

@@ -119,6 +119,8 @@ class CompleteUploadResponse(BaseModel):
     size_bytes: int
     content_type: str
     metadata: VideoMetadata
+    analysis_task_id: str | None
+    analysis_task_status: str | None
 
 
 def get_media_storage(conn: BusinessReadConn) -> StorageAdapter:
@@ -201,6 +203,8 @@ def complete_asset_upload(
         size_bytes=completed.size_bytes,
         content_type=completed.content_type,
         metadata=completed.metadata,
+        analysis_task_id=completed.analysis_task_id,
+        analysis_task_status=completed.analysis_task_status,
     )
 
 

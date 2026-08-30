@@ -186,9 +186,8 @@ export function ProjectsPage({
           controller.signal,
         );
         updateUpload(key, { stage: "verifying" });
-        const completed = await completeVideoUpload(intent.asset_id);
+        await completeVideoUpload(intent.asset_id);
         updateUpload(key, { stage: "analyzing" });
-        await startVideoAnalysis(project.id, completed.asset_id);
         updateUpload(key, { stage: null, progress: null });
         await loadProjects({ silent: true });
       } catch (error) {

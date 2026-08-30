@@ -284,6 +284,8 @@ export type CompletedUpload = {
   size_bytes: number;
   content_type: string;
   metadata: { duration_seconds: number };
+  analysis_task_id: string | null;
+  analysis_task_status: AnalysisTask["status"] | null;
 };
 
 export type AnalysisVersion = {

@@ -180,6 +180,8 @@ def test_owner_can_upload_complete_and_query_video_asset(
     assert complete.status_code == 200
     assert complete.json()["status"] == "uploaded"
     assert complete.json()["metadata"]["duration_seconds"] == 8.0
+    assert complete.json()["analysis_task_status"] == "PENDING"
+    assert complete.json()["analysis_task_id"]
     assert asset.status_code == 200
     assert asset.json()["id"] == intent["asset_id"]
     assert asset.json()["project_id"] == "project_owned"
@@ -196,6 +198,109 @@ def test_owner_can_upload_complete_and_query_video_asset(
     assert project["status"] == "REFERENCE_READY"
     assert uploaded_asset is not None
     assert uploaded_asset["kind"] == "reference_video"
+
+
+def test_upload_completion_enqueues_analysis_once_and_returns_the_durable_task(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+) -> None:
+    intent = create_upload_intent(client)
+    storage.put_object(
+        str(intent["storage_key"]),
+        b"video-bytes",
+        content_type="video/mp4",
+    )
+
+    first = client.post(
+        f"/api/assets/{intent['asset_id']}/complete",
+        headers=auth_headers("employee_1"),
+    )
+    repeated = client.post(
+        f"/api/assets/{intent['asset_id']}/complete",
+        headers=auth_headers("employee_1"),
+    )
+
+    assert first.status_code == 200
+    assert repeated.status_code == 200
+    assert first.json()["analysis_task_status"] == "PENDING"
+    assert repeated.json()["analysis_task_id"] == first.json()["analysis_task_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        tasks = conn.execute(
+            "SELECT project_id, asset_id, created_by_user_id, duration_seconds, status "
+            "FROM analysis_tasks WHERE asset_id = ?",
+            (str(intent["asset_id"]),),
+        ).fetchall()
+    assert len(tasks) == 1
+    assert dict(tasks[0]) == {
+        "project_id": "project_owned",
+        "asset_id": intent["asset_id"],
+        "created_by_user_id": "employee_1",
+        "duration_seconds": 8.0,
+        "status": "PENDING",
+    }
+
+
+def test_upload_completion_rolls_back_when_analysis_enqueue_cannot_commit(
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor = CurrentUser(
+        id="employee_1",
+        username="employee_1",
+        display_name="Employee One",
+        role="employee",
+    )
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        intent = create_media_upload_intent(
+            conn,
+            actor=actor,
+            storage=storage,
+            project_id="project_owned",
+            filename="reference.mp4",
+            content_type="video/mp4",
+            size_bytes=1024,
+        )
+        storage.put_object(
+            intent.storage_key,
+            b"video-bytes",
+            content_type="video/mp4",
+        )
+
+        def reject_enqueue(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("queue unavailable")
+
+        monkeypatch.setattr("app.media.enqueue_analysis_task", reject_enqueue)
+        with pytest.raises(RuntimeError, match="queue unavailable"):
+            complete_upload(
+                conn,
+                actor=actor,
+                storage=storage,
+                probe=FakeVideoProbe(duration_seconds=8.0),
+                asset_id=intent.asset_id,
+            )
+
+        asset = conn.execute(
+            "SELECT sha256, size_bytes FROM assets WHERE id = ?",
+            (intent.asset_id,),
+        ).fetchone()
+        project = conn.execute(
+            "SELECT status FROM projects WHERE id = ?",
+            ("project_owned",),
+        ).fetchone()
+        task_count = conn.execute(
+            "SELECT COUNT(*) AS total FROM analysis_tasks WHERE asset_id = ?",
+            (intent.asset_id,),
+        ).fetchone()
+
+    assert asset is not None
+    assert asset["sha256"] == ""
+    assert asset["size_bytes"] == 0
+    assert project is not None
+    assert project["status"] == "ACTIVE"
+    assert task_count is not None
+    assert task_count["total"] == 0
 
 
 def test_upload_intent_reuses_an_owned_completed_video_by_content_hash(

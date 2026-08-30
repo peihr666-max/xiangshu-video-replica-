@@ -692,6 +692,84 @@ def insert_version(
     return row
 
 
+def find_latest_analysis_task(
+    conn: BusinessConnection,
+    *,
+    project_id: str,
+    asset_id: str,
+) -> sqlite3.Row | None:
+    row = conn.execute(
+        """
+        SELECT * FROM analysis_tasks
+        WHERE project_id = %s AND asset_id = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (project_id, asset_id),
+    ).fetchone()
+    return None if row is None else cast(sqlite3.Row, row)
+
+
+def enqueue_analysis_task(
+    conn: BusinessConnection,
+    *,
+    project_id: str,
+    asset_id: str,
+    created_by_user_id: str,
+    duration_seconds: float,
+) -> tuple[sqlite3.Row, bool]:
+    existing = conn.execute(
+        """
+        SELECT * FROM analysis_tasks
+        WHERE project_id = %s AND asset_id = %s
+          AND status IN ('PENDING', 'RUNNING')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (project_id, asset_id),
+    ).fetchone()
+    if existing is not None:
+        return existing, False
+
+    task_id = str(uuid4())
+    conn.execute(
+        """
+        INSERT INTO analysis_tasks (
+            id, project_id, asset_id, created_by_user_id,
+            duration_seconds, status
+        ) VALUES (%s, %s, %s, %s, %s, 'PENDING')
+        ON CONFLICT DO NOTHING
+        """,
+        (
+            task_id,
+            project_id,
+            asset_id,
+            created_by_user_id,
+            duration_seconds,
+        ),
+    )
+    inserted = conn.execute(
+        "SELECT * FROM analysis_tasks WHERE id = %s",
+        (task_id,),
+    ).fetchone()
+    if inserted is not None:
+        return inserted, True
+
+    concurrent = conn.execute(
+        """
+        SELECT * FROM analysis_tasks
+        WHERE project_id = %s AND asset_id = %s
+          AND status IN ('PENDING', 'RUNNING')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (project_id, asset_id),
+    ).fetchone()
+    if concurrent is None:
+        raise RuntimeError("analysis task enqueue conflict left no active task")
+    return concurrent, False
+
+
 def _insert_version(
     conn: BusinessConnection,
     *,

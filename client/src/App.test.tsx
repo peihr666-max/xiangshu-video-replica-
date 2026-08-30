@@ -1222,7 +1222,7 @@ describe("App", () => {
 
   // 15.05s clears the upload precheck (15s + 0.1s rounding tolerance) but used to be
   // rejected by the analysis request schema, so the automatic start returned a bare 422.
-  it("uploads a 15.05s reference video, completes precheck, and starts analysis without echoing the duration", async () => {
+  it("uploads a 15.05s reference video and receives a durable analysis task from completion", async () => {
     class SuccessfulUploadRequest {
       onerror: (() => void) | null = null;
       onload: (() => void) | null = null;
@@ -1298,18 +1298,8 @@ describe("App", () => {
             size_bytes: 10,
             content_type: "video/mp4",
             metadata: { duration_seconds: 15.05 },
-          }),
-        });
-      }
-      if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            id: "analysis-task-1",
-            project_id: "project-1",
-            asset_id: "asset-1",
-            status: "PENDING",
-            error_message: null,
+            analysis_task_id: "analysis-task-1",
+            analysis_task_status: "PENDING",
           }),
         });
       }
@@ -1376,19 +1366,12 @@ describe("App", () => {
     expect(
       await screen.findByRole("button", { name: "打开项目 咖啡口播" }),
     ).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/projects/project-1/analysis-tasks",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          asset_id: "asset-1",
-          reuse_existing: true,
-        }),
-      }),
-    );
+    expect(
+      fetchMock.mock.calls.some(([url]) => url.endsWith("/analysis-tasks")),
+    ).toBe(false);
   });
 
-  it("surfaces the automatic-analysis failure on the upload entry", async () => {
+  it("surfaces an upload-completion failure on the upload entry", async () => {
     class SuccessfulUploadRequest {
       onerror: (() => void) | null = null;
       onload: (() => void) | null = null;
@@ -1406,37 +1389,6 @@ describe("App", () => {
       }
     }
 
-    const analysis = {
-      id: "analysis-recovered",
-      project_id: "project-recovery",
-      asset_id: "asset-recovery",
-      kind: "analysis",
-      version_number: 1,
-      payload: {
-        analysis: {
-          summary: "恢复成功",
-          duration_seconds: 8,
-          shots: [
-            {
-              shot_id: "S01",
-              start_time: 0,
-              end_time: 8,
-              shot_type: "近景",
-              composition: "人物居中",
-              camera_motion: "固定",
-              subject: "主讲人",
-              action: "讲话",
-              scene: "室内",
-              spoken_text: "你好",
-              transition: "硬切",
-            },
-          ],
-        },
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    };
-    let analysisPostCalls = 0;
     const fetchMock = vi.fn((url: string, options?: RequestInit) => {
       if (url.endsWith("/health")) {
         return Promise.resolve({ ok: true, json: async () => healthResponse });
@@ -1474,42 +1426,12 @@ describe("App", () => {
       }
       if (url.endsWith("/complete")) {
         return Promise.resolve({
-          ok: true,
+          ok: false,
+          status: 503,
           json: async () => ({
-            asset_id: "asset-recovery",
-            project_id: "project-recovery",
-            status: "uploaded",
-            storage_uri: "cos://private-bucket/reference.mp4",
-            sha256: "hash",
-            size_bytes: 10,
-            content_type: "video/mp4",
-            metadata: { duration_seconds: 8 },
+            detail: { message: "视频预检暂时不可用" },
           }),
         });
-      }
-      if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
-        analysisPostCalls += 1;
-        return analysisPostCalls === 1
-          ? Promise.resolve({
-              ok: false,
-              status: 502,
-              json: async () => ({
-                detail: { message: "模型暂时不可用" },
-              }),
-            })
-          : Promise.resolve({
-              ok: true,
-              json: async () => ({
-                id: "analysis-task-recovery",
-                project_id: "project-recovery",
-                asset_id: "asset-recovery",
-                status: "PENDING",
-                error_message: null,
-              }),
-            });
-      }
-      if (url.endsWith("/analysis/latest")) {
-        return Promise.resolve({ ok: true, json: async () => analysis });
       }
       if (url.endsWith("/shot-cards/latest")) {
         return Promise.resolve({ ok: false, status: 404 });
@@ -1538,7 +1460,7 @@ describe("App", () => {
       },
     });
 
-    expect(await screen.findByText(/模型暂时不可用/)).toBeInTheDocument();
+    expect(await screen.findByText(/视频预检暂时不可用/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "知道了" })).toBeInTheDocument();
   });
 

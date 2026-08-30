@@ -14,6 +14,11 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from app.analysis import (
+    enqueue_analysis_task,
+    find_analysis_version_for_asset,
+    find_latest_analysis_task,
+)
 from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
 from app.permissions import (
@@ -61,6 +66,8 @@ class CompletedUpload:
     size_bytes: int
     content_type: str
     metadata: VideoMetadata
+    analysis_task_id: str | None
+    analysis_task_status: str | None
 
 
 class VideoProbe(Protocol):
@@ -348,6 +355,7 @@ def complete_upload(
     validate_duration(metadata.duration_seconds)
     content_sha256 = hashlib.sha256(content).hexdigest()
 
+    analysis_task: sqlite3.Row | None = None
     with conn:
         conn.execute(
             """
@@ -377,6 +385,43 @@ def complete_upload(
             "UPDATE projects SET status = %s WHERE id = %s",
             ("REFERENCE_READY", str(row["project_id"])),
         )
+        project_id = str(row["project_id"])
+        analysis_task = find_latest_analysis_task(
+            conn,
+            project_id=project_id,
+            asset_id=asset_id,
+        )
+        if (
+            analysis_task is None
+            and find_analysis_version_for_asset(
+                conn,
+                project_id=project_id,
+                asset_id=asset_id,
+            )
+            is None
+        ):
+            analysis_task, created = enqueue_analysis_task(
+                conn,
+                project_id=project_id,
+                asset_id=asset_id,
+                created_by_user_id=actor.id,
+                duration_seconds=metadata.duration_seconds,
+            )
+            if created:
+                write_audit(
+                    conn,
+                    actor=actor,
+                    action="analysis.task_enqueued",
+                    entity_type="analysis_task",
+                    entity_id=str(analysis_task["id"]),
+                    metadata={
+                        "project_id": project_id,
+                        "asset_id": asset_id,
+                        "asset_sha256": content_sha256,
+                        "trigger": "asset.upload_complete",
+                    },
+                    commit=False,
+                )
 
     write_audit(
         conn,
@@ -398,6 +443,8 @@ def complete_upload(
         size_bytes=stored.size,
         content_type=content_type,
         metadata=metadata,
+        analysis_task_id=(None if analysis_task is None else str(analysis_task["id"])),
+        analysis_task_status=(None if analysis_task is None else str(analysis_task["status"])),
     )
 
 
