@@ -56,6 +56,35 @@ const foreignEntry: api.SimpleLibraryEntry = {
   views: viewsFor("foreign"),
 };
 
+function characterTask(
+  status: api.DurableImageTaskStatus,
+  overrides: Partial<api.CharacterSheetTask> = {},
+): api.CharacterSheetTask {
+  return {
+    id: "character-task-1",
+    project_id: null,
+    identity_id: null,
+    operation: "CREATE",
+    display_name: "林夏",
+    status,
+    attempt: 1,
+    result_identity_id: status === "SUCCEEDED" ? entry.identity_id : null,
+    result_version_id: status === "SUCCEEDED" ? "version-1" : null,
+    result: null,
+    error_code: null,
+    error_message: null,
+    retryable: status === "FAILED",
+    created_at: "2026-08-30T00:00:00Z",
+    updated_at: "2026-08-30T00:01:00Z",
+    started_at: "2026-08-30T00:00:10Z",
+    completed_at:
+      status === "PENDING" || status === "RUNNING"
+        ? null
+        : "2026-08-30T00:01:00Z",
+    ...overrides,
+  };
+}
+
 describe("CharacterLibrary", () => {
   beforeEach(() => {
     // resetAllMocks (not clearAllMocks) also drops leftover mockResolvedValueOnce
@@ -236,6 +265,45 @@ describe("CharacterLibrary", () => {
     expect(await screen.findByAltText("林夏 正脸近景")).toBeInTheDocument();
     expect(screen.queryByLabelText("人物 林夏 生成进度")).toBeNull();
   });
+
+  it("reloads the library when a completed background task is recovered", async () => {
+    vi.mocked(api.listSimpleCharacterLibrary)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { ...entry, contact_sheet_asset_id: "sheet-new" },
+      ]);
+    vi.mocked(api.getLatestCharacterSheetTask).mockResolvedValue(
+      characterTask("SUCCEEDED"),
+    );
+
+    render(<CharacterLibrary userRole="employee" userId="employee_1" />);
+
+    expect(await screen.findByAltText("林夏 正脸近景")).toBeInTheDocument();
+    expect(screen.getByText(/人物“林夏”多视图已生成/)).toBeInTheDocument();
+    expect(api.listSimpleCharacterLibrary).toHaveBeenCalledTimes(2);
+    expect(api.waitForCharacterSheetTask).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["FAILED", "图片服务拒绝了请求"],
+    ["SUBMISSION_UNCERTAIN", "云端提交结果暂时无法确认"],
+  ] as const)(
+    "restores a %s background task as an actionable error",
+    async (status, message) => {
+      vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([]);
+      vi.mocked(api.getLatestCharacterSheetTask).mockResolvedValue(
+        characterTask(status, { error_message: message }),
+      );
+
+      render(<CharacterLibrary userRole="employee" userId="employee_1" />);
+
+      expect(await screen.findByText(message)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "移除失败任务" }),
+      ).toBeInTheDocument();
+      expect(api.waitForCharacterSheetTask).not.toHaveBeenCalled();
+    },
+  );
 
   it("marks non-provider placeholder publications explicitly", async () => {
     vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([

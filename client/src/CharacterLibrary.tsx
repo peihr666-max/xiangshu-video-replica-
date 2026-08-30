@@ -183,11 +183,31 @@ export function CharacterLibrary({
     void (async () => {
       try {
         const task = await getLatestCharacterSheetTask();
+        if (!active || !task) {
+          return;
+        }
+        if (task.status === "SUCCEEDED") {
+          clearPendingGeneration();
+          setMessage(`人物“${task.display_name}”多视图已生成。`);
+          // The first load may race the worker's final commit. Always reload after
+          // observing SUCCEEDED so a completed character cannot stay invisible.
+          await loadLibrary();
+          return;
+        }
         if (
-          !active ||
-          !task ||
-          (task.status !== "PENDING" && task.status !== "RUNNING")
+          task.status === "FAILED" ||
+          task.status === "SUBMISSION_UNCERTAIN"
         ) {
+          setPendingCharacter({
+            displayName: task.display_name,
+            progress: task.status === "FAILED" ? 100 : 72,
+            stage:
+              task.error_message ??
+              (task.status === "SUBMISSION_UNCERTAIN"
+                ? "云端提交结果暂时无法确认，请稍后重试。"
+                : "人物生成失败，请重新提交。"),
+            status: "error",
+          });
           return;
         }
         setPendingCharacter({
