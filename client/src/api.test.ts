@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  attachCustomerSessionToken,
+  CUSTOMER_SESSION_REPLACED_EVENT,
+  CUSTOMER_SESSION_REVOKED_EVENT,
   chooseProjectMainCharacterVersion,
   compileGenerationPrompt,
   completeVideoUpload,
@@ -9,6 +12,8 @@ import {
   createGenerationResultPreviewUrl,
   createProject,
   createScriptVersion,
+  createVideoUploadIntent,
+  customerVisibleErrorMessage,
   downloadCharacterAsset,
   downloadGenerationResult,
   generateFirstFrames,
@@ -25,6 +30,7 @@ import {
   getSettings,
   listGenerationBatches,
   listProjectCharacterVersions,
+  listProjects,
   lockGenerationPrompt,
   regenerateGenerationBatch,
   regenerateGenerationTask,
@@ -33,6 +39,7 @@ import {
   reviseGenerationPrompt,
   SESSION_EXPIRED_EVENT,
   selectCharacterReferences,
+  setCustomerSessionToken,
   setInternalAccessToken,
   startVideoAnalysis,
   uploadReferenceVideo,
@@ -71,6 +78,124 @@ describe("API base URL resolution", () => {
       }),
     ).toBe("https://api.example.com");
   });
+});
+
+describe("customer-visible service errors", () => {
+  it.each([
+    [
+      { code: "METASO_UPSTREAM_TIMEOUT", message: "MiniMax H3 timeout" },
+      "视频生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+    ],
+    [
+      { code: "APILIO_REQUEST_FAILED", message: "Gemini unavailable" },
+      "视频拆解服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+    ],
+    [
+      {
+        code: "APILIO_SETTINGS_UNAVAILABLE",
+        message: "生成人物置换首帧失败：Apilio key missing",
+      },
+      "首帧生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+    ],
+    [
+      { code: "IMAGE_FAILED", message: "GPT Image returned no output" },
+      "首帧生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+    ],
+    [
+      { code: "COS_UPLOAD_FAILED", message: "腾讯云 COS denied" },
+      "素材库暂时不可用，请稍后重试；如持续失败，请联系客服。",
+    ],
+    [
+      { code: "SCRIPT_FAILED", message: "DeepSeek timeout" },
+      "文案优化服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+    ],
+    [
+      { code: "ZPAY_UNAVAILABLE", message: "gateway rejected" },
+      "在线支付暂时不可用，请稍后重试；如已扣款，请勿重复支付并联系客服。",
+    ],
+  ])("maps a branded provider failure to neutral copy", (error, expected) => {
+    expect(customerVisibleErrorMessage(error)).toBe(expected);
+  });
+
+  it("keeps actionable non-branded errors and adds request ids only after mapping", () => {
+    expect(
+      customerVisibleErrorMessage({
+        code: "METASO_FAILED",
+        message: "upstream failed",
+        requestId: "request-123",
+      }),
+    ).toBe(
+      "视频生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。 问题编号：request-123",
+    );
+    expect(customerVisibleErrorMessage("参考视频时长必须为 4–15 秒")).toBe(
+      "参考视频时长必须为 4–15 秒",
+    );
+  });
+
+  it("turns transport failures into the caller's customer-safe fallback", () => {
+    expect(
+      customerVisibleErrorMessage(
+        new TypeError("Failed to fetch"),
+        "项目列表暂不可用，请检查网络连接后重试。",
+      ),
+    ).toBe("项目列表暂不可用，请检查网络连接后重试。");
+  });
+
+  it.each([
+    [
+      "ACTIVATION_UNAVAILABLE",
+      "该激活码当前无法使用，请确认激活码仍在有效期内。",
+    ],
+    [
+      "PAIRING_UNAVAILABLE",
+      "该激活码当前无法用于设备配对，请联系服务人员处理。",
+    ],
+  ])("localizes customer account error %s", (code, expected) => {
+    expect(
+      customerVisibleErrorMessage({
+        code,
+        message: "The activation code cannot be used.",
+      }),
+    ).toBe(expected);
+  });
+});
+
+describe("customer workspace session lifecycle", () => {
+  const customerSessionText = "customer-session-fixture";
+
+  afterEach(() => {
+    setCustomerSessionToken(null);
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    ["SESSION_REPLACED", CUSTOMER_SESSION_REPLACED_EVENT],
+    ["DEVICE_REVOKED", CUSTOMER_SESSION_REVOKED_EVENT],
+  ])(
+    "dispatches the exact %s lifecycle event for shared workspace requests",
+    async (code, eventName) => {
+      const detail = { code, message: "session unavailable" };
+      const response = () => ({
+        ok: false,
+        status: 401,
+        headers: new Headers({ "X-Request-Id": "request-lifecycle-1" }),
+        json: vi.fn().mockResolvedValue({ detail }),
+      });
+      const fetchResponse = {
+        ...response(),
+        clone: vi.fn(() => response()),
+      };
+      const listener = vi.fn();
+      window.addEventListener(eventName, listener, { once: true });
+      setCustomerSessionToken(customerSessionText);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(fetchResponse));
+
+      await expect(listProjects()).rejects.toThrow();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      window.removeEventListener(eventName, listener);
+    },
+  );
 });
 
 const generationVersion = {
@@ -545,12 +670,34 @@ describe("character reference and first-frame binding", () => {
   });
 
   it("maps a stale latest generation and sends the frozen binding on regeneration", async () => {
+    const generatedVersion = {
+      id: "first-frame-candidates-1",
+      project_id: "project-1",
+      asset_id: "source-1",
+      kind: "first_frame_candidates",
+      version_number: 1,
+      payload: { candidates: [] },
+      created_by_user_id: "employee-1",
+      created_at: "2030-01-01T00:00:00Z",
+    };
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({ ok: false, status: 409 })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ id: "first-frame-candidates-1" }),
+        json: async () => ({ id: "first-frame-task-1" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "first-frame-task-1",
+          status: "SUCCEEDED",
+          result_version_id: generatedVersion.id,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => generatedVersion,
       });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -566,19 +713,24 @@ describe("character reference and first-frame binding", () => {
       character_reference_selection_id: "reference-selection-1",
     });
 
-    expect(fetchMock).toHaveBeenLastCalledWith(
-      "http://127.0.0.1:8000/api/projects/project-1/first-frames/generate",
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/api/projects/project-1/first-frame-tasks",
       expect.objectContaining({
-        body: JSON.stringify({
-          model: "nano-banana-pro-2k",
-          prompt: "replace",
-          quantity: 1,
-          character_version_id: "character-version-1",
-          character_reference_selection_id: "reference-selection-1",
-        }),
         method: "POST",
       }),
     );
+    const submitted = JSON.parse(
+      String(fetchMock.mock.calls[1]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(submitted).toMatchObject({
+      model: "nano-banana-pro-2k",
+      prompt: "replace",
+      quantity: 1,
+      character_version_id: "character-version-1",
+      character_reference_selection_id: "reference-selection-1",
+    });
+    expect(submitted.idempotency_key).toMatch(/^first-frame-/);
   });
 });
 
@@ -801,7 +953,7 @@ describe("startVideoAnalysis", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses the provider-sized timeout and lets the server own the reference duration", async () => {
+  it("only enqueues analysis with the normal API timeout", async () => {
     const timeoutSpy = vi.spyOn(window, "setTimeout");
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -811,9 +963,9 @@ describe("startVideoAnalysis", () => {
 
     await startVideoAnalysis("project-1", "asset-1");
 
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 300_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5_000);
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/projects/project-1/analysis",
+      "http://127.0.0.1:8000/api/projects/project-1/analysis-tasks",
       expect.objectContaining({
         body: JSON.stringify({
           asset_id: "asset-1",
@@ -883,10 +1035,92 @@ describe("startVideoAnalysis", () => {
   });
 });
 
-describe("getCurrentUser", () => {
+describe("createVideoUploadIntent", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("sends a SHA-256 fingerprint so the server can skip duplicate uploads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        asset_id: "asset-1",
+        project_id: "project-1",
+        storage_key: "projects/project-1/video.mp4",
+        method: null,
+        url: null,
+        headers: {},
+        expires_at: null,
+        upload_required: false,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const file = new File(["same-video"], "reference.mp4", {
+      type: "video/mp4",
+    });
+
+    await createVideoUploadIntent("project-1", file);
+
+    const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(options.body));
+    expect(body.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.size_bytes).toBe(file.size);
+  });
+});
+
+describe("getCurrentUser", () => {
+  afterEach(() => {
+    setCustomerSessionToken(null);
+    vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+  it("uses the customer session for shared workspace requests", async () => {
+    vi.stubEnv("DEV", false);
+    vi.stubEnv("PROD", true);
+    const user = {
+      id: "customer-1",
+      username: "customer-1",
+      display_name: "客户",
+      role: "customer",
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => user,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setCustomerSessionToken("customer-session-1");
+
+    await expect(getCurrentUser()).resolves.toEqual(user);
+
+    const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = options.headers as Headers;
+    expect(headers.get("Authorization")).toBe("Bearer customer-session-1");
+    expect(headers.has("X-Dev-User-Id")).toBe(false);
+  });
+
+  it("does not let an older workspace cleanup clear the active session", async () => {
+    const releaseOlder = attachCustomerSessionToken("older-session");
+    const releaseCurrent = attachCustomerSessionToken("current-session");
+    releaseOlder();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: "customer-1",
+        username: "customer-1",
+        display_name: "Customer One",
+        role: "customer",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getCurrentUser();
+
+    const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(options.headers).get("Authorization")).toBe(
+      "Bearer current-session",
+    );
+    releaseCurrent();
   });
 
   it("loads the current user from auth/me using the unified development identity", async () => {

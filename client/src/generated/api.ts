@@ -602,6 +602,57 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/settings/providers/{provider}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Update Control Provider Settings */
+    put: operations["update_control_provider_settings_api_control_settings_providers__provider__put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/settings/providers/{provider}/connection-test": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Test Control Provider Connection */
+    post: operations["test_control_provider_connection_api_control_settings_providers__provider__connection_test_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/settings/runtime": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Update Control Runtime Settings */
+    patch: operations["update_control_runtime_settings_api_control_settings_runtime_patch"];
+    trace?: never;
+  };
   "/api/control/settings/zpay": {
     parameters: {
       query?: never;
@@ -687,6 +738,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/admin/session/password": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Login Admin With Password */
+    post: operations["login_admin_with_password_api_control_admin_session_password_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/admin/password": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Recover Admin Password */
+    put: operations["recover_admin_password_api_control_admin_password_put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/admin/session": {
     parameters: {
       query?: never;
@@ -700,6 +785,27 @@ export interface paths {
     post?: never;
     /** Logout Admin Session */
     delete: operations["logout_admin_session_api_control_admin_session_delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/customers/{user_id}/unit-price": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Customer Unit Price */
+    get: operations["read_customer_unit_price_api_control_customers__user_id__unit_price_get"];
+    /**
+     * Update Customer Unit Price
+     * @description Set or clear a customer's sale price without applying a cost floor.
+     */
+    put: operations["update_customer_unit_price_api_control_customers__user_id__unit_price_put"];
+    post?: never;
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -854,7 +960,7 @@ export interface paths {
     put?: never;
     /**
      * Activate First Device
-     * @description Redeem an activation code and create the whole customer chain atomically.
+     * @description Create a first activation or recover its already-bound machine atomically.
      */
     post: operations["activate_first_device_api_customer_activate_post"];
     delete?: never;
@@ -954,6 +1060,50 @@ export interface paths {
      *     surface, §12.2 step 6).
      */
     post: operations["approve_device_pairing_api_customer_device_pairings__pairing_id__approve_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/device-pairings/{pairing_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Dismiss Device Pairing
+     * @description Dismiss an invalid pending/approved pairing without deleting audit lineage.
+     */
+    delete: operations["dismiss_device_pairing_api_customer_device_pairings__pairing_id__delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/activation-code/reset": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Reset Customer Activation Code
+     * @description Rotate the main activation code while preserving bound devices/session.
+     *
+     *     The old digest is replaced atomically. The replacement plaintext is not
+     *     persisted and is returned exactly once with a no-store cache directive.
+     *     Any unconsumed pairing created with the previous code is invalidated.
+     */
+    post: operations["reset_customer_activation_code_api_customer_activation_code_reset_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1208,7 +1358,7 @@ export interface paths {
     };
     /**
      * List Activation Codes
-     * @description List codes with masked display forms — digests never leave the store.
+     * @description List codes; administrators may recover full values from sealed exports.
      */
     get: operations["list_activation_codes_api_control_activation_codes_get"];
     put?: never;
@@ -1392,10 +1542,60 @@ export interface paths {
     get: operations["read_customer_recharge_order_status_api_customer_recharge_orders__order_no__get"];
     put?: never;
     post?: never;
+    /**
+     * Close Customer Recharge Order
+     * @description Close an unpaid order without erasing its accounting lineage.
+     *
+     *     The UI calls this action "delete", while the database keeps the order as
+     *     CLOSED so callbacks, support and reconciliation retain one authoritative
+     *     record. Repeating the request is intentionally idempotent.
+     */
+    delete: operations["close_customer_recharge_order_api_customer_recharge_orders__order_no__delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/recharge-orders/{order_no}/payment-code": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Create Customer Payment Code
+     * @description Return a display-ready QR image for one owned pending order.
+     *
+     *     Merchant credentials and signed protocol fields stay server-side. The
+     *     PostgreSQL connection is released before the external request so a slow
+     *     payment provider cannot consume the shared database pool.
+     */
+    post: operations["create_customer_payment_code_api_customer_recharge_orders__order_no__payment_code_post"];
     delete?: never;
     options?: never;
     head?: never;
     patch?: never;
+    trace?: never;
+  };
+  "/api/customer/profile": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Customer Profile */
+    get: operations["read_customer_profile_api_customer_profile_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Update Customer Profile */
+    patch: operations["update_customer_profile_api_customer_profile_patch"];
     trace?: never;
   };
   "/api/customer/wallet": {
@@ -1705,6 +1905,47 @@ export interface paths {
     put?: never;
     /** Create Project Analysis */
     post: operations["create_project_analysis_api_projects__project_id__analysis_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/projects/{project_id}/analysis-tasks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Create Project Analysis Task
+     * @description Validate quickly and persist work for the generation worker.
+     *
+     *     No provider or storage-network call is allowed in this request.  Customer
+     *     session fencing therefore protects only the enqueue commit and can never
+     *     block the heartbeat for the lifetime of a model request.
+     */
+    post: operations["create_project_analysis_task_api_projects__project_id__analysis_tasks_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/analysis-tasks/{task_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Analysis Task */
+    get: operations["read_analysis_task_api_analysis_tasks__task_id__get"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -2513,6 +2754,50 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/live": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Live
+     * @description Process liveness only; dependency failures belong to ``/ready``.
+     */
+    get: operations["live_live_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/ready": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Ready
+     * @description Return ready only while every customer runtime dependency is usable.
+     *
+     *     This is deliberately synchronous: FastAPI runs it in its worker thread
+     *     pool, so a slow PostgreSQL/COS probe cannot block the ASGI event loop or
+     *     prevent the dependency-free liveness endpoint from responding.
+     */
+    get: operations["ready_ready_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2549,6 +2834,16 @@ export interface components {
       limit: number;
       /** Offset */
       offset: number;
+    };
+    /**
+     * ActivationCodeResetResponse
+     * @description The replacement plaintext exists only in this no-store response.
+     */
+    ActivationCodeResetResponse: {
+      /** Activation Code */
+      activation_code: string;
+      /** Masked Code */
+      masked_code: string;
     };
     /**
      * AdjustmentRequest
@@ -2600,6 +2895,8 @@ export interface components {
       expires_at: string;
       /** Last Activity At */
       last_activity_at: string;
+      /** Csrf Token */
+      csrf_token?: string | null;
       actor: components["schemas"]["AdminActorInfo"];
     };
     /**
@@ -2617,6 +2914,37 @@ export interface components {
        * @default
        */
       reason: string;
+    };
+    /** AnalysisTaskResponse */
+    AnalysisTaskResponse: {
+      /** Id */
+      id: string;
+      /** Project Id */
+      project_id: string;
+      /** Asset Id */
+      asset_id: string;
+      /** Status */
+      status: string;
+      /** Attempt */
+      attempt: number;
+      /** Result Version Id */
+      result_version_id: string | null;
+      /** Error Code */
+      error_code: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Failure Phase */
+      failure_phase: string | null;
+      /** Retryable */
+      retryable: boolean;
+      /** Created At */
+      created_at: string;
+      /** Updated At */
+      updated_at: string;
+      /** Started At */
+      started_at: string | null;
+      /** Completed At */
+      completed_at: string | null;
     };
     /** AssetResponse */
     AssetResponse: {
@@ -3317,6 +3645,11 @@ export interface components {
       billing: components["schemas"]["BillingSettingsSnapshot"];
       zpay: components["schemas"]["MaskedZPaySettings"];
       deployment: components["schemas"]["DeploymentSettings"];
+      /** Providers */
+      providers: {
+        [key: string]: components["schemas"]["MaskedProviderSettings"];
+      };
+      runtime: components["schemas"]["RuntimeSettingsSnapshot"];
     };
     /** ControlWalletTransaction */
     ControlWalletTransaction: {
@@ -3428,6 +3761,74 @@ export interface components {
       session_epoch: number;
       /** Session Lease Expires At */
       session_lease_expires_at: string;
+    };
+    /** CustomerPaymentCodeResponse */
+    CustomerPaymentCodeResponse: {
+      /** Order No */
+      order_no: string;
+      /** Amount Fen */
+      amount_fen: number;
+      /** Credits */
+      credits: number;
+      /** Qr Image Url */
+      qr_image_url: string;
+      /** Payment Url */
+      payment_url: string;
+    };
+    /** CustomerProfileResponse */
+    CustomerProfileResponse: {
+      /** User Id */
+      user_id: string;
+      /** Username */
+      username: string;
+      /** Display Name */
+      display_name: string;
+      /** Joined At */
+      joined_at: string;
+      /** Activation Code Masked */
+      activation_code_masked: string | null;
+      /** Activation Status */
+      activation_status: string | null;
+      /** Activated At */
+      activated_at: string | null;
+      /** Device Slots Used */
+      device_slots_used: number;
+      /** Device Slots Total */
+      device_slots_total: number;
+    };
+    /** CustomerUnitPriceResponse */
+    CustomerUnitPriceResponse: {
+      /** User Id */
+      user_id: string;
+      /** Unit Price Fen */
+      unit_price_fen: number;
+      /** Custom Unit Price Fen */
+      custom_unit_price_fen: number | null;
+      /** Default Unit Price Fen */
+      default_unit_price_fen: number;
+      /** Min Recharge Fen */
+      min_recharge_fen: number;
+      /** Recharge Step Fen */
+      recharge_step_fen: number;
+      /** Updated At */
+      updated_at: string | null;
+      /** Request Id */
+      request_id?: string | null;
+    };
+    /** CustomerUnitPriceUpdateRequest */
+    CustomerUnitPriceUpdateRequest: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Unit Price Fen */
+      unit_price_fen: number | null;
     };
     /** DeliverRequest */
     DeliverRequest: {
@@ -3648,6 +4049,11 @@ export interface components {
       reason: string;
       /** Quantity */
       quantity: number;
+      /**
+       * Auto Issue
+       * @default false
+       */
+      auto_issue: boolean;
     };
     /** GenerationBatchListItem */
     GenerationBatchListItem: {
@@ -3815,6 +4221,20 @@ export interface components {
       /** Request Id */
       request_id: string;
     };
+    /** MaskedProviderSettings */
+    MaskedProviderSettings: {
+      /**
+       * Provider
+       * @enum {string}
+       */
+      provider: "apilio" | "metaso" | "cos" | "deepseek";
+      /** Configured */
+      configured: boolean;
+      /** Config */
+      config: {
+        [key: string]: string;
+      };
+    };
     /** MaskedZPaySettings */
     MaskedZPaySettings: {
       /**
@@ -3844,6 +4264,18 @@ export interface components {
       pairing_request_id: string;
       /** Status */
       status: string;
+    };
+    /** PasswordLoginRequest */
+    PasswordLoginRequest: {
+      /** Username */
+      username: string;
+      /** Password */
+      password: string;
+    };
+    /** PasswordRecoveryRequest */
+    PasswordRecoveryRequest: {
+      /** Password */
+      password: string;
     };
     /**
      * PendingPairingView
@@ -4026,6 +4458,15 @@ export interface components {
       reference_upload_status: string;
       /** Analysis Status */
       analysis_status: string;
+      /** Analysis Task Id */
+      analysis_task_id?: string | null;
+      /** Analysis Error Message */
+      analysis_error_message?: string | null;
+      /**
+       * Analysis Retryable
+       * @default false
+       */
+      analysis_retryable: boolean;
     };
     /** PromptCompileRequest */
     PromptCompileRequest: {
@@ -4196,6 +4637,30 @@ export interface components {
       active_storage_provider?: ("cos" | "local") | null;
       /** Fair Queue Enabled */
       fair_queue_enabled?: boolean | null;
+    };
+    /** RuntimeSettingsSnapshot */
+    RuntimeSettingsSnapshot: {
+      /** Max Generation Count Per Batch */
+      max_generation_count_per_batch: number;
+      /** Max Concurrent H3 Tasks */
+      max_concurrent_h3_tasks: number;
+      /**
+       * Active Storage Provider
+       * @enum {string}
+       */
+      active_storage_provider: "cos" | "local";
+    };
+    /** RuntimeSettingsUpdate */
+    RuntimeSettingsUpdate: {
+      /** Max Generation Count Per Batch */
+      max_generation_count_per_batch: number;
+      /** Max Concurrent H3 Tasks */
+      max_concurrent_h3_tasks: number;
+      /**
+       * Active Storage Provider
+       * @enum {string}
+       */
+      active_storage_provider: "cos" | "local";
     };
     /** ScriptRequest */
     ScriptRequest: {
@@ -4511,6 +4976,11 @@ export interface components {
         | "REGENERATE"
       )[];
     };
+    /** UpdateCustomerProfileRequest */
+    UpdateCustomerProfileRequest: {
+      /** Display Name */
+      display_name: string;
+    };
     /** UpdateShotCardsRequest */
     UpdateShotCardsRequest: {
       /** Shots */
@@ -4528,6 +4998,8 @@ export interface components {
       content_type: string;
       /** Size Bytes */
       size_bytes: number;
+      /** Sha256 */
+      sha256?: string | null;
     };
     /** UploadIntentResponse */
     UploadIntentResponse: {
@@ -4538,15 +5010,17 @@ export interface components {
       /** Storage Key */
       storage_key: string;
       /** Method */
-      method: string;
+      method: string | null;
       /** Url */
-      url: string;
+      url: string | null;
       /** Headers */
       headers: {
         [key: string]: string;
       };
       /** Expires At */
-      expires_at: string;
+      expires_at: string | null;
+      /** Upload Required */
+      upload_required: boolean;
     };
     /** UserResponse */
     UserResponse: {
@@ -5639,10 +6113,7 @@ export interface operations {
   create_cached_character_url_api_assets__asset_id__cached_url_post: {
     parameters: {
       query?: never;
-      header?: {
-        "X-Dev-User-Id"?: string | null;
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         asset_id: string;
       };
@@ -5974,6 +6445,111 @@ export interface operations {
       };
     };
   };
+  update_control_provider_settings_api_control_settings_providers__provider__put: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Control-Proxy-Token"?: string | null;
+      };
+      path: {
+        provider: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProviderSettingsRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MaskedProviderSettings"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  test_control_provider_connection_api_control_settings_providers__provider__connection_test_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Control-Proxy-Token"?: string | null;
+      };
+      path: {
+        provider: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProviderTestResult"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  update_control_runtime_settings_api_control_settings_runtime_patch: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Control-Proxy-Token"?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RuntimeSettingsUpdate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RuntimeSettingsSnapshot"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   update_zpay_settings_api_control_settings_zpay_patch: {
     parameters: {
       query?: never;
@@ -6147,6 +6723,70 @@ export interface operations {
       };
     };
   };
+  login_admin_with_password_api_control_admin_session_password_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PasswordLoginRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ExchangeResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  recover_admin_password_api_control_admin_password_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PasswordRecoveryRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   get_current_admin_session_api_control_admin_session_get: {
     parameters: {
       query?: never;
@@ -6182,6 +6822,72 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+    };
+  };
+  read_customer_unit_price_api_control_customers__user_id__unit_price_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        user_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CustomerUnitPriceResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  update_customer_unit_price_api_control_customers__user_id__unit_price_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        user_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CustomerUnitPriceUpdateRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CustomerUnitPriceResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
       };
     };
   };
@@ -6570,6 +7276,55 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  dismiss_device_pairing_api_customer_device_pairings__pairing_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        pairing_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  reset_customer_activation_code_api_customer_activation_code_reset_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ActivationCodeResetResponse"];
         };
       };
     };
@@ -7334,6 +8089,119 @@ export interface operations {
       };
     };
   };
+  close_customer_recharge_order_api_customer_recharge_orders__order_no__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        order_no: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_customer_payment_code_api_customer_recharge_orders__order_no__payment_code_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        order_no: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CustomerPaymentCodeResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_customer_profile_api_customer_profile_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CustomerProfileResponse"];
+        };
+      };
+    };
+  };
+  update_customer_profile_api_customer_profile_patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UpdateCustomerProfileRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CustomerProfileResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_customer_wallet_api_customer_wallet_get: {
     parameters: {
       query?: never;
@@ -7922,6 +8790,75 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["VersionResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_project_analysis_task_api_projects__project_id__analysis_tasks_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        project_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateAnalysisRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_analysis_task_api_analysis_tasks__task_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisTaskResponse"];
         };
       };
       /** @description Validation Error */
@@ -9873,6 +10810,46 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HealthResponse"];
+        };
+      };
+    };
+  };
+  live_live_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HealthResponse"];
+        };
+      };
+    };
+  };
+  ready_ready_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
         };
       };
     };

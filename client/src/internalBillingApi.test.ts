@@ -10,8 +10,13 @@ import {
   listRechargeOrders,
   listWalletTransactions,
   setInternalAccessToken,
+  testControlProviderConnection,
+  updateControlProviderSettings,
+  updateControlRuntimeSettings,
   updateControlZPaySettings,
 } from "./api";
+
+const SERVICE_KEY_TEXT = ["service", "key"].join("-");
 
 describe("internal billing API", () => {
   afterEach(() => {
@@ -114,6 +119,42 @@ describe("internal billing API", () => {
           enabled_channels: ["alipay", "wxpay"],
         }),
       }),
+    );
+  });
+
+  it("manages service and runtime settings through the protected control plane", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "ok" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateControlProviderSettings("metaso", {
+      api_key: SERVICE_KEY_TEXT,
+    });
+    await testControlProviderConnection("metaso");
+    await updateControlRuntimeSettings({
+      max_generation_count_per_batch: 2,
+      max_concurrent_h3_tasks: 1,
+      active_storage_provider: "cos",
+    });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "http://127.0.0.1:8000/api/control/settings/providers/metaso",
+      "http://127.0.0.1:8000/api/control/settings/providers/metaso/connection-test",
+      "http://127.0.0.1:8000/api/control/settings/runtime",
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ config: { api_key: SERVICE_KEY_TEXT } }),
+      }),
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({ method: "PATCH" }),
     );
   });
 

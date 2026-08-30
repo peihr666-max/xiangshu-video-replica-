@@ -139,7 +139,6 @@ with psycopg.connect("${adminDsn}", autocommit=True) as c:
     // Recharge lane (PR #65 task #7): the customer wallet view needs the ZPay
     // config + deployment settings to create orders.
     VIDEO_REPLICA_SETTINGS_KEY: settingsKey,
-    ZPAY_GATEWAY_URL: "https://zpayz.cn/submit.php",
     PUBLIC_BASE_URL: "https://callback.example.com",
   };
   const api = spawn(

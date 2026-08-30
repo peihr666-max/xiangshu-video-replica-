@@ -1,11 +1,5 @@
 import type { CustomerDeviceListResponse } from "../api";
 
-/** Device management page (FE-04 / T31): shows two-slot status, current device details,
- * lease countdown, unbind and recharge actions. Does not provide second master code entry.
- *
- * Consumes the regenerated device contract (slots/history; the current device is
- * flagged by ``is_current``, and only bound rows occupy a slot).
- */
 export function DeviceManagementPage({
   devices,
   isOnline,
@@ -15,134 +9,107 @@ export function DeviceManagementPage({
 }: {
   devices: CustomerDeviceListResponse;
   isOnline: boolean;
-  /** The live session lease, when the session transport exposes one; the device
-   * contract itself carries no lease timestamp. */
   leaseExpiresAt?: string | null;
   onUnbind: (deviceId: string) => void;
   onError: (error: Error) => void;
   onRecharge: () => void;
 }): React.JSX.Element {
-  const occupiedSlots = devices.slots.flatMap((slot) =>
-    slot.device === null
-      ? []
-      : [{ slot_no: slot.slot_no, device: slot.device }],
-  );
-  const nextFreeSlot =
-    devices.slots.find((slot) => slot.device === null)?.slot_no ?? null;
-
   return (
-    <main className="device-management-page" aria-labelledby="page-title">
-      <header>
-        <h1 id="page-title">Device Management</h1>
-
-        <div
-          className={`online-status ${isOnline ? "online" : "offline"}`}
-          aria-live="polite"
-        >
-          Status:
-          <strong>{isOnline ? "Online" : "Offline"}</strong>
+    <section className="device-management-page" aria-labelledby="device-title">
+      <header className="device-management-page__header">
+        <div>
+          <h2 id="device-title">设备管理</h2>
+          <p>一个账号最多绑定 2 台设备，同时只允许 1 台设备在线。</p>
         </div>
+        <span
+          className={
+            isOnline ? "device-online-state is-online" : "device-online-state"
+          }
+        >
+          {isOnline ? "本机在线" : "本机离线"}
+        </span>
       </header>
 
-      <section className="slot-status" aria-label="Two Slot Status">
-        <h2>Your Account Supports Two Devices</h2>
+      {isOnline && leaseExpiresAt ? (
+        <p className="device-session-expiry">
+          本次登录有效至 {formatDate(leaseExpiresAt)}
+        </p>
+      ) : null}
 
-        {occupiedSlots.map(({ slot_no, device }) => (
-          <article
-            key={device.id}
-            className={`slot-card slot-${slot_no} ${device.is_current ? "active" : "inactive"}`}
-            aria-labelledby={`slot-${slot_no}-title`}
-          >
-            <header>
-              <h3 id={`slot-${slot_no}-title`}>
-                Slot #{slot_no}
-                <span
-                  className={`status-badge ${device.is_current ? "online" : "inactive"}`}
-                >
-                  {device.is_current ? "● Online" : "○ Inactive"}
-                </span>
-              </h3>
-            </header>
-
-            <div className="card-body">
-              <p className="device-name">
-                <strong>Device:</strong> {device.display_name}
-              </p>
-
-              {device.is_current && isOnline && leaseExpiresAt && (
-                <>
-                  <p className="lease-info">
-                    <strong>Session expires at:</strong>{" "}
-                    {new Date(leaseExpiresAt).toLocaleString()}
-                  </p>
-                  <p className="lease-countdown">
-                    <time dateTime={leaseExpiresAt}>Lease countdown: ...</time>
-                  </p>
-                </>
-              )}
-
-              <div className="slot-actions">
-                {device.is_current ? (
-                  <>
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      onClick={() => onUnbind(device.id)}
-                      disabled={!isOnline}
-                      aria-describedby={`unbind-desc-${slot_no}`}
-                    >
-                      Unbind This Device
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-primary"
-                      onClick={onRecharge}
-                      disabled={!isOnline}
-                      aria-describedby="recharge-desc"
-                    >
-                      Recharge
-                    </button>
-                  </>
-                ) : (
-                  <p className="inactive-message">
-                    No active session in this slot.{" "}
-                    <a href="/customer/pairing" aria-label="Pair a new device">
-                      Pair a new device →
-                    </a>
-                  </p>
-                )}
+      <div className="device-slot-grid">
+        {devices.slots.map((slot) => {
+          const device = slot.device;
+          return (
+            <article
+              className={
+                device?.is_current
+                  ? "device-slot-card device-slot-card--current"
+                  : "device-slot-card"
+              }
+              key={slot.slot_no}
+            >
+              <div className="device-slot-card__heading">
+                <span>设备 {slot.slot_no}</span>
+                <strong>
+                  {device
+                    ? device.is_current
+                      ? "当前设备"
+                      : "已绑定"
+                    : "空闲"}
+                </strong>
               </div>
-            </div>
-          </article>
-        ))}
+              {device ? (
+                <>
+                  <h3>{device.display_name}</h3>
+                  <dl>
+                    <div>
+                      <dt>系统</dt>
+                      <dd>{device.platform || "未知"}</dd>
+                    </div>
+                    <div>
+                      <dt>最近使用</dt>
+                      <dd>{formatDate(device.last_active_at)}</dd>
+                    </div>
+                    <div>
+                      <dt>绑定时间</dt>
+                      <dd>{formatDate(device.bound_at)}</dd>
+                    </div>
+                  </dl>
+                  <button
+                    className="secondary-button"
+                    disabled={!isOnline}
+                    onClick={() => onUnbind(device.id)}
+                    type="button"
+                  >
+                    {device.is_current ? "解绑当前设备" : "下线并解绑"}
+                  </button>
+                </>
+              ) : (
+                <div className="device-slot-card__empty">
+                  <p>这个位置还没有绑定设备。</p>
+                  <a href="/customer/pairing">绑定第二台设备</a>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
 
-        {nextFreeSlot !== null && (
-          <p className="next-slot-info">
-            You currently have only one device registered.{" "}
-            <strong>Next free slot: #{nextFreeSlot}</strong>.{" "}
-            <a href="/customer/pairing" aria-label="Register second device">
-              Register your second device →
-            </a>
-          </p>
-        )}
-      </section>
-
-      <aside className="info-banner">
-        <h3>Important Notes</h3>
-        <ul>
-          <li>
-            Your activation code supports up to two devices simultaneously.
-          </li>
-          <li>The same customer identity can be used across both devices.</li>
-          <li>
-            Recharging extends the total consumption quota (not per-device).
-          </li>
-          <li>
-            For security reasons, you must confirm any critical action like
-            unbinding.
-          </li>
-        </ul>
-      </aside>
-    </main>
+      <div className="device-management-page__footer">
+        <p>
+          发现陌生设备时请立即下线；解绑当前设备后，需要使用激活码重新绑定。
+        </p>
+        <button onClick={onRecharge} type="button">
+          充值条数
+        </button>
+      </div>
+    </section>
   );
+}
+
+function formatDate(value: string | null): string {
+  if (!value) {
+    return "暂无记录";
+  }
+  return new Date(value).toLocaleString("zh-CN");
 }

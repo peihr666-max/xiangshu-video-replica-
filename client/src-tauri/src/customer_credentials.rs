@@ -61,9 +61,11 @@ impl CustomerCredentialVault {
         Self { dir: dir.into() }
     }
 
-    /// The stable device fingerprint (§14): generated once as a UUID, then
-    /// read forever. This is an identifier, not a secret, so it lives in a
-    /// plain file.
+    /// The app-data copy of the stable device fingerprint (§14). Production
+    /// also mirrors this identifier into the current user's Windows registry
+    /// so uninstall/reinstall or a deleted credential envelope cannot silently
+    /// turn the same computer into a new device. This file remains the legacy
+    /// migration source and the portable test implementation.
     pub fn device_instance_id(&self) -> Result<String, VaultError> {
         let path = self.dir.join(DEVICE_INSTANCE_FILE);
         if let Ok(existing) = fs::read_to_string(&path) {
@@ -75,6 +77,25 @@ impl CustomerCredentialVault {
         let id = Uuid::new_v4().to_string();
         write_file_atomically(&path, id.as_bytes())?;
         Ok(id)
+    }
+
+    /// Return the durable production fingerprint, migrating the existing
+    /// app-data identifier into the Windows registry on first upgraded launch.
+    /// The registry holds only an opaque random UUID, never a credential.
+    pub fn durable_device_instance_id(&self) -> Result<String, VaultError> {
+        #[cfg(windows)]
+        {
+            if let Some(existing) = durable_identity::read()? {
+                return Ok(existing);
+            }
+            let legacy_or_new = self.device_instance_id()?;
+            durable_identity::write(&legacy_or_new)?;
+            Ok(legacy_or_new)
+        }
+        #[cfg(not(windows))]
+        {
+            self.device_instance_id()
+        }
     }
 
     /// Persist the credentials as a DPAPI-protected JSON envelope.
@@ -149,7 +170,7 @@ fn vault_for(app: &AppHandle) -> Result<CustomerCredentialVault, VaultError> {
 #[tauri::command]
 pub fn customer_device_instance_id(app: AppHandle) -> Result<String, String> {
     vault_for(&app)
-        .and_then(|vault| vault.device_instance_id())
+        .and_then(|vault| vault.durable_device_instance_id())
         .map_err(|e| e.0)
 }
 
@@ -195,6 +216,161 @@ pub fn customer_clear_all_credentials(app: AppHandle) -> Result<(), String> {
 // posture). The non-Windows path fails closed: the vault refuses to persist
 // rather than silently falling back to a plaintext file.
 // ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+mod durable_identity {
+    use std::ffi::{c_void, OsStr};
+    use std::mem::size_of;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    use super::{vault_err, VaultError};
+
+    type HKey = isize;
+
+    const HKEY_CURRENT_USER: HKey = 0x80000001_u32 as i32 as HKey;
+    const ERROR_FILE_NOT_FOUND: i32 = 2;
+    const ERROR_PATH_NOT_FOUND: i32 = 3;
+    const KEY_SET_VALUE: u32 = 0x0002;
+    const REG_OPTION_NON_VOLATILE: u32 = 0;
+    const REG_SZ: u32 = 1;
+    const RRF_RT_REG_SZ: u32 = 0x0000_0002;
+    const REGISTRY_SUBKEY: &str = r"Software\Xiangshu\VideoReplicaCustomer";
+    const REGISTRY_VALUE: &str = "DeviceInstanceId";
+
+    #[link(name = "Advapi32")]
+    extern "system" {
+        fn RegGetValueW(
+            hkey: HKey,
+            subkey: *const u16,
+            value: *const u16,
+            flags: u32,
+            value_type: *mut u32,
+            data: *mut c_void,
+            data_size: *mut u32,
+        ) -> i32;
+        fn RegCreateKeyExW(
+            hkey: HKey,
+            subkey: *const u16,
+            reserved: u32,
+            class: *mut u16,
+            options: u32,
+            desired_access: u32,
+            security_attributes: *const c_void,
+            result: *mut HKey,
+            disposition: *mut u32,
+        ) -> i32;
+        fn RegSetValueExW(
+            hkey: HKey,
+            value_name: *const u16,
+            reserved: u32,
+            value_type: u32,
+            data: *const u8,
+            data_size: u32,
+        ) -> i32;
+        fn RegCloseKey(hkey: HKey) -> i32;
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        OsStr::new(value).encode_wide().chain(Some(0)).collect()
+    }
+
+    pub fn read() -> Result<Option<String>, VaultError> {
+        let subkey = wide(REGISTRY_SUBKEY);
+        let value_name = wide(REGISTRY_VALUE);
+        let mut byte_count = 0_u32;
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                value_name.as_ptr(),
+                RRF_RT_REG_SZ,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut byte_count,
+            )
+        };
+        if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+            return Ok(None);
+        }
+        if status != 0 {
+            return Err(vault_err(format!(
+                "unable to read durable device identity (Windows error {status})"
+            )));
+        }
+        if byte_count < 2 {
+            return Ok(None);
+        }
+
+        let mut buffer = vec![0_u16; byte_count as usize / 2];
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                value_name.as_ptr(),
+                RRF_RT_REG_SZ,
+                ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut byte_count,
+            )
+        };
+        if status != 0 {
+            return Err(vault_err(format!(
+                "unable to read durable device identity (Windows error {status})"
+            )));
+        }
+        while buffer.last() == Some(&0) {
+            buffer.pop();
+        }
+        let value = String::from_utf16(&buffer).map_err(|error| vault_err(error.to_string()))?;
+        let trimmed = value.trim();
+        Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
+    }
+
+    pub fn write(value: &str) -> Result<(), VaultError> {
+        let subkey = wide(REGISTRY_SUBKEY);
+        let value_name = wide(REGISTRY_VALUE);
+        let value_wide = wide(value);
+        let mut key = 0_isize;
+        let status = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                ptr::null_mut(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                ptr::null(),
+                &mut key,
+                ptr::null_mut(),
+            )
+        };
+        if status != 0 {
+            return Err(vault_err(format!(
+                "unable to create durable device identity key (Windows error {status})"
+            )));
+        }
+        let write_status = unsafe {
+            RegSetValueExW(
+                key,
+                value_name.as_ptr(),
+                0,
+                REG_SZ,
+                value_wide.as_ptr().cast(),
+                (value_wide.len() * size_of::<u16>()) as u32,
+            )
+        };
+        let _ = unsafe {
+            RegCloseKey(key);
+        };
+        if write_status != 0 {
+            return Err(vault_err(format!(
+                "unable to persist durable device identity (Windows error {write_status})"
+            )));
+        }
+        Ok(())
+    }
+}
 
 #[cfg(windows)]
 mod dpapi {

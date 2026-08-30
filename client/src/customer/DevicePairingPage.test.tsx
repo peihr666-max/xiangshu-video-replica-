@@ -24,13 +24,10 @@ function mockResponse(status: number, body: unknown) {
 }
 
 function fillForm() {
-  fireEvent.change(screen.getByLabelText(/activation code/i), {
+  fireEvent.change(screen.getByLabelText("激活码"), {
     target: { value: "XS04-TESTCODE-CODECODE-CODECODE" },
   });
-  fireEvent.change(screen.getByLabelText(/device fingerprint/i), {
-    target: { value: "Test Device •••• AB12" },
-  });
-  fireEvent.change(screen.getByLabelText(/device name/i), {
+  fireEvent.change(screen.getByLabelText("设备名称"), {
     target: { value: "My Test Device" },
   });
 }
@@ -47,6 +44,8 @@ describe("DevicePairingPage (FE-03 / T30)", () => {
   }) {
     render(
       <DevicePairingPage
+        deviceFingerprint="test-instance-id"
+        devicePlatform="windows"
         onSuccess={props?.onSuccess ?? mockOnSuccess}
         onError={props?.onError ?? mockOnError}
         onCancel={props?.onCancel ?? mockOnCancel}
@@ -54,37 +53,31 @@ describe("DevicePairingPage (FE-03 / T30)", () => {
     );
   }
 
-  it("displays device fingerprint input field with label", () => {
+  it("uses the protected machine identifier instead of asking the user to type it", () => {
     renderWithProps();
-    expect(screen.getByLabelText(/device fingerprint/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/fingerprint|机器码/i)).toBeNull();
+    expect(screen.getByText("机器标识由本机安全读取")).toBeInTheDocument();
   });
 
   it("displays device name input field with label", () => {
     renderWithProps();
-    expect(screen.getByLabelText(/device name/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("设备名称")).toBeInTheDocument();
   });
 
   it("collects the activation code from the user instead of hardcoding it", () => {
     renderWithProps();
-    expect(screen.getByLabelText(/activation code/i)).toHaveAttribute(
-      "required",
-    );
+    expect(screen.getByLabelText("激活码")).toHaveAttribute("required");
   });
 
   it("validates required fields are not empty", () => {
     renderWithProps();
 
     // Try to submit without filling fields
-    fireEvent.click(screen.getByRole("button", { name: /enroll device/i }));
+    fireEvent.click(screen.getByRole("button", { name: "提交配对申请" }));
 
     // Every field should be marked as required
-    expect(screen.getByLabelText(/activation code/i)).toHaveAttribute(
-      "required",
-    );
-    expect(screen.getByLabelText(/device fingerprint/i)).toHaveAttribute(
-      "required",
-    );
-    expect(screen.getByLabelText(/device name/i)).toHaveAttribute("required");
+    expect(screen.getByLabelText("激活码")).toHaveAttribute("required");
+    expect(screen.getByLabelText("设备名称")).toHaveAttribute("required");
   });
 
   it("shows loading state when processing enrollment", async () => {
@@ -94,11 +87,11 @@ describe("DevicePairingPage (FE-03 / T30)", () => {
     fillForm();
 
     // Click enroll before API call completes
-    fireEvent.click(screen.getByRole("button", { name: /enroll device/i }));
+    fireEvent.click(screen.getByRole("button", { name: "提交配对申请" }));
 
     // Should show busy/loading state
     await waitFor(() => {
-      const button = screen.getByRole("button", { name: /enrolling device/i });
+      const button = screen.getByRole("button", { name: "正在提交…" });
       expect(button).toBeInTheDocument();
     });
   });
@@ -119,7 +112,7 @@ describe("DevicePairingPage (FE-03 / T30)", () => {
 
       renderWithProps({ onSuccess: mockSuccess });
       fillForm();
-      fireEvent.click(screen.getByRole("button", { name: /enroll device/i }));
+      fireEvent.click(screen.getByRole("button", { name: "提交配对申请" }));
 
       await waitFor(
         () => {
@@ -142,15 +135,22 @@ describe("DevicePairingPage (FE-03 / T30)", () => {
       const requestBody = JSON.parse(init.body as string);
       expect(requestBody).toMatchObject({
         activation_code: "XS04-TESTCODE-CODECODE-CODECODE",
-        device_fingerprint: "Test Device •••• AB12",
+        device_fingerprint: "test-instance-id",
         device_name: "My Test Device",
+        device_platform: "windows",
       });
 
       // HTTP 202 maps to the pending pairing state.
-      expect(mockSuccess).toHaveBeenCalledWith({
-        status: "pending",
-        data: expect.objectContaining({ pairing_request_id: "test-id" }),
-      });
+      expect(mockSuccess).toHaveBeenCalledWith(
+        {
+          status: "pending",
+          data: expect.objectContaining({ pairing_request_id: "test-id" }),
+        },
+        expect.objectContaining({
+          activationCode: "XS04-TESTCODE-CODECODE-CODECODE",
+          deviceName: "My Test Device",
+        }),
+      );
     } finally {
       window.fetch = originalFetch;
     }
@@ -169,14 +169,22 @@ describe("DevicePairingPage (FE-03 / T30)", () => {
 
       renderWithProps({ onSuccess: mockSuccess });
       fillForm();
-      fireEvent.click(screen.getByRole("button", { name: /enroll device/i }));
+      fireEvent.click(screen.getByRole("button", { name: "提交配对申请" }));
 
       await waitFor(
         () => {
-          expect(mockSuccess).toHaveBeenCalledWith({
-            status: "consumed",
-            data: expect.objectContaining({ session_token: sessionTokenText }),
-          });
+          expect(mockSuccess).toHaveBeenCalledWith(
+            {
+              status: "consumed",
+              data: expect.objectContaining({
+                session_token: sessionTokenText,
+              }),
+            },
+            expect.objectContaining({
+              activationCode: "XS04-TESTCODE-CODECODE-CODECODE",
+              deviceName: "My Test Device",
+            }),
+          );
         },
         { timeout: 1000 },
       );
@@ -198,7 +206,7 @@ describe("DevicePairingPage (FE-03 / T30)", () => {
 
       renderWithProps({ onError: mockError });
       fillForm();
-      fireEvent.click(screen.getByRole("button", { name: /enroll device/i }));
+      fireEvent.click(screen.getByRole("button", { name: "提交配对申请" }));
 
       await waitFor(
         () => {
@@ -213,7 +221,7 @@ describe("DevicePairingPage (FE-03 / T30)", () => {
 
   it("has cancel button that calls onCancel callback", () => {
     renderWithProps();
-    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    fireEvent.click(screen.getByRole("button", { name: "返回首次激活" }));
     expect(mockOnCancel).toHaveBeenCalledTimes(1);
   });
 

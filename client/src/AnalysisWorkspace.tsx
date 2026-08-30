@@ -218,9 +218,6 @@ export function AnalysisWorkspace({
     useState<AnalysisVersion | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTabKey>("content");
   const [reloadToken, setReloadToken] = useState(0);
-  const [forceLoadProjectId, setForceLoadProjectId] = useState<string | null>(
-    null,
-  );
   const reloadTokenRef = useRef(0);
   const isGenerationBusyRef = useRef(false);
   const isWorkspaceBusyRef = useRef(false);
@@ -232,11 +229,7 @@ export function AnalysisWorkspace({
   const isSavingRef = useRef(false);
 
   useEffect(() => {
-    if (
-      !readOnly &&
-      project.analysis_status === "PENDING" &&
-      forceLoadProjectId !== project.id
-    ) {
+    if (!readOnly && project.analysis_status === "PENDING") {
       setIsLoading(false);
       setError("");
       setSaveMessage("");
@@ -314,13 +307,7 @@ export function AnalysisWorkspace({
     return () => {
       isActive = false;
     };
-  }, [
-    forceLoadProjectId,
-    project.analysis_status,
-    project.id,
-    readOnly,
-    reloadToken,
-  ]);
+  }, [project.analysis_status, project.id, readOnly, reloadToken]);
 
   useEffect(() => {
     if (!project.id) {
@@ -670,8 +657,6 @@ export function AnalysisWorkspace({
     try {
       await startVideoAnalysis(project.id, project.reference_asset_id);
       onAnalysisReady(project.id);
-      setForceLoadProjectId(project.id);
-      reloadWorkspace();
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -1008,6 +993,7 @@ export function AnalysisWorkspace({
                     projectId={project.id}
                     referenceAssetId={project.reference_asset_id}
                     readOnly={readOnly || isFirstFrameBusy}
+                    videoDurationSeconds={durationSeconds}
                   />
                 ) : (
                   <PipelineSkeleton note="先在上方选择角色版本" />
@@ -1262,8 +1248,18 @@ export function AnalysisWorkspace({
       ) : null}
       {!isLoading && isAnalysisMissing ? (
         <div className="analysis-missing-state">
-          <strong>待拆解</strong>
-          <p>参考视频已就绪。</p>
+          <strong>
+            {project.analysis_status === "PENDING"
+              ? "拆解中"
+              : project.analysis_status === "FAILED"
+                ? "拆解失败"
+                : "待拆解"}
+          </strong>
+          <p>
+            {project.analysis_status === "PENDING"
+              ? "任务已在后台运行，可以返回项目列表查看进度。"
+              : project.analysis_error_message || "参考视频已就绪。"}
+          </p>
           {readOnly ? (
             <>
               <span className="status-note">只读身份无法启动拆解。</span>
@@ -1277,11 +1273,21 @@ export function AnalysisWorkspace({
             </>
           ) : (
             <button
-              disabled={isStartingAnalysis || !project.reference_asset_id}
+              disabled={
+                isStartingAnalysis ||
+                project.analysis_status === "PENDING" ||
+                !project.reference_asset_id
+              }
               onClick={handleStartAnalysis}
               type="button"
             >
-              {isStartingAnalysis ? "正在拆解" : "开始拆解"}
+              {isStartingAnalysis
+                ? "正在提交"
+                : project.analysis_status === "PENDING"
+                  ? "后台拆解中"
+                  : project.analysis_status === "FAILED"
+                    ? "重新拆解"
+                    : "开始拆解"}
             </button>
           )}
         </div>
@@ -1293,7 +1299,7 @@ export function AnalysisWorkspace({
           </div>
           {analysisProvider === "fake_gemini" ? (
             <p className="status-note">
-              演示数据 · 在设置中配置 Gemini 后可重新拆解
+              演示数据 · 配置视频拆解服务后可重新拆解
             </p>
           ) : null}
           {readOnly ? (

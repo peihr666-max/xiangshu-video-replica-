@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustomerPairingFlow } from "./CustomerPairingFlow";
 import type { CustomerCredentialStore } from "./useCustomerSession";
@@ -35,17 +35,16 @@ function fakeStore(overrides?: {
   };
 }
 
-function fillForm() {
-  fireEvent.change(screen.getByLabelText(/activation code/i), {
+async function fillForm() {
+  fireEvent.change(screen.getByLabelText("激活码"), {
     target: { value: "XS04-TESTCODE-CODECODE-CODECODE" },
   });
-  fireEvent.change(screen.getByLabelText(/device fingerprint/i), {
-    target: { value: "Second Device •••• CD34" },
-  });
-  fireEvent.change(screen.getByLabelText(/device name/i), {
+  fireEvent.change(screen.getByLabelText("设备名称"), {
     target: { value: "My Second Device" },
   });
-  fireEvent.click(screen.getByRole("button", { name: /enroll device/i }));
+  const submit = screen.getByRole("button", { name: "提交配对申请" });
+  await waitFor(() => expect(submit).toBeEnabled());
+  fireEvent.click(submit);
 }
 
 describe("CustomerPairingFlow (FE-03 / T30)", () => {
@@ -76,7 +75,7 @@ describe("CustomerPairingFlow (FE-03 / T30)", () => {
     );
 
     render(<CustomerPairingFlow store={fakeStore()} onPaired={vi.fn()} />);
-    fillForm();
+    await fillForm();
 
     expect(
       await screen.findByRole("heading", { name: "等待主设备审批" }),
@@ -85,6 +84,12 @@ describe("CustomerPairingFlow (FE-03 / T30)", () => {
     expect(screen.getByText(/2026\/8\/26/)).toBeInTheDocument();
     // The waiting screen is honest about the pending state, not a success.
     expect(screen.queryByRole("heading", { name: "配对成功" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "返回重新提交" }));
+    expect(screen.getByLabelText("激活码")).toHaveValue(
+      "XS04-TESTCODE-CODECODE-CODECODE",
+    );
+    expect(screen.getByLabelText("设备名称")).toHaveValue("My Second Device");
   });
 
   it("stores the device credential and reports success when approved meanwhile (201)", async () => {
@@ -104,7 +109,16 @@ describe("CustomerPairingFlow (FE-03 / T30)", () => {
     );
 
     render(<CustomerPairingFlow store={store} onPaired={onPaired} />);
-    fillForm();
+    await fillForm();
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      device_fingerprint: "test-instance-id",
+      device_platform: "windows",
+    });
 
     expect(
       await screen.findByRole("heading", { name: "配对成功" }),
@@ -137,12 +151,12 @@ describe("CustomerPairingFlow (FE-03 / T30)", () => {
         onPaired={vi.fn()}
       />,
     );
-    fillForm();
+    await fillForm();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("vault locked");
     // Back on the form; the credential was never persisted.
     expect(
-      screen.getByRole("button", { name: /enroll device/i }),
+      screen.getByRole("button", { name: "提交配对申请" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "配对成功" })).toBeNull();
   });

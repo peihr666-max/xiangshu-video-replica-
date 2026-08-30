@@ -36,12 +36,14 @@ EXCLUDED_TABLES = frozenset({"alembic_version"})
 # auth-failure audit, T15/ACT-08; the append-only admin device operations
 # audit, T18/DEV-03; the append-only audited admin adjustments, T23/BILL-02;
 # the per-user fair-queue cursors, T25/041; committed customer-write fencing
-# evidence, T37/042). They have no SQLite counterpart
+# evidence, T37/042; per-operator password hashes, admin login/043; customer
+# unit-price overrides, PRICE-01/044). They have no SQLite counterpart
 # in the T07 import source, so an empty such table on the target is expected;
 # a non-empty one is divergent state and must fail closed.
 PG_ONLY_TABLES: frozenset[str] = frozenset(
     {
         "admin_sessions",
+        "admin_password_credentials",
         "admin_adjustments",
         "admin_device_events",
         "activation_code_batches",
@@ -55,6 +57,7 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "customer_session_state",
         "customer_session_events",
         "customer_idempotency_envelopes",
+        "customer_unit_prices",
         "customer_fencing_write_evidence",
         "customer_authorization_evidence",
         "ops_alert_state",

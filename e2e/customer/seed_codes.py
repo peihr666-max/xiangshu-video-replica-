@@ -11,7 +11,8 @@ Reads env (same variables the backend runner exports):
 The ZPay seeding keeps the browser recharge E2E working: the wallet's 充值
 button calls POST /api/customer/recharge-orders, which reads the ZPay merchant
 config from provider_settings (decrypted with VIDEO_REPLICA_SETTINGS_KEY) and
-the deployment config from ZPAY_GATEWAY_URL / PUBLIC_BASE_URL — the same shape
+the callback origin from PUBLIC_BASE_URL; the documented gateway is fixed in
+code. This is the same shape
 test_customer_recharge.py::recharge_config_fixture uses. Without it the route
 answers 503 ZPAY_CONFIGURATION_INVALID.
 

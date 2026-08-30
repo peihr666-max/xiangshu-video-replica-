@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as adminApi from "../api.admin";
 import { CustomersPage } from "./CustomersPage";
@@ -39,6 +45,12 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         created_at: "2026-08-24T10:00:00Z",
         activation_code: "ABC-123",
         status: "active",
+        generation_total: 8,
+        generation_succeeded: 5,
+        generation_failed: 1,
+        generation_in_progress: 1,
+        generation_attention: 1,
+        credits_spent: 5,
       },
       {
         user_id: "user-2",
@@ -64,6 +76,29 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     });
 
     expect(screen.getByText(/共 2 位客户/)).toBeInTheDocument();
+    expect(screen.getByText("5 / 8")).toBeInTheDocument();
+    expect(screen.getByText("1 / 1 / 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("customer-1 已结算消耗")).toHaveTextContent(
+      "5",
+    );
+    const firstDataRow = screen
+      .getAllByRole("row")
+      .find((row) => row.textContent?.includes("customer-1"));
+    expect(firstDataRow).toBeDefined();
+    expect(
+      within(firstDataRow as HTMLElement)
+        .getAllByRole("cell")
+        .map((cell) => cell.textContent?.replace(/\s+/g, " ").trim()),
+    ).toEqual([
+      "customer-1",
+      "ABC-123",
+      "2026/8/24 18:00:00",
+      "活跃",
+      "5 / 8",
+      "1 / 1 / 1",
+      "5",
+      "展开详情",
+    ]);
   });
 
   it("shows loading state while fetching customers", () => {
@@ -162,11 +197,75 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       expect(screen.getByText("customer-1")).toBeInTheDocument();
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "展开详情" }));
     fireEvent.click(screen.getByRole("button", { name: "调账历史" }));
     expect(adminApi.listAdminAdjustments).toHaveBeenCalledWith("user-1", {
       limit: 20,
       offset: 0,
     });
+  });
+
+  it("expands a customer row to reveal operational details and collapse again", async () => {
+    vi.mocked(adminApi.listCustomers).mockResolvedValue({
+      customers: [
+        {
+          user_id: "user-1",
+          username: "customer-1",
+          created_at: "2026-08-24T10:00:00Z",
+          activation_code: "ABC-123",
+          status: "active",
+          generation_total: 8,
+          generation_succeeded: 5,
+          generation_failed: 1,
+          generation_in_progress: 1,
+          generation_attention: 1,
+          credits_spent: 5,
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 20,
+    });
+
+    render(<CustomersPage />);
+
+    const toggle = await screen.findByRole("button", { name: "展开详情" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggle);
+
+    const detailPanel = screen
+      .getByRole("heading", {
+        name: "customer-1 运营详情",
+      })
+      .closest("section");
+    expect(detailPanel).not.toBeNull();
+    expect(
+      within(detailPanel as HTMLElement).getByText("累计生成"),
+    ).toBeInTheDocument();
+    expect(
+      within(detailPanel as HTMLElement).getByText("8 条"),
+    ).toBeInTheDocument();
+    expect(
+      within(detailPanel as HTMLElement).getByRole("button", {
+        name: "调账历史",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(detailPanel as HTMLElement).getByRole("button", {
+        name: "收起详情",
+      }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(
+      within(detailPanel as HTMLElement).getByRole("button", {
+        name: "收起详情",
+      }),
+    );
+
+    expect(
+      screen.queryByRole("heading", { name: "customer-1 运营详情" }),
+    ).toBeNull();
   });
 
   it("shows empty state when no customers exist", async () => {

@@ -1,4 +1,5 @@
 import type { CustomerApiError } from "../api";
+import { CustomerAccessBrand } from "./ActivationPage";
 import type { CustomerSessionConflict } from "./useCustomerSession";
 
 /** The returning-device login screen (FE-02): the stored device credential
@@ -20,29 +21,41 @@ export function LoginPage({
   conflict: CustomerSessionConflict | null;
 }) {
   return (
-    <section className="login-card" aria-labelledby="login-title">
-      <span className="eyebrow">JINGXU STUDIO</span>
-      <h1 id="login-title">欢迎回来</h1>
-      <p className="login-hint">使用保存在本机的设备凭据直接登录工作台。</p>
-      {conflict ? (
-        <div className="login-conflict" role="status">
-          <p>另一台设备正在线上：{conflict.deviceNameMasked}</p>
-          <p>
-            占用 {conflict.slotNo} 号设备槽
-            {conflict.leaseExpiresAt
-              ? `，租约到 ${formatLeaseExpiry(conflict.leaseExpiresAt)}`
-              : ""}
-            。如需在本机使用，请联系管理员或稍后重试。
+    <main className="customer-access-shell">
+      <section
+        className="customer-access-card customer-access-card--login"
+        aria-labelledby="login-title"
+      >
+        <CustomerAccessBrand />
+        <div className="customer-access-body">
+          <h1 id="login-title">欢迎回来</h1>
+          <p className="customer-access-lead">
+            使用保存在本机的设备凭据直接登录工作台。
           </p>
+          {conflict ? (
+            <div className="login-conflict" role="status">
+              <p>另一台设备正在线上：{conflict.deviceNameMasked}</p>
+              <p>
+                占用 {conflict.slotNo} 号设备槽
+                {conflict.leaseExpiresAt
+                  ? `，租约到 ${formatLeaseExpiry(conflict.leaseExpiresAt)}`
+                  : ""}
+                。如需在本机使用，请联系管理员或稍后重试。
+              </p>
+            </div>
+          ) : null}
+          {error && !conflict ? (
+            <p className="form-error">{error.message}</p>
+          ) : null}
+          <button type="button" onClick={onRetryLogin} disabled={isBusy}>
+            {isBusy ? "正在登录…" : "使用本机设备登录"}
+          </button>
         </div>
-      ) : null}
-      {error && !conflict ? (
-        <p className="form-error">{error.message}</p>
-      ) : null}
-      <button type="button" onClick={onRetryLogin} disabled={isBusy}>
-        {isBusy ? "正在登录…" : "使用本机设备登录"}
-      </button>
-    </section>
+        <footer className="customer-access-footer">
+          当前设备凭据将安全保存在本机
+        </footer>
+      </section>
+    </main>
   );
 }
 

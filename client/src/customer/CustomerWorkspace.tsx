@@ -1,28 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
 import { WorkspaceShell } from "../App";
 import {
+  attachCustomerSessionToken,
+  type CustomerActivationCodeReset,
   CustomerApiError,
   type CustomerDeviceListResponse,
+  type CustomerProfile,
   customerApproveDevicePairing,
+  customerDismissDevicePairing,
+  customerGetProfile,
   customerListDevices,
+  customerResetActivationCode,
   customerUnbindDevice,
+  customerUpdateProfile,
 } from "../api";
 import { customerToCurrentUser } from "../RootApp";
-import { DeviceManagementPage } from "./DeviceManagementPage";
-import { PairingApprovalCard } from "./PairingApprovalCard";
 import type {
   CustomerCredentialStore,
   CustomerWorkspaceUser,
 } from "./useCustomerSession";
 
 /**
- * T31 / FE-04 — the customer workspace: the shared generation shell plus the
- * device-management view that M4 shipped as an orphan component.
- *
- * The view toggles between the generation workspace and the two-slot device
- * page; the device page loads the T16 contract through the customer API
- * adapter (device credential from the vault, never a second master code).
- * A 401 on any device call falls back to the session-expired screen.
+ * Customer workspace: the shared generation shell plus a session-backed
+ * personal centre. Device actions still use the device credential stored in
+ * the desktop vault; account and recharge data use the operator session.
  */
 export function CustomerWorkspace({
   user,
@@ -33,14 +34,51 @@ export function CustomerWorkspace({
   store: CustomerCredentialStore;
   onSessionExpired: () => void;
 }) {
-  // The generation workspace is the landing view: a freshly activated or
-  // logged-in customer is here to work, not to manage devices; the header
-  // button flips to the device page when device management is needed.
-  const [view, setView] = useState<"workspace" | "devices">("workspace");
   const [devices, setDevices] = useState<CustomerDeviceListResponse | null>(
     null,
   );
+  const [profile, setProfile] = useState<CustomerProfile | null>(null);
   const [deviceError, setDeviceError] = useState("");
+  const [workspaceCredentialReady, setWorkspaceCredentialReady] =
+    useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let releaseSession = () => {};
+    void store
+      .loadSessionToken()
+      .then((token) => {
+        if (!active) {
+          return;
+        }
+        if (token === null) {
+          onSessionExpired();
+          return;
+        }
+        releaseSession = attachCustomerSessionToken(token);
+        void customerGetProfile({ kind: "session", token })
+          .then((nextProfile) => {
+            if (active) {
+              setProfile(nextProfile);
+            }
+          })
+          .catch((cause) => {
+            if (cause instanceof CustomerApiError && cause.status === 401) {
+              onSessionExpired();
+            }
+          });
+        setWorkspaceCredentialReady(true);
+      })
+      .catch(() => {
+        if (active) {
+          onSessionExpired();
+        }
+      });
+    return () => {
+      active = false;
+      releaseSession();
+    };
+  }, [store, onSessionExpired]);
 
   const loadDevices = useCallback(async () => {
     const token = await store.loadDeviceCredentialToken();
@@ -69,16 +107,12 @@ export function CustomerWorkspace({
     void loadDevices();
   }, [loadDevices]);
 
-  // Entering the device view re-fetches: a second device's enroll may have
-  // landed a PENDING pairing after the workspace first loaded, and the
-  // approval list must show it (T30 / FE-03 approval reachability).
-  useEffect(() => {
-    if (view === "devices") {
-      void loadDevices();
-    }
-  }, [view, loadDevices]);
-
   async function handleUnbind(deviceId: string) {
+    if (
+      !window.confirm("确认下线并解绑这台设备？当前设备解绑后需要重新激活。")
+    ) {
+      return;
+    }
     const token = await store.loadDeviceCredentialToken();
     if (token === null) {
       onSessionExpired();
@@ -124,87 +158,94 @@ export function CustomerWorkspace({
     }
   }
 
-  if (view === "devices") {
-    const pendingPairings = devices?.pending_pairings ?? [];
-    return (
-      <div className="customer-workspace">
-        <header className="customer-workspace-header">
-          <span className="eyebrow">JINGXU STUDIO</span>
-          <div>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => setView("workspace")}
-            >
-              进入工作区
-            </button>
-          </div>
-        </header>
-        {deviceError ? (
-          <p className="settings-error" role="alert">
-            {deviceError}
-          </p>
-        ) : null}
-        {devices !== null ? (
-          <>
-            {pendingPairings.length > 0 ? (
-              <section
-                className="pending-pairings"
-                aria-label="待审批的配对请求"
-              >
-                <h2>待审批配对</h2>
-                {pendingPairings.map((pending) => (
-                  <PairingApprovalCard
-                    key={pending.pairing_request_id}
-                    pairing={{
-                      id: pending.pairing_request_id,
-                      deviceFingerprint: `${pending.display_name} · ${pending.platform}`,
-                      createdAt: pending.created_at,
-                    }}
-                    onApprove={(id) => void handleApprovePairing(id)}
-                    onReject={() =>
-                      setDeviceError(
-                        "暂不支持拒绝配对,请联系客服处理未授权的配对请求",
-                      )
-                    }
-                  />
-                ))}
-              </section>
-            ) : null}
-            <DeviceManagementPage
-              devices={devices}
-              isOnline
-              leaseExpiresAt={null}
-              onUnbind={(deviceId) => void handleUnbind(deviceId)}
-              onError={(error) => setDeviceError(error.message)}
-              onRecharge={() =>
-                setDeviceError("续充请联系客服或在工作区使用钱包功能")
-              }
-            />
-          </>
-        ) : null}
-      </div>
-    );
+  async function handleDismissPairing(pairingId: string) {
+    if (!window.confirm("确认删除这个无效的设备绑定请求？")) {
+      return;
+    }
+    const token = await store.loadDeviceCredentialToken();
+    if (token === null) {
+      onSessionExpired();
+      return;
+    }
+    try {
+      await customerDismissDevicePairing({ kind: "device", token }, pairingId);
+      await loadDevices();
+    } catch (cause) {
+      if (cause instanceof CustomerApiError && cause.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setDeviceError(
+        cause instanceof Error && cause.message
+          ? cause.message
+          : "删除设备绑定请求失败",
+      );
+    }
+  }
+
+  async function handleUpdateProfile(
+    displayName: string,
+  ): Promise<CustomerProfile> {
+    const token = await store.loadSessionToken();
+    if (token === null) {
+      onSessionExpired();
+      throw new Error("登录已失效，请重新进入工作台。");
+    }
+    try {
+      return await customerUpdateProfile(
+        { kind: "session", token },
+        displayName,
+      );
+    } catch (cause) {
+      if (cause instanceof CustomerApiError && cause.status === 401) {
+        onSessionExpired();
+      }
+      throw cause;
+    }
+  }
+
+  async function handleResetActivationCode(): Promise<CustomerActivationCodeReset> {
+    const token = await store.loadDeviceCredentialToken();
+    if (token === null) {
+      onSessionExpired();
+      throw new Error("设备授权已失效，请重新激活。");
+    }
+    try {
+      return await customerResetActivationCode({ kind: "device", token });
+    } catch (cause) {
+      if (cause instanceof CustomerApiError && cause.status === 401) {
+        onSessionExpired();
+      }
+      throw cause;
+    }
   }
 
   return (
     <div className="customer-workspace">
-      <header className="customer-workspace-header">
-        <span className="eyebrow">JINGXU STUDIO</span>
-        <div>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setView("devices")}
-          >
-            设备管理
-          </button>
-        </div>
-      </header>
-      <WorkspaceShell
-        currentUser={customerToCurrentUser(user)}
-        customerWallet={{ store, onSessionExpired }}
-      />
+      {workspaceCredentialReady ? (
+        <WorkspaceShell
+          currentUser={customerToCurrentUser(user, profile)}
+          customerAccount={{
+            devices,
+            deviceError,
+            onApprovePairing: (pairingId) =>
+              void handleApprovePairing(pairingId),
+            onDismissPairing: (pairingId) =>
+              void handleDismissPairing(pairingId),
+            onProfileUpdated: setProfile,
+            onResetActivationCode: handleResetActivationCode,
+            onUnbind: (deviceId) => void handleUnbind(deviceId),
+            onUpdateProfile: handleUpdateProfile,
+            profile,
+            store,
+            onSessionExpired,
+          }}
+        />
+      ) : (
+        <main className="centered-shell" aria-live="polite">
+          <p className="login-hint">正在进入工作区…</p>
+        </main>
+      )}
     </div>
   );
 }

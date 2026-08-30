@@ -61,7 +61,7 @@ Set-Location server
 
 `POST /api/recharge-orders` 只接收整数分 `amount_fen`，服务端根据当前内部价格计算条数并生成 ZPay 表单。商户号、商户密钥、支付渠道、商户订单号和回调地址都不接受客户端覆盖。
 
-部署必须设置不含路径和查询参数的 HTTPS `PUBLIC_BASE_URL`，以及经程序白名单校验的 `ZPAY_GATEWAY_URL`（当前支持官方公开文档的 `https://zpayz.cn/submit.php` 和用户 Demo 的 `https://z-pay.cn/submit.php`）。ZPay `pid`/`key`/`enabled_channels` 使用现有 SettingsRepository 加密保存；可视化配置入口在内部 P0 管理页任务中提供，不得通过 SQL 写入明文密钥。签名契约以 [ZPay 官方开发文档](https://api.z-pay.cn/doc.html) 为准。
+部署只需设置不含路径和查询参数的 HTTPS `PUBLIC_BASE_URL`。支付网关固定使用说明文档中的 `https://zpayz.cn/submit.php`；异步通知和同步返回地址由服务端根据 `PUBLIC_BASE_URL` 自动生成，管理页面不提供地址输入框。ZPay `pid`/`key`/`enabled_channels` 使用现有 SettingsRepository 加密保存；不得通过 SQL 写入明文密钥。签名契约以 [ZPay 官方开发文档](https://api.z-pay.cn/doc.html) 为准。
 
 ### ZPay 回调与手动查单
 

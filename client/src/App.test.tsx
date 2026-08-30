@@ -157,6 +157,27 @@ describe("App", () => {
     expect(screen.getByText("林夏")).toBeInTheDocument();
   });
 
+  it("uses a network-safe project list error instead of claiming the local service is down", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/health")) {
+        return Promise.resolve({ ok: true, json: async () => healthResponse });
+      }
+      if (url.endsWith("/api/projects")) {
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return Promise.resolve({ ok: true, json: async () => [] });
+    });
+    vi.stubGlobal("fetch", withAuth(fetchMock));
+
+    render(<App />);
+    await enterWorkspace();
+
+    expect(
+      await screen.findByText("项目列表暂不可用，请检查网络连接后重试。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/检查本地服务连接/)).toBeNull();
+  });
+
   it("navigates from login to the project page and loads local API health", async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.endsWith("/health")) {
@@ -211,6 +232,39 @@ describe("App", () => {
     expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/health", {
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it("updates the server connection badge after a later health check fails", async () => {
+    vi.useFakeTimers();
+    let healthRequestCount = 0;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/health")) {
+        healthRequestCount += 1;
+        return healthRequestCount === 1
+          ? Promise.resolve({ ok: true, json: async () => healthResponse })
+          : Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return Promise.resolve({ ok: true, json: async () => [] });
+    });
+    vi.stubGlobal("fetch", withAuth(fetchMock));
+
+    render(<App />);
+    await enterWorkspace();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole("status", { name: "本地服务已连接" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(healthRequestCount).toBe(2);
+    expect(
+      screen.getByRole("status", { name: "本地服务未连接" }),
+    ).toBeInTheDocument();
   });
 
   it("renders one wallet panel from the shared navigation", async () => {
@@ -602,20 +656,24 @@ describe("App", () => {
       },
     });
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/api/assets/upload-intent",
+    await waitFor(() => {
+      const uploadIntentCall = fetchMock.mock.calls.find(([url]) =>
+        url.endsWith("/api/assets/upload-intent"),
+      );
+      expect(uploadIntentCall).toBeDefined();
+      expect(uploadIntentCall?.[1]).toEqual(
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(JSON.parse(String(uploadIntentCall?.[1]?.body))).toEqual(
         expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            project_id: "project-pending",
-            filename: "retry.mp4",
-            content_type: "video/mp4",
-            size_bytes: 5,
-          }),
+          project_id: "project-pending",
+          filename: "retry.mp4",
+          content_type: "video/mp4",
+          size_bytes: 5,
+          sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         }),
-      ),
-    );
+      );
+    });
     // 续传复用现有项目，不再新建。
     expect(
       fetchMock.mock.calls.filter(
@@ -672,7 +730,7 @@ describe("App", () => {
               status: "REFERENCE_READY",
               reference_asset_id: "asset-ready",
               reference_upload_status: "READY",
-              analysis_status: analysisReady ? "READY" : "PENDING",
+              analysis_status: analysisReady ? "READY" : "NOT_READY",
             },
           ],
         });
@@ -688,9 +746,15 @@ describe("App", () => {
               }),
             });
       }
-      if (url.endsWith("/analysis") && options?.method === "POST") {
+      if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
         analysisReady = true;
-        return Promise.resolve({ ok: true, json: async () => analysis });
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: "analysis-task-recovered",
+            status: "PENDING",
+          }),
+        });
       }
       if (url.endsWith("/shot-cards/latest")) {
         return Promise.resolve({ ok: false, status: 404 });
@@ -721,9 +785,9 @@ describe("App", () => {
     ).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "开始拆解" }));
 
-    expect(await screen.findByText("恢复后的拆解结果")).toBeInTheDocument();
+    expect(await screen.findByText("拆解中")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/projects/project-ready/analysis",
+      "http://127.0.0.1:8000/api/projects/project-ready/analysis-tasks",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -1005,7 +1069,7 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("咖啡口播拆解")).toBeInTheDocument();
     expect(
-      screen.getByText("演示数据 · 在设置中配置 Gemini 后可重新拆解"),
+      screen.getByText("演示数据 · 配置视频拆解服务后可重新拆解"),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("S01 动作")).toHaveValue("已保存的动作");
     fireEvent.change(screen.getByLabelText("S01 动作"), {
@@ -1343,7 +1407,7 @@ describe("App", () => {
       await screen.findByRole("button", { name: "打开项目 咖啡口播" }),
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/projects/project-1/analysis",
+      "http://127.0.0.1:8000/api/projects/project-1/analysis-tasks",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -1408,19 +1472,48 @@ describe("App", () => {
         return Promise.resolve({ ok: true, json: async () => healthResponse });
       }
       if (url.endsWith("/api/projects") && !url.includes("analysis")) {
+        if (options?.method === "POST") {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              id: "project-recovery",
+              owner_user_id: "employee_1",
+              name: "失败后恢复",
+              status: "ACTIVE",
+              reference_asset_id: null,
+              reference_upload_status: "NOT_STARTED",
+              analysis_status: "NOT_READY",
+            }),
+          });
+        }
         return Promise.resolve({
           ok: true,
           json: async () =>
-            options?.method === "POST"
-              ? {
-                  id: "project-recovery",
-                  owner_user_id: "employee_1",
-                  name: "失败后恢复",
-                  status: "ACTIVE",
-                  reference_asset_id: null,
-                  reference_upload_status: "NOT_STARTED",
-                  analysis_status: "NOT_READY",
-                }
+            analysisPostCalls > 0
+              ? [
+                  {
+                    id: "project-recovery",
+                    owner_user_id: "employee_1",
+                    name: "失败后恢复",
+                    status: "REFERENCE_READY",
+                    reference_asset_id: "asset-recovery",
+                    reference_upload_status: "READY",
+                    analysis_status: "FAILED",
+                    analysis_error_message: "视频拆解失败，请重新拆解。",
+                    analysis_retryable: true,
+                  },
+                  {
+                    id: "project-non-retryable",
+                    owner_user_id: "employee_1",
+                    name: "不可重试项目",
+                    status: "REFERENCE_READY",
+                    reference_asset_id: "asset-non-retryable",
+                    reference_upload_status: "READY",
+                    analysis_status: "FAILED",
+                    analysis_error_message: "拆解结果无法解析，请更换视频。",
+                    analysis_retryable: false,
+                  },
+                ]
               : [],
         });
       }
@@ -1453,17 +1546,15 @@ describe("App", () => {
           }),
         });
       }
-      if (url.endsWith("/analysis") && options?.method === "POST") {
+      if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
         analysisPostCalls += 1;
-        return analysisPostCalls === 1
-          ? Promise.resolve({
-              ok: false,
-              status: 502,
-              json: async () => ({
-                detail: { message: "模型暂时不可用" },
-              }),
-            })
-          : Promise.resolve({ ok: true, json: async () => analysis });
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: `analysis-task-${analysisPostCalls}`,
+            status: "PENDING",
+          }),
+        });
       }
       if (url.endsWith("/analysis/latest")) {
         return Promise.resolve({ ok: true, json: async () => analysis });
@@ -1495,8 +1586,19 @@ describe("App", () => {
       },
     });
 
-    expect(await screen.findByText(/模型暂时不可用/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "知道了" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("视频拆解失败，请重新拆解。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("拆解结果无法解析，请更换视频。"),
+    ).toBeInTheDocument();
+    const retryButtons = screen.getAllByRole("button", { name: "重新拆解" });
+    expect(retryButtons).toHaveLength(1);
+    fireEvent.click(retryButtons[0]);
+    await waitFor(() => expect(analysisPostCalls).toBe(2));
+    expect(
+      await screen.findByText("项目“失败后恢复”已重新提交拆解。"),
+    ).toBeInTheDocument();
   });
 
   it("rejects unsupported reference videos before creating a project", async () => {
@@ -1834,7 +1936,7 @@ describe("App", () => {
     });
 
     expect(
-      await screen.findByText(/上传参考视频失败（无法连接对象存储/),
+      await screen.findByText(/上传参考视频失败（无法连接素材库/),
     ).toBeInTheDocument();
     expect(
       screen.queryByText(/上传参考视频失败（网络错误）/),
@@ -1957,7 +2059,7 @@ describe("App", () => {
     ).toBeInTheDocument();
     // 存储策略已固化：人物图片/参考视频/首帧上云，成片仅本机；提示固定展示。
     expect(
-      screen.getByText(/人物图片、参考视频与首帧保存到腾讯云存储/),
+      screen.getByText(/人物图片、参考视频与首帧保存到素材库/),
     ).toBeInTheDocument();
     expect(screen.getByText(/生成的成片仅保存在本机/)).toBeInTheDocument();
     expect(screen.queryByLabelText("存储方式")).not.toBeInTheDocument();
@@ -2036,7 +2138,7 @@ describe("App", () => {
     expect(apiKeyInput).toHaveAttribute("type", "text");
     fireEvent.click(screen.getAllByRole("button", { name: "隐藏API Key" })[0]);
     expect(apiKeyInput).toHaveAttribute("type", "password");
-    expect(screen.getByText("模型服务")).toBeInTheDocument();
+    expect(screen.getByText("视频拆解与图像服务")).toBeInTheDocument();
     expect(screen.queryByLabelText("Region")).not.toBeInTheDocument();
     expect(screen.getByText(/区域固定为上海/)).toBeInTheDocument();
     expect(screen.queryByText("阿里云 OSS")).not.toBeInTheDocument();

@@ -31,15 +31,13 @@ from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_image_provider
 from app.first_frames import GeneratedImage, ImageProviderFailed
+from app.generation_worker import run_worker_once
 from app.main import app
 from app.media import storage_key_from_uri
 from app.media_routes import get_media_storage
 from app.simple_character import (
     SIMPLE_CONTACT_SHEET_MODEL,
-    SimpleCharacterCreationResult,
-    SimpleCharacterView,
     _decode_png_rgb,
-    contact_sheet_placeholder_png,
     crop_contact_sheet_views,
 )
 from app.storage import FakeStorageAdapter
@@ -183,6 +181,55 @@ def test_upload_intent_returns_direct_upload_contract(client: TestClient) -> Non
     assert "image/png" in payload["allowed_content_types"]
 
 
+def test_character_sheet_task_is_idempotent_and_recovers_from_server_state(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    contact_sheet_provider: StubContactSheetProvider,
+) -> None:
+    data = {
+        "display_name": "荣哥",
+        "persona_name": "乡墅项目管理专家",
+        "idempotency_key": "character-sheet-task-1",
+    }
+    first = client.post(
+        "/api/simple-characters/tasks/generate",
+        headers=headers("employee_1"),
+        files=upload_files(),
+        data=data,
+    )
+    replay = client.post(
+        "/api/simple-characters/tasks/generate",
+        headers=headers("employee_1"),
+        files=upload_files(),
+        data=data,
+    )
+
+    assert first.status_code == 202
+    assert replay.status_code == 202
+    assert replay.json()["id"] == first.json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-test",
+                storage=storage,
+                image_provider=contact_sheet_provider,
+                max_tasks=1,
+            )
+            == 1
+        )
+
+    task = client.get(
+        f"/api/simple-characters/task-status/{first.json()['id']}",
+        headers=headers("employee_1"),
+    )
+    assert task.status_code == 200
+    assert task.json()["status"] == "SUCCEEDED"
+    assert task.json()["result_identity_id"]
+    assert task.json()["result"]["generation_source"] == "image_provider"
+
+
 def test_simple_character_rejects_missing_project(client: TestClient) -> None:
     response = generate(client, project_id="project-missing")
     assert response.status_code == 404
@@ -212,33 +259,46 @@ def test_simple_character_rejects_empty_name(client: TestClient) -> None:
 
 
 def test_simple_character_generation_runs_provider_work_off_the_event_loop(
-    db_path: Path,
     storage: FakeStorageAdapter,
     contact_sheet_provider: StubContactSheetProvider,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     event_loop_thread_id = threading.get_ident()
     provider_thread_id: int | None = None
+    storage_thread_ids: list[int] = []
+    original_edit = contact_sheet_provider.edit
+    original_put_object = storage.put_object
 
-    def observed_create_simple_character(
-        *args: object, **kwargs: object
-    ) -> SimpleCharacterCreationResult:
+    def observed_edit(
+        *,
+        model: str,
+        prompt: str,
+        source_image: object,
+        character_reference_images: list[object],
+        output_count: int,
+    ) -> list[GeneratedImage]:
         nonlocal provider_thread_id
         provider_thread_id = threading.get_ident()
-        return SimpleCharacterCreationResult(
-            identity_id="identity-1",
-            persona_id="persona-1",
-            character_version_id="version-1",
-            publication_hash="hash-1",
-            contact_sheet_asset_id="asset-1",
-            views=(SimpleCharacterView(view_type="FRONT_FACE", asset_id="asset-front"),),
+        return original_edit(
+            model=model,
+            prompt=prompt,
+            source_image=source_image,
+            character_reference_images=character_reference_images,
+            output_count=output_count,
         )
 
-    monkeypatch.setattr(
-        simple_character_routes,
-        "create_simple_character",
-        observed_create_simple_character,
-    )
+    monkeypatch.setattr(contact_sheet_provider, "edit", observed_edit)
+
+    def observed_put_object(
+        key: str,
+        content: bytes,
+        *,
+        content_type: str,
+    ):
+        storage_thread_ids.append(threading.get_ident())
+        return original_put_object(key, content, content_type=content_type)
+
+    monkeypatch.setattr(storage, "put_object", observed_put_object)
 
     class InMemoryUpload:
         size = 5
@@ -247,29 +307,32 @@ def test_simple_character_generation_runs_provider_work_off_the_event_loop(
         async def read(self) -> bytes:
             return b"image"
 
-    async def generate_character() -> simple_character_routes.SimpleCharacterResponse:
-        with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-            return await simple_character_routes._run_simple_character_creation(
-                conn=conn,
-                actor=CurrentUser(
-                    id="employee_1",
-                    username="employee_1",
-                    display_name="Employee One",
-                    role="employee",
-                ),
-                storage=storage,
-                provider=contact_sheet_provider,
-                file=cast(UploadFile, InMemoryUpload()),
-                display_name="荣哥",
-                persona_name="",
-                project_id="project-owned",
-            )
+    async def prepare_character():
+        return await simple_character_routes._prepare_simple_character_upload(
+            file=cast(UploadFile, InMemoryUpload()),
+            display_name="荣哥",
+            persona_name="",
+            provider=contact_sheet_provider,
+            actor=CurrentUser(
+                id="employee_1",
+                username="employee_1",
+                display_name="Employee One",
+                role="employee",
+            ),
+            storage=storage,
+        )
 
-    response = asyncio.run(generate_character())
+    content, content_type, persona_name, prepared = asyncio.run(prepare_character())
 
-    assert response.character_version_id == "version-1"
+    assert content == b"image"
+    assert content_type == "image/png"
+    assert persona_name == "荣哥"
+    assert prepared.generation.contact_content == contact_sheet_provider.sheet_content
+    assert len(prepared.object_keys) == 16
     assert provider_thread_id is not None
     assert provider_thread_id != event_loop_thread_id
+    assert storage_thread_ids
+    assert all(thread_id != event_loop_thread_id for thread_id in storage_thread_ids)
 
 
 def test_auditor_cannot_generate(client: TestClient) -> None:
@@ -407,6 +470,7 @@ def test_generate_creates_contact_sheet_asset(
     payload = response.json()
     contact_asset_id = payload["contact_sheet_asset_id"]
     assert contact_asset_id
+    assert payload["generation_source"] == "image_provider"
 
     # The provider was asked to render the single five-view sheet from the
     # uploaded photo with the identity-preserve prompt.
@@ -624,7 +688,10 @@ def test_customer_character_cache_is_shared_across_api_replicas(
 
     assert response.status_code == 200, response.text
     parsed = urlsplit(response.json()["url"])
-    cache_key = f"character-cache/{Path(parsed.path).name}"
+    # Production COS credentials are intentionally scoped to the existing
+    # projects/users namespaces. Keep the shared preview cache inside that
+    # allowlisted boundary instead of requiring a new bucket-root permission.
+    cache_key = f"projects/character-cache/{Path(parsed.path).name}"
     assert shared_cache.head_object(cache_key) is not None
     assert events[:5] == [
         "pg-enter",
@@ -672,29 +739,37 @@ def test_character_cache_rejects_source_with_wrong_hash(
     assert not cache_root.exists() or not any(cache_root.iterdir())
 
 
-def test_contact_sheet_provider_failure_falls_back_to_placeholder(
+def test_contact_sheet_provider_failure_is_visible_and_does_not_publish(
     client: TestClient,
     db_path: Path,
 ) -> None:
     app.dependency_overrides[get_image_provider] = lambda: FailingContactSheetProvider()
     response = generate_global(client)
-    assert response.status_code == 201, response.text
-    payload = response.json()
-    assert payload["contact_sheet_asset_id"]
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"]["code"] == "CONTACT_SHEET_PROVIDER_FAILED"
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert conn.execute("SELECT 1 FROM person_identities").fetchone() is None
+
+
+def test_unconfigured_local_provider_keeps_explicit_placeholder_path(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    app.dependency_overrides[get_image_provider] = lambda: None
+
+    response = generate_global(client)
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["generation_source"] == "local_placeholder"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         row = conn.execute(
-            "SELECT kind, size_bytes, metadata_json FROM assets WHERE id = ?",
+            "SELECT metadata_json FROM assets WHERE id = ?",
             (payload["contact_sheet_asset_id"],),
         ).fetchone()
         assert row is not None
-        assert row["kind"] == "character_contact_sheet"
-        metadata = json.loads(str(row["metadata_json"]))
-        assert metadata["generation_source"] == "local_placeholder"
-        expected = contact_sheet_placeholder_png(
-            f"contact-sheet:{payload['character_version_id']}".encode()
-        )
-        assert row["size_bytes"] == len(expected)
+        assert json.loads(str(row["metadata_json"]))["generation_source"] == "local_placeholder"
 
 
 def test_contact_sheet_download_url_rejects_auditors(client: TestClient) -> None:
@@ -730,6 +805,7 @@ def test_library_lists_characters_with_published_views(
     assert entry["display_name"] == "荣哥"
     assert entry["status"] == "ACTIVE"
     assert entry["contact_sheet_asset_id"] == created["contact_sheet_asset_id"]
+    assert entry["generation_source"] == "image_provider"
     assert {view["view_type"] for view in entry["views"]} == set(REQUIRED_CHARACTER_VIEW_TYPES)
     assert {view["asset_id"] for view in entry["views"]} == {
         view["asset_id"] for view in created["views"]
@@ -749,6 +825,7 @@ def test_library_falls_back_to_views_when_snapshot_has_no_contact_sheet(
         ).fetchone()
         snapshot = json.loads(str(row["publication_snapshot_json"]))
         del snapshot["contact_sheet_asset_id"]
+        snapshot.pop("generation_source", None)
         conn.execute(
             "UPDATE character_versions SET publication_snapshot_json = ? WHERE id = ?",
             (json.dumps(snapshot), version_id),
@@ -762,6 +839,7 @@ def test_library_falls_back_to_views_when_snapshot_has_no_contact_sheet(
     assert len(matching) == 1
     entry = matching[0]
     assert entry["contact_sheet_asset_id"] is None
+    assert entry["generation_source"] is None
     assert len(entry["views"]) == len(REQUIRED_CHARACTER_VIEW_TYPES)
 
 

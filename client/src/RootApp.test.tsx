@@ -73,7 +73,7 @@ describe("RootApp", () => {
       render(<RootApp path={path} />);
 
       expect(
-        screen.getByRole("heading", { name: "内部运营管理" }),
+        screen.getByRole("heading", { name: "运营管理后台" }),
       ).toBeInTheDocument();
       expect(screen.queryByRole("heading", { name: "镜序 Studio" })).toBeNull();
     },
@@ -101,23 +101,21 @@ describe("RootApp", () => {
     expect(
       await screen.findByRole("heading", { name: "项目" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "内部运营管理" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "运营管理后台" })).toBeNull();
   });
 
-  it("routes /customer/pairing to the second-device enrollment form, not the state machine", async () => {
+  it("routes the legacy pairing URL to the same unified activation entry", async () => {
     vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
 
     render(<RootApp path="/customer/pairing" />);
 
-    // T30: the pairing entry renders even when this browser holds no
-    // credential — it collects the activation code for the primary device.
     expect(
-      await screen.findByRole("heading", { name: "Pair New Device" }),
+      await screen.findByRole("heading", { name: "激活短视频复刻工作台" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText(/activation code/i)).toBeInTheDocument();
-    // The seven-screen state machine must not intercept the pairing route.
+    expect(screen.getByLabelText("激活码")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/fingerprint|机器码/i)).toBeNull();
     expect(
-      screen.queryByRole("heading", { name: "激活短视频复刻工作台" }),
+      screen.queryByRole("heading", { name: "添加已有账号设备" }),
     ).toBeNull();
   });
 

@@ -94,9 +94,11 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
     expect(screen.getByLabelText("成片时长")).toBeInTheDocument();
     expect(screen.getByLabelText("分辨率")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "编译 H3 Prompt" }),
+      screen.getByRole("button", { name: "编译视频生成提示词" }),
     ).toBeEnabled();
-    expect(screen.queryByLabelText("H3 Prompt 内容")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("视频生成提示词内容"),
+    ).not.toBeInTheDocument();
   });
 
   it("时长非法时显示错误提示", () => {
@@ -105,7 +107,7 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
       screen.getByText("成片时长必须是 4–15 秒的整数。"),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "编译 H3 Prompt" }),
+      screen.getByRole("button", { name: "编译视频生成提示词" }),
     ).toBeDisabled();
   });
 
@@ -155,7 +157,9 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
       savedPromptText: "已保存文本",
     });
 
-    expect(screen.getByLabelText("H3 Prompt 内容")).toHaveValue("当前编辑文本");
+    expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(
+      "当前编辑文本",
+    );
     expect(screen.getByText("已保存版本")).toBeInTheDocument();
     expect(screen.getByText("当前编辑")).toBeInTheDocument();
     expect(screen.getByText("当前状态：LOCKED")).toBeInTheDocument();
@@ -214,9 +218,11 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
     expect(screen.getByLabelText("成片时长")).toBeDisabled();
     expect(screen.getByLabelText("分辨率")).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "编译 H3 Prompt" }),
+      screen.getByRole("button", { name: "编译视频生成提示词" }),
     ).toBeDisabled();
-    expect(screen.getByLabelText("H3 Prompt 内容")).toHaveAttribute("readonly");
+    expect(screen.getByLabelText("视频生成提示词内容")).toHaveAttribute(
+      "readonly",
+    );
     expect(
       screen.getByRole("button", { name: "另存 Prompt 新版本" }),
     ).toBeDisabled();
@@ -235,7 +241,7 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
       savedPromptText: "编辑中",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "编译 H3 Prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "编译视频生成提示词" }));
     expect(callbacks.onCompilePrompt).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "锁定 Prompt" }));
@@ -260,7 +266,7 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
   it("冻结来源摘要展示六项输入", () => {
     renderLauncher();
 
-    expect(screen.getByText("分析版本：analysis-v1")).toBeInTheDocument();
+    expect(screen.getByText("拆解版本：analysis-v1")).toBeInTheDocument();
     expect(screen.getByText("镜头卡版本：shot-card-v1")).toBeInTheDocument();
     expect(screen.getByText("人物版本：char-v1")).toBeInTheDocument();
     expect(screen.getByText("人物参考：ref-v1")).toBeInTheDocument();

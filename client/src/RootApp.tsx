@@ -1,9 +1,8 @@
 import { useMemo } from "react";
 import { AdminApp } from "./AdminApp";
 import { App } from "./App";
-import type { CurrentUser } from "./api";
+import type { CurrentUser, CustomerProfile } from "./api";
 import { ActivationPage } from "./customer/ActivationPage";
-import { CustomerPairingFlow } from "./customer/CustomerPairingFlow";
 import { CustomerWorkspace } from "./customer/CustomerWorkspace";
 import { LoginPage } from "./customer/LoginPage";
 import { SessionConflictDialog } from "./customer/SessionConflictDialog";
@@ -18,12 +17,6 @@ export function RootApp({
 }: {
   path?: string;
 }) {
-  if (path === "/customer/pairing") {
-    // The pairing entry (T30) sits outside the seven-screen state machine:
-    // it only ever needs the vault, and must render even when this browser
-    // holds no credential yet (that is exactly the second-device scenario).
-    return <CustomerPairingRoute />;
-  }
   if (path === "/customer" || path.startsWith("/customer/")) {
     return <CustomerShell />;
   }
@@ -31,20 +24,6 @@ export function RootApp({
     <AdminApp />
   ) : (
     <App />
-  );
-}
-
-/** The pairing route owns its store (same stable-identity pattern as the
- * shell) and bounces back to /customer once the device credential is saved. */
-function CustomerPairingRoute() {
-  const store = useMemo(customerCredentialStore, []);
-  return (
-    <CustomerPairingFlow
-      store={store}
-      onPaired={() => {
-        window.location.assign("/customer");
-      }}
-    />
   );
 }
 
@@ -177,13 +156,12 @@ function CustomerTerminalScreen({
 
 export function customerToCurrentUser(
   user: CustomerWorkspaceUser,
+  profile?: CustomerProfile | null,
 ): CurrentUser {
   return {
     id: user.userId,
-    username: user.username ?? "customer",
-    display_name: user.username ?? "客户",
-    // The customer lane maps to the standard employee permissions: full
-    // workspace access, no internal settings page.
-    role: "employee",
+    username: profile?.username ?? user.username ?? "customer",
+    display_name: profile?.display_name ?? user.username ?? "客户",
+    role: "customer",
   };
 }

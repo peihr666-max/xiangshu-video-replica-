@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DevicePairingPage } from "./DevicePairingPage";
 import type { CustomerCredentialStore } from "./useCustomerSession";
 
@@ -25,11 +25,36 @@ export function CustomerPairingFlow({
   const [stage, setStage] = useState<"form" | "pending" | "consumed">("form");
   const [pendingExpiry, setPendingExpiry] = useState("");
   const [error, setError] = useState("");
+  const [deviceFingerprint, setDeviceFingerprint] = useState("");
+  const [draft, setDraft] = useState({ activationCode: "", deviceName: "" });
 
-  async function handleEnrollSuccess(result: {
-    status: "pending" | "consumed";
-    data: unknown;
-  }) {
+  useEffect(() => {
+    let active = true;
+    void store
+      .deviceInstanceId()
+      .then((value) => {
+        if (active) {
+          setDeviceFingerprint(value);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setError("无法读取本机机器标识，请重启应用后重试。");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [store]);
+
+  async function handleEnrollSuccess(
+    result: {
+      status: "pending" | "consumed";
+      data: unknown;
+    },
+    input: { activationCode: string; deviceName: string },
+  ) {
+    setDraft(input);
     setError("");
     if (result.status === "pending") {
       const pending = result.data as { expires_at: string };
@@ -58,7 +83,7 @@ export function CustomerPairingFlow({
         <header>
           <h1 id="pairing-waiting-title">等待主设备审批</h1>
           <p className="page-subtitle">
-            配对请求已提交,请在主设备上打开设备管理并确认本次配对。
+            配对请求已提交，请在已登录的主设备个人中心确认；也可以联系管理员审批。
           </p>
         </header>
         <section className="pairing-pending" aria-live="polite">
@@ -67,7 +92,7 @@ export function CustomerPairingFlow({
               本请求将在 {new Date(pendingExpiry).toLocaleString()} 过期。
             </p>
           ) : null}
-          <p className="pending-status">Pending - 等待主设备确认</p>
+          <p className="pending-status">等待主设备确认</p>
           <div className="form-actions">
             <button
               type="button"
@@ -81,7 +106,7 @@ export function CustomerPairingFlow({
               className="btn-primary"
               onClick={() => setStage("form")}
             >
-              我已审批,重新配对
+              返回重新提交
             </button>
           </div>
         </section>
@@ -116,7 +141,11 @@ export function CustomerPairingFlow({
         </p>
       ) : null}
       <DevicePairingPage
-        onSuccess={(result) => void handleEnrollSuccess(result)}
+        deviceFingerprint={deviceFingerprint}
+        devicePlatform={store.devicePlatform()}
+        initialActivationCode={draft.activationCode}
+        initialDeviceName={draft.deviceName}
+        onSuccess={(result, input) => void handleEnrollSuccess(result, input)}
         onError={(cause) => setError(cause.message)}
         onCancel={onPaired}
       />

@@ -88,7 +88,7 @@ export function GenerationLauncher({
     <>
       <fieldset className="generation-source-grid">
         <legend>冻结输入来源</legend>
-        <span>分析版本：{analysisVersionId}</span>
+        <span>拆解版本：{analysisVersionId}</span>
         <span>镜头卡版本：{shotCardVersionId}</span>
         <span>人物版本：{characterVersionId ?? "历史兼容人物"}</span>
         <span>人物参考：{referenceSelectionId ?? "历史兼容参考"}</span>
@@ -154,14 +154,14 @@ export function GenerationLauncher({
           <p className="settings-error">成片时长必须是 4–15 秒的整数。</p>
         ) : null}
         <button disabled={!canCompile} onClick={onCompilePrompt} type="button">
-          {busyAction === "compile" ? "正在编译" : "编译 H3 Prompt"}
+          {busyAction === "compile" ? "正在编译" : "编译视频生成提示词"}
         </button>
         {promptVersion ? (
           <>
             <label className="generation-field">
-              <span>H3 Prompt 内容</span>
+              <span>视频生成提示词内容</span>
               <textarea
-                aria-label="H3 Prompt 内容"
+                aria-label="视频生成提示词内容"
                 onChange={(event) => onPromptTextChange(event.target.value)}
                 readOnly={
                   readOnly ||

@@ -30,8 +30,8 @@ Task exit gate: *每个操作可追溯真实 actor；SQLite、本地资产、开
 **Session storage & verification** (PostgreSQL only):
 
 - `POST /api/control/admin/session/exchange` → 201: sets HttpOnly cookie `admin_session` (`path=/api/control`, `samesite=strict`, `secure=true` in customer production, `max_age=TTL`) and returns `{session_id, expires_at, csrf_token, actor}`.
-- Session token and CSRF token are `secrets.token_urlsafe(32)`; **only SHA-256 digests reach the database** (`session_digest`, `csrf_digest`, `created_ip_digest`, `created_ua_digest`).
-- `GET /api/control/admin/session` (whoami) returns the real actor; `DELETE /api/control/admin/session` revokes (`revoked_at`) and clears the cookie.
+- The session token is random; the CSRF token is HMAC-derived from the HttpOnly session token so `GET /api/control/admin/session` can restore a writable browser session after refresh. **Only SHA-256 digests reach the database** (`session_digest`, `csrf_digest`, `created_ip_digest`, `created_ua_digest`); session responses are `Cache-Control: no-store`.
+- `GET /api/control/admin/session` (whoami) returns the real actor and refresh-safe CSRF token; `DELETE /api/control/admin/session` revokes (`revoked_at`) and clears the cookie.
 - **PostgreSQL time is the only clock**: creation, expiry comparison, last-activity refresh and revocation all use `SELECT now()` inside the same transaction.
 - Every request re-joins `users`: inactive actor or a role outside {admin, auditor} invalidates the session immediately (401), and expiry is re-checked against DB time.
 - TTL is bounded 60–86,400 s (default 8 h) via `VIDEO_REPLICA_ADMIN_SESSION_TTL_SECONDS`; out-of-range values fail startup/validation.
@@ -71,6 +71,13 @@ Enforced twice: in `bootstrap.main()` (before ready-check/pool warm-up) and in t
 ## 4. Operator Tooling
 
 `server/scripts/issue_admin_exchange_credential.py` — CLI to mint a short-lived single-use credential for an operator (reads the versioned HMAC key from the environment; prints the credential only).
+
+## 4.1 Routine Password Login Follow-up (2026-08-27)
+
+- `POST /api/control/admin/session/password` is now the normal production login path. Unknown account, inactive account, missing password configuration and incorrect password share one 401 response; both source-address and account-digest budgets are stored in PostgreSQL and shared by all replicas.
+- Revision `043_admin_password_login` stores one salted scrypt hash per operator and records whether each session came from `password` or `exchange`; plaintext passwords never enter the database, logs, audit metadata or browser persistence.
+- ASX1 exchange is retained only for first-time setup and recovery. An exchange-authenticated administrator may `PUT /api/control/admin/password`; the write replaces the hash, revokes every existing session for that actor and requires a fresh password login. Password-authenticated sessions cannot change the password through that endpoint.
+- The React admin shell gates the complete navigation and all control-plane requests behind account/password login. Refresh restores a writable session from the HttpOnly cookie; auditors remain read-only. The recovery UI is explicitly separated under “首次设置或找回密码”.
 
 ## Files Changed
 

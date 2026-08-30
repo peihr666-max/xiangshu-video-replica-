@@ -28,6 +28,8 @@ from app.zpay import (
     ZPayOrderQueryClient,
     ZPayOrderQueryError,
     ZPayOrderQueryResult,
+    ZPayPaymentCodeClient,
+    ZPayPaymentCodeError,
     sign_zpay_params,
 )
 
@@ -600,3 +602,73 @@ def test_zpay_query_client_never_logs_secret_or_request_url(
 
     assert "merchant-secret" not in caplog.text
     assert "api.php" not in caplog.text
+
+
+def test_zpay_payment_code_client_posts_signed_order_and_returns_https_urls() -> None:
+    captured: dict[str, object] = {}
+
+    def opener(request: Any, *, timeout: float) -> FakeHTTPResponse:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["form"] = parse_qs(request.data.decode("utf-8"))
+        return FakeHTTPResponse(
+            {
+                "code": 1,
+                "O_id": "provider-order-1",
+                "payurl": "https://pay.example/checkout/1",
+                "img": "https://pay.example/qr/1.png",
+            }
+        )
+
+    result = ZPayPaymentCodeClient(opener=opener).create_payment_code(
+        merchant=ZPayMerchantConfig("merchant-123", "merchant-secret", "wxpay"),
+        deployment=ZPayDeploymentConfig(
+            gateway_url="https://zpayz.cn/submit.php",
+            query_url="https://zpayz.cn/api.php",
+            notify_url="https://video.example/api/payments/zpay/notify",
+            return_url="https://video.example/api/payments/zpay/return",
+        ),
+        merchant_order_no=ORDER_NO,
+        amount_fen=500,
+        credits=1,
+        client_ip="203.0.113.8",
+    )
+
+    assert captured["url"] == "https://zpayz.cn/mapi.php"
+    assert captured["timeout"] == 3.0
+    form = captured["form"]
+    assert isinstance(form, dict)
+    assert form["out_trade_no"] == [ORDER_NO]
+    assert form["money"] == ["5.00"]
+    assert form["clientip"] == ["203.0.113.8"]
+    assert form["sign_type"] == ["MD5"]
+    assert len(form["sign"][0]) == 32
+    assert result.qr_image_url == "https://pay.example/qr/1.png"
+    assert result.payment_url == "https://pay.example/checkout/1"
+
+
+def test_zpay_payment_code_client_rejects_insecure_image_url() -> None:
+    def opener(request: Any, *, timeout: float) -> FakeHTTPResponse:
+        del request, timeout
+        return FakeHTTPResponse(
+            {
+                "code": 1,
+                "payurl": "https://pay.example/checkout/1",
+                "img": "http://127.0.0.1/qr.png",
+            }
+        )
+
+    with pytest.raises(ZPayPaymentCodeError):
+        ZPayPaymentCodeClient(opener=opener).create_payment_code(
+            merchant=ZPayMerchantConfig("merchant-123", "merchant-secret", "alipay"),
+            deployment=ZPayDeploymentConfig(
+                gateway_url="https://zpayz.cn/submit.php",
+                query_url="https://zpayz.cn/api.php",
+                notify_url="https://video.example/api/payments/zpay/notify",
+                return_url="https://video.example/api/payments/zpay/return",
+            ),
+            merchant_order_no=ORDER_NO,
+            amount_fen=10000,
+            credits=10,
+            client_ip="203.0.113.8",
+        )

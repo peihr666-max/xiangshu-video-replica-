@@ -203,7 +203,8 @@ describe("TaskRecordsPanel", () => {
     expect(
       screen.getByRole("button", { name: "查看结果 2：task-audio-failed" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("MiniMax-H3")).toBeInTheDocument();
+    expect(screen.getByText("视频生成")).toBeInTheDocument();
+    expect(screen.queryByText(/MiniMax/i)).not.toBeInTheDocument();
     expect(screen.getByText("¥1.50")).toBeInTheDocument();
     expect(screen.getByText("技术详情").closest("details")).not.toHaveAttribute(
       "open",
@@ -234,6 +235,58 @@ describe("TaskRecordsPanel", () => {
     );
   });
 
+  it("keeps polling after repeated network failures and recovers automatically", async () => {
+    vi.useFakeTimers();
+    window.localStorage.setItem("generation.batchId", "batch-1");
+    vi.mocked(api.getGenerationBatch).mockReset();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      vi.mocked(api.getGenerationBatch).mockRejectedValueOnce(
+        new Error("temporary network failure"),
+      );
+    }
+    vi.mocked(api.getGenerationBatch).mockResolvedValueOnce(
+      batch({ tasks: [task({ result_asset_id: null })] }),
+    );
+
+    render(
+      <TaskRecordsPanel
+        handoffBatch={null}
+        onHandoffConsumed={vi.fn()}
+        userRole="employee"
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100_000);
+    });
+
+    expect(api.getGenerationBatch).toHaveBeenCalledTimes(7);
+    expect(screen.queryByText(/网络连接失败/)).not.toBeInTheDocument();
+  });
+
+  it("lets the user refresh immediately after a network failure", async () => {
+    window.localStorage.setItem("generation.batchId", "batch-1");
+    vi.mocked(api.getGenerationBatch)
+      .mockRejectedValueOnce(new Error("temporary network failure"))
+      .mockResolvedValueOnce(
+        batch({ tasks: [task({ result_asset_id: null })] }),
+      );
+
+    render(
+      <TaskRecordsPanel
+        handoffBatch={null}
+        onHandoffConsumed={vi.fn()}
+        userRole="employee"
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "立即刷新" }));
+    await waitFor(() =>
+      expect(api.getGenerationBatch).toHaveBeenCalledTimes(2),
+    );
+    expect(screen.queryByText(/网络连接失败/)).not.toBeInTheDocument();
+  });
+
   it("plays the provider result URL directly without signing an archive preview", async () => {
     vi.mocked(api.getGenerationBatch).mockResolvedValue(
       batch({
@@ -242,7 +295,10 @@ describe("TaskRecordsPanel", () => {
             provider: "metaso",
             provider_result_url: "https://provider.example/signed-result.mp4",
           }),
-          task({ id: "task-audio-failed" }),
+          task({
+            id: "task-audio-failed",
+            result_asset_id: "asset-audio-failed",
+          }),
         ],
       }),
     );
@@ -262,7 +318,9 @@ describe("TaskRecordsPanel", () => {
       "src",
       "https://provider.example/signed-result.mp4",
     );
-    expect(api.createGenerationResultPreviewUrl).not.toHaveBeenCalled();
+    expect(api.createGenerationResultPreviewUrl).not.toHaveBeenCalledWith(
+      "asset-ok",
+    );
   });
 
   it("falls back to the archived copy preview when the provider URL fails to play", async () => {
@@ -1199,7 +1257,7 @@ describe("TaskRecordsPanel", () => {
     expect(screen.getByText("成功 1")).toBeInTheDocument();
 
     // 左栏事实表：快照解析出的分辨率与成片时长与模型、费用并列。
-    expect(screen.getByText("模型")).toBeInTheDocument();
+    expect(screen.getByText("生成能力")).toBeInTheDocument();
     expect(screen.getByText("1080x1920")).toBeInTheDocument();
     expect(screen.getByText("成片时长")).toBeInTheDocument();
     expect(screen.getByText("15 秒")).toBeInTheDocument();

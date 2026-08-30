@@ -53,6 +53,7 @@ def test_customer_runtime_dependency_gate_requires_private_cos(
     from app import bootstrap
 
     monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/ffprobe")
     ready = SimpleNamespace(pool_size=4)
     monkeypatch.setattr(bootstrap, "check_pg_ready", lambda: ready)
 
@@ -89,6 +90,7 @@ def test_customer_runtime_dependency_gate_accepts_pg_and_cos(
     from app import bootstrap
 
     monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/ffprobe")
     ready = SimpleNamespace(pool_size=4)
     monkeypatch.setattr(bootstrap, "check_pg_ready", lambda: ready)
 
@@ -138,6 +140,18 @@ def test_customer_runtime_dependency_gate_accepts_pg_and_cos(
     assert bootstrap.check_customer_production_runtime_dependencies() is ready
     assert probes == ["bucket"]
     assert events == ["pg-enter", "pg-exit", "cos-bucket-head"]
+
+
+def test_customer_runtime_dependency_gate_rejects_missing_video_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import bootstrap
+
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: None)
+
+    with pytest.raises(RuntimeError, match="requires ffprobe"):
+        bootstrap.check_customer_production_runtime_dependencies()
 
 
 def test_empty_customer_bootstrap_provisions_first_admin_and_cos_atomically(
@@ -406,9 +420,11 @@ def test_systemd_contract_has_two_api_ports_and_four_independent_workers() -> No
     worker = _read("deploy/systemd/video-replica-worker@.service")
 
     assert "EnvironmentFile=/etc/video-replica/customer.env" in api
+    assert "ExecStartPre=/usr/bin/test -x /usr/bin/ffprobe" in api
     assert "python -m app.bootstrap" in api
     assert "--host 127.0.0.1 --port %i --no-proxy-headers" in api
     assert "EnvironmentFile=/etc/video-replica/customer.env" in worker
+    assert "ExecStartPre=/usr/bin/test -x /usr/bin/ffprobe" in worker
     assert "python -m app.bootstrap" in worker
     assert "python -m app.generation_worker" in worker
     assert "--worker-id %H-worker-%i" in worker
@@ -422,7 +438,8 @@ def test_maintenance_and_pg_migration_are_single_owner_fail_closed_jobs() -> Non
 
     assert "Type=oneshot" in maintenance
     assert "EnvironmentFile=/etc/video-replica/customer.env" in maintenance
-    assert maintenance.count("ExecStart=") >= 3
+    assert maintenance.count("ExecStart=") >= 4
+    assert "python -m scripts.reconcile_dangling_billing_reservations" in maintenance
     assert "flock -n" in migration
     assert "alembic upgrade head" in migration
     assert "VIDEO_REPLICA_DATABASE_URL" in migration
@@ -467,7 +484,10 @@ def test_t37_metrics_and_cluster_alert_jobs_are_private_single_owner_contracts()
         "server/scripts/check_ops_alerts.py",
         "server/tests/test_ops_metrics.py",
         "server/tests/test_ops_alerts.py",
-        "server/migrations/versions/042_t37_observability_indexes.py",
+        "server/migrations/versions/043_admin_password_login.py",
+        "server/migrations/versions/044_customer_unit_prices.py",
+        "server/migrations/versions/045_async_analysis_tasks.py",
+        "server/migrations/versions/046_async_image_tasks.py",
         "deploy/systemd/video-replica-ops-alerts.service",
         "deploy/systemd/video-replica-ops-alerts.timer",
     ):
@@ -562,6 +582,7 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     origin_guard = _read("scripts/require_customer_api_base.mjs")
     frozen_map = _read("docs/客户版代码开发清单-V3.md")
     customer_config = json.loads(_read("client/src-tauri/tauri.customer.conf.json"))
+    customer_installer_hooks = _read("client/src-tauri/customer-installer-hooks.nsh")
 
     assert '"check:tauri:customer"' in package
     assert '"tauri:build:customer"' in package
@@ -573,12 +594,22 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     assert "url.port" in origin_guard
     assert "--config src-tauri/tauri.customer.conf.json" in package
     assert customer_config["productName"] == "短视频复刻客户云工作台"
+    assert customer_config["version"] == "0.1.7"
     assert customer_config["identifier"] == "com.xiangshu.video-replica.customer"
     assert customer_config["app"]["windows"][0]["url"] == "customer"
     assert customer_config["bundle"]["resources"] == []
     assert customer_config["bundle"]["publisher"] == "Xiangshu Video Replica"
     assert (
         customer_config["bundle"]["windows"]["nsis"]["startMenuFolder"] == "短视频复刻客户云工作台"
+    )
+    assert (
+        customer_config["bundle"]["windows"]["nsis"]["installerHooks"]
+        == "customer-installer-hooks.nsh"
+    )
+    assert "$LOCALAPPDATA\\短视频复刻工作台\\uninstall.exe" in customer_installer_hooks
+    assert (
+        "ExecWait '\"$LOCALAPPDATA\\短视频复刻工作台\\uninstall.exe\" /S'"
+        in customer_installer_hooks
     )
     assert "127.0.0.1:8000" not in customer_config["app"]["security"]["csp"]
     assert "npm run check:tauri:customer" in workflow
@@ -592,6 +623,14 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     assert "start-backend.sh" in workflow
     assert "client/src-tauri/tauri.customer.conf.json" in frozen_map
     assert "scripts/require_customer_api_base.mjs" in frozen_map
+
+
+def test_release_desktop_uses_windows_gui_subsystem() -> None:
+    desktop_entrypoint = _read("client/src-tauri/src/main.rs")
+
+    assert desktop_entrypoint.startswith(
+        '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]\n'
+    )
 
 
 @pytest.mark.parametrize(

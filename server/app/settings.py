@@ -15,6 +15,9 @@ ProviderName = Literal["apilio", "metaso", "cos", "deepseek"]
 
 SETTINGS_KEY_ENV = "VIDEO_REPLICA_SETTINGS_KEY"
 LOCAL_KEYSTORE_DISABLED_ENV = "VIDEO_REPLICA_DISABLE_LOCAL_KEYSTORE"
+ACCEPTANCE_PAYMENT_USER_ID_ENV = "VIDEO_REPLICA_ACCEPTANCE_PAYMENT_USER_ID"
+ACCEPTANCE_PAYMENT_AMOUNT_FEN_ENV = "VIDEO_REPLICA_ACCEPTANCE_PAYMENT_AMOUNT_FEN"
+MAX_ACCEPTANCE_PAYMENT_FEN = 500
 SECRET_FIELDS = (
     "api_key",
     "access_key_id",
@@ -321,6 +324,22 @@ class SettingsRepository:
             "recharge_step_fen": int(row["recharge_step_fen"]),
         }
 
+    def read_customer_billing_settings(self, *, user_id: str) -> dict[str, int]:
+        """Return billing settings with an optional per-customer sale price.
+
+        Customized customers recharge in whole-video increments.  The global
+        minimum remains the lower bound and is rounded up to the next whole
+        video at that customer's price.
+        """
+        billing = self.read_billing_settings()
+        row = self.conn.execute(
+            "SELECT unit_price_fen FROM customer_unit_prices WHERE user_id = %s",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return billing
+        return apply_customer_unit_price(billing, unit_price_fen=int(row["unit_price_fen"]))
+
 
 def fernet_from_environment() -> Fernet:
     return Fernet(settings_encryption_key().encode("ascii"))
@@ -423,6 +442,63 @@ def validate_billing_settings(
         raise ValueError("min_recharge_fen must be divisible by recharge_step_fen")
     if recharge_step_fen % internal_base_unit_price_fen != 0:
         raise ValueError("recharge_step_fen must be divisible by internal_base_unit_price_fen")
+
+
+def apply_customer_unit_price(
+    billing: dict[str, int],
+    *,
+    unit_price_fen: int,
+) -> dict[str, int]:
+    """Apply a positive per-customer sale price to a global billing snapshot."""
+    if isinstance(unit_price_fen, bool) or not isinstance(unit_price_fen, int):
+        raise ValueError("unit_price_fen must be an integer fen value")
+    if unit_price_fen < 1 or unit_price_fen > 2_147_483_647:
+        raise ValueError("unit_price_fen must be between 1 and 2147483647")
+    global_minimum = billing["min_recharge_fen"]
+    effective_minimum = ((global_minimum + unit_price_fen - 1) // unit_price_fen) * unit_price_fen
+    return {
+        **billing,
+        "charged_unit_price_fen": unit_price_fen,
+        "min_recharge_fen": effective_minimum,
+        "recharge_step_fen": unit_price_fen,
+    }
+
+
+def effective_customer_billing_settings(
+    billing: dict[str, int],
+    *,
+    user_id: str,
+) -> dict[str, int]:
+    """Return the normal billing snapshot or a tightly scoped real-chain rehearsal.
+
+    The deployment-only override never changes stored global pricing.  It is
+    enabled only when both environment variables are present, only for the
+    exact customer id, and can never raise the real payment above five yuan.
+    """
+    configured_user_id = os.environ.get(ACCEPTANCE_PAYMENT_USER_ID_ENV, "").strip()
+    raw_amount = os.environ.get(ACCEPTANCE_PAYMENT_AMOUNT_FEN_ENV, "").strip()
+    if not configured_user_id and not raw_amount:
+        return dict(billing)
+    if not configured_user_id or not raw_amount:
+        raise ValueError("acceptance payment requires both user id and amount")
+    try:
+        amount_fen = int(raw_amount)
+    except ValueError as exc:
+        raise ValueError("acceptance payment amount must be integer fen") from exc
+    if amount_fen < 1 or amount_fen > MAX_ACCEPTANCE_PAYMENT_FEN:
+        raise ValueError(
+            f"acceptance payment amount must be between 1 and {MAX_ACCEPTANCE_PAYMENT_FEN} fen"
+        )
+    if user_id != configured_user_id:
+        return dict(billing)
+    charged_unit_price_fen = billing["charged_unit_price_fen"]
+    if amount_fen % charged_unit_price_fen != 0:
+        raise ValueError("acceptance payment amount must be divisible by the configured unit price")
+    return {
+        **billing,
+        "min_recharge_fen": amount_fen,
+        "recharge_step_fen": amount_fen,
+    }
 
 
 def mask_config(config: dict[str, str]) -> dict[str, str]:

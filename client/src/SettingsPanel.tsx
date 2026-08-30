@@ -1,13 +1,18 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import {
+  customerVisibleErrorMessage,
+  getControlSettings,
   getSettings,
   type ProviderName,
   type ProviderSettings,
   type ProviderTestResult,
   type RuntimeSettings,
   type SettingsSnapshot,
+  testControlProviderConnection,
   testProviderConnection,
+  updateControlProviderSettings,
+  updateControlRuntimeSettings,
   updateProviderSettings,
   updateRuntimeSettings,
 } from "./api";
@@ -34,19 +39,19 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
     fields: [{ name: "api_key", label: "API Key", secret: true }],
   },
   apilio: {
-    title: "模型服务",
+    title: "视频拆解与图像服务",
     fields: [
       { name: "api_key", label: "图像模型 API Key", secret: true },
       {
         name: "analysis_api_key",
-        label: "视频分析 API Key（可选）",
+        label: "视频拆解 API Key（可选）",
         secret: true,
       },
     ],
   },
   cos: {
-    title: "腾讯云存储",
-    note: "区域固定为上海 · 测试连接会创建并删除一个临时对象",
+    title: "素材库",
+    note: "存储区域固定为上海 · 测试连接会创建并删除一个临时对象",
     fields: [
       { name: "access_key_id", label: "SecretId", secret: true },
       { name: "secret_access_key", label: "SecretKey", secret: true },
@@ -55,20 +60,24 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
   },
   deepseek: {
     title: "AI 改写",
-    note: "二创口播稿改写 · 默认 DeepSeek，只需 API Key",
+    note: "二创口播稿改写 · 只需 API Key",
     fields: [{ name: "api_key", label: "API Key", secret: true }],
   },
 };
 
 const PROVIDER_ORDER: ProviderName[] = ["metaso", "apilio", "cos", "deepseek"];
 
-export function SettingsPanel() {
+export function SettingsPanel({
+  source = "workspace",
+}: {
+  source?: "workspace" | "control";
+}) {
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
-    getSettings()
+    (source === "control" ? getControlSettings() : getSettings())
       .then((snapshot) => {
         if (isMounted) {
           setSettings(snapshot);
@@ -78,9 +87,10 @@ export function SettingsPanel() {
       .catch((error: unknown) => {
         if (isMounted) {
           setLoadError(
-            error instanceof Error
-              ? error.message
-              : "无法读取设置。请确认本地服务已启动且当前身份具有管理员权限。",
+            customerVisibleErrorMessage(
+              error,
+              "无法读取设置。请确认本地服务已启动且当前身份具有管理员权限。",
+            ),
           );
         }
       });
@@ -88,7 +98,7 @@ export function SettingsPanel() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [source]);
 
   async function saveProvider(
     provider: ProviderName,
@@ -96,7 +106,9 @@ export function SettingsPanel() {
   ) {
     const finalConfig =
       provider === "cos" ? { ...config, region: COS_REGION } : config;
-    const updated = await updateProviderSettings(provider, finalConfig);
+    const updated = await (source === "control"
+      ? updateControlProviderSettings(provider, finalConfig)
+      : updateProviderSettings(provider, finalConfig));
     setSettings((current) =>
       current
         ? {
@@ -108,7 +120,9 @@ export function SettingsPanel() {
   }
 
   async function saveRuntime(runtime: RuntimeSettings) {
-    const updated = await updateRuntimeSettings(runtime);
+    const updated = await (source === "control"
+      ? updateControlRuntimeSettings(runtime)
+      : updateRuntimeSettings(runtime));
     setSettings((current) =>
       current ? { ...current, runtime: updated } : current,
     );
@@ -135,6 +149,11 @@ export function SettingsPanel() {
             provider={provider}
             settings={settings.providers[provider]}
             onSave={saveProvider}
+            onTest={
+              source === "control"
+                ? testControlProviderConnection
+                : testProviderConnection
+            }
           />
         ))}
       </div>
@@ -148,6 +167,7 @@ function ProviderForm({
   provider,
   settings,
   onSave,
+  onTest,
 }: {
   provider: ProviderName;
   settings: ProviderSettings;
@@ -155,6 +175,7 @@ function ProviderForm({
     provider: ProviderName,
     config: Record<string, string>,
   ) => Promise<void>;
+  onTest: (provider: ProviderName) => Promise<ProviderTestResult>;
 }) {
   const form = PROVIDER_FORMS[provider];
   const [values, setValues] = useState<Record<string, string>>(() =>
@@ -204,14 +225,15 @@ function ProviderForm({
     setIsTesting(true);
     setStatus("");
     try {
-      const result = await testProviderConnection(provider);
+      const result = await onTest(provider);
       setStatus(testResultLabel(result));
       setStatusTone(result.status === "not_configured" ? "error" : "ok");
     } catch (error) {
       setStatus(
-        error instanceof Error
-          ? error.message
-          : "测试失败，请检查网络与管理员权限后重试。",
+        customerVisibleErrorMessage(
+          error,
+          "测试失败，请检查网络与管理员权限后重试。",
+        ),
       );
       setStatusTone("error");
     } finally {
@@ -383,8 +405,8 @@ function RuntimeForm({
         </label>
       </div>
       <p className="storage-provider-hint">
-        人物图片、参考视频与首帧保存到腾讯云存储（需在桶 CORS 放行
-        PUT/GET/HEAD，否则上传失败）；生成的成片仅保存在本机。
+        人物图片、参考视频与首帧保存到素材库（需放行 PUT/GET/HEAD
+        跨域访问，否则上传失败）；生成的成片仅保存在本机。
       </p>
       <div className="form-actions">
         <button disabled={isSaving} type="submit">

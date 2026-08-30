@@ -5,12 +5,10 @@ const REQUEST_TIMEOUT_MS = 5_000;
 // Cloud/storage operations (diagnostics, presigned URLs, archive prechecks)
 // may legitimately take much longer than a normal API round-trip.
 const CLOUD_OP_TIMEOUT_MS = 60_000;
-// Must exceed the server's per-call provider timeout (240s: analysis.py,
-// first_frames.py image edits) plus overhead; the real Gemini shot-card call
-// measured 71–91s on a 15s video, gpt-image contact sheets 1–3 minutes.
-const ANALYSIS_TIMEOUT_MS = 300_000;
 export const SESSION_EXPIRED_EVENT = "video-replica:session-expired";
 let internalAccessToken: string | null = null;
+let customerSessionToken: string | null = null;
+let customerSessionOwner: symbol | null = null;
 // The customer-production admin session exchanges its CSRF value once and
 // keeps it in memory only.  Control-plane writes share this value so the
 // existing account/billing screens stay behind the same per-operator session
@@ -55,7 +53,7 @@ function apiBaseUrl(): string {
 }
 
 type HealthResponse = components["schemas"]["HealthResponse"];
-export type UserRole = "employee" | "admin" | "auditor";
+export type UserRole = "employee" | "admin" | "auditor" | "customer";
 
 export type CurrentUser = {
   id: string;
@@ -133,6 +131,8 @@ export type BillingSettings = {
 };
 
 export type ControlSettings = {
+  providers: Record<ProviderName, ProviderSettings>;
+  runtime: RuntimeSettings;
   billing: BillingSettings;
   zpay: {
     provider: "zpay";
@@ -261,17 +261,21 @@ export type Project = {
   status: string;
   reference_asset_id: string | null;
   reference_upload_status: "NOT_STARTED" | "UPLOAD_PENDING" | "READY";
-  analysis_status: "NOT_READY" | "PENDING" | "READY";
+  analysis_status: "NOT_READY" | "PENDING" | "READY" | "FAILED";
+  analysis_task_id?: string | null;
+  analysis_error_message?: string | null;
+  analysis_retryable?: boolean;
 };
 
 export type UploadIntent = {
   asset_id: string;
   project_id: string;
   storage_key: string;
-  method: "PUT";
-  url: string;
+  method: "PUT" | null;
+  url: string | null;
   headers: Record<string, string>;
-  expires_at: string;
+  expires_at: string | null;
+  upload_required?: boolean;
 };
 
 export type CompletedUpload = {
@@ -294,6 +298,23 @@ export type AnalysisVersion = {
   payload: Record<string, unknown>;
   created_by_user_id: string | null;
   created_at: string;
+};
+
+export type AnalysisTask = {
+  id: string;
+  project_id: string;
+  asset_id: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  attempt: number;
+  result_version_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  failure_phase: string | null;
+  retryable: boolean;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
 };
 
 export type AnalysisProvider = "apilio_gemini" | "fake_gemini";
@@ -448,6 +469,21 @@ export type FirstFrameModel = "gpt-image-2" | "nano-banana-pro-2k";
 export type GenerateFirstFramesInput =
   components["schemas"]["GenerateFirstFramesRequest"];
 
+export interface FirstFrameTask {
+  id: string;
+  project_id: string;
+  status: DurableImageTaskStatus;
+  attempt: number;
+  result_version_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  retryable: boolean;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
 export type FirstFrameCandidate = {
   asset_id: string;
   storage_key: string;
@@ -543,6 +579,38 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 export function setInternalAccessToken(token: string | null): void {
   const normalized = token?.trim() ?? "";
   internalAccessToken = normalized || null;
+}
+
+/** Keep the active customer workspace credential in memory only.  The Tauri
+ * vault remains the persistent source; this bridge exists solely so the
+ * shared project/analysis/generation API adapter can authenticate requests. */
+export function setCustomerSessionToken(token: string | null): void {
+  const normalized = token?.trim() ?? "";
+  customerSessionToken = normalized || null;
+  customerSessionOwner = null;
+}
+
+/** Attach a workspace-owned credential and return an ownership-aware cleanup.
+ * A stale React tree may unmount after a newer tree has already attached its
+ * token; its cleanup must not clear the newer session. */
+export function attachCustomerSessionToken(token: string): () => void {
+  const normalized = token.trim();
+  if (!normalized) {
+    throw new Error("Customer session token is required");
+  }
+  const owner = Symbol("customer-workspace-session");
+  customerSessionToken = normalized;
+  customerSessionOwner = owner;
+  return () => {
+    if (customerSessionOwner === owner) {
+      customerSessionToken = null;
+      customerSessionOwner = null;
+    }
+  };
+}
+
+function workspaceAccessToken(): string | null {
+  return internalAccessToken ?? customerSessionToken;
 }
 
 export async function getWallet(): Promise<WalletSnapshot> {
@@ -692,6 +760,38 @@ export async function updateControlBillingSettings(input: {
   );
 }
 
+export async function updateControlProviderSettings(
+  provider: ProviderName,
+  config: Record<string, string>,
+): Promise<ProviderSettings> {
+  return requestControlJson<ProviderSettings>(
+    `/api/control/settings/providers/${provider}`,
+    "保存服务设置失败",
+    { method: "PUT", body: JSON.stringify({ config }) },
+  );
+}
+
+export async function testControlProviderConnection(
+  provider: ProviderName,
+): Promise<ProviderTestResult> {
+  return requestControlJson<ProviderTestResult>(
+    `/api/control/settings/providers/${provider}/connection-test`,
+    "连接测试失败",
+    { method: "POST" },
+    CLOUD_OP_TIMEOUT_MS,
+  );
+}
+
+export async function updateControlRuntimeSettings(
+  runtime: RuntimeSettings,
+): Promise<RuntimeSettings> {
+  return requestControlJson<RuntimeSettings>(
+    "/api/control/settings/runtime",
+    "保存运行设置失败",
+    { method: "PATCH", body: JSON.stringify(runtime) },
+  );
+}
+
 export async function syncControlRechargeOrder(
   orderNo: string,
 ): Promise<RechargeOrder> {
@@ -743,7 +843,7 @@ export async function compileGenerationPrompt(
 ): Promise<GenerationVersion> {
   return requestGenerationJson<GenerationVersion>(
     `/api/projects/${encodeURIComponent(projectId)}/prompts/compile`,
-    "编译 H3 Prompt 失败",
+    "编译视频生成提示词失败",
     { method: "POST", body: JSON.stringify(input) },
   );
 }
@@ -754,7 +854,7 @@ export async function reviseGenerationPrompt(
 ): Promise<GenerationVersion> {
   return requestGenerationJson<GenerationVersion>(
     `/api/projects/${encodeURIComponent(projectId)}/prompts/revise`,
-    "保存 H3 Prompt 失败",
+    "保存视频生成提示词失败",
     { method: "POST", body: JSON.stringify(input) },
   );
 }
@@ -810,7 +910,7 @@ export async function getLatestGenerationPrompt(
 ): Promise<GenerationVersionState> {
   return requestGenerationJson<GenerationVersionState>(
     `/api/projects/${encodeURIComponent(projectId)}/prompts/latest`,
-    "读取 H3 Prompt 失败",
+    "读取视频生成提示词失败",
   );
 }
 
@@ -820,7 +920,7 @@ export async function lockGenerationPrompt(
 ): Promise<GenerationVersion> {
   return requestGenerationJson<GenerationVersion>(
     `/api/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptVersionId)}/lock`,
-    "锁定 H3 Prompt 失败",
+    "锁定视频生成提示词失败",
     { method: "POST" },
   );
 }
@@ -1060,6 +1160,7 @@ export async function createVideoUploadIntent(
   projectId: string,
   file: File,
 ): Promise<UploadIntent> {
+  const sha256 = await sha256ForUpload(file);
   return requestApiJson<UploadIntent>(
     "/api/assets/upload-intent",
     "创建上传任务失败",
@@ -1072,6 +1173,7 @@ export async function createVideoUploadIntent(
         // application/octet-stream from some file managers) is normalized.
         content_type: contentTypeForFile(file),
         size_bytes: file.size,
+        ...(sha256 === null ? {} : { sha256 }),
       }),
     },
   );
@@ -1083,7 +1185,20 @@ export function uploadReferenceVideo(
   onProgress: (progressPercent: number) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  return uploadStorageObject(intent, file, onProgress, "上传参考视频", signal);
+  if (
+    intent.upload_required === false ||
+    intent.method !== "PUT" ||
+    !intent.url
+  ) {
+    return Promise.reject(new Error("该视频已存在，无需重复上传。"));
+  }
+  return uploadStorageObject(
+    { headers: intent.headers, method: intent.method, url: intent.url },
+    file,
+    onProgress,
+    "上传参考视频",
+    signal,
+  );
 }
 
 export function uploadIdentityAsset(
@@ -1116,11 +1231,9 @@ function uploadStorageObject(
     if (isLocalApiUploadUrl(intent.url)) {
       // Mirror requestApi's auth precedence: the internal Bearer token wins in
       // managed mode; otherwise fall back to the development identity header.
-      if (internalAccessToken) {
-        request.setRequestHeader(
-          "Authorization",
-          `Bearer ${internalAccessToken}`,
-        );
+      const accessToken = workspaceAccessToken();
+      if (accessToken) {
+        request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
       } else if (devUserId) {
         request.setRequestHeader("X-Dev-User-Id", devUserId);
       }
@@ -1151,7 +1264,7 @@ function uploadStorageObject(
         new Error(
           isLocalApiUploadUrl(intent.url)
             ? `${errorPrefix}失败（无法连接本地服务，请确认服务已启动）`
-            : `${errorPrefix}失败（无法连接对象存储；请检查网络，以及云存储桶是否已配置跨域 CORS 规则）`,
+            : `${errorPrefix}失败（无法连接素材库；请检查网络以及素材库跨域访问规则）`,
         ),
       );
     request.ontimeout = () =>
@@ -1382,17 +1495,16 @@ export async function completeVideoUpload(
 export async function startVideoAnalysis(
   projectId: string,
   assetId: string,
-): Promise<AnalysisVersion> {
+): Promise<AnalysisTask> {
   const errorPrefix = "启动视频拆解失败";
   try {
-    return await requestApiJson<AnalysisVersion>(
-      `/api/projects/${encodeURIComponent(projectId)}/analysis`,
+    return await requestApiJson<AnalysisTask>(
+      `/api/projects/${encodeURIComponent(projectId)}/analysis-tasks`,
       errorPrefix,
       {
         method: "POST",
         body: JSON.stringify({ asset_id: assetId, reuse_existing: true }),
       },
-      ANALYSIS_TIMEOUT_MS,
     );
   } catch (error) {
     throw analysisRequestError(error, errorPrefix);
@@ -1495,6 +1607,7 @@ export interface SimpleCharacterResult {
   character_version_id: string;
   publication_hash: string;
   contact_sheet_asset_id: string;
+  generation_source: "image_provider" | "local_placeholder";
   views: SimpleCharacterView[];
 }
 
@@ -1504,7 +1617,46 @@ export interface SimpleLibraryEntry {
   owner_user_id: string | null;
   status: string;
   contact_sheet_asset_id: string | null;
+  generation_source: "image_provider" | "local_placeholder" | null;
   views: SimpleCharacterView[];
+}
+
+export type DurableImageTaskStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "SUBMISSION_UNCERTAIN";
+
+export interface CharacterSheetTask {
+  id: string;
+  project_id: string | null;
+  identity_id: string | null;
+  operation: "CREATE" | "REGENERATE";
+  display_name: string;
+  status: DurableImageTaskStatus;
+  attempt: number;
+  result_identity_id: string | null;
+  result_version_id: string | null;
+  result: SimpleCharacterResult | SimpleCharacterRegenerationResult | null;
+  error_code: string | null;
+  error_message: string | null;
+  retryable: boolean;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+function createRequestKey(prefix: string): string {
+  const suffix =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${suffix}`;
+}
+
+function waitForPoll(delayMs = 1_500): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
 }
 
 export async function uploadSimpleCharacter(
@@ -1519,17 +1671,20 @@ export async function uploadSimpleCharacter(
   if (personaName.trim()) {
     form.append("persona_name", personaName.trim());
   }
+  form.append("idempotency_key", createRequestKey("character-sheet"));
   const endpoint = projectId
-    ? `/api/simple-characters/${encodeURIComponent(projectId)}/generate`
-    : "/api/simple-characters/generate";
-  return requestApiJson<SimpleCharacterResult>(
+    ? `/api/simple-characters/tasks/${encodeURIComponent(projectId)}/generate`
+    : "/api/simple-characters/tasks/generate";
+  const task = await requestApiJson<CharacterSheetTask>(
     endpoint,
     "一键创建人物失败",
     { method: "POST", body: form },
-    // AI contact-sheet generation is a synchronous gpt-image edit that can
-    // take 1–3 minutes; use the provider-sized budget, not the 60s cloud one.
-    ANALYSIS_TIMEOUT_MS,
   );
+  const completed = await waitForCharacterSheetTask(task.id);
+  if (!completed.result || !("persona_id" in completed.result)) {
+    throw new Error("人物生成任务完成但结果不可用，请重新读取人物库。");
+  }
+  return completed.result as SimpleCharacterResult;
 }
 
 export async function renamePersonIdentity(
@@ -1565,6 +1720,7 @@ export interface SimpleCharacterRegenerationResult {
   version_number: number;
   publication_hash: string;
   contact_sheet_asset_id: string;
+  generation_source: "image_provider" | "local_placeholder";
   views: SimpleCharacterView[];
 }
 
@@ -1573,14 +1729,51 @@ export interface SimpleCharacterRegenerationResult {
 export async function regenerateContactSheet(
   identityId: string,
 ): Promise<SimpleCharacterRegenerationResult> {
-  return requestApiJson<SimpleCharacterRegenerationResult>(
-    `/api/simple-characters/identities/${encodeURIComponent(
-      identityId,
-    )}/regenerate-contact-sheet`,
+  const form = new FormData();
+  form.append("idempotency_key", createRequestKey("character-regenerate"));
+  const task = await requestApiJson<CharacterSheetTask>(
+    `/api/simple-characters/identities/${encodeURIComponent(identityId)}/regenerate-contact-sheet-task`,
     "重新生成多视图失败",
-    { method: "POST" },
-    ANALYSIS_TIMEOUT_MS,
+    { method: "POST", body: form },
   );
+  const completed = await waitForCharacterSheetTask(task.id);
+  if (!completed.result || !("previous_version_id" in completed.result)) {
+    throw new Error("人物重新生成任务完成但结果不可用，请重新读取人物库。");
+  }
+  return completed.result as SimpleCharacterRegenerationResult;
+}
+
+export async function getCharacterSheetTask(
+  taskId: string,
+): Promise<CharacterSheetTask> {
+  return requestApiJson<CharacterSheetTask>(
+    `/api/simple-characters/task-status/${encodeURIComponent(taskId)}`,
+    "读取人物生成任务失败",
+  );
+}
+
+export async function getLatestCharacterSheetTask(): Promise<CharacterSheetTask | null> {
+  return requestApiJson<CharacterSheetTask | null>(
+    "/api/simple-characters/tasks/active-or-latest",
+    "读取人物生成任务失败",
+  );
+}
+
+export async function waitForCharacterSheetTask(
+  taskId: string,
+): Promise<CharacterSheetTask> {
+  const deadline = Date.now() + 20 * 60_000;
+  while (Date.now() < deadline) {
+    const task = await getCharacterSheetTask(taskId);
+    if (task.status === "SUCCEEDED") {
+      return task;
+    }
+    if (task.status === "FAILED" || task.status === "SUBMISSION_UNCERTAIN") {
+      throw new Error(task.error_message || "人物生成失败，请重新提交。");
+    }
+    await waitForPoll();
+  }
+  throw new Error("人物生成仍在后台进行，请稍后返回人物库查看。");
 }
 
 export async function listSimpleCharacterLibrary(): Promise<
@@ -1831,14 +2024,69 @@ export async function generateFirstFrames(
   projectId: string,
   input: GenerateFirstFramesInput,
 ): Promise<AnalysisVersion> {
-  // Image edits sit at 1–3 minutes (first_frames.py keeps a 240s per-call
-  // budget), so reuse the analysis-sized budget instead of the 5s default.
-  return requestApiJson<AnalysisVersion>(
-    `/api/projects/${encodeURIComponent(projectId)}/first-frames/generate`,
+  const task = await requestApiJson<FirstFrameTask>(
+    `/api/projects/${encodeURIComponent(projectId)}/first-frame-tasks`,
     "生成人物置换首帧失败",
-    { method: "POST", body: JSON.stringify(input) },
-    ANALYSIS_TIMEOUT_MS,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ...input,
+        idempotency_key: createRequestKey("first-frame"),
+      }),
+    },
   );
+  return resumeFirstFrameGeneration(projectId, task.id);
+}
+
+export async function resumeFirstFrameGeneration(
+  projectId: string,
+  taskId: string,
+): Promise<AnalysisVersion> {
+  const completed = await waitForFirstFrameTask(taskId);
+  const latest = await getLatestProjectFirstFrames(projectId);
+  if (
+    !completed.result_version_id ||
+    !latest.version ||
+    latest.version.id !== completed.result_version_id
+  ) {
+    throw new Error("首帧任务已完成，但最新版本尚未同步，请重新读取项目。");
+  }
+  return latest.version;
+}
+
+export async function getFirstFrameTask(
+  taskId: string,
+): Promise<FirstFrameTask> {
+  return requestApiJson<FirstFrameTask>(
+    `/api/first-frame-tasks/${encodeURIComponent(taskId)}`,
+    "读取首帧生成任务失败",
+  );
+}
+
+export async function getLatestFirstFrameTask(
+  projectId: string,
+): Promise<FirstFrameTask | null> {
+  return requestApiJson<FirstFrameTask | null>(
+    `/api/projects/${encodeURIComponent(projectId)}/first-frame-tasks/active-or-latest`,
+    "读取首帧生成任务失败",
+  );
+}
+
+export async function waitForFirstFrameTask(
+  taskId: string,
+): Promise<FirstFrameTask> {
+  const deadline = Date.now() + 20 * 60_000;
+  while (Date.now() < deadline) {
+    const task = await getFirstFrameTask(taskId);
+    if (task.status === "SUCCEEDED") {
+      return task;
+    }
+    if (task.status === "FAILED" || task.status === "SUBMISSION_UNCERTAIN") {
+      throw new Error(task.error_message || "首帧生成失败，请重新提交。");
+    }
+    await waitForPoll();
+  }
+  throw new Error("首帧仍在后台生成，请稍后返回项目查看。");
 }
 
 export async function confirmFirstFrame(
@@ -2276,7 +2524,100 @@ type RequestError = Error & {
   status?: number;
   code?: string;
   retryable?: boolean;
+  requestId?: string;
 };
+
+const BRANDED_SERVICE_ERRORS: ReadonlyArray<{
+  pattern: RegExp;
+  message: string;
+}> = [
+  {
+    pattern: /metaso|minimax|(?:^|[_\W])h3(?:$|[_\W])/i,
+    message: "视频生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern:
+      /(?:apilio|gemini).*(?:首帧|图像|人物)|(?:首帧|图像|人物).*(?:apilio|gemini)/i,
+    message: "首帧生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /apilio|gemini/i,
+    message: "视频拆解服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /gpt[\s_-]*image|nano[\s_-]*banana/i,
+    message: "首帧生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /(?:^|[_\W])cos(?:$|[_\W])|腾讯云|myqcloud/i,
+    message: "素材库暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /deepseek/i,
+    message: "文案优化服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /zpay/i,
+    message:
+      "在线支付暂时不可用，请稍后重试；如已扣款，请勿重复支付并联系客服。",
+  },
+];
+
+const CUSTOMER_ACCOUNT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  ACTIVATION_UNAVAILABLE: "该激活码当前无法使用，请确认激活码仍在有效期内。",
+  PAIRING_UNAVAILABLE: "该激活码当前无法用于设备配对，请联系服务人员处理。",
+  SESSION_CONFLICT: "另一台设备当前正在使用此账号，请稍后重新打开应用。",
+  SESSION_EXPIRED: "登录已过期，请重新登录。",
+  SESSION_REPLACED: "当前设备已被另一台设备切换下线，请重新登录。",
+  DEVICE_REVOKED: "当前设备凭据已失效，请联系服务人员处理。",
+};
+
+/**
+ * Keep provider identifiers and raw diagnostics intact inside the API and
+ * server, while translating only messages that are about to reach a product
+ * surface. Non-branded, actionable errors are preserved verbatim.
+ */
+export function customerVisibleErrorMessage(
+  error: unknown,
+  fallback = "操作失败，请稍后重试。",
+): string {
+  let message = "";
+  let code = "";
+  let requestId = "";
+
+  if (typeof error === "string") {
+    message = error.trim();
+  } else if (error instanceof Error) {
+    message = error.message.trim();
+    const details = error as RequestError;
+    code = details.code?.trim() ?? "";
+    requestId = details.requestId?.trim() ?? "";
+  } else if (isRecord(error)) {
+    message = typeof error.message === "string" ? error.message.trim() : "";
+    code = typeof error.code === "string" ? error.code.trim() : "";
+    requestId =
+      typeof error.requestId === "string" ? error.requestId.trim() : "";
+  }
+
+  const accountMessage = CUSTOMER_ACCOUNT_ERROR_MESSAGES[code];
+  if (accountMessage) {
+    return accountMessage;
+  }
+  if (error instanceof TypeError) {
+    return fallback;
+  }
+
+  const source = `${code} ${message}`;
+  const branded = BRANDED_SERVICE_ERRORS.find(({ pattern }) =>
+    pattern.test(source),
+  );
+  if (!branded) {
+    return message || fallback;
+  }
+  return requestId
+    ? `${branded.message} 问题编号：${requestId}`
+    : branded.message;
+}
 
 async function responseErrorDetails(
   response: Response,
@@ -2297,10 +2638,14 @@ async function responseErrorDetails(
       // The code must survive even when the server omits a message, otherwise
       // callers cannot tell a retryable failure from a permanent one.
       return {
-        message:
-          typeof message === "string" && message.trim()
-            ? `${errorPrefix}：${message}（${response.status}）`
-            : `${errorPrefix}（${response.status}）`,
+        message: customerVisibleErrorMessage({
+          message:
+            typeof message === "string" && message.trim()
+              ? `${errorPrefix}：${message}（${response.status}）`
+              : `${errorPrefix}（${response.status}）`,
+          code,
+          requestId: response.headers?.get?.("X-Request-Id") ?? "",
+        }),
         code,
         retryable,
       };
@@ -2370,8 +2715,9 @@ async function requestApi(
   if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  if (internalAccessToken) {
-    headers.set("Authorization", `Bearer ${internalAccessToken}`);
+  const accessToken = workspaceAccessToken();
+  if (accessToken) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
   } else if (devUserId) {
     headers.set("X-Dev-User-Id", devUserId);
   }
@@ -2383,7 +2729,7 @@ async function requestApi(
       signal: controller.signal,
     });
     if (response.status === 401 && path !== "/api/auth/me") {
-      emitSessionExpired();
+      await emitWorkspaceSessionEnded(response);
     }
     return response;
   } catch (error) {
@@ -2411,10 +2757,48 @@ function emitSessionExpired() {
   window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
 
+async function emitWorkspaceSessionEnded(response: Response) {
+  if (customerSessionToken === null) {
+    emitSessionExpired();
+    return;
+  }
+
+  let lifecycle = CUSTOMER_SESSION_EXPIRED_EVENT;
+  try {
+    const requestId = response.headers.get("X-Request-Id") ?? "";
+    const error = await customerErrorFromResponse(response.clone(), requestId);
+    lifecycle = customerLifecycleEvent(error.kind) ?? lifecycle;
+  } catch {
+    // A proxy/non-JSON 401 still ends the customer session, but it must never
+    // be guessed as a permanent device revocation (which would wipe the
+    // long-lived device credential).
+  }
+  window.dispatchEvent(new Event(lifecycle));
+}
+
 function contentTypeForFile(file: File): "video/mp4" | "video/quicktime" {
   return file.name.toLowerCase().endsWith(".mov")
     ? "video/quicktime"
     : "video/mp4";
+}
+
+async function sha256ForUpload(file: File): Promise<string | null> {
+  try {
+    if (!globalThis.crypto?.subtle || typeof file.arrayBuffer !== "function") {
+      return null;
+    }
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      await file.arrayBuffer(),
+    );
+    return Array.from(new Uint8Array(digest), (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
+  } catch {
+    // Deduplication is an optimization.  Older WebViews must still be able to
+    // upload normally when Web Crypto cannot hash a local File.
+    return null;
+  }
 }
 
 function contentTypeForIdentityFile(file: File): string {
@@ -2455,7 +2839,8 @@ function isCurrentUser(value: unknown): value is CurrentUser {
     typeof value.display_name === "string" &&
     (value.role === "employee" ||
       value.role === "admin" ||
-      value.role === "auditor")
+      value.role === "auditor" ||
+      value.role === "customer")
   );
 }
 
@@ -2735,7 +3120,7 @@ async function customerErrorFromResponse(
     ? Number.parseInt(retryAfterHeader, 10)
     : undefined;
   return new CustomerApiError({
-    message,
+    message: customerVisibleErrorMessage({ message, code, requestId }),
     status: response.status,
     code,
     requestId,
@@ -2876,6 +3261,21 @@ export async function customerActivate(
     },
   );
   return body;
+}
+
+export type CustomerRecoverInput = Omit<
+  CustomerActivateInput,
+  "activationCode"
+>;
+
+/** Recover a previously bound desktop from its durable opaque fingerprint.
+ * The server only succeeds while the associated activation code, account and
+ * device binding are all active; first-time users still need an activation
+ * code. The empty code is an explicit wire-level recovery signal. */
+export function customerRecover(
+  input: CustomerRecoverInput,
+): Promise<CustomerActivationResponse> {
+  return customerActivate({ ...input, activationCode: "" });
 }
 
 export type CustomerLoginResult = {
@@ -3055,6 +3455,33 @@ export async function customerApproveDevicePairing(
   return body;
 }
 
+/** Remove an invalid pending/approved pairing request from the customer's
+ * active list while the server preserves its audit row. */
+export async function customerDismissDevicePairing(
+  credential: CustomerDeviceCredential,
+  pairingId: string,
+): Promise<void> {
+  await customerJson<undefined>(
+    `/api/customer/device-pairings/${encodeURIComponent(pairingId)}`,
+    { method: "DELETE", credential },
+  );
+}
+
+export type CustomerActivationCodeReset =
+  components["schemas"]["ActivationCodeResetResponse"];
+
+/** Rotate the active account code. The replacement plaintext is returned
+ * once and must never be persisted by the desktop. */
+export async function customerResetActivationCode(
+  credential: CustomerDeviceCredential,
+): Promise<CustomerActivationCodeReset> {
+  const { body } = await customerJson<CustomerActivationCodeReset>(
+    "/api/customer/activation-code/reset",
+    { method: "POST", credential },
+  );
+  return body;
+}
+
 /** The customer's wallet balance + billing (GET /api/customer/wallet). */
 export async function customerGetWallet(
   credential: CustomerSessionCredential,
@@ -3062,6 +3489,33 @@ export async function customerGetWallet(
   const { body } = await customerJson<WalletSnapshot>("/api/customer/wallet", {
     credential,
   });
+  return body;
+}
+
+export type CustomerProfile = components["schemas"]["CustomerProfileResponse"];
+
+export async function customerGetProfile(
+  credential: CustomerSessionCredential,
+): Promise<CustomerProfile> {
+  const { body } = await customerJson<CustomerProfile>(
+    "/api/customer/profile",
+    { credential },
+  );
+  return body;
+}
+
+export async function customerUpdateProfile(
+  credential: CustomerSessionCredential,
+  displayName: string,
+): Promise<CustomerProfile> {
+  const { body } = await customerJson<CustomerProfile>(
+    "/api/customer/profile",
+    {
+      method: "PATCH",
+      credential,
+      body: { display_name: displayName },
+    },
+  );
   return body;
 }
 
@@ -3107,6 +3561,22 @@ export async function customerCreateRechargeOrder(
   return body;
 }
 
+export type CustomerPaymentCode =
+  components["schemas"]["CustomerPaymentCodeResponse"];
+
+/** Generate a display-only QR code for an owned pending recharge order.
+ * Merchant credentials and signed protocol fields remain on the server. */
+export async function customerCreateRechargePaymentCode(
+  credential: CustomerSessionCredential,
+  orderNo: string,
+): Promise<CustomerPaymentCode> {
+  const { body } = await customerJson<CustomerPaymentCode>(
+    `/api/customer/recharge-orders/${encodeURIComponent(orderNo)}/payment-code`,
+    { method: "POST", credential },
+  );
+  return body;
+}
+
 /** Poll a customer recharge order
  * (GET /api/customer/recharge-orders/{order_no}). */
 export async function customerGetRechargeOrder(
@@ -3118,4 +3588,16 @@ export async function customerGetRechargeOrder(
     { credential },
   );
   return body;
+}
+
+/** Close an unpaid recharge order. The server keeps the CLOSED row for
+ * callback reconciliation and audit instead of physically deleting it. */
+export async function customerCloseRechargeOrder(
+  credential: CustomerSessionCredential,
+  orderNo: string,
+): Promise<void> {
+  await customerJson<undefined>(
+    `/api/customer/recharge-orders/${encodeURIComponent(orderNo)}`,
+    { method: "DELETE", credential },
+  );
 }

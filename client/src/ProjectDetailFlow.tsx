@@ -22,7 +22,6 @@ import {
   readAnalysisPayload,
   readFirstFrameSelectionPayload,
   reviseGenerationPrompt,
-  type SourceFrameCharacterFeatures,
   saveShotCards,
   selectCharacterReferences,
 } from "./api";
@@ -41,14 +40,16 @@ type ProjectDetailFlowProps = {
 
 type GenerationPhase = "idle" | "running" | "done";
 
-// 源帧特征缺省建议值与服务端 DEFAULT_SOURCE_FRAME_FEATURES 对齐：
-// 自动匹配推荐集依赖这组特征（正面半身 → FRONT_HALF + 正脸）。
-const DEFAULT_FEATURE_SUGGESTION: SourceFrameCharacterFeatures = {
-  orientation: "FRONT",
-  shot_size: "HALF_BODY",
-  face_visible: true,
-  body_completeness: "UPPER_BODY",
+type IdempotencyEnvelope = {
+  fingerprint: string;
+  key: string;
 };
+
+function newIdempotencyKey(): string {
+  return typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
+    : `detail-flow-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 // 项目详情流程页 = 「解析提示词 → 源画面与人物 → 人物置换首帧 → 自定义文案 → 提交生成」
 // 五段自上而下滚动。人物参考在角色与源画面就绪后全自动匹配（无人工确认）；
@@ -93,7 +94,9 @@ export function ProjectDetailFlow({
   const [referenceRetryCount, setReferenceRetryCount] = useState(0);
   const upstreamBusyRef = useRef<Set<string>>(new Set());
   const [, forceRender] = useState(0);
-  const idempotencyKeyRef = useRef("");
+  // 只有完全相同的提交内容才复用幂等键。上一次请求响应丢失时可安全重试；
+  // 用户修改文案、Prompt、首帧或生成参数后必须生成新键，避免服务端 409。
+  const idempotencyEnvelopeRef = useRef<IdempotencyEnvelope | null>(null);
   const autoMatchAttemptedRef = useRef<Set<string>>(new Set());
   const onBusyChangeRef = useRef(onBusyChange);
   onBusyChangeRef.current = onBusyChange;
@@ -392,22 +395,30 @@ export function ProjectDetailFlow({
         promptVersionId = revised.id;
       }
       const locked = await lockGenerationPrompt(project.id, promptVersionId);
-      if (!idempotencyKeyRef.current) {
-        idempotencyKeyRef.current =
-          typeof globalThis.crypto?.randomUUID === "function"
-            ? globalThis.crypto.randomUUID()
-            : `detail-flow-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      }
-      const batch = await createGenerationBatch(project.id, {
+      const batchRequest = {
         quantity: 1,
         prompt_version_id: locked.id,
         first_frame_asset_id: firstFrameAssetId,
         output_duration_seconds: duration,
-        resolution: "768P",
-        idempotency_key: idempotencyKeyRef.current,
+        resolution: "768P" as const,
         provider: defaultBatchProvider(),
-        fake_audio_quality: "ok",
+        fake_audio_quality: "ok" as const,
+      };
+      const fingerprint = JSON.stringify({
+        ...batchRequest,
+        script_text: scriptText.trim(),
       });
+      if (idempotencyEnvelopeRef.current?.fingerprint !== fingerprint) {
+        idempotencyEnvelopeRef.current = {
+          fingerprint,
+          key: newIdempotencyKey(),
+        };
+      }
+      const batch = await createGenerationBatch(project.id, {
+        ...batchRequest,
+        idempotency_key: idempotencyEnvelopeRef.current.key,
+      });
+      idempotencyEnvelopeRef.current = null;
       setGenerationPhase("done");
       setGenerationMessage("生成任务已创建，正在前往任务记录…");
       onBatchCreated(batch);
@@ -421,16 +432,12 @@ export function ProjectDetailFlow({
 
   function renderPaidWarning() {
     if (!limits) {
-      return (
-        <p className="flow-cost">
-          本次将创建 1 个付费视频生成任务（MiniMax H3）。
-        </p>
-      );
+      return <p className="flow-cost">本次将创建 1 个付费视频生成任务。</p>;
     }
     const cost = limits.estimated_cost_per_task;
     return (
       <p className="flow-cost">
-        本次将创建 1 个付费视频生成任务（MiniMax H3）
+        本次将创建 1 个付费视频生成任务
         {cost == null ? "" : `，预计费用 ¥${cost.toFixed(2)}`}。
       </p>
     );
@@ -463,6 +470,11 @@ export function ProjectDetailFlow({
     }
     return <p className="status-note">正在自动匹配人物参考…</p>;
   })();
+  const outputDurationSeconds = defaultDurationSeconds();
+  const scriptCharacterCount = countSpeechCharacters(scriptText);
+  const suggestedScriptMin = outputDurationSeconds * 4;
+  const suggestedScriptMax = outputDurationSeconds * 5;
+  const scriptTooLong = scriptCharacterCount > suggestedScriptMax;
 
   return (
     <section aria-label={`生成流程 ${project.name}`} className="flow-page">
@@ -523,13 +535,13 @@ export function ProjectDetailFlow({
           variant="inline"
         />
         <SourceFrameSelection
-          featureSuggestion={DEFAULT_FEATURE_SUGGESTION}
           onBusyChange={(busy) => markUpstreamBusy("source-frame", busy)}
           onSelectionChange={handleSourceFrameChange}
           projectId={project.id}
           readOnly={readOnly}
           referenceAssetId={project.reference_asset_id}
           simplified
+          videoDurationSeconds={outputDurationSeconds}
         />
       </fieldset>
 
@@ -566,6 +578,19 @@ export function ProjectDetailFlow({
             onChange={(event) => setScriptText(event.target.value)}
             value={scriptText}
           />
+          <p className="status-note">
+            当前 {scriptCharacterCount} 字；{outputDurationSeconds} 秒成片建议约{" "}
+            {suggestedScriptMin}–{suggestedScriptMax} 字（按每秒 4–5 字）。
+          </p>
+          {scriptTooLong ? (
+            <p
+              aria-label="文案时长警告"
+              className="settings-error"
+              role="alert"
+            >
+              当前文案已超过建议上限，口播可能无法在成片时长内完整表达；建议缩短后再提交。
+            </p>
+          ) : null}
         </div>
       </fieldset>
 
@@ -610,4 +635,8 @@ export function ProjectDetailFlow({
       </fieldset>
     </section>
   );
+}
+
+function countSpeechCharacters(value: string): number {
+  return Array.from(value.replace(/\s+/g, "")).length;
 }

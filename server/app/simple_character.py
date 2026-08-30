@@ -48,7 +48,12 @@ from app.db_portable import BusinessConnection
 from app.first_frames import FirstFrameModel, ImageInput, ImageProvider, ImageProviderFailed
 from app.media import storage_key_from_uri
 from app.permissions import require_project_access, write_audit
-from app.storage import StorageAdapter, StorageBackendUnavailable
+from app.storage import (
+    StorageAdapter,
+    StorageBackendUnavailable,
+    StoragePermissionError,
+    StoredObject,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +142,7 @@ class SimpleCharacterCreationResult:
     character_version_id: str
     publication_hash: str
     contact_sheet_asset_id: str
+    generation_source: str
     views: tuple[SimpleCharacterView, ...]
 
 
@@ -149,7 +155,206 @@ class SimpleLibraryEntry:
     owner_user_id: str | None
     status: str
     contact_sheet_asset_id: str | None
+    generation_source: str | None
     views: tuple[SimpleCharacterView, ...]
+
+
+@dataclass(frozen=True)
+class PreparedSimpleCharacterGeneration:
+    version_id: str
+    contact_content: bytes
+    contact_content_type: str
+    contact_source: str
+
+
+@dataclass(frozen=True)
+class PreparedSimpleCharacterAsset:
+    asset_id: str
+    stored: StoredObject
+
+
+@dataclass(frozen=True)
+class PreparedSimpleCharacterViewStorage:
+    view_type: RequiredCharacterViewType
+    character_asset_id: str
+    generated_asset: PreparedSimpleCharacterAsset
+    approved_asset: PreparedSimpleCharacterAsset
+    review_id: str
+    content: bytes
+
+
+@dataclass(frozen=True)
+class PreparedSimpleCharacterPublication:
+    """All provider and object-storage output needed for a short DB publish."""
+
+    identity_id: str
+    persona_id: str
+    generation: PreparedSimpleCharacterGeneration
+    source_asset: PreparedSimpleCharacterAsset
+    contact_sheet_asset: PreparedSimpleCharacterAsset
+    views: tuple[PreparedSimpleCharacterViewStorage, ...]
+    object_keys: tuple[str, ...]
+
+
+def prepare_simple_character_generation(
+    *,
+    source_content: bytes,
+    source_content_type: str,
+    display_name: str,
+    image_provider: ImageProvider | None,
+) -> PreparedSimpleCharacterGeneration:
+    """Run the slow contact-sheet provider before opening a fenced write."""
+
+    _validate_source(source_content, source_content_type, display_name)
+    version_id = str(uuid.uuid4())
+    normalized_content_type = source_content_type.split(";", 1)[0].strip().lower()
+    contact_content, contact_content_type, contact_source = _generate_contact_sheet_content(
+        image_provider,
+        source_content=source_content,
+        source_content_type=normalized_content_type,
+        version_id=version_id,
+    )
+    return PreparedSimpleCharacterGeneration(
+        version_id=version_id,
+        contact_content=contact_content,
+        contact_content_type=contact_content_type,
+        contact_source=contact_source,
+    )
+
+
+def store_simple_character_publication(
+    *,
+    actor: CurrentUser,
+    storage: StorageAdapter,
+    source_content: bytes,
+    source_content_type: str,
+    display_name: str,
+    generation: PreparedSimpleCharacterGeneration,
+) -> PreparedSimpleCharacterPublication:
+    """Upload every character object before opening the customer write fence."""
+
+    _validate_source(source_content, source_content_type, display_name)
+    identity_id = str(uuid.uuid4())
+    persona_id = str(uuid.uuid4())
+    version_id = generation.version_id
+    object_keys: list[str] = []
+    try:
+        source_asset_id = str(uuid.uuid4())
+        source_type = source_content_type.split(";", 1)[0].strip().lower()
+        source_key = identity_asset_key(
+            owner_user_id=actor.id,
+            identity_id=identity_id,
+            purpose="source",
+            asset_id=source_asset_id,
+            extension=SIMPLE_UPLOAD_ALLOWED_TYPES[source_type],
+        )
+        source_stored = storage.put_object(
+            source_key,
+            source_content,
+            content_type=source_content_type,
+        )
+        object_keys.append(source_stored.key)
+
+        contact_asset_id = str(uuid.uuid4())
+        contact_key = _contact_sheet_asset_key(
+            owner_user_id=actor.id,
+            identity_id=identity_id,
+            asset_id=contact_asset_id,
+            extension=SIMPLE_CONTACT_SHEET_EXTENSIONS[generation.contact_content_type],
+        )
+        contact_stored = storage.put_object(
+            contact_key,
+            generation.contact_content,
+            content_type=generation.contact_content_type,
+        )
+        object_keys.append(contact_stored.key)
+
+        cropped_views = crop_contact_sheet_views(
+            generation.contact_content,
+            generation.contact_content_type,
+        )
+        prepared_views: list[PreparedSimpleCharacterViewStorage] = []
+        for view_type in REQUIRED_CHARACTER_VIEW_TYPES:
+            character_asset_id = str(uuid.uuid4())
+            generated_asset_id = str(uuid.uuid4())
+            approved_asset_id = str(uuid.uuid4())
+            content = cropped_views.get(view_type) if cropped_views else None
+            if content is None:
+                content = deterministic_png(
+                    f"{version_id}:{view_type}".encode(),
+                    width=1024,
+                    height=1536,
+                )
+            generated_key = generated_character_asset_key(
+                owner_user_id=actor.id,
+                persona_id=persona_id,
+                version_id=version_id,
+                view_type=view_type,
+                asset_id=generated_asset_id,
+            )
+            generated_stored = storage.put_object(
+                generated_key,
+                content,
+                content_type="image/png",
+            )
+            object_keys.append(generated_stored.key)
+            approved_key = approved_character_asset_key(
+                owner_user_id=actor.id,
+                persona_id=persona_id,
+                version_id=version_id,
+                view_type=view_type,
+                asset_id=approved_asset_id,
+            )
+            approved_stored = storage.put_object(
+                approved_key,
+                content,
+                content_type="image/png",
+            )
+            object_keys.append(approved_stored.key)
+            prepared_views.append(
+                PreparedSimpleCharacterViewStorage(
+                    view_type=view_type,
+                    character_asset_id=character_asset_id,
+                    generated_asset=PreparedSimpleCharacterAsset(
+                        asset_id=generated_asset_id,
+                        stored=generated_stored,
+                    ),
+                    approved_asset=PreparedSimpleCharacterAsset(
+                        asset_id=approved_asset_id,
+                        stored=approved_stored,
+                    ),
+                    review_id=str(uuid.uuid4()),
+                    content=content,
+                )
+            )
+    except (
+        KeyError,
+        OSError,
+        StorageBackendUnavailable,
+        StoragePermissionError,
+        ValueError,
+    ) as exc:
+        cleanup_publication_objects(storage, object_keys)
+        raise character_error(
+            503,
+            "SIMPLE_CHARACTER_STORAGE_UNAVAILABLE",
+            "人物素材写入素材库失败，请稍后重试。",
+        ) from exc
+    return PreparedSimpleCharacterPublication(
+        identity_id=identity_id,
+        persona_id=persona_id,
+        generation=generation,
+        source_asset=PreparedSimpleCharacterAsset(
+            asset_id=source_asset_id,
+            stored=source_stored,
+        ),
+        contact_sheet_asset=PreparedSimpleCharacterAsset(
+            asset_id=contact_asset_id,
+            stored=contact_stored,
+        ),
+        views=tuple(prepared_views),
+        object_keys=tuple(object_keys),
+    )
 
 
 def create_simple_character(
@@ -163,6 +368,8 @@ def create_simple_character(
     display_name: str,
     persona_name: str,
     image_provider: ImageProvider | None = None,
+    prepared_generation: PreparedSimpleCharacterGeneration | None = None,
+    prepared_publication: PreparedSimpleCharacterPublication | None = None,
 ) -> SimpleCharacterCreationResult:
     """Create and publish a character from a single uploaded image.
 
@@ -186,25 +393,40 @@ def create_simple_character(
         )
     _validate_source(source_content, source_content_type, display_name)
 
+    if prepared_publication is not None:
+        prepared_generation = prepared_publication.generation
     now_iso = _utc_now_iso()
-    identity_id = str(uuid.uuid4())
-    persona_id = str(uuid.uuid4())
-    version_id = str(uuid.uuid4())
+    identity_id = (
+        prepared_publication.identity_id if prepared_publication is not None else str(uuid.uuid4())
+    )
+    persona_id = (
+        prepared_publication.persona_id if prepared_publication is not None else str(uuid.uuid4())
+    )
+    version_id = (
+        prepared_generation.version_id if prepared_generation is not None else str(uuid.uuid4())
+    )
 
     # Provider-backed generation can take tens of seconds, so render the
     # contact sheet BEFORE opening the write transaction to avoid holding
     # the SQLite lock for the whole image generation.
-    normalized_content_type = source_content_type.split(";", 1)[0].strip().lower()
-    contact_content, contact_content_type, contact_source = _generate_contact_sheet_content(
-        image_provider,
-        source_content=source_content,
-        source_content_type=normalized_content_type,
-        version_id=version_id,
-    )
+    if prepared_generation is None:
+        normalized_content_type = source_content_type.split(";", 1)[0].strip().lower()
+        contact_content, contact_content_type, contact_source = _generate_contact_sheet_content(
+            image_provider,
+            source_content=source_content,
+            source_content_type=normalized_content_type,
+            version_id=version_id,
+        )
+    else:
+        contact_content = prepared_generation.contact_content
+        contact_content_type = prepared_generation.contact_content_type
+        contact_source = prepared_generation.contact_source
 
     # Track every object written during the transaction so a rollback can
     # remove orphaned storage objects, mirroring the publication flow.
-    attempted_keys: list[str] = []
+    attempted_keys = (
+        list(prepared_publication.object_keys) if prepared_publication is not None else []
+    )
 
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -217,6 +439,9 @@ def create_simple_character(
             content=source_content,
             content_type=source_content_type,
             attempted_keys=attempted_keys,
+            prepared_asset=(
+                prepared_publication.source_asset if prepared_publication is not None else None
+            ),
         )
         _insert_identity(
             conn,
@@ -266,6 +491,9 @@ def create_simple_character(
             attempted_keys=attempted_keys,
             contact_content=contact_content,
             contact_content_type=contact_content_type,
+            prepared_views=(
+                prepared_publication.views if prepared_publication is not None else None
+            ),
         )
         contact_sheet_asset_id = _store_contact_sheet_asset(
             conn,
@@ -277,6 +505,11 @@ def create_simple_character(
             content_type=contact_content_type,
             generation_source=contact_source,
             attempted_keys=attempted_keys,
+            prepared_asset=(
+                prepared_publication.contact_sheet_asset
+                if prepared_publication is not None
+                else None
+            ),
         )
         publication_hash, assets_by_view = _publish_views(
             conn,
@@ -287,8 +520,12 @@ def create_simple_character(
             persona_snapshot_json=persona_snapshot_json,
             views=views,
             contact_sheet_asset_id=contact_sheet_asset_id,
+            generation_source=contact_source,
             now_iso=now_iso,
             attempted_keys=attempted_keys,
+            prepared_views=(
+                prepared_publication.views if prepared_publication is not None else None
+            ),
         )
 
         write_audit(
@@ -308,11 +545,13 @@ def create_simple_character(
         conn.commit()
     except HTTPException:
         conn.rollback()
-        cleanup_publication_objects(storage, attempted_keys)
+        if prepared_publication is None:
+            cleanup_publication_objects(storage, attempted_keys)
         raise
     except Exception as exc:  # pragma: no cover - defensive guard
         conn.rollback()
-        cleanup_publication_objects(storage, attempted_keys)
+        if prepared_publication is None:
+            cleanup_publication_objects(storage, attempted_keys)
         raise character_error(
             500,
             "SIMPLE_CHARACTER_CREATION_FAILED",
@@ -325,6 +564,7 @@ def create_simple_character(
         character_version_id=version_id,
         publication_hash=publication_hash,
         contact_sheet_asset_id=contact_sheet_asset_id,
+        generation_source=contact_source,
         views=tuple(
             SimpleCharacterView(
                 view_type=view_type,
@@ -399,6 +639,7 @@ def list_simple_library(
                 ),
                 status=str(identity_rows[0]["identity_status"]),
                 contact_sheet_asset_id=_snapshot_contact_sheet_asset_id(latest),
+                generation_source=_snapshot_generation_source(latest),
                 views=views,
             )
         )
@@ -421,6 +662,19 @@ def _snapshot_contact_sheet_asset_id(row: sqlite3.Row | None) -> str | None:
         return None
     value = snapshot.get("contact_sheet_asset_id")
     return value if isinstance(value, str) and value else None
+
+
+def _snapshot_generation_source(row: sqlite3.Row | None) -> str | None:
+    if row is None or row["snapshot_json"] is None:
+        return None
+    try:
+        snapshot = json.loads(str(row["snapshot_json"]))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(snapshot, dict):
+        return None
+    value = snapshot.get("generation_source")
+    return value if value in {"image_provider", "local_placeholder"} else None
 
 
 def _group_by_identity(rows: list[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:
@@ -486,6 +740,7 @@ class SimpleCharacterRegenerationResult:
     version_number: int
     publication_hash: str
     contact_sheet_asset_id: str
+    generation_source: str
     views: tuple[SimpleCharacterView, ...]
 
 
@@ -496,6 +751,8 @@ def regenerate_simple_character_contact_sheet(
     identity_id: str,
     storage: StorageAdapter,
     image_provider: ImageProvider | None = None,
+    prepared_generation: PreparedSimpleCharacterGeneration | None = None,
+    source_content_override: bytes | None = None,
 ) -> SimpleCharacterRegenerationResult:
     """Re-run the single-photo five-view generation and publish a new version.
 
@@ -567,26 +824,38 @@ def regenerate_simple_character_contact_sheet(
     # Read the photo and render the new sheet before opening the write
     # transaction (same policy as create_simple_character) so provider calls
     # never hold the SQLite lock.
-    try:
-        source_content = storage.get_object(storage_key_from_uri(str(source_asset["storage_uri"])))
-    except (StorageBackendUnavailable, OSError, ValueError, KeyError) as exc:
-        raise character_error(
-            503,
-            "SIMPLE_CHARACTER_SOURCE_UNAVAILABLE",
-            "原始授权照片读取失败，请稍后重试。",
-        ) from exc
+    if source_content_override is None:
+        try:
+            source_content = storage.get_object(
+                storage_key_from_uri(str(source_asset["storage_uri"]))
+            )
+        except (StorageBackendUnavailable, OSError, ValueError, KeyError) as exc:
+            raise character_error(
+                503,
+                "SIMPLE_CHARACTER_SOURCE_UNAVAILABLE",
+                "原始授权照片读取失败，请稍后重试。",
+            ) from exc
+    else:
+        source_content = source_content_override
     source_content_type = (
         str(source_asset["content_type"] or "image/png").split(";", 1)[0].strip().lower()
     )
 
-    version_id = str(uuid.uuid4())
-    now_iso = _utc_now_iso()
-    contact_content, contact_content_type, contact_source = _generate_contact_sheet_content(
-        image_provider,
-        source_content=source_content,
-        source_content_type=source_content_type,
-        version_id=version_id,
+    version_id = (
+        prepared_generation.version_id if prepared_generation is not None else str(uuid.uuid4())
     )
+    now_iso = _utc_now_iso()
+    if prepared_generation is None:
+        contact_content, contact_content_type, contact_source = _generate_contact_sheet_content(
+            image_provider,
+            source_content=source_content,
+            source_content_type=source_content_type,
+            version_id=version_id,
+        )
+    else:
+        contact_content = prepared_generation.contact_content
+        contact_content_type = prepared_generation.contact_content_type
+        contact_source = prepared_generation.contact_source
 
     attempted_keys: list[str] = []
     try:
@@ -632,6 +901,7 @@ def regenerate_simple_character_contact_sheet(
             persona_snapshot_json=persona_snapshot_json,
             views=views,
             contact_sheet_asset_id=contact_sheet_asset_id,
+            generation_source=contact_source,
             now_iso=now_iso,
             attempted_keys=attempted_keys,
         )
@@ -673,6 +943,7 @@ def regenerate_simple_character_contact_sheet(
         version_number=next_version_number,
         publication_hash=publication_hash,
         contact_sheet_asset_id=contact_sheet_asset_id,
+        generation_source=contact_source,
         views=tuple(
             SimpleCharacterView(
                 view_type=view_type,
@@ -919,18 +1190,23 @@ def _store_source_asset(
     content: bytes,
     content_type: str,
     attempted_keys: list[str],
+    prepared_asset: PreparedSimpleCharacterAsset | None = None,
 ) -> str:
-    asset_id = str(uuid.uuid4())
-    extension = SIMPLE_UPLOAD_ALLOWED_TYPES[content_type.split(";", 1)[0].strip().lower()]
-    key = identity_asset_key(
-        owner_user_id=actor.id,
-        identity_id=identity_id,
-        purpose="source",
-        asset_id=asset_id,
-        extension=extension,
-    )
-    stored = storage.put_object(key, content, content_type=content_type)
-    attempted_keys.append(stored.key)
+    if prepared_asset is None:
+        asset_id = str(uuid.uuid4())
+        extension = SIMPLE_UPLOAD_ALLOWED_TYPES[content_type.split(";", 1)[0].strip().lower()]
+        key = identity_asset_key(
+            owner_user_id=actor.id,
+            identity_id=identity_id,
+            purpose="source",
+            asset_id=asset_id,
+            extension=extension,
+        )
+        stored = storage.put_object(key, content, content_type=content_type)
+        attempted_keys.append(stored.key)
+    else:
+        asset_id = prepared_asset.asset_id
+        stored = prepared_asset.stored
     conn.execute(
         """
         INSERT INTO assets (
@@ -1399,6 +1675,7 @@ def _generate_and_approve_views(
     attempted_keys: list[str],
     contact_content: bytes,
     contact_content_type: str,
+    prepared_views: tuple[PreparedSimpleCharacterViewStorage, ...] | None = None,
 ) -> list[_ApprovedView]:
     """Store one approved per-view asset for each required view type.
 
@@ -1408,25 +1685,36 @@ def _generate_and_approve_views(
     deterministic placeholder fallback so the flow never blocks on cropping.
     """
     cropped_views = crop_contact_sheet_views(contact_content, contact_content_type)
+    prepared_by_view = (
+        {view.view_type: view for view in prepared_views} if prepared_views is not None else {}
+    )
     views: list[_ApprovedView] = []
     for view_type in REQUIRED_CHARACTER_VIEW_TYPES:
-        character_asset_id = str(uuid.uuid4())
-        generated_asset_id = str(uuid.uuid4())
-        review_id = str(uuid.uuid4())
-        content = cropped_views.get(view_type) if cropped_views else None
-        if content is None:
-            content = deterministic_png(
-                f"{version_id}:{view_type}".encode(), width=1024, height=1536
+        prepared_view = prepared_by_view.get(view_type)
+        if prepared_view is None:
+            character_asset_id = str(uuid.uuid4())
+            generated_asset_id = str(uuid.uuid4())
+            review_id = str(uuid.uuid4())
+            content = cropped_views.get(view_type) if cropped_views else None
+            if content is None:
+                content = deterministic_png(
+                    f"{version_id}:{view_type}".encode(), width=1024, height=1536
+                )
+            generated_key = generated_character_asset_key(
+                owner_user_id=actor.id,
+                persona_id=persona_id,
+                version_id=version_id,
+                view_type=view_type,
+                asset_id=generated_asset_id,
             )
-        generated_key = generated_character_asset_key(
-            owner_user_id=actor.id,
-            persona_id=persona_id,
-            version_id=version_id,
-            view_type=view_type,
-            asset_id=generated_asset_id,
-        )
-        stored = storage.put_object(generated_key, content, content_type="image/png")
-        attempted_keys.append(stored.key)
+            stored = storage.put_object(generated_key, content, content_type="image/png")
+            attempted_keys.append(stored.key)
+        else:
+            character_asset_id = prepared_view.character_asset_id
+            generated_asset_id = prepared_view.generated_asset.asset_id
+            review_id = prepared_view.review_id
+            content = prepared_view.content
+            stored = prepared_view.generated_asset.stored
         conn.execute(
             """
             INSERT INTO assets (
@@ -1501,21 +1789,35 @@ def _publish_views(
     persona_snapshot_json: str,
     views: list[_ApprovedView],
     contact_sheet_asset_id: str,
+    generation_source: str,
     now_iso: str,
     attempted_keys: list[str],
+    prepared_views: tuple[PreparedSimpleCharacterViewStorage, ...] | None = None,
 ) -> tuple[str, dict[str, dict[str, object]]]:
     assets_by_view: dict[str, dict[str, object]] = {}
+    prepared_by_view = (
+        {view.view_type: view for view in prepared_views} if prepared_views is not None else {}
+    )
     for view in views:
-        approved_asset_id = str(uuid.uuid4())
-        approved_key = approved_character_asset_key(
-            owner_user_id=actor.id,
-            persona_id=persona_id,
-            version_id=version_id,
-            view_type=view.view_type,
-            asset_id=approved_asset_id,
-        )
-        stored = storage.put_object(approved_key, view.content, content_type=view.content_type)
-        attempted_keys.append(stored.key)
+        prepared_view = prepared_by_view.get(view.view_type)
+        if prepared_view is None:
+            approved_asset_id = str(uuid.uuid4())
+            approved_key = approved_character_asset_key(
+                owner_user_id=actor.id,
+                persona_id=persona_id,
+                version_id=version_id,
+                view_type=view.view_type,
+                asset_id=approved_asset_id,
+            )
+            stored = storage.put_object(
+                approved_key,
+                view.content,
+                content_type=view.content_type,
+            )
+            attempted_keys.append(stored.key)
+        else:
+            approved_asset_id = prepared_view.approved_asset.asset_id
+            stored = prepared_view.approved_asset.stored
         conn.execute(
             """
             INSERT INTO assets (
@@ -1575,6 +1877,7 @@ def _publish_views(
         "assets_by_view": assets_by_view,
         "character_version_id": version_id,
         "contact_sheet_asset_id": contact_sheet_asset_id,
+        "generation_source": generation_source,
         "persona_snapshot_hash": hashlib.sha256(persona_snapshot_json.encode()).hexdigest(),
         "published_at": now_iso,
         "required_view_types": list(REQUIRED_CHARACTER_VIEW_TYPES),
@@ -1615,11 +1918,17 @@ def _generate_contact_sheet_content(
 ) -> tuple[bytes, str, str]:
     """Render the single five-view contact sheet image.
 
-    Returns ``(content, content_type, generation_source)``. Whenever no
-    provider is configured, the provider call fails, or its output is not a
-    usable raster image, a locally composed placeholder is used instead so
-    uploads never block on image generation.
+    Returns ``(content, content_type, generation_source)``. An explicitly
+    unconfigured local runtime may use a deterministic placeholder. Once a
+    real provider is selected, failures and unusable output stay visible and
+    must never be published as a successful customer character.
     """
+    if provider is None or getattr(provider, "provider_name", "") == "fake":
+        return (
+            contact_sheet_placeholder_png(f"contact-sheet:{version_id}".encode()),
+            "image/png",
+            "local_placeholder",
+        )
     if provider is not None:
         extension = SIMPLE_CONTACT_SHEET_EXTENSIONS.get(source_content_type, ".png")
         try:
@@ -1635,19 +1944,23 @@ def _generate_contact_sheet_content(
                 output_count=1,
             )
         except ImageProviderFailed as exc:
-            logger.warning("Contact sheet provider failed, using placeholder: %s", exc)
+            raise character_error(
+                502,
+                "CONTACT_SHEET_PROVIDER_FAILED",
+                "人物多视图生成服务暂不可用，请稍后重试。",
+            ) from exc
         else:
             if generated:
                 image = generated[0]
                 content_type = image.content_type.split(";", 1)[0].strip().lower()
                 if image.content and content_type in SIMPLE_CONTACT_SHEET_EXTENSIONS:
                     return image.content, content_type, "image_provider"
-            logger.warning("Contact sheet provider returned no usable image, using placeholder")
-    return (
-        contact_sheet_placeholder_png(f"contact-sheet:{version_id}".encode()),
-        "image/png",
-        "local_placeholder",
-    )
+            raise character_error(
+                502,
+                "CONTACT_SHEET_PROVIDER_INVALID_OUTPUT",
+                "人物多视图生成服务返回了无效图片，请稍后重试。",
+            )
+    raise AssertionError("configured image provider path must return or raise")
 
 
 def _contact_sheet_asset_key(
@@ -1671,17 +1984,22 @@ def _store_contact_sheet_asset(
     content_type: str,
     generation_source: str,
     attempted_keys: list[str],
+    prepared_asset: PreparedSimpleCharacterAsset | None = None,
 ) -> str:
     """Persist the five-view contact sheet as its own downloadable asset."""
-    asset_id = str(uuid.uuid4())
-    key = _contact_sheet_asset_key(
-        owner_user_id=actor.id,
-        identity_id=identity_id,
-        asset_id=asset_id,
-        extension=SIMPLE_CONTACT_SHEET_EXTENSIONS[content_type],
-    )
-    stored = storage.put_object(key, content, content_type=content_type)
-    attempted_keys.append(stored.key)
+    if prepared_asset is None:
+        asset_id = str(uuid.uuid4())
+        key = _contact_sheet_asset_key(
+            owner_user_id=actor.id,
+            identity_id=identity_id,
+            asset_id=asset_id,
+            extension=SIMPLE_CONTACT_SHEET_EXTENSIONS[content_type],
+        )
+        stored = storage.put_object(key, content, content_type=content_type)
+        attempted_keys.append(stored.key)
+    else:
+        asset_id = prepared_asset.asset_id
+        stored = prepared_asset.stored
     conn.execute(
         """
         INSERT INTO assets (

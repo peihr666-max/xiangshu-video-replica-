@@ -214,4 +214,67 @@ describe("CustomerWalletPanel", () => {
       fetchMock.mock.calls.some(([, options]) => options?.method === "POST"),
     ).toBe(false);
   });
+
+  it("deletes an unpaid order from the visible list after closing it", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = vi.fn((url: string, options?: RequestInit) => {
+      if (url.endsWith("/api/customer/wallet")) {
+        return jsonResponse(wallet);
+      }
+      if (url.endsWith("/api/customer/wallet/transactions")) {
+        return jsonResponse({ items: [], total: 0, limit: 20, offset: 0 });
+      }
+      if (url.endsWith("/api/customer/recharge-orders/order-pending")) {
+        return options?.method === "DELETE"
+          ? Promise.resolve({
+              ok: true,
+              status: 204,
+              json: async () => undefined,
+            })
+          : jsonResponse({
+              order_no: "order-pending",
+              status: "PENDING",
+              amount_fen: 10000,
+              credits: 10,
+              channel: "wxpay",
+              created_at: "2026-08-28 10:00:00",
+              paid_at: null,
+            });
+      }
+      if (url.endsWith("/api/customer/recharge-orders")) {
+        return jsonResponse({
+          items: [
+            {
+              order_no: "order-pending",
+              status: "PENDING",
+              amount_fen: 10000,
+              credits: 10,
+              channel: "wxpay",
+              created_at: "2026-08-28 10:00:00",
+              paid_at: null,
+            },
+          ],
+          total: 1,
+          limit: 20,
+          offset: 0,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
+    );
+
+    expect(await screen.findByText("order-pending")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除待支付订单" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/customer/recharge-orders/order-pending"),
+        expect.objectContaining({ method: "DELETE" }),
+      ),
+    );
+    expect(screen.queryByText("order-pending")).toBeNull();
+  });
 });

@@ -10,6 +10,7 @@ import {
   completeVideoUpload,
   createProject,
   createVideoUploadIntent,
+  customerVisibleErrorMessage,
   deleteProject,
   listProjects,
   type Project,
@@ -44,7 +45,7 @@ type ProjectsPageProps = {
 
 const UPLOAD_STAGE_LABELS: Record<UploadStage, string> = {
   creating_project: "正在创建项目",
-  creating_upload: "正在准备上传",
+  creating_upload: "正在检查是否已上传",
   uploading: "正在上传视频",
   verifying: "正在校验视频",
   analyzing: "正在启动拆解",
@@ -90,6 +91,8 @@ export function ProjectsPage({
   const [editingProjectId, setEditingProjectId] = useState("");
   const [editingProjectName, setEditingProjectName] = useState("");
   const [renamingProjectId, setRenamingProjectId] = useState("");
+  const [retryingAnalysisProjectId, setRetryingAnalysisProjectId] =
+    useState("");
   const [rebindProject, setRebindProject] = useState<Project | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const rebindFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -119,8 +122,13 @@ export function ProjectsPage({
         const nextProjects = await listProjects();
         setProjects(nextProjects);
         setProjectsError("");
-      } catch {
-        setProjectsError("项目列表暂不可用，请检查本地服务连接。");
+      } catch (error) {
+        setProjectsError(
+          customerVisibleErrorMessage(
+            error,
+            "项目列表暂不可用，请检查网络连接后重试。",
+          ),
+        );
       } finally {
         if (!options.silent) {
           setIsProjectsLoading(false);
@@ -174,19 +182,23 @@ export function ProjectsPage({
           (await createProject(defaultProjectName(file.name)));
         updateUpload(key, { projectId: project.id, stage: "creating_upload" });
         const intent = await createVideoUploadIntent(project.id, file);
-        updateUpload(key, { stage: "uploading" });
-        await uploadReferenceVideo(
-          intent,
-          file,
-          (progress) => {
-            updateUpload(key, { progress });
-          },
-          controller.signal,
-        );
-        updateUpload(key, { stage: "verifying" });
-        const completed = await completeVideoUpload(intent.asset_id);
+        let completedAssetId = intent.asset_id;
+        if (intent.upload_required !== false) {
+          updateUpload(key, { stage: "uploading" });
+          await uploadReferenceVideo(
+            intent,
+            file,
+            (progress) => {
+              updateUpload(key, { progress });
+            },
+            controller.signal,
+          );
+          updateUpload(key, { stage: "verifying" });
+          const completed = await completeVideoUpload(intent.asset_id);
+          completedAssetId = completed.asset_id;
+        }
         updateUpload(key, { stage: "analyzing" });
-        await startVideoAnalysis(project.id, completed.asset_id);
+        await startVideoAnalysis(project.id, completedAssetId);
         updateUpload(key, { stage: null, progress: null });
         await loadProjects({ silent: true });
       } catch (error) {
@@ -277,7 +289,7 @@ export function ProjectsPage({
       return;
     }
     const confirmed = window.confirm(
-      `删除“${project.name}”？该项目的参考视频、分析结果、脚本、生成记录与生成产物将一并删除，且无法恢复。云端文件若暂时无法清理，将在审计日志中记录。`,
+      `删除“${project.name}”？该项目的参考视频、拆解结果、脚本、生成记录与生成产物将一并删除，且无法恢复。素材库文件若暂时无法清理，将在审计日志中记录。`,
     );
     if (!confirmed) {
       return;
@@ -297,6 +309,26 @@ export function ProjectsPage({
       );
     } finally {
       setDeletingProjectId("");
+    }
+  }
+
+  async function handleRetryAnalysis(project: Project) {
+    if (!project.reference_asset_id || !canWrite) {
+      return;
+    }
+    setRetryingAnalysisProjectId(project.id);
+    setProjectActionError("");
+    setProjectActionMessage("");
+    try {
+      await startVideoAnalysis(project.id, project.reference_asset_id);
+      setProjectActionMessage(`项目“${project.name}”已重新提交拆解。`);
+      await loadProjects({ silent: true });
+    } catch (error) {
+      setProjectActionError(
+        error instanceof Error ? error.message : "重新拆解失败，请稍后重试。",
+      );
+    } finally {
+      setRetryingAnalysisProjectId("");
     }
   }
 
@@ -356,6 +388,11 @@ export function ProjectsPage({
     }
     if (project.analysis_status === "READY") {
       return <span className="project-badge project-badge--ready">已拆解</span>;
+    }
+    if (project.analysis_status === "FAILED") {
+      return (
+        <span className="project-badge project-badge--failed">拆解失败</span>
+      );
     }
     return <span className="project-badge project-badge--pending">待拆解</span>;
   }
@@ -543,6 +580,12 @@ export function ProjectsPage({
                           <strong>{project.name}</strong>
                           <span className="projects-list__meta">
                             {renderStatusBadge(project)}
+                            {project.analysis_status === "FAILED" &&
+                            project.analysis_error_message ? (
+                              <span className="projects-list__analysis-error">
+                                {project.analysis_error_message}
+                              </span>
+                            ) : null}
                           </span>
                         </button>
                         <div className="projects-list__actions">
@@ -562,6 +605,22 @@ export function ProjectsPage({
                               type="button"
                             >
                               查看流程
+                            </button>
+                          ) : null}
+                          {project.analysis_status === "FAILED" &&
+                          project.analysis_retryable !== false &&
+                          canWrite ? (
+                            <button
+                              className="projects-generate-button"
+                              disabled={
+                                retryingAnalysisProjectId === project.id
+                              }
+                              onClick={() => void handleRetryAnalysis(project)}
+                              type="button"
+                            >
+                              {retryingAnalysisProjectId === project.id
+                                ? "正在重新提交"
+                                : "重新拆解"}
                             </button>
                           ) : null}
                           {project.reference_upload_status !== "READY" &&

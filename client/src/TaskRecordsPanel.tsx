@@ -9,6 +9,7 @@ import {
 import {
   confirmGenerationTaskNotCharged,
   createGenerationResultPreviewUrl,
+  customerVisibleErrorMessage,
   deleteGenerationBatch,
   downloadGenerationResult,
   type GenerationBatch,
@@ -33,7 +34,6 @@ import {
 const BATCH_STORAGE_KEY = "generation.batchId";
 const POLL_INTERVAL_MS = 2_000;
 const MAX_RETRY_DELAY_MS = 16_000;
-const MAX_BATCH_POLL_RETRIES = 5;
 const TERMINAL_BATCH_STATUSES = new Set([
   "SUCCEEDED",
   "COMPLETED_WITH_FAILURES",
@@ -154,9 +154,14 @@ export function TaskRecordsPanel({
         if (!activeBatchIdRef.current && items[0]) {
           selectBatch(items[0].id);
         }
-      } catch {
+      } catch (error) {
         if (historyRequestRef.current === requestId) {
-          setHistoryError("任务记录列表暂不可用，请检查本地服务后重试。");
+          setHistoryError(
+            customerVisibleErrorMessage(
+              error,
+              "任务记录列表暂不可用，请检查网络连接后重试。",
+            ),
+          );
         }
       } finally {
         if (historyRequestRef.current === requestId) {
@@ -191,9 +196,20 @@ export function TaskRecordsPanel({
     let isActive = true;
     let timeoutId: number | undefined;
     let nextRetryDelayMs = POLL_INTERVAL_MS;
-    let retryCount = 0;
+    let requestInFlight = false;
+
+    function scheduleLoad(delayMs: number) {
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+      timeoutId = window.setTimeout(loadBatch, delayMs);
+    }
 
     async function loadBatch() {
+      if (requestInFlight) {
+        return;
+      }
+      requestInFlight = true;
       setIsBatchLoading(true);
       try {
         const nextBatch = await getGenerationBatch(activeBatchId);
@@ -203,14 +219,13 @@ export function TaskRecordsPanel({
         setBatch(nextBatch);
         setBatchError("");
         setRetryDelaySeconds(null);
-        retryCount = 0;
         nextRetryDelayMs = POLL_INTERVAL_MS;
         storeBatchId(activeBatchId);
         if (
           !isTerminalBatch(nextBatch) ||
           hasRequeuedTaskStillProcessing(nextBatch, requeuedTaskIdsRef.current)
         ) {
-          timeoutId = window.setTimeout(loadBatch, POLL_INTERVAL_MS);
+          scheduleLoad(POLL_INTERVAL_MS);
         }
       } catch (error) {
         if (!isActive) {
@@ -226,28 +241,33 @@ export function TaskRecordsPanel({
           setBatch(null);
           return;
         }
-        retryCount += 1;
-        if (retryCount >= MAX_BATCH_POLL_RETRIES) {
-          setBatchError(
-            "网络连接失败，已停止自动刷新，请检查本地服务后手动刷新。",
-          );
-          setRetryDelaySeconds(null);
-          return;
-        }
         nextRetryDelayMs = Math.min(nextRetryDelayMs * 2, MAX_RETRY_DELAY_MS);
         setBatchError("网络连接失败");
         setRetryDelaySeconds(nextRetryDelayMs / 1_000);
-        timeoutId = window.setTimeout(loadBatch, nextRetryDelayMs);
+        scheduleLoad(nextRetryDelayMs);
       } finally {
+        requestInFlight = false;
         if (isActive) {
           setIsBatchLoading(false);
         }
       }
     }
 
+    function resumePolling() {
+      nextRetryDelayMs = POLL_INTERVAL_MS;
+      setRetryDelaySeconds(null);
+      if (!requestInFlight) {
+        void loadBatch();
+      }
+    }
+
+    window.addEventListener("online", resumePolling);
+    window.addEventListener("focus", resumePolling);
     void loadBatch();
     return () => {
       isActive = false;
+      window.removeEventListener("online", resumePolling);
+      window.removeEventListener("focus", resumePolling);
       if (timeoutId !== undefined) {
         window.clearTimeout(timeoutId);
       }
@@ -321,7 +341,7 @@ export function TaskRecordsPanel({
   async function handleDeleteBatch(item: GenerationBatchListItem) {
     const displayName = batchDisplayName(item);
     const confirmed = window.confirm(
-      `删除批次「${displayName}」将同时删除其全部任务记录与云端结果文件，已产生的付费记录删除后不可恢复。确定删除？`,
+      `删除批次「${displayName}」将同时删除其全部任务记录与素材库结果文件，已产生的付费记录删除后不可恢复。确定删除？`,
     );
     if (!confirmed) {
       return;
@@ -786,6 +806,7 @@ export function TaskRecordsPanel({
           <BatchStatusMessage
             error={batchError}
             isLoading={isBatchLoading}
+            onRetry={() => setPollingRevision((current) => current + 1)}
             retryDelaySeconds={retryDelaySeconds}
           />
           {batch ? (
@@ -907,17 +928,26 @@ export function TaskRecordsPanel({
 function BatchStatusMessage({
   error,
   isLoading,
+  onRetry,
   retryDelaySeconds,
 }: {
   error: string;
   isLoading: boolean;
+  onRetry: () => void;
   retryDelaySeconds: number | null;
 }) {
   if (error) {
     return (
-      <p className="status-note" role="status">
-        {retryDelaySeconds ? `${error}，${retryDelaySeconds} 秒后重试` : error}
-      </p>
+      <div className="status-note" role="status">
+        <span>
+          {retryDelaySeconds
+            ? `${error}，${retryDelaySeconds} 秒后重试`
+            : error}
+        </span>
+        <button onClick={onRetry} type="button">
+          立即刷新
+        </button>
+      </div>
     );
   }
   return isLoading ? (
@@ -1094,9 +1124,7 @@ function BatchPanel({
                 }
                 type="checkbox"
               />
-              <span>
-                我已确认本次会新增 {batch.quantity} 次 Provider 付费调用
-              </span>
+              <span>我已确认本次会新增 {batch.quantity} 次付费视频生成</span>
             </label>
             <button
               disabled={
@@ -1247,7 +1275,12 @@ function TaskItem({
           </div>
 
           {task.error_message_redacted ? (
-            <p className="task-error-summary">{task.error_message_redacted}</p>
+            <p className="task-error-summary">
+              {customerVisibleErrorMessage(
+                task.error_message_redacted,
+                "视频生成失败，请稍后重试。",
+              )}
+            </p>
           ) : null}
 
           {task.result_asset_id ? (
@@ -1307,8 +1340,8 @@ function TaskItem({
 
           <dl className="task-facts">
             <div>
-              <dt>模型</dt>
-              <dd>{task.model}</dd>
+              <dt>生成能力</dt>
+              <dd>视频生成</dd>
             </div>
             {resolution ? (
               <div>
@@ -1335,7 +1368,7 @@ function TaskItem({
               <dd>{task.attempt ?? 0} 次</dd>
             </div>
             <div>
-              <dt>Provider 尾号</dt>
+              <dt>任务参考号</dt>
               <dd>
                 {task.provider_task_id_tail
                   ? task.provider_task_id_tail
@@ -1418,7 +1451,7 @@ function TaskItem({
                 <summary>付费重新生成</summary>
                 <div className="task-detail-ops__body">
                   <p>
-                    只复用该任务的冻结 Prompt，新建一次 Provider 调用；
+                    只复用该任务的冻结 Prompt，新建一次付费视频生成；
                     原失败或质检记录保留。金额快照：
                     {formatCost(task.estimated_cost)}
                   </p>
@@ -1448,7 +1481,7 @@ function TaskItem({
                       }
                       type="checkbox"
                     />
-                    <span>我已确认本次将产生一次新的 Provider 付费调用</span>
+                    <span>我已确认本次将产生一次新的付费视频生成</span>
                   </label>
                   <button
                     aria-label={`付费重新生成 ${task.id}`}

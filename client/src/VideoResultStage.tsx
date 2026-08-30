@@ -1,6 +1,10 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 
-import type { GenerationBatch, GenerationTask } from "./api";
+import {
+  customerVisibleErrorMessage,
+  type GenerationBatch,
+  type GenerationTask,
+} from "./api";
 
 // 生成结果舞台 = 客户视角的结果消费视图：大预览框 + 真实进度叙事 +
 // 等待安抚内容 + 视频信息栏 + 轻量付费再次生成。运维操作（对账、安全
@@ -24,14 +28,14 @@ const PHASE_MESSAGES: Record<string, string> = {
   SUBMITTING: "正在把首帧与 Prompt 提交给渲染引擎…",
   QUEUED: "已进入渲染队列，即将开始生成…",
   RUNNING: "AI 正在基于你的首帧渲染画面、动作与口型…",
-  ARCHIVING: "渲染完成，正在把成片保存到本机…",
+  ARCHIVING: "渲染完成，正在把成片保存到素材库…",
   SUCCEEDED: "已生成，正在自动进行音频质检…",
 };
 
 const REASSURANCE_FACTS = [
   "渲染在云端进行，离开此页面不会中断任务，回来时进度仍在。",
   "768P 成片通常需要 2–4 分钟，2K 略久，请放心等待。",
-  "生成结果会自动保存到本机，可随时回来播放或下载。",
+  "生成结果会自动保存到素材库，可随时回来播放或下载。",
   "同一批次的多个结果会并行处理，完成一个就能先看一个。",
 ] as const;
 
@@ -176,7 +180,13 @@ export function VideoResultStage({
   const canRegenerate =
     canOperate && activeTask.available_actions?.includes("REGENERATE");
   const regenerateBusy = Boolean(activeTaskAction);
-  const resultError = resultErrors[activeTask.id];
+  const rawResultError = resultErrors[activeTask.id];
+  const resultError = rawResultError
+    ? customerVisibleErrorMessage(
+        rawResultError,
+        "生成结果暂时无法加载，请稍后重试。",
+      )
+    : "";
 
   function handleRegenerateSubmit() {
     const detail = regenerateDetail.trim();
@@ -205,7 +215,7 @@ export function VideoResultStage({
       <div className="video-stage-player">
         {activeTask.provider === "fake_h3" ? (
           <p className="video-stage-provider-note" role="status">
-            该任务使用本地模拟通道，不会触发真实 MiniMax H3 生成。
+            该任务使用测试模式，不会产生真实的视频生成费用。
           </p>
         ) : null}
         {outcome === "quality_failed" && activeTask.result_asset_id ? (
@@ -308,7 +318,7 @@ export function VideoResultStage({
         >
           <strong>付费再次生成</strong>
           <p>
-            只复用该任务的冻结 Prompt，新建一次 Provider 调用； 金额快照：
+            只复用该任务的冻结 Prompt，新建一次付费生成；金额快照：
             {formatCost(activeTask.estimated_cost)}
           </p>
           <fieldset>
@@ -344,7 +354,7 @@ export function VideoResultStage({
               onChange={(event) => setRegenerateConfirmed(event.target.checked)}
               type="checkbox"
             />
-            <span>我已确认本次将产生一次新的 Provider 付费调用</span>
+            <span>我已确认本次将产生一次新的付费视频生成</span>
           </label>
           <button
             disabled={
@@ -687,8 +697,8 @@ function StageInfoBar({ task }: { task: GenerationTask }) {
     <div className="video-stage-info">
       <dl className="video-stage-facts">
         <div>
-          <dt>生成模型</dt>
-          <dd>{task.model}</dd>
+          <dt>生成能力</dt>
+          <dd>视频生成</dd>
         </div>
         {resolution ? (
           <div>
@@ -712,11 +722,7 @@ function StageInfoBar({ task }: { task: GenerationTask }) {
         </div>
         <div>
           <dt>生成通道</dt>
-          <dd>
-            {task.provider === "fake_h3"
-              ? "本地模拟（不调用 MiniMax）"
-              : "真实 MiniMax H3"}
-          </dd>
+          <dd>{task.provider === "fake_h3" ? "测试模式" : "正式服务"}</dd>
         </div>
         <div>
           <dt>费用</dt>
@@ -731,7 +737,7 @@ function StageInfoBar({ task }: { task: GenerationTask }) {
             <dd>{task.id}</dd>
           </div>
           <div>
-            <dt>Provider 尾号</dt>
+            <dt>任务参考号</dt>
             <dd>{task.provider_task_id_tail ?? "未公开"}</dd>
           </div>
           <div>
@@ -852,9 +858,10 @@ function outcomeCopy(outcome: TaskOutcome, task: GenerationTask) {
   switch (outcome) {
     case "failed":
       return {
-        detail:
-          task.error_message_redacted ??
+        detail: customerVisibleErrorMessage(
+          task.error_message_redacted,
           "本次生成未成功，可在运维详情查看原因。",
+        ),
         title: "生成失败",
       };
     case "needs_attention":

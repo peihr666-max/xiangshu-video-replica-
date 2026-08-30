@@ -15,7 +15,10 @@ import {
  * contract (the desktop build swaps in the Tauri DPAPI adapter, tests and
  * the browser lane use an isolated non-persistent store; dev doc §14: the
  * desktop and browser credential adapters must stay separate). */
-function memoryStore(initial?: { deviceToken?: string | null }) {
+function memoryStore(initial?: {
+  deviceToken?: string | null;
+  automaticRecovery?: boolean;
+}) {
   let deviceToken: string | null = initial?.deviceToken ?? null;
   let sessionToken: string | null = null;
   const calls: string[] = [];
@@ -57,6 +60,7 @@ function memoryStore(initial?: { deviceToken?: string | null }) {
     devicePlatform() {
       return "windows";
     },
+    automaticRecovery: initial?.automaticRecovery ?? false,
   };
   return store;
 }
@@ -137,6 +141,56 @@ describe("useCustomerSession", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("recovers a durable desktop fingerprint automatically when local credentials are missing", async () => {
+    const store = memoryStore({ automaticRecovery: true });
+    const fetchMock = stubFetch((url) => {
+      if (url.endsWith("/api/customer/activate")) {
+        return jsonResponse(activationBody, 201);
+      }
+      return jsonResponse({}, 500);
+    });
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+
+    await waitFor(() => expect(result.current.screen).toBe("workspace"));
+    expect(store.snapshot()).toEqual({
+      deviceToken: deviceTokenText,
+      sessionToken: sessionTokenText,
+    });
+    const request = fetchMock.mock.calls[0];
+    const body = JSON.parse(String(request[1]?.body));
+    expect(body.activation_code).toBe("");
+    expect(body.device_fingerprint).toBe("instance-1");
+  });
+
+  it("shows first activation without an error when automatic recovery finds no binding", async () => {
+    const store = memoryStore({ automaticRecovery: true });
+    const fetchMock = stubFetch((url) => {
+      if (url.endsWith("/api/customer/activate")) {
+        return jsonResponse(
+          {
+            detail: {
+              code: "ACTIVATION_UNAVAILABLE",
+              message: "The activation code cannot be used.",
+            },
+          },
+          400,
+        );
+      }
+      return jsonResponse({}, 500);
+    });
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+
+    await waitFor(() => expect(result.current.screen).toBe("activation"));
+    expect(result.current.error).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("activates with the device instance fingerprint and persists both credentials", async () => {
     const store = memoryStore();
     const fetchMock = stubFetch((url) => {
@@ -199,7 +253,9 @@ describe("useCustomerSession", () => {
 
     expect(result.current.screen).toBe("activation");
     expect(result.current.error?.kind).toBe("bad-request");
-    expect(result.current.error?.message).toBe("激活码不可用");
+    expect(result.current.error?.message).toBe(
+      "该激活码当前无法使用，请确认激活码仍在有效期内。",
+    );
   });
 
   it("restores a restart by auto-logging-in with the stored device credential", async () => {

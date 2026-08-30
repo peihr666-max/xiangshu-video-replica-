@@ -36,6 +36,7 @@ const codesPage = {
     {
       code_id: "code-1",
       batch_id: "batch-1",
+      activation_code: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
       masked_code: "XS****01",
       status: "GENERATED",
       bound_user_id: null,
@@ -44,6 +45,7 @@ const codesPage = {
     {
       code_id: "code-2",
       batch_id: "batch-1",
+      activation_code: "XS04-1111111-2222222-3333333-4444444",
       masked_code: "XS****02",
       status: "ACTIVE",
       bound_user_id: "user-9",
@@ -106,6 +108,10 @@ function installFetch(options?: {
 describe("ActivationCodesPage", () => {
   beforeEach(async () => {
     installFetch();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
     await exchangeAdminSession("ASX1.body.signature");
   });
 
@@ -114,13 +120,17 @@ describe("ActivationCodesPage", () => {
     clearAdminActivationSession();
   });
 
-  it("loads the code list on mount with masked codes only", async () => {
+  it("shows full activation codes and permits repeated copying", async () => {
     const fetchMock = installFetch();
 
     render(<ActivationCodesPage />);
 
-    expect(await screen.findByText("XS****01")).toBeInTheDocument();
-    expect(screen.getByText("XS****02")).toBeInTheDocument();
+    expect(
+      await screen.findByText("XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("XS04-1111111-2222222-3333333-4444444"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "已生成" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "已激活" })).toBeInTheDocument();
     expect(screen.getByText("user-9")).toBeInTheDocument();
@@ -130,14 +140,25 @@ describe("ActivationCodesPage", () => {
     expect(String(listCall?.[0])).toBe(
       "http://127.0.0.1:8000/api/control/activation-codes?limit=50&offset=0",
     );
-    expect(screen.queryByText(/XS-[A-Z]{4}/)).toBeNull();
+    const firstCopy = screen.getByRole("button", {
+      name: "复制激活码 XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
+    });
+    fireEvent.click(firstCopy);
+    fireEvent.click(firstCopy);
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(2),
+    );
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(
+      "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
+    );
+    expect(await screen.findByText("激活码已复制")).toBeInTheDocument();
   });
 
   it("filters the list by batch id and status", async () => {
     const fetchMock = installFetch();
 
     render(<ActivationCodesPage />);
-    await screen.findByText("XS****01");
+    await screen.findByText("XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD");
 
     fireEvent.change(screen.getByLabelText("批次 ID"), {
       target: { value: "batch-1" },
@@ -237,7 +258,9 @@ describe("ActivationCodesPage", () => {
 
     render(<ActivationCodesPage readOnly />);
 
-    expect(await screen.findByText("XS****01")).toBeInTheDocument();
+    expect(
+      await screen.findByText("XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD"),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "暂停" })).toBeNull();
     expect(screen.queryByRole("button", { name: "恢复" })).toBeNull();
     expect(screen.queryByRole("button", { name: "作废" })).toBeNull();

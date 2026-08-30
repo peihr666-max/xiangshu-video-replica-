@@ -199,7 +199,7 @@ describe("GenerationComposer", () => {
 
     // 等 drafts 重载完成后锚定已保存文本，再制造人工修订中的脏 Prompt。
     const promptField = await waitFor(() => {
-      const field = screen.getByLabelText("H3 Prompt 内容");
+      const field = screen.getByLabelText("视频生成提示词内容");
       expect(field).toHaveValue("编译后的 Prompt");
       return field;
     });
@@ -272,7 +272,7 @@ describe("GenerationComposer", () => {
     render(<WorkspaceHost />);
 
     expect(await screen.findByText("口播稿与 Prompt")).toBeInTheDocument();
-    expect(screen.getByText("分析版本：analysis-1")).toBeInTheDocument();
+    expect(screen.getByText("拆解版本：analysis-1")).toBeInTheDocument();
     expect(
       screen.getByText("人物版本：character-version-1"),
     ).toBeInTheDocument();
@@ -292,13 +292,13 @@ describe("GenerationComposer", () => {
     );
     expect(await screen.findByText("S01：自定义口播稿")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "编译 H3 Prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "编译视频生成提示词" }));
     expect(
       await screen.findByDisplayValue("编译后的 Prompt"),
     ).toBeInTheDocument();
     expect(screen.getByText("模板版本：h3.prompt.v1")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("H3 Prompt 内容"), {
+    fireEvent.change(screen.getByLabelText("视频生成提示词内容"), {
       target: { value: "人工修订 Prompt" },
     });
     expect(
@@ -497,7 +497,7 @@ describe("GenerationComposer", () => {
 
     render(<WorkspaceHost />);
     const compileButton = await screen.findByRole("button", {
-      name: "编译 H3 Prompt",
+      name: "编译视频生成提示词",
     });
     expect(compileButton).toBeEnabled();
     const createButton = screen.getByRole("button", {
@@ -547,7 +547,7 @@ describe("GenerationComposer", () => {
     );
 
     render(<WorkspaceHost />);
-    const prompt = await screen.findByLabelText("H3 Prompt 内容");
+    const prompt = await screen.findByLabelText("视频生成提示词内容");
     fireEvent.change(prompt, { target: { value: "等待保存的修订" } });
     fireEvent.click(screen.getByRole("button", { name: "另存 Prompt 新版本" }));
 
@@ -594,9 +594,9 @@ describe("GenerationComposer", () => {
 
     render(<WorkspaceHost />);
     const compileButton = await screen.findByRole("button", {
-      name: "编译 H3 Prompt",
+      name: "编译视频生成提示词",
     });
-    fireEvent.change(screen.getByLabelText("H3 Prompt 内容"), {
+    fireEvent.change(screen.getByLabelText("视频生成提示词内容"), {
       target: { value: "尚未保存的手工修订" },
     });
 
@@ -636,8 +636,8 @@ describe("GenerationComposer", () => {
     );
 
     render(<WorkspaceHost />);
-    const prompt = await screen.findByLabelText("H3 Prompt 内容");
-    fireEvent.click(screen.getByRole("button", { name: "编译 H3 Prompt" }));
+    const prompt = await screen.findByLabelText("视频生成提示词内容");
+    fireEvent.click(screen.getByRole("button", { name: "编译视频生成提示词" }));
 
     expect(prompt).toHaveAttribute("readonly");
     expect(screen.getByRole("button", { name: "正在编译" })).toBeDisabled();
