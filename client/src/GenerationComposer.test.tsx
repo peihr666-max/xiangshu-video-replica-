@@ -21,9 +21,12 @@ vi.mock("./api", async (importOriginal) => {
     createScriptVersion: vi.fn(),
     getGenerationRuntimeLimits: vi.fn(),
     getLatestGenerationPrompt: vi.fn(),
+    getLatestScriptRewriteTask: vi.fn(),
     getLatestScriptVersion: vi.fn(),
     lockGenerationPrompt: vi.fn(),
     reviseGenerationPrompt: vi.fn(),
+    rewriteProjectScript: vi.fn(),
+    waitForScriptRewriteTask: vi.fn(),
   };
 });
 
@@ -162,6 +165,7 @@ describe("GenerationComposer", () => {
       stale: false,
       stale_reasons: [],
     });
+    vi.mocked(api.getLatestScriptRewriteTask).mockResolvedValue(null);
     vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
       version: null,
       stale: false,
@@ -172,6 +176,107 @@ describe("GenerationComposer", () => {
       max_quantity: 4,
       estimated_cost_per_task: null,
     });
+  });
+
+  it("AI 改写入队后立即释放页面 busy，并在后台完成后回填结果", async () => {
+    const pendingTask: api.ScriptRewriteTask = {
+      id: "rewrite-task-1",
+      project_id: "project-1",
+      status: "PENDING",
+      attempt: 0,
+      result: null,
+      error_code: null,
+      error_message: null,
+      retryable: false,
+      created_at: "2030-01-01T00:00:00Z",
+      updated_at: "2030-01-01T00:00:00Z",
+      started_at: null,
+      completed_at: null,
+    };
+    const completedTask: api.ScriptRewriteTask = {
+      ...pendingTask,
+      status: "SUCCEEDED",
+      attempt: 1,
+      result: {
+        rewritten_text: "后台完成的二创稿。",
+        provider: "deepseek",
+        model: "deepseek-chat",
+      },
+      completed_at: "2030-01-01T00:00:05Z",
+    };
+    let resolveRewrite: ((task: api.ScriptRewriteTask) => void) | undefined;
+    vi.mocked(api.rewriteProjectScript).mockResolvedValue(pendingTask);
+    vi.mocked(api.waitForScriptRewriteTask).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRewrite = resolve;
+        }),
+    );
+
+    render(<WorkspaceHost />);
+    fireEvent.click(await screen.findByRole("button", { name: "AI 改写" }));
+
+    await waitFor(() =>
+      expect(api.rewriteProjectScript).toHaveBeenCalledWith(
+        "project-1",
+        "原稿第一句。原稿第二句。",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "AI 改写" })).toBeEnabled(),
+    );
+    expect(props.onBusyChange).toHaveBeenCalledWith(true);
+    expect(props.onBusyChange).toHaveBeenLastCalledWith(false);
+
+    await act(async () => {
+      resolveRewrite?.(completedTask);
+      await Promise.resolve();
+    });
+    expect(screen.getByLabelText("口播稿内容")).toHaveValue(
+      "后台完成的二创稿。",
+    );
+    expect(screen.getByRole("radio", { name: "自定义稿" })).toBeChecked();
+  });
+
+  it("重新进入项目时恢复仍在执行的 AI 改写任务", async () => {
+    const pendingTask: api.ScriptRewriteTask = {
+      id: "rewrite-task-recovered",
+      project_id: "project-1",
+      status: "RUNNING",
+      attempt: 1,
+      result: null,
+      error_code: null,
+      error_message: null,
+      retryable: false,
+      created_at: "2030-01-02T00:00:00Z",
+      updated_at: "2030-01-02T00:00:01Z",
+      started_at: "2030-01-02T00:00:01Z",
+      completed_at: null,
+    };
+    vi.mocked(api.getLatestScriptRewriteTask).mockResolvedValue(pendingTask);
+    vi.mocked(api.waitForScriptRewriteTask).mockResolvedValue({
+      ...pendingTask,
+      status: "SUCCEEDED",
+      result: {
+        rewritten_text: "离开页面期间完成的二创稿。",
+        provider: "deepseek",
+        model: "deepseek-chat",
+      },
+      completed_at: "2030-01-02T00:00:10Z",
+    });
+
+    render(<WorkspaceHost />);
+
+    await waitFor(() =>
+      expect(api.waitForScriptRewriteTask).toHaveBeenCalledWith(
+        "rewrite-task-recovered",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("口播稿内容")).toHaveValue(
+        "离开页面期间完成的二创稿。",
+      ),
+    );
   });
 
   it("一键流水线：Prompt 存在未保存修订时提示先保存且不发起任何请求（P0-04-01）", async () => {

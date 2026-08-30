@@ -26,14 +26,17 @@ vi.mock("./api", async (importOriginal) => {
     createScriptVersion: vi.fn(),
     getGenerationRuntimeLimits: vi.fn(),
     getLatestGenerationPrompt: vi.fn(),
+    getLatestScriptRewriteTask: vi.fn(),
     getLatestProjectAnalysis: vi.fn(),
     getLatestProjectShotCards: vi.fn(),
     getLatestScriptVersion: vi.fn(),
     lockGenerationPrompt: vi.fn(),
     reviseGenerationPrompt: vi.fn(),
+    rewriteProjectScript: vi.fn(),
     saveShotCards: vi.fn(),
     startVideoAnalysis: vi.fn(),
     waitForAnalysisTask: vi.fn(),
+    waitForScriptRewriteTask: vi.fn(),
   };
 });
 
@@ -384,6 +387,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       stale: false,
       stale_reasons: [],
     });
+    vi.mocked(api.getLatestScriptRewriteTask).mockResolvedValue(null);
     vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
       version: null,
       stale: false,

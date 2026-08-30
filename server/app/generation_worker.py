@@ -69,6 +69,14 @@ from app.image_tasks import (
     run_first_frame_task_outside_transaction,
 )
 from app.media_routes import get_media_storage
+from app.script_rewrite import (
+    acquire_script_rewrite_task,
+    complete_script_rewrite_task,
+    fail_script_rewrite_task,
+    mark_script_rewrite_submission_started,
+    perform_script_rewrite_task,
+    prepare_script_rewrite_task,
+)
 from app.source_frames import (
     FFmpegSourceFrameExtractor,
     SourceFrameExtractor,
@@ -147,6 +155,36 @@ def run_worker_once(
                 complete_analysis_task(conn, work=analysis_work, result=analysis_result)
             except Exception as exc:
                 fail_analysis_task(conn, lease=analysis_lease, cause=exc)
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        script_rewrite_lease = acquire_script_rewrite_task(conn, worker_id=worker_id)
+        if script_rewrite_lease is not None:
+            submission_started = False
+            try:
+                rewrite_work = prepare_script_rewrite_task(
+                    conn,
+                    lease=script_rewrite_lease,
+                )
+                mark_script_rewrite_submission_started(
+                    conn,
+                    lease=script_rewrite_lease,
+                )
+                submission_started = True
+                rewrite_result = perform_script_rewrite_task(rewrite_work)
+                complete_script_rewrite_task(
+                    conn,
+                    lease=script_rewrite_lease,
+                    result=rewrite_result,
+                )
+            except Exception as exc:
+                fail_script_rewrite_task(
+                    conn,
+                    lease=script_rewrite_lease,
+                    cause=exc,
+                    submission_started=submission_started,
+                )
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
@@ -633,6 +671,44 @@ def run_pg_worker_once(
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
                     fail_analysis_task(conn, lease=analysis_lease, cause=exc)
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        with pg_transaction() as raw_conn:
+            script_rewrite_lease = acquire_script_rewrite_task(
+                BusinessConnection.postgres(raw_conn),
+                worker_id=worker_id,
+            )
+        if script_rewrite_lease is not None:
+            submission_started = False
+            try:
+                with pg_transaction() as raw_conn:
+                    rewrite_work = prepare_script_rewrite_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=script_rewrite_lease,
+                    )
+                with pg_transaction() as raw_conn:
+                    mark_script_rewrite_submission_started(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=script_rewrite_lease,
+                    )
+                submission_started = True
+                rewrite_result = perform_script_rewrite_task(rewrite_work)
+                with pg_transaction() as raw_conn:
+                    complete_script_rewrite_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=script_rewrite_lease,
+                        result=rewrite_result,
+                    )
+            except Exception as exc:
+                with pg_transaction() as raw_conn:
+                    fail_script_rewrite_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=script_rewrite_lease,
+                        cause=exc,
+                        submission_started=submission_started,
+                    )
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:

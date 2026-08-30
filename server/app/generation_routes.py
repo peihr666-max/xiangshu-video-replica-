@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 from typing import cast
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
@@ -60,11 +62,29 @@ from app.rbac_routes import storage_for_asset
 from app.script_rewrite import (
     ScriptRewriteRequest,
     ScriptRewriteResult,
-    rewrite_script_with_deepseek,
+    enqueue_script_rewrite_task,
+    latest_script_rewrite_task,
+    load_script_rewrite_task,
+    script_rewrite_task_result,
 )
 from app.storage import StorageBackendUnavailable
 
 router = APIRouter(prefix="/api", tags=["generation"])
+
+
+class ScriptRewriteTaskResponse(BaseModel):
+    id: str
+    project_id: str
+    status: str
+    attempt: int
+    result: ScriptRewriteResult | None
+    error_code: str | None
+    error_message: str | None
+    retryable: bool
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    completed_at: str | None
 
 
 def get_h3_provider() -> H3Provider:
@@ -84,32 +104,80 @@ def create_project_script(
 
 @router.post(
     "/projects/{project_id}/script-rewrite",
-    response_model=ScriptRewriteResult,
+    response_model=ScriptRewriteTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def rewrite_project_script(
     project_id: str,
     request: ScriptRewriteRequest,
     db: BusinessDbDep,
-) -> ScriptRewriteResult:
+) -> ScriptRewriteTaskResponse:
     with db.write() as (conn, actor):
-        require_not_auditor(
-            conn,
-            actor=actor,
-            action="project.script_rewrite",
-            entity_type="project",
-            entity_id=project_id,
-        )
-        require_project_access(
+        row = enqueue_script_rewrite_task(
             conn,
             actor=actor,
             project_id=project_id,
-            action="project.script_rewrite",
-        )
-        return rewrite_script_with_deepseek(
-            conn,
-            actor=actor,
             source_text=request.text,
+            idempotency_key=request.idempotency_key or str(uuid4()),
         )
+        return script_rewrite_task_response(row)
+
+
+@router.get(
+    "/script-rewrite-tasks/{task_id}",
+    response_model=ScriptRewriteTaskResponse,
+)
+def read_script_rewrite_task(
+    task_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> ScriptRewriteTaskResponse:
+    row = load_script_rewrite_task(conn, task_id)
+    require_project_access(
+        conn,
+        actor=actor,
+        project_id=str(row["project_id"]),
+        action="project.script_rewrite_read",
+    )
+    return script_rewrite_task_response(row)
+
+
+@router.get(
+    "/projects/{project_id}/script-rewrite-tasks/latest",
+    response_model=ScriptRewriteTaskResponse | None,
+)
+def read_latest_script_rewrite_task(
+    project_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> ScriptRewriteTaskResponse | None:
+    require_project_access(
+        conn,
+        actor=actor,
+        project_id=project_id,
+        action="project.script_rewrite_read",
+    )
+    row = latest_script_rewrite_task(conn, project_id=project_id)
+    return None if row is None else script_rewrite_task_response(row)
+
+
+def script_rewrite_task_response(row: sqlite3.Row) -> ScriptRewriteTaskResponse:
+    return ScriptRewriteTaskResponse(
+        id=str(row["id"]),
+        project_id=str(row["project_id"]),
+        status=str(row["status"]),
+        attempt=int(row["attempt"]),
+        result=script_rewrite_task_result(row),
+        error_code=None if row["error_code"] is None else str(row["error_code"]),
+        error_message=(
+            None if row["error_message_redacted"] is None else str(row["error_message_redacted"])
+        ),
+        retryable=bool(row["retryable"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        started_at=None if row["started_at"] is None else str(row["started_at"]),
+        completed_at=(None if row["completed_at"] is None else str(row["completed_at"])),
+    )
 
 
 @router.get("/projects/{project_id}/scripts/latest", response_model=VersionState)

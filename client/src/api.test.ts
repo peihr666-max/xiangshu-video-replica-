@@ -32,6 +32,7 @@ import {
   resolveApiBaseUrl,
   retryGenerationTask,
   reviseGenerationPrompt,
+  rewriteProjectScript,
   SESSION_EXPIRED_EVENT,
   selectCharacterReferences,
   setInternalAccessToken,
@@ -40,6 +41,7 @@ import {
   waitForAnalysisTask,
   waitForCharacterSheetTask,
   waitForFirstFrameTask,
+  waitForScriptRewriteTask,
   waitForSourceFrameTask,
 } from "./api";
 
@@ -974,6 +976,48 @@ describe("startVideoAnalysis", () => {
         idempotency_key: expect.any(String),
       }),
     );
+  });
+
+  it("enqueues script rewrite and shares its durable recovery poller", async () => {
+    vi.useFakeTimers();
+    const queued = {
+      id: "script-rewrite-task-shared",
+      project_id: "project-1",
+      status: "PENDING",
+      result: null,
+    };
+    const running = { ...queued, status: "RUNNING" };
+    const succeeded = {
+      ...queued,
+      status: "SUCCEEDED",
+      result: {
+        rewritten_text: "新的二创稿。",
+        provider: "deepseek",
+        model: "deepseek-chat",
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => queued })
+      .mockResolvedValueOnce({ ok: true, json: async () => running })
+      .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const task = await rewriteProjectScript("project-1", "待改写原稿。");
+    const first = waitForScriptRewriteTask(task.id);
+    const recovered = waitForScriptRewriteTask(task.id);
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(Promise.all([first, recovered])).resolves.toEqual([
+      succeeded,
+      succeeded,
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const enqueueBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(enqueueBody).toEqual({
+      text: "待改写原稿。",
+      idempotency_key: expect.any(String),
+    });
   });
 
   it("tells a temporary network failure apart from an unusable model response", async () => {

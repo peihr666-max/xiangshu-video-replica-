@@ -11,10 +11,13 @@ import {
   type GenerationVersion,
   getGenerationRuntimeLimits,
   getLatestGenerationPrompt,
+  getLatestScriptRewriteTask,
   getLatestScriptVersion,
   lockGenerationPrompt,
   reviseGenerationPrompt,
   rewriteProjectScript,
+  type ScriptRewriteTask,
+  waitForScriptRewriteTask,
 } from "./api";
 
 export type ScriptSource = "original" | "custom";
@@ -119,8 +122,9 @@ export function useGenerationDrafts({
       getLatestScriptVersion(projectId),
       getLatestGenerationPrompt(projectId),
       getGenerationRuntimeLimits(),
+      getLatestScriptRewriteTask(projectId),
     ])
-      .then(([scriptState, promptState, runtime]) => {
+      .then(([scriptState, promptState, runtime, latestRewriteTask]) => {
         if (!active || loadGeneration !== loadGenerationRef.current) {
           return;
         }
@@ -176,6 +180,51 @@ export function useGenerationDrafts({
         );
         if (restoredResolution === "768P" || restoredResolution === "2K") {
           setResolution(restoredResolution);
+        }
+
+        if (
+          latestRewriteTask &&
+          shouldRecoverScriptRewrite(latestRewriteTask, restoredScript)
+        ) {
+          if (latestRewriteTask.status === "SUCCEEDED") {
+            applyRecoveredScriptRewrite(
+              latestRewriteTask,
+              setScriptSource,
+              setScriptText,
+              setMessage,
+              setError,
+            );
+          } else if (
+            latestRewriteTask.status === "FAILED" ||
+            latestRewriteTask.status === "SUBMISSION_UNCERTAIN"
+          ) {
+            setError(
+              latestRewriteTask.error_message ||
+                (latestRewriteTask.status === "SUBMISSION_UNCERTAIN"
+                  ? "AI 改写提交状态不确定，请确认服务商记录后再重试。"
+                  : "AI 改写失败，请重新提交。"),
+            );
+          } else {
+            setMessage("AI 改写正在后台执行，可离开本页继续其他操作。");
+            void waitForScriptRewriteTask(latestRewriteTask.id)
+              .then((completedTask) => {
+                if (active && loadGeneration === loadGenerationRef.current) {
+                  applyRecoveredScriptRewrite(
+                    completedTask,
+                    setScriptSource,
+                    setScriptText,
+                    setMessage,
+                    setError,
+                  );
+                }
+              })
+              .catch((requestError) => {
+                if (active && loadGeneration === loadGenerationRef.current) {
+                  setError(errorMessage(requestError, "AI 改写失败。"));
+                  setMessage("");
+                }
+              });
+          }
         }
       })
       .catch((requestError) => {
@@ -298,13 +347,25 @@ export function useGenerationDrafts({
     setError("");
     setMessage("");
     try {
-      const result = await rewriteProjectScript(projectId, text);
+      const task = await rewriteProjectScript(projectId, text);
       if (actionGeneration !== actionGenerationRef.current) {
         return;
       }
-      setScriptSource("custom");
-      setScriptText(result.rewritten_text);
-      setMessage("AI 改写完成，请确认后点击「保存口播稿」存为二创稿。");
+      // 任务已持久化后立即释放页面级 busy；Provider 调用由 Worker 完成，
+      // 不应再阻止切换标签、项目或页面。
+      setBusyAction(null);
+      setMessage("AI 改写正在后台执行，可离开本页继续其他操作。");
+      const completedTask = await waitForScriptRewriteTask(task.id);
+      if (actionGeneration !== actionGenerationRef.current) {
+        return;
+      }
+      applyRecoveredScriptRewrite(
+        completedTask,
+        setScriptSource,
+        setScriptText,
+        setMessage,
+        setError,
+      );
     } catch (requestError) {
       if (actionGeneration === actionGenerationRef.current) {
         setError(errorMessage(requestError, "AI 改写失败。"));
@@ -762,6 +823,48 @@ export function useGenerationDrafts({
     recoverBatch,
     runGenerationPipeline,
   };
+}
+
+function shouldRecoverScriptRewrite(
+  task: ScriptRewriteTask,
+  savedScript: GenerationVersion | null,
+): boolean {
+  if (!savedScript || !task.completed_at) {
+    return true;
+  }
+  if (
+    task.result?.rewritten_text.trim() ===
+    (readPayloadString(savedScript, "full_text") ?? "").trim()
+  ) {
+    return false;
+  }
+  return timestampMs(task.completed_at) >= timestampMs(savedScript.created_at);
+}
+
+function timestampMs(value: string): number {
+  const normalized = value.includes("T")
+    ? value
+    : `${value.replace(" ", "T")}Z`;
+  const parsed = Date.parse(normalized);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function applyRecoveredScriptRewrite(
+  task: ScriptRewriteTask,
+  setScriptSource: (source: ScriptSource) => void,
+  setScriptText: (text: string) => void,
+  setMessage: (message: string) => void,
+  setError: (message: string) => void,
+) {
+  if (!task.result) {
+    setError("AI 改写已完成，但结果暂不可用，请刷新后重试。");
+    setMessage("");
+    return;
+  }
+  setScriptSource("custom");
+  setScriptText(task.result.rewritten_text);
+  setError("");
+  setMessage("AI 改写完成，请确认后点击「保存口播稿」存为二创稿。");
 }
 
 // P0-02-03：状态提升后由 AnalysisWorkspace 持有，注入标签页①的

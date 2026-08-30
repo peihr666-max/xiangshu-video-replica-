@@ -1613,19 +1613,106 @@ export type ScriptRewriteResult = {
   model: string;
 };
 
-// The server caps the DeepSeek call at 120s; leave headroom for transport.
-const SCRIPT_REWRITE_TIMEOUT_MS = 130_000;
+export type ScriptRewriteTask = {
+  id: string;
+  project_id: string;
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "SUBMISSION_UNCERTAIN";
+  attempt: number;
+  result: ScriptRewriteResult | null;
+  error_code: string | null;
+  error_message: string | null;
+  retryable: boolean;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+const scriptRewriteTaskWaiters = new Map<string, Promise<ScriptRewriteTask>>();
 
 export async function rewriteProjectScript(
   projectId: string,
   text: string,
-): Promise<ScriptRewriteResult> {
-  return requestApiJson<ScriptRewriteResult>(
+): Promise<ScriptRewriteTask> {
+  return requestApiJson<ScriptRewriteTask>(
     `/api/projects/${encodeURIComponent(projectId)}/script-rewrite`,
     "AI 改写失败",
-    { method: "POST", body: JSON.stringify({ text }) },
-    SCRIPT_REWRITE_TIMEOUT_MS,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        text,
+        idempotency_key: newControlWriteIdempotencyKey(),
+      }),
+    },
   );
+}
+
+export async function getScriptRewriteTask(
+  taskId: string,
+): Promise<ScriptRewriteTask> {
+  return requestApiJson<ScriptRewriteTask>(
+    `/api/script-rewrite-tasks/${encodeURIComponent(taskId)}`,
+    "读取 AI 改写任务失败",
+  );
+}
+
+export async function getLatestScriptRewriteTask(
+  projectId: string,
+): Promise<ScriptRewriteTask | null> {
+  const response = await requestApi(
+    `/api/projects/${encodeURIComponent(projectId)}/script-rewrite-tasks/latest`,
+    { method: "GET" },
+  );
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`读取 AI 改写任务失败（${response.status}）`);
+  }
+  return (await response.json()) as ScriptRewriteTask | null;
+}
+
+export async function waitForScriptRewriteTask(
+  taskId: string,
+): Promise<ScriptRewriteTask> {
+  const existing = scriptRewriteTaskWaiters.get(taskId);
+  if (existing) {
+    return existing;
+  }
+  const waiter = pollScriptRewriteTask(taskId);
+  scriptRewriteTaskWaiters.set(taskId, waiter);
+  const clear = () => {
+    if (scriptRewriteTaskWaiters.get(taskId) === waiter) {
+      scriptRewriteTaskWaiters.delete(taskId);
+    }
+  };
+  void waiter.then(clear, clear);
+  return waiter;
+}
+
+async function pollScriptRewriteTask(
+  taskId: string,
+): Promise<ScriptRewriteTask> {
+  const deadline = Date.now() + 10 * 60_000;
+  while (Date.now() < deadline) {
+    const task = await getScriptRewriteTask(taskId);
+    if (task.status === "SUCCEEDED") {
+      if (!task.result) {
+        throw new Error("AI 改写已完成，但结果暂不可用，请刷新后重试。");
+      }
+      return task;
+    }
+    if (task.status === "FAILED" || task.status === "SUBMISSION_UNCERTAIN") {
+      throw new Error(task.error_message || "AI 改写失败，请重新提交。");
+    }
+    await waitForPoll();
+  }
+  throw new Error("AI 改写仍在后台执行，请稍后返回查看。");
 }
 
 export type CharacterViewType =
