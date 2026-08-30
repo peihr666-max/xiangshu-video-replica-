@@ -499,6 +499,7 @@ def test_t37_metrics_and_cluster_alert_jobs_are_private_single_owner_contracts()
         "server/migrations/versions/044_customer_unit_prices.py",
         "server/migrations/versions/045_async_analysis_tasks.py",
         "server/migrations/versions/046_async_image_tasks.py",
+        "server/migrations/versions/047_async_source_frame_tasks.py",
         "deploy/systemd/video-replica-ops-alerts.service",
         "deploy/systemd/video-replica-ops-alerts.timer",
     ):

@@ -7,14 +7,15 @@ import sqlite3
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from fastapi import HTTPException
 
 from app.analysis import insert_version
-from app.auth import CurrentUser
+from app.auth import CurrentUser, Role
 from app.db_portable import BusinessConnection
 from app.media import is_reference_video_asset
 from app.permissions import (
@@ -35,6 +36,7 @@ SOURCE_FRAME_SELECTION_KIND = "source_frame_selection"
 SOURCE_FRAME_SCHEMA_VERSION = "b4.source-frame.v1"
 SOURCE_FRAME_TIMESTAMPS_SECONDS = (0.5, 1.5, 2.5)
 FFMPEG_TIMEOUT_SECONDS = 15
+SOURCE_FRAME_TASK_LEASE_MINUTES = 5
 
 
 def source_video_duration_seconds(asset: sqlite3.Row) -> float | None:
@@ -62,6 +64,29 @@ class ExtractedSourceFrame:
     timestamp_seconds: float
     image: bytes
     technical_score: float | None = None
+
+
+@dataclass(frozen=True)
+class SourceFrameExtractionPlan:
+    actor: CurrentUser
+    project_id: str
+    asset_id: str
+    source_storage_uri: str
+    requested_timestamps: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class StoredSourceFrameCandidates:
+    candidates: list[dict[str, object]]
+    created_assets: list[tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class SourceFrameTaskLease:
+    id: str
+    created_by_user_id: str
+    worker_id: str
+    attempt: int
 
 
 class SourceFrameExtractor(Protocol):
@@ -203,6 +228,33 @@ def extract_source_frame_candidates(
     extractor: SourceFrameExtractor,
     timestamps_seconds: tuple[float, ...] | None = None,
 ) -> sqlite3.Row:
+    plan = prepare_source_frame_extraction(
+        conn,
+        project_id=project_id,
+        asset_id=asset_id,
+        actor=actor,
+        timestamps_seconds=timestamps_seconds,
+    )
+    stored = perform_source_frame_extraction(
+        plan,
+        storage=storage,
+        extractor=extractor,
+    )
+    try:
+        return complete_source_frame_extraction(conn, plan=plan, stored=stored)
+    except Exception:
+        delete_created_source_frames(storage, stored.created_assets, actor_id=actor.id)
+        raise
+
+
+def prepare_source_frame_extraction(
+    conn: BusinessConnection,
+    *,
+    project_id: str,
+    asset_id: str,
+    actor: CurrentUser,
+    timestamps_seconds: tuple[float, ...] | None = None,
+) -> SourceFrameExtractionPlan:
     require_not_auditor(
         conn,
         actor=actor,
@@ -247,8 +299,23 @@ def extract_source_frame_candidates(
             "Source frame timestamps must be inside the reference video duration.",
         )
 
+    return SourceFrameExtractionPlan(
+        actor=actor,
+        project_id=project_id,
+        asset_id=asset_id,
+        source_storage_uri=str(asset["storage_uri"]),
+        requested_timestamps=requested_timestamps,
+    )
+
+
+def perform_source_frame_extraction(
+    plan: SourceFrameExtractionPlan,
+    *,
+    storage: StorageAdapter,
+    extractor: SourceFrameExtractor,
+) -> StoredSourceFrameCandidates:
     try:
-        reference = storage_object_ref_from_uri(str(asset["storage_uri"]))
+        reference = storage_object_ref_from_uri(plan.source_storage_uri)
         require_storage_match(storage, reference)
         video = storage.get_object(reference.key)
     except (KeyError, OSError, StorageBackendUnavailable, ValueError) as exc:
@@ -262,7 +329,7 @@ def extract_source_frame_candidates(
         frames = extractor.extract(
             video,
             filename=Path(reference.key).name,
-            timestamps_seconds=requested_timestamps,
+            timestamps_seconds=plan.requested_timestamps,
         )
     except SourceFrameExtractorUnavailable as exc:
         raise source_frame_error(
@@ -292,10 +359,10 @@ def extract_source_frame_candidates(
 
     created_assets: list[tuple[str, str]] = []
     try:
-        candidates = []
+        candidates: list[dict[str, object]] = []
         for frame in frames:
             frame_asset_id = str(uuid4())
-            storage_key = f"projects/{project_id}/source-frames/{frame_asset_id}.jpg"
+            storage_key = f"projects/{plan.project_id}/source-frames/{frame_asset_id}.jpg"
             created_assets.append((frame_asset_id, storage_key))
             stored = storage.put_object(storage_key, frame.image, content_type="image/jpeg")
             candidates.append(
@@ -310,65 +377,400 @@ def extract_source_frame_candidates(
                 }
             )
         candidates.sort(key=technical_score_of_candidate, reverse=True)
-
-        with conn:
-            for candidate in candidates:
-                conn.execute(
-                    """
-                    INSERT INTO assets (
-                        id, project_id, kind, storage_uri, sha256, size_bytes, content_type,
-                        created_by_user_id
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        candidate["asset_id"],
-                        project_id,
-                        "source_frame",
-                        candidate["storage_uri"],
-                        candidate["sha256"],
-                        candidate["size_bytes"],
-                        "image/jpeg",
-                        actor.id,
-                    ),
-                )
-            row = insert_version(
-                conn,
-                project_id=project_id,
-                asset_id=asset_id,
-                kind=SOURCE_FRAME_CANDIDATES_KIND,
-                created_by_user_id=actor.id,
-                payload={
-                    "schema_version": SOURCE_FRAME_SCHEMA_VERSION,
-                    "source_asset_id": asset_id,
-                    "requested_timestamps_seconds": list(requested_timestamps),
-                    "candidates": candidates,
-                },
-            )
-    except sqlite3.Error as exc:
-        delete_created_source_frames(storage, created_assets, actor_id=actor.id)
-        raise source_frame_error(
-            500,
-            "SOURCE_FRAME_PERSIST_FAILED",
-            "Source frame candidates could not be saved. Extract them again.",
-        ) from exc
+        return StoredSourceFrameCandidates(
+            candidates=candidates,
+            created_assets=created_assets,
+        )
     except (OSError, StorageBackendUnavailable, ValueError) as exc:
-        delete_created_source_frames(storage, created_assets, actor_id=actor.id)
+        delete_created_source_frames(
+            storage,
+            created_assets,
+            actor_id=plan.actor.id,
+        )
         raise source_frame_error(
             503,
             "SOURCE_FRAME_STORAGE_UNAVAILABLE",
             "Source frame storage is temporarily unavailable.",
         ) from exc
 
+
+def complete_source_frame_extraction(
+    conn: BusinessConnection,
+    *,
+    plan: SourceFrameExtractionPlan,
+    stored: StoredSourceFrameCandidates,
+    commit: bool = True,
+) -> sqlite3.Row:
+    try:
+        for candidate in stored.candidates:
+            conn.execute(
+                """
+                INSERT INTO assets (
+                    id, project_id, kind, storage_uri, sha256, size_bytes, content_type,
+                    created_by_user_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    candidate["asset_id"],
+                    plan.project_id,
+                    "source_frame",
+                    candidate["storage_uri"],
+                    candidate["sha256"],
+                    candidate["size_bytes"],
+                    "image/jpeg",
+                    plan.actor.id,
+                ),
+            )
+        row = insert_version(
+            conn,
+            project_id=plan.project_id,
+            asset_id=plan.asset_id,
+            kind=SOURCE_FRAME_CANDIDATES_KIND,
+            created_by_user_id=plan.actor.id,
+            payload={
+                "schema_version": SOURCE_FRAME_SCHEMA_VERSION,
+                "source_asset_id": plan.asset_id,
+                "requested_timestamps_seconds": list(plan.requested_timestamps),
+                "candidates": stored.candidates,
+            },
+            commit=False,
+        )
+        write_audit(
+            conn,
+            actor=plan.actor,
+            action="source_frame.extract",
+            entity_type="version",
+            entity_id=str(row["id"]),
+            metadata={
+                "project_id": plan.project_id,
+                "source_asset_id": plan.asset_id,
+            },
+            commit=False,
+        )
+        if commit:
+            conn.commit()
+        return row
+    except sqlite3.Error as exc:
+        if commit:
+            conn.rollback()
+        raise source_frame_error(
+            500,
+            "SOURCE_FRAME_PERSIST_FAILED",
+            "Source frame candidates could not be saved. Extract them again.",
+        ) from exc
+
+
+def enqueue_source_frame_task(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    project_id: str,
+    asset_id: str,
+    timestamps_seconds: tuple[float, ...] | None,
+    idempotency_key: str,
+) -> sqlite3.Row:
+    plan = prepare_source_frame_extraction(
+        conn,
+        project_id=project_id,
+        asset_id=asset_id,
+        actor=actor,
+        timestamps_seconds=timestamps_seconds,
+    )
+    request_payload = {
+        "asset_id": asset_id,
+        "timestamps_seconds": list(plan.requested_timestamps),
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(
+            request_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    replay = conn.execute(
+        """
+        SELECT * FROM source_frame_tasks
+        WHERE project_id = %s AND idempotency_key = %s
+        """,
+        (project_id, idempotency_key),
+    ).fetchone()
+    if replay is not None:
+        if str(replay["request_hash"]) != request_hash:
+            raise source_frame_error(
+                409,
+                "SOURCE_FRAME_TASK_IDEMPOTENCY_CONFLICT",
+                "取帧参数已经变化，请重新提交。",
+            )
+        return cast(sqlite3.Row, replay)
+
+    active = conn.execute(
+        """
+        SELECT * FROM source_frame_tasks
+        WHERE project_id = %s AND asset_id = %s
+          AND status IN ('PENDING','RUNNING')
+        ORDER BY created_at DESC, id DESC LIMIT 1
+        """,
+        (project_id, asset_id),
+    ).fetchone()
+    if active is not None:
+        return cast(sqlite3.Row, active)
+
+    task_id = str(uuid4())
+    conn.execute(
+        """
+        INSERT INTO source_frame_tasks (
+            id, project_id, asset_id, created_by_user_id, idempotency_key,
+            request_hash, request_json, status
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
+        ON CONFLICT DO NOTHING
+        """,
+        (
+            task_id,
+            project_id,
+            asset_id,
+            actor.id,
+            idempotency_key,
+            request_hash,
+            json.dumps(request_payload, ensure_ascii=False, sort_keys=True),
+        ),
+    )
+    row = conn.execute(
+        "SELECT * FROM source_frame_tasks WHERE id = %s",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            """
+            SELECT * FROM source_frame_tasks
+            WHERE project_id = %s AND asset_id = %s
+              AND status IN ('PENDING','RUNNING')
+            ORDER BY created_at DESC, id DESC LIMIT 1
+            """,
+            (project_id, asset_id),
+        ).fetchone()
+    if row is None:
+        raise source_frame_error(
+            409,
+            "SOURCE_FRAME_TASK_ENQUEUE_CONFLICT",
+            "取帧任务状态已变化，请重试。",
+        )
     write_audit(
         conn,
         actor=actor,
-        action="source_frame.extract",
-        entity_type="version",
+        action="source_frame.task_enqueued",
+        entity_type="source_frame_task",
         entity_id=str(row["id"]),
         metadata={"project_id": project_id, "source_asset_id": asset_id},
     )
+    return cast(sqlite3.Row, row)
+
+
+def acquire_source_frame_task(
+    conn: BusinessConnection,
+    *,
+    worker_id: str,
+) -> SourceFrameTaskLease | None:
+    now = _time_text(datetime.now(UTC))
+    locked_until = _time_text(
+        datetime.now(UTC) + timedelta(minutes=SOURCE_FRAME_TASK_LEASE_MINUTES)
+    )
+    conn.execute(
+        """
+        UPDATE source_frame_tasks
+        SET status = 'PENDING', locked_by = NULL, locked_until = NULL,
+            error_code = NULL, error_message_redacted = NULL, retryable = 0,
+            updated_at = %s
+        WHERE status = 'RUNNING' AND locked_until IS NOT NULL AND locked_until <= %s
+        """,
+        (now, now),
+    )
+    row = conn.execute(
+        """
+        UPDATE source_frame_tasks
+        SET status = 'RUNNING', attempt = attempt + 1,
+            locked_by = %s, locked_until = %s,
+            started_at = COALESCE(started_at, %s), updated_at = %s,
+            error_code = NULL, error_message_redacted = NULL, retryable = 0
+        WHERE id = (
+            SELECT id FROM source_frame_tasks
+            WHERE status = 'PENDING'
+            ORDER BY created_at, id LIMIT 1
+        ) AND status = 'PENDING'
+        RETURNING *
+        """,
+        (worker_id, locked_until, now, now),
+    ).fetchone()
+    conn.commit()
+    if row is None:
+        return None
+    return SourceFrameTaskLease(
+        id=str(row["id"]),
+        created_by_user_id=str(row["created_by_user_id"]),
+        worker_id=worker_id,
+        attempt=int(row["attempt"]),
+    )
+
+
+def prepare_source_frame_task(
+    conn: BusinessConnection,
+    *,
+    lease: SourceFrameTaskLease,
+) -> SourceFrameExtractionPlan:
+    row = require_owned_source_frame_task(conn, lease)
+    payload = json.loads(str(row["request_json"]))
+    raw_timestamps = payload.get("timestamps_seconds")
+    if not isinstance(raw_timestamps, list):
+        raise RuntimeError("source frame task timestamps are unavailable")
+    actor = load_source_frame_task_actor(conn, lease.created_by_user_id)
+    return prepare_source_frame_extraction(
+        conn,
+        project_id=str(row["project_id"]),
+        asset_id=str(row["asset_id"]),
+        actor=actor,
+        timestamps_seconds=tuple(float(value) for value in raw_timestamps),
+    )
+
+
+def complete_source_frame_task(
+    conn: BusinessConnection,
+    *,
+    lease: SourceFrameTaskLease,
+    plan: SourceFrameExtractionPlan,
+    stored: StoredSourceFrameCandidates,
+) -> sqlite3.Row:
+    now = _time_text(datetime.now(UTC))
+    with conn:
+        require_owned_source_frame_task(conn, lease)
+        version = complete_source_frame_extraction(
+            conn,
+            plan=plan,
+            stored=stored,
+            commit=False,
+        )
+        updated = conn.execute(
+            """
+            UPDATE source_frame_tasks
+            SET status = 'SUCCEEDED', result_version_id = %s,
+                locked_by = NULL, locked_until = NULL,
+                completed_at = %s, updated_at = %s, retryable = 0
+            WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+            """,
+            (str(version["id"]), now, now, lease.id, lease.worker_id),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("source frame task lease was lost")
+    return version
+
+
+def fail_source_frame_task(
+    conn: BusinessConnection,
+    *,
+    lease: SourceFrameTaskLease,
+    cause: Exception,
+) -> None:
+    code = "SOURCE_FRAME_TASK_FAILED"
+    message = "候选源画面提取失败，请稍后重试。"
+    retryable = True
+    if isinstance(cause, HTTPException):
+        detail: dict[str, Any] = cause.detail if isinstance(cause.detail, dict) else {}
+        code = str(detail.get("code") or code)
+        message = str(detail.get("message") or message)
+        retryable = cause.status_code in {429, 502, 503, 504}
+    elif isinstance(cause, (StorageBackendUnavailable, OSError)):
+        code = "SOURCE_FRAME_STORAGE_UNAVAILABLE"
+        message = "素材库暂不可用，请稍后重试。"
+    now = _time_text(datetime.now(UTC))
+    conn.execute(
+        """
+        UPDATE source_frame_tasks
+        SET status = 'FAILED', error_code = %s,
+            error_message_redacted = %s, retryable = %s,
+            locked_by = NULL, locked_until = NULL,
+            completed_at = %s, updated_at = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        """,
+        (
+            code,
+            message,
+            1 if retryable else 0,
+            now,
+            now,
+            lease.id,
+            lease.worker_id,
+        ),
+    )
+    conn.commit()
+
+
+def load_source_frame_task(
+    conn: BusinessConnection,
+    task_id: str,
+) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM source_frame_tasks WHERE id = %s",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise source_frame_error(
+            404,
+            "SOURCE_FRAME_TASK_NOT_FOUND",
+            "取帧任务不存在。",
+        )
+    return cast(sqlite3.Row, row)
+
+
+def latest_source_frame_task(
+    conn: BusinessConnection,
+    *,
+    project_id: str,
+    asset_id: str,
+) -> sqlite3.Row | None:
+    return cast(
+        sqlite3.Row | None,
+        conn.execute(
+            """
+            SELECT * FROM source_frame_tasks
+            WHERE project_id = %s AND asset_id = %s
+            ORDER BY CASE WHEN status IN ('PENDING','RUNNING') THEN 0 ELSE 1 END,
+                     created_at DESC, id DESC LIMIT 1
+            """,
+            (project_id, asset_id),
+        ).fetchone(),
+    )
+
+
+def require_owned_source_frame_task(
+    conn: BusinessConnection,
+    lease: SourceFrameTaskLease,
+) -> sqlite3.Row:
+    row = load_source_frame_task(conn, lease.id)
+    if str(row["status"]) != "RUNNING" or str(row["locked_by"]) != lease.worker_id:
+        raise RuntimeError("source frame task lease was lost")
     return row
+
+
+def load_source_frame_task_actor(
+    conn: BusinessConnection,
+    user_id: str,
+) -> CurrentUser:
+    row = conn.execute(
+        "SELECT id, username, display_name, role FROM users WHERE id = %s",
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("source frame task actor is unavailable")
+    return CurrentUser(
+        id=str(row["id"]),
+        username=str(row["username"]),
+        display_name=str(row["display_name"]),
+        role=cast(Role, str(row["role"])),
+    )
+
+
+def _time_text(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def delete_created_source_frames(

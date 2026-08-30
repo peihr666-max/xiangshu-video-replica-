@@ -13,6 +13,9 @@ import {
   getAssetDownloadUrl,
   getLatestProjectSourceFrameSelection,
   getLatestProjectSourceFrames,
+  getLatestProjectSourceFrameTask,
+  type SourceFrameTask,
+  waitForSourceFrameTask,
 } from "./api";
 import { SourceFrameSelection } from "./SourceFrameSelection";
 
@@ -20,9 +23,11 @@ vi.mock("./api", () => ({
   confirmSourceFrame: vi.fn(),
   extractSourceFrames: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
+  getLatestProjectSourceFrameTask: vi.fn(),
   getLatestProjectSourceFrameSelection: vi.fn(),
   getLatestProjectSourceFrames: vi.fn(),
   readSourceFrameCandidates: vi.fn((version) => version.payload),
+  waitForSourceFrameTask: vi.fn(),
 }));
 
 const candidatesVersion = {
@@ -42,6 +47,23 @@ const candidatesVersion = {
   created_at: "2030-01-01T00:00:00Z",
 };
 
+const sourceFrameTask = {
+  id: "source-frame-task-1",
+  project_id: "project-1",
+  asset_id: "reference-1",
+  timestamps_seconds: [0.5, 1.5, 2.5],
+  status: "PENDING" as const,
+  attempt: 0,
+  result_version_id: null,
+  error_code: null,
+  error_message: null,
+  retryable: false,
+  created_at: "2030-01-01T00:00:00Z",
+  updated_at: "2030-01-01T00:00:00Z",
+  started_at: null,
+  completed_at: null,
+};
+
 describe("SourceFrameSelection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -52,6 +74,7 @@ describe("SourceFrameSelection", () => {
       version: null,
       stale: false,
     });
+    vi.mocked(getLatestProjectSourceFrameTask).mockResolvedValue(null);
     vi.mocked(getAssetDownloadUrl).mockImplementation(async (assetId) => ({
       url: `https://private.example/${assetId}.jpg`,
     }));
@@ -69,7 +92,12 @@ describe("SourceFrameSelection", () => {
         },
       },
     });
-    vi.mocked(extractSourceFrames).mockResolvedValue(candidatesVersion);
+    vi.mocked(extractSourceFrames).mockResolvedValue(sourceFrameTask);
+    vi.mocked(waitForSourceFrameTask).mockResolvedValue({
+      ...sourceFrameTask,
+      status: "SUCCEEDED",
+      result_version_id: candidatesVersion.id,
+    });
   });
 
   it("shows ranked candidates and requires explicit confirmation", async () => {
@@ -317,14 +345,10 @@ describe("SourceFrameSelection", () => {
   });
 
   it("does not reload an old project after a stale extraction completes", async () => {
-    let resolveExtraction:
-      | ((version: typeof candidatesVersion) => void)
-      | undefined;
-    const pendingExtraction = new Promise<typeof candidatesVersion>(
-      (resolve) => {
-        resolveExtraction = resolve;
-      },
-    );
+    let resolveExtraction: ((task: typeof sourceFrameTask) => void) | undefined;
+    const pendingExtraction = new Promise<typeof sourceFrameTask>((resolve) => {
+      resolveExtraction = resolve;
+    });
     vi.mocked(extractSourceFrames).mockReturnValue(pendingExtraction);
     const { rerender } = render(
       <SourceFrameSelection
@@ -348,11 +372,65 @@ describe("SourceFrameSelection", () => {
     const loadCount = vi.mocked(getLatestProjectSourceFrames).mock.calls.length;
 
     await act(async () => {
-      resolveExtraction?.(candidatesVersion);
+      resolveExtraction?.(sourceFrameTask);
       await pendingExtraction;
     });
 
     expect(getLatestProjectSourceFrames).toHaveBeenCalledTimes(loadCount);
+  });
+
+  it("releases workspace navigation after the durable extraction task is accepted", async () => {
+    let resolveTask: ((task: SourceFrameTask) => void) | undefined;
+    const pendingTask = new Promise<SourceFrameTask>((resolve) => {
+      resolveTask = resolve;
+    });
+    vi.mocked(waitForSourceFrameTask).mockReturnValue(pendingTask);
+    const onBusyChange = vi.fn();
+    render(
+      <SourceFrameSelection
+        onBusyChange={onBusyChange}
+        projectId="project-1"
+        referenceAssetId="reference-1"
+      />,
+    );
+
+    await screen.findByAltText("候选源画面 1");
+    fireEvent.click(screen.getByRole("button", { name: "重新提取候选" }));
+
+    await waitFor(() => expect(extractSourceFrames).toHaveBeenCalledOnce());
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
+    expect(
+      screen.getByText("候选源画面正在后台提取，可离开本页继续其他操作。"),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      resolveTask?.({
+        ...sourceFrameTask,
+        status: "SUCCEEDED",
+        result_version_id: candidatesVersion.id,
+      });
+      await pendingTask;
+    });
+  });
+
+  it("resumes a pending extraction task after remount without enqueueing again", async () => {
+    vi.mocked(getLatestProjectSourceFrames)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(candidatesVersion);
+    vi.mocked(getLatestProjectSourceFrameTask).mockResolvedValueOnce(
+      sourceFrameTask,
+    );
+
+    render(
+      <SourceFrameSelection
+        projectId="project-1"
+        referenceAssetId="reference-1"
+      />,
+    );
+
+    expect(await screen.findByAltText("候选源画面 1")).toBeInTheDocument();
+    expect(waitForSourceFrameTask).toHaveBeenCalledWith(sourceFrameTask.id);
+    expect(extractSourceFrames).not.toHaveBeenCalled();
   });
 
   // P0-03-02：候选自动提取与特征预填（红灯先行）。

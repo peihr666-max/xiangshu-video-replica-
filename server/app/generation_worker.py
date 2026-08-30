@@ -69,6 +69,16 @@ from app.image_tasks import (
     run_first_frame_task_outside_transaction,
 )
 from app.media_routes import get_media_storage
+from app.source_frames import (
+    FFmpegSourceFrameExtractor,
+    SourceFrameExtractor,
+    acquire_source_frame_task,
+    complete_source_frame_task,
+    delete_created_source_frames,
+    fail_source_frame_task,
+    perform_source_frame_extraction,
+    prepare_source_frame_task,
+)
 from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
@@ -88,6 +98,7 @@ def run_worker_once(
     character_provider: CharacterImageProvider | None = None,
     analysis_provider: VideoAnalysisProvider | None = None,
     image_provider: ImageProvider | None = None,
+    source_frame_extractor: SourceFrameExtractor | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks, then return so SQLite connections stay short-lived."""
@@ -136,6 +147,42 @@ def run_worker_once(
                 complete_analysis_task(conn, work=analysis_work, result=analysis_result)
             except Exception as exc:
                 fail_analysis_task(conn, lease=analysis_lease, cause=exc)
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        source_frame_lease = acquire_source_frame_task(conn, worker_id=worker_id)
+        if source_frame_lease is not None:
+            source_frame_plan = None
+            source_frame_stored = None
+            try:
+                source_frame_plan = prepare_source_frame_task(
+                    conn,
+                    lease=source_frame_lease,
+                )
+                source_frame_stored = perform_source_frame_extraction(
+                    source_frame_plan,
+                    storage=storage,
+                    extractor=source_frame_extractor or FFmpegSourceFrameExtractor(),
+                )
+                complete_source_frame_task(
+                    conn,
+                    lease=source_frame_lease,
+                    plan=source_frame_plan,
+                    stored=source_frame_stored,
+                )
+            except Exception as exc:
+                if source_frame_plan is not None and source_frame_stored is not None:
+                    delete_created_source_frames(
+                        storage,
+                        source_frame_stored.created_assets,
+                        actor_id=source_frame_plan.actor.id,
+                    )
+                fail_source_frame_task(
+                    conn,
+                    lease=source_frame_lease,
+                    cause=exc,
+                )
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
@@ -506,6 +553,7 @@ def run_pg_worker_once(
     analysis_provider: VideoAnalysisProvider | None = None,
     generation_provider: H3Provider | None = None,
     image_provider: ImageProvider | None = None,
+    source_frame_extractor: SourceFrameExtractor | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks on the PostgreSQL lane.
@@ -585,6 +633,49 @@ def run_pg_worker_once(
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
                     fail_analysis_task(conn, lease=analysis_lease, cause=exc)
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        with pg_transaction() as raw_conn:
+            source_frame_lease = acquire_source_frame_task(
+                BusinessConnection.postgres(raw_conn),
+                worker_id=worker_id,
+            )
+        if source_frame_lease is not None:
+            source_frame_plan = None
+            source_frame_stored = None
+            try:
+                with pg_transaction() as raw_conn:
+                    source_frame_plan = prepare_source_frame_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=source_frame_lease,
+                    )
+                source_frame_stored = perform_source_frame_extraction(
+                    source_frame_plan,
+                    storage=storage,
+                    extractor=source_frame_extractor or FFmpegSourceFrameExtractor(),
+                )
+                with pg_transaction() as raw_conn:
+                    complete_source_frame_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=source_frame_lease,
+                        plan=source_frame_plan,
+                        stored=source_frame_stored,
+                    )
+            except Exception as exc:
+                if source_frame_plan is not None and source_frame_stored is not None:
+                    delete_created_source_frames(
+                        storage,
+                        source_frame_stored.created_assets,
+                        actor_id=source_frame_plan.actor.id,
+                    )
+                with pg_transaction() as raw_conn:
+                    fail_source_frame_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=source_frame_lease,
+                        cause=exc,
+                    )
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from app.auth import get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
+from app.generation_worker import run_worker_once
 from app.main import app
 from app.media_routes import get_media_storage
 from app.source_frame_routes import ExtractSourceFramesRequest, get_source_frame_extractor
@@ -146,6 +147,43 @@ def auth_headers(user_id: str) -> dict[str, str]:
     return {"X-Dev-User-Id": user_id}
 
 
+def complete_source_frame_task(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    *,
+    payload: dict[str, object] | None = None,
+    extractor: object | None = None,
+) -> dict[str, object]:
+    queued = client.post(
+        "/api/projects/project_owned/source-frames/extract",
+        json=payload or {"asset_id": "reference_owned"},
+        headers=auth_headers("employee_1"),
+    )
+    assert queued.status_code == 202
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        processed = run_worker_once(
+            conn,
+            worker_id="source-frame-test-worker",
+            storage=storage,
+            source_frame_extractor=extractor or FakeSourceFrameExtractor(),
+            max_tasks=1,
+        )
+    assert processed == 1
+    task = client.get(
+        f"/api/source-frame-tasks/{queued.json()['id']}",
+        headers=auth_headers("employee_1"),
+    )
+    assert task.status_code == 200
+    assert task.json()["status"] == "SUCCEEDED"
+    latest = client.get(
+        "/api/projects/project_owned/source-frames/latest",
+        headers=auth_headers("employee_1"),
+    )
+    assert latest.status_code == 200
+    return dict(latest.json())
+
+
 def test_owner_can_extract_candidates_and_confirm_one(
     client: TestClient,
     db_path: Path,
@@ -157,14 +195,11 @@ def test_owner_can_extract_candidates_and_confirm_one(
         content_type="video/mp4",
     )
 
-    extracted = client.post(
-        "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned"},
-        headers=auth_headers("employee_1"),
+    body = complete_source_frame_task(
+        client,
+        db_path,
+        storage,
     )
-
-    assert extracted.status_code == 200
-    body = extracted.json()
     assert body["kind"] == "source_frame_candidates"
     assert body["version_number"] == 1
     candidates = body["payload"]["candidates"]
@@ -236,6 +271,7 @@ def test_source_frame_extraction_requires_owner_and_ready_reference(
 
 def test_confirmation_rejects_assets_outside_the_latest_candidate_set(
     client: TestClient,
+    db_path: Path,
     storage: FakeStorageAdapter,
 ) -> None:
     storage.put_object(
@@ -243,12 +279,11 @@ def test_confirmation_rejects_assets_outside_the_latest_candidate_set(
         b"reference-video",
         content_type="video/mp4",
     )
-    extracted = client.post(
-        "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned"},
-        headers=auth_headers("employee_1"),
+    complete_source_frame_task(
+        client,
+        db_path,
+        storage,
     )
-    assert extracted.status_code == 200
 
     response = client.post(
         "/api/projects/project_owned/source-frames/confirm",
@@ -262,6 +297,7 @@ def test_confirmation_rejects_assets_outside_the_latest_candidate_set(
 
 def test_reextracting_source_frames_makes_the_previous_selection_stale(
     client: TestClient,
+    db_path: Path,
     storage: FakeStorageAdapter,
 ) -> None:
     storage.put_object(
@@ -269,37 +305,36 @@ def test_reextracting_source_frames_makes_the_previous_selection_stale(
         b"reference-video",
         content_type="video/mp4",
     )
-    first = client.post(
-        "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned"},
-        headers=auth_headers("employee_1"),
+    first = complete_source_frame_task(
+        client,
+        db_path,
+        storage,
     )
-    assert first.status_code == 200
     confirmed = client.post(
         "/api/projects/project_owned/source-frames/confirm",
-        json={"source_frame_asset_id": first.json()["payload"]["candidates"][0]["asset_id"]},
+        json={"source_frame_asset_id": first["payload"]["candidates"][0]["asset_id"]},
         headers=auth_headers("employee_1"),
     )
     assert confirmed.status_code == 200
 
-    second = client.post(
-        "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned"},
-        headers=auth_headers("employee_1"),
+    second = complete_source_frame_task(
+        client,
+        db_path,
+        storage,
     )
     selection = client.get(
         "/api/projects/project_owned/source-frames/selection/latest",
         headers=auth_headers("employee_1"),
     )
 
-    assert second.status_code == 200
-    assert second.json()["id"] != first.json()["id"]
+    assert second["id"] != first["id"]
     assert selection.status_code == 409
     assert selection.json()["detail"]["code"] == "SOURCE_FRAME_SELECTION_STALE"
 
 
 def test_owner_can_reextract_manually_selected_timestamps_across_the_full_video(
     client: TestClient,
+    db_path: Path,
     storage: FakeStorageAdapter,
 ) -> None:
     storage.put_object(
@@ -308,14 +343,16 @@ def test_owner_can_reextract_manually_selected_timestamps_across_the_full_video(
         content_type="video/mp4",
     )
 
-    response = client.post(
-        "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned", "timestamps_seconds": [0.2, 8.8]},
-        headers=auth_headers("employee_1"),
+    response = complete_source_frame_task(
+        client,
+        db_path,
+        storage,
+        payload={
+            "asset_id": "reference_owned",
+            "timestamps_seconds": [0.2, 8.8],
+        },
     )
-
-    assert response.status_code == 200
-    payload = response.json()["payload"]
+    payload = response["payload"]
     assert payload["requested_timestamps_seconds"] == [0.2, 8.8]
     assert [candidate["timestamp_seconds"] for candidate in payload["candidates"]] == [8.8, 0.2]
 
@@ -411,6 +448,7 @@ def test_ffmpeg_extractor_returns_scored_jpegs_for_requested_timestamps(tmp_path
 
 def test_empty_extracted_frame_is_reported_as_an_extraction_failure(
     client: TestClient,
+    db_path: Path,
     storage: FakeStorageAdapter,
 ) -> None:
     storage.put_object(
@@ -418,20 +456,33 @@ def test_empty_extracted_frame_is_reported_as_an_extraction_failure(
         b"reference-video",
         content_type="video/mp4",
     )
-    app.dependency_overrides[get_source_frame_extractor] = EmptySourceFrameExtractor
-
-    response = client.post(
+    queued = client.post(
         "/api/projects/project_owned/source-frames/extract",
         json={"asset_id": "reference_owned"},
         headers=auth_headers("employee_1"),
     )
 
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "SOURCE_FRAME_EXTRACTION_FAILED"
+    assert queued.status_code == 202
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        run_worker_once(
+            conn,
+            worker_id="source-frame-empty-worker",
+            storage=storage,
+            source_frame_extractor=EmptySourceFrameExtractor(),
+            max_tasks=1,
+        )
+    task = client.get(
+        f"/api/source-frame-tasks/{queued.json()['id']}",
+        headers=auth_headers("employee_1"),
+    )
+    assert task.status_code == 200
+    assert task.json()["status"] == "FAILED"
+    assert task.json()["error_code"] == "SOURCE_FRAME_EXTRACTION_FAILED"
 
 
 def test_database_failure_removes_uploaded_candidate_frames(
     client: TestClient,
+    db_path: Path,
     storage: FakeStorageAdapter,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -445,12 +496,26 @@ def test_database_failure_removes_uploaded_candidate_frames(
         raise sqlite3.IntegrityError("simulated persistence failure")
 
     monkeypatch.setattr("app.source_frames.insert_version", fail_insert_version)
-    response = client.post(
+    queued = client.post(
         "/api/projects/project_owned/source-frames/extract",
         json={"asset_id": "reference_owned"},
         headers=auth_headers("employee_1"),
     )
 
-    assert response.status_code == 500
-    assert response.json()["detail"]["code"] == "SOURCE_FRAME_PERSIST_FAILED"
+    assert queued.status_code == 202
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        run_worker_once(
+            conn,
+            worker_id="source-frame-db-failure-worker",
+            storage=storage,
+            source_frame_extractor=FakeSourceFrameExtractor(),
+            max_tasks=1,
+        )
+    task = client.get(
+        f"/api/source-frame-tasks/{queued.json()['id']}",
+        headers=auth_headers("employee_1"),
+    )
+    assert task.status_code == 200
+    assert task.json()["status"] == "FAILED"
+    assert task.json()["error_code"] == "SOURCE_FRAME_PERSIST_FAILED"
     assert not [key for key in storage._objects if "/source-frames/" in key]

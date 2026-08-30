@@ -443,6 +443,25 @@ export type SourceFrameSelectionState = {
   stale: boolean;
 };
 
+export type SourceFrameTask = {
+  id: string;
+  project_id: string;
+  asset_id: string;
+  timestamps_seconds: number[];
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  attempt: number;
+  result_version_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  retryable: boolean;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+const sourceFrameTaskWaiters = new Map<string, Promise<SourceFrameTask>>();
+
 export type SourceFrameCharacterFeatures =
   components["schemas"]["SourceFrameCharacterFeatures"];
 
@@ -1937,8 +1956,8 @@ export async function extractSourceFrames(
   projectId: string,
   assetId: string,
   timestampsSeconds: number[],
-): Promise<AnalysisVersion> {
-  return requestApiJson<AnalysisVersion>(
+): Promise<SourceFrameTask> {
+  return requestApiJson<SourceFrameTask>(
     `/api/projects/${encodeURIComponent(projectId)}/source-frames/extract`,
     "提取候选源画面失败",
     {
@@ -1946,9 +1965,69 @@ export async function extractSourceFrames(
       body: JSON.stringify({
         asset_id: assetId,
         timestamps_seconds: timestampsSeconds,
+        idempotency_key: newControlWriteIdempotencyKey(),
       }),
     },
   );
+}
+
+export async function getSourceFrameTask(
+  taskId: string,
+): Promise<SourceFrameTask> {
+  return requestApiJson<SourceFrameTask>(
+    `/api/source-frame-tasks/${encodeURIComponent(taskId)}`,
+    "读取候选源画面任务失败",
+  );
+}
+
+export async function getLatestProjectSourceFrameTask(
+  projectId: string,
+  assetId: string,
+): Promise<SourceFrameTask | null> {
+  const response = await requestApi(
+    `/api/projects/${encodeURIComponent(projectId)}/source-frame-tasks/latest?asset_id=${encodeURIComponent(assetId)}`,
+    { method: "GET" },
+  );
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`读取候选源画面任务失败（${response.status}）`);
+  }
+  return (await response.json()) as SourceFrameTask | null;
+}
+
+export async function waitForSourceFrameTask(
+  taskId: string,
+): Promise<SourceFrameTask> {
+  const existing = sourceFrameTaskWaiters.get(taskId);
+  if (existing) {
+    return existing;
+  }
+  const waiter = pollSourceFrameTask(taskId);
+  sourceFrameTaskWaiters.set(taskId, waiter);
+  const clear = () => {
+    if (sourceFrameTaskWaiters.get(taskId) === waiter) {
+      sourceFrameTaskWaiters.delete(taskId);
+    }
+  };
+  void waiter.then(clear, clear);
+  return waiter;
+}
+
+async function pollSourceFrameTask(taskId: string): Promise<SourceFrameTask> {
+  const deadline = Date.now() + 10 * 60_000;
+  while (Date.now() < deadline) {
+    const task = await getSourceFrameTask(taskId);
+    if (task.status === "SUCCEEDED") {
+      return task;
+    }
+    if (task.status === "FAILED") {
+      throw new Error(task.error_message || "候选源画面提取失败，请重新提交。");
+    }
+    await waitForPoll();
+  }
+  throw new Error("候选源画面仍在后台提取，请稍后返回查看。");
 }
 
 export async function confirmSourceFrame(

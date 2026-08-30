@@ -252,7 +252,7 @@ def test_pg_upgrade_from_published_040_head_applies_fair_queue() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "046_async_image_tasks"
+            assert version == "047_async_source_frame_tasks"
             fair_queue_column = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.columns "
                 "WHERE table_name = 'runtime_settings' AND column_name = 'fair_queue_enabled'"
@@ -286,7 +286,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
 
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "046_async_image_tasks", f"unexpected head revision: {version}"
+            assert version == "047_async_source_frame_tasks", f"unexpected head revision: {version}"
 
             tables = {
                 row[0]
@@ -309,6 +309,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
                 "analysis_tasks",
                 "first_frame_tasks",
                 "character_sheet_tasks",
+                "source_frame_tasks",
             ):
                 assert required in tables, f"missing table {required} after upgrade head"
 
@@ -341,6 +342,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
                 "idx_character_sheet_tasks_identity",
                 "idx_character_sheet_tasks_result_identity",
                 "idx_character_sheet_tasks_result_version",
+                "idx_source_frame_tasks_result_version",
             ):
                 assert name in index_defs, f"foreign-key support index {name} missing on PG"
             expected_partial = {
@@ -361,6 +363,9 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
                     "status = ANY (ARRAY['PENDING'::text, 'RUNNING'::text])"
                 ),
                 "uq_character_sheet_tasks_active_request": (
+                    "status = ANY (ARRAY['PENDING'::text, 'RUNNING'::text])"
+                ),
+                "uq_source_frame_tasks_active_asset": (
                     "status = ANY (ARRAY['PENDING'::text, 'RUNNING'::text])"
                 ),
             }
@@ -386,7 +391,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "046_async_image_tasks"
+            assert version == "047_async_source_frame_tasks"
     finally:
         _drop_database("t06_migrate_test")
 
@@ -508,7 +513,7 @@ def test_pg_wallet_downgrade_blocked_when_ledger_has_settled_rounds() -> None:
         # The database must be left exactly at head (no partial rollback).
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "046_async_image_tasks"
+        assert version == "047_async_source_frame_tasks"
     finally:
         _drop_database(db_name)
 
@@ -834,7 +839,7 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             command.downgrade(_alembic_config(sqlalchemy_dsn), "025_postgres_runtime_compatibility")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "046_async_image_tasks"
+        assert version == "047_async_source_frame_tasks"
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
@@ -936,7 +941,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "046_async_image_tasks"
+            assert version == "047_async_source_frame_tasks"
 
             indexes = {
                 row[0]
@@ -1117,7 +1122,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
         # indexes intact when the append-only evidence guard refuses rollback.
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "046_async_image_tasks"
+            assert version == "047_async_source_frame_tasks"
             index_count = conn.execute(
                 "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
                 "AND indexname = 'idx_wallets_updated_at_user'"

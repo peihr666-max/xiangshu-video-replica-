@@ -7,9 +7,11 @@ import {
   getAssetDownloadUrl,
   getLatestProjectSourceFrameSelection,
   getLatestProjectSourceFrames,
+  getLatestProjectSourceFrameTask,
   readSourceFrameCandidates,
   type SourceFrameCandidate,
   type SourceFrameCharacterFeatures,
+  waitForSourceFrameTask,
 } from "./api";
 
 export function SourceFrameSelection({
@@ -96,9 +98,12 @@ export function SourceFrameSelection({
     setIsSubmitting(false);
     setError("");
     try {
-      const [version, selection] = await Promise.all([
+      const [version, selection, latestTask] = await Promise.all([
         getLatestProjectSourceFrames(projectId),
         getLatestProjectSourceFrameSelection(projectId),
+        referenceAssetId
+          ? getLatestProjectSourceFrameTask(projectId, referenceAssetId)
+          : Promise.resolve(null),
       ]);
       if (!isCurrentRequest()) {
         return;
@@ -114,6 +119,44 @@ export function SourceFrameSelection({
         resetFeatures();
         onSelectionChange?.(null);
         setStatus(selection.stale ? "候选已更新，请重新确认源画面。" : "");
+        if (
+          latestTask?.status === "PENDING" ||
+          latestTask?.status === "RUNNING"
+        ) {
+          setIsSubmitting(true);
+          setStatus("候选源画面正在后台提取，可离开本页继续其他操作。");
+          try {
+            await waitForSourceFrameTask(latestTask.id);
+            if (!isCurrentRequest()) {
+              return;
+            }
+            setStatus("候选源画面已提取，请核对后确认。");
+            await loadCandidates();
+          } catch (requestError) {
+            if (isCurrentRequest()) {
+              setError(
+                requestError instanceof Error
+                  ? requestError.message
+                  : "候选源画面提取失败。",
+              );
+            }
+          } finally {
+            if (isCurrentRequest()) {
+              setIsSubmitting(false);
+            }
+          }
+          return;
+        }
+        if (latestTask?.status === "FAILED") {
+          setError(
+            latestTask.error_message || "候选源画面提取失败，请重新提交。",
+          );
+          return;
+        }
+        if (latestTask?.status === "SUCCEEDED") {
+          setError("取帧任务已完成，但候选记录暂不可用，请刷新后重试。");
+          return;
+        }
         // P0-03-02：角色就绪且无候选时自动提取默认时间点（本地截帧无费用），
         // 提取仅产生候选，确认仍为人工动作；readOnly 不触发（契约红线 6）。
         if (
@@ -124,12 +167,20 @@ export function SourceFrameSelection({
           autoExtractProjectRef.current = projectId;
           onBusyChangeRef.current?.(true);
           setIsSubmitting(true);
+          let enqueuePending = true;
           try {
-            await extractSourceFrames(
+            const task = await extractSourceFrames(
               projectId,
               referenceAssetId,
               defaultTimestamps,
             );
+            if (!isCurrentRequest()) {
+              return;
+            }
+            enqueuePending = false;
+            onBusyChangeRef.current?.(false);
+            setStatus("候选源画面正在后台提取，可离开本页继续其他操作。");
+            await waitForSourceFrameTask(task.id);
             if (!isCurrentRequest()) {
               return;
             }
@@ -148,7 +199,9 @@ export function SourceFrameSelection({
             if (isCurrentRequest()) {
               setIsSubmitting(false);
             }
-            onBusyChangeRef.current?.(false);
+            if (enqueuePending) {
+              onBusyChangeRef.current?.(false);
+            }
           }
         }
         return;
@@ -303,15 +356,27 @@ export function SourceFrameSelection({
     }
     const requestId = loadRequestId.current + 1;
     loadRequestId.current = requestId;
-    onBusyChange?.(true);
+    onBusyChangeRef.current?.(true);
     setIsSubmitting(true);
     setError("");
     setStatus("");
     // 手动提取开启新状态，作废自动提取提示标记，避免异常分支残留的
     // 标记把本次手动提取误标为自动提取（P0-05-02 评审 Minor）。
     autoExtractNotifiedRef.current = false;
+    let enqueuePending = true;
     try {
-      await extractSourceFrames(projectId, referenceAssetId, timestamps);
+      const task = await extractSourceFrames(
+        projectId,
+        referenceAssetId,
+        timestamps,
+      );
+      if (requestId !== loadRequestId.current) {
+        return;
+      }
+      enqueuePending = false;
+      onBusyChangeRef.current?.(false);
+      setStatus("候选源画面正在后台提取，可离开本页继续其他操作。");
+      await waitForSourceFrameTask(task.id);
       if (requestId !== loadRequestId.current) {
         return;
       }
@@ -333,7 +398,9 @@ export function SourceFrameSelection({
       if (requestId === loadRequestId.current) {
         setIsSubmitting(false);
       }
-      onBusyChange?.(false);
+      if (enqueuePending) {
+        onBusyChangeRef.current?.(false);
+      }
     }
   }
 

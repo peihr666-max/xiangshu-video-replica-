@@ -11,6 +11,7 @@ import {
   createScriptVersion,
   downloadCharacterAsset,
   downloadGenerationResult,
+  extractSourceFrames,
   generateFirstFrames,
   getCachedCharacterAssetUrl,
   getCharacterReferenceRecommendation,
@@ -39,6 +40,7 @@ import {
   waitForAnalysisTask,
   waitForCharacterSheetTask,
   waitForFirstFrameTask,
+  waitForSourceFrameTask,
 } from "./api";
 
 describe("API base URL resolution", () => {
@@ -926,6 +928,52 @@ describe("startVideoAnalysis", () => {
       succeeded,
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("enqueues source-frame extraction and shares its durable poller", async () => {
+    vi.useFakeTimers();
+    const queued = {
+      id: "source-frame-task-shared",
+      project_id: "project-1",
+      asset_id: "asset-1",
+      timestamps_seconds: [2.4, 6, 9.6],
+      status: "PENDING",
+    };
+    const running = { ...queued, status: "RUNNING" };
+    const succeeded = {
+      ...queued,
+      status: "SUCCEEDED",
+      result_version_id: "source-frame-version-shared",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => queued })
+      .mockResolvedValueOnce({ ok: true, json: async () => running })
+      .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const task = await extractSourceFrames(
+      "project-1",
+      "asset-1",
+      queued.timestamps_seconds,
+    );
+    const first = waitForSourceFrameTask(task.id);
+    const recovered = waitForSourceFrameTask(task.id);
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(Promise.all([first, recovered])).resolves.toEqual([
+      succeeded,
+      succeeded,
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const enqueueBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(enqueueBody).toEqual(
+      expect.objectContaining({
+        asset_id: "asset-1",
+        timestamps_seconds: [2.4, 6, 9.6],
+        idempotency_key: expect.any(String),
+      }),
+    );
   });
 
   it("tells a temporary network failure apart from an unusable model response", async () => {
