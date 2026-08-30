@@ -53,7 +53,7 @@ def test_production_environment_template_disables_desktop_identity_bypasses() ->
     assert "VIDEO_REPLICA_DESKTOP_USER_ID=" in environment
     assert "VIDEO_REPLICA_DISABLE_LOCAL_KEYSTORE=1" in environment
     assert "PUBLIC_BASE_URL=https://internal.example.com" in environment
-    assert "ZPAY_GATEWAY_URL=https://zpayz.cn/submit.php" in environment
+    assert "ZPAY_GATEWAY_URL" not in environment
     assert "CONTROL_PROXY_TOKEN_DIGEST=REPLACE_WITH_SHA256_DIGEST" in environment
     assert "CONTROL_ADMIN_USER_ID=REPLACE_WITH_ADMIN_USER_ID" in environment
 

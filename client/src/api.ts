@@ -7,6 +7,8 @@ const REQUEST_TIMEOUT_MS = 5_000;
 const CLOUD_OP_TIMEOUT_MS = 60_000;
 export const SESSION_EXPIRED_EVENT = "video-replica:session-expired";
 let internalAccessToken: string | null = null;
+let customerSessionToken: string | null = null;
+let customerSessionOwner: symbol | null = null;
 // The customer-production admin session exchanges its CSRF value once and
 // keeps it in memory only.  Control-plane writes share this value so the
 // existing account/billing screens stay behind the same per-operator session
@@ -51,7 +53,7 @@ function apiBaseUrl(): string {
 }
 
 type HealthResponse = components["schemas"]["HealthResponse"];
-export type UserRole = "employee" | "admin" | "auditor";
+export type UserRole = "employee" | "admin" | "auditor" | "customer";
 
 export type CurrentUser = {
   id: string;
@@ -282,10 +284,11 @@ export type UploadIntent = {
   asset_id: string;
   project_id: string;
   storage_key: string;
-  method: "PUT";
-  url: string;
+  method: "PUT" | null;
+  url: string | null;
   headers: Record<string, string>;
-  expires_at: string;
+  expires_at: string | null;
+  upload_required?: boolean;
 };
 
 export type CompletedUpload = {
@@ -330,7 +333,6 @@ export type AnalysisTask = {
 };
 
 const analysisTaskWaiters = new Map<string, Promise<AnalysisTask>>();
-
 export type AnalysisProvider = "apilio_gemini" | "fake_gemini";
 
 export type ShotMotion = {
@@ -614,6 +616,38 @@ export function setInternalAccessToken(token: string | null): void {
   internalAccessToken = normalized || null;
 }
 
+/** Keep the active customer workspace credential in memory only.  The Tauri
+ * vault remains the persistent source; this bridge exists solely so the
+ * shared project/analysis/generation API adapter can authenticate requests. */
+export function setCustomerSessionToken(token: string | null): void {
+  const normalized = token?.trim() ?? "";
+  customerSessionToken = normalized || null;
+  customerSessionOwner = null;
+}
+
+/** Attach a workspace-owned credential and return an ownership-aware cleanup.
+ * A stale React tree may unmount after a newer tree has already attached its
+ * token; its cleanup must not clear the newer session. */
+export function attachCustomerSessionToken(token: string): () => void {
+  const normalized = token.trim();
+  if (!normalized) {
+    throw new Error("Customer session token is required");
+  }
+  const owner = Symbol("customer-workspace-session");
+  customerSessionToken = normalized;
+  customerSessionOwner = owner;
+  return () => {
+    if (customerSessionOwner === owner) {
+      customerSessionToken = null;
+      customerSessionOwner = null;
+    }
+  };
+}
+
+function workspaceAccessToken(): string | null {
+  return internalAccessToken ?? customerSessionToken;
+}
+
 export async function getWallet(): Promise<WalletSnapshot> {
   return requestApiJson<WalletSnapshot>("/api/wallet", "读取钱包失败");
 }
@@ -870,7 +904,7 @@ export async function compileGenerationPrompt(
 ): Promise<GenerationVersion> {
   return requestGenerationJson<GenerationVersion>(
     `/api/projects/${encodeURIComponent(projectId)}/prompts/compile`,
-    "编译 H3 Prompt 失败",
+    "编译视频生成提示词失败",
     { method: "POST", body: JSON.stringify(input) },
   );
 }
@@ -881,7 +915,7 @@ export async function reviseGenerationPrompt(
 ): Promise<GenerationVersion> {
   return requestGenerationJson<GenerationVersion>(
     `/api/projects/${encodeURIComponent(projectId)}/prompts/revise`,
-    "保存 H3 Prompt 失败",
+    "保存视频生成提示词失败",
     { method: "POST", body: JSON.stringify(input) },
   );
 }
@@ -937,7 +971,7 @@ export async function getLatestGenerationPrompt(
 ): Promise<GenerationVersionState> {
   return requestGenerationJson<GenerationVersionState>(
     `/api/projects/${encodeURIComponent(projectId)}/prompts/latest`,
-    "读取 H3 Prompt 失败",
+    "读取视频生成提示词失败",
   );
 }
 
@@ -947,7 +981,7 @@ export async function lockGenerationPrompt(
 ): Promise<GenerationVersion> {
   return requestGenerationJson<GenerationVersion>(
     `/api/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptVersionId)}/lock`,
-    "锁定 H3 Prompt 失败",
+    "锁定视频生成提示词失败",
     { method: "POST" },
   );
 }
@@ -1251,6 +1285,7 @@ export async function createVideoUploadIntent(
   projectId: string,
   file: File,
 ): Promise<UploadIntent> {
+  const sha256 = await sha256ForUpload(file);
   return requestApiJson<UploadIntent>(
     "/api/assets/upload-intent",
     "创建上传任务失败",
@@ -1263,6 +1298,7 @@ export async function createVideoUploadIntent(
         // application/octet-stream from some file managers) is normalized.
         content_type: contentTypeForFile(file),
         size_bytes: file.size,
+        ...(sha256 === null ? {} : { sha256 }),
       }),
     },
   );
@@ -1274,7 +1310,20 @@ export function uploadReferenceVideo(
   onProgress: (progressPercent: number) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  return uploadStorageObject(intent, file, onProgress, "上传参考视频", signal);
+  if (
+    intent.upload_required === false ||
+    intent.method !== "PUT" ||
+    !intent.url
+  ) {
+    return Promise.reject(new Error("该视频已存在，无需重复上传。"));
+  }
+  return uploadStorageObject(
+    { headers: intent.headers, method: intent.method, url: intent.url },
+    file,
+    onProgress,
+    "上传参考视频",
+    signal,
+  );
 }
 
 export function uploadIdentityAsset(
@@ -1307,11 +1356,9 @@ function uploadStorageObject(
     if (isLocalApiUploadUrl(intent.url)) {
       // Mirror requestApi's auth precedence: the internal Bearer token wins in
       // managed mode; otherwise fall back to the development identity header.
-      if (internalAccessToken) {
-        request.setRequestHeader(
-          "Authorization",
-          `Bearer ${internalAccessToken}`,
-        );
+      const accessToken = workspaceAccessToken();
+      if (accessToken) {
+        request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
       } else if (devUserId) {
         request.setRequestHeader("X-Dev-User-Id", devUserId);
       }
@@ -1342,7 +1389,7 @@ function uploadStorageObject(
         new Error(
           isLocalApiUploadUrl(intent.url)
             ? `${errorPrefix}失败（无法连接本地服务，请确认服务已启动）`
-            : `${errorPrefix}失败（无法连接对象存储；请检查网络，以及云存储桶是否已配置跨域 CORS 规则）`,
+            : `${errorPrefix}失败（无法连接素材库；请检查网络以及素材库跨域访问规则）`,
         ),
       );
     request.ontimeout = () =>
@@ -1869,7 +1916,6 @@ const characterSheetTaskWaiters = new Map<
   Promise<CharacterSheetTask>
 >();
 const firstFrameTaskWaiters = new Map<string, Promise<FirstFrameTask>>();
-
 export async function uploadSimpleCharacter(
   projectId: string | null,
   file: File,
@@ -2829,7 +2875,100 @@ type RequestError = Error & {
   status?: number;
   code?: string;
   retryable?: boolean;
+  requestId?: string;
 };
+
+const BRANDED_SERVICE_ERRORS: ReadonlyArray<{
+  pattern: RegExp;
+  message: string;
+}> = [
+  {
+    pattern: /metaso|minimax|(?:^|[_\W])h3(?:$|[_\W])/i,
+    message: "视频生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern:
+      /(?:apilio|gemini).*(?:首帧|图像|人物)|(?:首帧|图像|人物).*(?:apilio|gemini)/i,
+    message: "首帧生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /apilio|gemini/i,
+    message: "视频拆解服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /gpt[\s_-]*image|nano[\s_-]*banana/i,
+    message: "首帧生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /(?:^|[_\W])cos(?:$|[_\W])|腾讯云|myqcloud/i,
+    message: "素材库暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /deepseek/i,
+    message: "文案优化服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+  },
+  {
+    pattern: /zpay/i,
+    message:
+      "在线支付暂时不可用，请稍后重试；如已扣款，请勿重复支付并联系客服。",
+  },
+];
+
+const CUSTOMER_ACCOUNT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  ACTIVATION_UNAVAILABLE: "该激活码当前无法使用，请确认激活码仍在有效期内。",
+  PAIRING_UNAVAILABLE: "该激活码当前无法用于设备配对，请联系服务人员处理。",
+  SESSION_CONFLICT: "另一台设备当前正在使用此账号，请稍后重新打开应用。",
+  SESSION_EXPIRED: "登录已过期，请重新登录。",
+  SESSION_REPLACED: "当前设备已被另一台设备切换下线，请重新登录。",
+  DEVICE_REVOKED: "当前设备凭据已失效，请联系服务人员处理。",
+};
+
+/**
+ * Keep provider identifiers and raw diagnostics intact inside the API and
+ * server, while translating only messages that are about to reach a product
+ * surface. Non-branded, actionable errors are preserved verbatim.
+ */
+export function customerVisibleErrorMessage(
+  error: unknown,
+  fallback = "操作失败，请稍后重试。",
+): string {
+  let message = "";
+  let code = "";
+  let requestId = "";
+
+  if (typeof error === "string") {
+    message = error.trim();
+  } else if (error instanceof Error) {
+    message = error.message.trim();
+    const details = error as RequestError;
+    code = details.code?.trim() ?? "";
+    requestId = details.requestId?.trim() ?? "";
+  } else if (isRecord(error)) {
+    message = typeof error.message === "string" ? error.message.trim() : "";
+    code = typeof error.code === "string" ? error.code.trim() : "";
+    requestId =
+      typeof error.requestId === "string" ? error.requestId.trim() : "";
+  }
+
+  const accountMessage = CUSTOMER_ACCOUNT_ERROR_MESSAGES[code];
+  if (accountMessage) {
+    return accountMessage;
+  }
+  if (error instanceof TypeError) {
+    return fallback;
+  }
+
+  const source = `${code} ${message}`;
+  const branded = BRANDED_SERVICE_ERRORS.find(({ pattern }) =>
+    pattern.test(source),
+  );
+  if (!branded) {
+    return message || fallback;
+  }
+  return requestId
+    ? `${branded.message} 问题编号：${requestId}`
+    : branded.message;
+}
 
 async function responseErrorDetails(
   response: Response,
@@ -2850,10 +2989,14 @@ async function responseErrorDetails(
       // The code must survive even when the server omits a message, otherwise
       // callers cannot tell a retryable failure from a permanent one.
       return {
-        message:
-          typeof message === "string" && message.trim()
-            ? `${errorPrefix}：${message}（${response.status}）`
-            : `${errorPrefix}（${response.status}）`,
+        message: customerVisibleErrorMessage({
+          message:
+            typeof message === "string" && message.trim()
+              ? `${errorPrefix}：${message}（${response.status}）`
+              : `${errorPrefix}（${response.status}）`,
+          code,
+          requestId: response.headers?.get?.("X-Request-Id") ?? "",
+        }),
         code,
         retryable,
       };
@@ -2927,8 +3070,9 @@ async function requestApi(
   if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  if (internalAccessToken) {
-    headers.set("Authorization", `Bearer ${internalAccessToken}`);
+  const accessToken = workspaceAccessToken();
+  if (accessToken) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
   } else if (devUserId) {
     headers.set("X-Dev-User-Id", devUserId);
   }
@@ -2940,7 +3084,7 @@ async function requestApi(
       signal: controller.signal,
     });
     if (response.status === 401 && path !== "/api/auth/me") {
-      emitSessionExpired();
+      await emitWorkspaceSessionEnded(response);
     }
     return response;
   } catch (error) {
@@ -2968,10 +3112,48 @@ function emitSessionExpired() {
   window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
 
+async function emitWorkspaceSessionEnded(response: Response) {
+  if (customerSessionToken === null) {
+    emitSessionExpired();
+    return;
+  }
+
+  let lifecycle = CUSTOMER_SESSION_EXPIRED_EVENT;
+  try {
+    const requestId = response.headers.get("X-Request-Id") ?? "";
+    const error = await customerErrorFromResponse(response.clone(), requestId);
+    lifecycle = customerLifecycleEvent(error.kind) ?? lifecycle;
+  } catch {
+    // A proxy/non-JSON 401 still ends the customer session, but it must never
+    // be guessed as a permanent device revocation (which would wipe the
+    // long-lived device credential).
+  }
+  window.dispatchEvent(new Event(lifecycle));
+}
+
 function contentTypeForFile(file: File): "video/mp4" | "video/quicktime" {
   return file.name.toLowerCase().endsWith(".mov")
     ? "video/quicktime"
     : "video/mp4";
+}
+
+async function sha256ForUpload(file: File): Promise<string | null> {
+  try {
+    if (!globalThis.crypto?.subtle || typeof file.arrayBuffer !== "function") {
+      return null;
+    }
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      await file.arrayBuffer(),
+    );
+    return Array.from(new Uint8Array(digest), (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
+  } catch {
+    // Deduplication is an optimization.  Older WebViews must still be able to
+    // upload normally when Web Crypto cannot hash a local File.
+    return null;
+  }
 }
 
 function contentTypeForIdentityFile(file: File): string {
@@ -3012,7 +3194,8 @@ function isCurrentUser(value: unknown): value is CurrentUser {
     typeof value.display_name === "string" &&
     (value.role === "employee" ||
       value.role === "admin" ||
-      value.role === "auditor")
+      value.role === "auditor" ||
+      value.role === "customer")
   );
 }
 
@@ -3292,7 +3475,7 @@ async function customerErrorFromResponse(
     ? Number.parseInt(retryAfterHeader, 10)
     : undefined;
   return new CustomerApiError({
-    message,
+    message: customerVisibleErrorMessage({ message, code, requestId }),
     status: response.status,
     code,
     requestId,
@@ -3433,6 +3616,21 @@ export async function customerActivate(
     },
   );
   return body;
+}
+
+export type CustomerRecoverInput = Omit<
+  CustomerActivateInput,
+  "activationCode"
+>;
+
+/** Recover a previously bound desktop from its durable opaque fingerprint.
+ * The server only succeeds while the associated activation code, account and
+ * device binding are all active; first-time users still need an activation
+ * code. The empty code is an explicit wire-level recovery signal. */
+export function customerRecover(
+  input: CustomerRecoverInput,
+): Promise<CustomerActivationResponse> {
+  return customerActivate({ ...input, activationCode: "" });
 }
 
 export type CustomerLoginResult = {
@@ -3612,6 +3810,33 @@ export async function customerApproveDevicePairing(
   return body;
 }
 
+/** Remove an invalid pending/approved pairing request from the customer's
+ * active list while the server preserves its audit row. */
+export async function customerDismissDevicePairing(
+  credential: CustomerDeviceCredential,
+  pairingId: string,
+): Promise<void> {
+  await customerJson<undefined>(
+    `/api/customer/device-pairings/${encodeURIComponent(pairingId)}`,
+    { method: "DELETE", credential },
+  );
+}
+
+export type CustomerActivationCodeReset =
+  components["schemas"]["ActivationCodeResetResponse"];
+
+/** Rotate the active account code. The replacement plaintext is returned
+ * once and must never be persisted by the desktop. */
+export async function customerResetActivationCode(
+  credential: CustomerDeviceCredential,
+): Promise<CustomerActivationCodeReset> {
+  const { body } = await customerJson<CustomerActivationCodeReset>(
+    "/api/customer/activation-code/reset",
+    { method: "POST", credential },
+  );
+  return body;
+}
+
 /** The customer's wallet balance + billing (GET /api/customer/wallet). */
 export async function customerGetWallet(
   credential: CustomerSessionCredential,
@@ -3619,6 +3844,33 @@ export async function customerGetWallet(
   const { body } = await customerJson<WalletSnapshot>("/api/customer/wallet", {
     credential,
   });
+  return body;
+}
+
+export type CustomerProfile = components["schemas"]["CustomerProfileResponse"];
+
+export async function customerGetProfile(
+  credential: CustomerSessionCredential,
+): Promise<CustomerProfile> {
+  const { body } = await customerJson<CustomerProfile>(
+    "/api/customer/profile",
+    { credential },
+  );
+  return body;
+}
+
+export async function customerUpdateProfile(
+  credential: CustomerSessionCredential,
+  displayName: string,
+): Promise<CustomerProfile> {
+  const { body } = await customerJson<CustomerProfile>(
+    "/api/customer/profile",
+    {
+      method: "PATCH",
+      credential,
+      body: { display_name: displayName },
+    },
+  );
   return body;
 }
 
@@ -3664,6 +3916,22 @@ export async function customerCreateRechargeOrder(
   return body;
 }
 
+export type CustomerPaymentCode =
+  components["schemas"]["CustomerPaymentCodeResponse"];
+
+/** Generate a display-only QR code for an owned pending recharge order.
+ * Merchant credentials and signed protocol fields remain on the server. */
+export async function customerCreateRechargePaymentCode(
+  credential: CustomerSessionCredential,
+  orderNo: string,
+): Promise<CustomerPaymentCode> {
+  const { body } = await customerJson<CustomerPaymentCode>(
+    `/api/customer/recharge-orders/${encodeURIComponent(orderNo)}/payment-code`,
+    { method: "POST", credential },
+  );
+  return body;
+}
+
 /** Poll a customer recharge order
  * (GET /api/customer/recharge-orders/{order_no}). */
 export async function customerGetRechargeOrder(
@@ -3675,4 +3943,16 @@ export async function customerGetRechargeOrder(
     { credential },
   );
   return body;
+}
+
+/** Close an unpaid recharge order. The server keeps the CLOSED row for
+ * callback reconciliation and audit instead of physically deleting it. */
+export async function customerCloseRechargeOrder(
+  credential: CustomerSessionCredential,
+  orderNo: string,
+): Promise<void> {
+  await customerJson<undefined>(
+    `/api/customer/recharge-orders/${encodeURIComponent(orderNo)}`,
+    { method: "DELETE", credential },
+  );
 }

@@ -22,6 +22,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
+from app.async_compat import reject_legacy_sync_operation
 from app.auth import AuthenticatedUser, Database
 from app.character_asset_review import cleanup_publication_objects
 from app.character_contracts import PersonIdentity, RequiredCharacterViewType
@@ -155,6 +156,26 @@ class CharacterSheetTaskResponse(BaseModel):
     completed_at: str | None
 
 
+def require_async_global_character_route() -> None:
+    reject_legacy_sync_operation(
+        replacement="/api/simple-characters/tasks/generate",
+    )
+
+
+def require_async_project_character_route(project_id: str) -> None:
+    reject_legacy_sync_operation(
+        replacement=f"/api/simple-characters/tasks/{project_id}/generate",
+    )
+
+
+def require_async_character_regeneration_route(identity_id: str) -> None:
+    reject_legacy_sync_operation(
+        replacement=(
+            f"/api/simple-characters/identities/{identity_id}/regenerate-contact-sheet-task"
+        ),
+    )
+
+
 @router.post("/upload-intent", response_model=SimpleUploadIntentResponse)
 def create_simple_upload_intent(
     actor: AuthenticatedUser,
@@ -175,7 +196,12 @@ def create_simple_upload_intent(
     )
 
 
-@router.post("/generate", response_model=SimpleCharacterResponse, status_code=201)
+@router.post(
+    "/generate",
+    response_model=SimpleCharacterResponse,
+    status_code=201,
+    dependencies=[Depends(require_async_global_character_route)],
+)
 async def generate_global_simple_character(
     storage: Annotated[StorageAdapter, Depends(get_character_storage)],
     provider: InjectedImageProvider,
@@ -324,6 +350,7 @@ def rename_identity(
     "/identities/{identity_id}/regenerate-contact-sheet",
     response_model=SimpleCharacterRegenerationResponse,
     status_code=201,
+    dependencies=[Depends(require_async_character_regeneration_route)],
 )
 def regenerate_contact_sheet(
     identity_id: str,
@@ -477,6 +504,7 @@ def delete_identity(
     "/{project_id}/generate",
     response_model=SimpleCharacterResponse,
     status_code=201,
+    dependencies=[Depends(require_async_project_character_route)],
 )
 async def generate_simple_character(
     project_id: str,

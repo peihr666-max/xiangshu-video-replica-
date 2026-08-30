@@ -591,7 +591,7 @@ def test_pg_billing_provider_shapes_accepted_and_rejected() -> None:
             # zpay + INTERNAL + PENDING: the existing internal recharge flow.
             _insert_t08_order(conn, 1)
             # zpay + CUSTOMER_STANDARD + PAID with trade number: customer
-            # top-up through ZPay (T22) at a customer price >= base price.
+            # top-up through ZPay (T22) with a frozen customer sale price.
             _insert_t08_order(
                 conn,
                 2,

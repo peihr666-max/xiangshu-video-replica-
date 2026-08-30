@@ -196,7 +196,8 @@ describe("VideoResultStage", () => {
     const video = screen.getByLabelText("结果预览 task-ok");
     expect(video).toHaveAttribute("src", "https://stage-preview/asset-ok");
     expect(video).toHaveAttribute("preload", "auto");
-    expect(screen.getByText("MiniMax-H3")).toBeInTheDocument();
+    expect(screen.getByText("视频生成")).toBeInTheDocument();
+    expect(screen.queryByText(/MiniMax/i)).not.toBeInTheDocument();
     expect(screen.getByText("音频质检通过")).toBeInTheDocument();
     expect(screen.getByText("¥1.50")).toBeInTheDocument();
     expect(
@@ -348,5 +349,30 @@ describe("VideoResultStage", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "查看处理方式" }));
     expect(onOpenOpsDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it("never renders a provider brand from a failed task", () => {
+    renderStage({
+      batch: batch({
+        tasks: [
+          task({
+            status: "FAILED",
+            stage: "FAILED",
+            archive_status: "PENDING",
+            quality_status: "PENDING",
+            result_asset_id: null,
+            error_code: "METASO_UPSTREAM_TIMEOUT",
+            error_message_redacted: "MiniMax H3 request timed out",
+          }),
+        ],
+      }),
+    });
+
+    expect(
+      screen.getByText(
+        "视频生成服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/MiniMax|Metaso|H3/i)).not.toBeInTheDocument();
   });
 });

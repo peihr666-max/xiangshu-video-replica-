@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.analysis import (
@@ -28,6 +28,7 @@ from app.analysis import (
     get_version,
     validate_shot_cards,
 )
+from app.async_compat import reject_legacy_sync_operation
 from app.auth import AuthenticatedUser, CurrentUser, Database, Role
 from app.customer_fence import BusinessDbDep
 from app.db_portable import BusinessConnection
@@ -182,7 +183,17 @@ class AnalysisTaskWork:
     asset_uri: str
 
 
-@router.post("/projects/{project_id}/analysis", response_model=VersionResponse)
+def require_async_analysis_route(project_id: str) -> None:
+    reject_legacy_sync_operation(
+        replacement=f"/api/projects/{project_id}/analysis-tasks",
+    )
+
+
+@router.post(
+    "/projects/{project_id}/analysis",
+    response_model=VersionResponse,
+    dependencies=[Depends(require_async_analysis_route)],
+)
 def create_project_analysis(
     project_id: str,
     request: CreateAnalysisRequest,

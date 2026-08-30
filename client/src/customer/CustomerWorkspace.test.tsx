@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CustomerDeviceListResponse } from "../api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CustomerDeviceListResponse, CustomerProfile } from "../api";
 import { CustomerWorkspace } from "./CustomerWorkspace";
 import type {
   CustomerCredentialStore,
@@ -11,6 +11,7 @@ import type {
 // secret scan (which flags `token:`/`token =` followed by a quoted literal)
 // never sees a raw quoted value — a dummy, never a real credential.
 const deviceTokenText = "workspace-device-token-1";
+const sessionTokenText = "workspace-session-token-1";
 
 const user: CustomerWorkspaceUser = {
   userId: "user-1",
@@ -47,6 +48,18 @@ const mockDevices: CustomerDeviceListResponse = {
   ],
 };
 
+const mockProfile: CustomerProfile = {
+  user_id: "user-1",
+  username: "customer-1",
+  display_name: "客户一号",
+  joined_at: "2026-08-01T00:00:00Z",
+  activation_code_masked: "XS04-ABCD••••WXYZ",
+  activation_status: "ACTIVE",
+  activated_at: "2026-08-02T00:00:00Z",
+  device_slots_used: 1,
+  device_slots_total: 2,
+};
+
 function jsonResponse(payload: unknown, status = 200) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
@@ -58,7 +71,7 @@ function jsonResponse(payload: unknown, status = 200) {
 function fakeStore(): CustomerCredentialStore {
   return {
     loadDeviceCredentialToken: vi.fn().mockResolvedValue(deviceTokenText),
-    loadSessionToken: vi.fn().mockResolvedValue(null),
+    loadSessionToken: vi.fn().mockResolvedValue(sessionTokenText),
     saveActivation: vi.fn().mockResolvedValue(undefined),
     saveSessionToken: vi.fn().mockResolvedValue(undefined),
     clearSessionToken: vi.fn().mockResolvedValue(undefined),
@@ -69,17 +82,24 @@ function fakeStore(): CustomerCredentialStore {
 }
 
 describe("CustomerWorkspace (T31)", () => {
+  beforeEach(() => {
+    window.history.replaceState(null, "", "#projects");
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
   function stubDeviceFetch() {
-    return vi.fn((url: string, init?: { method?: string }) => {
+    return vi.fn((url: string, init?: RequestInit) => {
       if (
         url.endsWith("/api/customer/devices") &&
         (init?.method ?? "GET") === "GET"
       ) {
         return jsonResponse(mockDevices);
+      }
+      if (url.endsWith("/api/customer/profile")) {
+        return jsonResponse(mockProfile);
       }
       if (
         url.includes("/api/customer/device-pairings/") &&
@@ -101,7 +121,7 @@ describe("CustomerWorkspace (T31)", () => {
    * once the approve call lands — the reload after approval must observe it. */
   function stubDeviceFetchWithApproval() {
     let approved = false;
-    return vi.fn((url: string, init?: { method?: string }) => {
+    return vi.fn((url: string, init?: RequestInit) => {
       if (
         url.endsWith("/api/customer/devices") &&
         (init?.method ?? "GET") === "GET"
@@ -109,6 +129,9 @@ describe("CustomerWorkspace (T31)", () => {
         return jsonResponse(
           approved ? { ...mockDevices, pending_pairings: [] } : mockDevices,
         );
+      }
+      if (url.endsWith("/api/customer/profile")) {
+        return jsonResponse(mockProfile);
       }
       if (
         url.includes("/api/customer/device-pairings/") &&
@@ -118,6 +141,38 @@ describe("CustomerWorkspace (T31)", () => {
         return jsonResponse({
           pairing_request_id: "pairing-1",
           status: "APPROVED",
+        });
+      }
+      if (url.endsWith("/health")) {
+        return jsonResponse({ status: "ok", service: "video-replica-api" });
+      }
+      return jsonResponse([]);
+    });
+  }
+
+  function stubDeviceFetchWithDismissal() {
+    let dismissed = false;
+    return vi.fn((url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/api/customer/devices") &&
+        (init?.method ?? "GET") === "GET"
+      ) {
+        return jsonResponse(
+          dismissed ? { ...mockDevices, pending_pairings: [] } : mockDevices,
+        );
+      }
+      if (url.endsWith("/api/customer/profile")) {
+        return jsonResponse(mockProfile);
+      }
+      if (
+        url.endsWith("/api/customer/device-pairings/pairing-1") &&
+        init?.method === "DELETE"
+      ) {
+        dismissed = true;
+        return Promise.resolve({
+          ok: true,
+          status: 204,
+          json: async () => undefined,
         });
       }
       if (url.endsWith("/health")) {
@@ -139,18 +194,45 @@ describe("CustomerWorkspace (T31)", () => {
       />,
     );
 
-    // The workspace is the landing view; the device management entry flips
-    // to the device page where pending pairings await approval.
-    fireEvent.click(screen.getByRole("button", { name: "设备管理" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "打开个人中心" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /设备管理/ }));
     expect(
-      await screen.findByRole("heading", { name: "待审批配对" }),
+      await screen.findByRole("heading", { name: "新的设备绑定请求" }),
     ).toBeInTheDocument();
     // The approver sees the candidate's self-reported identity — the same
     // masked fingerprint posture as the device list.
     expect(screen.getByText(/Second Device •••• CD34/)).toBeInTheDocument();
-    expect(screen.getByText(/待分配/)).toBeInTheDocument();
+    expect(screen.getByText(/待确认/)).toBeInTheDocument();
     // No slot is fabricated for a request that has not been approved yet.
     expect(screen.queryByText(/Slot #2/)).toBeNull();
+  });
+
+  it("loads the shared workspace only after attaching the customer session", async () => {
+    const fetchMock = stubDeviceFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <CustomerWorkspace
+        user={user}
+        store={fakeStore()}
+        onSessionExpired={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("status", { name: "云服务已连接" }),
+    ).toBeInTheDocument();
+
+    await waitFor(() => {
+      const projectRequest = fetchMock.mock.calls.find(([url]) =>
+        url.endsWith("/api/projects"),
+      );
+      expect(projectRequest).toBeDefined();
+      const headers = new Headers(projectRequest?.[1]?.headers);
+      expect(headers.get("Authorization")).toBe(`Bearer ${sessionTokenText}`);
+    });
   });
 
   it("approves a pairing through the customer API and reloads the list", async () => {
@@ -164,10 +246,13 @@ describe("CustomerWorkspace (T31)", () => {
         onSessionExpired={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "设备管理" }));
-    await screen.findByRole("heading", { name: "待审批配对" });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "打开个人中心" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /设备管理/ }));
+    await screen.findByRole("heading", { name: "新的设备绑定请求" });
 
-    fireEvent.click(screen.getByRole("button", { name: /approve pairing/i }));
+    fireEvent.click(screen.getByRole("button", { name: "确认绑定" }));
 
     await waitFor(() => {
       expect(
@@ -179,12 +264,15 @@ describe("CustomerWorkspace (T31)", () => {
     // The pending section disappears after the reload; the empty-section
     // render does not show the approval heading anymore.
     await waitFor(() => {
-      expect(screen.queryByRole("heading", { name: "待审批配对" })).toBeNull();
+      expect(
+        screen.queryByRole("heading", { name: "新的设备绑定请求" }),
+      ).toBeNull();
     });
   });
 
   it("never claims a reject endpoint that does not exist", async () => {
-    vi.stubGlobal("fetch", stubDeviceFetch());
+    const fetchMock = stubDeviceFetch();
+    vi.stubGlobal("fetch", fetchMock);
 
     render(
       <CustomerWorkspace
@@ -193,15 +281,49 @@ describe("CustomerWorkspace (T31)", () => {
         onSessionExpired={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "设备管理" }));
-    await screen.findByRole("heading", { name: "待审批配对" });
-
-    fireEvent.click(screen.getByRole("button", { name: /reject/i }));
-
-    // T30 ships approve-only; the reject path must say so instead of
-    // pretending an endpoint exists.
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /暂不支持拒绝配对/,
+    fireEvent.click(
+      await screen.findByRole("button", { name: "打开个人中心" }),
     );
+    fireEvent.click(screen.getByRole("button", { name: /设备管理/ }));
+    await screen.findByRole("heading", { name: "新的设备绑定请求" });
+
+    fireEvent.click(screen.getByRole("button", { name: "暂不处理" }));
+
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("/reject")),
+    ).toBe(false);
+  });
+
+  it("deletes an invalid pairing request and reloads the device list", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = stubDeviceFetchWithDismissal();
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CustomerWorkspace
+        user={user}
+        store={fakeStore()}
+        onSessionExpired={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "打开个人中心" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /设备管理/ }));
+    await screen.findByRole("heading", { name: "新的设备绑定请求" });
+
+    fireEvent.click(screen.getByRole("button", { name: "删除无效请求" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            url.endsWith("/api/customer/device-pairings/pairing-1") &&
+            init?.method === "DELETE",
+        ),
+      ).toBe(true);
+      expect(
+        screen.queryByRole("heading", { name: "新的设备绑定请求" }),
+      ).toBeNull();
+    });
   });
 });

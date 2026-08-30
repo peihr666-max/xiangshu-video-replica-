@@ -459,13 +459,18 @@ def _drain_pg_worker(dsn: str, *, worker_id: str = "e2e-worker") -> int:
         processed += 1
 
 
-def _signed_notify_params(order_no: str, *, trade_no: str) -> dict[str, str]:
+def _signed_notify_params(
+    order_no: str,
+    *,
+    trade_no: str,
+    amount_yuan: str = "100.00",
+) -> dict[str, str]:
     from app.zpay import sign_zpay_params
 
     params = {
         "pid": "merchant-123",
         "name": "内部视频生成条数充值 10 条",
-        "money": "100.00",
+        "money": amount_yuan,
         "out_trade_no": order_no,
         "trade_no": trade_no,
         "trade_status": "TRADE_SUCCESS",
@@ -499,6 +504,18 @@ def test_customer_chain_activation_to_archived_task(client: TestClient, chain_ds
     project_id = project.json()["id"]
     assert project.json()["owner_user_id"] == customer["user_id"]
 
+    # The desktop workspace reads through the same customer session token as
+    # its writes.  This is the actual GUI entry gate: accepting POST while
+    # rejecting GET would let activation succeed but leave the customer on an
+    # unusable empty/error workspace.
+    projects = client.get(PROJECTS_PATH, headers=_bearer(session_token))
+    assert projects.status_code == 200, projects.text
+    assert [item["id"] for item in projects.json()] == [project_id]
+
+    project_detail = client.get(f"{PROJECTS_PATH}/{project_id}", headers=_bearer(session_token))
+    assert project_detail.status_code == 200, project_detail.text
+    assert project_detail.json()["owner_user_id"] == customer["user_id"]
+
     shot_card_id, first_frame_id = _seed_chain_assets(
         project_id=project_id, user_id=customer["user_id"]
     )
@@ -509,6 +526,22 @@ def test_customer_chain_activation_to_archived_task(client: TestClient, chain_ds
         shot_card_version_id=shot_card_id,
         first_frame_asset_id=first_frame_id,
     )
+
+    read_matrix = (
+        (f"{PROJECTS_PATH}/{project_id}/shot-cards/latest", 200),
+        # The compact fixture intentionally seeds only the confirmed asset,
+        # not a full candidates payload; 409 proves the customer session was
+        # accepted and the domain validator (not auth) rejected the fixture.
+        (f"{PROJECTS_PATH}/{project_id}/first-frames/latest", 409),
+        (f"{PROJECTS_PATH}/{project_id}/first-frames/history", 200),
+        (f"{PROJECTS_PATH}/{project_id}/source-frames/latest", 200),
+        (f"{PROJECTS_PATH}/{project_id}/scripts/latest", 200),
+        (f"{PROJECTS_PATH}/{project_id}/prompts/latest", 200),
+        ("/api/simple-characters/library", 200),
+    )
+    for path, expected_status in read_matrix:
+        response = client.get(path, headers=_bearer(session_token))
+        assert response.status_code == expected_status, f"{path}: {response.text}"
 
     batch = client.post(
         f"{PROJECTS_PATH}/{project_id}/generation-batches",
@@ -529,6 +562,17 @@ def test_customer_chain_activation_to_archived_task(client: TestClient, chain_ds
     assert payload["tasks"][0]["status"] == "PENDING", payload
     assert payload["tasks"][0]["prompt_snapshot"]["status"] == "LOCKED", payload
     batch_id = str(payload["id"])
+
+    batch_detail = client.get(f"/api/generation-batches/{batch_id}", headers=_bearer(session_token))
+    assert batch_detail.status_code == 200, batch_detail.text
+    assert batch_detail.json()["id"] == batch_id
+
+    batch_list = client.get(
+        f"/api/generation-batches?project_id={project_id}",
+        headers=_bearer(session_token),
+    )
+    assert batch_list.status_code == 200, batch_list.text
+    assert batch_list.json()["items"][0]["id"] == batch_id
 
     processed = _drain_pg_worker(chain_dsn)
     assert processed == 1, f"worker must process the one submitted task, got {processed}"
@@ -561,7 +605,9 @@ def test_customer_chain_activation_to_archived_task(client: TestClient, chain_ds
 
 
 def test_customer_chain_second_device_conflict_switch_recharge(
-    client: TestClient, chain_dsn: str
+    client: TestClient,
+    chain_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The device/session/money chain: pair a second device, its login hits
     the 409 OTHER_DEVICE_ONLINE conflict while the first device is online,
@@ -646,19 +692,37 @@ def test_customer_chain_second_device_conflict_switch_recharge(
     assert stale_write.status_code == 401, stale_write.text
     assert stale_write.json()["detail"]["code"] == "SESSION_REPLACED", stale_write.text
 
+    # --- Controlled five-yuan acceptance: one named customer only ---
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_ACCEPTANCE_PAYMENT_USER_ID",
+        customer["user_id"],
+    )
+    monkeypatch.setenv("VIDEO_REPLICA_ACCEPTANCE_PAYMENT_AMOUNT_FEN", "500")
+    with psycopg.connect(chain_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE runtime_settings SET internal_base_unit_price_fen = 500 WHERE id = 1")
+
+    wallet_view = client.get("/api/customer/wallet", headers=_bearer(new_session))
+    assert wallet_view.status_code == 200, wallet_view.text
+    assert wallet_view.json()["min_recharge_fen"] == 500
+    assert wallet_view.json()["recharge_step_fen"] == 500
+
     # --- Recharge on the new session: order then signed ZPay callback ---
     order = client.post(
         RECHARGE_PATH,
-        json={"amount_fen": 10000},
+        json={"amount_fen": 500},
         headers={**_bearer(new_session), IDEMPOTENCY_KEY_HEADER: "idem-recharge-chain-b"},
     )
     assert order.status_code == 201, order.text
     order_payload = order.json()
     assert order_payload["status"] == "PENDING", order_payload
-    assert order_payload["credits"] == 10, order_payload
+    assert order_payload["credits"] == 1, order_payload
     order_no = str(order_payload["order_no"])
 
-    params = _signed_notify_params(order_no, trade_no="zpay-chain-b-trade-1")
+    params = _signed_notify_params(
+        order_no,
+        trade_no="zpay-chain-b-trade-1",
+        amount_yuan="5.00",
+    )
     notify = client.get(NOTIFY_PATH, params=params)
     assert notify.status_code == 200, notify.text
     assert notify.text == "success"
@@ -677,14 +741,14 @@ def test_customer_chain_second_device_conflict_switch_recharge(
             "SELECT available_credits FROM wallets WHERE user_id = %s",
             (customer["user_id"],),
         ).fetchone()
-        assert wallet is not None and int(wallet[0]) >= 10
+        assert wallet is not None and int(wallet[0]) >= 1
         charge = conn.execute(
             "SELECT available_delta FROM wallet_transactions "
             "WHERE user_id = %s AND type = 'CHARGE' "
             "AND idempotency_key LIKE 'zpay:charge:%%'",
             (customer["user_id"],),
         ).fetchone()
-        assert charge is not None and int(charge[0]) == 10
+        assert charge is not None and int(charge[0]) == 1
         session_row = conn.execute(
             "SELECT session_epoch, device_id FROM customer_session_state"
         ).fetchone()

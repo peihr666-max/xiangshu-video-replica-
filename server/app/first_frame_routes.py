@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.async_compat import reject_legacy_sync_operation
 from app.auth import AuthenticatedUser, Database
 from app.bootstrap import is_customer_production
 from app.customer_fence import BusinessDbDep, BusinessReadConn
@@ -160,7 +161,17 @@ FirstFrameStorage = Annotated[StorageAdapter, Depends(get_media_storage)]
 InjectedImageProvider = Annotated[ImageProvider, Depends(get_image_provider)]
 
 
-@router.post("/projects/{project_id}/first-frames/generate", response_model=VersionResponse)
+def require_async_first_frame_route(project_id: str) -> None:
+    reject_legacy_sync_operation(
+        replacement=f"/api/projects/{project_id}/first-frame-tasks",
+    )
+
+
+@router.post(
+    "/projects/{project_id}/first-frames/generate",
+    response_model=VersionResponse,
+    dependencies=[Depends(require_async_first_frame_route)],
+)
 def generate_project_first_frames(
     project_id: str,
     request: GenerateFirstFramesRequest,

@@ -21,6 +21,10 @@ describe("LoginPage", () => {
     expect(
       screen.getByRole("button", { name: "使用本机设备登录" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: "镜序 Studio" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("main")).toHaveClass("customer-access-shell");
     expect(screen.queryByLabelText(/激活码/)).toBeNull();
     expect(screen.queryByLabelText(/内部访问令牌/)).toBeNull();
   });

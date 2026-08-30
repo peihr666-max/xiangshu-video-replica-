@@ -35,9 +35,19 @@ describe("ActivationPage", () => {
     expect(
       screen.getByRole("button", { name: "激活并进入工作台" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: "镜序 Studio" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("main")).toHaveClass("customer-access-shell");
     // FE-02 red line: the internal access-token field is not a customer
     // entrance — it must not exist on this page.
     expect(screen.queryByLabelText(/内部访问令牌/)).toBeNull();
+    expect(screen.queryByText("添加已有账号设备")).toBeNull();
+    expect(
+      screen.getByText(
+        "输入有效激活码即可进入，本机会自动识别并关联您的账号。",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("does not submit until both fields are filled", () => {
@@ -73,7 +83,7 @@ describe("ActivationPage", () => {
     expect(screen.getByLabelText(/设备名称/)).toBeDisabled();
   });
 
-  it("shows the server's anti-enumeration message verbatim", () => {
+  it("shows a localized anti-enumeration message without a second login path", () => {
     render(
       <ActivationPage
         onActivate={vi.fn()}
@@ -88,7 +98,9 @@ describe("ActivationPage", () => {
       />,
     );
 
-    expect(screen.getByText("激活码不可用")).toBeInTheDocument();
+    expect(
+      screen.getByText("该激活码当前无法使用，请确认激活码仍在有效期内。"),
+    ).toBeInTheDocument();
   });
 
   it("shows the retry wait in seconds when rate limited", () => {

@@ -11,6 +11,7 @@ import {
   customerHeartbeat,
   customerLogin,
   customerLogout,
+  customerRecover,
   customerSwitch,
 } from "../api";
 import {
@@ -37,6 +38,9 @@ export interface CustomerCredentialStore {
   /** The stable device fingerprint (§14: generated once, read forever). */
   deviceInstanceId(): Promise<string>;
   devicePlatform(): string;
+  /** Only the desktop's registry-backed identity is durable enough to act as
+   * an unattended recovery proof. Browser/test stores opt out by default. */
+  readonly automaticRecovery?: boolean;
 }
 
 export type CustomerSessionConflict = {
@@ -168,27 +172,80 @@ export function useCustomerSession(
     bootstrappedRef.current = true;
     let cancelled = false;
     (async () => {
-      let deviceToken: string | null;
+      let deviceToken: string | null = null;
+      let credentialLoadFailed = false;
       try {
         deviceToken = await store.loadDeviceCredentialToken();
       } catch {
-        // An unreadable vault behaves like no credential: the user lands on
-        // the activation screen with a readable error (never a stuck
-        // checking screen).
-        dispatch({ type: "boot-check-completed", hasDeviceCredential: false });
-        if (!cancelled) {
-          setError(credentialStoreError(null));
-        }
-        return;
+        // A missing/corrupt local envelope is precisely what the durable
+        // machine-identity recovery lane repairs. If recovery is unavailable,
+        // the activation page still gets a readable local-vault error.
+        credentialLoadFailed = true;
       }
       if (cancelled) {
         return;
+      }
+      if (deviceToken === null && store.automaticRecovery) {
+        setIsBusy(true);
+        try {
+          const response = await customerRecover({
+            deviceFingerprint: await store.deviceInstanceId(),
+            deviceName: "本机设备",
+            devicePlatform: store.devicePlatform(),
+            idempotencyKey: newIdempotencyKey(),
+          });
+          await store.saveActivation(
+            response.device_token,
+            response.session_token,
+          );
+          if (cancelled) {
+            return;
+          }
+          sessionTokenRef.current = response.session_token;
+          setSessionToken(response.session_token);
+          setUser({ userId: response.user_id, username: response.username });
+          dispatch({
+            type: "boot-check-completed",
+            hasDeviceCredential: false,
+          });
+          dispatch({ type: "activation-succeeded" });
+          return;
+        } catch (cause) {
+          if (cancelled) {
+            return;
+          }
+          dispatch({
+            type: "boot-check-completed",
+            hasDeviceCredential: false,
+          });
+          if (
+            cause instanceof CustomerApiError &&
+            cause.code === "ACTIVATION_UNAVAILABLE"
+          ) {
+            // A genuinely new/unbound computer belongs on first activation;
+            // the expected recovery miss is not an error banner.
+            return;
+          }
+          setError(
+            cause instanceof CustomerApiError
+              ? cause
+              : credentialStoreError(cause),
+          );
+          return;
+        } finally {
+          if (!cancelled) {
+            setIsBusy(false);
+          }
+        }
       }
       dispatch({
         type: "boot-check-completed",
         hasDeviceCredential: deviceToken !== null,
       });
       if (deviceToken === null) {
+        if (credentialLoadFailed) {
+          setError(credentialStoreError(null));
+        }
         return;
       }
       setIsBusy(true);
@@ -525,6 +582,7 @@ type StoredCustomerCredentials = {
 
 function tauriCustomerCredentialStore(): CustomerCredentialStore {
   return {
+    automaticRecovery: true,
     async loadDeviceCredentialToken() {
       const stored = await invoke<StoredCustomerCredentials | null>(
         "customer_load_credentials",
@@ -535,7 +593,8 @@ function tauriCustomerCredentialStore(): CustomerCredentialStore {
       const stored = await invoke<StoredCustomerCredentials | null>(
         "customer_load_credentials",
       );
-      return stored?.session_token ?? null;
+      const sessionToken = stored?.session_token?.trim();
+      return sessionToken || null;
     },
     async saveActivation(deviceToken, sessionToken) {
       await invoke("customer_save_credentials", {
@@ -576,6 +635,7 @@ function inMemoryCustomerCredentialStore(): CustomerCredentialStore {
   let sessionToken: string | null = null;
   const instanceId = newIdempotencyKey();
   return {
+    automaticRecovery: false,
     async loadDeviceCredentialToken() {
       return deviceToken;
     },
@@ -584,7 +644,7 @@ function inMemoryCustomerCredentialStore(): CustomerCredentialStore {
     },
     async saveActivation(nextDeviceToken, nextSessionToken) {
       deviceToken = nextDeviceToken;
-      sessionToken = nextSessionToken;
+      sessionToken = nextSessionToken.trim() || null;
     },
     async saveSessionToken(nextSessionToken) {
       sessionToken = nextSessionToken;

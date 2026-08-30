@@ -6,13 +6,17 @@ import {
   CustomerApiError,
   customerActivate,
   customerApproveDevicePairing,
+  customerCloseRechargeOrder,
+  customerDismissDevicePairing,
   customerEnrollDevice,
   customerHeartbeat,
   customerListDevices,
   customerLogin,
   customerLogout,
+  customerResetActivationCode,
   customerSwitch,
   customerUnbindDevice,
+  customerUpdateProfile,
 } from "./api";
 import type { components } from "./generated/api";
 
@@ -428,6 +432,77 @@ describe("customer API adapter requests", () => {
     expect((options.headers as Headers).get("Authorization")).toBe(
       "Bearer device-token",
     );
+  });
+
+  it("dismisses a pairing with DELETE and rotates the activation code with POST", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(204, undefined))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          activation_code: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
+          masked_code: "XS04-AAAA***-*******-*******-***DDDD",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await customerDismissDevicePairing(
+      { kind: "device", token: deviceTokenText },
+      "pairing-1",
+    );
+    const reset = await customerResetActivationCode({
+      kind: "device",
+      token: deviceTokenText,
+    });
+
+    expect(reset.masked_code).toContain("***");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `${BASE}/api/customer/device-pairings/pairing-1`,
+    );
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("DELETE");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `${BASE}/api/customer/activation-code/reset`,
+    );
+    expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBe("POST");
+  });
+
+  it("updates the customer display name and closes an unpaid order", async () => {
+    const updatedProfile = {
+      user_id: "user-1",
+      username: "customer-1",
+      display_name: "丽丽工作室",
+      joined_at: "2026-08-01T00:00:00Z",
+      activation_code_masked: "XS04-AAAA***-*******-*******-***DDDD",
+      activation_status: "ACTIVE",
+      activated_at: "2026-08-01T00:00:00Z",
+      device_slots_used: 1,
+      device_slots_total: 2,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, updatedProfile))
+      .mockResolvedValueOnce(noContent());
+    vi.stubGlobal("fetch", fetchMock);
+
+    const profile = await customerUpdateProfile(
+      { kind: "session", token: sessionTokenText },
+      "丽丽工作室",
+    );
+    await customerCloseRechargeOrder(
+      { kind: "session", token: sessionTokenText },
+      "order-1",
+    );
+
+    expect(profile.display_name).toBe("丽丽工作室");
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/api/customer/profile`);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("PATCH");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBe(
+      JSON.stringify({ display_name: "丽丽工作室" }),
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      `${BASE}/api/customer/recharge-orders/order-1`,
+    );
+    expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBe("DELETE");
   });
 });
 

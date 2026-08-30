@@ -433,9 +433,11 @@ def test_systemd_contract_has_two_api_ports_and_four_independent_workers() -> No
     worker = _read("deploy/systemd/video-replica-worker@.service")
 
     assert "EnvironmentFile=/etc/video-replica/customer.env" in api
+    assert "ExecStartPre=/usr/bin/test -x /usr/bin/ffprobe" in api
     assert "python -m app.bootstrap" in api
     assert "--host 127.0.0.1 --port %i --no-proxy-headers" in api
     assert "EnvironmentFile=/etc/video-replica/customer.env" in worker
+    assert "ExecStartPre=/usr/bin/test -x /usr/bin/ffprobe" in worker
     assert "python -m app.bootstrap" in worker
     assert "python -m app.generation_worker" in worker
     assert "--worker-id %H-worker-%i" in worker
@@ -596,6 +598,7 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     origin_guard = _read("scripts/require_customer_api_base.mjs")
     frozen_map = _read("docs/客户版代码开发清单-V3.md")
     customer_config = json.loads(_read("client/src-tauri/tauri.customer.conf.json"))
+    customer_installer_hooks = _read("client/src-tauri/customer-installer-hooks.nsh")
 
     assert '"check:tauri:customer"' in package
     assert '"tauri:build:customer"' in package
@@ -607,12 +610,22 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     assert "url.port" in origin_guard
     assert "--config src-tauri/tauri.customer.conf.json" in package
     assert customer_config["productName"] == "短视频复刻客户云工作台"
+    assert customer_config["version"] == "0.1.7"
     assert customer_config["identifier"] == "com.xiangshu.video-replica.customer"
     assert customer_config["app"]["windows"][0]["url"] == "customer"
     assert customer_config["bundle"]["resources"] == []
     assert customer_config["bundle"]["publisher"] == "Xiangshu Video Replica"
     assert (
         customer_config["bundle"]["windows"]["nsis"]["startMenuFolder"] == "短视频复刻客户云工作台"
+    )
+    assert (
+        customer_config["bundle"]["windows"]["nsis"]["installerHooks"]
+        == "customer-installer-hooks.nsh"
+    )
+    assert "$LOCALAPPDATA\\短视频复刻工作台\\uninstall.exe" in customer_installer_hooks
+    assert (
+        "ExecWait '\"$LOCALAPPDATA\\短视频复刻工作台\\uninstall.exe\" /S'"
+        in customer_installer_hooks
     )
     assert "127.0.0.1:8000" not in customer_config["app"]["security"]["csp"]
     assert "npm run check:tauri:customer" in workflow
@@ -628,6 +641,14 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     assert "start-backend.sh" in workflow
     assert "client/src-tauri/tauri.customer.conf.json" in frozen_map
     assert "scripts/require_customer_api_base.mjs" in frozen_map
+
+
+def test_release_desktop_uses_windows_gui_subsystem() -> None:
+    desktop_entrypoint = _read("client/src-tauri/src/main.rs")
+
+    assert desktop_entrypoint.startswith(
+        '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]\n'
+    )
 
 
 @pytest.mark.parametrize(

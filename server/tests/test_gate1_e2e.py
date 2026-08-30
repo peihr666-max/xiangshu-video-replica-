@@ -238,7 +238,10 @@ def test_api_restart_controller_replaces_the_service_and_acknowledges_request(
         controller.start()
         try:
             request_path.write_text('{"request_id":"restart-test"}\n', encoding="utf-8")
-            deadline = time.monotonic() + 5
+            # Windows may need the controller's five-second process-kill fallback
+            # before the replacement service can start, so do not race that exact
+            # boundary in the test.
+            deadline = time.monotonic() + 10
             while time.monotonic() < deadline and not completion_path.exists():
                 time.sleep(0.01)
             assert json.loads(completion_path.read_text(encoding="utf-8")) == {

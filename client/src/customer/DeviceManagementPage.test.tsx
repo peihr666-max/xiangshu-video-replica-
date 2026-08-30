@@ -50,12 +50,13 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
 
   it("displays current online status at the top of the page", () => {
     renderWithProps();
-    expect(screen.getByText(/status:/i)).toBeInTheDocument();
+    expect(screen.getByText("本机在线")).toBeInTheDocument();
   });
 
   it("shows two-slot status with current slot #", () => {
     renderWithProps();
-    expect(screen.getByText(/Slot #1/i)).toBeInTheDocument();
+    expect(screen.getByText("设备 1")).toBeInTheDocument();
+    expect(screen.getByText("设备 2")).toBeInTheDocument();
   });
 
   it("displays masked device name without exposing full fingerprint", () => {
@@ -65,9 +66,7 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
 
   it("has unbind button for each device slot that calls onUnbind callback", async () => {
     renderWithProps();
-    fireEvent.click(
-      screen.getByRole("button", { name: /unbind this device/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "解绑当前设备" }));
 
     // Should prompt user to confirm action first
     await waitFor(() => {
@@ -77,12 +76,12 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
 
   it("shows lease expiry countdown for active session", () => {
     renderWithProps();
-    expect(screen.getByText(/session expires at/i)).toBeInTheDocument();
+    expect(screen.getByText(/本次登录有效至/)).toBeInTheDocument();
   });
 
   it("provides recharge button that calls onRecharge callback", () => {
     renderWithProps();
-    fireEvent.click(screen.getByRole("button", { name: /recharge/i }));
+    fireEvent.click(screen.getByRole("button", { name: "充值条数" }));
     expect(mockOnRecharge).toHaveBeenCalledTimes(1);
   });
 
@@ -99,6 +98,6 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
 
   it("shows appropriate messaging when no second device is available yet", () => {
     renderWithProps();
-    expect(screen.getByText(/next free slot: #2/i)).toBeInTheDocument();
+    expect(screen.getByText(/还没有绑定设备/)).toBeInTheDocument();
   });
 });

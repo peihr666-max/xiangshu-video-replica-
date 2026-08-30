@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnalysisWorkspace } from "./AnalysisWorkspace";
 import {
   type CurrentUser,
+  type CustomerActivationCodeReset,
+  type CustomerDeviceListResponse,
+  type CustomerProfile,
   type GenerationBatch,
   getCurrentUser,
   getHealth,
@@ -10,6 +13,8 @@ import {
   setInternalAccessToken,
 } from "./api";
 import { CharacterLibrary } from "./CharacterLibrary";
+import { CustomerProfilePanel } from "./customer/CustomerProfilePanel";
+import { CustomerRechargeDialog } from "./customer/CustomerRechargeDialog";
 import { CustomerWalletPanel } from "./customer/CustomerWalletPanel";
 import type { CustomerCredentialStore } from "./customer/useCustomerSession";
 import { ProjectDetailFlow } from "./ProjectDetailFlow";
@@ -24,6 +29,7 @@ type WorkspacePage =
   | "projects"
   | "settings"
   | "tasks"
+  | "profile"
   | "wallet";
 type ServiceState = "checking" | "connected" | "disconnected";
 
@@ -133,9 +139,23 @@ export function App() {
  * internal one, which 401'd for a customer session. */
 export function WorkspaceShell({
   currentUser,
+  customerAccount,
   customerWallet,
 }: {
   currentUser: CurrentUser;
+  customerAccount?: {
+    devices: CustomerDeviceListResponse | null;
+    deviceError: string;
+    onApprovePairing: (pairingId: string) => void;
+    onDismissPairing: (pairingId: string) => void;
+    onProfileUpdated: (profile: CustomerProfile) => void;
+    onResetActivationCode: () => Promise<CustomerActivationCodeReset>;
+    onUnbind: (deviceId: string) => void;
+    onUpdateProfile: (displayName: string) => Promise<CustomerProfile>;
+    profile: CustomerProfile | null;
+    store: CustomerCredentialStore;
+    onSessionExpired: () => void;
+  };
   customerWallet?: {
     store: CustomerCredentialStore;
     onSessionExpired: () => void;
@@ -152,6 +172,11 @@ export function WorkspaceShell({
   const [activeDetailProject, setActiveDetailProject] =
     useState<Project | null>(null);
   const [isAnalysisWorkspaceBusy, setIsAnalysisWorkspaceBusy] = useState(false);
+  const [isRechargeOpen, setIsRechargeOpen] = useState(false);
+  const [suggestedRechargeAmount, setSuggestedRechargeAmount] = useState<
+    number | undefined
+  >(undefined);
+  const [walletRefreshKey, setWalletRefreshKey] = useState(0);
   const activeAnalysisBusyRef = useRef(false);
   const activeAnalysisSessionRef = useRef(0);
   const canWrite = currentUser.role !== "auditor";
@@ -199,10 +224,8 @@ export function WorkspaceShell({
     };
   }, [currentUser]);
 
-  // The health probe restarts on every navigation so the badge re-enters
-  // the checking state while switching pages; the page value itself is not
-  // read inside the effect.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: keep the historical navigation-time restart behaviour of the service badge.
+  // Poll the real API continuously.  A one-shot success would leave the badge
+  // green forever after the server or the user's network disappeared.
   useEffect(() => {
     let isActive = true;
     let timeoutId: number | undefined;
@@ -217,7 +240,9 @@ export function WorkspaceShell({
       } catch {
         if (isActive) {
           setServiceState("disconnected");
-          // Keep retrying so the badge recovers once the local backend is up.
+        }
+      } finally {
+        if (isActive) {
           timeoutId = window.setTimeout(checkHealth, HEALTH_RETRY_INTERVAL_MS);
         }
       }
@@ -230,7 +255,7 @@ export function WorkspaceShell({
         window.clearTimeout(timeoutId);
       }
     };
-  }, [page]);
+  }, []);
 
   const workspacePage = page;
   const currentRole = currentUser.role;
@@ -302,108 +327,154 @@ export function WorkspaceShell({
     transitionToPage("tasks");
   }
 
-  function markAnalysisReady(projectId: string) {
+  function markAnalysisQueued(projectId: string) {
     setActiveAnalysisProject((current) =>
       current?.id === projectId
-        ? { ...current, analysis_status: "READY" }
+        ? {
+            ...current,
+            analysis_status: "PENDING",
+            analysis_error_message: null,
+            analysis_retryable: false,
+          }
         : current,
     );
   }
 
+  function openRecharge(amountYuan?: number) {
+    setSuggestedRechargeAmount(amountYuan);
+    setIsRechargeOpen(true);
+  }
+
+  const customerSession = customerAccount ?? customerWallet;
+
   return (
-    <main className="app-shell">
-      <AppSidebar
-        activePage={page}
-        currentUser={currentUser}
-        navigationDisabled={isAnalysisWorkspaceBusy}
-        onNavigate={navigateTo}
-      />
-      <section className="workspace-stage">
-        <header className="workspace-header">
-          {nestedProject ? (
-            <p className="workspace-breadcrumb">{`项目 / ${nestedProject.name}`}</p>
-          ) : null}
-          <div className="workspace-title-row">
-            <div className="workspace-title-group">
-              <h1>{workspaceTitle}</h1>
-              {nestedProject ? null : (
-                <p className="workspace-subtitle">
-                  {pageSubtitle(workspacePage)}
-                </p>
-              )}
-            </div>
-            <ServiceBadge state={serviceState} />
-          </div>
-        </header>
-        <div className="workspace-body">
-          {page === "settings" ? <SettingsPanel /> : null}
-          {page === "characters" ? (
-            <CharacterLibrary
-              userId={currentUser.id}
-              userRole={currentUser.role}
-            />
-          ) : null}
-          {page === "projects" && activeDetailProject ? (
-            <ProjectDetailFlow
-              onBack={closeDetail}
-              onBatchCreated={openCreatedBatch}
-              onBusyChange={(busy) =>
-                handleAnalysisWorkspaceBusyChange(
-                  analysisWorkspaceSession,
-                  busy,
-                )
-              }
-              project={activeDetailProject}
-              readOnly={!canWrite}
-            />
-          ) : null}
-          {page === "projects" &&
-          !activeDetailProject &&
-          activeAnalysisProject ? (
-            <AnalysisWorkspace
-              currentUserId={currentUser.id}
-              onClose={closeAnalysis}
-              onAnalysisReady={markAnalysisReady}
-              onBatchCreated={openCreatedBatch}
-              onWorkspaceBusyChange={(busy) =>
-                handleAnalysisWorkspaceBusyChange(
-                  analysisWorkspaceSession,
-                  busy,
-                )
-              }
-              project={activeAnalysisProject}
-              readOnly={!canWrite}
-            />
-          ) : null}
-          {page === "projects" &&
-          !activeDetailProject &&
-          !activeAnalysisProject ? (
-            <ProjectsPage
-              canWrite={canWrite}
-              onOpenAnalysis={openAnalysis}
-              onOpenDetail={openDetail}
-            />
-          ) : null}
-          {page === "tasks" ? (
-            <TaskRecordsPanel
-              handoffBatch={pendingBatchHandoff}
-              onHandoffConsumed={consumeBatchHandoff}
-              userRole={currentUser.role}
-            />
-          ) : null}
-          {page === "wallet" ? (
-            customerWallet ? (
-              <CustomerWalletPanel
-                store={customerWallet.store}
-                onSessionExpired={customerWallet.onSessionExpired}
+    <>
+      <main className="app-shell">
+        <AppSidebar
+          activePage={page}
+          currentUser={currentUser}
+          navigationDisabled={isAnalysisWorkspaceBusy}
+          onNavigate={navigateTo}
+        />
+        <section className="workspace-stage">
+          <header className="workspace-header">
+            {nestedProject ? (
+              <p className="workspace-breadcrumb">{`项目 / ${nestedProject.name}`}</p>
+            ) : null}
+            <div className="workspace-title-row">
+              <div className="workspace-title-group">
+                <h1>{workspaceTitle}</h1>
+                {nestedProject ? null : (
+                  <p className="workspace-subtitle">
+                    {pageSubtitle(workspacePage)}
+                  </p>
+                )}
+              </div>
+              <ServiceBadge
+                scope={customerAccount ? "cloud" : "local"}
+                state={serviceState}
               />
-            ) : (
-              <WalletPanel />
-            )
-          ) : null}
-        </div>
-      </section>
-    </main>
+            </div>
+          </header>
+          <div className="workspace-body">
+            {page === "settings" ? <SettingsPanel /> : null}
+            {page === "characters" ? (
+              <CharacterLibrary
+                userId={currentUser.id}
+                userRole={currentUser.role}
+              />
+            ) : null}
+            {page === "projects" && activeDetailProject ? (
+              <ProjectDetailFlow
+                onBack={closeDetail}
+                onBatchCreated={openCreatedBatch}
+                onBusyChange={(busy) =>
+                  handleAnalysisWorkspaceBusyChange(
+                    analysisWorkspaceSession,
+                    busy,
+                  )
+                }
+                project={activeDetailProject}
+                readOnly={!canWrite}
+              />
+            ) : null}
+            {page === "projects" &&
+            !activeDetailProject &&
+            activeAnalysisProject ? (
+              <AnalysisWorkspace
+                currentUserId={currentUser.id}
+                onClose={closeAnalysis}
+                onAnalysisReady={markAnalysisQueued}
+                onBatchCreated={openCreatedBatch}
+                onWorkspaceBusyChange={(busy) =>
+                  handleAnalysisWorkspaceBusyChange(
+                    analysisWorkspaceSession,
+                    busy,
+                  )
+                }
+                project={activeAnalysisProject}
+                readOnly={!canWrite}
+              />
+            ) : null}
+            {page === "projects" &&
+            !activeDetailProject &&
+            !activeAnalysisProject ? (
+              <ProjectsPage
+                canWrite={canWrite}
+                onOpenAnalysis={openAnalysis}
+                onOpenDetail={openDetail}
+              />
+            ) : null}
+            {page === "tasks" ? (
+              <TaskRecordsPanel
+                handoffBatch={pendingBatchHandoff}
+                onHandoffConsumed={consumeBatchHandoff}
+                userRole={currentUser.role}
+              />
+            ) : null}
+            {page === "wallet" ? (
+              customerWallet ? (
+                <CustomerWalletPanel
+                  key={walletRefreshKey}
+                  onRechargeRequested={openRecharge}
+                  store={customerWallet.store}
+                  onSessionExpired={customerWallet.onSessionExpired}
+                />
+              ) : (
+                <WalletPanel />
+              )
+            ) : null}
+            {page === "profile" && customerAccount ? (
+              <CustomerProfilePanel
+                deviceError={customerAccount.deviceError}
+                devices={customerAccount.devices}
+                onApprovePairing={customerAccount.onApprovePairing}
+                onDismissPairing={customerAccount.onDismissPairing}
+                onProfileUpdated={customerAccount.onProfileUpdated}
+                onRecharge={openRecharge}
+                onResetActivationCode={customerAccount.onResetActivationCode}
+                onSessionExpired={customerAccount.onSessionExpired}
+                onUnbind={customerAccount.onUnbind}
+                onUpdateProfile={customerAccount.onUpdateProfile}
+                profile={customerAccount.profile}
+                store={customerAccount.store}
+                walletRefreshKey={walletRefreshKey}
+              />
+            ) : null}
+          </div>
+        </section>
+      </main>
+      {customerSession ? (
+        <CustomerRechargeDialog
+          isOpen={isRechargeOpen}
+          onClose={() => setIsRechargeOpen(false)}
+          onPaid={() => setWalletRefreshKey((current) => current + 1)}
+          onSessionExpired={customerSession.onSessionExpired}
+          store={customerSession.store}
+          suggestedAmountYuan={suggestedRechargeAmount}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -434,7 +505,11 @@ function AppSidebar({
     label: string;
     page: WorkspacePage;
   }> = [
-    { icon: "wallet", label: "余额与充值", page: "wallet" },
+    {
+      icon: "wallet",
+      label: "余额与充值",
+      page: "wallet",
+    },
     ...(currentUser.role === "admin"
       ? [
           {
@@ -480,7 +555,10 @@ function AppSidebar({
     onNavigate(nextPage);
   }
 
-  const isUserPage = activePage === "wallet" || activePage === "settings";
+  const isUserPage =
+    activePage === "wallet" ||
+    activePage === "settings" ||
+    activePage === "profile";
   return (
     <aside className="app-sidebar">
       <div className="app-brand">
@@ -517,59 +595,82 @@ function AppSidebar({
           </button>
         ))}
       </nav>
-      <div className="sidebar-user-menu" ref={userMenuRef}>
-        <button
-          aria-controls="sidebar-user-actions"
-          aria-expanded={isUserMenuOpen}
-          aria-label="用户菜单"
-          className={
-            isUserPage ? "sidebar-user sidebar-user--active" : "sidebar-user"
-          }
-          disabled={navigationDisabled}
-          onClick={() => setIsUserMenuOpen((isOpen) => !isOpen)}
-          type="button"
-        >
-          <span className="sidebar-user__avatar" aria-hidden="true">
-            <SidebarIcon name="user" />
-          </span>
-          <span className="sidebar-user__identity">
-            <strong>{currentUser.display_name}</strong>
-            <small className="sidebar-user__subtitle">
-              {formatRole(currentUser.role)}
-            </small>
-          </span>
-          <span className="sidebar-user__chevron" aria-hidden="true">
-            <svg aria-hidden="true" viewBox="0 0 16 16">
-              <path d="m4 6 4 4 4-4" />
-            </svg>
-          </span>
-        </button>
-        {isUserMenuOpen ? (
-          <fieldset
-            aria-label="用户功能"
-            className="sidebar-user__menu"
-            id="sidebar-user-actions"
+      {currentUser.role === "customer" ? (
+        <div className="sidebar-user-menu">
+          <button
+            aria-current={activePage === "profile" ? "page" : undefined}
+            aria-label="打开个人中心"
+            className={
+              isUserPage ? "sidebar-user sidebar-user--active" : "sidebar-user"
+            }
+            disabled={navigationDisabled}
+            onClick={() => onNavigate("profile")}
+            type="button"
           >
-            {userItems.map((item) => (
-              <button
-                aria-current={activePage === item.page ? "page" : undefined}
-                className={
-                  activePage === item.page
-                    ? "sidebar-user__menu-item sidebar-user__menu-item--active"
-                    : "sidebar-user__menu-item"
-                }
-                disabled={navigationDisabled}
-                key={item.page}
-                onClick={() => navigateFromUserMenu(item.page)}
-                type="button"
-              >
-                <SidebarIcon name={item.icon} />
-                {item.label}
-              </button>
-            ))}
-          </fieldset>
-        ) : null}
-      </div>
+            <span className="sidebar-user__avatar" aria-hidden="true">
+              <SidebarIcon name="user" />
+            </span>
+            <span className="sidebar-user__identity">
+              <strong>{currentUser.display_name}</strong>
+              <small className="sidebar-user__subtitle">个人中心</small>
+            </span>
+          </button>
+        </div>
+      ) : (
+        <div className="sidebar-user-menu" ref={userMenuRef}>
+          <button
+            aria-controls="sidebar-user-actions"
+            aria-expanded={isUserMenuOpen}
+            aria-label="用户菜单"
+            className={
+              isUserPage ? "sidebar-user sidebar-user--active" : "sidebar-user"
+            }
+            disabled={navigationDisabled}
+            onClick={() => setIsUserMenuOpen((isOpen) => !isOpen)}
+            type="button"
+          >
+            <span className="sidebar-user__avatar" aria-hidden="true">
+              <SidebarIcon name="user" />
+            </span>
+            <span className="sidebar-user__identity">
+              <strong>{currentUser.display_name}</strong>
+              <small className="sidebar-user__subtitle">
+                {formatRole(currentUser.role)}
+              </small>
+            </span>
+            <span className="sidebar-user__chevron" aria-hidden="true">
+              <svg aria-hidden="true" viewBox="0 0 16 16">
+                <path d="m4 6 4 4 4-4" />
+              </svg>
+            </span>
+          </button>
+          {isUserMenuOpen ? (
+            <fieldset
+              aria-label="用户功能"
+              className="sidebar-user__menu"
+              id="sidebar-user-actions"
+            >
+              {userItems.map((item) => (
+                <button
+                  aria-current={activePage === item.page ? "page" : undefined}
+                  className={
+                    activePage === item.page
+                      ? "sidebar-user__menu-item sidebar-user__menu-item--active"
+                      : "sidebar-user__menu-item"
+                  }
+                  disabled={navigationDisabled}
+                  key={item.page}
+                  onClick={() => navigateFromUserMenu(item.page)}
+                  type="button"
+                >
+                  <SidebarIcon name={item.icon} />
+                  {item.label}
+                </button>
+              ))}
+            </fieldset>
+          ) : null}
+        </div>
+      )}
     </aside>
   );
 }
@@ -610,11 +711,18 @@ function SidebarIcon({
   );
 }
 
-function ServiceBadge({ state }: { state: ServiceState }) {
+function ServiceBadge({
+  scope,
+  state,
+}: {
+  scope: "cloud" | "local";
+  state: ServiceState;
+}) {
+  const serviceName = scope === "cloud" ? "云服务" : "本地服务";
   const labels: Record<ServiceState, string> = {
-    checking: "正在连接本地服务",
-    connected: "本地服务已连接",
-    disconnected: "本地服务未连接",
+    checking: `正在连接${serviceName}`,
+    connected: `${serviceName}已连接`,
+    disconnected: `${serviceName}未连接`,
   };
 
   return (
@@ -642,7 +750,14 @@ function workspacePageAllowed(
 ): boolean {
   if (
     !(
-      ["characters", "projects", "settings", "tasks", "wallet"] as string[]
+      [
+        "characters",
+        "profile",
+        "projects",
+        "settings",
+        "tasks",
+        "wallet",
+      ] as string[]
     ).includes(page)
   ) {
     return false;
@@ -662,6 +777,7 @@ function ensureWorkspaceHash(page: WorkspacePage) {
 function pageTitle(page: WorkspacePage): string {
   return {
     characters: "人物库",
+    profile: "个人中心",
     projects: "项目",
     settings: "设置",
     tasks: "任务记录",
@@ -673,6 +789,7 @@ function pageTitle(page: WorkspacePage): string {
 function pageSubtitle(page: WorkspacePage): string {
   return {
     characters: "上传一张图片一键生成五视角拼合图，供项目选用。",
+    profile: "查看账号、激活凭证、余额和已绑定设备。",
     projects: "上传参考视频，拆解提示词，配首帧生成新视频。",
     settings: "管理各服务连接凭据与运行参数。",
     tasks: "查看生成批次，播放结果并处理异常任务。",
@@ -685,6 +802,7 @@ function formatRole(role: CurrentUser["role"]) {
     admin: "管理员",
     auditor: "审计员",
     employee: "普通员工",
+    customer: "客户用户",
   };
   return labels[role];
 }

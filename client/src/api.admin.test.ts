@@ -108,7 +108,9 @@ describe("admin activation API adapter", () => {
       ),
     );
 
-    await expect(getControlAccounts()).rejects.toThrow("读取内部账号失败");
+    await expect(getControlAccounts()).rejects.toThrow(
+      "登录已过期，请重新登录。",
+    );
     expect(onSessionExpired).toHaveBeenCalledOnce();
 
     window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);

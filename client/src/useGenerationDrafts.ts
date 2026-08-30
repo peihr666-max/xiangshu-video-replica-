@@ -442,10 +442,10 @@ export function useGenerationDrafts({
       setPromptText(compiledText);
       setSavedPromptText(compiledText);
       setPromptStale(false);
-      setMessage(`H3 Prompt 已编译为版本 #${compiled.version_number}。`);
+      setMessage(`视频生成提示词已编译为版本 #${compiled.version_number}。`);
     } catch (requestError) {
       if (actionGeneration === actionGenerationRef.current) {
-        setError(errorMessage(requestError, "编译 H3 Prompt 失败。"));
+        setError(errorMessage(requestError, "编译视频生成提示词失败。"));
       }
     } finally {
       if (actionGeneration === actionGenerationRef.current) {
@@ -479,7 +479,7 @@ export function useGenerationDrafts({
       setMessage(`Prompt 已另存为版本 #${revised.version_number}。`);
     } catch (requestError) {
       if (actionGeneration === actionGenerationRef.current) {
-        setError(errorMessage(requestError, "保存 H3 Prompt 失败。"));
+        setError(errorMessage(requestError, "保存视频生成提示词失败。"));
       }
     } finally {
       if (actionGeneration === actionGenerationRef.current) {
@@ -512,7 +512,7 @@ export function useGenerationDrafts({
       setMessage(`Prompt 版本 #${locked.version_number} 已锁定。`);
     } catch (requestError) {
       if (actionGeneration === actionGenerationRef.current) {
-        setError(errorMessage(requestError, "锁定 H3 Prompt 失败。"));
+        setError(errorMessage(requestError, "锁定视频生成提示词失败。"));
       }
     } finally {
       if (actionGeneration === actionGenerationRef.current) {

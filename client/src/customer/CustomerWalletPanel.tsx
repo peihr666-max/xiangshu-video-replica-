@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   type CreatedRechargeOrder,
   CustomerApiError,
+  customerCloseRechargeOrder,
   customerCreateRechargeOrder,
   customerGetRechargeOrder,
   customerGetWallet,
@@ -24,9 +25,11 @@ const MAX_ORDER_POLL_ATTEMPTS = 30;
 export function CustomerWalletPanel({
   store,
   onSessionExpired,
+  onRechargeRequested,
 }: {
   store: CustomerCredentialStore;
   onSessionExpired: () => void;
+  onRechargeRequested?: (amountYuan: number) => void;
 }) {
   const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
@@ -37,6 +40,7 @@ export function CustomerWalletPanel({
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
+  const [closingOrderNo, setClosingOrderNo] = useState<string | null>(null);
 
   const loadSession = useCallback(async (): Promise<{
     kind: "session";
@@ -62,7 +66,7 @@ export function CustomerWalletPanel({
     ]);
     setWallet(nextWallet);
     setTransactions(transactionPage.items);
-    setOrders(orderPage.items);
+    setOrders(orderPage.items.filter((order) => order.status !== "CLOSED"));
     // Codex P2 (PR #65): the pending order number lives only in component
     // state, so reopening/remounting the wallet (or exhausting the poll
     // window) would never resume tracking an outstanding payment. Derive the
@@ -174,6 +178,10 @@ export function CustomerWalletPanel({
       );
       return;
     }
+    if (onRechargeRequested) {
+      onRechargeRequested(amountYuan);
+      return;
+    }
     const credential = await loadSession();
     if (credential === null) {
       return;
@@ -201,6 +209,35 @@ export function CustomerWalletPanel({
     void startRecharge(Number(customAmount));
   }
 
+  async function closePendingOrder(orderNo: string) {
+    if (
+      closingOrderNo ||
+      !window.confirm(
+        "确认删除这个待支付订单？如果已经扫码付款，请不要删除，先等待到账。",
+      )
+    ) {
+      return;
+    }
+    const credential = await loadSession();
+    if (credential === null) {
+      return;
+    }
+    setClosingOrderNo(orderNo);
+    setError("");
+    try {
+      await customerCloseRechargeOrder(credential, orderNo);
+      setOrders((current) =>
+        current.filter((order) => order.order_no !== orderNo),
+      );
+      setPendingOrderNo((current) => (current === orderNo ? null : current));
+      setNotice("待支付订单已删除。");
+    } catch (cause) {
+      setError(errorMessage(cause, "删除待支付订单失败，请稍后重试。"));
+    } finally {
+      setClosingOrderNo(null);
+    }
+  }
+
   if (isLoading && !wallet) {
     return <p className="status-note">正在读取钱包</p>;
   }
@@ -217,7 +254,7 @@ export function CustomerWalletPanel({
     <section className="wallet-page" aria-label="余额与充值">
       <div className="wallet-summary-grid">
         <article className="wallet-summary-card">
-          <span>内部价</span>
+          <span>单条价格</span>
           <strong>{formatFen(wallet.internal_unit_price_fen)} / 条</strong>
         </article>
         <article className="wallet-summary-card">
@@ -295,6 +332,7 @@ export function CustomerWalletPanel({
                 <th>金额</th>
                 <th>条数</th>
                 <th>状态</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -305,11 +343,27 @@ export function CustomerWalletPanel({
                     <td>{formatFen(order.amount_fen)}</td>
                     <td>{order.credits}</td>
                     <td>{orderStatusLabel(order.status)}</td>
+                    <td>
+                      {order.status === "PENDING" ? (
+                        <button
+                          className="table-action-button table-action-button--danger"
+                          disabled={closingOrderNo === order.order_no}
+                          onClick={() => void closePendingOrder(order.order_no)}
+                          type="button"
+                        >
+                          {closingOrderNo === order.order_no
+                            ? "正在删除"
+                            : "删除待支付订单"}
+                        </button>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={4}>暂无充值订单</td>
+                  <td colSpan={5}>暂无充值订单</td>
                 </tr>
               )}
             </tbody>

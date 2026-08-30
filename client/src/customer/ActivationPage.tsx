@@ -1,7 +1,22 @@
 import { type FormEvent, useState } from "react";
 
-import type { CustomerApiError } from "../api";
+import { type CustomerApiError, customerVisibleErrorMessage } from "../api";
+import activationDeviceIcon from "../assets/brand/activation-device.png";
+import activationLockIcon from "../assets/brand/activation-lock.png";
+import jingxuLogoMark from "../assets/brand/jingxu-logo-mark.png";
 import type { CustomerActivationFormInput } from "./useCustomerSession";
+
+export function CustomerAccessBrand() {
+  return (
+    <div className="customer-access-brand">
+      <img alt="镜序 Studio" src={jingxuLogoMark} />
+      <span className="customer-access-brand__name">
+        <strong>镜序</strong>
+        <small>Studio</small>
+      </span>
+    </div>
+  );
+}
 
 /** The first-run activation form (FE-02): redeem an activation code, name
  * this device, and land in the workspace. The dev doc §13.2 client
@@ -33,45 +48,64 @@ export function ActivationPage({
   };
 
   return (
-    <section className="login-card" aria-labelledby="activation-title">
-      <span className="eyebrow">JINGXU STUDIO</span>
-      <h1 id="activation-title">激活短视频复刻工作台</h1>
-      <p className="login-hint">
-        输入激活码完成首次激活，激活后本机将成为您的第一台绑定设备。
-      </p>
-      <form onSubmit={handleSubmit}>
-        <label>
-          激活码
-          <input
-            value={activationCode}
-            onChange={(event) => setActivationCode(event.target.value)}
-            autoComplete="off"
-            placeholder="XS04-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX"
-            disabled={isBusy}
-          />
-        </label>
-        <label>
-          设备名称
-          <input
-            value={deviceName}
-            onChange={(event) => setDeviceName(event.target.value)}
-            autoComplete="off"
-            placeholder="例如：工作电脑"
-            disabled={isBusy}
-          />
-        </label>
-        {error ? (
-          <p className="form-error">{activationErrorText(error)}</p>
-        ) : null}
-        <button type="submit" disabled={isBusy}>
-          {isBusy ? "正在激活…" : "激活并进入工作台"}
-        </button>
-      </form>
-    </section>
+    <main className="customer-access-shell">
+      <section
+        className="customer-access-card"
+        aria-labelledby="activation-title"
+      >
+        <CustomerAccessBrand />
+        <div className="customer-access-body">
+          <h1 id="activation-title">激活短视频复刻工作台</h1>
+          <p className="customer-access-lead">
+            输入有效激活码即可进入，本机会自动识别并关联您的账号。
+          </p>
+          <form className="customer-access-form" onSubmit={handleSubmit}>
+            <label>
+              激活码
+              <span className="customer-access-input customer-access-input--trailing">
+                <input
+                  value={activationCode}
+                  onChange={(event) => setActivationCode(event.target.value)}
+                  autoComplete="off"
+                  placeholder="XS04-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX"
+                  disabled={isBusy}
+                />
+                <img alt="" aria-hidden="true" src={activationLockIcon} />
+              </span>
+            </label>
+            <label>
+              设备名称
+              <span className="customer-access-input customer-access-input--leading">
+                <img alt="" aria-hidden="true" src={activationDeviceIcon} />
+                <input
+                  value={deviceName}
+                  onChange={(event) => setDeviceName(event.target.value)}
+                  autoComplete="off"
+                  placeholder="例如：工作电脑"
+                  disabled={isBusy}
+                />
+              </span>
+            </label>
+            {error ? (
+              <p className="form-error">{activationErrorText(error)}</p>
+            ) : null}
+            <button type="submit" disabled={isBusy}>
+              {isBusy ? "正在激活…" : "激活并进入工作台"}
+            </button>
+          </form>
+        </div>
+        <footer className="customer-access-footer">
+          遇到问题？请联系服务人员
+        </footer>
+      </section>
+    </main>
   );
 }
 
 function activationErrorText(error: CustomerApiError): string {
+  if (error.code === "ACTIVATION_UNAVAILABLE") {
+    return customerVisibleErrorMessage(error);
+  }
   switch (error.kind) {
     case "rate-limited":
       return error.retryAfterSeconds !== undefined

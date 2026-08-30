@@ -69,6 +69,10 @@ function isBatchHistoryRequest(url: string) {
   return url.includes("/api/generation-batches?");
 }
 
+function isBatchDetailRequest(url: string) {
+  return /\/api\/generation-batches\/[^/?]+(?:\?.*)?$/.test(url);
+}
+
 function emptyBatchHistory() {
   return { items: [], next_cursor: null };
 }
@@ -157,6 +161,27 @@ describe("App", () => {
     expect(screen.getByText("林夏")).toBeInTheDocument();
   });
 
+  it("uses a network-safe project list error instead of claiming the local service is down", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/health")) {
+        return Promise.resolve({ ok: true, json: async () => healthResponse });
+      }
+      if (url.endsWith("/api/projects")) {
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return Promise.resolve({ ok: true, json: async () => [] });
+    });
+    vi.stubGlobal("fetch", withAuth(fetchMock));
+
+    render(<App />);
+    await enterWorkspace();
+
+    expect(
+      await screen.findByText("项目列表暂不可用，请检查网络连接后重试。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/检查本地服务连接/)).toBeNull();
+  });
+
   it("navigates from login to the project page and loads local API health", async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.endsWith("/health")) {
@@ -211,6 +236,39 @@ describe("App", () => {
     expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/health", {
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it("updates the server connection badge after a later health check fails", async () => {
+    vi.useFakeTimers();
+    let healthRequestCount = 0;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/health")) {
+        healthRequestCount += 1;
+        return healthRequestCount === 1
+          ? Promise.resolve({ ok: true, json: async () => healthResponse })
+          : Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return Promise.resolve({ ok: true, json: async () => [] });
+    });
+    vi.stubGlobal("fetch", withAuth(fetchMock));
+
+    render(<App />);
+    await enterWorkspace();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole("status", { name: "本地服务已连接" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(healthRequestCount).toBe(2);
+    expect(
+      screen.getByRole("status", { name: "本地服务未连接" }),
+    ).toBeInTheDocument();
   });
 
   it("renders one wallet panel from the shared navigation", async () => {
@@ -468,7 +526,7 @@ describe("App", () => {
             status: "REFERENCE_READY",
             reference_asset_id: "asset-ready",
             reference_upload_status: "READY",
-            analysis_status: "READY",
+            analysis_status: "PENDING",
           },
           {
             id: "project-pending",
@@ -498,14 +556,11 @@ describe("App", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "打开项目 已归档项目" }),
     );
-    expect(await screen.findByText("只读身份：仅可查看。")).toBeInTheDocument();
-    expect(screen.getByLabelText("S01 动作")).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "保存镜头卡片" })).toBeNull();
     expect(
-      screen.getByRole("button", { name: "查看角色版本" }),
+      await screen.findByText("只读身份无法启动拆解。"),
     ).toBeInTheDocument();
-    // P0-02-04：门禁改骨架引导，无角色时下游三区均为引导态。
-    expect(screen.getAllByText("先在上方选择角色版本")).toHaveLength(3);
+    expect(screen.queryByLabelText("S01 动作")).toBeNull();
+    expect(screen.queryByRole("button", { name: "保存镜头卡片" })).toBeNull();
     expect(
       screen.queryByRole("button", { name: "重新生成候选首帧" }),
     ).toBeNull();
@@ -602,20 +657,24 @@ describe("App", () => {
       },
     });
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/api/assets/upload-intent",
+    await waitFor(() => {
+      const uploadIntentCall = fetchMock.mock.calls.find(([url]) =>
+        url.endsWith("/api/assets/upload-intent"),
+      );
+      expect(uploadIntentCall).toBeDefined();
+      expect(uploadIntentCall?.[1]).toEqual(
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(JSON.parse(String(uploadIntentCall?.[1]?.body))).toEqual(
         expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            project_id: "project-pending",
-            filename: "retry.mp4",
-            content_type: "video/mp4",
-            size_bytes: 5,
-          }),
+          project_id: "project-pending",
+          filename: "retry.mp4",
+          content_type: "video/mp4",
+          size_bytes: 5,
+          sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         }),
-      ),
-    );
+      );
+    });
     // 续传复用现有项目，不再新建。
     expect(
       fetchMock.mock.calls.filter(
@@ -689,28 +748,12 @@ describe("App", () => {
             });
       }
       if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            id: "analysis-task-recovered",
-            project_id: "project-ready",
-            asset_id: "asset-ready",
-            status: "PENDING",
-            error_message: null,
-          }),
-        });
-      }
-      if (url.endsWith("/api/analysis-tasks/analysis-task-recovered")) {
         analysisReady = true;
         return Promise.resolve({
           ok: true,
           json: async () => ({
             id: "analysis-task-recovered",
-            project_id: "project-ready",
-            asset_id: "asset-ready",
-            status: "SUCCEEDED",
-            result_version_id: analysis.id,
-            error_message: null,
+            status: "PENDING",
           }),
         });
       }
@@ -743,7 +786,7 @@ describe("App", () => {
     ).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "开始拆解" }));
 
-    expect(await screen.findByText("恢复后的拆解结果")).toBeInTheDocument();
+    expect(await screen.findByText("拆解中")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/projects/project-ready/analysis-tasks",
       expect.objectContaining({
@@ -1026,9 +1069,6 @@ describe("App", () => {
       await screen.findByRole("heading", { name: "镜头与口播" }),
     ).toBeInTheDocument();
     expect(await screen.findByText("咖啡口播拆解")).toBeInTheDocument();
-    expect(
-      screen.getByText("演示数据 · 在设置中配置 Gemini 后可重新拆解"),
-    ).toBeInTheDocument();
     expect(screen.getByLabelText("S01 动作")).toHaveValue("已保存的动作");
     fireEvent.change(screen.getByLabelText("S01 动作"), {
       target: { value: "端起咖啡杯" },
@@ -1222,7 +1262,7 @@ describe("App", () => {
 
   // 15.05s clears the upload precheck (15s + 0.1s rounding tolerance) but used to be
   // rejected by the analysis request schema, so the automatic start returned a bare 422.
-  it("uploads a 15.05s reference video and receives a durable analysis task from completion", async () => {
+  it("uploads a 15.05s reference video, completes precheck, and starts analysis without echoing the duration", async () => {
     class SuccessfulUploadRequest {
       onerror: (() => void) | null = null;
       onload: (() => void) | null = null;
@@ -1298,8 +1338,6 @@ describe("App", () => {
             size_bytes: 10,
             content_type: "video/mp4",
             metadata: { duration_seconds: 15.05 },
-            analysis_task_id: "analysis-task-1",
-            analysis_task_status: "PENDING",
           }),
         });
       }
@@ -1366,12 +1404,19 @@ describe("App", () => {
     expect(
       await screen.findByRole("button", { name: "打开项目 咖啡口播" }),
     ).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([url]) => url.endsWith("/analysis-tasks")),
-    ).toBe(false);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/projects/project-1/analysis-tasks",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          asset_id: "asset-1",
+          reuse_existing: true,
+        }),
+      }),
+    );
   });
 
-  it("surfaces an upload-completion failure on the upload entry", async () => {
+  it("surfaces the automatic-analysis failure on the upload entry", async () => {
     class SuccessfulUploadRequest {
       onerror: (() => void) | null = null;
       onload: (() => void) | null = null;
@@ -1389,24 +1434,84 @@ describe("App", () => {
       }
     }
 
+    const analysis = {
+      id: "analysis-recovered",
+      project_id: "project-recovery",
+      asset_id: "asset-recovery",
+      kind: "analysis",
+      version_number: 1,
+      payload: {
+        analysis: {
+          summary: "恢复成功",
+          duration_seconds: 8,
+          shots: [
+            {
+              shot_id: "S01",
+              start_time: 0,
+              end_time: 8,
+              shot_type: "近景",
+              composition: "人物居中",
+              camera_motion: "固定",
+              subject: "主讲人",
+              action: "讲话",
+              scene: "室内",
+              spoken_text: "你好",
+              transition: "硬切",
+            },
+          ],
+        },
+      },
+      created_by_user_id: "employee_1",
+      created_at: "2030-01-01T00:00:00Z",
+    };
+    let analysisPostCalls = 0;
     const fetchMock = vi.fn((url: string, options?: RequestInit) => {
       if (url.endsWith("/health")) {
         return Promise.resolve({ ok: true, json: async () => healthResponse });
       }
       if (url.endsWith("/api/projects") && !url.includes("analysis")) {
+        if (options?.method === "POST") {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              id: "project-recovery",
+              owner_user_id: "employee_1",
+              name: "失败后恢复",
+              status: "ACTIVE",
+              reference_asset_id: null,
+              reference_upload_status: "NOT_STARTED",
+              analysis_status: "NOT_READY",
+            }),
+          });
+        }
         return Promise.resolve({
           ok: true,
           json: async () =>
-            options?.method === "POST"
-              ? {
-                  id: "project-recovery",
-                  owner_user_id: "employee_1",
-                  name: "失败后恢复",
-                  status: "ACTIVE",
-                  reference_asset_id: null,
-                  reference_upload_status: "NOT_STARTED",
-                  analysis_status: "NOT_READY",
-                }
+            analysisPostCalls > 0
+              ? [
+                  {
+                    id: "project-recovery",
+                    owner_user_id: "employee_1",
+                    name: "失败后恢复",
+                    status: "REFERENCE_READY",
+                    reference_asset_id: "asset-recovery",
+                    reference_upload_status: "READY",
+                    analysis_status: "FAILED",
+                    analysis_error_message: "视频拆解失败，请重新拆解。",
+                    analysis_retryable: true,
+                  },
+                  {
+                    id: "project-non-retryable",
+                    owner_user_id: "employee_1",
+                    name: "不可重试项目",
+                    status: "REFERENCE_READY",
+                    reference_asset_id: "asset-non-retryable",
+                    reference_upload_status: "READY",
+                    analysis_status: "FAILED",
+                    analysis_error_message: "拆解结果无法解析，请更换视频。",
+                    analysis_retryable: false,
+                  },
+                ]
               : [],
         });
       }
@@ -1426,12 +1531,31 @@ describe("App", () => {
       }
       if (url.endsWith("/complete")) {
         return Promise.resolve({
-          ok: false,
-          status: 503,
+          ok: true,
           json: async () => ({
-            detail: { message: "视频预检暂时不可用" },
+            asset_id: "asset-recovery",
+            project_id: "project-recovery",
+            status: "uploaded",
+            storage_uri: "cos://private-bucket/reference.mp4",
+            sha256: "hash",
+            size_bytes: 10,
+            content_type: "video/mp4",
+            metadata: { duration_seconds: 8 },
           }),
         });
+      }
+      if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
+        analysisPostCalls += 1;
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: `analysis-task-${analysisPostCalls}`,
+            status: "PENDING",
+          }),
+        });
+      }
+      if (url.endsWith("/analysis/latest")) {
+        return Promise.resolve({ ok: true, json: async () => analysis });
       }
       if (url.endsWith("/shot-cards/latest")) {
         return Promise.resolve({ ok: false, status: 404 });
@@ -1460,8 +1584,19 @@ describe("App", () => {
       },
     });
 
-    expect(await screen.findByText(/视频预检暂时不可用/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "知道了" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("视频拆解失败，请重新拆解。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("拆解结果无法解析，请更换视频。"),
+    ).toBeInTheDocument();
+    const retryButtons = screen.getAllByRole("button", { name: "重新拆解" });
+    expect(retryButtons).toHaveLength(1);
+    fireEvent.click(retryButtons[0]);
+    await waitFor(() => expect(analysisPostCalls).toBe(2));
+    expect(
+      await screen.findByText("项目“失败后恢复”已重新提交拆解。"),
+    ).toBeInTheDocument();
   });
 
   it("rejects unsupported reference videos before creating a project", async () => {
@@ -1799,7 +1934,7 @@ describe("App", () => {
     });
 
     expect(
-      await screen.findByText(/上传参考视频失败（无法连接对象存储/),
+      await screen.findByText(/上传参考视频失败（无法连接素材库/),
     ).toBeInTheDocument();
     expect(
       screen.queryByText(/上传参考视频失败（网络错误）/),
@@ -2191,7 +2326,7 @@ describe("App", () => {
           json: async () => emptyBatchHistory(),
         });
       }
-      if (url.endsWith("/api/generation-batches/batch-1")) {
+      if (isBatchDetailRequest(url)) {
         generationRequestCount += 1;
         return Promise.resolve({
           ok: true,
@@ -2199,7 +2334,7 @@ describe("App", () => {
             generationRequestCount === 1 ? runningBatch : doneBatch,
         });
       }
-      return Promise.resolve({ ok: true, json: async () => [] });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
     });
     vi.stubGlobal("fetch", withAuth(fetchMock));
 
@@ -2250,8 +2385,11 @@ describe("App", () => {
           json: async () => emptyBatchHistory(),
         });
       }
-      generationRequestCount += 1;
-      return Promise.resolve({ ok: true, json: async () => attentionBatch });
+      if (isBatchDetailRequest(url)) {
+        generationRequestCount += 1;
+        return Promise.resolve({ ok: true, json: async () => attentionBatch });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
     });
     vi.stubGlobal("fetch", withAuth(fetchMock));
 
@@ -2291,7 +2429,7 @@ describe("App", () => {
           json: async () => emptyBatchHistory(),
         });
       }
-      if (url.endsWith("/api/generation-batches/batch-1")) {
+      if (isBatchDetailRequest(url)) {
         generationRequestCount += 1;
         if (generationRequestCount === 2) {
           return Promise.reject(new Error("network"));
@@ -2310,7 +2448,7 @@ describe("App", () => {
               : batchResponse(),
         });
       }
-      return Promise.resolve({ ok: true, json: async () => [] });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
     });
     vi.stubGlobal("fetch", withAuth(fetchMock));
 
@@ -2330,7 +2468,6 @@ describe("App", () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
-      await Promise.resolve();
     });
 
     expect(screen.getByText("网络连接失败，4 秒后重试")).toBeInTheDocument();
@@ -2364,12 +2501,15 @@ describe("App", () => {
           json: async () => emptyBatchHistory(),
         });
       }
-      generationRequestCount += 1;
-      return Promise.resolve({
-        ok: false,
-        status: 404,
-        json: async () => ({ detail: { code: "BATCH_NOT_FOUND" } }),
-      });
+      if (isBatchDetailRequest(url)) {
+        generationRequestCount += 1;
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          json: async () => ({ detail: { code: "BATCH_NOT_FOUND" } }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
     });
     vi.stubGlobal("fetch", withAuth(fetchMock));
 

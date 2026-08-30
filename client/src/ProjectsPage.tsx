@@ -10,6 +10,7 @@ import {
   completeVideoUpload,
   createProject,
   createVideoUploadIntent,
+  customerVisibleErrorMessage,
   deleteProject,
   listProjects,
   type Project,
@@ -44,7 +45,7 @@ type ProjectsPageProps = {
 
 const UPLOAD_STAGE_LABELS: Record<UploadStage, string> = {
   creating_project: "正在创建项目",
-  creating_upload: "正在准备上传",
+  creating_upload: "正在检查是否已上传",
   uploading: "正在上传视频",
   verifying: "正在校验视频",
   analyzing: "正在启动拆解",
@@ -121,8 +122,13 @@ export function ProjectsPage({
         const nextProjects = await listProjects();
         setProjects(nextProjects);
         setProjectsError("");
-      } catch {
-        setProjectsError("项目列表暂不可用，请检查本地服务连接。");
+      } catch (error) {
+        setProjectsError(
+          customerVisibleErrorMessage(
+            error,
+            "项目列表暂不可用，请检查网络连接后重试。",
+          ),
+        );
       } finally {
         if (!options.silent) {
           setIsProjectsLoading(false);
@@ -176,18 +182,23 @@ export function ProjectsPage({
           (await createProject(defaultProjectName(file.name)));
         updateUpload(key, { projectId: project.id, stage: "creating_upload" });
         const intent = await createVideoUploadIntent(project.id, file);
-        updateUpload(key, { stage: "uploading" });
-        await uploadReferenceVideo(
-          intent,
-          file,
-          (progress) => {
-            updateUpload(key, { progress });
-          },
-          controller.signal,
-        );
-        updateUpload(key, { stage: "verifying" });
-        await completeVideoUpload(intent.asset_id);
+        let completedAssetId = intent.asset_id;
+        if (intent.upload_required !== false) {
+          updateUpload(key, { stage: "uploading" });
+          await uploadReferenceVideo(
+            intent,
+            file,
+            (progress) => {
+              updateUpload(key, { progress });
+            },
+            controller.signal,
+          );
+          updateUpload(key, { stage: "verifying" });
+          const completed = await completeVideoUpload(intent.asset_id);
+          completedAssetId = completed.asset_id;
+        }
         updateUpload(key, { stage: "analyzing" });
+        await startVideoAnalysis(project.id, completedAssetId);
         updateUpload(key, { stage: null, progress: null });
         await loadProjects({ silent: true });
       } catch (error) {
@@ -278,7 +289,7 @@ export function ProjectsPage({
       return;
     }
     const confirmed = window.confirm(
-      `删除“${project.name}”？该项目的参考视频、分析结果、脚本、生成记录与生成产物将一并删除，且无法恢复。云端文件若暂时无法清理，将在审计日志中记录。`,
+      `删除“${project.name}”？该项目的参考视频、拆解结果、脚本、生成记录与生成产物将一并删除，且无法恢复。素材库文件若暂时无法清理，将在审计日志中记录。`,
     );
     if (!confirmed) {
       return;

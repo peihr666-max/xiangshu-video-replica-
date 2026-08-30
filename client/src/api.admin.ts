@@ -269,6 +269,7 @@ export async function deleteAdminSession(): Promise<void> {
 export type ActivationCodeListItem = {
   code_id: string;
   batch_id: string;
+  activation_code: string | null;
   masked_code: string;
   status: string;
   bound_user_id: string | null;

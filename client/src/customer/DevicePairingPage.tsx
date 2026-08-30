@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { customerEnrollDevice } from "../api";
+import { CustomerAccessBrand } from "./ActivationPage";
 
 /** Second-device pairing enrollment page (FE-03 / T30).
  * Collects the activation code, device fingerprint and name, and enrolls
@@ -7,38 +8,52 @@ import { customerEnrollDevice } from "../api";
  * Idempotency-Key the server's enroll route requires (T17 / DEV-02).
  */
 export function DevicePairingPage({
+  deviceFingerprint,
+  devicePlatform,
+  initialActivationCode = "",
+  initialDeviceName = "",
   onSuccess,
   onError,
   onCancel,
 }: {
-  onSuccess: (result: {
-    status: "pending" | "consumed";
-    data: unknown;
-  }) => void;
+  deviceFingerprint: string;
+  devicePlatform: string;
+  initialActivationCode?: string;
+  initialDeviceName?: string;
+  onSuccess: (
+    result: {
+      status: "pending" | "consumed";
+      data: unknown;
+    },
+    input: { activationCode: string; deviceName: string },
+  ) => void;
   onError: (error: Error) => void;
   onCancel: () => void;
 }): React.JSX.Element {
   const [isBusy, setIsBusy] = useState(false);
-  const [activationCode, setActivationCode] = useState("");
-  const [deviceFingerprint, setDeviceFingerprint] = useState("");
-  const [deviceName, setDeviceName] = useState("");
+  const [activationCode, setActivationCode] = useState(initialActivationCode);
+  const [deviceName, setDeviceName] = useState(initialDeviceName);
 
   const handleEnroll = async () => {
     setIsBusy(true);
     try {
-      const result = await customerEnrollDevice({
+      const input = {
         activationCode: activationCode.trim(),
-        deviceFingerprint: deviceFingerprint.trim(),
         deviceName: deviceName.trim(),
-        devicePlatform: "web",
+      };
+      const result = await customerEnrollDevice({
+        activationCode: input.activationCode,
+        deviceFingerprint: deviceFingerprint.trim(),
+        deviceName: input.deviceName,
+        devicePlatform,
         // Every enrollment attempt gets its own key; the transport adds the
         // X-Request-Id correlation id.
         idempotencyKey: crypto.randomUUID(),
       });
       if (result.status === 202) {
-        onSuccess({ status: "pending", data: result.pending });
+        onSuccess({ status: "pending", data: result.pending }, input);
       } else {
-        onSuccess({ status: "consumed", data: result.credential });
+        onSuccess({ status: "consumed", data: result.credential }, input);
       }
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
@@ -49,72 +64,78 @@ export function DevicePairingPage({
   };
 
   return (
-    <main className="device-pairing-page" aria-labelledby="page-title">
-      <header>
-        <h1 id="page-title">Pair New Device</h1>
-        <p className="page-subtitle">
-          Register your second device under this customer identity
-        </p>
-      </header>
-
-      <form onSubmit={(e) => e.preventDefault()} className="pairing-form">
-        <div className="form-group">
-          <label htmlFor="activation-code">Activation Code</label>
-          <input
-            type="text"
-            id="activation-code"
-            value={activationCode}
-            onChange={(e) => setActivationCode(e.target.value)}
-            placeholder="XS04-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX"
-            autoComplete="off"
-            required
-            aria-required="true"
-          />
-        </div>
-        <div className="form-group">
-          <label htmlFor="device-fingerprint">Device Fingerprint</label>
-          <input
-            type="text"
-            id="device-fingerprint"
-            value={deviceFingerprint}
-            onChange={(e) => setDeviceFingerprint(e.target.value)}
-            placeholder="e.g., Chrome on Windows •••• AB12"
-            required
-            aria-required="true"
-          />
-        </div>
-        <div className="form-group">
-          <label htmlFor="device-name">Device Name</label>
-          <input
-            type="text"
-            id="device-name"
-            value={deviceName}
-            onChange={(e) => setDeviceName(e.target.value)}
-            placeholder="e.g., My Personal Laptop"
-            required
-            aria-required="true"
-          />
-        </div>
-        <div className="form-actions">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onCancel}
-            disabled={isBusy}
+    <main className="customer-access-shell">
+      <section
+        className="customer-access-card"
+        aria-labelledby="pairing-page-title"
+      >
+        <CustomerAccessBrand />
+        <div className="customer-access-body">
+          <h1 id="pairing-page-title">添加已有账号设备</h1>
+          <p className="customer-access-lead">
+            适用于激活码已完成首次激活，需要将当前电脑加入同一账号的情况。
+          </p>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleEnroll();
+            }}
+            className="customer-access-form"
           >
-            Cancel
-          </button>
+            <div className="form-group">
+              <label htmlFor="activation-code">激活码</label>
+              <input
+                type="text"
+                id="activation-code"
+                value={activationCode}
+                onChange={(e) => setActivationCode(e.target.value)}
+                placeholder="XS04-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX"
+                autoComplete="off"
+                required
+                aria-required="true"
+              />
+            </div>
+            <p className="customer-access-machine-note">
+              机器标识由本机安全读取
+            </p>
+            <div className="form-group">
+              <label htmlFor="device-name">设备名称</label>
+              <input
+                type="text"
+                id="device-name"
+                value={deviceName}
+                onChange={(e) => setDeviceName(e.target.value)}
+                placeholder="例如：家庭电脑"
+                required
+                aria-required="true"
+              />
+            </div>
+            <div className="form-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={onCancel}
+                disabled={isBusy}
+              >
+                返回首次激活
+              </button>
 
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={handleEnroll}
-            disabled={isBusy}
-          >
-            {isBusy ? "Enrolling Device..." : "Enroll Device"}
-          </button>
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={
+                  isBusy ||
+                  !activationCode.trim() ||
+                  !deviceName.trim() ||
+                  !deviceFingerprint
+                }
+              >
+                {isBusy ? "正在提交…" : "提交配对申请"}
+              </button>
+            </div>
+          </form>
         </div>
-      </form>
+      </section>
     </main>
   );
 }
