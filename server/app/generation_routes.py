@@ -20,7 +20,6 @@ from app.generation import (
     GenerationRuntimeLimits,
     GenerationTaskRetryRequest,
     H3Provider,
-    H3ProviderSettingsUnavailable,
     PaidRegenerationRequest,
     PromptCompileRequest,
     PromptPreviewRequest,
@@ -35,13 +34,14 @@ from app.generation import (
     confirm_generation_task_not_charged,
     create_generation_batch,
     create_script_version,
+    enqueue_generation_reconcile_operation,
     generation_runtime_limits,
     get_generation_batch,
-    h3_provider_for_task,
+    latest_generation_reconcile_operation,
     list_generation_batches,
+    load_generation_reconcile_operation,
     lock_prompt_version,
     preview_prompt_text,
-    reconcile_generation_task,
     regenerate_generation_batch,
     regenerate_generation_task,
     rename_generation_batch,
@@ -51,7 +51,6 @@ from app.generation import (
     version_state,
 )
 from app.media import storage_key_from_uri
-from app.media_routes import get_media_storage
 from app.permissions import (
     require_not_auditor,
     require_project_access,
@@ -78,6 +77,20 @@ class ScriptRewriteTaskResponse(BaseModel):
     status: str
     attempt: int
     result: ScriptRewriteResult | None
+    error_code: str | None
+    error_message: str | None
+    retryable: bool
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    completed_at: str | None
+
+
+class GenerationReconcileOperationResponse(BaseModel):
+    id: str
+    task_id: str
+    status: str
+    attempt: int
     error_code: str | None
     error_message: str | None
     retryable: bool
@@ -633,12 +646,16 @@ def confirm_task_not_charged(
         )
 
 
-@router.post("/generation-tasks/{task_id}/reconcile", response_model=TaskResult)
+@router.post(
+    "/generation-tasks/{task_id}/reconcile",
+    response_model=GenerationReconcileOperationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def reconcile_uncertain_task(
     task_id: str,
     db: BusinessDbDep,
     request: ReconcileGenerationTaskRequest | None = None,
-) -> TaskResult:
+) -> GenerationReconcileOperationResponse:
     with db.write() as (conn, actor):
         row = _generation_task_context(conn, task_id)
         require_not_auditor(
@@ -657,25 +674,81 @@ def reconcile_uncertain_task(
         if request is None:
             raise HTTPException(status_code=422, detail={"code": "RECONCILE_REQUEST_REQUIRED"})
 
-        def provider_factory() -> H3Provider:
-            try:
-                return h3_provider_for_task(conn, str(row["provider"]))
-            except H3ProviderSettingsUnavailable as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail={"code": "METASO_SETTINGS_UNAVAILABLE"},
-                ) from exc
-
-        return reconcile_generation_task(
+        operation = enqueue_generation_reconcile_operation(
             conn,
             task_id=task_id,
             batch_id=str(row["batch_id"]),
             project_id=str(row["project_id"]),
-            created_by_user_id=str(row["created_by_user_id"]),
             actor=actor,
             request=request,
-            # 归档重试必须与 Worker 使用同一业务存储，避免真实 Metaso
-            # 成片落本地后无法满足 COS 结算前提。
-            storage_factory=lambda: get_media_storage(conn),
-            provider_factory=provider_factory,
         )
+        return generation_reconcile_operation_response(operation)
+
+
+@router.get(
+    "/generation-reconcile-operations/{operation_id}",
+    response_model=GenerationReconcileOperationResponse,
+)
+def read_generation_reconcile_operation(
+    operation_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> GenerationReconcileOperationResponse:
+    row = load_generation_reconcile_operation(conn, operation_id)
+    require_project_access(
+        conn,
+        actor=actor,
+        project_id=str(row["project_id"]),
+        action="generation_task.reconcile_read",
+    )
+    return generation_reconcile_operation_response(row)
+
+
+@router.get(
+    "/generation-tasks/{task_id}/reconcile/latest",
+    response_model=GenerationReconcileOperationResponse | None,
+)
+def read_latest_generation_reconcile_operation(
+    task_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> GenerationReconcileOperationResponse | None:
+    task = _generation_task_context(conn, task_id)
+    require_project_access(
+        conn,
+        actor=actor,
+        project_id=str(task["project_id"]),
+        action="generation_task.reconcile_read",
+    )
+    row = latest_generation_reconcile_operation(conn, task_id=task_id)
+    return None if row is None else generation_reconcile_operation_response(row)
+
+
+def generation_reconcile_operation_response(
+    row: sqlite3.Row,
+) -> GenerationReconcileOperationResponse:
+    result_status = str(row["result_status"])
+    operation_status = (
+        "RUNNING"
+        if result_status == "PENDING" and row["locked_by"] is not None
+        else "PENDING"
+        if result_status == "PENDING"
+        else "SUCCEEDED"
+        if result_status == "COMPLETED"
+        else "FAILED"
+    )
+    return GenerationReconcileOperationResponse(
+        id=str(row["id"]),
+        task_id=str(row["task_id"]),
+        status=operation_status,
+        attempt=int(row["attempt"]),
+        error_code=None if row["error_code"] is None else str(row["error_code"]),
+        error_message=(
+            None if row["error_message_redacted"] is None else str(row["error_message_redacted"])
+        ),
+        retryable=bool(row["retryable"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        started_at=None if row["started_at"] is None else str(row["started_at"]),
+        completed_at=(None if row["completed_at"] is None else str(row["completed_at"])),
+    )

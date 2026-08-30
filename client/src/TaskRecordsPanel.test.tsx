@@ -17,6 +17,7 @@ vi.mock("./api", async () => {
     createGenerationResultPreviewUrl: vi.fn(),
     downloadGenerationResult: vi.fn(),
     getGenerationBatch: vi.fn(),
+    getLatestGenerationReconcileOperation: vi.fn(),
     listGenerationBatches: vi.fn(),
     regenerateGenerationBatch: vi.fn(),
     regenerateGenerationTask: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("./api", async () => {
     retryGenerationTask: vi.fn(),
     confirmGenerationTaskNotCharged: vi.fn(),
     reconcileUncertainTask: vi.fn(),
+    waitForGenerationReconcileOperation: vi.fn(),
   };
 });
 
@@ -128,6 +130,25 @@ function listItem(
   };
 }
 
+function reconcileOperation(
+  overrides: Partial<api.GenerationReconcileOperation> = {},
+): api.GenerationReconcileOperation {
+  return {
+    id: "reconcile-operation-1",
+    task_id: "task-reconcile",
+    status: "PENDING",
+    attempt: 0,
+    error_code: null,
+    error_message: null,
+    retryable: false,
+    created_at: "2026-08-16 10:00:00",
+    updated_at: "2026-08-16 10:00:00",
+    started_at: null,
+    completed_at: null,
+    ...overrides,
+  };
+}
+
 // 任务页默认落点是生成结果舞台；运维能力的既有用例统一先切到运维视图。
 async function switchToOpsView() {
   fireEvent.click(await screen.findByRole("button", { name: "运维详情" }));
@@ -153,7 +174,18 @@ describe("TaskRecordsPanel", () => {
       async (_taskId) => task(),
     );
     vi.mocked(api.reconcileUncertainTask).mockImplementation(async (_taskId) =>
-      task(),
+      reconcileOperation({ task_id: _taskId }),
+    );
+    vi.mocked(api.getLatestGenerationReconcileOperation).mockResolvedValue(
+      null,
+    );
+    vi.mocked(api.waitForGenerationReconcileOperation).mockImplementation(
+      async (operationId) =>
+        reconcileOperation({
+          id: operationId,
+          status: "SUCCEEDED",
+          completed_at: "2026-08-16 10:00:05",
+        }),
     );
     vi.mocked(api.regenerateGenerationBatch).mockImplementation(
       async (_batchId) => batch({ id: "batch-regenerated" }),
@@ -753,7 +785,9 @@ describe("TaskRecordsPanel", () => {
   });
 
   it("does not write a completed reconcile response into a newly selected batch", async () => {
-    let finishReconcile: ((value: api.GenerationTask) => void) | undefined;
+    let finishReconcile:
+      | ((value: api.GenerationReconcileOperation) => void)
+      | undefined;
     vi.mocked(api.reconcileUncertainTask).mockReturnValue(
       new Promise((resolve) => {
         finishReconcile = resolve;
@@ -809,7 +843,12 @@ describe("TaskRecordsPanel", () => {
     expect(await screen.findByText("task-b")).toBeInTheDocument();
 
     await act(async () => {
-      finishReconcile?.(task({ id: "task-a" }));
+      finishReconcile?.(
+        reconcileOperation({
+          id: "reconcile-task-a",
+          task_id: "task-a",
+        }),
+      );
       await Promise.resolve();
     });
 
@@ -819,6 +858,113 @@ describe("TaskRecordsPanel", () => {
     );
     expect(screen.getByText("task-b")).toBeInTheDocument();
     expect(screen.queryByText("task-a")).not.toBeInTheDocument();
+  });
+
+  it("releases the reconcile action after durable enqueue while the worker continues", async () => {
+    const uncertainBatch = batch({
+      tasks: [
+        task({
+          id: "task-background-reconcile",
+          status: "SUBMISSION_UNCERTAIN",
+          stage: "SUBMISSION_UNCERTAIN",
+          available_actions: ["RECONCILE"],
+        }),
+      ],
+    });
+    vi.mocked(api.listGenerationBatches).mockResolvedValue({
+      items: [listItem({ tasks: uncertainBatch.tasks })],
+      next_cursor: null,
+    });
+    vi.mocked(api.getGenerationBatch).mockResolvedValue(uncertainBatch);
+    vi.mocked(api.reconcileUncertainTask).mockResolvedValue(
+      reconcileOperation({
+        id: "background-reconcile-operation",
+        task_id: "task-background-reconcile",
+      }),
+    );
+    vi.mocked(api.waitForGenerationReconcileOperation).mockReturnValue(
+      new Promise(() => undefined),
+    );
+
+    render(
+      <TaskRecordsPanel
+        handoffBatch={null}
+        onHandoffConsumed={vi.fn()}
+        userRole="employee"
+      />,
+    );
+    await switchToOpsView();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "对账 task-background-reconcile",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(api.waitForGenerationReconcileOperation).toHaveBeenCalledWith(
+        "background-reconcile-operation",
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "对账 task-background-reconcile" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText("任务已进入后台对账，可离开本页继续其他操作。"),
+    ).toBeInTheDocument();
+  });
+
+  it("重新进入任务页时恢复未完成的后台对账", async () => {
+    const uncertainBatch = batch({
+      tasks: [
+        task({
+          id: "task-reconcile-recovery",
+          status: "SUBMISSION_UNCERTAIN",
+          stage: "SUBMISSION_UNCERTAIN",
+          available_actions: ["RECONCILE"],
+        }),
+      ],
+    });
+    vi.mocked(api.listGenerationBatches).mockResolvedValue({
+      items: [listItem({ tasks: uncertainBatch.tasks })],
+      next_cursor: null,
+    });
+    vi.mocked(api.getGenerationBatch).mockResolvedValue(uncertainBatch);
+    vi.mocked(api.getLatestGenerationReconcileOperation).mockResolvedValue(
+      reconcileOperation({
+        id: "recovered-reconcile-operation",
+        task_id: "task-reconcile-recovery",
+        status: "RUNNING",
+      }),
+    );
+    vi.mocked(api.waitForGenerationReconcileOperation).mockResolvedValue(
+      reconcileOperation({
+        id: "recovered-reconcile-operation",
+        task_id: "task-reconcile-recovery",
+        status: "SUCCEEDED",
+      }),
+    );
+
+    render(
+      <TaskRecordsPanel
+        handoffBatch={null}
+        onHandoffConsumed={vi.fn()}
+        userRole="employee"
+      />,
+    );
+
+    await waitFor(() =>
+      expect(api.getLatestGenerationReconcileOperation).toHaveBeenCalledWith(
+        "task-reconcile-recovery",
+      ),
+    );
+    await waitFor(() =>
+      expect(api.waitForGenerationReconcileOperation).toHaveBeenCalledWith(
+        "recovered-reconcile-operation",
+      ),
+    );
+    await waitFor(() =>
+      expect(api.getGenerationBatch).toHaveBeenCalledTimes(2),
+    );
   });
 
   it("restarts polling after a safe retry requeues a terminal task", async () => {

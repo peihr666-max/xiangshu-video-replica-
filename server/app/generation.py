@@ -29,7 +29,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.analysis import get_version, insert_version
-from app.auth import CurrentUser
+from app.auth import CurrentUser, Role
 from app.db_portable import BusinessConnection
 from app.internal_billing import (
     BillingInvariantError,
@@ -145,6 +145,7 @@ GENERATION_MAX_POLL_AGE_SECONDS = 2 * 60 * 60
 # Reconciliation performs one provider query plus optional download/archive;
 # fifteen minutes exceeds those bounded calls while still recovering crashes.
 RECONCILIATION_RESERVATION_SECONDS = 900
+RECONCILE_OPERATION_LEASE_MINUTES = 15
 FAKE_H3_OUTCOME_ENV = "VIDEO_REPLICA_FAKE_H3_OUTCOME"
 FAKE_H3_RESULT_PATH_ENV = "VIDEO_REPLICA_FAKE_H3_RESULT_PATH"
 ACCEPTANCE_GENERATION_USER_ID_ENV = "VIDEO_REPLICA_ACCEPTANCE_GENERATION_USER_ID"
@@ -304,6 +305,36 @@ class ReconcileReservation:
     id: str
     actor: CurrentUser
     idempotency_key: str
+
+
+@dataclass(frozen=True)
+class ReconcileOperationLease:
+    id: str
+    task_id: str
+    actor_user_id: str
+    idempotency_key: str
+    worker_id: str
+    attempt: int
+
+
+@dataclass(frozen=True)
+class PreparedReconcileOperation:
+    lease: ReconcileOperationLease
+    actor: CurrentUser
+    batch_id: str
+    project_id: str
+    created_by_user_id: str
+    task_status: str
+    provider_task_id: str | None
+    provider: H3Provider | None
+
+
+@dataclass(frozen=True)
+class ReconcileOperationOutcome:
+    status: Literal["ALREADY_TERMINAL", "SUCCEEDED", "FAILED", "CANCELLED"]
+    stored: StoredObject | None = None
+    audio_quality_status: Literal["AUDIO_OK", "AUDIO_QUALITY_FAILED"] | None = None
+    quality_issue_codes: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -3303,6 +3334,529 @@ def confirm_generation_task_not_charged(
         conn.rollback()
         raise
     return get_task_result(conn, task_id)
+
+
+def enqueue_generation_reconcile_operation(
+    conn: BusinessConnection,
+    *,
+    task_id: str,
+    batch_id: str,
+    project_id: str,
+    actor: CurrentUser,
+    request: ReconcileGenerationTaskRequest,
+) -> sqlite3.Row:
+    action = "RECONCILE"
+    request_hash = generation_task_operation_hash(
+        action=action,
+        task_id=task_id,
+        payload={},
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    row = conn.execute(
+        """
+        SELECT status, provider_task_id, superseded_by_task_id
+        FROM generation_tasks WHERE id = %s
+        """,
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        conn.rollback()
+        raise generation_error(404, "TASK_NOT_FOUND", "Generation task does not exist.")
+    if row["superseded_by_task_id"] is not None:
+        conn.rollback()
+        raise generation_error(
+            409,
+            "TASK_SUPERSEDED",
+            "This historical task has already been replaced.",
+        )
+    existing = conn.execute(
+        """
+        SELECT * FROM generation_task_operations
+        WHERE actor_user_id = %s AND task_id = %s AND action = %s
+          AND idempotency_key = %s
+        """,
+        (actor.id, task_id, action, request.idempotency_key),
+    ).fetchone()
+    if existing is not None:
+        if str(existing["request_hash"]) != request_hash:
+            conn.rollback()
+            raise generation_error(
+                409,
+                "IDEMPOTENCY_CONFLICT",
+                "This idempotency key was already used for a different task operation.",
+            )
+        conn.commit()
+        return cast(sqlite3.Row, existing)
+    active = conn.execute(
+        """
+        SELECT * FROM generation_task_operations
+        WHERE task_id = %s AND action = 'RECONCILE' AND result_status = 'PENDING'
+        ORDER BY created_at DESC, id DESC LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if active is not None:
+        conn.commit()
+        return cast(sqlite3.Row, active)
+    if str(row["status"]) != "SUBMISSION_UNCERTAIN":
+        conn.rollback()
+        raise generation_error(
+            409,
+            "TASK_NOT_UNCERTAIN",
+            "Only SUBMISSION_UNCERTAIN tasks can be reconciled.",
+        )
+    if optional_text(row["provider_task_id"]) is None:
+        conn.rollback()
+        raise generation_error(
+            409,
+            "SUBMISSION_REQUIRES_MANUAL_CONFIRMATION",
+            "There is no provider task id; an admin must confirm no charge occurred.",
+        )
+    operation_id = str(uuid4())
+    conn.execute(
+        """
+        INSERT INTO generation_task_operations (
+            id, task_id, actor_user_id, action, idempotency_key,
+            request_hash, result_task_id, result_status
+        ) VALUES (%s, %s, %s, 'RECONCILE', %s, %s, %s, 'PENDING')
+        ON CONFLICT DO NOTHING
+        """,
+        (
+            operation_id,
+            task_id,
+            actor.id,
+            request.idempotency_key,
+            request_hash,
+            task_id,
+        ),
+    )
+    operation = conn.execute(
+        "SELECT * FROM generation_task_operations WHERE id = %s",
+        (operation_id,),
+    ).fetchone()
+    if operation is None:
+        operation = conn.execute(
+            """
+            SELECT * FROM generation_task_operations
+            WHERE task_id = %s AND action = 'RECONCILE' AND result_status = 'PENDING'
+            ORDER BY created_at DESC, id DESC LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+    if operation is None:
+        conn.rollback()
+        raise generation_error(
+            409,
+            "RECONCILE_IN_PROGRESS",
+            "A reconciliation request is already in progress for this task.",
+        )
+    insert_audit(
+        conn,
+        actor=actor,
+        action="generation_task.reconcile_requested",
+        entity_type="generation_task",
+        entity_id=task_id,
+        metadata={
+            "batch_id": batch_id,
+            "project_id": project_id,
+            "operation_id": str(operation["id"]),
+            "idempotency_key_hash": content_hash(request.idempotency_key),
+            "provider_task_id_tail": redacted_provider_task_tail(
+                optional_text(row["provider_task_id"])
+            ),
+        },
+    )
+    conn.commit()
+    return cast(sqlite3.Row, operation)
+
+
+def acquire_generation_reconcile_operation(
+    conn: BusinessConnection,
+    *,
+    worker_id: str,
+) -> ReconcileOperationLease | None:
+    now = _timestamp_text(datetime.now(UTC))
+    locked_until = _timestamp_text(
+        datetime.now(UTC) + timedelta(minutes=RECONCILE_OPERATION_LEASE_MINUTES)
+    )
+    conn.execute(
+        """
+        UPDATE generation_task_operations
+        SET locked_by = NULL, locked_until = NULL, updated_at = %s
+        WHERE action = 'RECONCILE' AND result_status = 'PENDING'
+          AND locked_until IS NOT NULL AND locked_until <= %s
+        """,
+        (now, now),
+    )
+    row = conn.execute(
+        """
+        UPDATE generation_task_operations
+        SET locked_by = %s, locked_until = %s, attempt = attempt + 1,
+            started_at = COALESCE(started_at, %s), updated_at = %s,
+            error_code = NULL, error_message_redacted = NULL, retryable = 0
+        WHERE id = (
+            SELECT id FROM generation_task_operations
+            WHERE action = 'RECONCILE' AND result_status = 'PENDING'
+              AND locked_by IS NULL
+            ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
+        ) AND action = 'RECONCILE' AND result_status = 'PENDING'
+          AND locked_by IS NULL
+        RETURNING *
+        """,
+        (worker_id, locked_until, now, now),
+    ).fetchone()
+    conn.commit()
+    if row is None:
+        return None
+    actor_user_id = optional_text(row["actor_user_id"])
+    if actor_user_id is None:
+        conn.execute(
+            """
+            UPDATE generation_task_operations
+            SET result_status = 'FAILED', error_code = 'RECONCILE_ACTOR_UNAVAILABLE',
+                error_message_redacted = 'The reconciliation actor is unavailable.',
+                retryable = 0, locked_by = NULL, locked_until = NULL,
+                completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND locked_by = %s
+            """,
+            (str(row["id"]), worker_id),
+        )
+        conn.commit()
+        return None
+    return ReconcileOperationLease(
+        id=str(row["id"]),
+        task_id=str(row["task_id"]),
+        actor_user_id=actor_user_id,
+        idempotency_key=str(row["idempotency_key"]),
+        worker_id=worker_id,
+        attempt=int(row["attempt"]),
+    )
+
+
+def prepare_generation_reconcile_operation(
+    conn: BusinessConnection,
+    *,
+    lease: ReconcileOperationLease,
+    provider_factory: Callable[[BusinessConnection, str], H3Provider],
+) -> PreparedReconcileOperation:
+    _require_owned_reconcile_operation(conn, lease)
+    row = conn.execute(
+        """
+        SELECT
+            task.status,
+            task.provider_task_id,
+            task.provider,
+            batch.id AS batch_id,
+            batch.project_id,
+            batch.created_by_user_id,
+            users.username,
+            users.display_name,
+            users.role
+        FROM generation_tasks AS task
+        JOIN generation_batches AS batch ON batch.id = task.batch_id
+        JOIN users ON users.id = %s
+        WHERE task.id = %s
+        """,
+        (lease.actor_user_id, lease.task_id),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("reconciliation task context is unavailable")
+    task_status = str(row["status"])
+    provider_task_id = optional_text(row["provider_task_id"])
+    provider: H3Provider | None = None
+    if task_status == "SUBMISSION_UNCERTAIN":
+        if provider_task_id is None:
+            raise generation_error(
+                409,
+                "SUBMISSION_REQUIRES_MANUAL_CONFIRMATION",
+                "There is no provider task id; an admin must confirm no charge occurred.",
+            )
+        provider = provider_factory(conn, str(row["provider"]))
+    return PreparedReconcileOperation(
+        lease=lease,
+        actor=CurrentUser(
+            id=lease.actor_user_id,
+            username=str(row["username"]),
+            display_name=str(row["display_name"]),
+            role=cast(Role, str(row["role"])),
+        ),
+        batch_id=str(row["batch_id"]),
+        project_id=str(row["project_id"]),
+        created_by_user_id=str(row["created_by_user_id"]),
+        task_status=task_status,
+        provider_task_id=provider_task_id,
+        provider=provider,
+    )
+
+
+def perform_generation_reconcile_operation(
+    work: PreparedReconcileOperation,
+    *,
+    storage: StorageAdapter,
+) -> ReconcileOperationOutcome:
+    if work.task_status != "SUBMISSION_UNCERTAIN":
+        return ReconcileOperationOutcome(status="ALREADY_TERMINAL")
+    if work.provider is None or work.provider_task_id is None:
+        raise RuntimeError("reconciliation provider context is unavailable")
+    try:
+        query = work.provider.query_image_to_video(work.provider_task_id)
+    except H3ProviderFailed as exc:
+        raise generation_error(
+            502,
+            "PROVIDER_QUERY_FAILED",
+            "Provider query failed during reconciliation.",
+        ) from exc
+    if query.status == "RUNNING":
+        raise generation_error(
+            409,
+            "PROVIDER_STILL_PROCESSING",
+            "Provider reports the task is still running.",
+        )
+    if query.status in {"FAILED", "CANCELLED"}:
+        return ReconcileOperationOutcome(status=query.status)
+    if query.result_url is None:
+        raise generation_error(
+            502,
+            "PROVIDER_RESULT_URL_MISSING",
+            "Provider reports success without a result URL.",
+        )
+    try:
+        content = work.provider.download_result(query.result_url)
+    except Exception as exc:
+        raise generation_error(
+            503,
+            "RESULT_DOWNLOAD_FAILED",
+            "Result download failed; retry reconciliation.",
+        ) from exc
+    audio_quality_status, quality_issue_codes = h3_audio_quality(content)
+    stored = store_generation_result(
+        storage,
+        task_id=f"{work.lease.task_id}/{work.lease.id}/{work.lease.attempt}",
+        content=content,
+    )
+    return ReconcileOperationOutcome(
+        status="SUCCEEDED",
+        stored=stored,
+        audio_quality_status=audio_quality_status,
+        quality_issue_codes=quality_issue_codes,
+    )
+
+
+def complete_generation_reconcile_operation(
+    conn: BusinessConnection,
+    *,
+    work: PreparedReconcileOperation,
+    outcome: ReconcileOperationOutcome,
+) -> TaskResult:
+    lease = work.lease
+    with conn:
+        _require_owned_reconcile_operation(conn, lease)
+        if outcome.status == "ALREADY_TERMINAL":
+            result = get_task_result(conn, lease.task_id)
+        elif outcome.status in {"FAILED", "CANCELLED"}:
+            task_update = conn.execute(
+                """
+                UPDATE generation_tasks
+                SET status = 'FAILED', error_code = 'PROVIDER_TERMINAL',
+                    error_message_redacted = %s,
+                    locked_by = NULL, locked_until = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'SUBMISSION_UNCERTAIN'
+                """,
+                (
+                    f"Provider reports the task finished with {outcome.status.lower()}",
+                    lease.task_id,
+                ),
+            )
+            if task_update.rowcount != 1:
+                raise _reconcile_reservation_lost()
+            finalize_internal_billing(
+                conn,
+                task_id=lease.task_id,
+                outcome="cancelled" if outcome.status == "CANCELLED" else "failed",
+            )
+            _refresh_batch_status_in_transaction(conn, batch_id=work.batch_id)
+            result = get_task_result(conn, lease.task_id)
+        else:
+            if outcome.stored is None or outcome.audio_quality_status is None:
+                raise RuntimeError("reconciled archive result is unavailable")
+            result_asset_id = str(uuid4())
+            conn.execute(
+                """
+                INSERT INTO assets (
+                    id, project_id, kind, storage_uri, sha256, size_bytes,
+                    content_type, created_by_user_id
+                ) VALUES (%s, %s, 'video', %s, %s, %s, %s, %s)
+                """,
+                (
+                    result_asset_id,
+                    work.project_id,
+                    outcome.stored.uri,
+                    outcome.stored.sha256,
+                    outcome.stored.size,
+                    outcome.stored.content_type,
+                    work.created_by_user_id,
+                ),
+            )
+            task_update = conn.execute(
+                """
+                UPDATE generation_tasks
+                SET status = 'SUCCEEDED', archive_status = 'ARCHIVED',
+                    quality_status = %s, quality_issue_codes = %s,
+                    result_asset_id = %s, error_code = NULL,
+                    error_message_redacted = NULL, locked_by = NULL,
+                    locked_until = NULL, completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'SUBMISSION_UNCERTAIN'
+                  AND result_asset_id IS NULL
+                """,
+                (
+                    outcome.audio_quality_status,
+                    json.dumps(outcome.quality_issue_codes or [], ensure_ascii=True),
+                    result_asset_id,
+                    lease.task_id,
+                ),
+            )
+            if task_update.rowcount != 1:
+                raise _reconcile_reservation_lost()
+            finalize_internal_billing(conn, task_id=lease.task_id, outcome="success")
+            _refresh_batch_status_in_transaction(conn, batch_id=work.batch_id)
+            result = get_task_result(conn, lease.task_id)
+        operation_update = conn.execute(
+            """
+            UPDATE generation_task_operations
+            SET result_status = 'COMPLETED', response_snapshot_json = %s,
+                locked_by = NULL, locked_until = NULL, retryable = 0,
+                completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND action = 'RECONCILE' AND result_status = 'PENDING'
+              AND locked_by = %s
+            """,
+            (
+                json.dumps(
+                    {
+                        "status": result.status,
+                        "archive_status": result.archive_status,
+                        "result_asset_id": result.result_asset_id,
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ),
+                lease.id,
+                lease.worker_id,
+            ),
+        )
+        if operation_update.rowcount != 1:
+            raise _reconcile_reservation_lost()
+        insert_audit(
+            conn,
+            actor=work.actor,
+            action=(
+                "generation_task.reconcile_archived"
+                if result.archive_status == "ARCHIVED"
+                else "generation_task.reconcile_terminal_failed"
+            ),
+            entity_type="generation_task",
+            entity_id=lease.task_id,
+            metadata={
+                "batch_id": work.batch_id,
+                "project_id": work.project_id,
+                "operation_id": lease.id,
+                "status": result.status,
+                "archive_status": result.archive_status,
+            },
+        )
+    return result
+
+
+def fail_generation_reconcile_operation(
+    conn: BusinessConnection,
+    *,
+    lease: ReconcileOperationLease,
+    cause: Exception,
+) -> None:
+    code = "RECONCILE_OPERATION_FAILED"
+    message = "任务对账失败，请稍后重试。"
+    retryable = True
+    if isinstance(cause, HTTPException):
+        detail: dict[str, Any] = cause.detail if isinstance(cause.detail, dict) else {}
+        code = str(detail.get("code") or code)
+        message = str(detail.get("message") or message)
+        retryable = cause.status_code in {409, 429, 502, 503, 504}
+    conn.execute(
+        """
+        UPDATE generation_task_operations
+        SET result_status = 'FAILED', error_code = %s,
+            error_message_redacted = %s, retryable = %s,
+            locked_by = NULL, locked_until = NULL,
+            completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s AND action = 'RECONCILE' AND result_status = 'PENDING'
+          AND locked_by = %s
+        """,
+        (code, message, 1 if retryable else 0, lease.id, lease.worker_id),
+    )
+    conn.commit()
+
+
+def load_generation_reconcile_operation(
+    conn: BusinessConnection,
+    operation_id: str,
+) -> sqlite3.Row:
+    row = conn.execute(
+        """
+        SELECT operation.*, batch.project_id
+        FROM generation_task_operations AS operation
+        JOIN generation_tasks AS task ON task.id = operation.task_id
+        JOIN generation_batches AS batch ON batch.id = task.batch_id
+        WHERE operation.id = %s AND operation.action = 'RECONCILE'
+        """,
+        (operation_id,),
+    ).fetchone()
+    if row is None:
+        raise generation_error(404, "RECONCILE_OPERATION_NOT_FOUND", "对账任务不存在。")
+    return cast(sqlite3.Row, row)
+
+
+def latest_generation_reconcile_operation(
+    conn: BusinessConnection,
+    *,
+    task_id: str,
+) -> sqlite3.Row | None:
+    return cast(
+        sqlite3.Row | None,
+        conn.execute(
+            """
+            SELECT operation.*, batch.project_id
+            FROM generation_task_operations AS operation
+            JOIN generation_tasks AS task ON task.id = operation.task_id
+            JOIN generation_batches AS batch ON batch.id = task.batch_id
+            WHERE operation.task_id = %s AND operation.action = 'RECONCILE'
+            ORDER BY CASE WHEN operation.result_status = 'PENDING' THEN 0 ELSE 1 END,
+                     operation.created_at DESC, operation.id DESC LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone(),
+    )
+
+
+def _require_owned_reconcile_operation(
+    conn: BusinessConnection,
+    lease: ReconcileOperationLease,
+) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM generation_task_operations WHERE id = %s",
+        (lease.id,),
+    ).fetchone()
+    if (
+        row is None
+        or str(row["result_status"]) != "PENDING"
+        or str(row["locked_by"]) != lease.worker_id
+    ):
+        raise _reconcile_reservation_lost()
+    return cast(sqlite3.Row, row)
+
+
+def _timestamp_text(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def reconcile_generation_task(

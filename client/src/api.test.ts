@@ -27,6 +27,7 @@ import {
   listGenerationBatches,
   listProjectCharacterVersions,
   lockGenerationPrompt,
+  reconcileUncertainTask,
   regenerateGenerationBatch,
   regenerateGenerationTask,
   resolveApiBaseUrl,
@@ -41,6 +42,7 @@ import {
   waitForAnalysisTask,
   waitForCharacterSheetTask,
   waitForFirstFrameTask,
+  waitForGenerationReconcileOperation,
   waitForScriptRewriteTask,
   waitForSourceFrameTask,
 } from "./api";
@@ -1018,6 +1020,39 @@ describe("startVideoAnalysis", () => {
       text: "待改写原稿。",
       idempotency_key: expect.any(String),
     });
+  });
+
+  it("enqueues H3 reconciliation and shares its durable recovery poller", async () => {
+    vi.useFakeTimers();
+    const queued = {
+      id: "reconcile-operation-shared",
+      task_id: "generation-task-1",
+      status: "PENDING",
+    };
+    const running = { ...queued, status: "RUNNING" };
+    const succeeded = { ...queued, status: "SUCCEEDED" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => queued })
+      .mockResolvedValueOnce({ ok: true, json: async () => running })
+      .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const operation = await reconcileUncertainTask("generation-task-1", {
+      idempotency_key: "reconcile-operation-key",
+    });
+    const first = waitForGenerationReconcileOperation(operation.id);
+    const recovered = waitForGenerationReconcileOperation(operation.id);
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(Promise.all([first, recovered])).resolves.toEqual([
+      succeeded,
+      succeeded,
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:8000/api/generation-tasks/generation-task-1/reconcile",
+    );
   });
 
   it("tells a temporary network failure apart from an unusable model response", async () => {

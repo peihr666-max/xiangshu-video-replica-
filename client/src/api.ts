@@ -184,6 +184,19 @@ export type ConfirmNotChargedInput =
   components["schemas"]["ConfirmNotChargedRequest"];
 export type ReconcileGenerationTaskInput =
   components["schemas"]["ReconcileGenerationTaskRequest"];
+export type GenerationReconcileOperation = {
+  id: string;
+  task_id: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  attempt: number;
+  error_code: string | null;
+  error_message: string | null;
+  retryable: boolean;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
 export type PaidRegenerationInput =
   components["schemas"]["PaidRegenerationRequest"];
 export type GenerationBatchListItem = Omit<
@@ -1129,13 +1142,77 @@ async function fetchGenerationResultBlob(
 export async function reconcileUncertainTask(
   taskId: string,
   input: ReconcileGenerationTaskInput,
-): Promise<GenerationTask> {
-  return requestApiJson<GenerationTask>(
+): Promise<GenerationReconcileOperation> {
+  return requestApiJson<GenerationReconcileOperation>(
     `/api/generation-tasks/${encodeURIComponent(taskId)}/reconcile`,
     "任务对账失败",
     { method: "POST", body: JSON.stringify(input) },
-    CLOUD_OP_TIMEOUT_MS,
   );
+}
+
+const generationReconcileWaiters = new Map<
+  string,
+  Promise<GenerationReconcileOperation>
+>();
+
+export async function getGenerationReconcileOperation(
+  operationId: string,
+): Promise<GenerationReconcileOperation> {
+  return requestApiJson<GenerationReconcileOperation>(
+    `/api/generation-reconcile-operations/${encodeURIComponent(operationId)}`,
+    "读取任务对账进度失败",
+  );
+}
+
+export async function getLatestGenerationReconcileOperation(
+  taskId: string,
+): Promise<GenerationReconcileOperation | null> {
+  const response = await requestApi(
+    `/api/generation-tasks/${encodeURIComponent(taskId)}/reconcile/latest`,
+    { method: "GET" },
+  );
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`读取任务对账进度失败（${response.status}）`);
+  }
+  return (await response.json()) as GenerationReconcileOperation | null;
+}
+
+export async function waitForGenerationReconcileOperation(
+  operationId: string,
+): Promise<GenerationReconcileOperation> {
+  const existing = generationReconcileWaiters.get(operationId);
+  if (existing) {
+    return existing;
+  }
+  const waiter = pollGenerationReconcileOperation(operationId);
+  generationReconcileWaiters.set(operationId, waiter);
+  const clear = () => {
+    if (generationReconcileWaiters.get(operationId) === waiter) {
+      generationReconcileWaiters.delete(operationId);
+    }
+  };
+  void waiter.then(clear, clear);
+  return waiter;
+}
+
+async function pollGenerationReconcileOperation(
+  operationId: string,
+): Promise<GenerationReconcileOperation> {
+  const deadline = Date.now() + 10 * 60_000;
+  while (Date.now() < deadline) {
+    const operation = await getGenerationReconcileOperation(operationId);
+    if (operation.status === "SUCCEEDED") {
+      return operation;
+    }
+    if (operation.status === "FAILED") {
+      throw new Error(operation.error_message || "任务对账失败，请重新提交。");
+    }
+    await waitForPoll();
+  }
+  throw new Error("任务仍在后台对账，请稍后返回查看。");
 }
 
 export async function listProjects(): Promise<Project[]> {

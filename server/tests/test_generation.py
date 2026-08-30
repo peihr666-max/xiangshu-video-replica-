@@ -24,9 +24,9 @@ from app.generation import (
     FakeH3Provider,
     H3CreateResult,
     H3ProviderFailed,
-    H3ProviderSettingsUnavailable,
     MetasoH3Provider,
     SubmissionUncertain,
+    acquire_generation_reconcile_operation,
     build_h3_request,
     compile_prompt_text,
     generation_task_operation_hash,
@@ -3948,18 +3948,9 @@ def test_reconcile_route_is_idempotent_and_audited(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.generation_routes as generation_routes_module
-
     monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
-    monkeypatch.setattr(
-        "app.generation_routes.h3_provider_for_task",
-        lambda _conn, _provider: ReconcileSucceededProvider(api_key="test-key"),
-    )
-    monkeypatch.setattr(
-        generation_routes_module,
-        "get_media_storage",
-        lambda _conn: FakeStorageAdapter(provider="cos", bucket="generation-results"),
-    )
+    storage = FakeStorageAdapter(provider="cos", bucket="generation-results")
+    provider = ReconcileSucceededProvider(api_key="test-key")
     prompt_id = create_locked_prompt(client)
     created = client.post(
         "/api/projects/project_owned/generation-batches",
@@ -3992,40 +3983,36 @@ def test_reconcile_route_is_idempotent_and_audited(
         headers=auth_headers("employee_1"),
         json=payload,
     )
-
-    def unavailable_storage(*_args: object, **_kwargs: object) -> FakeStorageAdapter:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
+    assert first.status_code == 202
+    assert first.json()["status"] == "PENDING"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="reconcile-route-worker",
+                storage=storage,
+                reconcile_provider=provider,
+                max_tasks=1,
+            )
+            == 1
         )
-
-    def unavailable_provider(*_args: object, **_kwargs: object) -> FakeH3Provider:
-        raise H3ProviderSettingsUnavailable("provider settings removed")
-
-    monkeypatch.setattr(
-        generation_routes_module,
-        "get_media_storage",
-        unavailable_storage,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        generation_routes_module,
-        "h3_provider_for_task",
-        unavailable_provider,
-    )
     replay = client.post(
         f"/api/generation-tasks/{task_id}/reconcile",
         headers=auth_headers("employee_1"),
         json=payload,
     )
 
-    assert first.status_code == 200
-    assert replay.status_code == 200
-    assert first.json()["result_asset_id"] == replay.json()["result_asset_id"]
+    assert replay.status_code == 202
+    assert replay.json()["id"] == first.json()["id"]
+    assert replay.json()["status"] == "SUCCEEDED"
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        result_asset_id = conn.execute(
+            "SELECT result_asset_id FROM generation_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()[0]
         result_asset_count = conn.execute(
             "SELECT COUNT(*) FROM assets WHERE kind = 'video' AND id = ?",
-            (first.json()["result_asset_id"],),
+            (result_asset_id,),
         ).fetchone()[0]
         operation_count = conn.execute(
             "SELECT COUNT(*) FROM generation_task_operations WHERE task_id = ? AND action = ?",
@@ -4050,21 +4037,8 @@ def test_reconcile_route_is_idempotent_and_audited(
 def test_reconcile_route_recovers_an_abandoned_pending_reservation(
     db_path: Path,
     client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
     reuse_idempotency_key: bool,
 ) -> None:
-    import app.generation_routes as generation_routes_module
-
-    monkeypatch.setattr(
-        generation_routes_module,
-        "h3_provider_for_task",
-        lambda _conn, _provider: ReconcileFailedProvider(api_key="test-key"),
-    )
-    monkeypatch.setattr(
-        generation_routes_module,
-        "get_media_storage",
-        lambda _conn: FakeStorageAdapter(provider="cos", bucket="generation-results"),
-    )
     prompt_id = create_locked_prompt(client)
     created = client.post(
         "/api/projects/project_owned/generation-batches",
@@ -4120,8 +4094,19 @@ def test_reconcile_route_recovers_an_abandoned_pending_reservation(
         },
     )
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "FAILED"
+    assert response.status_code == 202
+    assert response.json()["id"] == "stale-reconcile-operation"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="stale-reconcile-worker",
+                storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
+                reconcile_provider=ReconcileFailedProvider(api_key="test-key"),
+                max_tasks=1,
+            )
+            == 1
+        )
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         operations = conn.execute(
             """
@@ -4131,49 +4116,97 @@ def test_reconcile_route_recovers_an_abandoned_pending_reservation(
             """,
             (task_id,),
         ).fetchall()
-        recovery_audits = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM audit_logs
-            WHERE action = 'generation_task.reconcile_stale_reservation_released'
-              AND entity_id = ?
-            """,
-            (task_id,),
-        ).fetchone()[0]
 
     assert len(operations) == 1
     assert operations[0]["result_status"] == "COMPLETED"
-    assert operations[0]["id"] != "stale-reconcile-operation"
-    assert recovery_audits == 1
+    assert operations[0]["id"] == "stale-reconcile-operation"
+
+
+def test_reconcile_worker_reclaims_an_expired_preflight_lease(
+    db_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
+    prompt_id = create_locked_prompt(client)
+    created = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "reconcile-expired-lease-batch",
+        },
+    )
+    task_id = created.json()["tasks"][0]["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET status = 'SUBMISSION_UNCERTAIN', error_code = 'SUBMISSION_UNCERTAIN',
+                provider_task_id = 'provider-expired-lease'
+            WHERE id = %s
+            """,
+            (task_id,),
+        )
+        conn.commit()
+    queued = client.post(
+        f"/api/generation-tasks/{task_id}/reconcile",
+        headers=auth_headers("employee_1"),
+        json={"idempotency_key": "reconcile-expired-lease-operation"},
+    )
+    assert queued.status_code == 202
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        first_lease = acquire_generation_reconcile_operation(
+            conn,
+            worker_id="crashed-reconcile-worker",
+        )
+        assert first_lease is not None
+        conn.execute(
+            "UPDATE generation_task_operations SET locked_until = %s WHERE id = %s",
+            ("2000-01-01 00:00:00", first_lease.id),
+        )
+        conn.commit()
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="replacement-reconcile-worker",
+                storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
+                reconcile_provider=ReconcileSucceededProvider(api_key="test-key"),
+                max_tasks=1,
+            )
+            == 1
+        )
+        operation = conn.execute(
+            "SELECT result_status, attempt FROM generation_task_operations WHERE id = %s",
+            (queued.json()["id"],),
+        ).fetchone()
+        task_status = conn.execute(
+            "SELECT status FROM generation_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()[0]
+    assert dict(operation) == {"result_status": "COMPLETED", "attempt": 2}
+    assert task_status == "SUCCEEDED"
 
 
 def test_reconcile_provider_failure_does_not_require_storage_settings(
     db_path: Path,
     client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.generation_routes as generation_routes_module
-
     storage_calls = 0
 
-    def unavailable_storage(*_args: object, **_kwargs: object) -> FakeStorageAdapter:
-        nonlocal storage_calls
-        storage_calls += 1
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
-        )
+    class NoWriteStorage(FakeStorageAdapter):
+        def put_object(self, key: str, content: bytes, *, content_type: str):  # type: ignore[override]
+            nonlocal storage_calls
+            storage_calls += 1
+            return super().put_object(key, content, content_type=content_type)
 
-    monkeypatch.setattr(
-        generation_routes_module,
-        "h3_provider_for_task",
-        lambda _conn, _provider: ReconcileFailedProvider(api_key="test-key"),
-    )
-    monkeypatch.setattr(
-        generation_routes_module,
-        "get_media_storage",
-        unavailable_storage,
-    )
     prompt_id = create_locked_prompt(client)
     created = client.post(
         "/api/projects/project_owned/generation-batches",
@@ -4206,8 +4239,23 @@ def test_reconcile_provider_failure_does_not_require_storage_settings(
         json={"idempotency_key": "reconcile-without-storage-operation"},
     )
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "FAILED"
+    assert response.status_code == 202
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="provider-terminal-reconcile-worker",
+                storage=NoWriteStorage(provider="cos", bucket="generation-results"),
+                reconcile_provider=ReconcileFailedProvider(api_key="test-key"),
+                max_tasks=1,
+            )
+            == 1
+        )
+        task_status = conn.execute(
+            "SELECT status FROM generation_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()[0]
+    assert task_status == "FAILED"
     assert storage_calls == 0
 
 
@@ -4216,8 +4264,6 @@ def test_reconcile_lost_reservation_cannot_finalize_an_archived_result(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.generation_routes as generation_routes_module
-
     uploaded_keys: list[str] = []
     replaced_reservation_ids: list[str] = []
 
@@ -4271,16 +4317,6 @@ def test_reconcile_lost_reservation_cannot_finalize_an_archived_result(
         bucket="generation-results",
     )
     monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
-    monkeypatch.setattr(
-        generation_routes_module,
-        "h3_provider_for_task",
-        lambda _conn, _provider: ReconcileSucceededProvider(api_key="test-key"),
-    )
-    monkeypatch.setattr(
-        generation_routes_module,
-        "get_media_storage",
-        lambda _conn: storage,
-    )
     prompt_id = create_locked_prompt(client)
     created = client.post(
         "/api/projects/project_owned/generation-batches",
@@ -4313,10 +4349,20 @@ def test_reconcile_lost_reservation_cannot_finalize_an_archived_result(
         json={"idempotency_key": "old-reconcile-reservation"},
     )
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "RECONCILE_RESERVATION_LOST"
+    assert response.status_code == 202
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="reconcile-takeover-worker",
+                storage=storage,
+                reconcile_provider=ReconcileSucceededProvider(api_key="test-key"),
+                max_tasks=1,
+            )
+            == 1
+        )
     assert len(uploaded_keys) == 1
-    assert uploaded_keys[0] == (f"generation-results/{task_id}/{replaced_reservation_ids[0]}.mp4")
+    assert uploaded_keys[0] == (f"generation-results/{task_id}/{replaced_reservation_ids[0]}/1.mp4")
     assert storage.head_object(uploaded_keys[0]) is None
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         task_row = conn.execute(

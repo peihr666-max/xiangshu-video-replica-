@@ -2191,12 +2191,15 @@ describe("App", () => {
           json: async () => emptyBatchHistory(),
         });
       }
-      generationRequestCount += 1;
-      return Promise.resolve({
-        ok: true,
-        json: async () =>
-          generationRequestCount === 1 ? runningBatch : doneBatch,
-      });
+      if (url.endsWith("/api/generation-batches/batch-1")) {
+        generationRequestCount += 1;
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            generationRequestCount === 1 ? runningBatch : doneBatch,
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => [] });
     });
     vi.stubGlobal("fetch", withAuth(fetchMock));
 
@@ -2288,23 +2291,26 @@ describe("App", () => {
           json: async () => emptyBatchHistory(),
         });
       }
-      generationRequestCount += 1;
-      if (generationRequestCount === 2) {
-        return Promise.reject(new Error("network"));
+      if (url.endsWith("/api/generation-batches/batch-1")) {
+        generationRequestCount += 1;
+        if (generationRequestCount === 2) {
+          return Promise.reject(new Error("network"));
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            generationRequestCount === 1
+              ? batchResponse({
+                  progress: {
+                    ...batchResponse().progress,
+                    terminal_count: 0,
+                    progress_percent: 0,
+                  },
+                })
+              : batchResponse(),
+        });
       }
-      return Promise.resolve({
-        ok: true,
-        json: async () =>
-          generationRequestCount === 1
-            ? batchResponse({
-                progress: {
-                  ...batchResponse().progress,
-                  terminal_count: 0,
-                  progress_percent: 0,
-                },
-              })
-            : batchResponse(),
-      });
+      return Promise.resolve({ ok: true, json: async () => [] });
     });
     vi.stubGlobal("fetch", withAuth(fetchMock));
 
@@ -2324,6 +2330,7 @@ describe("App", () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
+      await Promise.resolve();
     });
 
     expect(screen.getByText("网络连接失败，4 秒后重试")).toBeInTheDocument();

@@ -29,6 +29,7 @@ vi.mock("./api", async (importOriginal) => {
     getLatestProjectFirstFrames: vi.fn(),
     getLatestFirstFrameTask: vi.fn(),
     getLatestProjectSourceFrameSelection: vi.fn(),
+    getLatestProjectSourceFrameTask: vi.fn(),
     getLatestProjectSourceFrames: vi.fn(),
     getLatestScriptVersion: vi.fn(),
     getProjectFirstFrameHistory: vi.fn(),
@@ -247,6 +248,7 @@ describe("ProjectDetailFlow", () => {
       version: sourceFrameSelectionVersion,
       stale: false,
     });
+    vi.mocked(api.getLatestProjectSourceFrameTask).mockResolvedValue(null);
     vi.mocked(api.getAssetDownloadUrl).mockImplementation(async (assetId) => ({
       url: `http://127.0.0.1:8000/mock/${assetId}`,
     }));

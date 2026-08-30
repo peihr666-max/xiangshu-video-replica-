@@ -38,7 +38,7 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
     assert journal_mode == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5000
-    assert alembic_versions == ["048_async_script_rewrite_tasks"]
+    assert alembic_versions == ["049_async_generation_reconcile"]
     assert "schema_migrations" not in tables
     assert {
         "users",
@@ -98,8 +98,16 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
         script_rewrite_task_indexes = {
             row[1] for row in conn.execute("PRAGMA index_list(script_rewrite_tasks)").fetchall()
         }
+        reconcile_operation_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(generation_task_operations)").fetchall()
+        }
+        reconcile_operation_indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list(generation_task_operations)").fetchall()
+        }
 
-    assert version == "048_async_script_rewrite_tasks"
+    assert version == "049_async_generation_reconcile"
     assert {
         "locked_by",
         "locked_until",
@@ -145,6 +153,17 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
         "retryable",
     }.issubset(script_rewrite_task_columns)
     assert "uq_script_rewrite_tasks_active_project" in script_rewrite_task_indexes
+    assert {
+        "attempt",
+        "locked_by",
+        "locked_until",
+        "started_at",
+        "completed_at",
+        "error_code",
+        "error_message_redacted",
+        "retryable",
+    }.issubset(reconcile_operation_columns)
+    assert "idx_generation_task_operations_reconcile_claim" in reconcile_operation_indexes
 
 
 def test_retry_lineage_revision_is_reversible(tmp_path: Path) -> None:
@@ -200,7 +219,7 @@ def test_retry_lineage_revision_is_reversible(tmp_path: Path) -> None:
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "048_async_script_rewrite_tasks"
+            "049_async_generation_reconcile"
         )
 
 
@@ -256,7 +275,7 @@ def test_remove_oss_migration_purges_settings_and_selects_safe_fallback(
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE runtime_settings SET active_storage_provider = 'oss' WHERE id = 1")
 
-    assert version == "048_async_script_rewrite_tasks"
+    assert version == "049_async_generation_reconcile"
     assert "oss" not in providers
     assert active_provider == expected_provider
 
@@ -360,7 +379,7 @@ def test_runtime_bootstrap_upgrades_an_existing_database_before_startup(
     assert result.returncode == 0, result.stderr
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "048_async_script_rewrite_tasks"
+            "049_async_generation_reconcile"
         )
         assert (
             conn.execute(

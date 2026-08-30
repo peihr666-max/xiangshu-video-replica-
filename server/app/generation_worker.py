@@ -41,7 +41,10 @@ from app.generation import (
     MetasoH3Provider,
     SubmissionUncertain,
     acquire_generation_continuation_lease,
+    acquire_generation_reconcile_operation,
     acquire_generation_task_lease,
+    complete_generation_reconcile_operation,
+    fail_generation_reconcile_operation,
     finalize_generation_archive,
     h3_audio_quality,
     h3_provider_for_task,
@@ -51,6 +54,8 @@ from app.generation import (
     mark_task_provider_failed,
     mark_task_provider_settings_unavailable,
     mark_task_submission_uncertain,
+    perform_generation_reconcile_operation,
+    prepare_generation_reconcile_operation,
     prepare_generation_submission,
     release_generation_archive_retry,
     reschedule_generation_poll,
@@ -107,6 +112,7 @@ def run_worker_once(
     analysis_provider: VideoAnalysisProvider | None = None,
     image_provider: ImageProvider | None = None,
     source_frame_extractor: SourceFrameExtractor | None = None,
+    reconcile_provider: H3Provider | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks, then return so SQLite connections stay short-lived."""
@@ -184,6 +190,45 @@ def run_worker_once(
                     lease=script_rewrite_lease,
                     cause=exc,
                     submission_started=submission_started,
+                )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        reconcile_lease = acquire_generation_reconcile_operation(
+            conn,
+            worker_id=worker_id,
+        )
+        if reconcile_lease is not None:
+            reconcile_work = None
+            reconcile_outcome = None
+            try:
+                reconcile_work = prepare_generation_reconcile_operation(
+                    conn,
+                    lease=reconcile_lease,
+                    provider_factory=lambda active_conn, provider_name: (
+                        reconcile_provider or h3_provider_for_task(active_conn, provider_name)
+                    ),
+                )
+                reconcile_outcome = perform_generation_reconcile_operation(
+                    reconcile_work,
+                    storage=generation_storage or storage,
+                )
+                complete_generation_reconcile_operation(
+                    conn,
+                    work=reconcile_work,
+                    outcome=reconcile_outcome,
+                )
+            except Exception as exc:
+                if reconcile_outcome is not None and reconcile_outcome.stored is not None:
+                    (generation_storage or storage).delete_object(
+                        reconcile_outcome.stored.key,
+                        actor_id=None,
+                    )
+                fail_generation_reconcile_operation(
+                    conn,
+                    lease=reconcile_lease,
+                    cause=exc,
                 )
             processed += 1
             processed_round = True
@@ -708,6 +753,49 @@ def run_pg_worker_once(
                         lease=script_rewrite_lease,
                         cause=exc,
                         submission_started=submission_started,
+                    )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        with pg_transaction() as raw_conn:
+            reconcile_lease = acquire_generation_reconcile_operation(
+                BusinessConnection.postgres(raw_conn),
+                worker_id=worker_id,
+            )
+        if reconcile_lease is not None:
+            reconcile_work = None
+            reconcile_outcome = None
+            try:
+                with pg_transaction() as raw_conn:
+                    reconcile_work = prepare_generation_reconcile_operation(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=reconcile_lease,
+                        provider_factory=lambda active_conn, provider_name: (
+                            generation_provider or h3_provider_for_task(active_conn, provider_name)
+                        ),
+                    )
+                reconcile_outcome = perform_generation_reconcile_operation(
+                    reconcile_work,
+                    storage=generation_storage or storage,
+                )
+                with pg_transaction() as raw_conn:
+                    complete_generation_reconcile_operation(
+                        BusinessConnection.postgres(raw_conn),
+                        work=reconcile_work,
+                        outcome=reconcile_outcome,
+                    )
+            except Exception as exc:
+                if reconcile_outcome is not None and reconcile_outcome.stored is not None:
+                    (generation_storage or storage).delete_object(
+                        reconcile_outcome.stored.key,
+                        actor_id=None,
+                    )
+                with pg_transaction() as raw_conn:
+                    fail_generation_reconcile_operation(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=reconcile_lease,
+                        cause=exc,
                     )
             processed += 1
             processed_round = True

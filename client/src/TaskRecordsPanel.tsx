@@ -13,8 +13,10 @@ import {
   downloadGenerationResult,
   type GenerationBatch,
   type GenerationBatchListItem,
+  type GenerationReconcileOperation,
   type GenerationTask,
   getGenerationBatch,
+  getLatestGenerationReconcileOperation,
   listGenerationBatches,
   reconcileUncertainTask,
   regenerateGenerationBatch,
@@ -22,6 +24,7 @@ import {
   renameGenerationBatch,
   retryGenerationTask,
   type UserRole,
+  waitForGenerationReconcileOperation,
 } from "./api";
 import {
   playableProviderUrl,
@@ -254,6 +257,64 @@ export function TaskRecordsPanel({
     };
   }, [activeBatchId, pollingRevision]);
 
+  const reconcileRecoveryKey = (batch?.tasks ?? [])
+    .filter((task) => task.status === "SUBMISSION_UNCERTAIN")
+    .map((task) => task.id)
+    .sort()
+    .join(",");
+
+  useEffect(() => {
+    if (!activeBatchId || !reconcileRecoveryKey) {
+      return;
+    }
+    let active = true;
+    async function recoverReconciliations() {
+      try {
+        const taskIds = reconcileRecoveryKey.split(",");
+        const operations = await Promise.all(
+          taskIds.map((taskId) =>
+            getLatestGenerationReconcileOperation(taskId),
+          ),
+        );
+        const pending = operations.filter(
+          (operation): operation is GenerationReconcileOperation =>
+            operation?.status === "PENDING" || operation?.status === "RUNNING",
+        );
+        const failed = operations.find(
+          (operation) => operation?.status === "FAILED",
+        );
+        if (failed && active) {
+          setBatchError(failed.error_message || "任务对账失败，请重新提交。");
+        }
+        if (
+          operations.some((operation) => operation?.status === "SUCCEEDED") &&
+          active
+        ) {
+          setPollingRevision((current) => current + 1);
+        }
+        if (pending.length === 0) {
+          return;
+        }
+        await Promise.allSettled(
+          pending.map((operation) =>
+            waitForGenerationReconcileOperation(operation.id),
+          ),
+        );
+        if (active) {
+          setPollingRevision((current) => current + 1);
+        }
+      } catch {
+        if (active) {
+          setBatchError("读取后台对账进度失败，请稍后刷新。");
+        }
+      }
+    }
+    void recoverReconciliations();
+    return () => {
+      active = false;
+    };
+  }, [activeBatchId, reconcileRecoveryKey]);
+
   function handleBatchSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextBatchId = batchIdInput.trim();
@@ -366,9 +427,15 @@ export function TaskRecordsPanel({
     );
     setActiveTaskAction(actionKey);
     try {
-      await reconcileUncertainTask(taskId, {
+      const operation = await reconcileUncertainTask(taskId, {
         idempotency_key: operationKey,
       });
+      if (activeBatchIdRef.current !== batchIdAtStart) {
+        return;
+      }
+      setActiveTaskAction((current) => (current === actionKey ? "" : current));
+      setBatchError("任务已进入后台对账，可离开本页继续其他操作。");
+      await waitForGenerationReconcileOperation(operation.id);
       if (activeBatchIdRef.current !== batchIdAtStart) {
         return;
       }
@@ -379,10 +446,13 @@ export function TaskRecordsPanel({
       setBatch(nextBatch);
       setBatchError("");
       delete taskOperationKeysRef.current[actionKey];
-    } catch {
+    } catch (error) {
       if (activeBatchIdRef.current === batchIdAtStart) {
-        setBatchError("任务对账失败，请重试。");
+        setBatchError(
+          error instanceof Error ? error.message : "任务对账失败，请重试。",
+        );
       }
+      delete taskOperationKeysRef.current[actionKey];
     } finally {
       setActiveTaskAction((current) => (current === actionKey ? "" : current));
     }
