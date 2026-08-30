@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -230,14 +231,48 @@ def headers(user_id: str) -> dict[str, str]:
     return {"X-Dev-User-Id": user_id}
 
 
-def prepare_inputs(client: TestClient) -> str:
-    extracted = client.post(
+def extract_source_frames(
+    client: TestClient,
+    *,
+    timestamps_seconds: list[float] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"asset_id": "reference_owned"}
+    if timestamps_seconds is not None:
+        payload["timestamps_seconds"] = timestamps_seconds
+    enqueued = client.post(
         "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned"},
+        json=payload,
         headers=headers("employee_1"),
     )
-    assert extracted.status_code == 200
-    source_frame_asset_id = extracted.json()["payload"]["candidates"][0]["asset_id"]
+    assert enqueued.status_code == 202
+
+    storage_override = client.app.dependency_overrides[get_media_storage]
+    task_storage = storage_override()
+    with BusinessConnection.sqlite(
+        connect_database(Path(os.environ["VIDEO_REPLICA_DB_PATH"]))
+    ) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="source-frame-setup-worker",
+                storage=task_storage,
+                source_frame_extractor=FakeSourceFrameExtractor(),
+                max_tasks=1,
+            )
+            == 1
+        )
+
+    latest = client.get(
+        "/api/projects/project_owned/source-frames/latest",
+        headers=headers("employee_1"),
+    )
+    assert latest.status_code == 200
+    return latest.json()
+
+
+def prepare_inputs(client: TestClient) -> str:
+    extracted = extract_source_frames(client)
+    source_frame_asset_id = extracted["payload"]["candidates"][0]["asset_id"]
     confirmed = client.post(
         "/api/projects/project_owned/source-frames/confirm",
         json={"source_frame_asset_id": source_frame_asset_id},
@@ -338,12 +373,7 @@ def test_first_frame_task_replay_survives_input_change_but_worker_fails_closed(
     )
     assert first.status_code == 202
 
-    refreshed = client.post(
-        "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned", "timestamps_seconds": [0.6]},
-        headers=headers("employee_1"),
-    )
-    assert refreshed.status_code == 200
+    extract_source_frames(client, timestamps_seconds=[0.6])
 
     replay = client.post(
         "/api/projects/project_owned/first-frame-tasks",
@@ -639,12 +669,8 @@ def test_source_frame_reconfirmation_makes_existing_first_frame_candidates_stale
         headers=headers("employee_1"),
     )
     first_frame_asset_id = generated.json()["payload"]["candidates"][0]["asset_id"]
-    extracted_again = client.post(
-        "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned"},
-        headers=headers("employee_1"),
-    )
-    new_source_frame_asset_id = extracted_again.json()["payload"]["candidates"][0]["asset_id"]
+    extracted_again = extract_source_frames(client)
+    new_source_frame_asset_id = extracted_again["payload"]["candidates"][0]["asset_id"]
     confirmed_source = client.post(
         "/api/projects/project_owned/source-frames/confirm",
         json={"source_frame_asset_id": new_source_frame_asset_id},

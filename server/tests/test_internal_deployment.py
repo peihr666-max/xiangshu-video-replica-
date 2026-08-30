@@ -107,7 +107,9 @@ def test_real_generation_and_reconciliation_use_configured_media_storage() -> No
 
     assert "get_local_result_storage" not in worker
     assert "generation_storage=asset_storage" in worker
-    assert "storage_factory=lambda: get_media_storage(conn)" in routes
+    assert "perform_generation_reconcile_operation" in worker
+    assert "storage=generation_storage or storage" in worker
+    assert "enqueue_generation_reconcile_operation" in routes
 
 
 def test_runbook_provisions_a_writable_sqlite_parent_for_the_service_user() -> None:
