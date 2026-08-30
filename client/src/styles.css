@@ -712,6 +712,18 @@ button.sidebar-user__menu-item--active {
   color: #79dda9;
 }
 
+.project-badge--failed {
+  border-color: rgba(255, 128, 142, 0.45);
+  color: #ff8f9c;
+}
+
+.projects-list__analysis-error {
+  color: #ff9eaa;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  max-width: 34rem;
+}
+
 .projects-list__actions {
   display: flex;
   flex-wrap: wrap;

@@ -468,7 +468,7 @@ describe("App", () => {
             status: "REFERENCE_READY",
             reference_asset_id: "asset-ready",
             reference_upload_status: "READY",
-            analysis_status: "PENDING",
+            analysis_status: "READY",
           },
           {
             id: "project-pending",
@@ -672,7 +672,7 @@ describe("App", () => {
               status: "REFERENCE_READY",
               reference_asset_id: "asset-ready",
               reference_upload_status: "READY",
-              analysis_status: analysisReady ? "READY" : "PENDING",
+              analysis_status: analysisReady ? "READY" : "NOT_READY",
             },
           ],
         });
@@ -688,9 +688,31 @@ describe("App", () => {
               }),
             });
       }
-      if (url.endsWith("/analysis") && options?.method === "POST") {
+      if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: "analysis-task-recovered",
+            project_id: "project-ready",
+            asset_id: "asset-ready",
+            status: "PENDING",
+            error_message: null,
+          }),
+        });
+      }
+      if (url.endsWith("/api/analysis-tasks/analysis-task-recovered")) {
         analysisReady = true;
-        return Promise.resolve({ ok: true, json: async () => analysis });
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: "analysis-task-recovered",
+            project_id: "project-ready",
+            asset_id: "asset-ready",
+            status: "SUCCEEDED",
+            result_version_id: analysis.id,
+            error_message: null,
+          }),
+        });
       }
       if (url.endsWith("/shot-cards/latest")) {
         return Promise.resolve({ ok: false, status: 404 });
@@ -723,7 +745,7 @@ describe("App", () => {
 
     expect(await screen.findByText("恢复后的拆解结果")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/projects/project-ready/analysis",
+      "http://127.0.0.1:8000/api/projects/project-ready/analysis-tasks",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -1279,6 +1301,18 @@ describe("App", () => {
           }),
         });
       }
+      if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: "analysis-task-1",
+            project_id: "project-1",
+            asset_id: "asset-1",
+            status: "PENDING",
+            error_message: null,
+          }),
+        });
+      }
       if (url.endsWith("/shot-cards/latest")) {
         return Promise.resolve({ ok: false, status: 404 });
       }
@@ -1343,7 +1377,7 @@ describe("App", () => {
       await screen.findByRole("button", { name: "打开项目 咖啡口播" }),
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/projects/project-1/analysis",
+      "http://127.0.0.1:8000/api/projects/project-1/analysis-tasks",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -1453,7 +1487,7 @@ describe("App", () => {
           }),
         });
       }
-      if (url.endsWith("/analysis") && options?.method === "POST") {
+      if (url.endsWith("/analysis-tasks") && options?.method === "POST") {
         analysisPostCalls += 1;
         return analysisPostCalls === 1
           ? Promise.resolve({
@@ -1463,7 +1497,16 @@ describe("App", () => {
                 detail: { message: "模型暂时不可用" },
               }),
             })
-          : Promise.resolve({ ok: true, json: async () => analysis });
+          : Promise.resolve({
+              ok: true,
+              json: async () => ({
+                id: "analysis-task-recovery",
+                project_id: "project-recovery",
+                asset_id: "asset-recovery",
+                status: "PENDING",
+                error_message: null,
+              }),
+            });
       }
       if (url.endsWith("/analysis/latest")) {
         return Promise.resolve({ ok: true, json: async () => analysis });

@@ -9,6 +9,7 @@ import {
 
 import {
   type AnalysisProvider,
+  type AnalysisTask,
   type AnalysisVersion,
   type CharacterReferenceSelection as CharacterReferenceSelectionValue,
   type GenerationBatch,
@@ -25,6 +26,7 @@ import {
   type SourceFrameCharacterFeatures,
   saveShotCards,
   startVideoAnalysis,
+  waitForAnalysisTask,
 } from "./api";
 import { CharacterReferenceSelection } from "./CharacterReferenceSelection";
 import { CharacterSelection } from "./CharacterSelection";
@@ -61,6 +63,8 @@ function copyShotCards(shots: ShotCard[]): ShotCard[] {
     motion: shot.motion ? { ...shot.motion } : shot.motion,
   }));
 }
+
+type AnalysisTaskState = Pick<AnalysisTask, "id" | "status" | "error_message">;
 
 function motionEqual(
   left: ShotMotion | null | undefined,
@@ -208,6 +212,8 @@ export function AnalysisWorkspace({
   const [isFirstFrameBusy, setIsFirstFrameBusy] = useState(false);
   const [isAnalysisMissing, setIsAnalysisMissing] = useState(false);
   const [isStartingAnalysis, setIsStartingAnalysis] = useState(false);
+  const [analysisTaskState, setAnalysisTaskState] =
+    useState<AnalysisTaskState | null>(null);
   const [characterSelection, setCharacterSelection] =
     useState<ProjectMainCharacter | null>(null);
   const [sourceFrameSelection, setSourceFrameSelection] =
@@ -230,11 +236,76 @@ export function AnalysisWorkspace({
   const characterReferenceSelectionIdRef = useRef<string | null>(null);
   const savedShotsRef = useRef<ShotCard[]>([]);
   const isSavingRef = useRef(false);
+  const analysisWatchIdRef = useRef(0);
+  const onAnalysisReadyRef = useRef(onAnalysisReady);
+  onAnalysisReadyRef.current = onAnalysisReady;
+
+  const followAnalysisTask = useCallback(
+    async (initialTask: AnalysisTaskState) => {
+      const watchId = ++analysisWatchIdRef.current;
+      setAnalysisTaskState(initialTask);
+      setIsAnalysisMissing(true);
+      setError("");
+      try {
+        const completed = await waitForAnalysisTask(initialTask.id);
+        if (watchId !== analysisWatchIdRef.current) {
+          return;
+        }
+        setAnalysisTaskState({
+          id: completed.id,
+          status: completed.status,
+          error_message: completed.error_message,
+        });
+        onAnalysisReadyRef.current(project.id);
+        setForceLoadProjectId(project.id);
+        reloadTokenRef.current += 1;
+        setReloadToken(reloadTokenRef.current);
+      } catch (taskError) {
+        if (watchId !== analysisWatchIdRef.current) {
+          return;
+        }
+        setAnalysisTaskState({
+          id: initialTask.id,
+          status: "FAILED",
+          error_message:
+            taskError instanceof Error
+              ? taskError.message
+              : "视频拆解失败，请重新提交。",
+        });
+        setIsAnalysisMissing(true);
+      }
+    },
+    [project.id],
+  );
+
+  useEffect(() => {
+    if (project.analysis_status === "PENDING" && project.analysis_task_id) {
+      void followAnalysisTask({
+        id: project.analysis_task_id,
+        status: "PENDING",
+        error_message: null,
+      });
+    }
+  }, [followAnalysisTask, project.analysis_status, project.analysis_task_id]);
+
+  useEffect(
+    () => () => {
+      analysisWatchIdRef.current += 1;
+    },
+    [],
+  );
+
+  const effectiveAnalysisStatus =
+    analysisTaskState?.status ?? project.analysis_status;
+  const isAnalysisPending =
+    effectiveAnalysisStatus === "PENDING" ||
+    effectiveAnalysisStatus === "RUNNING";
+  const analysisErrorMessage =
+    analysisTaskState?.error_message ?? project.analysis_error_message ?? null;
 
   useEffect(() => {
     if (
-      !readOnly &&
-      project.analysis_status === "PENDING" &&
+      (isAnalysisPending || effectiveAnalysisStatus === "FAILED") &&
       forceLoadProjectId !== project.id
     ) {
       setIsLoading(false);
@@ -316,9 +387,9 @@ export function AnalysisWorkspace({
     };
   }, [
     forceLoadProjectId,
-    project.analysis_status,
+    effectiveAnalysisStatus,
+    isAnalysisPending,
     project.id,
-    readOnly,
     reloadToken,
   ]);
 
@@ -668,10 +739,15 @@ export function AnalysisWorkspace({
     setIsStartingAnalysis(true);
     setError("");
     try {
-      await startVideoAnalysis(project.id, project.reference_asset_id);
-      onAnalysisReady(project.id);
-      setForceLoadProjectId(project.id);
-      reloadWorkspace();
+      const task = await startVideoAnalysis(
+        project.id,
+        project.reference_asset_id,
+      );
+      void followAnalysisTask({
+        id: task.id,
+        status: task.status,
+        error_message: task.error_message,
+      });
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -1262,8 +1338,18 @@ export function AnalysisWorkspace({
       ) : null}
       {!isLoading && isAnalysisMissing ? (
         <div className="analysis-missing-state">
-          <strong>待拆解</strong>
-          <p>参考视频已就绪。</p>
+          <strong>
+            {isAnalysisPending
+              ? "拆解中"
+              : effectiveAnalysisStatus === "FAILED"
+                ? "拆解失败"
+                : "待拆解"}
+          </strong>
+          <p>
+            {isAnalysisPending
+              ? "任务已在后台运行，可以返回项目列表查看进度。"
+              : analysisErrorMessage || "参考视频已就绪。"}
+          </p>
           {readOnly ? (
             <>
               <span className="status-note">只读身份无法启动拆解。</span>
@@ -1277,11 +1363,21 @@ export function AnalysisWorkspace({
             </>
           ) : (
             <button
-              disabled={isStartingAnalysis || !project.reference_asset_id}
+              disabled={
+                isStartingAnalysis ||
+                isAnalysisPending ||
+                !project.reference_asset_id
+              }
               onClick={handleStartAnalysis}
               type="button"
             >
-              {isStartingAnalysis ? "正在拆解" : "开始拆解"}
+              {isStartingAnalysis
+                ? "正在提交"
+                : isAnalysisPending
+                  ? "后台拆解中"
+                  : effectiveAnalysisStatus === "FAILED"
+                    ? "重新拆解"
+                    : "开始拆解"}
             </button>
           )}
         </div>

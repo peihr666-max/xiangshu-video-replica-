@@ -32,8 +32,27 @@ vi.mock("./api", async (importOriginal) => {
     lockGenerationPrompt: vi.fn(),
     reviseGenerationPrompt: vi.fn(),
     saveShotCards: vi.fn(),
+    startVideoAnalysis: vi.fn(),
+    waitForAnalysisTask: vi.fn(),
   };
 });
+
+const pendingAnalysisTask: api.AnalysisTask = {
+  id: "analysis-task-1",
+  project_id: "project-1",
+  asset_id: "reference-video-1",
+  status: "PENDING",
+  attempt: 0,
+  result_version_id: null,
+  error_code: null,
+  error_message: null,
+  failure_phase: null,
+  retryable: false,
+  created_at: "2030-01-01T00:00:00Z",
+  updated_at: "2030-01-01T00:00:00Z",
+  started_at: null,
+  completed_at: null,
+};
 
 const characterSelection = {
   project_id: "project-1",
@@ -375,6 +394,70 @@ describe("AnalysisWorkspace workflow gates", () => {
       max_quantity: 4,
       estimated_cost_per_task: null,
     });
+    vi.mocked(api.startVideoAnalysis).mockResolvedValue(pendingAnalysisTask);
+    vi.mocked(api.waitForAnalysisTask).mockResolvedValue({
+      ...pendingAnalysisTask,
+      status: "SUCCEEDED",
+      result_version_id: "analysis-1",
+      completed_at: "2030-01-01T00:01:00Z",
+    });
+  });
+
+  it("resumes a pending analysis task after navigation and loads its result", async () => {
+    const onAnalysisReady = vi.fn();
+
+    render(
+      <AnalysisWorkspace
+        currentUserId="employee_1"
+        onAnalysisReady={onAnalysisReady}
+        onBatchCreated={vi.fn()}
+        onClose={vi.fn()}
+        project={{
+          id: "project-1",
+          owner_user_id: "employee_1",
+          name: "后台拆解测试",
+          status: "REFERENCE_READY",
+          reference_asset_id: "reference-video-1",
+          reference_upload_status: "READY",
+          analysis_status: "PENDING",
+          analysis_task_id: pendingAnalysisTask.id,
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("拆解完成")).toBeInTheDocument();
+    expect(api.waitForAnalysisTask).toHaveBeenCalledWith(
+      pendingAnalysisTask.id,
+    );
+    expect(onAnalysisReady).toHaveBeenCalledWith("project-1");
+  });
+
+  it("restores a failed analysis as a retryable state", async () => {
+    render(
+      <AnalysisWorkspace
+        currentUserId="employee_1"
+        onAnalysisReady={vi.fn()}
+        onBatchCreated={vi.fn()}
+        onClose={vi.fn()}
+        project={{
+          id: "project-1",
+          owner_user_id: "employee_1",
+          name: "失败拆解测试",
+          status: "REFERENCE_READY",
+          reference_asset_id: "reference-video-1",
+          reference_upload_status: "READY",
+          analysis_status: "FAILED",
+          analysis_error_message: "模型返回内容无法解析",
+          analysis_retryable: true,
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("拆解失败")).toBeInTheDocument();
+    expect(screen.getByText("模型返回内容无法解析")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "重新拆解" }),
+    ).toBeInTheDocument();
   });
 
   it("preserves downstream gates for idempotent confirmations and rolls back on a changed character", async () => {

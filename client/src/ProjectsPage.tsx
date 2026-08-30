@@ -90,6 +90,8 @@ export function ProjectsPage({
   const [editingProjectId, setEditingProjectId] = useState("");
   const [editingProjectName, setEditingProjectName] = useState("");
   const [renamingProjectId, setRenamingProjectId] = useState("");
+  const [retryingAnalysisProjectId, setRetryingAnalysisProjectId] =
+    useState("");
   const [rebindProject, setRebindProject] = useState<Project | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const rebindFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -300,6 +302,26 @@ export function ProjectsPage({
     }
   }
 
+  async function handleRetryAnalysis(project: Project) {
+    if (!project.reference_asset_id || !canWrite) {
+      return;
+    }
+    setRetryingAnalysisProjectId(project.id);
+    setProjectActionError("");
+    setProjectActionMessage("");
+    try {
+      await startVideoAnalysis(project.id, project.reference_asset_id);
+      setProjectActionMessage(`项目“${project.name}”已重新提交拆解。`);
+      await loadProjects({ silent: true });
+    } catch (error) {
+      setProjectActionError(
+        error instanceof Error ? error.message : "重新拆解失败，请稍后重试。",
+      );
+    } finally {
+      setRetryingAnalysisProjectId("");
+    }
+  }
+
   function startRename(project: Project) {
     setEditingProjectId(project.id);
     setEditingProjectName(project.name);
@@ -356,6 +378,11 @@ export function ProjectsPage({
     }
     if (project.analysis_status === "READY") {
       return <span className="project-badge project-badge--ready">已拆解</span>;
+    }
+    if (project.analysis_status === "FAILED") {
+      return (
+        <span className="project-badge project-badge--failed">拆解失败</span>
+      );
     }
     return <span className="project-badge project-badge--pending">待拆解</span>;
   }
@@ -543,6 +570,12 @@ export function ProjectsPage({
                           <strong>{project.name}</strong>
                           <span className="projects-list__meta">
                             {renderStatusBadge(project)}
+                            {project.analysis_status === "FAILED" &&
+                            project.analysis_error_message ? (
+                              <span className="projects-list__analysis-error">
+                                {project.analysis_error_message}
+                              </span>
+                            ) : null}
                           </span>
                         </button>
                         <div className="projects-list__actions">
@@ -562,6 +595,22 @@ export function ProjectsPage({
                               type="button"
                             >
                               查看流程
+                            </button>
+                          ) : null}
+                          {project.analysis_status === "FAILED" &&
+                          project.analysis_retryable !== false &&
+                          canWrite ? (
+                            <button
+                              className="projects-generate-button"
+                              disabled={
+                                retryingAnalysisProjectId === project.id
+                              }
+                              onClick={() => void handleRetryAnalysis(project)}
+                              type="button"
+                            >
+                              {retryingAnalysisProjectId === project.id
+                                ? "正在重新提交"
+                                : "重新拆解"}
                             </button>
                           ) : null}
                           {project.reference_upload_status !== "READY" &&

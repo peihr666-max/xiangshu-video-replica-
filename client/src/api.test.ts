@@ -36,6 +36,7 @@ import {
   setInternalAccessToken,
   startVideoAnalysis,
   uploadReferenceVideo,
+  waitForAnalysisTask,
   waitForCharacterSheetTask,
   waitForFirstFrameTask,
 } from "./api";
@@ -880,7 +881,7 @@ describe("startVideoAnalysis", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses the provider-sized timeout and lets the server own the reference duration", async () => {
+  it("only enqueues analysis with the normal API timeout", async () => {
     const timeoutSpy = vi.spyOn(window, "setTimeout");
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -890,9 +891,9 @@ describe("startVideoAnalysis", () => {
 
     await startVideoAnalysis("project-1", "asset-1");
 
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 300_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5_000);
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/projects/project-1/analysis",
+      "http://127.0.0.1:8000/api/projects/project-1/analysis-tasks",
       expect.objectContaining({
         body: JSON.stringify({
           asset_id: "asset-1",
@@ -900,6 +901,31 @@ describe("startVideoAnalysis", () => {
         }),
       }),
     );
+  });
+
+  it("shares one analysis task poller across concurrent recovery callers", async () => {
+    vi.useFakeTimers();
+    const pending = { id: "analysis-task-shared", status: "RUNNING" };
+    const succeeded = {
+      id: "analysis-task-shared",
+      status: "SUCCEEDED",
+      result_version_id: "analysis-version-shared",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => pending })
+      .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = waitForAnalysisTask("analysis-task-shared");
+    const recovered = waitForAnalysisTask("analysis-task-shared");
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(Promise.all([first, recovered])).resolves.toEqual([
+      succeeded,
+      succeeded,
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("tells a temporary network failure apart from an unusable model response", async () => {

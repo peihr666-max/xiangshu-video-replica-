@@ -5,10 +5,6 @@ const REQUEST_TIMEOUT_MS = 5_000;
 // Cloud/storage operations (diagnostics, presigned URLs, archive prechecks)
 // may legitimately take much longer than a normal API round-trip.
 const CLOUD_OP_TIMEOUT_MS = 60_000;
-// Must exceed the server's per-call provider timeout (240s: analysis.py,
-// first_frames.py image edits) plus overhead; the real Gemini shot-card call
-// measured 71–91s on a 15s video, gpt-image contact sheets 1–3 minutes.
-const ANALYSIS_TIMEOUT_MS = 300_000;
 export const SESSION_EXPIRED_EVENT = "video-replica:session-expired";
 let internalAccessToken: string | null = null;
 // The customer-production admin session exchanges its CSRF value once and
@@ -263,7 +259,10 @@ export type Project = {
   status: string;
   reference_asset_id: string | null;
   reference_upload_status: "NOT_STARTED" | "UPLOAD_PENDING" | "READY";
-  analysis_status: "NOT_READY" | "PENDING" | "READY";
+  analysis_status: "NOT_READY" | "PENDING" | "READY" | "FAILED";
+  analysis_task_id?: string | null;
+  analysis_error_message?: string | null;
+  analysis_retryable?: boolean;
 };
 
 export type UploadIntent = {
@@ -297,6 +296,25 @@ export type AnalysisVersion = {
   created_by_user_id: string | null;
   created_at: string;
 };
+
+export type AnalysisTask = {
+  id: string;
+  project_id: string;
+  asset_id: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  attempt: number;
+  result_version_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  failure_phase: string | null;
+  retryable: boolean;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+const analysisTaskWaiters = new Map<string, Promise<AnalysisTask>>();
 
 export type AnalysisProvider = "apilio_gemini" | "fake_gemini";
 
@@ -1457,21 +1475,60 @@ export async function completeVideoUpload(
 export async function startVideoAnalysis(
   projectId: string,
   assetId: string,
-): Promise<AnalysisVersion> {
+): Promise<AnalysisTask> {
   const errorPrefix = "启动视频拆解失败";
   try {
-    return await requestApiJson<AnalysisVersion>(
-      `/api/projects/${encodeURIComponent(projectId)}/analysis`,
+    return await requestApiJson<AnalysisTask>(
+      `/api/projects/${encodeURIComponent(projectId)}/analysis-tasks`,
       errorPrefix,
       {
         method: "POST",
         body: JSON.stringify({ asset_id: assetId, reuse_existing: true }),
       },
-      ANALYSIS_TIMEOUT_MS,
     );
   } catch (error) {
     throw analysisRequestError(error, errorPrefix);
   }
+}
+
+export async function getAnalysisTask(taskId: string): Promise<AnalysisTask> {
+  return requestApiJson<AnalysisTask>(
+    `/api/analysis-tasks/${encodeURIComponent(taskId)}`,
+    "读取视频拆解任务失败",
+  );
+}
+
+export async function waitForAnalysisTask(
+  taskId: string,
+): Promise<AnalysisTask> {
+  const existing = analysisTaskWaiters.get(taskId);
+  if (existing) {
+    return existing;
+  }
+  const waiter = pollAnalysisTask(taskId);
+  analysisTaskWaiters.set(taskId, waiter);
+  const clear = () => {
+    if (analysisTaskWaiters.get(taskId) === waiter) {
+      analysisTaskWaiters.delete(taskId);
+    }
+  };
+  void waiter.then(clear, clear);
+  return waiter;
+}
+
+async function pollAnalysisTask(taskId: string): Promise<AnalysisTask> {
+  const deadline = Date.now() + 20 * 60_000;
+  while (Date.now() < deadline) {
+    const task = await getAnalysisTask(taskId);
+    if (task.status === "SUCCEEDED") {
+      return task;
+    }
+    if (task.status === "FAILED") {
+      throw new Error(task.error_message || "视频拆解失败，请重新提交。");
+    }
+    await waitForPoll();
+  }
+  throw new Error("视频拆解仍在后台进行，请稍后返回项目列表查看。");
 }
 
 export async function getLatestProjectAnalysis(
