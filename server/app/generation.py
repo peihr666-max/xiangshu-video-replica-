@@ -58,14 +58,18 @@ from app.storage import (
 SCRIPT_KIND = "script"
 H3_PROMPT_KIND = "h3_prompt"
 GENERATION_SCHEMA_VERSION = "c.generation.v1"
-H3_PROMPT_TEMPLATE_VERSION = "h3.prompt.v4"
+H3_PROMPT_TEMPLATE_VERSION = "h3.prompt.v5"
 H3_PROMPT_TEMPLATE_SPEC = (
     (
         "intro",
         "生成一条 {duration_seconds} 秒、{resolution}、写实短视频，从提供的首帧自然开始；"
         "人物严格按各镜头的动作与运镜描述真实运动，不得僵立原地。",
     ),
-    ("continuity", "保持首帧人物身份、服装、发型、场景和光线连续。"),
+    (
+        "continuity",
+        "严格延续已确认首帧中的完整人物身份、脸部、发型、肤色、身形比例、上下装、鞋履与手部，"
+        "保持场景和光线连续；不得退化为局部换脸，不得恢复原视频人物的身体或服装，不得身份漂移。",
+    ),
     (
         "shot",
         "[{start:.1f}-{end:.1f}s] {shot_type}，{composition}，{camera_motion}；"
@@ -943,7 +947,7 @@ def confirmed_first_frame_sources(
     *,
     project_id: str,
     first_frame_asset_id: str,
-) -> dict[str, str | None]:
+) -> dict[str, Any]:
     require_confirmed_first_frame(
         conn,
         project_id=project_id,
@@ -976,6 +980,11 @@ def confirmed_first_frame_sources(
         "character_version_id": candidate_payload.get("character_version_id"),
         "character_reference_selection_id": candidate_payload.get(
             "character_reference_selection_id"
+        ),
+        "first_frame_reconstruction_mode": candidate_payload.get("reconstruction_mode"),
+        "character_contract": candidate_payload.get("character_contract"),
+        "project_character_appearance_version_id": candidate_payload.get(
+            "project_character_appearance_version_id"
         ),
     }
 
@@ -5871,11 +5880,22 @@ def map_script_to_shots(text: str, shots: list[dict[str, Any]]) -> list[dict[str
     sentences = [part for part in re.split(r"(?<=[。！？!？])", text) if part]
     if not sentences and text:
         sentences = [text]
+    spoken_segment_indexes = [
+        index for index, shot in enumerate(shots) if str(shot.get("spoken_text") or "").strip()
+    ]
+    # Legacy/manual shot cards may not carry per-segment narration. In that
+    # case retain the old all-segments distribution. When narration evidence
+    # exists, action-only beats stay silent instead of consuming the next line.
+    target_indexes = spoken_segment_indexes or list(range(len(shots)))
+    text_by_index: dict[int, str] = {}
+    for target_position, shot_index in enumerate(target_indexes):
+        segment_text = sentences[target_position] if target_position < len(sentences) else ""
+        if target_position == len(target_indexes) - 1 and len(sentences) > len(target_indexes):
+            segment_text = "".join(sentences[target_position:])
+        text_by_index[shot_index] = segment_text
     mappings: list[dict[str, Any]] = []
     for index, shot in enumerate(shots):
-        segment_text = sentences[index] if index < len(sentences) else ""
-        if index == len(shots) - 1 and len(sentences) > len(shots):
-            segment_text = "".join(sentences[index:])
+        segment_text = text_by_index.get(index, "")
         mappings.append(
             {
                 "shot_id": str(shot["shot_id"]),
@@ -6027,6 +6047,11 @@ def generation_request_snapshot(
         "main_character_version_id": prompt_snapshot.get("main_character_version_id"),
         "character_version_id": prompt_snapshot.get("character_version_id"),
         "character_reference_selection_id": prompt_snapshot.get("character_reference_selection_id"),
+        "first_frame_reconstruction_mode": prompt_snapshot.get("first_frame_reconstruction_mode"),
+        "character_contract": prompt_snapshot.get("character_contract"),
+        "project_character_appearance_version_id": prompt_snapshot.get(
+            "project_character_appearance_version_id"
+        ),
         "first_frame_asset_id": request.first_frame_asset_id,
         "output_duration_seconds": request.output_duration_seconds,
         "resolution": request.resolution,

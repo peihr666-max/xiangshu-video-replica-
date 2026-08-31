@@ -31,6 +31,7 @@ from app.generation import (
     compile_prompt_text,
     generation_task_operation_hash,
     h3_provider_for_task,
+    map_script_to_shots,
     mark_expired_active_leases_needing_attention,
     mark_task_submission_uncertain,
     reconcile_submission_uncertain_task,
@@ -257,7 +258,19 @@ def seed_data(conn: sqlite3.Connection) -> None:
                 "first_frame_candidates",
                 1,
                 json.dumps(
-                    {"candidates": [{"asset_id": "first_frame_owned"}]},
+                    {
+                        "candidates": [{"asset_id": "first_frame_owned"}],
+                        "reconstruction_mode": "full_person_replace.v1",
+                        "character_contract": {
+                            "identity_source": "contact_sheet+source_photo",
+                            "body_reconstruction": True,
+                            "preserve_scene": True,
+                            "preserve_pose": True,
+                            "preserve_framing": True,
+                            "clothing_policy": "project_appearance_first",
+                        },
+                        "project_character_appearance_version_id": "appearance-v1",
+                    },
                     ensure_ascii=True,
                     sort_keys=True,
                 ),
@@ -1676,7 +1689,7 @@ def test_prompt_revision_freezes_sources_and_batch_reports_staleness(
     assert compiled.status_code == 200
     compiled_payload = compiled.json()["payload"]
     assert compiled_payload["status"] == "SAVED"
-    assert compiled_payload["template_version"] == "h3.prompt.v4"
+    assert compiled_payload["template_version"] == "h3.prompt.v5"
     assert len(compiled_payload["template_hash"]) == 64
     assert compiled_payload["source_analysis_version_id"] is None
     assert compiled_payload["script_version_id"] == script["id"]
@@ -1685,6 +1698,10 @@ def test_prompt_revision_freezes_sources_and_batch_reports_staleness(
     assert compiled_payload["first_frame_selection_version_id"] == "first_frame_selection_v1"
     assert compiled_payload["character_version_id"] is None
     assert compiled_payload["character_reference_selection_id"] is None
+    assert compiled_payload["first_frame_reconstruction_mode"] == "full_person_replace.v1"
+    assert compiled_payload["project_character_appearance_version_id"] == "appearance-v1"
+    assert compiled_payload["character_contract"]["body_reconstruction"] is True
+    assert "不得退化为局部换脸" in compiled_payload["prompt_text"]
 
     blank_revision = client.post(
         "/api/projects/project_owned/prompts/revise",
@@ -1825,7 +1842,7 @@ def test_prompt_compiler_rescales_shot_timeline_to_output_duration(
 
     assert compiled.status_code == 200
     payload = compiled.json()["payload"]
-    assert payload["template_version"] == "h3.prompt.v4"
+    assert payload["template_version"] == "h3.prompt.v5"
     assert payload["source_duration_seconds"] == 10
     assert payload["timeline_scale_factor"] == 0.4
     assert "生成一条 4 秒" in payload["prompt_text"]
@@ -1919,10 +1936,39 @@ def test_compile_prompt_text_falls_back_to_action_text_for_legacy_shots() -> Non
     assert "固定；主体：主讲人" in prompt_text
 
 
+def test_script_mapping_keeps_silent_action_segments_empty() -> None:
+    mappings = map_script_to_shots(
+        "第一句。第二句。",
+        [
+            {
+                "shot_id": "S01",
+                "start_time": 0,
+                "end_time": 3,
+                "spoken_text": "第一句。",
+            },
+            {
+                "shot_id": "S02",
+                "start_time": 3,
+                "end_time": 5,
+                "spoken_text": "",
+                "segment_kind": "ACTION_BEAT",
+            },
+            {
+                "shot_id": "S03",
+                "start_time": 5,
+                "end_time": 10,
+                "spoken_text": "第二句。",
+            },
+        ],
+    )
+
+    assert [mapping["text"] for mapping in mappings] == ["第一句。", "", "第二句。"]
+
+
 @pytest.mark.parametrize(
     ("template_attribute", "next_value"),
     [
-        ("H3_PROMPT_TEMPLATE_VERSION", "h3.prompt.v5"),
+        ("H3_PROMPT_TEMPLATE_VERSION", "h3.prompt.v6"),
         ("H3_PROMPT_TEMPLATE_HASH", "new-template-hash"),
     ],
 )

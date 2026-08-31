@@ -158,6 +158,7 @@ def valid_analysis_payload() -> dict[str, object]:
                 "composition": "人物居中",
                 "camera_motion": "轻微推进",
                 "subject": "主讲人",
+                "person_count": 1,
                 "action": "看向镜头讲话",
                 "scene": "室内",
                 "spoken_text": "你好",
@@ -179,6 +180,7 @@ def valid_analysis_payload() -> dict[str, object]:
                 "composition": "三分法",
                 "camera_motion": "固定",
                 "subject": "产品",
+                "person_count": 0,
                 "action": "展示产品",
                 "scene": "桌面",
                 "spoken_text": "再见",
@@ -297,6 +299,50 @@ def test_analysis_still_rejects_a_material_timeline_overrun() -> None:
         parse_analysis_response(json.dumps(payload), duration_seconds=12.066667)
 
 
+def test_analysis_rejects_a_timeline_gap() -> None:
+    payload = valid_analysis_payload()
+    shots = payload["shots"]
+    assert isinstance(shots, list)
+    shots[1]["start_time"] = 5.5
+
+    with pytest.raises(ValidationError, match="shots must form a continuous timeline"):
+        parse_analysis_response(json.dumps(payload), duration_seconds=10)
+
+
+def test_analysis_rejects_a_timeline_that_does_not_cover_the_full_video() -> None:
+    payload = valid_analysis_payload()
+    shots = payload["shots"]
+    assert isinstance(shots, list)
+    shots[-1]["end_time"] = 9.5
+
+    with pytest.raises(ValidationError, match="shots must cover the full video"):
+        parse_analysis_response(json.dumps(payload), duration_seconds=10)
+
+
+def test_analysis_accepts_action_beats_inside_one_continuous_camera_take() -> None:
+    payload = valid_analysis_payload()
+    shots = payload["shots"]
+    assert isinstance(shots, list)
+    shots[0]["segment_kind"] = "ACTION_BEAT"
+    shots[0]["boundary_reason"] = "开场建立人物与场景"
+    shots[1]["segment_kind"] = "ACTION_BEAT"
+    shots[1]["boundary_reason"] = "手势与表达重点发生变化"
+
+    analysis = parse_analysis_response(json.dumps(payload), duration_seconds=10)
+
+    assert analysis.shots[0].segment_kind == "ACTION_BEAT"
+    assert analysis.shots[1].boundary_reason == "手势与表达重点发生变化"
+
+
+def test_analysis_instruction_requires_action_segments_for_long_continuous_takes() -> None:
+    instruction = analysis_instruction(12)
+
+    assert "单一连续镜头" in instruction
+    assert "2-5 个可执行时间段" in instruction
+    assert "动作阶段" in instruction
+    assert "不得仅因为没有剪辑切点就把整段视频输出为一个时间段" in instruction
+
+
 def test_analysis_repair_receives_precise_duration_and_logs_no_provider_content(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -309,9 +355,15 @@ def test_analysis_repair_receives_precise_duration_and_logs_no_provider_content(
 
     invalid_payload = valid_analysis_payload()
     invalid_payload["unexpected"] = "private-customer-content"
+    repaired_payload = valid_analysis_payload()
+    repaired_shots = repaired_payload["shots"]
+    assert isinstance(repaired_shots, list)
+    repaired_shots[0]["end_time"] = 6.0333335
+    repaired_shots[1]["start_time"] = 6.0333335
+    repaired_shots[1]["end_time"] = 12.066667
     provider = RecordingRepairProvider(
         analysis_json=json.dumps(invalid_payload),
-        repair_json=json.dumps(valid_analysis_payload()),
+        repair_json=json.dumps(repaired_payload),
     )
 
     result = analyze_video(
@@ -421,6 +473,18 @@ def test_analysis_schema_rejects_overlap_and_unknown_fields() -> None:
 
     with pytest.raises(ValidationError):
         parse_analysis_response(json.dumps(overlap), duration_seconds=10)
+
+
+def test_analysis_records_person_count_for_the_single_person_generation_gate() -> None:
+    analysis = parse_analysis_response(
+        json.dumps(valid_analysis_payload()),
+        duration_seconds=10,
+    )
+
+    assert [shot.person_count for shot in analysis.shots] == [1, 0]
+    instruction = analysis_instruction(10)
+    assert "person_count" in instruction
+    assert "所有可见真人" in instruction
 
 
 def test_project_owner_can_create_and_read_analysis_version(client: TestClient) -> None:

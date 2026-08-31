@@ -114,10 +114,20 @@ class ShotCard(BaseModel):
     composition: str = Field(min_length=1)
     camera_motion: str = Field(min_length=1)
     subject: str = Field(min_length=1)
+    # Optional only for backward compatibility. New provider responses must
+    # populate it so first-frame generation can reject multi-person videos
+    # before making a paid image call.
+    person_count: int | None = Field(default=None, ge=0)
     action: str = Field(min_length=1)
     scene: str = Field(min_length=1)
     spoken_text: str
     transition: str = Field(min_length=1)
+    # ``shots`` remains the compatibility name consumed by the existing
+    # editor/compiler, but it now represents executable timeline segments.
+    # A segment can start at a physical cut or at an action/semantic beat
+    # inside one continuous camera take.
+    segment_kind: Literal["SHOT_CUT", "ACTION_BEAT"] | None = None
+    boundary_reason: str | None = Field(default=None, min_length=1)
     # 旧版本拆解结果与手动保存的镜头卡没有 motion；缺失时 H3 Prompt
     # 编译回退到 action 文本拼接（行为不劣化），新生成的分析必须携带。
     motion: ShotMotion | None = None
@@ -148,11 +158,15 @@ class VideoAnalysis(BaseModel):
     def validate_shot_timeline(self) -> VideoAnalysis:
         previous_end = 0.0
         for shot in self.shots:
-            if shot.start_time < previous_end:
+            if shot.start_time < previous_end - TIMELINE_ROUNDING_TOLERANCE_SECONDS:
                 raise ValueError("shots must not overlap")
+            if shot.start_time > previous_end + TIMELINE_ROUNDING_TOLERANCE_SECONDS:
+                raise ValueError("shots must form a continuous timeline")
             if shot.end_time > self.duration_seconds:
                 raise ValueError("shot end_time must not exceed duration_seconds")
             previous_end = shot.end_time
+        if abs(previous_end - self.duration_seconds) > TIMELINE_ROUNDING_TOLERANCE_SECONDS:
+            raise ValueError("shots must cover the full video")
         return self
 
 
@@ -499,8 +513,10 @@ def analysis_instruction(duration_seconds: float) -> str:
         "JSON 结构：summary, aspect_ratio, resolution, fps, theme, visual_style, "
         "pace, camera_language, original_script, shots。\n"
         "shots 内每个镜头必须包含 shot_id, start_time, end_time, shot_type, "
-        "composition, camera_motion, subject, action, scene, spoken_text, "
-        "transition, motion。镜头时间覆盖全片且互不重叠。\n"
+        "composition, camera_motion, subject, person_count, action, scene, spoken_text, "
+        "transition, motion, segment_kind, boundary_reason。shots 的业务含义是可执行时间段，"
+        "既可以来自真实剪辑切点，也可以来自同一连续镜头内的动作或语义阶段变化；"
+        "时间段必须从 0 秒开始、连续覆盖全片、互不重叠且不得留空洞。\n"
         f"已验证的视频总时长为 {canonical_duration} 秒；最后一个镜头的 end_time "
         f"必须精确等于 {canonical_duration}。\n"
         "除 shot_id 和枚举值外，所有文本字段一律用中文填写。\n"
@@ -520,6 +536,13 @@ def analysis_instruction(duration_seconds: float) -> str:
         "- relative_motion（人物与摄影机相对运动，中文）：如“人物逐渐靠近镜头，画面占比增大”。\n"
         "\n"
         "关键规则：\n"
+        "-1. person_count 必须统计该时间段画面内所有可见真人（包括局部露出者）；"
+        "同一人的镜面反射不重复计数，海报、照片和屏幕中的人物不计数。\n"
+        "0. 对 8 秒及以上的视频，优先拆成 2-5 个可执行时间段。即使视频是单一连续镜头，"
+        "也要按动作阶段、手势变化、人物位移、运镜变化、讲话重点或收束节奏拆段；"
+        "不得仅因为没有剪辑切点就把整段视频输出为一个时间段。真实切镜填写 "
+        "segment_kind=SHOT_CUT，同镜头内阶段变化填写 segment_kind=ACTION_BEAT，"
+        "boundary_reason 用中文说明拆分原因。不得为了凑数制造不存在的动作。\n"
         "1. 人物在镜头内移动（行走、跑动、转身）时，subject_motion_state 必须选对应"
         "运动状态，action 必须写明运动方向与幅度；不得把移动中的人物概括成“说话”或"
         "“站立”，也不得把运动镜头写成固定机位。\n"
@@ -869,6 +892,7 @@ def _default_analysis_payload(duration_seconds: float) -> dict[str, Any]:
                 "composition": "人物居中",
                 "camera_motion": "手持跟拍",
                 "subject": "主讲人",
+                "person_count": 1,
                 "action": "边向镜头走近边口播",
                 "scene": "室内",
                 "spoken_text": "",
@@ -890,6 +914,7 @@ def _default_analysis_payload(duration_seconds: float) -> dict[str, Any]:
                 "composition": "三分法",
                 "camera_motion": "缓慢推近",
                 "subject": "主讲人",
+                "person_count": 1,
                 "action": "站位固定，边做讲解手势边口播",
                 "scene": "室内",
                 "spoken_text": "",

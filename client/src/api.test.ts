@@ -33,6 +33,8 @@ import {
   listProjectCharacterVersions,
   listProjects,
   lockGenerationPrompt,
+  readAnalysisPayload,
+  readFirstFrameCandidates,
   reconcileUncertainTask,
   regenerateGenerationBatch,
   regenerateGenerationTask,
@@ -53,6 +55,95 @@ import {
   waitForScriptRewriteTask,
   waitForSourceFrameTask,
 } from "./api";
+
+describe("generation payload readers", () => {
+  it("reads project appearance and reconstruction metadata compatibly", () => {
+    const parsed = readFirstFrameCandidates({
+      id: "first-frame-v1",
+      project_id: "project-1",
+      asset_id: "source-1",
+      kind: "first_frame_candidates",
+      version_number: 1,
+      payload: {
+        provider: "fake",
+        model: "gpt-image-2",
+        prompt: "完整人物重构",
+        reconstruction_mode: "full_person_replace.v1",
+        character_contract: { body_reconstruction: true },
+        project_character_appearance_version_id: "appearance-v1",
+        project_appearance: {
+          category: "BUSINESS",
+          scene: "商务会议室",
+          subject: "企业负责人",
+          outfit_description: "简洁商务休闲装",
+          selection_reason: "按场景自动匹配",
+        },
+        candidates: [
+          {
+            asset_id: "first-frame-1",
+            storage_key: "projects/project-1/first-frame-1.png",
+            storage_uri: "cos://bucket/first-frame-1.png",
+            sha256: "hash",
+            size_bytes: 123,
+            content_type: "image/png",
+            quality: {
+              passed: true,
+              attempt: 2,
+              issue_codes: [],
+              inspection: { head_only_replacement_detected: false },
+            },
+          },
+        ],
+      },
+      created_by_user_id: "employee-1",
+      created_at: "2030-01-01T00:00:00Z",
+    });
+
+    expect(parsed?.reconstruction_mode).toBe("full_person_replace.v1");
+    expect(parsed?.project_appearance?.category).toBe("BUSINESS");
+    expect(parsed?.candidates[0]?.quality?.passed).toBe(true);
+    expect(parsed?.candidates[0]?.quality?.attempt).toBe(2);
+  });
+
+  it("reads action-beat metadata while keeping the shots compatibility field", () => {
+    const parsed = readAnalysisPayload({
+      id: "analysis-v1",
+      project_id: "project-1",
+      asset_id: "video-1",
+      kind: "analysis",
+      version_number: 1,
+      payload: {
+        analysis: {
+          summary: "连续镜头动作拆解",
+          duration_seconds: 12,
+          original_script: "",
+          shots: [
+            {
+              shot_id: "S01",
+              start_time: 0,
+              end_time: 12,
+              shot_type: "中景",
+              composition: "人物居中",
+              camera_motion: "固定",
+              subject: "主讲人",
+              action: "口播",
+              scene: "室内",
+              spoken_text: "",
+              transition: "连续",
+              segment_kind: "ACTION_BEAT",
+              boundary_reason: "表达重点变化",
+            },
+          ],
+        },
+      },
+      created_by_user_id: "employee-1",
+      created_at: "2030-01-01T00:00:00Z",
+    });
+
+    expect(parsed?.shots[0]?.segment_kind).toBe("ACTION_BEAT");
+    expect(parsed?.shots[0]?.boundary_reason).toBe("表达重点变化");
+  });
+});
 
 describe("API base URL resolution", () => {
   it("uses the serving HTTPS origin for a production web build", () => {
@@ -673,6 +764,24 @@ describe("character reference and first-frame binding", () => {
           source_frame_selection_version_id: "source-selection-1",
           character_version_id: "character-version-1",
         }),
+        method: "POST",
+      }),
+    );
+  });
+
+  it("lets the server apply safe source-frame defaults during automatic confirmation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "saved" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await confirmSourceFrame("project-1", "source-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/projects/project-1/source-frames/confirm",
+      expect.objectContaining({
+        body: JSON.stringify({ source_frame_asset_id: "source-1" }),
         method: "POST",
       }),
     );

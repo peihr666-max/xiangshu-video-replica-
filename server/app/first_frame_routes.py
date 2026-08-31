@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from typing import Annotated, Any, Literal
 
@@ -14,8 +15,11 @@ from app.customer_fence import BusinessDbDep, BusinessReadConn
 from app.first_frames import (
     APILIO_DEFAULT_BASE_URL,
     FIRST_FRAME_SELECTION_KIND,
+    ApilioFirstFrameQualityInspector,
     ApilioImageProvider,
+    FakeFirstFrameQualityInspector,
     FakeImageProvider,
+    FirstFrameQualityInspector,
     ImageProvider,
     complete_first_frame_generation,
     confirm_first_frame,
@@ -157,8 +161,59 @@ def get_image_provider(conn: BusinessReadConn) -> ImageProvider:
     )
 
 
+def get_first_frame_quality_inspector(conn: BusinessReadConn) -> FirstFrameQualityInspector:
+    if os.environ.get("VIDEO_REPLICA_FAKE_FIRST_FRAME_QUALITY_INSPECTOR") == "1":
+        return FakeFirstFrameQualityInspector()
+    has_saved_apilio_config = (
+        conn.execute(
+            "SELECT 1 FROM provider_settings WHERE provider = %s",
+            ("apilio",),
+        ).fetchone()
+        is not None
+    )
+    try:
+        config = SettingsRepository(conn).load_provider_config("apilio")
+    except SettingsUnavailableError as exc:
+        if has_saved_apilio_config or is_customer_production():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "FIRST_FRAME_QUALITY_SETTINGS_UNAVAILABLE",
+                    "message": "首帧自动质检服务尚未正确配置，请联系管理员。",
+                },
+            ) from exc
+        return FakeFirstFrameQualityInspector()
+    if not config:
+        if is_customer_production():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "FIRST_FRAME_QUALITY_SETTINGS_REQUIRED",
+                    "message": "首帧自动质检服务尚未配置，请联系管理员。",
+                },
+            )
+        return FakeFirstFrameQualityInspector()
+    api_key = config.get("analysis_api_key") or config.get("api_key")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "FIRST_FRAME_QUALITY_SETTINGS_UNAVAILABLE",
+                "message": "首帧自动质检密钥不可用，请联系管理员。",
+            },
+        )
+    return ApilioFirstFrameQualityInspector(
+        api_key=api_key,
+        base_url=APILIO_DEFAULT_BASE_URL,
+    )
+
+
 FirstFrameStorage = Annotated[StorageAdapter, Depends(get_media_storage)]
 InjectedImageProvider = Annotated[ImageProvider, Depends(get_image_provider)]
+InjectedFirstFrameQualityInspector = Annotated[
+    FirstFrameQualityInspector,
+    Depends(get_first_frame_quality_inspector),
+]
 
 
 def require_async_first_frame_route(project_id: str) -> None:
@@ -177,6 +232,7 @@ def generate_project_first_frames(
     request: GenerateFirstFramesRequest,
     storage: FirstFrameStorage,
     provider: InjectedImageProvider,
+    quality_inspector: InjectedFirstFrameQualityInspector,
     db: BusinessDbDep,
 ) -> VersionResponse:
     with db.write() as (conn, actor):
@@ -195,7 +251,11 @@ def generate_project_first_frames(
     # must run after the fenced customer transaction releases its session-row
     # lock; otherwise every concurrent desktop request appears to be offline.
     work = load_first_frame_generation_work(plan, storage=storage)
-    generated = perform_first_frame_generation(work, provider=provider)
+    generated = perform_first_frame_generation(
+        work,
+        provider=provider,
+        quality_inspector=quality_inspector,
+    )
     stored = store_first_frame_generation(work, storage=storage, generated=generated)
     try:
         with db.write() as (conn, _actor):

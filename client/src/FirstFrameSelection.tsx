@@ -532,6 +532,19 @@ export function FirstFrameSelection({
       {status ? <p className="setup-success">{status}</p> : null}
       {payload ? (
         <>
+          {payload.project_appearance ? (
+            <aside
+              className="project-appearance-summary"
+              aria-label="本项目人物造型"
+            >
+              <div>
+                <strong>本项目人物造型</strong>
+                <span>后台自动匹配</span>
+              </div>
+              <p>{payload.project_appearance.outfit_description}</p>
+              <small>{payload.project_appearance.selection_reason}</small>
+            </aside>
+          ) : null}
           {!simplified ? (
             <p className="file-note">
               当前模式：{modelLabel(payload.model)} ·{" "}
@@ -659,6 +672,14 @@ function FirstFrameOption({
       <span>
         <strong>首帧候选 {index + 1}</strong>
         <small>{candidate.content_type}</small>
+        {candidate.quality?.passed ? (
+          <small className="first-frame-quality-pass">
+            整身人物质检通过
+            {candidate.quality.attempt > 1
+              ? ` · 自动修正 ${candidate.quality.attempt - 1} 次`
+              : ""}
+          </small>
+        ) : null}
       </span>
     </label>
   );

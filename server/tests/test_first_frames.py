@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -15,9 +16,12 @@ from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_image_provider
 from app.first_frames import (
     FIRST_FRAME_NO_TEXT_CONSTRAINT,
+    FirstFrameCandidateInspection,
+    FirstFrameSourceInspection,
     GeneratedImage,
     ImageInput,
     RetryableImageProviderFailed,
+    derive_project_appearance_spec,
     normalize_prompt,
 )
 from app.generation_worker import run_worker_once
@@ -88,6 +92,39 @@ class FlakyImageProvider(RecordingImageProvider):
             character_reference_images=character_reference_images,
             output_count=output_count,
         )
+
+
+@dataclass
+class SequenceFirstFrameQualityInspector:
+    candidate_inspections: list[FirstFrameCandidateInspection]
+    source_person_count: int = 1
+    source_calls: int = 0
+    candidate_calls: int = 0
+
+    def inspect_source(self, source_image: ImageInput) -> FirstFrameSourceInspection:
+        assert source_image.content
+        self.source_calls += 1
+        return FirstFrameSourceInspection(
+            person_count=self.source_person_count,
+            notes=[],
+            provider="fake-first-frame-quality",
+            model="fake-first-frame-quality-v1",
+        )
+
+    def inspect_candidate(
+        self,
+        *,
+        source_image: ImageInput,
+        character_reference_images: list[ImageInput],
+        candidate: GeneratedImage,
+        expected_outfit: str,
+    ) -> FirstFrameCandidateInspection:
+        assert source_image.content
+        assert character_reference_images
+        assert candidate.content
+        assert expected_outfit
+        self.candidate_calls += 1
+        return self.candidate_inspections.pop(0)
 
 
 @dataclass(frozen=True)
@@ -540,6 +577,17 @@ def test_generate_candidates_archives_them_and_preserves_image_input_order(
     assert body["payload"]["source_frame_asset_id"] == source_frame_asset_id
     assert body["payload"]["model"] == "nano-banana-pro-2k"
     assert body["payload"]["provider"] == "fake"
+    assert body["payload"]["reconstruction_mode"] == "full_person_replace.v1"
+    assert body["payload"]["character_contract"] == {
+        "body_reconstruction": True,
+        "clothing_policy": "project_appearance_first",
+        "identity_source": "legacy_views_only",
+        "preserve_framing": True,
+        "preserve_pose": True,
+        "preserve_scene": True,
+    }
+    assert body["payload"]["project_appearance"]["category"] == "GENERAL"
+    assert body["payload"]["project_character_appearance_version_id"]
     assert len(body["payload"]["candidates"]) == 2
     assert provider.calls == [
         {
@@ -552,6 +600,202 @@ def test_generate_candidates_archives_them_and_preserves_image_input_order(
     ]
     for candidate in body["payload"]["candidates"]:
         assert storage.head_object(candidate["storage_key"]) is not None
+
+
+def test_project_appearance_uses_the_selected_source_frame_scene() -> None:
+    spec = derive_project_appearance_spec(
+        analysis_payload={
+            "theme": "工程项目业务介绍",
+            "visual_style": "真实纪实",
+            "shots": [
+                {
+                    "start_time": 0,
+                    "end_time": 4,
+                    "subject": "企业负责人",
+                    "action": "在办公室介绍合作模式",
+                    "scene": "商务办公室",
+                },
+                {
+                    "start_time": 4,
+                    "end_time": 12,
+                    "subject": "项目负责人",
+                    "action": "在施工现场边走边介绍工程进度",
+                    "scene": "建筑施工现场",
+                },
+            ],
+        },
+        source_analysis_version_id="analysis-1",
+        source_timestamp_seconds=8,
+    )
+
+    assert spec.category == "CONSTRUCTION"
+    assert spec.scene == "建筑施工现场"
+    assert "工装" in spec.outfit_description
+    assert "施工现场" in spec.selection_reason
+
+
+def test_full_person_prompt_uses_project_appearance_instead_of_copying_reference_clothes() -> None:
+    spec = derive_project_appearance_spec(
+        analysis_payload={
+            "theme": "企业客户合作",
+            "visual_style": "写实",
+            "shots": [
+                {
+                    "start_time": 0,
+                    "end_time": 12,
+                    "subject": "企业负责人",
+                    "action": "向镜头介绍业务",
+                    "scene": "商务会议室",
+                }
+            ],
+        },
+        source_analysis_version_id="analysis-1",
+        source_timestamp_seconds=3,
+    )
+
+    prompt = normalize_prompt(
+        None,
+        character_name="林夏",
+        reference_roles=["contact_sheet", "source_photo"],
+        project_appearance=spec,
+    )
+
+    assert "完整重构原人物的头脸、发型、颈部、肤色、身形比例" in prompt
+    assert "严禁只替换脸部" in prompt
+    assert spec.outfit_description in prompt
+    assert "参考图中的服装只用于理解人物体型，不得直接照搬" in prompt
+    assert "如果画面中有多人，只重构这一名主要人物" in prompt
+    assert "不得把目标人物外观扩散到旁人" in prompt
+
+
+def passing_candidate_inspection() -> FirstFrameCandidateInspection:
+    return FirstFrameCandidateInspection(
+        person_count=1,
+        identity_match_score=0.94,
+        full_person_reconstruction_score=0.91,
+        outfit_match_score=0.88,
+        pose_preserved=True,
+        framing_preserved=True,
+        scene_preserved=True,
+        anatomy_valid=True,
+        head_only_replacement_detected=False,
+        original_body_retained=False,
+        text_detected=False,
+        notes=[],
+        provider="fake-first-frame-quality",
+        model="fake-first-frame-quality-v1",
+    )
+
+
+def test_quality_gate_retries_a_head_only_result_before_publishing(
+    client: TestClient,
+    provider: RecordingImageProvider,
+) -> None:
+    from app.first_frame_routes import get_first_frame_quality_inspector
+
+    rejected = passing_candidate_inspection().model_copy(
+        update={
+            "full_person_reconstruction_score": 0.2,
+            "head_only_replacement_detected": True,
+            "original_body_retained": True,
+            "notes": ["仅头部发生变化，身体与服装仍属于原人物"],
+        }
+    )
+    inspector = SequenceFirstFrameQualityInspector(
+        candidate_inspections=[rejected, passing_candidate_inspection()]
+    )
+    app.dependency_overrides[get_first_frame_quality_inspector] = lambda: inspector
+    prepare_inputs(client)
+
+    response = client.post(
+        "/api/projects/project_owned/first-frames/generate",
+        json={"model": "gpt-image-2", "quantity": 1},
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 200
+    candidate = response.json()["payload"]["candidates"][0]
+    assert candidate["quality"]["passed"] is True
+    assert candidate["quality"]["attempt"] == 2
+    assert len(provider.calls) == 2
+    assert "自动质检未通过" in str(provider.calls[1]["prompt"])
+    assert inspector.source_calls == 1
+    assert inspector.candidate_calls == 2
+
+
+def test_quality_gate_blocks_generation_when_selected_source_frame_has_multiple_people(
+    client: TestClient,
+    provider: RecordingImageProvider,
+) -> None:
+    from app.first_frame_routes import get_first_frame_quality_inspector
+
+    inspector = SequenceFirstFrameQualityInspector(
+        candidate_inspections=[],
+        source_person_count=2,
+    )
+    app.dependency_overrides[get_first_frame_quality_inspector] = lambda: inspector
+    prepare_inputs(client)
+
+    response = client.post(
+        "/api/projects/project_owned/first-frames/generate",
+        json={"model": "gpt-image-2", "quantity": 1},
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "SINGLE_PERSON_SOURCE_REQUIRED"
+    assert provider.calls == []
+
+
+def test_analysis_person_count_blocks_multi_person_video_before_paid_generation(
+    client: TestClient,
+    db_path: Path,
+    provider: RecordingImageProvider,
+) -> None:
+    prepare_inputs(client)
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO versions (
+                id, project_id, asset_id, kind, version_number,
+                payload_json, created_by_user_id
+            ) VALUES (%s, %s, NULL, 'analysis', 1, %s, %s)
+            """,
+            (
+                "analysis-multi-person",
+                "project_owned",
+                json.dumps(
+                    {
+                        "analysis": {
+                            "theme": "双人访谈",
+                            "visual_style": "写实",
+                            "shots": [
+                                {
+                                    "start_time": 0,
+                                    "end_time": 12,
+                                    "subject": "两名访谈人物",
+                                    "action": "面对面交谈",
+                                    "scene": "办公室",
+                                    "person_count": 2,
+                                }
+                            ],
+                        }
+                    }
+                ),
+                "employee_1",
+            ),
+        )
+        conn.commit()
+
+    response = client.post(
+        "/api/projects/project_owned/first-frames/generate",
+        json={"model": "gpt-image-2", "quantity": 1},
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "MULTI_PERSON_VIDEO_UNSUPPORTED"
+    assert provider.calls == []
 
 
 def test_custom_prompt_cannot_bypass_the_no_text_constraint(
@@ -686,6 +930,60 @@ def test_source_frame_reconfirmation_makes_existing_first_frame_candidates_stale
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "FIRST_FRAME_CANDIDATES_STALE"
+
+
+def test_new_analysis_invalidates_project_appearance_and_first_frame_candidates(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    prepare_inputs(client)
+    generated = client.post(
+        "/api/projects/project_owned/first-frames/generate",
+        json={"model": "gpt-image-2", "quantity": 1},
+        headers=headers("employee_1"),
+    )
+    assert generated.status_code == 200
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO versions (
+                id, project_id, asset_id, kind, version_number,
+                payload_json, created_by_user_id
+            ) VALUES (%s, %s, NULL, 'analysis', 1, %s, %s)
+            """,
+            (
+                "analysis-after-first-frame",
+                "project_owned",
+                json.dumps(
+                    {
+                        "analysis": {
+                            "theme": "商务合作",
+                            "visual_style": "写实",
+                            "shots": [
+                                {
+                                    "start_time": 0,
+                                    "end_time": 12,
+                                    "subject": "企业负责人",
+                                    "action": "介绍合作方案",
+                                    "scene": "商务会议室",
+                                }
+                            ],
+                        }
+                    }
+                ),
+                "employee_1",
+            ),
+        )
+        conn.commit()
+
+    latest = client.get(
+        "/api/projects/project_owned/first-frames/latest",
+        headers=headers("employee_1"),
+    )
+
+    assert latest.status_code == 409
+    assert latest.json()["detail"]["code"] == "FIRST_FRAME_CANDIDATES_STALE"
 
 
 def test_main_character_reselection_makes_confirmed_first_frame_stale(client: TestClient) -> None:

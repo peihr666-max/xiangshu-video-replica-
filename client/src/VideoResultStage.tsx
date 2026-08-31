@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   customerVisibleErrorMessage,
@@ -11,11 +11,10 @@ import {
 // 重试、确认未计费、整批重生成）保留在任务记录的运维视图，由
 // onOpenOpsDetail 引导切换。
 
-// H3 Provider 没有真实百分比进度接口；RUNNING 期间以预估时长做时间
-// 插值（ease-out 前快后慢、85% 封顶），阶段锚点来自后端状态机轮询。
+// H3 Provider 没有真实百分比进度接口，因此客户视图只展示后端可验证的
+// 阶段与时间预估，不再用本地插值伪装成精确百分比。
 const ESTIMATED_RENDER_SECONDS = 240;
 const SLOW_RENDER_WARNING_FACTOR = 1.5;
-const REASSURANCE_ROTATE_SECONDS = 15;
 const TICK_MS = 1_000;
 // 任务停留在渲染前阶段（已提交/排队中/提交中）超过该阈值即视为排队异常：
 // 大概率没有被本地生成进程领取（进程未运行或连错数据库）。
@@ -32,13 +31,6 @@ const PHASE_MESSAGES: Record<string, string> = {
   SUCCEEDED: "已生成，正在自动进行音频质检…",
 };
 
-const REASSURANCE_FACTS = [
-  "渲染在云端进行，离开此页面不会中断任务，回来时进度仍在。",
-  "768P 成片通常需要 2–4 分钟，2K 略久，请放心等待。",
-  "生成结果会自动保存到素材库，可随时回来播放或下载。",
-  "同一批次的多个结果会并行处理，完成一个就能先看一个。",
-] as const;
-
 const REGENERATION_REASONS = [
   "画面质量不佳",
   "人物相似度不足",
@@ -51,6 +43,7 @@ type VideoResultStageProps = {
   activeResultAction: string;
   activeTaskAction: string;
   batch: GenerationBatch;
+  batchTitle: string;
   canOperate: boolean;
   onDownload: (task: GenerationTask) => void;
   onOpenOpsDetail: () => void;
@@ -72,6 +65,7 @@ export function VideoResultStage({
   activeResultAction,
   activeTaskAction,
   batch,
+  batchTitle,
   canOperate,
   onDownload,
   onOpenOpsDetail,
@@ -154,8 +148,6 @@ export function VideoResultStage({
 
   const outcome = taskOutcome(activeTask);
   const stage = effectiveStage(activeTask);
-  const percent =
-    outcome === "in_progress" ? stagePercent(activeTask, nowMs) : 100;
   const stepIndex = stepIndexForStage(stage, outcome);
   const elapsed =
     outcome === "in_progress" ? elapsedSeconds(activeTask, nowMs) : 0;
@@ -174,8 +166,6 @@ export function VideoResultStage({
     outcome === "in_progress" &&
     preRenderStage &&
     queueWait > QUEUE_STUCK_SECONDS;
-  const reassuranceIndex =
-    Math.floor(elapsed / REASSURANCE_ROTATE_SECONDS) % REASSURANCE_FACTS.length;
 
   const canRegenerate =
     canOperate && activeTask.available_actions?.includes("REGENERATE");
@@ -187,6 +177,9 @@ export function VideoResultStage({
         "生成结果暂时无法加载，请稍后重试。",
       )
     : "";
+  const showPlaybackRecovery = Boolean(
+    resultError && !previewUrl && hasPreviewSource,
+  );
 
   function handleRegenerateSubmit() {
     const detail = regenerateDetail.trim();
@@ -197,119 +190,119 @@ export function VideoResultStage({
   return (
     <section className="video-stage" aria-labelledby="video-stage-title">
       <header className="video-stage-header">
-        <div>
-          <h2 id="video-stage-title">生成结果</h2>
+        <div className="video-stage-header__title">
+          <div className="video-stage-title-row">
+            <h2 id="video-stage-title" title={batchTitle}>
+              {batchTitle}
+            </h2>
+            <span
+              className={`batch-status batch-status--${batch.status.toLowerCase()}`}
+            >
+              {formatStatus(batch.status)}
+            </span>
+          </div>
           <p className="video-stage-batch-note">
             {batch.progress.terminal_count} / {batch.progress.total_count}{" "}
             个结果已完成
             {batch.source_batch_id ? " · 冻结输入重生成批次" : ""}
           </p>
         </div>
-        <span
-          className={`batch-status batch-status--${batch.status.toLowerCase()}`}
-        >
-          {formatStatus(batch.status)}
-        </span>
+        <div className="video-stage-header__actions">
+          {canOperate && activeTask.result_asset_id ? (
+            <button
+              aria-label="下载 MP4"
+              disabled={activeResultAction === `${activeTask.id}:download`}
+              onClick={() => onDownload(activeTask)}
+              type="button"
+            >
+              {activeResultAction === `${activeTask.id}:download`
+                ? "正在下载…"
+                : "下载视频"}
+            </button>
+          ) : null}
+          {canRegenerate ? (
+            <button
+              className="secondary-button"
+              disabled={regenerateBusy}
+              onClick={() => {
+                setIsRegenerateOpen(!isRegenerateOpen);
+                setRegenerateReason("");
+                setRegenerateDetail("");
+                setRegenerateConfirmed(false);
+              }}
+              type="button"
+            >
+              {isRegenerateOpen ? "收起再次生成" : "再次生成"}
+            </button>
+          ) : null}
+        </div>
       </header>
 
-      <div className="video-stage-player">
-        {activeTask.provider === "fake_h3" ? (
-          <p className="video-stage-provider-note" role="status">
-            该任务使用测试模式，不会产生真实的视频生成费用。
-          </p>
-        ) : null}
-        {outcome === "quality_failed" && activeTask.result_asset_id ? (
-          <p className="video-stage-quality-banner" role="status">
-            音频质检未通过：该结果仅供对比查看，建议再次生成。
-          </p>
-        ) : null}
-        {outcome === "in_progress" ? (
-          <StageProgressView
-            elapsed={elapsed}
-            factIndex={reassuranceIndex}
-            onOpenOpsDetail={onOpenOpsDetail}
-            percent={percent}
-            phaseMessage={
-              queueStuck
-                ? "任务仍在排队，尚未被渲染进程领取…"
-                : (PHASE_MESSAGES[stage] ?? "正在生成…")
-            }
-            queueStuck={queueStuck}
-            queueWait={queueWait}
-            remaining={remaining}
-            showSlowWarning={showSlowWarning}
-            stepIndex={stepIndex}
-          />
-        ) : previewUrl ? (
-          <StageVideoPlayer
-            onSourceError={() => onPreviewSourceError(activeTask)}
-            src={previewUrl}
-            taskLabel={`结果预览 ${activeTask.id}`}
-          />
-        ) : !canOperate && hasPreviewSource ? (
-          <p className="video-stage-player-note">
-            审计只读，不可预览或下载结果
-          </p>
-        ) : hasPreviewSource ? (
-          <p className="video-stage-player-note" role="status">
-            {previewBusy ? "正在打开在线播放…" : "正在准备播放地址…"}
-          </p>
-        ) : (
-          <StageOutcomeView outcome={outcome} task={activeTask} />
-        )}
-        {resultError ? (
-          <p className="task-error-summary" role="status">
-            {resultError}{" "}
-            {canOperate && hasPreviewSource && !previewUrl ? (
-              <button
-                className="link-button"
-                onClick={() => onRequestPreview(activeTask)}
-                type="button"
-              >
-                重试加载
-              </button>
-            ) : null}
-          </p>
-        ) : null}
+      <div className="video-stage-result-grid">
+        <div className="video-stage-player">
+          {activeTask.provider === "fake_h3" ? (
+            <p className="video-stage-provider-note" role="status">
+              测试模式
+            </p>
+          ) : null}
+          {outcome === "quality_failed" && activeTask.result_asset_id ? (
+            <p className="video-stage-quality-banner" role="status">
+              音频质检未通过：该结果仅供对比查看，建议再次生成。
+            </p>
+          ) : null}
+          {outcome === "in_progress" ? (
+            <StageProgressView
+              elapsed={elapsed}
+              onOpenOpsDetail={onOpenOpsDetail}
+              phaseMessage={
+                queueStuck
+                  ? "任务仍在排队，尚未被渲染进程领取…"
+                  : (PHASE_MESSAGES[stage] ?? "正在生成…")
+              }
+              queueStuck={queueStuck}
+              queueWait={queueWait}
+              remaining={remaining}
+              showSlowWarning={showSlowWarning}
+              stepIndex={stepIndex}
+            />
+          ) : previewUrl ? (
+            <StageVideoPlayer
+              onSourceError={() => onPreviewSourceError(activeTask)}
+              src={previewUrl}
+              taskLabel={`结果预览 ${activeTask.id}`}
+            />
+          ) : showPlaybackRecovery ? (
+            <StagePlaybackRecovery
+              canDownload={canOperate && Boolean(activeTask.result_asset_id)}
+              error={resultError}
+              onDownload={() => onDownload(activeTask)}
+              onOpenOpsDetail={onOpenOpsDetail}
+              onRetry={() => onRequestPreview(activeTask)}
+              retryBusy={previewBusy}
+            />
+          ) : !canOperate && hasPreviewSource ? (
+            <p className="video-stage-player-note">
+              审计只读，不可预览或下载结果
+            </p>
+          ) : hasPreviewSource ? (
+            <p className="video-stage-player-note" role="status">
+              {previewBusy ? "正在打开在线播放…" : "正在准备播放地址…"}
+            </p>
+          ) : (
+            <StageOutcomeView outcome={outcome} task={activeTask} />
+          )}
+        </div>
+
+        <StageSummary batch={batch} outcome={outcome} task={activeTask} />
       </div>
 
-      <StageInfoBar task={activeTask} />
+      <StageTimeline outcome={outcome} stepIndex={stepIndex} />
 
-      <div className="video-stage-actions">
-        {canOperate && activeTask.result_asset_id ? (
-          <button
-            disabled={activeResultAction === `${activeTask.id}:download`}
-            onClick={() => onDownload(activeTask)}
-            type="button"
-          >
-            下载 MP4
-          </button>
-        ) : null}
-        {canRegenerate ? (
-          <button
-            className="secondary-button"
-            disabled={regenerateBusy}
-            onClick={() => {
-              setIsRegenerateOpen(!isRegenerateOpen);
-              setRegenerateReason("");
-              setRegenerateDetail("");
-              setRegenerateConfirmed(false);
-            }}
-            type="button"
-          >
-            {isRegenerateOpen ? "收起再次生成" : "再次生成"}
-          </button>
-        ) : null}
-        {outcome === "needs_attention" || outcome === "failed" ? (
-          <button
-            className="secondary-button"
-            onClick={onOpenOpsDetail}
-            type="button"
-          >
-            查看处理方式
-          </button>
-        ) : null}
-      </div>
+      {resultError && !showPlaybackRecovery ? (
+        <p className="task-error-summary" role="status">
+          {resultError}
+        </p>
+      ) : null}
 
       {canRegenerate && isRegenerateOpen ? (
         <section
@@ -368,39 +361,51 @@ export function VideoResultStage({
         </section>
       ) : null}
 
-      {tasks.length > 1 ? (
-        <nav aria-label="生成结果列表" className="video-stage-filmstrip">
-          {tasks.map((task, index) => {
-            const taskOutcomeValue = taskOutcome(task);
-            const isActive = task.id === activeTask.id;
-            const badge =
-              taskOutcomeValue === "in_progress"
-                ? `${Math.round(stagePercent(task, nowMs))}%`
-                : outcomeBadgeLabel(taskOutcomeValue);
-            return (
-              <button
-                aria-label={`查看结果 ${index + 1}：${task.id}`}
-                aria-pressed={isActive}
-                className={
-                  isActive
-                    ? "video-stage-cell video-stage-cell--active"
-                    : "video-stage-cell"
-                }
-                key={task.id}
-                onClick={() => setActiveTaskId(task.id)}
-                type="button"
-              >
-                <span className="video-stage-cell__index">{index + 1}</span>
-                <span
-                  className={`video-stage-cell__badge video-stage-cell__badge--${taskOutcomeValue}`}
+      <div className="video-stage-footer">
+        {tasks.length > 1 ? (
+          <nav aria-label="生成结果列表" className="video-stage-filmstrip">
+            {tasks.map((task, index) => {
+              const taskOutcomeValue = taskOutcome(task);
+              const isActive = task.id === activeTask.id;
+              const badge =
+                taskOutcomeValue === "in_progress"
+                  ? STEP_LABELS[
+                      stepIndexForStage(effectiveStage(task), taskOutcomeValue)
+                    ]
+                  : outcomeBadgeLabel(taskOutcomeValue);
+              return (
+                <button
+                  aria-label={`查看结果 ${index + 1}：${task.id}`}
+                  aria-pressed={isActive}
+                  className={
+                    isActive
+                      ? "video-stage-cell video-stage-cell--active"
+                      : "video-stage-cell"
+                  }
+                  key={task.id}
+                  onClick={() => setActiveTaskId(task.id)}
+                  type="button"
                 >
-                  {badge}
-                </span>
-              </button>
-            );
-          })}
-        </nav>
-      ) : null}
+                  <span className="video-stage-cell__index">
+                    结果 {index + 1}
+                  </span>
+                  <span
+                    className={`video-stage-cell__badge video-stage-cell__badge--${taskOutcomeValue}`}
+                  >
+                    {badge}
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+        ) : null}
+        <StageInfoBar
+          batchId={batch.id}
+          canOperate={canOperate}
+          onOpenOpsDetail={onOpenOpsDetail}
+          task={activeTask}
+        />
+      </div>
     </section>
   );
 }
@@ -432,7 +437,10 @@ function StageVideoPlayer({
       return;
     }
     if (video.paused) {
-      void video.play();
+      void video.play().catch(() => {
+        setIsPlaying(false);
+        onSourceError();
+      });
     } else {
       video.pause();
     }
@@ -576,9 +584,7 @@ function formatVideoTime(seconds: number): string {
 
 function StageProgressView({
   elapsed,
-  factIndex,
   onOpenOpsDetail,
-  percent,
   phaseMessage,
   queueStuck,
   queueWait,
@@ -587,9 +593,7 @@ function StageProgressView({
   stepIndex,
 }: {
   elapsed: number;
-  factIndex: number;
   onOpenOpsDetail: () => void;
-  percent: number;
   phaseMessage: string;
   queueStuck: boolean;
   queueWait: number;
@@ -599,38 +603,10 @@ function StageProgressView({
 }) {
   return (
     <div className="video-stage-progress">
-      <div
-        aria-label="生成进度"
-        aria-valuemax={100}
-        aria-valuemin={0}
-        aria-valuenow={Math.round(percent)}
-        className="video-stage-progress-ring"
-        role="progressbar"
-        style={
-          { "--stage-percent": `${Math.round(percent)}%` } as CSSProperties
-        }
-      >
-        <span className="video-stage-progress-ring__value">
-          {Math.round(percent)}%
-        </span>
-      </div>
-      <ol aria-label="生成阶段" className="video-stage-steps">
-        {STEP_LABELS.map((label, index) => (
-          <li
-            className={
-              index < stepIndex
-                ? "video-stage-step video-stage-step--done"
-                : index === stepIndex
-                  ? "video-stage-step video-stage-step--active"
-                  : "video-stage-step"
-            }
-            key={label}
-          >
-            <span className="video-stage-step__dot" aria-hidden="true" />
-            <span>{label}</span>
-          </li>
-        ))}
-      </ol>
+      <span className="video-stage-progress__eyebrow">当前阶段</span>
+      <strong className="video-stage-progress__stage" role="status">
+        {STEP_LABELS[stepIndex]}
+      </strong>
       <p className="video-stage-phase" role="status">
         {phaseMessage}
       </p>
@@ -656,14 +632,84 @@ function StageProgressView({
           </button>
         </div>
       ) : null}
-      <p className="video-stage-fact" key={factIndex}>
-        {REASSURANCE_FACTS[factIndex]}
-      </p>
       {showSlowWarning ? (
         <p className="video-stage-slow-note" role="status">
-          仍在渲染中，任务没有丢失，请放心等待。
+          渲染时间超过常规预估，任务仍在后台继续执行。
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function StageTimeline({
+  outcome,
+  stepIndex,
+}: {
+  outcome: TaskOutcome;
+  stepIndex: number;
+}) {
+  const completeAll = outcome === "completed" || outcome === "quality_failed";
+  return (
+    <ol aria-label="生成阶段" className="video-stage-steps">
+      {STEP_LABELS.map((label, index) => {
+        const isDone = completeAll || index < stepIndex;
+        const isActive = !completeAll && index === stepIndex;
+        return (
+          <li
+            className={
+              isDone
+                ? "video-stage-step video-stage-step--done"
+                : isActive
+                  ? "video-stage-step video-stage-step--active"
+                  : "video-stage-step"
+            }
+            key={label}
+          >
+            <span className="video-stage-step__dot" aria-hidden="true" />
+            <span>{label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function StagePlaybackRecovery({
+  canDownload,
+  error,
+  onDownload,
+  onOpenOpsDetail,
+  onRetry,
+  retryBusy,
+}: {
+  canDownload: boolean;
+  error: string;
+  onDownload: () => void;
+  onOpenOpsDetail: () => void;
+  onRetry: () => void;
+  retryBusy: boolean;
+}) {
+  return (
+    <div className="video-stage-playback-error" role="status">
+      <strong>暂时无法播放</strong>
+      <p>{error}</p>
+      <div className="video-stage-playback-error__actions">
+        <button disabled={retryBusy} onClick={onRetry} type="button">
+          {retryBusy ? "正在重新获取…" : "重新获取播放地址"}
+        </button>
+        {canDownload ? (
+          <button
+            className="secondary-button"
+            onClick={onDownload}
+            type="button"
+          >
+            下载原文件
+          </button>
+        ) : null}
+      </div>
+      <button className="link-button" onClick={onOpenOpsDetail} type="button">
+        查看技术详情
+      </button>
     </div>
   );
 }
@@ -684,7 +730,15 @@ function StageOutcomeView({
   );
 }
 
-function StageInfoBar({ task }: { task: GenerationTask }) {
+function StageSummary({
+  batch,
+  outcome,
+  task,
+}: {
+  batch: GenerationBatch;
+  outcome: TaskOutcome;
+  task: GenerationTask;
+}) {
   const resolution = readSnapshotString(task, "resolution");
   const outputDuration = readSnapshotNumber(task, "output_duration_seconds");
   const quality =
@@ -694,50 +748,72 @@ function StageInfoBar({ task }: { task: GenerationTask }) {
         ? "音频质检未通过"
         : "质检待完成";
   return (
-    <div className="video-stage-info">
-      <dl className="video-stage-facts">
+    <aside className="video-stage-summary" aria-label="结果信息">
+      <h3>结果信息</h3>
+      <dl>
         <div>
-          <dt>生成能力</dt>
-          <dd>视频生成</dd>
+          <dt>完成情况</dt>
+          <dd>
+            {batch.progress.terminal_count} / {batch.progress.total_count}{" "}
+            个结果
+          </dd>
         </div>
-        {resolution ? (
-          <div>
-            <dt>分辨率</dt>
-            <dd>{resolution}</dd>
-          </div>
-        ) : null}
-        {outputDuration !== null ? (
-          <div>
-            <dt>成片时长</dt>
-            <dd>{outputDuration} 秒</dd>
-          </div>
-        ) : null}
         <div>
-          <dt>生成耗时</dt>
-          <dd>{formatDuration(task.duration_seconds)}</dd>
+          <dt>{outcome === "in_progress" ? "提交时间" : "完成时间"}</dt>
+          <dd>
+            {formatTimestamp(
+              outcome === "in_progress" ? task.submitted_at : task.completed_at,
+            )}
+          </dd>
         </div>
         <div>
           <dt>质检</dt>
           <dd>{quality}</dd>
         </div>
-        <div>
-          <dt>生成通道</dt>
-          <dd>{task.provider === "fake_h3" ? "测试模式" : "正式服务"}</dd>
-        </div>
-        <div>
-          <dt>费用</dt>
-          <dd>{formatCost(task.actual_cost ?? task.estimated_cost)}</dd>
-        </div>
+        {resolution || outputDuration !== null ? (
+          <div>
+            <dt>成片规格</dt>
+            <dd>
+              {[
+                resolution,
+                outputDuration !== null ? `${outputDuration} 秒` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </dd>
+          </div>
+        ) : null}
       </dl>
+    </aside>
+  );
+}
+
+function StageInfoBar({
+  batchId,
+  canOperate,
+  onOpenOpsDetail,
+  task,
+}: {
+  batchId: string;
+  canOperate: boolean;
+  onOpenOpsDetail: () => void;
+  task: GenerationTask;
+}) {
+  return (
+    <div className="video-stage-info">
       <details className="video-stage-tech">
         <summary>技术详情</summary>
         <dl>
+          <div>
+            <dt>批次 ID</dt>
+            <dd>{batchId}</dd>
+          </div>
           <div>
             <dt>任务 ID</dt>
             <dd>{task.id}</dd>
           </div>
           <div>
-            <dt>任务参考号</dt>
+            <dt>服务商参考号</dt>
             <dd>{task.provider_task_id_tail ?? "未公开"}</dd>
           </div>
           <div>
@@ -751,8 +827,25 @@ function StageInfoBar({ task }: { task: GenerationTask }) {
             <dt>提交时间</dt>
             <dd>{formatTimestamp(task.submitted_at)}</dd>
           </div>
+          <div>
+            <dt>生成通道 / 费用</dt>
+            <dd>
+              {task.provider === "fake_h3" ? "测试模式" : "正式服务"} ·{" "}
+              {formatCost(task.actual_cost ?? task.estimated_cost)}
+            </dd>
+          </div>
         </dl>
       </details>
+      {canOperate ? (
+        <button
+          aria-label="运维详情"
+          className="link-button video-stage-ops-entry"
+          onClick={onOpenOpsDetail}
+          type="button"
+        >
+          处理与诊断
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -807,35 +900,8 @@ function pickDefaultTaskId(tasks: GenerationTask[]): string {
   return (viewable ?? tasks[0])?.id ?? "";
 }
 
-function stagePercent(task: GenerationTask, nowMs: number): number {
-  const stage = effectiveStage(task);
-  switch (stage) {
-    case "PENDING":
-      return 3;
-    case "SUBMITTING":
-      return 8;
-    case "QUEUED":
-      return 15;
-    case "RUNNING": {
-      const elapsed = elapsedSeconds(task, nowMs);
-      const ratio = Math.min(elapsed / ESTIMATED_RENDER_SECONDS, 1);
-      const eased = 1 - (1 - ratio) ** 2;
-      if (elapsed > ESTIMATED_RENDER_SECONDS) {
-        return Math.min(85, 80 + (elapsed - ESTIMATED_RENDER_SECONDS) / 30);
-      }
-      return 25 + 55 * eased;
-    }
-    case "ARCHIVING":
-      return 90;
-    case "SUCCEEDED":
-      return 92;
-    default:
-      return 0;
-  }
-}
-
 function stepIndexForStage(stage: string, outcome: TaskOutcome): number {
-  if (outcome !== "in_progress") {
+  if (outcome === "completed" || outcome === "quality_failed") {
     return 4;
   }
   switch (stage) {
@@ -849,8 +915,13 @@ function stepIndexForStage(stage: string, outcome: TaskOutcome): number {
     case "ARCHIVING":
     case "SUCCEEDED":
       return 3;
+    case "FAILED":
+    case "CANCELLED":
+    case "SUBMISSION_UNCERTAIN":
+    case "ARCHIVE_FAILED":
+      return 2;
     default:
-      return 4;
+      return 0;
   }
 }
 
@@ -967,10 +1038,6 @@ function formatClock(totalSeconds: number): string {
     return `${seconds} 秒`;
   }
   return `${minutes} 分 ${seconds} 秒`;
-}
-
-function formatDuration(value: number | null | undefined) {
-  return value === null || value === undefined ? "—" : `${value.toFixed(1)} 秒`;
 }
 
 function formatCost(value: number | null | undefined) {

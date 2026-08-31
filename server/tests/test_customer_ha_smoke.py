@@ -610,7 +610,7 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     assert "url.port" in origin_guard
     assert "--config src-tauri/tauri.customer.conf.json" in package
     assert customer_config["productName"] == "短视频复刻客户云工作台"
-    assert customer_config["version"] == "0.1.7"
+    assert customer_config["version"] == "0.1.10"
     assert customer_config["identifier"] == "com.xiangshu.video-replica.customer"
     assert customer_config["app"]["windows"][0]["url"] == "customer"
     assert customer_config["bundle"]["resources"] == []

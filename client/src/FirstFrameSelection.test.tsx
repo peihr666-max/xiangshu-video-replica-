@@ -63,6 +63,12 @@ const candidatesVersion = {
         sha256: "hash-1",
         size_bytes: 100,
         content_type: "image/png",
+        quality: {
+          passed: true,
+          attempt: 2,
+          issue_codes: [],
+          inspection: { head_only_replacement_detected: false },
+        },
       },
       {
         asset_id: "first-2",
@@ -138,6 +144,9 @@ describe("FirstFrameSelection", () => {
       "src",
       "https://private.example/first-1.png",
     );
+    expect(
+      screen.getByText("整身人物质检通过 · 自动修正 1 次"),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "确认用于视频生成的首帧" }),
     ).toBeDisabled();

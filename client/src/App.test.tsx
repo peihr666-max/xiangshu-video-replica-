@@ -1066,7 +1066,7 @@ describe("App", () => {
       screen.getByRole("heading", { name: "咖啡复刻" }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "镜头与口播" }),
+      await screen.findByRole("heading", { name: "动作时间段与口播" }),
     ).toBeInTheDocument();
     expect(await screen.findByText("咖啡口播拆解")).toBeInTheDocument();
     expect(screen.getByLabelText("S01 动作")).toHaveValue("已保存的动作");

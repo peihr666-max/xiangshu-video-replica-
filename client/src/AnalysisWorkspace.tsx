@@ -161,7 +161,15 @@ const DEFAULT_SHOT_MOTION: ShotMotion = {
 };
 
 const SHOT_TEXT_FIELDS: Array<{
-  key: Exclude<keyof ShotCard, "start_time" | "end_time" | "motion">;
+  key: Exclude<
+    keyof ShotCard,
+    | "start_time"
+    | "end_time"
+    | "motion"
+    | "segment_kind"
+    | "boundary_reason"
+    | "person_count"
+  >;
   label: string;
 }> = [
   { key: "shot_id", label: "镜头编号" },
@@ -866,10 +874,10 @@ export function AnalysisWorkspace({
         : { kind: "missing", count: contentMissingCount },
       content: (
         <div className="analysis-primary">
-          <section className="stage-block" aria-label="镜头与口播">
+          <section className="stage-block" aria-label="动作时间段与口播">
             <header className="stage-block__head">
               <span className="stage-block__index">02</span>
-              <h3>镜头与口播</h3>
+              <h3>动作时间段与口播</h3>
             </header>
             <div
               className={highlighted(
@@ -883,7 +891,7 @@ export function AnalysisWorkspace({
               <table className="shot-table">
                 <thead>
                   <tr>
-                    <th scope="col">镜头</th>
+                    <th scope="col">时间段</th>
                     <th scope="col">开始(秒)</th>
                     <th scope="col">结束(秒)</th>
                     {SHOT_TEXT_FIELDS.filter(
@@ -921,6 +929,16 @@ export function AnalysisWorkspace({
                           readOnly={readOnly || isSaving || isWorkspaceBusy}
                           value={shot.shot_id}
                         />
+                        {shot.segment_kind ? (
+                          <span
+                            className="shot-segment-kind"
+                            title={shot.boundary_reason ?? undefined}
+                          >
+                            {shot.segment_kind === "ACTION_BEAT"
+                              ? "动作段"
+                              : "切镜"}
+                          </span>
+                        ) : null}
                       </td>
                       <td className="shot-table__time">
                         <ShotCellInput

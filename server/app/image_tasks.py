@@ -22,8 +22,10 @@ from app.auth import CurrentUser, Role
 from app.character_asset_review import cleanup_publication_objects
 from app.db_portable import BusinessConnection
 from app.first_frames import (
+    FakeFirstFrameQualityInspector,
     FirstFrameGenerationPlan,
     FirstFrameGenerationWork,
+    FirstFrameQualityInspector,
     ImageProvider,
     StoredFirstFrameCandidates,
     complete_first_frame_generation,
@@ -66,6 +68,7 @@ class FirstFrameTaskPrepared:
     lease: ImageTaskLease
     plan: FirstFrameGenerationPlan
     provider: ImageProvider
+    quality_inspector: FirstFrameQualityInspector
 
 
 @dataclass(frozen=True)
@@ -139,6 +142,8 @@ def enqueue_first_frame_task(
         "source_frame_selection_version_id": plan.source_frame_selection_version_id,
         "source_frame_asset_id": plan.source_frame_asset_id,
         "reference_asset_ids": plan.character_inputs.reference_asset_ids,
+        "project_appearance_fingerprint": plan.project_appearance.fingerprint,
+        "source_analysis_version_id": plan.project_appearance.source_analysis_version_id,
     }
     request_hash = canonical_request_hash(request_payload)
     active = conn.execute(
@@ -343,6 +348,7 @@ def prepare_first_frame_task(
     *,
     lease: ImageTaskLease,
     provider: ImageProvider,
+    quality_inspector: FirstFrameQualityInspector | None = None,
 ) -> FirstFrameTaskPrepared:
     row = _require_owned_task(conn, "first_frame_tasks", lease)
     payload = json.loads(str(row["request_json"]))
@@ -377,6 +383,8 @@ def prepare_first_frame_task(
         "source_frame_selection_version_id": plan.source_frame_selection_version_id,
         "source_frame_asset_id": plan.source_frame_asset_id,
         "reference_asset_ids": plan.character_inputs.reference_asset_ids,
+        "project_appearance_fingerprint": plan.project_appearance.fingerprint,
+        "source_analysis_version_id": plan.project_appearance.source_analysis_version_id,
     }
     if canonical_request_hash(current_payload) != str(row["request_hash"]):
         raise _task_error(
@@ -385,7 +393,12 @@ def prepare_first_frame_task(
             "源画面或人物参考已变化，请重新提交首帧生成。",
         )
     conn.commit()
-    return FirstFrameTaskPrepared(lease=lease, plan=plan, provider=provider)
+    return FirstFrameTaskPrepared(
+        lease=lease,
+        plan=plan,
+        provider=provider,
+        quality_inspector=quality_inspector or FakeFirstFrameQualityInspector(),
+    )
 
 
 def run_first_frame_task_outside_transaction(
@@ -393,11 +406,16 @@ def run_first_frame_task_outside_transaction(
     *,
     storage: StorageAdapter,
     before_provider_call: Callable[[], None] | None = None,
+    after_provider_call: Callable[[], None] | None = None,
 ) -> tuple[FirstFrameGenerationWork, StoredFirstFrameCandidates]:
     work = load_first_frame_generation_work(prepared.plan, storage=storage)
-    if before_provider_call is not None:
-        before_provider_call()
-    generated = perform_first_frame_generation(work, provider=prepared.provider)
+    generated = perform_first_frame_generation(
+        work,
+        provider=prepared.provider,
+        quality_inspector=prepared.quality_inspector,
+        before_provider_call=before_provider_call,
+        after_provider_call=after_provider_call,
+    )
     stored = store_first_frame_generation(work, storage=storage, generated=generated)
     return work, stored
 

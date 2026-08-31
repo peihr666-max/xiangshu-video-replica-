@@ -30,8 +30,7 @@ export function SourceFrameSelection({
   projectId: string;
   readOnly?: boolean;
   referenceAssetId: string | null;
-  // 详情页简化模式仅精简辅助说明；人物替换特征仍必须由用户查看和确认，
-  // 不能以硬编码默认值冒充人工确认。
+  // 详情页默认只呈现自动处理状态；候选预览与更换入口收进低频操作区。
   simplified?: boolean;
   videoDurationSeconds?: number | null;
 }) {
@@ -41,13 +40,6 @@ export function SourceFrameSelection({
     [],
   );
   const [selectedAssetId, setSelectedAssetId] = useState("");
-  const [orientation, setOrientation] = useState("");
-  const [shotSize, setShotSize] = useState("");
-  const [faceVisibility, setFaceVisibility] = useState("");
-  const [bodyCompleteness, setBodyCompleteness] = useState("");
-  const [timestampsText, setTimestampsText] = useState(() =>
-    adaptiveSourceFrameTimestamps(videoDurationSeconds).join(", "),
-  );
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -63,32 +55,7 @@ export function SourceFrameSelection({
   const onBusyChangeRef = useRef(onBusyChange);
   onBusyChangeRef.current = onBusyChange;
   const autoExtractProjectRef = useRef<string | null>(null);
-  // 自动提取提示跨递归 loadCandidates 存活：提取成功后递归重载会走进
-  // 无确认分支重置文案，若不标记保留，提示存活窗口短于 E2E 轮询粒度
-  // （P0-05-02 评审 M1）。
-  const autoExtractNotifiedRef = useRef(false);
-
-  const resetFeatures = useCallback(() => {
-    setOrientation("");
-    setShotSize("");
-    setFaceVisibility("");
-    setBodyCompleteness("");
-  }, []);
-
-  // 预填只填空字段：仅在候选加载后一次性应用，用户改过的值不会被覆盖
-  // （任务 12 红线：确认仍为人工动作，建议值不落库）。
-  const applyFeatureSuggestion = useCallback(() => {
-    const suggestion = featureSuggestionRef.current;
-    if (!suggestion) {
-      return;
-    }
-    setOrientation((prev) => prev || suggestion.orientation);
-    setShotSize((prev) => prev || suggestion.shot_size);
-    setFaceVisibility(
-      (prev) => prev || (suggestion.face_visible ? "VISIBLE" : "HIDDEN"),
-    );
-    setBodyCompleteness((prev) => prev || suggestion.body_completeness);
-  }, []);
+  const autoConfirmAttemptRef = useRef<Set<string>>(new Set());
 
   const loadCandidates = useCallback(async () => {
     const requestId = loadRequestId.current + 1;
@@ -111,14 +78,12 @@ export function SourceFrameSelection({
       if (!version) {
         const defaultTimestamps =
           adaptiveSourceFrameTimestamps(videoDurationSeconds);
-        setTimestampsText(defaultTimestamps.join(", "));
         setCandidates([]);
         setPreviewUrls({});
         setFailedPreviewAssetIds([]);
         setSelectedAssetId("");
-        resetFeatures();
         onSelectionChange?.(null);
-        setStatus(selection.stale ? "候选已更新，请重新确认源画面。" : "");
+        setStatus(selection.stale ? "候选已更新，正在自动选择源画面。" : "");
         if (
           latestTask?.status === "PENDING" ||
           latestTask?.status === "RUNNING"
@@ -130,7 +95,7 @@ export function SourceFrameSelection({
             if (!isCurrentRequest()) {
               return;
             }
-            setStatus("候选源画面已提取，请核对后确认。");
+            setStatus("候选源画面已提取，正在自动选择。");
             await loadCandidates();
           } catch (requestError) {
             if (isCurrentRequest()) {
@@ -158,7 +123,7 @@ export function SourceFrameSelection({
           return;
         }
         // P0-03-02：角色就绪且无候选时自动提取默认时间点（本地截帧无费用），
-        // 提取仅产生候选，确认仍为人工动作；readOnly 不触发（契约红线 6）。
+        // 候选生成后由下方流程自动选取并确认；readOnly 不触发写操作（契约红线 6）。
         if (
           !readOnly &&
           referenceAssetId &&
@@ -184,8 +149,7 @@ export function SourceFrameSelection({
             if (!isCurrentRequest()) {
               return;
             }
-            autoExtractNotifiedRef.current = true;
-            setStatus("已自动提取候选源画面，请核对后确认。");
+            setStatus("已自动提取候选源画面，正在自动选择。");
             await loadCandidates();
           } catch (requestError) {
             if (isCurrentRequest()) {
@@ -214,46 +178,51 @@ export function SourceFrameSelection({
       setCandidates(payload.candidates);
       setPreviewUrls({});
       setFailedPreviewAssetIds([]);
-      setTimestampsText(payload.requested_timestamps_seconds.join(", "));
       const confirmedAssetId = selection.version?.payload.source_frame_asset_id;
-      const confirmedFeatures = selection.version
-        ? readCharacterFeatures(selection.version)
-        : null;
-      if (typeof confirmedAssetId === "string" && confirmedFeatures) {
+      if (typeof confirmedAssetId === "string" && !selection.stale) {
         setSelectedAssetId(confirmedAssetId);
-        setOrientation(confirmedFeatures.orientation);
-        setShotSize(confirmedFeatures.shot_size);
-        setFaceVisibility(
-          confirmedFeatures.face_visible ? "VISIBLE" : "HIDDEN",
-        );
-        setBodyCompleteness(confirmedFeatures.body_completeness);
-        setStatus("当前候选源画面已确认。");
+        setStatus("已自动选择源画面，将保留原视频的构图与动作。");
         onSelectionChange?.(selection.version);
-      } else if (typeof confirmedAssetId === "string") {
-        setSelectedAssetId(confirmedAssetId);
-        resetFeatures();
-        applyFeatureSuggestion();
-        setStatus("已保存的源画面缺少人物特征，请重新确认源画面。");
-        onSelectionChange?.(null);
-      } else if (selection.stale) {
-        setSelectedAssetId(preferredCandidateAssetId(payload.candidates));
-        resetFeatures();
-        applyFeatureSuggestion();
-        setStatus("候选已更新，请重新确认源画面。");
-        onSelectionChange?.(null);
       } else {
-        setSelectedAssetId(preferredCandidateAssetId(payload.candidates));
-        resetFeatures();
-        applyFeatureSuggestion();
-        if (autoExtractNotifiedRef.current) {
-          // 自动提取后的候选重载：保留提取提示直至人工确认/修改，
-          // 避免被本分支空文案覆盖（P0-05-02 评审 M1）。
-          autoExtractNotifiedRef.current = false;
-          setStatus("已自动提取候选源画面，请核对后确认。");
-        } else {
-          setStatus("");
-        }
+        const preferredAssetId = preferredCandidateAssetId(payload.candidates);
+        setSelectedAssetId(preferredAssetId);
         onSelectionChange?.(null);
+        if (!readOnly && preferredAssetId) {
+          const confirmationKey = `${version.id}:${preferredAssetId}`;
+          if (!autoConfirmAttemptRef.current.has(confirmationKey)) {
+            autoConfirmAttemptRef.current.add(confirmationKey);
+            onBusyChangeRef.current?.(true);
+            setIsSubmitting(true);
+            setStatus("正在后台选择最合适的源画面…");
+            try {
+              const confirmed = await confirmSourceFrame(
+                projectId,
+                preferredAssetId,
+                featureSuggestionRef.current,
+              );
+              if (!isCurrentRequest()) {
+                return;
+              }
+              setStatus("已自动选择源画面，将保留原视频的构图与动作。");
+              onSelectionChange?.(confirmed);
+            } catch (requestError) {
+              if (isCurrentRequest()) {
+                autoConfirmAttemptRef.current.delete(confirmationKey);
+                setStatus("自动选择未完成，可展开“查看或更换”手动处理。");
+                setError(
+                  requestError instanceof Error
+                    ? requestError.message
+                    : "自动选择源画面失败。",
+                );
+              }
+            } finally {
+              if (isCurrentRequest()) {
+                setIsSubmitting(false);
+              }
+              onBusyChangeRef.current?.(false);
+            }
+          }
+        }
       }
       if (readOnly) {
         return;
@@ -294,19 +263,12 @@ export function SourceFrameSelection({
       }
     }
   }, [
-    applyFeatureSuggestion,
     onSelectionChange,
     projectId,
     readOnly,
     referenceAssetId,
-    resetFeatures,
     videoDurationSeconds,
   ]);
-
-  function invalidateConfirmation() {
-    setStatus("源画面或人物特征已修改，请重新确认。");
-    onSelectionChange?.(null);
-  }
 
   useEffect(() => {
     void loadCandidates();
@@ -314,30 +276,6 @@ export function SourceFrameSelection({
       loadRequestId.current += 1;
     };
   }, [loadCandidates]);
-
-  function parseTimestamps(): number[] | null {
-    const values = timestampsText.split(",").map((value) => value.trim());
-    if (values.some((value) => value === "")) {
-      return null;
-    }
-    const timestamps = values.map(Number);
-    if (
-      timestamps.length < 1 ||
-      timestamps.length > 3 ||
-      timestamps.some(
-        (timestamp) =>
-          !Number.isFinite(timestamp) ||
-          timestamp < 0 ||
-          (typeof videoDurationSeconds === "number" &&
-            videoDurationSeconds > 0 &&
-            timestamp >= videoDurationSeconds),
-      ) ||
-      new Set(timestamps).size !== timestamps.length
-    ) {
-      return null;
-    }
-    return timestamps;
-  }
 
   async function handleExtract() {
     if (readOnly) {
@@ -347,22 +285,13 @@ export function SourceFrameSelection({
       setError("参考视频尚未就绪，不能提取源画面。");
       return;
     }
-    const timestamps = parseTimestamps();
-    if (!timestamps) {
-      setError(
-        "请输入 1–3 个视频时长范围内且不重复的时间点，例如 2.4, 6, 9.6。",
-      );
-      return;
-    }
+    const timestamps = adaptiveSourceFrameTimestamps(videoDurationSeconds);
     const requestId = loadRequestId.current + 1;
     loadRequestId.current = requestId;
     onBusyChangeRef.current?.(true);
     setIsSubmitting(true);
     setError("");
     setStatus("");
-    // 手动提取开启新状态，作废自动提取提示标记，避免异常分支残留的
-    // 标记把本次手动提取误标为自动提取（P0-05-02 评审 Minor）。
-    autoExtractNotifiedRef.current = false;
     let enqueuePending = true;
     try {
       const task = await extractSourceFrames(
@@ -381,9 +310,8 @@ export function SourceFrameSelection({
         return;
       }
       setSelectedAssetId("");
-      resetFeatures();
       onSelectionChange?.(null);
-      setStatus("候选源画面已更新，请选择并确认一张。");
+      setStatus("候选源画面已更新，正在自动选择。");
       await loadCandidates();
     } catch (requestError) {
       if (requestId !== loadRequestId.current) {
@@ -408,18 +336,8 @@ export function SourceFrameSelection({
     if (readOnly) {
       return;
     }
-    const characterFeatures = currentCharacterFeatures(
-      orientation,
-      shotSize,
-      faceVisibility,
-      bodyCompleteness,
-    );
-    if (
-      !selectedAssetId ||
-      !previewUrls[selectedAssetId] ||
-      !characterFeatures
-    ) {
-      setError("请先加载并查看候选源画面预览，再进行确认。");
+    if (!selectedAssetId || !previewUrls[selectedAssetId]) {
+      setError("请先加载并查看候选源画面预览，再使用所选画面。");
       return;
     }
     const requestId = loadRequestId.current;
@@ -430,7 +348,7 @@ export function SourceFrameSelection({
       const selection = await confirmSourceFrame(
         projectId,
         selectedAssetId,
-        characterFeatures,
+        featureSuggestionRef.current,
       );
       if (requestId !== loadRequestId.current) {
         return;
@@ -438,7 +356,7 @@ export function SourceFrameSelection({
       const selectedIndex = candidates.findIndex(
         (candidate) => candidate.asset_id === selectedAssetId,
       );
-      setStatus(`已确认候选源画面 ${selectedIndex + 1}。`);
+      setStatus(`已改用源画面 ${selectedIndex + 1}。`);
       onSelectionChange?.(selection);
     } catch (requestError) {
       if (requestId !== loadRequestId.current) {
@@ -459,111 +377,33 @@ export function SourceFrameSelection({
 
   return (
     <section
-      className="source-frame-selection"
+      className={
+        simplified
+          ? "source-frame-selection source-frame-selection--compact"
+          : "source-frame-selection"
+      }
       aria-labelledby="source-frame-title"
     >
-      <div>
-        <h3 id="source-frame-title">候选源画面</h3>
-        {!simplified ? <p>画质分仅用于排序，以人物可见性为准。</p> : null}
-      </div>
-      <fieldset className="source-frame-features">
-        <legend>人物替换特征（需人工确认）</legend>
-        <label>
-          人物朝向
-          <select
-            aria-label="人物朝向"
-            disabled={readOnly || isSubmitting}
-            onChange={(event) => {
-              setOrientation(event.target.value);
-              invalidateConfirmation();
-            }}
-            value={orientation}
-          >
-            <option value="">请选择</option>
-            <option value="FRONT">正面</option>
-            <option value="LEFT_45">左 45°</option>
-            <option value="RIGHT_45">右 45°</option>
-            <option value="LEFT_SIDE">左侧面</option>
-            <option value="RIGHT_SIDE">右侧面</option>
-          </select>
-        </label>
-        <label>
-          人物景别
-          <select
-            aria-label="人物景别"
-            disabled={readOnly || isSubmitting}
-            onChange={(event) => {
-              setShotSize(event.target.value);
-              invalidateConfirmation();
-            }}
-            value={shotSize}
-          >
-            <option value="">请选择</option>
-            <option value="CLOSE_UP">近景</option>
-            <option value="HALF_BODY">半身</option>
-            <option value="FULL_BODY">全身</option>
-          </select>
-        </label>
-        <label>
-          面部可见性
-          <select
-            aria-label="面部可见性"
-            disabled={readOnly || isSubmitting}
-            onChange={(event) => {
-              setFaceVisibility(event.target.value);
-              invalidateConfirmation();
-            }}
-            value={faceVisibility}
-          >
-            <option value="">请选择</option>
-            <option value="VISIBLE">清晰可见</option>
-            <option value="HIDDEN">不可见或遮挡</option>
-          </select>
-        </label>
-        <label>
-          身体完整度
-          <select
-            aria-label="身体完整度"
-            disabled={readOnly || isSubmitting}
-            onChange={(event) => {
-              setBodyCompleteness(event.target.value);
-              invalidateConfirmation();
-            }}
-            value={bodyCompleteness}
-          >
-            <option value="">请选择</option>
-            <option value="FACE_ONLY">仅面部</option>
-            <option value="UPPER_BODY">上半身</option>
-            <option value="FULL_BODY">全身</option>
-            <option value="PARTIAL">局部可见</option>
-          </select>
-        </label>
-      </fieldset>
-      <div className="source-frame-toolbar">
-        <label className="source-frame-timestamps">
-          重新取帧时间点（秒）
-          <input
-            aria-label="重新取帧时间点（秒）"
-            disabled={readOnly || isSubmitting}
-            onChange={(event) => setTimestampsText(event.target.value)}
-            value={timestampsText}
-          />
-          <small>
-            支持 1–3 个全片范围内的时间点，以逗号分隔
-            {typeof videoDurationSeconds === "number" &&
-            videoDurationSeconds > 0
-              ? `；当前视频约 ${videoDurationSeconds.toFixed(1)} 秒。`
-              : "。"}
-          </small>
-        </label>
-        <button
-          className="secondary-button"
-          disabled={readOnly || isSubmitting || !referenceAssetId}
-          onClick={handleExtract}
-          type="button"
+      <div className="source-frame-summary">
+        <div>
+          <h3 id="source-frame-title">源画面自动处理</h3>
+          <p>系统会保留原视频的构图与动作，并自动匹配已选人物视觉。</p>
+        </div>
+        <span
+          className={
+            error
+              ? "source-frame-state source-frame-state--attention"
+              : selectedAssetId && !isLoading && !isSubmitting
+                ? "source-frame-state source-frame-state--ready"
+                : "source-frame-state"
+          }
         >
-          {isSubmitting ? "正在处理" : "重新提取候选"}
-        </button>
+          {error
+            ? "需要处理"
+            : selectedAssetId && !isLoading && !isSubmitting
+              ? "已自动选择"
+              : "自动处理中"}
+        </span>
       </div>
       {isLoading ? <p className="status-note">正在读取候选源画面</p> : null}
       {error ? <p className="settings-error">{error}</p> : null}
@@ -574,88 +414,98 @@ export function SourceFrameSelection({
       {readOnly && candidates.length > 0 ? (
         <p className="status-note">只读身份不加载素材预览。</p>
       ) : null}
-      <fieldset className="source-frame-options">
-        <legend>
-          {readOnly
-            ? "候选记录（素材预览需要下载权限）"
-            : simplified
-              ? "选择一张"
-              : "选择一张用于后续人物置换和首帧生成"}
-        </legend>
-        {candidates.map((candidate, index) => (
-          <label
-            className={
-              selectedAssetId === candidate.asset_id
-                ? "source-frame-option source-frame-option--selected"
-                : "source-frame-option"
-            }
-            key={candidate.asset_id}
-          >
-            <input
-              checked={selectedAssetId === candidate.asset_id}
-              disabled={
-                readOnly || isSubmitting || !previewUrls[candidate.asset_id]
-              }
-              name="source-frame"
-              onChange={() => {
-                setSelectedAssetId(candidate.asset_id);
-                invalidateConfirmation();
-              }}
-              type="radio"
-              value={candidate.asset_id}
-            />
-            {previewUrls[candidate.asset_id] ? (
-              <img
-                alt={`候选源画面 ${index + 1}`}
-                src={previewUrls[candidate.asset_id]}
-              />
+      {candidates.length > 0 ? (
+        <details className="source-frame-advanced">
+          <summary>{readOnly ? "查看源画面记录" : "查看或更换源画面"}</summary>
+          <div className="source-frame-advanced__body">
+            {!readOnly ? (
+              <div className="source-frame-toolbar">
+                <p>
+                  通常无需修改。仅当人物遮挡、构图不合适或自动处理失败时更换。
+                </p>
+                <button
+                  className="secondary-button"
+                  disabled={isSubmitting || !referenceAssetId}
+                  onClick={handleExtract}
+                  type="button"
+                >
+                  {isSubmitting ? "正在处理" : "重新自动取帧"}
+                </button>
+              </div>
+            ) : null}
+            <fieldset className="source-frame-options">
+              <legend>
+                {readOnly ? "源画面记录" : "选择其他源画面（可选）"}
+              </legend>
+              {candidates.map((candidate, index) => (
+                <label
+                  className={
+                    selectedAssetId === candidate.asset_id
+                      ? "source-frame-option source-frame-option--selected"
+                      : "source-frame-option"
+                  }
+                  key={candidate.asset_id}
+                >
+                  <input
+                    checked={selectedAssetId === candidate.asset_id}
+                    disabled={
+                      readOnly ||
+                      isSubmitting ||
+                      !previewUrls[candidate.asset_id]
+                    }
+                    name="source-frame"
+                    onChange={() => {
+                      setSelectedAssetId(candidate.asset_id);
+                      setStatus("已选择其他源画面，点击下方按钮应用。");
+                    }}
+                    type="radio"
+                    value={candidate.asset_id}
+                  />
+                  {previewUrls[candidate.asset_id] ? (
+                    <img
+                      alt={`候选源画面 ${index + 1}`}
+                      src={previewUrls[candidate.asset_id]}
+                    />
+                  ) : (
+                    <span className="source-frame-placeholder">
+                      {failedPreviewAssetIds.includes(candidate.asset_id)
+                        ? "预览加载失败"
+                        : readOnly
+                          ? "预览不可用"
+                          : "预览加载中"}
+                    </span>
+                  )}
+                  <span>
+                    <strong>画面 {index + 1}</strong>
+                    <small>{candidate.timestamp_seconds.toFixed(1)} 秒</small>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            {readOnly ? (
+              <p className="status-note">只读身份不能更换源画面。</p>
             ) : (
-              <span className="source-frame-placeholder">
-                {failedPreviewAssetIds.includes(candidate.asset_id)
-                  ? "预览加载失败，请重新提取"
-                  : readOnly
-                    ? "预览不可用"
-                    : "预览加载中"}
-              </span>
+              <button
+                className="source-frame-confirm"
+                disabled={
+                  isSubmitting ||
+                  !selectedAssetId ||
+                  !previewUrls[selectedAssetId]
+                }
+                onClick={handleConfirm}
+                type="button"
+              >
+                使用所选画面
+              </button>
             )}
-            <span>
-              <strong>候选 {index + 1}</strong>
-              <small>{candidate.timestamp_seconds.toFixed(1)} 秒</small>
-              <small>
-                技术画质参考{" "}
-                {candidate.score === null ? "暂无" : candidate.score.toFixed(2)}
-              </small>
-            </span>
-          </label>
-        ))}
-      </fieldset>
-      {readOnly ? (
-        <p className="status-note">只读身份不能重新提取或确认源画面。</p>
-      ) : (
-        <button
-          className="source-frame-confirm"
-          disabled={
-            isSubmitting ||
-            !selectedAssetId ||
-            !previewUrls[selectedAssetId] ||
-            !currentCharacterFeatures(
-              orientation,
-              shotSize,
-              faceVisibility,
-              bodyCompleteness,
-            )
-          }
-          onClick={handleConfirm}
-          type="button"
-        >
-          确认源画面
-        </button>
-      )}
+          </div>
+        </details>
+      ) : null}
     </section>
   );
 }
 
-// P0-03-02：未确认时预选评分最高的候选（无评分时取第一张）。
+// P0-03-02：自动选取评分最高的候选（无评分时取第一张）。
 function preferredCandidateAssetId(candidates: SourceFrameCandidate[]): string {
   if (candidates.length === 0) {
     return "";
@@ -678,61 +528,4 @@ function adaptiveSourceFrameTimestamps(
   return [0.2, 0.5, 0.8].map((ratio) =>
     Number((durationSeconds * ratio).toFixed(3)),
   );
-}
-
-function readCharacterFeatures(
-  version: AnalysisVersion,
-): SourceFrameCharacterFeatures | null {
-  const value = version.payload.character_features;
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const features = value as Record<string, unknown>;
-  return currentCharacterFeatures(
-    features.orientation,
-    features.shot_size,
-    features.face_visible === true
-      ? "VISIBLE"
-      : features.face_visible === false
-        ? "HIDDEN"
-        : "",
-    features.body_completeness,
-  );
-}
-
-function currentCharacterFeatures(
-  orientation: unknown,
-  shotSize: unknown,
-  faceVisibility: unknown,
-  bodyCompleteness: unknown,
-): SourceFrameCharacterFeatures | null {
-  const orientations = [
-    "FRONT",
-    "LEFT_45",
-    "RIGHT_45",
-    "LEFT_SIDE",
-    "RIGHT_SIDE",
-  ] as const;
-  const shotSizes = ["CLOSE_UP", "HALF_BODY", "FULL_BODY"] as const;
-  const completeness = [
-    "FACE_ONLY",
-    "UPPER_BODY",
-    "FULL_BODY",
-    "PARTIAL",
-  ] as const;
-  if (
-    !orientations.includes(orientation as (typeof orientations)[number]) ||
-    !shotSizes.includes(shotSize as (typeof shotSizes)[number]) ||
-    (faceVisibility !== "VISIBLE" && faceVisibility !== "HIDDEN") ||
-    !completeness.includes(bodyCompleteness as (typeof completeness)[number])
-  ) {
-    return null;
-  }
-  return {
-    orientation: orientation as SourceFrameCharacterFeatures["orientation"],
-    shot_size: shotSize as SourceFrameCharacterFeatures["shot_size"],
-    face_visible: faceVisibility === "VISIBLE",
-    body_completeness:
-      bodyCompleteness as SourceFrameCharacterFeatures["body_completeness"],
-  };
 }

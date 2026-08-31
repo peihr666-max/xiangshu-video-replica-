@@ -125,7 +125,7 @@ describe("App generation handoff", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "任务记录" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(batch.id)).toBeInTheDocument();
+    expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
     expect(window.location.hash).toBe("#tasks");
     expect(window.localStorage.getItem("generation.batchId")).toBe(batch.id);
     await waitFor(() =>
@@ -153,7 +153,7 @@ describe("App generation handoff", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "任务记录" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(batch.id)).toBeInTheDocument();
+    expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
     expect(window.location.hash).toBe("#tasks");
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -230,6 +230,6 @@ describe("App generation handoff", () => {
       await screen.findByRole("heading", { level: 1, name: "任务记录" }),
     ).toBeInTheDocument();
     expect(window.location.hash).toBe("#tasks");
-    expect(screen.getByText(batch.id)).toBeInTheDocument();
+    expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
   });
 });

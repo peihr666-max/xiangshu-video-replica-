@@ -90,6 +90,7 @@ function renderStage(
     activeResultAction: "",
     activeTaskAction: "",
     batch: batch(),
+    batchTitle: "夏日咖啡馆口播复刻",
     canOperate: true,
     onDownload: vi.fn(),
     onOpenOpsDetail: vi.fn(),
@@ -142,26 +143,24 @@ describe("VideoResultStage", () => {
       }),
     });
 
-    // 进度环：RUNNING 60s 处于时间插值区间（25%–85%），非精确值断言。
-    const ring = screen.getByRole("progressbar", { name: "生成进度" });
-    const percent = Number(ring.getAttribute("aria-valuenow"));
-    expect(percent).toBeGreaterThanOrEqual(49);
-    expect(percent).toBeLessThanOrEqual(85);
+    // Provider 没有真实进度百分比：主视图只呈现后端阶段，不伪造数值。
+    expect(
+      screen.queryByRole("progressbar", { name: "生成进度" }),
+    ).not.toBeInTheDocument();
 
-    // 阶段叙事：步骤条 + 阶段文案 + 时间预期 + 轮换安抚内容。
-    expect(screen.getByText("渲染中").closest("li")).toHaveClass(
+    // 阶段叙事：步骤条 + 阶段文案 + 时间预期。
+    const stageList = screen.getByRole("list", { name: "生成阶段" });
+    expect(stageList.querySelectorAll("li")[2]).toHaveClass(
       "video-stage-step--active",
     );
-    expect(screen.getByText("已提交").closest("li")).toHaveClass(
+    expect(stageList.querySelectorAll("li")[0]).toHaveClass(
       "video-stage-step--done",
     );
     expect(
       screen.getByText("AI 正在基于你的首帧渲染画面、动作与口型…"),
     ).toBeInTheDocument();
     expect(screen.getByText(/已用时 1 分/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/渲染在云端进行，离开此页面不会中断任务/),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
   });
 
   it("shows an explicit not-lost reassurance when rendering runs long", () => {
@@ -182,7 +181,7 @@ describe("VideoResultStage", () => {
     });
 
     expect(
-      screen.getByText("仍在渲染中，任务没有丢失，请放心等待。"),
+      screen.getByText("渲染时间超过常规预估，任务仍在后台继续执行。"),
     ).toBeInTheDocument();
   });
 
@@ -196,10 +195,15 @@ describe("VideoResultStage", () => {
     const video = screen.getByLabelText("结果预览 task-ok");
     expect(video).toHaveAttribute("src", "https://stage-preview/asset-ok");
     expect(video).toHaveAttribute("preload", "auto");
-    expect(screen.getByText("视频生成")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "结果信息" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("2 / 2 个结果")).toBeInTheDocument();
     expect(screen.queryByText(/MiniMax/i)).not.toBeInTheDocument();
     expect(screen.getByText("音频质检通过")).toBeInTheDocument();
-    expect(screen.getByText("¥1.50")).toBeInTheDocument();
+    expect(
+      screen.getByText("生成通道 / 费用").nextElementSibling,
+    ).toHaveTextContent("¥1.50");
     expect(
       screen.getByRole("button", { name: "下载 MP4" }),
     ).toBeInTheDocument();
@@ -248,9 +252,9 @@ describe("VideoResultStage", () => {
 
     expect(onRequestPreview).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("button", { name: "重试加载" }),
+      screen.getByRole("button", { name: "重新获取播放地址" }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "重试加载" }));
+    fireEvent.click(screen.getByRole("button", { name: "重新获取播放地址" }));
     expect(onRequestPreview).toHaveBeenCalledTimes(1);
   });
 
@@ -347,7 +351,7 @@ describe("VideoResultStage", () => {
     expect(
       screen.getByText(/该任务需要人工处理（对账、归档重试或账单确认）/),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "查看处理方式" }));
+    fireEvent.click(screen.getByRole("button", { name: "运维详情" }));
     expect(onOpenOpsDetail).toHaveBeenCalledTimes(1);
   });
 

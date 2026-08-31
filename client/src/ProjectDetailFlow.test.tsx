@@ -20,6 +20,7 @@ vi.mock("./api", async (importOriginal) => {
     createGenerationBatch: vi.fn(),
     createScriptVersion: vi.fn(),
     defaultBatchProvider: actual.defaultBatchProvider,
+    extractSourceFrames: vi.fn(),
     generateFirstFrames: vi.fn(),
     getGenerationRuntimeLimits: vi.fn(),
     getLatestGenerationPrompt: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock("./api", async (importOriginal) => {
     resumeFirstFrameGeneration: vi.fn(),
     saveShotCards: vi.fn(),
     selectCharacterReferences: vi.fn(),
+    waitForSourceFrameTask: vi.fn(),
   };
 });
 
@@ -249,6 +251,15 @@ describe("ProjectDetailFlow", () => {
       stale: false,
     });
     vi.mocked(api.getLatestProjectSourceFrameTask).mockResolvedValue(null);
+    vi.mocked(api.extractSourceFrames).mockResolvedValue({
+      id: "source-frame-task-1",
+      status: "PENDING",
+    } as api.SourceFrameTask);
+    vi.mocked(api.waitForSourceFrameTask).mockResolvedValue({
+      id: "source-frame-task-1",
+      status: "SUCCEEDED",
+      result_version_id: sourceFramesVersion.id,
+    } as api.SourceFrameTask);
     vi.mocked(api.getAssetDownloadUrl).mockImplementation(async (assetId) => ({
       url: `http://127.0.0.1:8000/mock/${assetId}`,
     }));
@@ -330,22 +341,23 @@ describe("ProjectDetailFlow", () => {
     ).toHaveTextContent(/已超过建议上限/);
     expect(screen.queryByRole("button", { name: "AI 二创改写" })).toBeNull();
     expect(screen.queryByRole("button", { name: "使用原文案" })).toBeNull();
-    // 第二段区头是内联角色下拉；人物特征必须显示并来自已确认源画面，
-    // 不能再用详情页硬编码默认值冒充人工确认。
+    // 第二段保留角色入口，但源画面技术字段由后台自动处理并默认隐藏。
     const roleSelect = await screen.findByLabelText("角色版本");
     expect(roleSelect).toHaveValue("cv-1");
     expect(
       screen.getByRole("option", { name: /林夏 · 田园博主 V1/ }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("人物朝向")).toHaveValue("FRONT");
-    expect(screen.getByLabelText("人物景别")).toHaveValue("HALF_BODY");
-    expect(screen.getByLabelText("面部可见性")).toHaveValue("VISIBLE");
-    expect(screen.getByLabelText("身体完整度")).toHaveValue("UPPER_BODY");
+    expect(screen.getByText("源画面自动处理")).toBeInTheDocument();
+    expect(screen.getByText("已自动选择")).toBeInTheDocument();
+    expect(screen.queryByLabelText("人物朝向")).toBeNull();
+    expect(screen.queryByLabelText("人物景别")).toBeNull();
+    expect(screen.queryByLabelText("面部可见性")).toBeNull();
+    expect(screen.queryByLabelText("身体完整度")).toBeNull();
     expect(screen.queryByLabelText("首帧生成模式")).toBeNull();
     expect(screen.queryByLabelText("首帧编辑提示词")).toBeNull();
   });
 
-  it("keeps source-frame timestamps on the full source duration when output is capped", async () => {
+  it("uses the full source duration for automatic frame extraction", async () => {
     vi.mocked(api.getLatestProjectAnalysis).mockResolvedValue({
       ...analysisVersion,
       payload: {
@@ -365,7 +377,15 @@ describe("ProjectDetailFlow", () => {
       />,
     );
 
-    expect(await screen.findByText(/当前视频约 60\.0 秒/)).toBeInTheDocument();
+    await screen.findByText("源画面自动处理");
+    fireEvent.click(screen.getByRole("button", { name: "重新自动取帧" }));
+    await waitFor(() =>
+      expect(api.extractSourceFrames).toHaveBeenCalledWith(
+        "project-1",
+        "ref-1",
+        [12, 30, 48],
+      ),
+    );
     expect(screen.getByText(/15 秒成片建议约 60–75 字/)).toBeInTheDocument();
   });
 
@@ -660,7 +680,7 @@ describe("ProjectDetailFlow", () => {
     expect(screen.getByRole("button", { name: "返回项目列表" })).toBeEnabled();
     expect(workspaceBusy).not.toHaveBeenCalledWith(true);
     expect(screen.getByLabelText("角色版本")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "重新提取候选" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新自动取帧" })).toBeDisabled();
     expect(screen.getByText(/生成结束前暂不能更改/)).toBeInTheDocument();
 
     await act(async () => {

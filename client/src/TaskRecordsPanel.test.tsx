@@ -235,9 +235,13 @@ describe("TaskRecordsPanel", () => {
     expect(
       screen.getByRole("button", { name: "查看结果 2：task-audio-failed" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("视频生成")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "结果信息" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/MiniMax/i)).not.toBeInTheDocument();
-    expect(screen.getByText("¥1.50")).toBeInTheDocument();
+    expect(
+      screen.getByText("生成通道 / 费用").nextElementSibling,
+    ).toHaveTextContent("¥1.50");
     expect(screen.getByText("技术详情").closest("details")).not.toHaveAttribute(
       "open",
     );
@@ -394,6 +398,22 @@ describe("TaskRecordsPanel", () => {
     expect(api.createGenerationResultPreviewUrl).toHaveBeenCalledWith(
       "asset-ok",
     );
+
+    // 归档副本本身仍不可播放时，不再保留 0:00 / 0:00 黑屏，而是给出
+    // 可恢复动作。用户可重新签发播放地址，也可直接下载原文件。
+    fireEvent.error(fallbackVideo);
+    expect(await screen.findByText("暂时无法播放")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "重新获取播放地址" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "下载原文件" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新获取播放地址" }));
+    await waitFor(() =>
+      expect(api.createGenerationResultPreviewUrl).toHaveBeenCalledTimes(2),
+    );
   });
 
   it("tolerates a streaming preview response that finishes after the panel unmounts", async () => {
@@ -503,7 +523,7 @@ describe("TaskRecordsPanel", () => {
       ),
     );
     // 列表卡优先显示 display_name，改名后立刻生效。
-    expect(await screen.findByText("爆款 v2 批次")).toBeInTheDocument();
+    expect(await screen.findAllByText("爆款 v2 批次")).toHaveLength(2);
     expect(screen.queryByText("夏日咖啡馆口播复刻")).toBeNull();
   });
 

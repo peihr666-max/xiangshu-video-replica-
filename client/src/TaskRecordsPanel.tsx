@@ -67,7 +67,8 @@ export function TaskRecordsPanel({
   const [batch, setBatch] = useState<GenerationBatch | null>(handoffBatch);
   const [batchError, setBatchError] = useState("");
   const [isBatchLoading, setIsBatchLoading] = useState(false);
-  // 任务页双视角：舞台（客户视角，默认）与运维详情（对账/重试/账单确认）。
+  // 客户默认只看结果舞台；对账/重试等低频能力由舞台底部的
+  // “处理与诊断”入口进入，避免把内部运维信息放在主视图首层。
   const [viewMode, setViewMode] = useState<TaskViewMode>("stage");
   const [retryDelaySeconds, setRetryDelaySeconds] = useState<number | null>(
     null,
@@ -697,22 +698,32 @@ export function TaskRecordsPanel({
     [canOperate],
   );
 
-  // 直连链接播放失败（典型为签名过期）：标记后清除该预览，让自动
-  // effect 立即回退签发本地归档副本；归档链接本身的播放失败不改写
-  // 状态，交由既有错误提示与手动重试兜底。
+  // 直连链接播放失败（典型为签名过期）时自动回退归档副本；归档副本
+  // 仍无法播放时，清除黑屏播放器并展示可恢复的错误动作。
   const handlePreviewSourceError = useCallback((task: GenerationTask) => {
-    if (playableProviderUrl(task) === null) {
+    const directUrl = playableProviderUrl(task);
+    if (directUrl && !providerUrlFailedRef.current[task.id]) {
+      providerUrlFailedRef.current[task.id] = true;
+      setPreviewUrls((current) => {
+        if (current[task.id] !== directUrl) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[task.id];
+        return next;
+      });
       return;
     }
-    providerUrlFailedRef.current[task.id] = true;
+
     setPreviewUrls((current) => {
-      if (current[task.id] !== playableProviderUrl(task)) {
-        return current;
-      }
       const next = { ...current };
       delete next[task.id];
       return next;
     });
+    setResultErrors((current) => ({
+      ...current,
+      [task.id]: "视频已生成，但播放地址暂时不可用。",
+    }));
   }, []);
 
   async function handleDownload(task: GenerationTask) {
@@ -742,7 +753,7 @@ export function TaskRecordsPanel({
         <aside className="batch-history-panel" aria-label="批次历史">
           <div className="batch-history-heading">
             <div>
-              <h3>项目批次</h3>
+              <h3>批次列表</h3>
             </div>
             <button
               className="secondary-button"
@@ -824,9 +835,9 @@ export function TaskRecordsPanel({
                           </span>
                         </span>
                         <span className="batch-history-card__meta">
-                          {item.created_by_display_name} ·{" "}
-                          {item.progress.progress_percent}% · {item.quantity}{" "}
-                          个任务 · {formatTimestamp(item.created_at)}
+                          {formatTimestamp(item.created_at)} ·{" "}
+                          {item.progress.terminal_count} /{" "}
+                          {item.progress.total_count} 个结果
                         </span>
                         {item.needs_attention_count ? (
                           <span className="attention-tag">
@@ -880,55 +891,44 @@ export function TaskRecordsPanel({
             retryDelaySeconds={retryDelaySeconds}
           />
           {batch ? (
-            <>
-              <section aria-label="任务视图切换" className="task-view-switch">
-                <div className="task-view-switch__tabs">
+            viewMode === "stage" ? (
+              <VideoResultStage
+                activeResultAction={activeResultAction}
+                activeTaskAction={activeTaskAction}
+                batch={batch}
+                batchTitle={
+                  batch.display_name ??
+                  batchHistory.find((item) => item.id === batch.id)
+                    ?.project_name ??
+                  "视频生成批次"
+                }
+                canOperate={canOperate}
+                onDownload={handleDownload}
+                onOpenOpsDetail={() => setViewMode("ops")}
+                onPreviewSourceError={handlePreviewSourceError}
+                onRegenerate={handleRegenerateTask}
+                onRequestPreview={handlePreview}
+                previewUrls={previewUrls}
+                resultErrors={resultErrors}
+              />
+            ) : (
+              <>
+                <section
+                  aria-label="运维视图导航"
+                  className="task-view-switch task-view-switch--ops"
+                >
+                  <div>
+                    <strong>处理与诊断</strong>
+                    <p>仅在任务异常、对账或重试时使用。</p>
+                  </div>
                   <button
-                    aria-pressed={viewMode === "stage"}
-                    className={
-                      viewMode === "stage"
-                        ? "task-view-switch__button task-view-switch__button--active"
-                        : "task-view-switch__button"
-                    }
+                    className="secondary-button"
                     onClick={() => setViewMode("stage")}
                     type="button"
                   >
-                    生成结果
+                    返回生成结果
                   </button>
-                  <button
-                    aria-pressed={viewMode === "ops"}
-                    className={
-                      viewMode === "ops"
-                        ? "task-view-switch__button task-view-switch__button--active"
-                        : "task-view-switch__button"
-                    }
-                    onClick={() => setViewMode("ops")}
-                    type="button"
-                  >
-                    运维详情
-                  </button>
-                </div>
-                {activeBatchId ? (
-                  <span className="batch-id" title={activeBatchId}>
-                    {activeBatchId}
-                  </span>
-                ) : null}
-              </section>
-              {viewMode === "stage" ? (
-                <VideoResultStage
-                  activeResultAction={activeResultAction}
-                  activeTaskAction={activeTaskAction}
-                  batch={batch}
-                  canOperate={canOperate}
-                  onDownload={handleDownload}
-                  onOpenOpsDetail={() => setViewMode("ops")}
-                  onPreviewSourceError={handlePreviewSourceError}
-                  onRegenerate={handleRegenerateTask}
-                  onRequestPreview={handlePreview}
-                  previewUrls={previewUrls}
-                  resultErrors={resultErrors}
-                />
-              ) : (
+                </section>
                 <BatchPanel
                   activeResultAction={activeResultAction}
                   activeTaskAction={activeTaskAction}
@@ -966,8 +966,8 @@ export function TaskRecordsPanel({
                   taskPaymentConfirmations={taskPaymentConfirmations}
                   userRole={userRole}
                 />
-              )}
-            </>
+              </>
+            )
           ) : (
             <EmptyBatchState hasHistory={batchHistory.length > 0} />
           )}

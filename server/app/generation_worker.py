@@ -32,8 +32,8 @@ from app.db_pg import (
     validate_customer_production,
 )
 from app.db_portable import BusinessConnection
-from app.first_frame_routes import get_image_provider
-from app.first_frames import ImageProvider
+from app.first_frame_routes import get_first_frame_quality_inspector, get_image_provider
+from app.first_frames import FirstFrameQualityInspector, ImageProvider
 from app.generation import (
     H3Provider,
     H3ProviderFailed,
@@ -111,6 +111,7 @@ def run_worker_once(
     character_provider: CharacterImageProvider | None = None,
     analysis_provider: VideoAnalysisProvider | None = None,
     image_provider: ImageProvider | None = None,
+    first_frame_quality_inspector: FirstFrameQualityInspector | None = None,
     source_frame_extractor: SourceFrameExtractor | None = None,
     reconcile_provider: H3Provider | None = None,
     max_tasks: int | None = None,
@@ -280,16 +281,24 @@ def run_worker_once(
                 nonlocal submission_started
                 submission_started = True
 
+            def mark_submission_completed() -> None:
+                nonlocal submission_started
+                submission_started = False
+
             try:
                 prepared = prepare_first_frame_task(
                     conn,
                     lease=first_frame_lease,
                     provider=image_provider or get_image_provider(conn),
+                    quality_inspector=(
+                        first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
+                    ),
                 )
                 work, stored = run_first_frame_task_outside_transaction(
                     prepared,
                     storage=first_frame_storage or storage,
                     before_provider_call=mark_submission_started,
+                    after_provider_call=mark_submission_completed,
                 )
                 complete_first_frame_task(
                     conn,
@@ -636,6 +645,7 @@ def run_pg_worker_once(
     analysis_provider: VideoAnalysisProvider | None = None,
     generation_provider: H3Provider | None = None,
     image_provider: ImageProvider | None = None,
+    first_frame_quality_inspector: FirstFrameQualityInspector | None = None,
     source_frame_extractor: SourceFrameExtractor | None = None,
     max_tasks: int | None = None,
 ) -> int:
@@ -857,6 +867,10 @@ def run_pg_worker_once(
                 nonlocal submission_started
                 submission_started = True
 
+            def mark_pg_submission_completed() -> None:
+                nonlocal submission_started
+                submission_started = False
+
             try:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
@@ -864,11 +878,15 @@ def run_pg_worker_once(
                         conn,
                         lease=first_frame_lease,
                         provider=image_provider or get_image_provider(conn),
+                        quality_inspector=(
+                            first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
+                        ),
                     )
                 work, stored = run_first_frame_task_outside_transaction(
                     prepared,
                     storage=first_frame_storage or storage,
                     before_provider_call=mark_pg_submission_started,
+                    after_provider_call=mark_pg_submission_completed,
                 )
                 with pg_transaction() as raw_conn:
                     complete_first_frame_task(

@@ -373,11 +373,14 @@ export type ShotCard = {
   composition: string;
   camera_motion: string;
   subject: string;
+  person_count?: number | null;
   action: string;
   scene: string;
   spoken_text: string;
   transition: string;
   motion?: ShotMotion | null;
+  segment_kind?: "SHOT_CUT" | "ACTION_BEAT" | null;
+  boundary_reason?: string | null;
 };
 
 export type AnalysisPayload = {
@@ -526,6 +529,12 @@ export type FirstFrameCandidate = {
   sha256: string;
   size_bytes: number;
   content_type: string;
+  quality?: {
+    passed: boolean;
+    attempt: number;
+    issue_codes: string[];
+    inspection: Record<string, unknown>;
+  } | null;
 };
 
 export type FirstFrameCandidates = {
@@ -533,6 +542,18 @@ export type FirstFrameCandidates = {
   model: FirstFrameModel;
   prompt: string;
   candidates: FirstFrameCandidate[];
+  reconstruction_mode: string | null;
+  character_contract: Record<string, unknown> | null;
+  project_character_appearance_version_id: string | null;
+  project_appearance: ProjectAppearanceSpec | null;
+};
+
+export type ProjectAppearanceSpec = {
+  category: string;
+  scene: string;
+  subject: string;
+  outfit_description: string;
+  selection_reason: string;
 };
 
 export type FirstFrameSelectionState = {
@@ -2243,7 +2264,7 @@ async function pollSourceFrameTask(taskId: string): Promise<SourceFrameTask> {
 export async function confirmSourceFrame(
   projectId: string,
   sourceFrameAssetId: string,
-  characterFeatures: SourceFrameCharacterFeatures,
+  characterFeatures?: SourceFrameCharacterFeatures | null,
 ): Promise<AnalysisVersion> {
   return requestApiJson<AnalysisVersion>(
     `/api/projects/${encodeURIComponent(projectId)}/source-frames/confirm`,
@@ -2252,7 +2273,7 @@ export async function confirmSourceFrame(
       method: "POST",
       body: JSON.stringify({
         source_frame_asset_id: sourceFrameAssetId,
-        character_features: characterFeatures,
+        ...(characterFeatures ? { character_features: characterFeatures } : {}),
       }),
     },
   );
@@ -2517,6 +2538,38 @@ export function readFirstFrameCandidates(
     model: payload.model,
     prompt: payload.prompt,
     candidates: payload.candidates,
+    reconstruction_mode:
+      typeof payload.reconstruction_mode === "string"
+        ? payload.reconstruction_mode
+        : null,
+    character_contract: isRecord(payload.character_contract)
+      ? payload.character_contract
+      : null,
+    project_character_appearance_version_id:
+      typeof payload.project_character_appearance_version_id === "string"
+        ? payload.project_character_appearance_version_id
+        : null,
+    project_appearance: readProjectAppearance(payload.project_appearance),
+  };
+}
+
+function readProjectAppearance(value: unknown): ProjectAppearanceSpec | null {
+  if (
+    !isRecord(value) ||
+    typeof value.category !== "string" ||
+    typeof value.scene !== "string" ||
+    typeof value.subject !== "string" ||
+    typeof value.outfit_description !== "string" ||
+    typeof value.selection_reason !== "string"
+  ) {
+    return null;
+  }
+  return {
+    category: value.category,
+    scene: value.scene,
+    subject: value.subject,
+    outfit_description: value.outfit_description,
+    selection_reason: value.selection_reason,
   };
 }
 
@@ -2589,6 +2642,16 @@ function isSourceFrameCandidate(value: unknown): value is SourceFrameCandidate {
 }
 
 function isFirstFrameCandidate(value: unknown): value is FirstFrameCandidate {
+  const qualityValid =
+    !isRecord(value) ||
+    value.quality === undefined ||
+    value.quality === null ||
+    (isRecord(value.quality) &&
+      typeof value.quality.passed === "boolean" &&
+      typeof value.quality.attempt === "number" &&
+      Array.isArray(value.quality.issue_codes) &&
+      value.quality.issue_codes.every((code) => typeof code === "string") &&
+      isRecord(value.quality.inspection));
   return (
     isRecord(value) &&
     typeof value.asset_id === "string" &&
@@ -2596,7 +2659,8 @@ function isFirstFrameCandidate(value: unknown): value is FirstFrameCandidate {
     typeof value.storage_uri === "string" &&
     typeof value.sha256 === "string" &&
     typeof value.size_bytes === "number" &&
-    typeof value.content_type === "string"
+    typeof value.content_type === "string" &&
+    qualityValid
   );
 }
 
@@ -3227,9 +3291,31 @@ function isShotCard(value: unknown): value is ShotCard {
     return false;
   }
   if (
+    value.person_count !== undefined &&
+    value.person_count !== null &&
+    typeof value.person_count !== "number"
+  ) {
+    return false;
+  }
+  if (
     value.motion !== undefined &&
     value.motion !== null &&
     !isShotMotion(value.motion)
+  ) {
+    return false;
+  }
+  if (
+    value.segment_kind !== undefined &&
+    value.segment_kind !== null &&
+    value.segment_kind !== "SHOT_CUT" &&
+    value.segment_kind !== "ACTION_BEAT"
+  ) {
+    return false;
+  }
+  if (
+    value.boundary_reason !== undefined &&
+    value.boundary_reason !== null &&
+    typeof value.boundary_reason !== "string"
   ) {
     return false;
   }

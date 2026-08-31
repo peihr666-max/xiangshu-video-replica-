@@ -100,7 +100,7 @@ describe("SourceFrameSelection", () => {
     });
   });
 
-  it("shows ranked candidates and requires explicit confirmation", async () => {
+  it("automatically confirms the best candidate and hides technical controls", async () => {
     render(
       <SourceFrameSelection
         projectId="project-1"
@@ -108,42 +108,38 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    expect(await screen.findByText("候选源画面")).toBeInTheDocument();
+    expect(await screen.findByText("源画面自动处理")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(confirmSourceFrame).toHaveBeenCalledWith(
+        "project-1",
+        "source-1",
+        null,
+      ),
+    );
+    expect(
+      await screen.findByText("已自动选择源画面，将保留原视频的构图与动作。"),
+    ).toBeInTheDocument();
     expect(screen.getByAltText("候选源画面 1")).toHaveAttribute(
       "src",
       "https://private.example/source-1.jpg",
     );
-    expect(screen.getByText("技术画质参考 0.83")).toBeInTheDocument();
-    expect(screen.getByText("技术画质参考 0.52")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "确认源画面" })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("radio", { name: /候选 1/ }));
-    fireEvent.change(screen.getByLabelText("人物朝向"), {
-      target: { value: "FRONT" },
-    });
-    fireEvent.change(screen.getByLabelText("人物景别"), {
-      target: { value: "HALF_BODY" },
-    });
-    fireEvent.change(screen.getByLabelText("面部可见性"), {
-      target: { value: "VISIBLE" },
-    });
-    fireEvent.change(screen.getByLabelText("身体完整度"), {
-      target: { value: "UPPER_BODY" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "确认源画面" }));
-
-    await waitFor(() =>
-      expect(confirmSourceFrame).toHaveBeenCalledWith("project-1", "source-1", {
-        orientation: "FRONT",
-        shot_size: "HALF_BODY",
-        face_visible: true,
-        body_completeness: "UPPER_BODY",
-      }),
-    );
-    expect(await screen.findByText("已确认候选源画面 1。")).toBeInTheDocument();
+    expect(screen.queryByText(/技术画质参考/)).toBeNull();
+    expect(screen.queryByLabelText("人物朝向")).toBeNull();
+    expect(screen.queryByLabelText("人物景别")).toBeNull();
+    expect(screen.queryByLabelText("面部可见性")).toBeNull();
+    expect(screen.queryByLabelText("身体完整度")).toBeNull();
   });
 
-  it("rejects malformed manual timestamps instead of silently dropping them", async () => {
+  it("keeps a manual recovery path when automatic confirmation fails", async () => {
+    vi.mocked(confirmSourceFrame)
+      .mockRejectedValueOnce(new Error("自动确认暂不可用"))
+      .mockResolvedValueOnce({
+        ...candidatesVersion,
+        id: "source-selection-recovered",
+        kind: "source_frame_selection",
+        payload: { source_frame_asset_id: "source-1" },
+      });
+
     render(
       <SourceFrameSelection
         projectId="project-1"
@@ -151,19 +147,38 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    await screen.findByText("候选源画面");
-    fireEvent.change(screen.getByLabelText("重新取帧时间点（秒）"), {
-      target: { value: "0.5, invalid" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "重新提取候选" }));
+    expect(await screen.findByText("自动确认暂不可用")).toBeInTheDocument();
+    const useButton = screen.getByRole("button", { name: "使用所选画面" });
+    await waitFor(() => expect(useButton).toBeEnabled());
+    fireEvent.click(useButton);
 
-    expect(
-      await screen.findByText(/请输入 1–3 个视频时长范围内且不重复的时间点/),
-    ).toBeInTheDocument();
-    expect(extractSourceFrames).not.toHaveBeenCalled();
+    await waitFor(() => expect(confirmSourceFrame).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("已改用源画面 1。")).toBeInTheDocument();
   });
 
-  it("does not allow an unseen candidate to be confirmed", async () => {
+  it("re-extracts at adaptive timestamps without exposing technical inputs", async () => {
+    render(
+      <SourceFrameSelection
+        projectId="project-1"
+        referenceAssetId="reference-1"
+        videoDurationSeconds={12}
+      />,
+    );
+
+    await screen.findByAltText("候选源画面 1");
+    fireEvent.click(screen.getByRole("button", { name: "重新自动取帧" }));
+
+    await waitFor(() =>
+      expect(extractSourceFrames).toHaveBeenCalledWith(
+        "project-1",
+        "reference-1",
+        [2.4, 6, 9.6],
+      ),
+    );
+    expect(screen.queryByLabelText("重新取帧时间点（秒）")).toBeNull();
+  });
+
+  it("keeps an unavailable preview out of the manual fallback", async () => {
     vi.mocked(getAssetDownloadUrl).mockRejectedValueOnce(
       new Error("签名 URL 不可用"),
     );
@@ -174,11 +189,9 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    expect(
-      await screen.findByText("预览加载失败，请重新提取"),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /候选 1/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "确认源画面" })).toBeDisabled();
+    expect(await screen.findByText("预览加载失败")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("source-1")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "使用所选画面" })).toBeDisabled();
   });
 
   it("does not request protected preview downloads for a read-only auditor", async () => {
@@ -196,7 +209,7 @@ describe("SourceFrameSelection", () => {
     expect(getAssetDownloadUrl).not.toHaveBeenCalled();
   });
 
-  it("requires a legacy selection without character features to be confirmed again", async () => {
+  it("accepts a legacy selection without character features", async () => {
     const onSelectionChange = vi.fn();
     vi.mocked(getLatestProjectSourceFrameSelection).mockResolvedValue({
       stale: false,
@@ -217,10 +230,12 @@ describe("SourceFrameSelection", () => {
     );
 
     expect(
-      await screen.findByText(/缺少人物特征，请重新确认源画面/),
+      await screen.findByText("已自动选择源画面，将保留原视频的构图与动作。"),
     ).toBeInTheDocument();
-    expect(onSelectionChange).toHaveBeenLastCalledWith(null);
-    expect(screen.getByRole("button", { name: "确认源画面" })).toBeDisabled();
+    expect(onSelectionChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "source-selection-legacy" }),
+    );
+    expect(confirmSourceFrame).not.toHaveBeenCalled();
   });
 
   it("locks candidate choice while confirmation is in flight", async () => {
@@ -254,26 +269,11 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    await screen.findByText("候选源画面");
-    fireEvent.click(screen.getByRole("radio", { name: /候选 1/ }));
-    fireEvent.change(screen.getByLabelText("人物朝向"), {
-      target: { value: "FRONT" },
-    });
-    fireEvent.change(screen.getByLabelText("人物景别"), {
-      target: { value: "HALF_BODY" },
-    });
-    fireEvent.change(screen.getByLabelText("面部可见性"), {
-      target: { value: "VISIBLE" },
-    });
-    fireEvent.change(screen.getByLabelText("身体完整度"), {
-      target: { value: "UPPER_BODY" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "确认源画面" }));
-
     await waitFor(() => expect(confirmSourceFrame).toHaveBeenCalledOnce());
     expect(onBusyChange).toHaveBeenLastCalledWith(true);
-    expect(screen.getByRole("radio", { name: /候选 1/ })).toBeDisabled();
-    expect(screen.getByRole("radio", { name: /候选 2/ })).toBeDisabled();
+    expect(screen.getByText("自动处理中")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("source-1")).toBeDisabled();
+    expect(screen.getByDisplayValue("source-2")).toBeDisabled();
 
     resolveConfirmation?.();
     await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
@@ -312,21 +312,6 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    await screen.findByAltText("候选源画面 1");
-    fireEvent.click(screen.getByRole("radio", { name: /候选 1/ }));
-    fireEvent.change(screen.getByLabelText("人物朝向"), {
-      target: { value: "FRONT" },
-    });
-    fireEvent.change(screen.getByLabelText("人物景别"), {
-      target: { value: "HALF_BODY" },
-    });
-    fireEvent.change(screen.getByLabelText("面部可见性"), {
-      target: { value: "VISIBLE" },
-    });
-    fireEvent.change(screen.getByLabelText("身体完整度"), {
-      target: { value: "UPPER_BODY" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "确认源画面" }));
     await waitFor(() => expect(confirmSourceFrame).toHaveBeenCalledOnce());
 
     rerender(
@@ -357,8 +342,8 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    await screen.findByText("候选源画面");
-    fireEvent.click(screen.getByRole("button", { name: "重新提取候选" }));
+    await screen.findByAltText("候选源画面 1");
+    fireEvent.click(screen.getByRole("button", { name: "重新自动取帧" }));
     await waitFor(() => expect(extractSourceFrames).toHaveBeenCalledOnce());
     rerender(
       <SourceFrameSelection
@@ -395,7 +380,7 @@ describe("SourceFrameSelection", () => {
     );
 
     await screen.findByAltText("候选源画面 1");
-    fireEvent.click(screen.getByRole("button", { name: "重新提取候选" }));
+    fireEvent.click(screen.getByRole("button", { name: "重新自动取帧" }));
 
     await waitFor(() => expect(extractSourceFrames).toHaveBeenCalledOnce());
     await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
@@ -455,10 +440,7 @@ describe("SourceFrameSelection", () => {
     expect(await screen.findByAltText("候选源画面 1")).toBeInTheDocument();
   });
 
-  it("keeps the auto-extraction notice visible after candidates reload", async () => {
-    // P0-05-02 评审 M1：自动提取成功后递归 loadCandidates 走无确认分支，
-    // 提示须保留至人工确认，不被空文案覆盖（先等候选重载完成再断言，
-    // 避免只测到递归 await 窗口内的瞬态显示）。
+  it("automatically confirms after candidates are extracted", async () => {
     vi.mocked(getLatestProjectSourceFrames).mockResolvedValueOnce(null);
     render(
       <SourceFrameSelection
@@ -469,8 +451,13 @@ describe("SourceFrameSelection", () => {
 
     expect(await screen.findByAltText("候选源画面 1")).toBeInTheDocument();
     expect(
-      screen.getByText("已自动提取候选源画面，请核对后确认。"),
+      await screen.findByText("已自动选择源画面，将保留原视频的构图与动作。"),
     ).toBeInTheDocument();
+    expect(confirmSourceFrame).toHaveBeenCalledWith(
+      "project-1",
+      "source-1",
+      null,
+    );
   });
 
   it("does not auto-extract for a read-only auditor", async () => {
@@ -522,12 +509,12 @@ describe("SourceFrameSelection", () => {
     );
 
     await screen.findByAltText("候选源画面 1");
-    expect(screen.getByRole("radio", { name: /候选 1/ })).toBeChecked();
-    expect(screen.getByRole("radio", { name: /候选 2/ })).not.toBeChecked();
+    expect(screen.getByDisplayValue("source-1")).toBeChecked();
+    expect(screen.getByDisplayValue("source-2")).not.toBeChecked();
   });
 
-  it("prefills feature suggestions once and keeps user edits", async () => {
-    const { rerender } = render(
+  it("passes the latest visual suggestion to automatic confirmation", async () => {
+    render(
       <SourceFrameSelection
         featureSuggestion={{
           body_completeness: "FACE_ONLY",
@@ -540,37 +527,18 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    await screen.findByAltText("候选源画面 1");
-    expect(screen.getByLabelText("人物朝向")).toHaveValue("FRONT");
-    expect(screen.getByLabelText("人物景别")).toHaveValue("CLOSE_UP");
-    expect(screen.getByLabelText("面部可见性")).toHaveValue("VISIBLE");
-    expect(screen.getByLabelText("身体完整度")).toHaveValue("FACE_ONLY");
-
-    // 用户修改后，新的建议值（镜头卡自动保存）不得覆盖用户输入。
-    fireEvent.change(screen.getByLabelText("人物朝向"), {
-      target: { value: "LEFT_45" },
-    });
-    rerender(
-      <SourceFrameSelection
-        featureSuggestion={{
-          body_completeness: "FULL_BODY",
-          face_visible: false,
-          orientation: "RIGHT_SIDE",
-          shot_size: "FULL_BODY",
-        }}
-        projectId="project-1"
-        referenceAssetId="reference-1"
-      />,
+    await waitFor(() =>
+      expect(confirmSourceFrame).toHaveBeenCalledWith("project-1", "source-1", {
+        body_completeness: "FACE_ONLY",
+        face_visible: true,
+        orientation: "FRONT",
+        shot_size: "CLOSE_UP",
+      }),
     );
-    expect(screen.getByLabelText("人物朝向")).toHaveValue("LEFT_45");
-    expect(screen.getByLabelText("人物景别")).toHaveValue("CLOSE_UP");
-    expect(screen.getByLabelText("面部可见性")).toHaveValue("VISIBLE");
-    expect(screen.getByLabelText("身体完整度")).toHaveValue("FACE_ONLY");
+    expect(screen.queryByLabelText("人物朝向")).toBeNull();
   });
 
-  it("keeps user edits across parent re-renders with a changing busy callback", async () => {
-    // 评审 M-1 回归锁定：宿主链路（App 内联回调 + busy 翻转重渲染）会
-    // 让 onBusyChange 身份每次渲染变化，不得因此重载候选或清空用户已填特征。
+  it("does not reload across parent re-renders with a changing busy callback", async () => {
     const { rerender } = render(
       <SourceFrameSelection
         featureSuggestion={{
@@ -588,9 +556,7 @@ describe("SourceFrameSelection", () => {
     await screen.findByAltText("候选源画面 1");
     const initialLoadCount = vi.mocked(getLatestProjectSourceFrames).mock.calls
       .length;
-    fireEvent.change(screen.getByLabelText("人物朝向"), {
-      target: { value: "LEFT_45" },
-    });
+    await waitFor(() => expect(confirmSourceFrame).toHaveBeenCalledOnce());
 
     rerender(
       <SourceFrameSelection
@@ -606,13 +572,13 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    expect(screen.getByLabelText("人物朝向")).toHaveValue("LEFT_45");
     expect(getLatestProjectSourceFrames).toHaveBeenCalledTimes(
       initialLoadCount,
     );
+    expect(confirmSourceFrame).toHaveBeenCalledOnce();
   });
 
-  it("keeps confirmed features over incoming suggestions", async () => {
+  it("keeps an existing confirmed source frame over incoming suggestions", async () => {
     vi.mocked(getLatestProjectSourceFrameSelection).mockResolvedValue({
       stale: false,
       version: {
@@ -644,11 +610,10 @@ describe("SourceFrameSelection", () => {
     );
 
     expect(
-      await screen.findByText("当前候选源画面已确认。"),
+      await screen.findByText("已自动选择源画面，将保留原视频的构图与动作。"),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("人物朝向")).toHaveValue("LEFT_45");
-    expect(screen.getByLabelText("人物景别")).toHaveValue("HALF_BODY");
-    expect(screen.getByLabelText("面部可见性")).toHaveValue("HIDDEN");
-    expect(screen.getByLabelText("身体完整度")).toHaveValue("UPPER_BODY");
+    expect(screen.getByDisplayValue("source-2")).toBeChecked();
+    expect(confirmSourceFrame).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("人物朝向")).toBeNull();
   });
 });
