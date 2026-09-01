@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "050_activation_license_zero_credit"
+    assert version == "051_identity_owner_backfill"
     assert {
         "characters",
         "project_main_characters",
@@ -235,6 +235,24 @@ def test_employee_cannot_choose_disabled_expired_or_out_of_scope_character(
         )
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "CHARACTER_NOT_AVAILABLE"
+
+
+def test_employee_cannot_bind_unowned_global_legacy_character(client: TestClient) -> None:
+    character = create_character(client, name="Admin Global Character")
+
+    detail = client.get(
+        f"/api/characters/{character['id']}?project_id=project_owned",
+        headers=headers("employee_1"),
+    )
+    selection = client.put(
+        "/api/projects/project_owned/main-character",
+        headers=headers("employee_1"),
+        json={"character_id": character["id"]},
+    )
+
+    assert detail.status_code == 422
+    assert selection.status_code == 422
+    assert selection.json()["detail"]["code"] == "CHARACTER_NOT_AVAILABLE"
 
 
 def test_project_main_character_selection_records_immutable_version_snapshot(

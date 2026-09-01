@@ -4,9 +4,9 @@
 the whole customer identity chain in exactly one PostgreSQL transaction (dev
 doc §12.1). An empty code is the unattended reinstall-recovery signal: an
 already ACTIVE code is resolved through the same HMAC-protected machine
-fingerprint, then its device/session credentials rotate. Entering that same
-ACTIVE code on a new machine directly occupies the next free device slot and
-enters the existing account; no separate pairing or approval lane is required.
+fingerprint, then its device/session credentials rotate. Unknown or revoked
+hardware must use the explicit pairing workflow; presenting a reusable code
+does not itself authorize a new or previously revoked device.
 
 Idempotency envelope (revision 029, ``customer_idempotency_envelopes``): the
 engine lives in ``app.customer_idempotency`` since T14 / ACT-07 so the later
@@ -422,7 +422,7 @@ def _recover_or_bind_active_device(
         "JOIN users u ON u.id = d.user_id "
         "WHERE d.activation_code_id = %s AND d.user_id = %s "
         "AND (d.fingerprint_hmac = ANY(%s) OR d.fingerprint_canonical = %s) "
-        "AND d.status IN ('BOUND', 'UNBOUND', 'REVOKED') "
+        "AND d.status IN ('BOUND', 'UNBOUND') "
         "AND u.role = 'customer' AND u.is_active = 1 "
         "ORDER BY CASE WHEN d.status = 'BOUND' THEN 0 ELSE 1 END, "
         "d.created_at DESC, d.id DESC LIMIT 1 FOR UPDATE OF d",
@@ -567,7 +567,7 @@ def _run_activation(
             "JOIN activation_codes c ON c.id = d.activation_code_id "
             "JOIN activation_code_batches b ON b.id = c.batch_id "
             "WHERE (d.fingerprint_hmac = ANY(%s) OR d.fingerprint_canonical = %s) "
-            "AND d.status IN ('BOUND', 'UNBOUND', 'REVOKED') AND c.status = 'ACTIVE' "
+            "AND d.status IN ('BOUND', 'UNBOUND') AND c.status = 'ACTIVE' "
             "ORDER BY d.created_at DESC, d.id DESC LIMIT 1 FOR UPDATE OF c, d",
             (fingerprint_digests, fingerprint_digests[0]),
         ).fetchone()

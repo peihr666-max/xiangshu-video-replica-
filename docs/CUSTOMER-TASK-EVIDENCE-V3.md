@@ -4,6 +4,28 @@
 >
 > **Evidence location (M0 review M8 unification, 2026-08-21)**: per-task evidence documents live under `docs/evidence/` (T02–T06 evidence files moved from the repository root; run-fix evidence under `docs/evidence/m0-review-fixes/`). Historical self-references inside those documents to their original root paths are preserved as record snapshots.
 
+## T44 — T43 Security Follow-up Remediation
+
+| Field | Value |
+| --- | --- |
+| **Task ID** | T44 |
+| **Owner / Reviewer** | Backend/DB/Security/QA (Agent); repository self-review found no remaining Critical/High/Medium code issue; PG execution boundary remains open |
+| **Branch / Base SHA** | `feat/customer-v3-t44-security-followup` / `3799789588fd0278b8e18691329d60c7e75dfe23` |
+| **Verified Implementation SHA** | `0b36c61` |
+| **Upstream Spec Sections** | T43 follow-up findings B-1, F-1–F-5, C-1 and P-1 |
+| **Failure Test or Regression Lock** | NULL identity-owner backfill/NOT NULL/conflict refusal; customer/auditor internal recharge denial; revoked-device recovery denial; unowned legacy binding denial; auditor cache denial; cross-user first-frame replay denial; traversal/ambiguous object-key refusal; system auto-publish audit policy |
+| **Implementation Result** | Revision 051 performs deterministic owner recovery and fails closed on ambiguity; all listed authorization and storage bypasses are closed; per product decision, simple character generation remains direct and records system auto-approval rather than impersonating a human reviewer |
+| **Verification Command and Pass Count** | Initial 6 regression locks failed on old behavior then passed after fixes; focused 6/6; migration/schema related 116 passed / 13 skipped; affected aggregate 164 passed / 117 skipped; server full 924 passed / 499 skipped / 0 failed; Mypy 74 modules, full-server Ruff and format checks passed. PostgreSQL-specific T44 tests are present but skipped because this workstation has no PG fixture |
+| **Evidence Level** | `CODE_PRESENT`; not yet `AUTOMATED_VERIFIED` because the new migration has not executed on a real PostgreSQL 16 fixture |
+| **Security and Observability** | No customer data or secrets recorded; authorization runs before idempotent replay/storage network I/O; ambiguous ownership blocks migration |
+| **Migration and Rollback** | 051 prefers unique project-derived ownership, falls back to an existing creator, refuses conflicts/unresolved rows, then enforces NOT NULL and RESTRICT; downgrade restores nullable SET NULL shape without undoing safe backfill values |
+| **External Authorization Record** | None; no production DB, server, payment, COS, Provider, code issuance or release action |
+| **Untested Items** | Real PG16 upgrade/downgrade/conflict refusal, staging data preflight, production backup/migration and desktop release |
+
+Full evidence: `docs/evidence/T44-EVIDENCE.md`.
+
+---
+
 ## T43 — Tenant Isolation and Activation Security Remediation
 
 | Field | Value |

@@ -24,7 +24,7 @@ def test_zpay_provider_migration_is_reversible(tmp_path: Path) -> None:
     with initialize_database(db_path) as raw:
         with BusinessConnection.sqlite(raw) as conn:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-                "050_activation_license_zero_credit"
+                "051_identity_owner_backfill"
             )
 
     command.downgrade(alembic_config(db_path), "022_internal_billing")
@@ -40,7 +40,7 @@ def test_zpay_provider_migration_is_reversible(tmp_path: Path) -> None:
     command.upgrade(alembic_config(db_path), "head")
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "050_activation_license_zero_credit"
+            "051_identity_owner_backfill"
         )
 
 
@@ -151,6 +151,37 @@ def test_create_recharge_order_builds_server_owned_zpay_form(
         "amount_fen": amount_fen,
         "credits": expected_credits,
     }
+
+
+def test_auditor_cannot_create_internal_recharge_order(
+    recharge_api: tuple[TestClient, Path, dict[str, str]],
+) -> None:
+    client, db_path, _ = recharge_api
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        auditor = create_user(
+            conn,
+            username="auditor_1",
+            display_name="Auditor One",
+            role="auditor",
+            user_id="auditor_1",
+        )
+        token = issue_token(conn, user_id=str(auditor["user_id"]), raw_token="auditor-token")
+
+    response = client.post(
+        "/api/recharge-orders",
+        headers={"Authorization": f"Bearer {token['token']}"},
+        json={"amount_fen": 10000},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "ROLE_FORBIDDEN"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM recharge_orders WHERE user_id = 'auditor_1'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize("amount_fen", [9900, 10100, "10000", 10000.0, True])

@@ -34,7 +34,7 @@ from app.first_frames import (
     prepare_first_frame_generation,
     store_first_frame_generation,
 )
-from app.permissions import require_project_access
+from app.permissions import require_not_auditor, require_project_access
 from app.simple_character import (
     PreparedSimpleCharacterGeneration,
     SimpleCharacterCreationResult,
@@ -106,6 +106,22 @@ def enqueue_first_frame_task(
     character_reference_selection_id: str | None,
     idempotency_key: str,
 ) -> sqlite3.Row:
+    # Authorization must precede the idempotent replay lookup. Otherwise an
+    # unrelated user who guesses a project/key pair can observe another
+    # account's durable task without entering the normal preparation path.
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="first_frame_task.create",
+        entity_type="project",
+        entity_id=project_id,
+    )
+    require_project_access(
+        conn,
+        actor=actor,
+        project_id=project_id,
+        action="first_frame_task.create",
+    )
     request_parameters = {
         "model": model,
         "prompt": prompt,

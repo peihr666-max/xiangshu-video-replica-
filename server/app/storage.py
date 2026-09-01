@@ -638,12 +638,18 @@ class CloudStorageAdapter(_BaseStorageAdapter):
 
 
 def _safe_key(key: str) -> str:
-    if key.startswith("/") or key in {"", ".", ".."}:
+    # Object keys are identifiers, not filesystem paths. Reject ambiguous
+    # spellings instead of normalizing them after an authorization decision.
+    # This keeps the authorized key identical to the key written on disk.
+    if (
+        key.startswith("/")
+        or key in {"", ".", ".."}
+        or "\\" in key
+        or "\x00" in key
+        or any(part in {"", ".", ".."} for part in key.split("/"))
+    ):
         raise ValueError(f"unsafe object key: {key}")
-    normalized = os.path.normpath(key).replace("\\", "/")
-    if normalized.startswith("../") or normalized == "..":
-        raise ValueError(f"unsafe object key: {key}")
-    return normalized
+    return key
 
 
 def _expires_at(expires_in: timedelta) -> datetime:

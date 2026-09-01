@@ -216,12 +216,16 @@ def seed_data(conn: sqlite3.Connection) -> None:
         "INSERT INTO users (id, username, display_name, role) VALUES (?, ?, ?, ?)",
         [
             ("employee_1", "employee_1", "Employee One", "employee"),
+            ("employee_2", "employee_2", "Employee Two", "employee"),
             ("admin_1", "admin_1", "Admin One", "admin"),
         ],
     )
-    conn.execute(
+    conn.executemany(
         "INSERT INTO projects (id, owner_user_id, name) VALUES (?, ?, ?)",
-        ("project_owned", "employee_1", "Owned Project"),
+        [
+            ("project_owned", "employee_1", "Owned Project"),
+            ("project_other", "employee_2", "Other Project"),
+        ],
     )
     conn.executemany(
         """
@@ -391,6 +395,29 @@ def test_first_frame_task_is_idempotent_and_worker_publishes_result(
     )
     assert latest.status_code == 200
     assert latest.json()["id"] == task.json()["result_version_id"]
+
+
+def test_first_frame_idempotent_replay_requires_project_access(client: TestClient) -> None:
+    prepare_inputs(client)
+    request = {
+        "model": "nano-banana-pro-2k",
+        "quantity": 1,
+        "idempotency_key": "first-frame-foreign-replay-1",
+    }
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json=request,
+        headers=headers("employee_1"),
+    )
+    replay = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json=request,
+        headers=headers("employee_2"),
+    )
+
+    assert created.status_code == 202
+    assert replay.status_code == 403
+    assert replay.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
 
 
 def test_first_frame_task_replay_survives_input_change_but_worker_fails_closed(

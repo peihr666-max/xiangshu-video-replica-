@@ -247,7 +247,12 @@ def choose_project_main_character(
     project_id: str,
     character_id: str,
 ) -> dict[str, object]:
-    character = read_character(conn, character_id)
+    character = get_character(
+        conn,
+        character_id=character_id,
+        actor=actor,
+        project_id=project_id,
+    )
     if not character_is_available(character, project_id=project_id):
         raise character_not_available()
 

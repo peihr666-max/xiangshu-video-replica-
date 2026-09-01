@@ -1783,8 +1783,8 @@ def _generate_and_approve_views(
             (
                 review_id,
                 character_asset_id,
-                actor.id,
-                "Auto-approved by simple upload flow.",
+                None,
+                "System auto-approved by direct-publish policy.",
                 now_iso,
             ),
         )
@@ -1903,6 +1903,7 @@ def _publish_views(
         "generation_source": generation_source,
         "persona_snapshot_hash": hashlib.sha256(persona_snapshot_json.encode()).hexdigest(),
         "published_at": now_iso,
+        "review_policy": "SYSTEM_AUTO_PUBLISH",
         "required_view_types": list(REQUIRED_CHARACTER_VIEW_TYPES),
         "schema_version": CHARACTER_PUBLICATION_SCHEMA_VERSION,
         "template_hash": CHARACTER_TEMPLATE_HASH,
