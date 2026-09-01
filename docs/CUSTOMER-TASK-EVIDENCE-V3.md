@@ -11,16 +11,16 @@
 | **Task ID** | T45 |
 | **Owner / Reviewer** | Backend/Frontend/Security/QA/Release (Agent); repository self-review |
 | **Branch / Base SHA** | `feat/customer-v3-t45-defense-in-depth` / `92bace869c413d4403372e324530d7ff1052804b` |
-| **Verified Implementation SHA** | `cc563a54eadf9c746b1683fd15d89b2e530dbe7e` |
+| **Verified Implementation SHA** | `cc563a54eadf9c746b1683fd15d89b2e530dbe7e`; local PG16 integration fixes `8cebc43` |
 | **Upstream Spec Sections** | T45 work order B-2 plus S/D/C/A/E defense-in-depth findings |
 | **Failure Test or Regression Lock** | Session replay state gates; account-scoped keyed idempotency; late CLOSED payment; enabled-channel callback; revocable local/COS grants; per-device/preauth/reset limits; fencing dedupe; slot conflict mapping; customer response redaction; byte-identical 404; internal write contract; admin idle/context checks and self-service audit; billing actor split; auditor/reveal audit; executable release preflight |
 | **Implementation Result** | All T45 findings are closed in code or an explicit release-policy artifact; simple character and same-machine full-code reinstall remain direct without administrator review |
-| **Verification Command and Pass Count** | `npm run check`: secret scan pass; client 592/592; E2E format pass; Cargo pass; Ruff/format pass; Mypy 74 modules; Python 3.12.13 server full 943 passed / 504 skipped / 0 failed. PG tests skipped because no local PostgreSQL fixture is available |
-| **Evidence Level** | `CODE_PRESENT`; PostgreSQL 16 execution is required before `AUTOMATED_VERIFIED` |
+| **Verification Command and Pass Count** | Local PostgreSQL 16.15 on port 5433; `npm run check`: secret scan, client 592/592, E2E format, Cargo, Ruff/format, Mypy 74 modules all pass; Python 3.12.13 server full 1446 passed / 1 skipped / 0 failed; Playwright customer E2E 4/4 passed |
+| **Evidence Level** | `AUTOMATED_VERIFIED`; Docker runtime and staging/real external chains remain unverified |
 | **Security and Observability** | No plaintext secrets in audit/idempotency/log output; denial/reveal/auditor/self-service events are traceable; application grants are revocable; deploy preflight reports names and metadata only |
 | **Migration and Rollback** | No new migration; behavior is application/configuration level. Rollback must keep the upgraded client before restoring legacy recovery behavior |
 | **External Authorization Record** | None; no production DB/server/payment/COS/Provider/code issuance/gray/release action |
-| **Untested Items** | Real PG16 concurrency/integration, staging topology, real ZPay/COS/Provider, signed desktop installer and production deployment |
+| **Untested Items** | Docker runtime (Windows host lacks VirtualMachinePlatform), staging topology, real ZPay/COS/Provider, signed desktop installer and production deployment |
 
 Full evidence: `docs/evidence/T45-EVIDENCE.md`.
 
@@ -31,18 +31,18 @@ Full evidence: `docs/evidence/T45-EVIDENCE.md`.
 | Field | Value |
 | --- | --- |
 | **Task ID** | T44 |
-| **Owner / Reviewer** | Backend/DB/Security/QA (Agent); repository self-review found no remaining Critical/High/Medium code issue; PG execution boundary remains open |
+| **Owner / Reviewer** | Backend/DB/Security/QA (Agent); repository self-review found no remaining Critical/High/Medium code issue |
 | **Branch / Base SHA** | `feat/customer-v3-t44-security-followup` / `3799789588fd0278b8e18691329d60c7e75dfe23` |
 | **Verified Implementation SHA** | `0b36c61` |
 | **Upstream Spec Sections** | T43 follow-up findings B-1, F-1–F-5, C-1 and P-1 |
 | **Failure Test or Regression Lock** | NULL identity-owner backfill/NOT NULL/conflict refusal; customer/auditor internal recharge denial; revoked-device recovery denial; unowned legacy binding denial; auditor cache denial; cross-user first-frame replay denial; traversal/ambiguous object-key refusal; system auto-publish audit policy |
 | **Implementation Result** | Revision 051 performs deterministic owner recovery and fails closed on ambiguity; all listed authorization and storage bypasses are closed; per product decision, simple character generation remains direct and records system auto-approval rather than impersonating a human reviewer |
-| **Verification Command and Pass Count** | Initial 6 regression locks failed on old behavior then passed after fixes; focused 6/6; migration/schema related 116 passed / 13 skipped; affected aggregate 164 passed / 117 skipped; server full 924 passed / 499 skipped / 0 failed; Mypy 74 modules, full-server Ruff and format checks passed. PostgreSQL-specific T44 tests are present but skipped because this workstation has no PG fixture |
-| **Evidence Level** | `CODE_PRESENT`; not yet `AUTOMATED_VERIFIED` because the new migration has not executed on a real PostgreSQL 16 fixture |
+| **Verification Command and Pass Count** | Initial 6 regression locks failed on old behavior then passed after fixes; local PostgreSQL 16.15 migration suite 17/17 passed through revision 051 (including deterministic owner backfill and multi-owner refusal); server full 1446 passed / 1 skipped / 0 failed; client 592/592 and Playwright customer E2E 4/4 passed; Mypy 74 modules, full-server Ruff and format checks passed |
+| **Evidence Level** | `AUTOMATED_VERIFIED`; production-snapshot migration and staging remain open |
 | **Security and Observability** | No customer data or secrets recorded; authorization runs before idempotent replay/storage network I/O; ambiguous ownership blocks migration |
 | **Migration and Rollback** | 051 prefers unique project-derived ownership, falls back to an existing creator, refuses conflicts/unresolved rows, then enforces NOT NULL and RESTRICT; downgrade restores nullable SET NULL shape without undoing safe backfill values |
 | **External Authorization Record** | None; no production DB, server, payment, COS, Provider, code issuance or release action |
-| **Untested Items** | Real PG16 upgrade/downgrade/conflict refusal, staging data preflight, production backup/migration and desktop release |
+| **Untested Items** | Staging production-snapshot data preflight, production backup/migration and desktop release |
 
 Full evidence: `docs/evidence/T44-EVIDENCE.md`.
 

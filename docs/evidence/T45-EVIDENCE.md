@@ -2,16 +2,21 @@
 
 ## 1. 当前结论
 
-- 证据层级：`CODE_PRESENT`。
-- 分支：`feat/customer-v3-t45-defense-in-depth`，基线
+- 证据层级：`AUTOMATED_VERIFIED`。
+- 原实现分支：`feat/customer-v3-t45-defense-in-depth`，基线
   `92bace869c413d4403372e324530d7ff1052804b`。
 - 已验证实现提交：`cc563a54eadf9c746b1683fd15d89b2e530dbe7e`。
+- 本地 PG16 联测修复提交：`8cebc43`（分支
+  `fix/t45-local-pg-integration`）。
 - T45 工单中的会话/幂等、支付、签名 URL、限流、状态机、404 防枚举、管理端
   SoD、审计和发布检查项均已实现并建立回归锁。
 - 产品决策保持：simple 人物无需管理员审核，系统自动批准后直接生成/发布；
   同机重装输入完整原激活码并匹配指纹后直接恢复，也不需要管理员审核。
-- 本机没有 Docker、`psql` 或可访问的 `localhost:5433` PostgreSQL fixture，
-  PG 专项按测试合同跳过，因此不得提升为 `AUTOMATED_VERIFIED`。
+- 本机 PostgreSQL 16.15 隔离 fixture 已在 `127.0.0.1:5433` 实际执行迁移、
+  事务、限流、幂等与并发测试；全量服务端仅保留 1 条与 PG 无关的环境型 skip。
+- Docker Desktop 客户端已安装，但当前 Windows 镜像缺少
+  `VirtualMachinePlatform`，Docker 引擎未能启动；本轮是原生 PG16 联测，
+  不声明 Docker 容器运行时已验证。
 - 未连接或修改生产数据库、服务器、ZPay、COS、Provider，未发码、灰度或发布。
 
 ## 2. 逐项关闭结果
@@ -52,20 +57,21 @@
 | E2E 格式 | Biome：14 个文件通过 |
 | Tauri | `cargo fmt --check`、`cargo check --locked` 通过 |
 | 服务端静态 | Ruff check、Ruff format check 通过；Mypy 74 个模块通过 |
-| 受影响专项 | 292 通过；发现 1 个测试夹具缺签名 key，修复后相关 3/3 通过 |
-| 404 旧锁复验 | 旧 403 断言升级为不存在同型后 9/9 通过 |
-| 全量门禁 | Python 3.12.13；服务端 943 通过、504 跳过、0 失败，耗时 16 分 08 秒 |
+| 原失败点专项 | 32 通过；修正 PG 时区夹具、幂等测试 key 与 T45 后过期契约锁 |
+| 全量门禁 | Python 3.12.13；服务端 1446 通过、1 跳过、0 失败，耗时 22 分 44 秒 |
+| 客户端复验 | Biome、TypeScript、Vitest：50 个文件，592/592 通过 |
+| 浏览器联测 | Playwright Chromium：4/4 通过（激活×2、双设备配对、充值订单） |
 
 保留 1 条非阻断上游提示：FastAPI TestClient 的 Starlette/httpx 弃用警告。
 
 ## 4. 上线 No-Go
 
-- 必须在 PostgreSQL 16 fixture/隔离 staging 补跑所有跳过的 session、设备、限流、
-  管理写、迁移和并发用例；完成前证据仍是 `CODE_PRESENT`。
 - 必须先发布新桌面客户端，再发布 T45 服务端；确认旧客户端空码恢复提示符合发布说明。
 - 生产迁移/重启前必须运行 `scripts/customer_release_preflight.py` 并得到
   `T45_PREFLIGHT_OK`；建议固定到 systemd `ExecStartPre`。
 - 必须在同一候选 SHA 完成真实 ZPay 已关闭订单迟到付款、已启用渠道切换、私有 COS
   签名代理的大文件读取/吊销、Provider 和双 API 会话切换联测。
+- 若交付方式要求 Docker，必须先在具备 WSL2/Virtual Machine Platform 的主机补验
+  容器启动、健康检查与持久卷；本次原生 PG16 结果不替代该运行时证据。
 - 未完成备份、回滚演练、告警接收和上述真实链路前，不得标记
   `STAGING_VERIFIED`、`REAL_CHAIN_VERIFIED` 或 `PRODUCTION_GO`。

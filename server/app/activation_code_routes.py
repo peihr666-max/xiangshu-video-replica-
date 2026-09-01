@@ -430,7 +430,7 @@ def _recover_or_bind_active_device(
         "JOIN users u ON u.id = d.user_id "
         "WHERE d.activation_code_id = %s AND d.user_id = %s "
         "AND (d.fingerprint_hmac = ANY(%s) OR d.fingerprint_canonical = %s) "
-        "AND d.status IN ('BOUND', 'UNBOUND') "
+        "AND d.status IN ('BOUND', 'UNBOUND', 'REVOKED') "
         "AND u.role = 'customer' AND u.is_active = 1 "
         "ORDER BY CASE WHEN d.status = 'BOUND' THEN 0 ELSE 1 END, "
         "d.created_at DESC, d.id DESC LIMIT 1 FOR UPDATE OF d",
@@ -471,6 +471,12 @@ def _recover_or_bind_active_device(
         previous_slot = int(row[3])
         previous_status = str(row[4])
         target_slot: int | None
+        if previous_status == "REVOKED":
+            # Administrator revocation is terminal.  A matching historical
+            # fingerprint must not fall through to the unknown-device pairing
+            # response, which would both leak state and suggest that the
+            # credential can be revived.
+            raise _unavailable()
         if previous_status == "BOUND":
             target_slot = previous_slot
         else:
@@ -582,7 +588,10 @@ def _run_activation(
             hmac_key=hmac_key,
             device_name=device_name,
             device_platform=device_platform,
-            update_device_metadata=True,
+            # A reinstall can prove that it is the same machine, but the
+            # caller-supplied bootstrap label is not authority to rewrite the
+            # administrator/user-visible device identity.
+            update_device_metadata=False,
             allow_new_binding=True,
             request_id=request_id,
             server_now=server_now,

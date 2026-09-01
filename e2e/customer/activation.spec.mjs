@@ -17,8 +17,8 @@ test("customer activates a code and reaches the workspace", async ({
   await page.getByLabel("设备名称").fill("E2E Device A");
   await page.getByRole("button", { name: "激活并进入工作台" }).click();
 
-  // The workspace lands with the device-management entry visible.
-  await expect(page.getByRole("button", { name: "设备管理" })).toBeVisible({
+  // The workspace lands with the customer profile entry visible.
+  await expect(page.getByRole("button", { name: "打开个人中心" })).toBeVisible({
     timeout: 20_000,
   });
 });
@@ -32,6 +32,7 @@ test("activated workspace shows the first device in slot one and a wallet", asyn
   await page.getByLabel("设备名称").fill("E2E Device A");
   await page.getByRole("button", { name: "激活并进入工作台" }).click();
 
+  await page.getByRole("button", { name: "打开个人中心" }).click();
   await page.getByRole("button", { name: "设备管理" }).click();
 
   // Two-slot device view: the first device occupies slot one, and the
@@ -39,10 +40,13 @@ test("activated workspace shows the first device in slot one and a wallet", asyn
   await expect(page.getByText("E2E Device A").first()).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByRole("button", { name: "Recharge" })).toBeVisible();
+  const deviceManagement = page.getByRole("region", { name: "设备管理" });
+  await expect(
+    deviceManagement.getByRole("button", { name: "充值条数" }),
+  ).toBeVisible();
 
   // The pairing entry for a second device is present.
   await expect(
-    page.getByRole("link", { name: /Register second device/i }),
+    deviceManagement.getByRole("link", { name: "绑定第二台设备" }),
   ).toBeVisible();
 });

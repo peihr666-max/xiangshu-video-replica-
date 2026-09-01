@@ -2,10 +2,11 @@
 
 ## 1. 当前结论
 
-- 当前证据层级：`CODE_PRESENT`。
+- 当前证据层级：`AUTOMATED_VERIFIED`。
 - 分支：`feat/customer-v3-t44-security-followup`，基线 `3799789588fd0278b8e18691329d60c7e75dfe23`。
-- 实现提交：`0b36c61`；逐文件自评审未发现遗留 Critical/High/Medium 代码问题，真实 PG 执行边界仍保持开放。
-- 所有已报告缺陷均已修改并建立回归锁；本机没有 PostgreSQL fixture，因此迁移 051 的真实 PG16 用例尚未执行，不提前标记 `AUTOMATED_VERIFIED`。
+- 实现提交：`0b36c61`；本地 PG16 验证基线：`8cebc43`。逐文件自评审未发现遗留 Critical/High/Medium 代码问题。
+- 所有已报告缺陷均已修改并建立回归锁；迁移 051 已在本机 PostgreSQL 16.15
+  隔离数据库执行，包含 head 升级、owner 回填、约束和冲突拒绝用例。
 - 未连接或修改生产数据库、服务器、支付、COS、Provider，也未构建或发布桌面安装包。
 
 ## 2. 逐项修复结果
@@ -25,14 +26,16 @@
 
 1. 实现前的六个运行时回归测试全部在旧代码上失败，覆盖 F-1、C-1、F-3、F-4、F-5 和 P-1。
 2. 实现后同一专项：`6 passed`。
-3. 迁移/schema/人物相关组合：`116 passed, 13 skipped`。
-4. 受影响模块组合：`164 passed, 117 skipped`；跳过项主要为需要外部 PostgreSQL fixture 的用例。
-5. 服务端全量：`924 passed, 499 skipped, 0 failed`，耗时 14 分 40 秒；跳过项为未配置的 PG/外部工具环境合同。
+3. PostgreSQL 迁移套件：`17 passed`，迁移链实际升级至
+   `051_identity_owner_backfill`，含 T44 owner 回填和多 owner 冲突拒绝。
+4. 服务端全量：`1446 passed, 1 skipped, 0 failed`，耗时 22 分 44 秒；
+   PG session、设备、限流、迁移和并发用例均实际运行。
+5. 浏览器客户联测：Playwright Chromium `4 passed`。
 6. 静态检查：全服务端 Ruff 与 format check 通过；Mypy `74` 个模块通过；`git diff --check` 通过。
 
 ## 4. 上线前 No-Go
 
 - 必须先在生产快照的隔离副本上执行 051；若报告 multiple owners 或 no deterministic owner，必须人工确认归属后再迁移，不允许删除人物、临时填 admin 或跳过 NOT NULL。
-- 必须在 PostgreSQL 16 上执行新增的两个 T44 迁移测试，并验证 upgrade/downgrade 后外键行为。
 - 生产迁移前必须完成可恢复备份；同一发布 SHA 下验证客户充值路由、撤销设备、跨账号 legacy 绑定、首帧重放和直接发布审计快照。
-- 051 未在真实 PG16 通过前，不得宣称 `AUTOMATED_VERIFIED`、`STAGING_VERIFIED` 或 `PRODUCTION_GO`。
+- 本地 PG16 通过不等于生产快照验证；完成隔离 staging 数据预检、备份和回滚演练前，
+  不得宣称 `STAGING_VERIFIED` 或 `PRODUCTION_GO`。

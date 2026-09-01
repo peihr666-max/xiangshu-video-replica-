@@ -19,6 +19,7 @@ export function CustomerProfilePanel({
   onDismissPairing,
   onProfileUpdated,
   onRecharge,
+  onRefreshDevices,
   onResetActivationCode,
   onSessionExpired,
   onUnbind,
@@ -33,6 +34,7 @@ export function CustomerProfilePanel({
   onDismissPairing: (pairingId: string) => void;
   onProfileUpdated: (profile: CustomerProfile) => void;
   onRecharge: (amountYuan?: number) => void;
+  onRefreshDevices: () => Promise<void>;
   onResetActivationCode: () => Promise<CustomerActivationCodeReset>;
   onSessionExpired: () => void;
   onUnbind: (deviceId: string) => void;
@@ -144,7 +146,12 @@ export function CustomerProfilePanel({
             aria-current={tab === value ? "page" : undefined}
             className={tab === value ? "is-active" : ""}
             key={value}
-            onClick={() => setTab(value)}
+            onClick={() => {
+              setTab(value);
+              if (value === "devices") {
+                void onRefreshDevices();
+              }
+            }}
             type="button"
           >
             {label}
@@ -251,7 +258,13 @@ export function CustomerProfilePanel({
               >
                 {isResettingCode ? "正在重置" : "重置激活码"}
               </button>
-              <button onClick={() => setTab("devices")} type="button">
+              <button
+                onClick={() => {
+                  setTab("devices");
+                  void onRefreshDevices();
+                }}
+                type="button"
+              >
                 管理关联设备
               </button>
             </div>

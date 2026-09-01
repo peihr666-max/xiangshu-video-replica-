@@ -59,6 +59,7 @@ describe("CustomerProfilePanel", () => {
     onDismissPairing: vi.fn(),
     onProfileUpdated: vi.fn(),
     onRecharge: vi.fn(),
+    onRefreshDevices: vi.fn().mockResolvedValue(undefined),
     onResetActivationCode: vi.fn(),
     onSessionExpired: vi.fn(),
     onUnbind: vi.fn(),
@@ -76,6 +77,7 @@ describe("CustomerProfilePanel", () => {
     expect(screen.getByText("1 / 2")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "设备管理" }));
+    expect(defaultProps.onRefreshDevices).toHaveBeenCalled();
     expect(screen.getByText("工作电脑 •••• AB12")).toBeInTheDocument();
     expect(screen.getByText(/还没有绑定设备/)).toBeInTheDocument();
   });

@@ -949,8 +949,8 @@ def test_unbind_replays_sealed_204_after_response_loss(client: TestClient) -> No
     assert logouts is not None and int(logouts[0]) == 1
 
 
-def test_unbind_same_key_different_target_conflicts(client: TestClient) -> None:
-    """The key identifies one submission: a different target answers 409."""
+def test_unbind_same_key_different_target_isolated_by_scope(client: TestClient) -> None:
+    """T45 scopes an unbind key to its authenticated account and target."""
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-dev-13", suffix="d13")
     second_device_id = str(uuid.uuid4())
     _second_device_row(
@@ -964,19 +964,20 @@ def test_unbind_same_key_different_target_conflicts(client: TestClient) -> None:
     first = client.delete(f"{DEVICES_PATH}/{second_device_id}", headers=headers)
     assert first.status_code == 204, first.text
 
-    # Same key, but the target is now the caller's own device: the request
-    # hash differs, so the spent key answers a conflict instead of unbinding.
-    conflict = client.delete(f"{DEVICES_PATH}/{customer['device_id']}", headers=headers)
-    assert conflict.status_code == 409, conflict.text
-    assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
+    # The same client-generated key may safely be reused for a different
+    # authenticated target because the target is part of the envelope scope.
+    second = client.delete(f"{DEVICES_PATH}/{customer['device_id']}", headers=headers)
+    assert second.status_code == 204, second.text
+    assert second.headers.get(REPLAY_HEADER) is None
 
-    # The second target was never touched.
+    # Both independent submissions took effect.
     with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
-        status = conn.execute(
-            "SELECT status FROM customer_devices WHERE id = %s",
-            (customer["device_id"],),
-        ).fetchone()
-    assert status is not None and status[0] == "BOUND"
+        statuses = conn.execute(
+            "SELECT id, status FROM customer_devices WHERE id = ANY(%s) ORDER BY id",
+            ([second_device_id, customer["device_id"]],),
+        ).fetchall()
+    assert len(statuses) == 2
+    assert {str(row[1]) for row in statuses} == {"UNBOUND"}
 
 
 def test_unbind_idempotency_key_is_isolated_by_target_device(client: TestClient) -> None:

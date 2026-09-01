@@ -34,6 +34,7 @@ describe("CustomerRechargeDialog", () => {
   });
 
   it("creates a payment code and renders its QR image inside the app", async () => {
+    const onOrderCreated = vi.fn();
     const fetchMock = vi.fn((url: string, options?: RequestInit) => {
       if (url.endsWith("/api/customer/wallet")) {
         return jsonResponse({
@@ -89,6 +90,7 @@ describe("CustomerRechargeDialog", () => {
       <CustomerRechargeDialog
         isOpen
         onClose={vi.fn()}
+        onOrderCreated={onOrderCreated}
         onPaid={vi.fn()}
         onSessionExpired={vi.fn()}
         store={fakeStore()}
@@ -101,6 +103,7 @@ describe("CustomerRechargeDialog", () => {
     expect(qr).toHaveAttribute("src", "https://payment.example/qr.png");
     expect(screen.getByText("正在等待支付结果")).toBeInTheDocument();
     expect(screen.getByText(/到账 10 条/)).toBeInTheDocument();
+    expect(onOrderCreated).toHaveBeenCalledOnce();
     expect(screen.queryByText(/zpay|微信支付商户|支付宝商户/i)).toBeNull();
     await waitFor(() =>
       expect(
@@ -129,6 +132,7 @@ describe("CustomerRechargeDialog", () => {
       <CustomerRechargeDialog
         isOpen
         onClose={onClose}
+        onOrderCreated={vi.fn()}
         onPaid={vi.fn()}
         onSessionExpired={vi.fn()}
         store={fakeStore()}

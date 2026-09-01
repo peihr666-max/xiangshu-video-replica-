@@ -909,7 +909,9 @@ def test_request_scoped_pg_reads_persist_denials_after_dependency_rollback(
     with TestClient(app) as read_client:
         response = read_client.get("/denied-read")
 
-    assert response.status_code == 403
+    # T45 C-2 intentionally makes a foreign project indistinguishable from a
+    # missing one while retaining the durable denial audit server-side.
+    assert response.status_code == 404
     with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
         denial_count = int(
             conn.execute(
