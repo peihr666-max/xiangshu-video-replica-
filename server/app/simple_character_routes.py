@@ -19,14 +19,14 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.async_compat import reject_legacy_sync_operation
 from app.auth import AuthenticatedUser, Database
 from app.character_asset_review import cleanup_publication_objects
 from app.character_contracts import PersonIdentity, RequiredCharacterViewType
-from app.character_identity import character_error, read_identity_row
+from app.character_identity import character_error, read_identity_row, required_text
 from app.character_identity_routes import get_character_storage
 from app.customer_fence import BusinessDbDep
 from app.first_frame_routes import get_image_provider
@@ -46,6 +46,7 @@ from app.simple_character import (
     create_simple_character,
     delete_simple_character_identity,
     list_simple_library,
+    list_simple_scene_looks,
     prepare_simple_character_generation,
     regenerate_simple_character_contact_sheet,
     rename_simple_character_identity,
@@ -126,6 +127,30 @@ class SimpleCharacterRegenerationResponse(BaseModel):
     contact_sheet_asset_id: str
     generation_source: str
     views: list[SimpleCharacterViewResponse]
+
+
+class SimpleSceneLookResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    identity_id: str
+    persona_id: str
+    character_version_id: str
+    scene_name: str
+    scene_description: str
+    costume_description: str
+    contact_sheet_asset_id: str
+    generation_source: str
+    views: list[SimpleCharacterViewResponse]
+    published_at: str | None = None
+
+
+class SimpleSceneLookCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scene_name: str = Field(min_length=1, max_length=80)
+    scene_description: str = Field(min_length=1, max_length=600)
+    costume_description: str = Field(min_length=1, max_length=600)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 
 class IdentityRenameRequest(BaseModel):
@@ -328,6 +353,113 @@ def read_simple_library(
         )
         for entry in list_simple_library(conn, actor=actor)
     ]
+
+
+@router.get(
+    "/identities/{identity_id}/scene-looks",
+    response_model=list[SimpleSceneLookResponse],
+)
+def read_scene_looks(
+    identity_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> list[SimpleSceneLookResponse]:
+    return [
+        SimpleSceneLookResponse(
+            identity_id=look.identity_id,
+            persona_id=look.persona_id,
+            character_version_id=look.character_version_id,
+            scene_name=look.scene_name,
+            scene_description=look.scene_description,
+            costume_description=look.costume_description,
+            contact_sheet_asset_id=look.contact_sheet_asset_id,
+            generation_source=look.generation_source,
+            views=[
+                SimpleCharacterViewResponse(
+                    view_type=view.view_type,
+                    asset_id=view.asset_id,
+                )
+                for view in look.views
+            ],
+            published_at=look.published_at,
+        )
+        for look in list_simple_scene_looks(conn, actor=actor, identity_id=identity_id)
+    ]
+
+
+@router.post(
+    "/identities/{identity_id}/scene-looks/tasks/generate",
+    response_model=CharacterSheetTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def enqueue_scene_look(
+    identity_id: str,
+    payload: SimpleSceneLookCreateRequest,
+    db: BusinessDbDep,
+) -> CharacterSheetTaskResponse:
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="simple_character.scene_look.create",
+            entity_type="character_version",
+            entity_id=identity_id,
+        )
+        identity = read_identity_row(conn, identity_id)
+        if actor.role != "admin" and str(identity["owner_user_id"]) != actor.id:
+            raise character_error(
+                404,
+                "PERSON_IDENTITY_NOT_FOUND",
+                "人物身份不存在或不可用。",
+            )
+        if str(identity["status"]) == "ARCHIVED":
+            raise character_error(
+                409,
+                "IDENTITY_ARCHIVED",
+                "已归档人物身份不能新增场景造型。",
+            )
+        scene_name = required_text(
+            payload.scene_name,
+            "SCENE_LOOK_NAME_REQUIRED",
+            "场景名称不能为空。",
+        )
+        scene_description = required_text(
+            payload.scene_description,
+            "SCENE_LOOK_DESCRIPTION_REQUIRED",
+            "场景描述不能为空。",
+        )
+        costume_description = required_text(
+            payload.costume_description,
+            "SCENE_LOOK_COSTUME_REQUIRED",
+            "服装描述不能为空。",
+        )
+        source_asset = conn.execute(
+            "SELECT storage_uri, content_type, sha256, size_bytes FROM assets WHERE id = %s",
+            (str(identity["source_asset_id"]),),
+        ).fetchone()
+        if source_asset is None:
+            raise character_error(
+                409,
+                "SIMPLE_CHARACTER_SOURCE_MISSING",
+                "人物缺少原始授权照片。",
+            )
+        row = enqueue_character_sheet_task(
+            conn,
+            actor=actor,
+            operation="SCENE",
+            project_id=None,
+            identity_id=identity_id,
+            display_name=str(identity["display_name"]),
+            persona_name=scene_name,
+            source_storage_uri=str(source_asset["storage_uri"]),
+            source_content_type=str(source_asset["content_type"]),
+            source_sha256=str(source_asset["sha256"]),
+            source_size_bytes=int(source_asset["size_bytes"]),
+            idempotency_key=payload.idempotency_key,
+            scene_description=scene_description,
+            costume_description=costume_description,
+        )
+        return character_sheet_task_response(row)
 
 
 @router.patch("/identities/{identity_id}/name")
