@@ -43,9 +43,9 @@ acceptance spec §2.3 / §3.4):
   no second ``LOGIN`` event, ``X-Idempotent-Replay: true``), while the same
   key against a different request body answers 409 ``IDEMPOTENCY_CONFLICT``;
 
-- login is rate limited per IP through the T15 shared counters (the
-  ``login:ip`` dimension the security module already defines) and answers
-  429 ``RATE_LIMITED`` once the budget is spent — while a fully validated
+- login is rate limited per device credential through the T45 account bucket,
+  with the shared IP bucket retained as an auxiliary signal, and answers 429
+  ``RATE_LIMITED`` once the credential budget is spent — while a fully validated
   idempotent replay short-circuits *before* the limiter and spends no budget
   (the activation-route T15 review rule);
 
@@ -324,6 +324,7 @@ def customer_app(monkeypatch: pytest.MonkeyPatch, route_state: str) -> Iterator[
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_IP", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_IP", "1000")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_ACCOUNT", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS", "300")
     yield app
 
@@ -697,7 +698,9 @@ def test_login_requires_idempotency_key(client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 
-def test_login_is_rate_limited_per_ip(monkeypatch: pytest.MonkeyPatch, route_state: str) -> None:
+def test_login_is_rate_limited_per_device(
+    monkeypatch: pytest.MonkeyPatch, route_state: str
+) -> None:
     from app.activation_code_routes import router as activation_code_router
     from app.customer_session_routes import router as customer_session_router
 
@@ -716,6 +719,7 @@ def test_login_is_rate_limited_per_ip(monkeypatch: pytest.MonkeyPatch, route_sta
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_IP", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_IP", "2")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_ACCOUNT", "2")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS", "300")
 
     with TestClient(app) as tight_client:
@@ -765,6 +769,7 @@ def test_login_idempotent_replay_spends_no_rate_limit_budget(
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_IP", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_IP", "2")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_ACCOUNT", "2")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS", "300")
 
     with TestClient(app) as tight_client:
@@ -775,14 +780,22 @@ def test_login_idempotent_replay_spends_no_rate_limit_budget(
             **_bearer(customer["device_token"]),
             IDEMPOTENCY_KEY_HEADER: "idem-replay-budget",
         }
-        # Spend the whole budget of 2 (fresh keys — nothing to replay yet).
+        # The first fresh login spends one hit.  Its immediate replay is still
+        # current and must not spend a second hit.
         first = tight_client.post(LOGIN_PATH, json={}, headers=headers)
+        replay = tight_client.post(LOGIN_PATH, json={}, headers=headers)
+        assert first.status_code in (200, 201), first.text
+        assert replay.status_code == first.status_code, replay.text
+        assert replay.json() == first.json()
+        assert replay.headers.get(REPLAY_HEADER) == "true"
+
+        # A second fresh key spends the remaining hit and replaces the first
+        # sealed session.  The third fresh submission is then refused.
         second = tight_client.post(
             LOGIN_PATH,
             json={},
             headers={**headers, IDEMPOTENCY_KEY_HEADER: "idem-replay-budget-2"},
         )
-        assert first.status_code in (200, 201), first.text
         assert second.status_code in (200, 201), second.text
 
         # The budget is spent; a fresh key is now refused.
@@ -793,12 +806,11 @@ def test_login_idempotent_replay_spends_no_rate_limit_budget(
         )
         assert blocked.status_code == 429, blocked.text
 
-        # …but the retry of the first key replays its sealed response — the
-        # probe precedes the limiter, so the replay spends no budget.
-        replay = tight_client.post(LOGIN_PATH, json={}, headers=headers)
-        assert replay.status_code == first.status_code, replay.text
-        assert replay.json() == first.json()
-        assert replay.headers.get(REPLAY_HEADER) == "true"
+        # T45 S-1: once another login replaces the sealed session, the old
+        # envelope is no longer replayable even though it was valid above.
+        stale = tight_client.post(LOGIN_PATH, json={}, headers=headers)
+        assert stale.status_code == 409, stale.text
+        assert stale.json()["detail"]["code"] == "SESSION_REPLAY_STALE"
 
 
 # ---------------------------------------------------------------------------
@@ -1911,10 +1923,10 @@ def test_switch_replay_rejects_a_session_replaced_by_later_switch(
     assert stale_replay.json()["detail"]["code"] == "SESSION_REPLAY_STALE"
 
 
-def test_switch_is_rate_limited_through_the_login_ip_budget(
+def test_switch_is_rate_limited_through_the_login_device_budget(
     monkeypatch: pytest.MonkeyPatch, route_state: str
 ) -> None:
-    """The switch route draws the same ``login:ip`` budget as login — an
+    """The switch route draws the same per-device login budget as login — an
     attacker must not bypass the login limiter by switching instead."""
     from app.activation_code_routes import router as activation_code_router
     from app.customer_session_routes import router as customer_session_router
@@ -1934,6 +1946,7 @@ def test_switch_is_rate_limited_through_the_login_ip_budget(
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_IP", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE", "1000")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_IP", "2")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_ACCOUNT", "2")
     monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS", "300")
 
     with TestClient(app) as tight_client:

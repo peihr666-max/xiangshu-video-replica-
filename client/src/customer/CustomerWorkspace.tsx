@@ -233,6 +233,7 @@ export function CustomerWorkspace({
             onDismissPairing: (pairingId) =>
               void handleDismissPairing(pairingId),
             onProfileUpdated: setProfile,
+            onRefreshDevices: loadDevices,
             onResetActivationCode: handleResetActivationCode,
             onUnbind: (deviceId) => void handleUnbind(deviceId),
             onUpdateProfile: handleUpdateProfile,

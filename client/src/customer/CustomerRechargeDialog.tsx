@@ -18,6 +18,7 @@ const ORDER_POLL_INTERVAL_MS = 2_000;
 export function CustomerRechargeDialog({
   isOpen,
   onClose,
+  onOrderCreated,
   onPaid,
   onSessionExpired,
   store,
@@ -25,6 +26,7 @@ export function CustomerRechargeDialog({
 }: {
   isOpen: boolean;
   onClose: () => void;
+  onOrderCreated: () => void;
   onPaid: () => void;
   onSessionExpired: () => void;
   store: CustomerCredentialStore;
@@ -172,6 +174,10 @@ export function CustomerRechargeDialog({
         idempotencyKey: crypto.randomUUID(),
       });
       setOrder(created);
+      // The order is durable before the provider QR call.  Refresh the wallet
+      // immediately so a temporary provider failure cannot hide a PENDING
+      // order that still needs payment, retry, or closure.
+      onOrderCreated();
       const code = await customerCreateRechargePaymentCode(
         credential,
         created.order_no,

@@ -43,6 +43,16 @@ _V1_AEAD_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"  # 32 bytes, urlsaf
 _V2_AEAD_KEY = "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4Ojo7PDw-PD8"  # 32 bytes, urlsafe b64
 
 
+@pytest.fixture(autouse=True)
+def configured_customer_aead_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every database-bound envelope test needs the same synthetic key.
+
+    The PostgreSQL cases used to skip before reaching the digest helper on a
+    machine without the fixture, hiding this missing test precondition.
+    """
+    monkeypatch.setenv(CUSTOMER_IDEMPOTENCY_AEAD_KEY_ENV, _V1_AEAD_KEY)
+
+
 def _pg_dsn() -> str:
     return os.environ.get("TEST_POSTGRESQL_URL", DEFAULT_DSN)
 
