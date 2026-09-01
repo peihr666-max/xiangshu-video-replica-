@@ -28,7 +28,7 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
-_HEAD_REVISION = "051_identity_owner_backfill"
+_HEAD_REVISION = "052_character_scene_look_tasks"
 
 
 def _pg_dsn() -> str:

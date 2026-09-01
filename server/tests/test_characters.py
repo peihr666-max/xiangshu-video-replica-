@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "051_identity_owner_backfill"
+    assert version == "052_character_scene_look_tasks"
     assert {
         "characters",
         "project_main_characters",
