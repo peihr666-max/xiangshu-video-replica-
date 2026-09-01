@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -22,16 +23,24 @@ from app.auth import CurrentUser, Role
 from app.character_asset_review import cleanup_publication_objects
 from app.db_portable import BusinessConnection
 from app.first_frames import (
+    FIRST_FRAME_IMAGE_CONTENT_TYPES,
+    MAX_FIRST_FRAME_QUALITY_ATTEMPTS,
+    MAX_SCENE_CONTACT_SHEET_QUALITY_ATTEMPTS,
     FakeFirstFrameQualityInspector,
     FirstFrameGenerationPlan,
     FirstFrameGenerationWork,
     FirstFrameQualityInspector,
+    FirstFrameQualityResult,
+    GeneratedImage,
+    ImageInput,
     ImageProvider,
     StoredFirstFrameCandidates,
     complete_first_frame_generation,
+    evaluate_scene_contact_sheet_quality,
     load_first_frame_generation_work,
     perform_first_frame_generation,
     prepare_first_frame_generation,
+    scene_contact_sheet_retry_prompt,
     store_first_frame_generation,
 )
 from app.permissions import require_not_auditor, require_project_access
@@ -44,6 +53,7 @@ from app.simple_character import (
     create_simple_scene_look,
     prepare_simple_character_generation,
     regenerate_simple_character_contact_sheet,
+    scene_contact_sheet_prompt,
     store_simple_character_publication,
 )
 from app.storage import (
@@ -58,6 +68,8 @@ from app.storage import (
 # phase instead of relying on one fixed lease for the whole multi-round job.
 IMAGE_TASK_LEASE_MINUTES = 30
 ACTIVE_IMAGE_TASK_STATUSES = ("PENDING", "RUNNING")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -74,6 +86,7 @@ class FirstFrameTaskPrepared:
     plan: FirstFrameGenerationPlan
     provider: ImageProvider
     quality_inspector: FirstFrameQualityInspector
+    checkpoint_candidates: list[dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -91,11 +104,124 @@ class CharacterSheetTaskPrepared:
     source_content_type: str
     source_storage_key: str
     provider: ImageProvider
+    quality_inspector: FirstFrameQualityInspector
 
 
 def canonical_request_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _first_frame_checkpoint_candidates(row: sqlite3.Row) -> list[dict[str, object]]:
+    raw = row["result_json"]
+    if raw is None:
+        return []
+    candidates = _parse_first_frame_checkpoint(raw)
+    if candidates is None:
+        raise _task_error(
+            409,
+            "FIRST_FRAME_CHECKPOINT_INVALID",
+            "已保存的首帧生成结果无效，请联系管理员核对。",
+        )
+    return candidates
+
+
+def _parse_first_frame_checkpoint(raw: object) -> list[dict[str, object]] | None:
+    try:
+        payload = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    checkpoint = payload.get("checkpoint")
+    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") != 1:
+        return None
+    candidates = checkpoint.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    if not all(isinstance(candidate, dict) for candidate in candidates):
+        return None
+    return cast(list[dict[str, object]], candidates)
+
+
+def _has_recoverable_first_frame_checkpoint(raw: object) -> bool:
+    candidates = _parse_first_frame_checkpoint(raw)
+    if candidates is None:
+        return False
+    for candidate in candidates:
+        quality = candidate.get("quality")
+        if quality is None or (isinstance(quality, dict) and quality.get("passed") is True):
+            return True
+    return False
+
+
+def _checkpoint_candidate_payload(candidate: GeneratedImage) -> dict[str, object]:
+    if candidate.stored_candidate is None or candidate.quality_attempt is None:
+        raise ValueError("first-frame checkpoint candidate is not archived")
+    return {
+        **candidate.stored_candidate,
+        "quality_attempt": candidate.quality_attempt,
+        "quality": (
+            candidate.quality.model_dump(mode="json") if candidate.quality is not None else None
+        ),
+    }
+
+
+def _load_first_frame_checkpoint_candidates(
+    candidates: list[dict[str, object]],
+    *,
+    storage: StorageAdapter,
+) -> list[GeneratedImage]:
+    loaded: list[GeneratedImage] = []
+    try:
+        for candidate in candidates:
+            content_type = str(candidate["content_type"])
+            if content_type not in FIRST_FRAME_IMAGE_CONTENT_TYPES:
+                raise ValueError("unsupported checkpoint image type")
+            if not str(candidate["storage_key"]):
+                raise ValueError("checkpoint storage key is missing")
+            reference = storage_object_ref_from_uri(str(candidate["storage_uri"]))
+            require_storage_match(storage, reference)
+            content = storage.get_object(reference.key)
+            if len(content) != int(str(candidate["size_bytes"])):
+                raise ValueError("checkpoint image size mismatch")
+            if hashlib.sha256(content).hexdigest() != str(candidate["sha256"]):
+                raise ValueError("checkpoint image checksum mismatch")
+            quality_payload = candidate.get("quality")
+            quality = (
+                None
+                if quality_payload is None
+                else FirstFrameQualityResult.model_validate(quality_payload)
+            )
+            quality_attempt = int(str(candidate["quality_attempt"]))
+            if not 1 <= quality_attempt <= MAX_FIRST_FRAME_QUALITY_ATTEMPTS:
+                raise ValueError("checkpoint quality attempt is invalid")
+            loaded.append(
+                GeneratedImage(
+                    content=content,
+                    content_type=content_type,
+                    quality=quality,
+                    stored_candidate={
+                        key: value
+                        for key, value in candidate.items()
+                        if key not in {"quality", "quality_attempt"}
+                    },
+                    quality_attempt=quality_attempt,
+                )
+            )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _task_error(
+            409,
+            "FIRST_FRAME_CHECKPOINT_INVALID",
+            "已保存的首帧生成结果校验失败，请联系管理员核对。",
+        ) from exc
+    except (OSError, StorageBackendUnavailable) as exc:
+        raise _task_error(
+            503,
+            "FIRST_FRAME_CHECKPOINT_UNAVAILABLE",
+            "已生成的首帧暂时无法从素材库读取，将稍后重试。",
+        ) from exc
+    return loaded
 
 
 def enqueue_first_frame_task(
@@ -180,13 +306,26 @@ def enqueue_first_frame_task(
     ).fetchone()
     if active is not None:
         return cast(sqlite3.Row, active)
+    checkpoint_json: str | None = None
+    previous = conn.execute(
+        """
+        SELECT result_json FROM first_frame_tasks
+        WHERE project_id = %s AND request_hash = %s
+          AND status IN ('FAILED','SUBMISSION_UNCERTAIN')
+          AND result_json IS NOT NULL
+        ORDER BY created_at DESC, id DESC LIMIT 1
+        """,
+        (project_id, request_hash),
+    ).fetchone()
+    if previous is not None and _has_recoverable_first_frame_checkpoint(previous["result_json"]):
+        checkpoint_json = str(previous["result_json"])
     task_id = str(uuid4())
     conn.execute(
         """
         INSERT INTO first_frame_tasks (
             id, project_id, created_by_user_id, idempotency_key,
-            request_hash, request_json, status
-        ) VALUES (%s, %s, %s, %s, %s, %s, 'PENDING')
+            request_hash, request_json, result_json, status
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
         ON CONFLICT DO NOTHING
         """,
         (
@@ -196,6 +335,7 @@ def enqueue_first_frame_task(
             idempotency_key,
             request_hash,
             json.dumps(request_payload, ensure_ascii=False, sort_keys=True),
+            checkpoint_json,
         ),
     )
     row = conn.execute("SELECT * FROM first_frame_tasks WHERE id = %s", (task_id,)).fetchone()
@@ -331,6 +471,36 @@ def _acquire_image_task(
     table: Literal["first_frame_tasks", "character_sheet_tasks"],
     worker_id: str,
 ) -> ImageTaskLease | None:
+    if table == "first_frame_tasks":
+        expired = conn.execute(
+            """
+            SELECT id, result_json, attempt FROM first_frame_tasks
+            WHERE status = 'RUNNING'
+              AND locked_until IS NOT NULL
+              AND locked_until::timestamptz <= now()
+            """
+        ).fetchall()
+        for task in expired:
+            if int(task["attempt"]) >= 3 or not _has_recoverable_first_frame_checkpoint(
+                task["result_json"]
+            ):
+                continue
+            conn.execute(
+                """
+                UPDATE first_frame_tasks
+                SET status = 'PENDING',
+                    error_code = 'FIRST_FRAME_CHECKPOINT_RESUME',
+                    error_message_redacted = '生成图片已保存，正在恢复后续处理。',
+                    retryable = 1, locked_by = NULL, locked_until = NULL,
+                    completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'RUNNING'
+                """,
+                (str(task["id"]),),
+            )
+            logger.warning(
+                "resuming expired first-frame task from archived checkpoint",
+                extra={"task_id": str(task["id"]), "attempt": int(task["attempt"])},
+            )
     conn.execute(
         f"""
         UPDATE {table}
@@ -450,6 +620,36 @@ def prepare_first_frame_task(
         plan=plan,
         provider=provider,
         quality_inspector=quality_inspector or FakeFirstFrameQualityInspector(),
+        checkpoint_candidates=_first_frame_checkpoint_candidates(row),
+    )
+
+
+def save_first_frame_task_checkpoint(
+    conn: BusinessConnection,
+    *,
+    lease: ImageTaskLease,
+    candidates: list[GeneratedImage],
+) -> None:
+    payload = {
+        "checkpoint": {
+            "schema_version": 1,
+            "candidates": [_checkpoint_candidate_payload(candidate) for candidate in candidates],
+        }
+    }
+    updated = conn.execute(
+        """
+        UPDATE first_frame_tasks
+        SET result_json = %s, updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        """,
+        (json.dumps(payload, ensure_ascii=False, sort_keys=True), lease.id, lease.worker_id),
+    )
+    conn.commit()
+    if updated.rowcount != 1:
+        raise RuntimeError("first-frame task lease was lost")
+    logger.info(
+        "saved first-frame provider output checkpoint",
+        extra={"task_id": lease.id, "candidate_count": len(candidates)},
     )
 
 
@@ -460,18 +660,62 @@ def run_first_frame_task_outside_transaction(
     before_provider_call: Callable[[], None] | None = None,
     after_provider_call: Callable[[], None] | None = None,
     heartbeat: Callable[[], None] | None = None,
+    checkpoint_candidates: Callable[[list[GeneratedImage]], None] | None = None,
 ) -> tuple[FirstFrameGenerationWork, StoredFirstFrameCandidates]:
     if heartbeat is not None:
         heartbeat()
     work = load_first_frame_generation_work(prepared.plan, storage=storage)
-    generated = perform_first_frame_generation(
-        work,
-        provider=prepared.provider,
-        quality_inspector=prepared.quality_inspector,
-        before_provider_call=before_provider_call,
-        after_provider_call=after_provider_call,
-        heartbeat=heartbeat,
+    resumed_candidates = _load_first_frame_checkpoint_candidates(
+        prepared.checkpoint_candidates,
+        storage=storage,
     )
+    uncheckpointed_assets: list[tuple[str, str]] = []
+
+    def archive_generated(
+        generated: list[GeneratedImage],
+        quality_attempt: int,
+    ) -> list[GeneratedImage]:
+        stored = store_first_frame_generation(work, storage=storage, generated=generated)
+        uncheckpointed_assets.extend(stored.created_assets)
+        return [
+            replace(
+                image,
+                stored_candidate={
+                    key: value for key, value in candidate.items() if key != "quality"
+                },
+                quality_attempt=quality_attempt,
+            )
+            for image, candidate in zip(generated, stored.candidates, strict=True)
+        ]
+
+    def persist_checkpoint(candidates: list[GeneratedImage]) -> None:
+        if checkpoint_candidates is None:
+            return
+        checkpoint_candidates(candidates)
+        uncheckpointed_assets.clear()
+
+    try:
+        generated = perform_first_frame_generation(
+            work,
+            provider=prepared.provider,
+            quality_inspector=prepared.quality_inspector,
+            before_provider_call=before_provider_call,
+            after_provider_call=after_provider_call,
+            heartbeat=heartbeat,
+            resumed_candidates=resumed_candidates,
+            archive_generated=archive_generated if checkpoint_candidates is not None else None,
+            checkpoint_candidates=persist_checkpoint if checkpoint_candidates is not None else None,
+        )
+    except BaseException:
+        if uncheckpointed_assets:
+            from app.first_frames import delete_created_first_frames
+
+            delete_created_first_frames(
+                storage,
+                uncheckpointed_assets,
+                actor_id=work.actor.id,
+            )
+        raise
     if heartbeat is not None:
         heartbeat()
     stored = store_first_frame_generation(work, storage=storage, generated=generated)
@@ -526,6 +770,7 @@ def prepare_character_sheet_task(
     lease: ImageTaskLease,
     storage: StorageAdapter,
     provider: ImageProvider,
+    quality_inspector: FirstFrameQualityInspector | None = None,
 ) -> CharacterSheetTaskPrepared:
     row = _require_owned_task(conn, "character_sheet_tasks", lease)
     payload = json.loads(str(row["request_json"]))
@@ -558,19 +803,61 @@ def prepare_character_sheet_task(
         source_content_type=str(row["source_content_type"]),
         source_storage_key=reference.key,
         provider=provider,
+        quality_inspector=quality_inspector or FakeFirstFrameQualityInspector(),
     )
 
 
 def perform_character_sheet_task(
     prepared: CharacterSheetTaskPrepared,
 ) -> PreparedSimpleCharacterGeneration:
-    return prepare_simple_character_generation(
-        source_content=prepared.source_content,
-        source_content_type=prepared.source_content_type,
-        display_name=prepared.display_name,
-        image_provider=prepared.provider,
+    if prepared.operation != "SCENE":
+        return prepare_simple_character_generation(
+            source_content=prepared.source_content,
+            source_content_type=prepared.source_content_type,
+            display_name=prepared.display_name,
+            image_provider=prepared.provider,
+            scene_description=prepared.scene_description,
+            costume_description=prepared.costume_description,
+        )
+    if prepared.scene_description is None or prepared.costume_description is None:
+        raise _task_error(409, "SCENE_LOOK_INPUTS_MISSING", "场景造型参数不完整。")
+    source_image = ImageInput(
+        content=prepared.source_content,
+        content_type=prepared.source_content_type,
+        filename="character-source",
+    )
+    base_prompt = scene_contact_sheet_prompt(
         scene_description=prepared.scene_description,
         costume_description=prepared.costume_description,
+    )
+    issue_codes: list[str] = []
+    for attempt in range(1, MAX_SCENE_CONTACT_SHEET_QUALITY_ATTEMPTS + 1):
+        generation = prepare_simple_character_generation(
+            source_content=prepared.source_content,
+            source_content_type=prepared.source_content_type,
+            display_name=prepared.display_name,
+            image_provider=prepared.provider,
+            scene_description=prepared.scene_description,
+            costume_description=prepared.costume_description,
+            prompt_override=scene_contact_sheet_retry_prompt(base_prompt, issue_codes, attempt),
+        )
+        inspection = prepared.quality_inspector.inspect_scene_contact_sheet(
+            source_image=source_image,
+            contact_sheet=GeneratedImage(
+                content=generation.contact_content,
+                content_type=generation.contact_content_type,
+            ),
+            scene_description=prepared.scene_description,
+            costume_description=prepared.costume_description,
+        )
+        quality = evaluate_scene_contact_sheet_quality(inspection, attempt=attempt)
+        if quality.passed:
+            return replace(generation, scene_quality=quality)
+        issue_codes = quality.issue_codes
+    raise _task_error(
+        422,
+        "SCENE_LOOK_QUALITY_REJECTED",
+        "场景五视图未通过自动质检，请调整描述后重试。",
     )
 
 
@@ -702,6 +989,38 @@ def fail_image_task(
         code = "IMAGE_TASK_STORAGE_UNAVAILABLE"
         message = "素材库暂不可用，请稍后重试。"
         known_failure = not submission_started
+    current = conn.execute(
+        f"SELECT result_json FROM {table} WHERE id = %s AND status = 'RUNNING' AND locked_by = %s",
+        (lease.id, lease.worker_id),
+    ).fetchone()
+    resumable_checkpoint = (
+        table == "first_frame_tasks"
+        and current is not None
+        and _has_recoverable_first_frame_checkpoint(current["result_json"])
+    )
+    if resumable_checkpoint and not known_failure and lease.attempt < 2:
+        conn.execute(
+            """
+            UPDATE first_frame_tasks
+            SET status = 'PENDING', error_code = %s, error_message_redacted = %s,
+                retryable = 1, locked_by = NULL, locked_until = NULL,
+                completed_at = NULL, updated_at = %s
+            WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+            """,
+            (
+                code,
+                "生成图片已保存，将自动继续后续处理。",
+                _now_text(),
+                lease.id,
+                lease.worker_id,
+            ),
+        )
+        conn.commit()
+        logger.warning(
+            "requeued first-frame task from archived checkpoint",
+            extra={"task_id": lease.id, "attempt": lease.attempt, "error_code": code},
+        )
+        return
     status = "FAILED" if known_failure or not submission_started else "SUBMISSION_UNCERTAIN"
     if status == "SUBMISSION_UNCERTAIN":
         code = "IMAGE_TASK_SUBMISSION_UNCERTAIN"

@@ -450,10 +450,14 @@ export type SourceFrameCandidate = {
   asset_id: string;
   timestamp_seconds: number;
   score: number | null;
+  technical_score?: number | null;
+  semantic_score?: number | null;
+  selection_reason?: string;
 };
 
 export type SourceFrameCandidates = {
   requested_timestamps_seconds: number[];
+  semantic_quality_status: "VERIFIED" | "UNAVAILABLE" | "NOT_REQUESTED";
   candidates: SourceFrameCandidate[];
 };
 
@@ -2569,6 +2573,12 @@ export function readSourceFrameCandidates(
   }
   return {
     requested_timestamps_seconds: payload.requested_timestamps_seconds,
+    semantic_quality_status:
+      payload.semantic_quality_status === "VERIFIED" ||
+      payload.semantic_quality_status === "UNAVAILABLE" ||
+      payload.semantic_quality_status === "NOT_REQUESTED"
+        ? payload.semantic_quality_status
+        : "NOT_REQUESTED",
     candidates: payload.candidates,
   };
 }

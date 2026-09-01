@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from app import media_routes
 from app.auth import CurrentUser, get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
@@ -24,7 +26,7 @@ from app.media import (
 from app.media import (
     create_upload_intent as create_media_upload_intent,
 )
-from app.media_routes import api_base_url, get_media_storage, get_video_probe
+from app.media_routes import api_base_url, complete_asset_upload, get_media_storage, get_video_probe
 from app.settings import SettingsRepository
 from app.storage import FakeStorageAdapter, LocalStorageAdapter
 
@@ -37,6 +39,73 @@ class FakeVideoProbe:
         assert content
         assert filename
         return VideoMetadata(duration_seconds=self.duration_seconds)
+
+
+def test_upload_completion_probes_storage_between_short_database_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor = CurrentUser(
+        id="employee_1",
+        username="employee_1",
+        display_name="Employee One",
+        role="employee",
+    )
+
+    class TwoScopeDb:
+        def __init__(self) -> None:
+            self.active = 0
+            self.calls = 0
+
+        @contextmanager
+        def write(self):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            self.active += 1
+            try:
+                yield object(), actor
+            finally:
+                self.active -= 1
+
+    db = TwoScopeDb()
+    prepared = object()
+    probed = object()
+    completed = type(
+        "Completed",
+        (),
+        {
+            "asset_id": "asset-1",
+            "project_id": "project-1",
+            "status": "uploaded",
+            "storage_uri": "fake://bucket/key.mp4",
+            "sha256": "sha",
+            "size_bytes": 12,
+            "content_type": "video/mp4",
+            "metadata": VideoMetadata(duration_seconds=8),
+            "analysis_task_id": None,
+            "analysis_task_status": None,
+        },
+    )()
+    monkeypatch.setattr(media_routes, "prepare_upload_completion", lambda *_a, **_k: prepared)
+
+    def probe_between_scopes(*_args: object, **_kwargs: object) -> object:
+        assert db.active == 0
+        return probed
+
+    monkeypatch.setattr(media_routes, "probe_upload_completion", probe_between_scopes)
+    monkeypatch.setattr(
+        media_routes,
+        "persist_upload_completion",
+        lambda *_a, **_k: completed,
+    )
+
+    response = complete_asset_upload(
+        "asset-1",
+        db,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        FakeVideoProbe(duration_seconds=8),
+    )
+
+    assert db.calls == 2
+    assert response.asset_id == "asset-1"
 
 
 def test_public_api_origin_rejects_a_missing_hostname(

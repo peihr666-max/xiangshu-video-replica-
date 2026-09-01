@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from app.auth import get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
+from app.first_frames import GeneratedVideoInspection, ImageInput
 from app.generation import (
     MAX_ARCHIVE_RETRIES,
     FakeH3Provider,
@@ -31,6 +32,7 @@ from app.generation import (
     compile_prompt_text,
     generation_task_operation_hash,
     h3_provider_for_task,
+    inspect_generated_video_quality,
     map_script_to_shots,
     mark_expired_active_leases_needing_attention,
     mark_task_submission_uncertain,
@@ -47,6 +49,64 @@ from app.storage import FakeStorageAdapter, StorageBackendUnavailable, StoragePe
 def _fake_public_dns(hostname: str, port: int, type: int) -> list[tuple[object, ...]]:
     del hostname, type
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+
+class FailingGeneratedVideoInspector:
+    def inspect_generated_video(
+        self,
+        *,
+        first_frame: ImageInput,
+        sampled_frames: list[ImageInput],
+    ) -> GeneratedVideoInspection:
+        assert first_frame.content == b"first-frame"
+        assert len(sampled_frames) == 5
+        return GeneratedVideoInspection(
+            frame_count=5,
+            identity_consistency_score=0.62,
+            outfit_consistency_score=0.58,
+            motion_continuity_score=0.81,
+            anatomy_valid=True,
+            extra_people_detected=False,
+            severe_flicker_detected=False,
+            notes=["人物身份和服装发生漂移"],
+            provider="fake-quality",
+            model="fake-quality-v1",
+        )
+
+
+class UnavailableGeneratedVideoInspector:
+    def inspect_generated_video(
+        self,
+        *,
+        first_frame: ImageInput,
+        sampled_frames: list[ImageInput],
+    ) -> GeneratedVideoInspection:
+        del first_frame, sampled_frames
+        raise RuntimeError("quality provider unavailable")
+
+
+def test_generated_video_quality_rejects_identity_and_outfit_drift() -> None:
+    quality = inspect_generated_video_quality(
+        content=b"generated-video",
+        first_frame=ImageInput(
+            content=b"first-frame",
+            content_type="image/png",
+            filename="first-frame.png",
+        ),
+        inspector=FailingGeneratedVideoInspector(),
+        frame_extractor=lambda _: [
+            ImageInput(
+                content=f"frame-{index}".encode(), content_type="image/jpeg", filename="frame.jpg"
+            )
+            for index in range(5)
+        ],
+    )
+
+    assert quality.passed is False
+    assert quality.issue_codes == [
+        "VIDEO_IDENTITY_DRIFT",
+        "VIDEO_OUTFIT_DRIFT",
+    ]
 
 
 class RecordedMetasoTransport:
@@ -1041,6 +1101,117 @@ def test_task_paid_regeneration_supersedes_audio_failure_once_and_keeps_history(
     assert completed.quality_status == "AUDIO_OK"
     assert no_duplicate is None
     assert provider.create_calls == 1
+
+
+def test_visual_quality_failure_is_archived_and_allows_explicit_paid_regeneration(
+    db_path: Path,
+    client: TestClient,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    created = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "visual-failure-source",
+        },
+    )
+    assert created.status_code == 200
+    task_id = str(created.json()["tasks"][0]["id"])
+    storage = FakeStorageAdapter(provider="fake", bucket="generation-results")
+    storage.put_object("first-frame.png", b"first-frame", content_type="image/png")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        result = run_next_generation_task(
+            conn,
+            worker_id="visual-failure-worker",
+            provider=FakeH3Provider(),
+            storage=storage,
+            visual_quality_inspector=FailingGeneratedVideoInspector(),
+            video_frame_extractor=lambda _: [
+                ImageInput(
+                    content=f"frame-{index}".encode(),
+                    content_type="image/jpeg",
+                    filename=f"frame-{index}.jpg",
+                )
+                for index in range(5)
+            ],
+        )
+
+    assert result is not None
+    assert result.status == "SUCCEEDED"
+    assert result.archive_status == "ARCHIVED"
+    assert result.quality_status == "VISUAL_QUALITY_FAILED"
+    assert result.quality_issue_codes == ["VIDEO_IDENTITY_DRIFT", "VIDEO_OUTFIT_DRIFT"]
+    regenerated = client.post(
+        f"/api/generation-tasks/{task_id}/regenerate",
+        headers=auth_headers("employee_1"),
+        json=paid_regeneration_payload("visual-failure-regeneration"),
+    )
+    assert regenerated.status_code == 200
+
+
+def test_visual_validation_unavailable_keeps_paid_task_for_reconciliation(
+    db_path: Path,
+    client: TestClient,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    created = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "visual-validation-unavailable",
+        },
+    )
+    assert created.status_code == 200
+    storage = FakeStorageAdapter(provider="fake", bucket="generation-results")
+    storage.put_object("first-frame.png", b"first-frame", content_type="image/png")
+    provider = CountingRetryProvider()
+
+    def extractor(_content: bytes) -> list[ImageInput]:
+        return [
+            ImageInput(content=b"frame", content_type="image/jpeg", filename="frame.jpg")
+            for _ in range(5)
+        ]
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        first = run_next_generation_task(
+            conn,
+            worker_id="visual-unavailable-worker",
+            provider=provider,
+            storage=storage,
+            visual_quality_inspector=UnavailableGeneratedVideoInspector(),
+            video_frame_extractor=extractor,
+        )
+        second = run_next_generation_task(
+            conn,
+            worker_id="visual-unavailable-worker",
+            provider=provider,
+            storage=storage,
+            visual_quality_inspector=UnavailableGeneratedVideoInspector(),
+            video_frame_extractor=extractor,
+        )
+        wallet = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = ?",
+            ("employee_1",),
+        ).fetchone()
+
+    assert first is not None
+    assert first.status == "SUBMISSION_UNCERTAIN"
+    assert first.error_code == "VISUAL_VALIDATION_UNAVAILABLE"
+    assert first.available_actions == ["RECONCILE"]
+    assert second is None
+    assert provider.create_calls == 1
+    assert wallet is not None
+    assert int(wallet["reserved_credits"]) == 1
 
 
 def test_task_paid_regeneration_accepts_a_failed_submitted_provider_call(

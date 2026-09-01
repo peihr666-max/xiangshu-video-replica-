@@ -21,6 +21,8 @@ from app.source_frame_routes import ExtractSourceFramesRequest, get_source_frame
 from app.source_frames import (
     ExtractedSourceFrame,
     FFmpegSourceFrameExtractor,
+    SourceFrameCandidateAssessment,
+    SourceFrameSemanticInspection,
     score_grayscale_frame,
 )
 from app.storage import FakeStorageAdapter
@@ -57,6 +59,32 @@ class EmptySourceFrameExtractor:
         timestamps_seconds: tuple[float, ...],
     ) -> list[ExtractedSourceFrame]:
         return [ExtractedSourceFrame(timestamp_seconds=0.5, image=b"")]
+
+
+@dataclass(frozen=True)
+class SemanticSourceFrameInspector:
+    def inspect_source_frame_candidates(
+        self,
+        frames: list[ExtractedSourceFrame],
+    ) -> SourceFrameSemanticInspection:
+        assert len(frames) == 5
+        return SourceFrameSemanticInspection(
+            candidates=[
+                SourceFrameCandidateAssessment(
+                    candidate_index=index,
+                    person_count=1,
+                    person_visibility_score=0.98 if index == 0 else 0.4,
+                    face_clarity_score=0.98 if index == 0 else 0.4,
+                    unobstructed_score=0.98 if index == 0 else 0.4,
+                    pose_suitability_score=0.98 if index == 0 else 0.4,
+                    motion_blur_detected=False,
+                    notes=[],
+                )
+                for index in range(len(frames))
+            ],
+            provider="test-semantic-source-frame",
+            model="test-semantic-source-frame-v1",
+        )
 
 
 @pytest.fixture()
@@ -154,6 +182,7 @@ def complete_source_frame_task(
     *,
     payload: dict[str, object] | None = None,
     extractor: object | None = None,
+    quality_inspector: object | None = None,
 ) -> dict[str, object]:
     queued = client.post(
         "/api/projects/project_owned/source-frames/extract",
@@ -167,6 +196,7 @@ def complete_source_frame_task(
             worker_id="source-frame-test-worker",
             storage=storage,
             source_frame_extractor=extractor or FakeSourceFrameExtractor(),
+            source_frame_quality_inspector=quality_inspector,
             max_tasks=1,
         )
     assert processed == 1
@@ -203,8 +233,14 @@ def test_owner_can_extract_candidates_and_confirm_one(
     assert body["kind"] == "source_frame_candidates"
     assert body["version_number"] == 1
     candidates = body["payload"]["candidates"]
-    assert [candidate["timestamp_seconds"] for candidate in candidates] == [9.6, 6.0, 2.4]
-    assert [candidate["score"] for candidate in candidates] == [0.8, 0.5, 0.2]
+    assert [candidate["timestamp_seconds"] for candidate in candidates] == [
+        10.8,
+        8.4,
+        6.0,
+        3.6,
+        1.2,
+    ]
+    assert [candidate["score"] for candidate in candidates] == [0.9, 0.7, 0.5, 0.3, 0.1]
     assert all(candidate["asset_id"] for candidate in candidates)
     first_asset = candidates[0]["asset_id"]
     stored = storage.head_object(f"projects/project_owned/source-frames/{first_asset}.jpg")
@@ -247,6 +283,32 @@ def test_owner_can_extract_candidates_and_confirm_one(
     assert asset is not None
     assert asset["kind"] == "source_frame"
     assert asset["content_type"] == "image/jpeg"
+
+
+def test_semantic_source_frame_score_can_beat_a_sharper_but_unsuitable_frame(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+) -> None:
+    storage.put_object(
+        "projects/project_owned/uploads/reference_owned/reference.mp4",
+        b"reference-video",
+        content_type="video/mp4",
+    )
+
+    body = complete_source_frame_task(
+        client,
+        db_path,
+        storage,
+        quality_inspector=SemanticSourceFrameInspector(),
+    )
+
+    candidates = body["payload"]["candidates"]
+    assert body["payload"]["semantic_quality_status"] == "VERIFIED"
+    assert candidates[0]["timestamp_seconds"] == 1.2
+    assert candidates[0]["semantic_score"] == 0.98
+    assert candidates[0]["score"] > candidates[-1]["score"]
+    assert "人物完整度" in candidates[0]["selection_reason"]
 
 
 def test_source_frame_extraction_requires_owner_and_ready_reference(

@@ -23,8 +23,10 @@ from app.media import (
     FFprobeVideoProbe,
     VideoMetadata,
     VideoProbe,
-    complete_upload,
     create_upload_intent,
+    persist_upload_completion,
+    prepare_upload_completion,
+    probe_upload_completion,
     storage_key_from_uri,
 )
 from app.permissions import (
@@ -459,10 +461,11 @@ def complete_asset_upload(
     probe: InjectedVideoProbe,
 ) -> CompleteUploadResponse | JSONResponse:
     with db.write() as (conn, actor):
-        completed = complete_upload(
-            conn, actor=actor, storage=storage, probe=probe, asset_id=asset_id
-        )
+        prepared = prepare_upload_completion(conn, actor=actor, asset_id=asset_id)
         is_customer = actor.role == "customer"
+    probed = probe_upload_completion(prepared, storage=storage, probe=probe)
+    with db.write() as (conn, actor):
+        completed = persist_upload_completion(conn, actor=actor, probed=probed)
     result = CompleteUploadResponse(
         asset_id=completed.asset_id,
         project_id=completed.project_id,

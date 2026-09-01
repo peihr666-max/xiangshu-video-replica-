@@ -45,7 +45,13 @@ from app.character_identity import (
 )
 from app.character_image_generation import deterministic_png, png_chunk
 from app.db_portable import BusinessConnection
-from app.first_frames import FirstFrameModel, ImageInput, ImageProvider, ImageProviderFailed
+from app.first_frames import (
+    FirstFrameModel,
+    ImageInput,
+    ImageProvider,
+    ImageProviderFailed,
+    SceneContactSheetQualityResult,
+)
 from app.media import storage_key_from_uri
 from app.permissions import require_project_access, write_audit
 from app.storage import (
@@ -197,6 +203,7 @@ class PreparedSimpleCharacterGeneration:
     contact_content: bytes
     contact_content_type: str
     contact_source: str
+    scene_quality: SceneContactSheetQualityResult | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +243,7 @@ def prepare_simple_character_generation(
     image_provider: ImageProvider | None,
     scene_description: str | None = None,
     costume_description: str | None = None,
+    prompt_override: str | None = None,
 ) -> PreparedSimpleCharacterGeneration:
     """Run the slow contact-sheet provider before opening a fenced write."""
 
@@ -247,7 +255,8 @@ def prepare_simple_character_generation(
         source_content=source_content,
         source_content_type=normalized_content_type,
         version_id=version_id,
-        prompt=(
+        prompt=prompt_override
+        or (
             scene_contact_sheet_prompt(
                 scene_description=scene_description,
                 costume_description=costume_description,
@@ -1173,6 +1182,7 @@ def create_simple_scene_look(
             generation_source=prepared_generation.contact_source,
             now_iso=now_iso,
             attempted_keys=attempted_keys,
+            scene_quality=prepared_generation.scene_quality,
         )
         write_audit(
             conn,
@@ -2199,6 +2209,7 @@ def _publish_views(
     now_iso: str,
     attempted_keys: list[str],
     prepared_views: tuple[PreparedSimpleCharacterViewStorage, ...] | None = None,
+    scene_quality: SceneContactSheetQualityResult | None = None,
 ) -> tuple[str, dict[str, dict[str, object]]]:
     assets_by_view: dict[str, dict[str, object]] = {}
     prepared_by_view = (
@@ -2292,6 +2303,8 @@ def _publish_views(
         "template_hash": CHARACTER_TEMPLATE_HASH,
         "template_version": CHARACTER_TEMPLATE_VERSION,
     }
+    if scene_quality is not None:
+        snapshot["scene_quality"] = scene_quality.model_dump(mode="json")
     snapshot_json = encode_json(snapshot)
     publication_hash = hashlib.sha256(snapshot_json.encode()).hexdigest()
     updated_version = conn.execute(

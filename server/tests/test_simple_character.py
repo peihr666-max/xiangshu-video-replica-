@@ -31,8 +31,12 @@ from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_image_provider
 from app.first_frames import (
+    FirstFrameCandidateInspection,
+    FirstFrameSourceInspection,
     GeneratedImage,
+    ImageInput,
     ImageProviderFailed,
+    SceneContactSheetInspection,
     effective_reference_asset_ids,
 )
 from app.generation_worker import run_worker_once
@@ -116,6 +120,55 @@ class StubContactSheetProvider:
 class FailingContactSheetProvider(StubContactSheetProvider):
     def edit(self, **kwargs: object) -> list[GeneratedImage]:
         raise ImageProviderFailed("provider down")
+
+
+@dataclass
+class SequenceSceneLookQualityInspector:
+    inspections: list[SceneContactSheetInspection]
+    calls: int = 0
+
+    def inspect_source(self, source_image: ImageInput) -> FirstFrameSourceInspection:
+        raise AssertionError("source-frame inspection is not expected")
+
+    def inspect_candidate(
+        self,
+        *,
+        source_image: ImageInput,
+        character_reference_images: list[ImageInput],
+        candidate: GeneratedImage,
+        expected_outfit: str,
+    ) -> FirstFrameCandidateInspection:
+        raise AssertionError("first-frame inspection is not expected")
+
+    def inspect_scene_contact_sheet(
+        self,
+        *,
+        source_image: ImageInput,
+        contact_sheet: GeneratedImage,
+        scene_description: str,
+        costume_description: str,
+    ) -> SceneContactSheetInspection:
+        assert source_image.content
+        assert contact_sheet.content
+        assert scene_description
+        assert costume_description
+        self.calls += 1
+        return self.inspections.pop(0)
+
+
+def scene_sheet_inspection(*, identity_score: float = 0.95) -> SceneContactSheetInspection:
+    return SceneContactSheetInspection(
+        view_count=5,
+        identity_consistency_score=identity_score,
+        outfit_match_score=0.95,
+        scene_match_score=0.95,
+        anatomy_valid=True,
+        text_detected=False,
+        extra_people_detected=False,
+        notes=[],
+        provider="test-scene-quality",
+        model="test-scene-quality-v1",
+    )
 
 
 @pytest.fixture()
@@ -1436,6 +1489,14 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
 ) -> None:
     created = generate_global(client).json()
     identity_id = created["identity_id"]
+    scene_quality = SequenceSceneLookQualityInspector(
+        inspections=[
+            scene_sheet_inspection(identity_score=0.2),
+            scene_sheet_inspection(identity_score=0.4),
+            scene_sheet_inspection(),
+        ]
+    )
+    provider_calls_before_scene = len(contact_sheet_provider.calls)
 
     queued = client.post(
         f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
@@ -1456,6 +1517,7 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
                 worker_id="scene-look-worker",
                 storage=storage,
                 image_provider=contact_sheet_provider,
+                first_frame_quality_inspector=scene_quality,
                 max_tasks=1,
             )
             == 1
@@ -1471,6 +1533,8 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
     assert result["identity_id"] == identity_id
     assert result["scene_name"] == "工地巡检"
     assert len(result["views"]) == len(REQUIRED_CHARACTER_VIEW_TYPES)
+    assert scene_quality.calls == 3
+    assert len(contact_sheet_provider.calls) - provider_calls_before_scene == 3
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         source_asset_id = str(
@@ -1484,8 +1548,18 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
             character_version_id=result["character_version_id"],
             legacy_selected=[view["asset_id"] for view in result["views"]],
         )
+        publication = json.loads(
+            str(
+                conn.execute(
+                    "SELECT publication_snapshot_json FROM character_versions WHERE id = %s",
+                    (result["character_version_id"],),
+                ).fetchone()[0]
+            )
+        )
     assert reference_asset_ids == [result["contact_sheet_asset_id"], source_asset_id]
     assert reference_asset_roles == ["contact_sheet", "source_photo"]
+    assert publication["scene_quality"]["passed"] is True
+    assert publication["scene_quality"]["attempt"] == 3
 
     looks = client.get(
         f"/api/simple-characters/identities/{identity_id}/scene-looks",

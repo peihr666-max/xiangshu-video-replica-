@@ -18,10 +18,13 @@ from app.first_frame_routes import get_image_provider
 from app.first_frames import (
     FIRST_FRAME_NO_TEXT_CONSTRAINT,
     FirstFrameCandidateInspection,
+    FirstFrameCharacterInputs,
+    FirstFrameQualityInspectorFailed,
     FirstFrameSourceInspection,
     GeneratedImage,
     ImageInput,
     RetryableImageProviderFailed,
+    apply_selected_scene_look,
     derive_project_appearance_spec,
     normalize_prompt,
 )
@@ -127,6 +130,35 @@ class SequenceFirstFrameQualityInspector:
         assert expected_outfit
         self.candidate_calls += 1
         return self.candidate_inspections.pop(0)
+
+
+@dataclass
+class UnavailableCandidateQualityInspector:
+    candidate_calls: int = 0
+
+    def inspect_source(self, source_image: ImageInput) -> FirstFrameSourceInspection:
+        assert source_image.content
+        return FirstFrameSourceInspection(
+            person_count=1,
+            notes=[],
+            provider="fake-first-frame-quality",
+            model="fake-first-frame-quality-v1",
+        )
+
+    def inspect_candidate(
+        self,
+        *,
+        source_image: ImageInput,
+        character_reference_images: list[ImageInput],
+        candidate: GeneratedImage,
+        expected_outfit: str,
+    ) -> FirstFrameCandidateInspection:
+        assert source_image.content
+        assert character_reference_images
+        assert candidate.content
+        assert expected_outfit
+        self.candidate_calls += 1
+        raise FirstFrameQualityInspectorFailed("quality service unavailable")
 
 
 @dataclass(frozen=True)
@@ -679,6 +711,221 @@ def test_final_retryable_provider_failure_stops_automatic_paid_retry(
     assert task.json()["retryable"] is False
 
 
+def test_first_frame_task_archives_paid_outputs_before_quality_rejection(
+    client: TestClient,
+    db_path: Path,
+    provider: RecordingImageProvider,
+    storage: FakeStorageAdapter,
+) -> None:
+    prepare_inputs(client)
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={
+            "model": "gpt-image-2",
+            "quantity": 1,
+            "idempotency_key": "first-frame-checkpoint-rejected-1",
+        },
+        headers=headers("employee_1"),
+    )
+    assert created.status_code == 202
+    rejected = passing_candidate_inspection().model_copy(
+        update={
+            "full_person_reconstruction_score": 0.2,
+            "head_only_replacement_detected": True,
+            "original_body_retained": True,
+        }
+    )
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-checkpoint-rejected",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider,
+                first_frame_quality_inspector=SequenceFirstFrameQualityInspector(
+                    candidate_inspections=[rejected, rejected, rejected]
+                ),
+                max_tasks=1,
+            )
+            == 1
+        )
+        task = conn.execute(
+            "SELECT status, error_code, result_json FROM first_frame_tasks WHERE id = %s",
+            (created.json()["id"],),
+        ).fetchone()
+
+    assert task is not None
+    assert task["status"] == "FAILED"
+    assert task["error_code"] == "FIRST_FRAME_QUALITY_REJECTED"
+    checkpoint = json.loads(str(task["result_json"]))["checkpoint"]
+    assert len(checkpoint["candidates"]) == 3
+    assert all(candidate["quality"]["passed"] is False for candidate in checkpoint["candidates"])
+    assert [
+        storage.get_object(candidate["storage_key"]) for candidate in checkpoint["candidates"]
+    ] == [
+        b"first-frame-0",
+        b"first-frame-0",
+        b"first-frame-0",
+    ]
+
+
+def test_first_frame_task_reuses_checkpoint_after_quality_service_recovers(
+    client: TestClient,
+    db_path: Path,
+    provider: RecordingImageProvider,
+    storage: FakeStorageAdapter,
+) -> None:
+    prepare_inputs(client)
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={
+            "model": "gpt-image-2",
+            "quantity": 1,
+            "idempotency_key": "first-frame-checkpoint-resume-1",
+        },
+        headers=headers("employee_1"),
+    )
+    assert created.status_code == 202
+    unavailable = UnavailableCandidateQualityInspector()
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-checkpoint-first",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider,
+                first_frame_quality_inspector=unavailable,
+                max_tasks=1,
+            )
+            == 1
+        )
+        interrupted = conn.execute(
+            "SELECT status, result_json FROM first_frame_tasks WHERE id = %s",
+            (created.json()["id"],),
+        ).fetchone()
+        assert interrupted is not None
+        assert interrupted["status"] == "PENDING"
+        assert json.loads(str(interrupted["result_json"]))["checkpoint"]["candidates"]
+        conn.execute(
+            """
+            UPDATE first_frame_tasks
+            SET status = 'RUNNING', locked_by = 'stopped-worker',
+                locked_until = datetime('now', '-1 minute')
+            WHERE id = %s
+            """,
+            (created.json()["id"],),
+        )
+        conn.commit()
+
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-checkpoint-second",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider,
+                first_frame_quality_inspector=SequenceFirstFrameQualityInspector(
+                    candidate_inspections=[passing_candidate_inspection()]
+                ),
+                max_tasks=1,
+            )
+            == 1
+        )
+        completed = conn.execute(
+            "SELECT status, result_version_id FROM first_frame_tasks WHERE id = %s",
+            (created.json()["id"],),
+        ).fetchone()
+
+    assert unavailable.candidate_calls == 1
+    assert len(provider.calls) == 1
+    assert completed is not None
+    assert completed["status"] == "SUCCEEDED"
+    assert completed["result_version_id"] is not None
+
+
+def test_new_first_frame_task_reuses_checkpoint_from_uncertain_task(
+    client: TestClient,
+    db_path: Path,
+    provider: RecordingImageProvider,
+    storage: FakeStorageAdapter,
+) -> None:
+    prepare_inputs(client)
+    request = {
+        "model": "gpt-image-2",
+        "quantity": 1,
+        "idempotency_key": "first-frame-checkpoint-uncertain-1",
+    }
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json=request,
+        headers=headers("employee_1"),
+    )
+    assert created.status_code == 202
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE first_frame_tasks SET attempt = 1 WHERE id = %s",
+            (created.json()["id"],),
+        )
+        conn.commit()
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-checkpoint-uncertain",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider,
+                first_frame_quality_inspector=UnavailableCandidateQualityInspector(),
+                max_tasks=1,
+            )
+            == 1
+        )
+        uncertain = conn.execute(
+            "SELECT status, result_json FROM first_frame_tasks WHERE id = %s",
+            (created.json()["id"],),
+        ).fetchone()
+
+    assert uncertain is not None
+    assert uncertain["status"] == "SUBMISSION_UNCERTAIN"
+    assert json.loads(str(uncertain["result_json"]))["checkpoint"]["candidates"]
+
+    resumed = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={**request, "idempotency_key": "first-frame-checkpoint-uncertain-2"},
+        headers=headers("employee_1"),
+    )
+    assert resumed.status_code == 202
+    assert resumed.json()["id"] != created.json()["id"]
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-checkpoint-resubmitted",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider,
+                first_frame_quality_inspector=SequenceFirstFrameQualityInspector(
+                    candidate_inspections=[passing_candidate_inspection()]
+                ),
+                max_tasks=1,
+            )
+            == 1
+        )
+        completed = conn.execute(
+            "SELECT status FROM first_frame_tasks WHERE id = %s",
+            (resumed.json()["id"],),
+        ).fetchone()
+
+    assert len(provider.calls) == 1
+    assert completed is not None
+    assert completed["status"] == "SUCCEEDED"
+
+
 def test_generate_candidates_archives_them_and_preserves_image_input_order(
     client: TestClient,
     provider: RecordingImageProvider,
@@ -781,6 +1028,58 @@ def test_project_appearance_uses_half_open_segment_boundaries() -> None:
 
     assert spec.scene == "建筑施工现场"
     assert spec.category == "CONSTRUCTION"
+
+
+def test_selected_scene_look_is_the_authoritative_outfit_for_first_frame() -> None:
+    automatic = derive_project_appearance_spec(
+        analysis_payload={
+            "shots": [
+                {
+                    "start_time": 0,
+                    "end_time": 10,
+                    "subject": "主讲人",
+                    "action": "在会议室介绍业务",
+                    "scene": "商务会议室",
+                }
+            ]
+        },
+        source_analysis_version_id="analysis-scene-look",
+        source_timestamp_seconds=3,
+    )
+    character_inputs = FirstFrameCharacterInputs(
+        main_character_version_id="main-character-v1",
+        character_snapshot={
+            "persona_snapshot_json": {
+                "name": "工地造型",
+                "scene_description": "乡村别墅施工现场，白天自然光",
+                "costume_description": "黄色安全帽、深蓝色工装和反光背心",
+                "appearance_constraints_json": {"appearance_type": "scene"},
+            }
+        },
+        reference_asset_ids=["contact-sheet", "source-photo"],
+        character_name="林夏",
+        authorized_project_ids=[],
+        character_version_id="scene-look-v1",
+        reference_asset_roles=["contact_sheet", "source_photo"],
+    )
+
+    selected = apply_selected_scene_look(automatic, character_inputs=character_inputs)
+    prompt = normalize_prompt(
+        None,
+        character_name="林夏",
+        reference_roles=character_inputs.reference_asset_roles,
+        project_appearance=selected,
+    )
+
+    assert selected.appearance_source == "SCENE_LOOK"
+    assert selected.scene == "商务会议室"
+    assert selected.scene_look_description == "乡村别墅施工现场，白天自然光"
+    assert selected.outfit_description == "黄色安全帽、深蓝色工装和反光背心"
+    assert "用户已选择的场景造型" in prompt
+    assert "黄色安全帽、深蓝色工装和反光背心" in prompt
+    assert "服装、鞋履与配饰必须以该参考板为准" in prompt
+    assert "实际背景仍以原视频源帧为准" in prompt
+    assert "不得直接照搬" not in prompt
 
 
 def test_full_person_prompt_uses_project_appearance_instead_of_copying_reference_clothes() -> None:

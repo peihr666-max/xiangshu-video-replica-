@@ -385,7 +385,7 @@ describe("ProjectDetailFlow", () => {
       expect(api.extractSourceFrames).toHaveBeenCalledWith(
         "project-1",
         "ref-1",
-        [12, 30, 48],
+        [6, 18, 30, 42, 54],
       ),
     );
     expect(screen.getByText(/15 秒成片建议约 60–75 字/)).toBeInTheDocument();

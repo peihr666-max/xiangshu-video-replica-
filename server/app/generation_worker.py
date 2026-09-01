@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +34,9 @@ from app.db_pg import (
 )
 from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_first_frame_quality_inspector, get_image_provider
-from app.first_frames import FirstFrameQualityInspector, ImageProvider
+from app.first_frames import FirstFrameQualityInspector, ImageInput, ImageProvider
 from app.generation import (
+    GeneratedVideoValidationUnavailable,
     H3Provider,
     H3ProviderFailed,
     H3ProviderSettingsUnavailable,
@@ -45,6 +47,7 @@ from app.generation import (
     acquire_generation_task_lease,
     complete_generation_reconcile_operation,
     fail_generation_reconcile_operation,
+    final_generation_quality,
     finalize_generation_archive,
     h3_audio_quality,
     h3_provider_for_task,
@@ -58,6 +61,7 @@ from app.generation import (
     prepare_generation_reconcile_operation,
     prepare_generation_submission,
     release_generation_archive_retry,
+    release_generation_visual_validation_retry,
     reschedule_generation_poll,
     run_next_generation_task,
     store_generation_result,
@@ -73,6 +77,7 @@ from app.image_tasks import (
     prepare_first_frame_task,
     renew_image_task_lease,
     run_first_frame_task_outside_transaction,
+    save_first_frame_task_checkpoint,
 )
 from app.media_routes import get_media_storage
 from app.script_rewrite import (
@@ -86,6 +91,7 @@ from app.script_rewrite import (
 from app.source_frames import (
     FFmpegSourceFrameExtractor,
     SourceFrameExtractor,
+    SourceFrameQualityInspector,
     acquire_source_frame_task,
     complete_source_frame_task,
     delete_created_source_frames,
@@ -114,6 +120,8 @@ def run_worker_once(
     image_provider: ImageProvider | None = None,
     first_frame_quality_inspector: FirstFrameQualityInspector | None = None,
     source_frame_extractor: SourceFrameExtractor | None = None,
+    source_frame_quality_inspector: SourceFrameQualityInspector | None = None,
+    video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
     reconcile_provider: H3Provider | None = None,
     max_tasks: int | None = None,
 ) -> int:
@@ -130,6 +138,8 @@ def run_worker_once(
                 provider=None,
                 storage=generation_storage or storage,
                 first_frame_storage=first_frame_storage or storage,
+                visual_quality_inspector=first_frame_quality_inspector,
+                video_frame_extractor=video_frame_extractor,
             )
             is not None
         ):
@@ -215,6 +225,9 @@ def run_worker_once(
                 reconcile_outcome = perform_generation_reconcile_operation(
                     reconcile_work,
                     storage=generation_storage or storage,
+                    first_frame_storage=first_frame_storage or storage,
+                    visual_quality_inspector=first_frame_quality_inspector,
+                    video_frame_extractor=video_frame_extractor,
                 )
                 complete_generation_reconcile_operation(
                     conn,
@@ -249,6 +262,11 @@ def run_worker_once(
                     source_frame_plan,
                     storage=storage,
                     extractor=source_frame_extractor or FFmpegSourceFrameExtractor(),
+                    quality_inspector=(
+                        source_frame_quality_inspector
+                        or first_frame_quality_inspector
+                        or get_first_frame_quality_inspector(conn)
+                    ),
                 )
                 complete_source_frame_task(
                     conn,
@@ -283,10 +301,8 @@ def run_worker_once(
                 submission_started = True
 
             def mark_submission_completed() -> None:
-                # A known provider response ends transport uncertainty, but
-                # the paid output is still only in worker memory until QC and
-                # archival complete. Keep the durable task non-retryable if a
-                # later infrastructure failure loses that output.
+                # The next step archives the paid output and writes a durable
+                # checkpoint before quality inspection begins.
                 return
 
             def renew_first_frame_lease() -> None:
@@ -294,6 +310,13 @@ def run_worker_once(
                     conn,
                     table="first_frame_tasks",
                     lease=first_frame_lease,
+                )
+
+            def persist_first_frame_checkpoint(candidates: list[Any]) -> None:
+                save_first_frame_task_checkpoint(
+                    conn,
+                    lease=first_frame_lease,
+                    candidates=candidates,
                 )
 
             try:
@@ -311,6 +334,7 @@ def run_worker_once(
                     before_provider_call=mark_submission_started,
                     after_provider_call=mark_submission_completed,
                     heartbeat=renew_first_frame_lease,
+                    checkpoint_candidates=persist_first_frame_checkpoint,
                 )
                 complete_first_frame_task(
                     conn,
@@ -347,6 +371,9 @@ def run_worker_once(
                     lease=character_sheet_lease,
                     storage=storage,
                     provider=image_provider or get_image_provider(conn),
+                    quality_inspector=(
+                        first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
+                    ),
                 )
                 submission_started = True
                 sheet_generation = perform_character_sheet_task(prepared_sheet)
@@ -379,6 +406,8 @@ def _run_pg_generation_step(
     storage: StorageAdapter,
     first_frame_storage: StorageAdapter,
     provider_override: H3Provider | None = None,
+    visual_quality_inspector: FirstFrameQualityInspector | None = None,
+    video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
 ) -> None:
     """Run exactly one recoverable generation state transition.
 
@@ -535,6 +564,22 @@ def _run_pg_generation_step(
                 result_url=result.result_url,
             )
         try:
+            quality_status, quality_issue_codes = final_generation_quality(
+                content=result.result_content,
+                first_frame_uri=str(lease["first_frame_uri"]),
+                first_frame_storage=first_frame_storage,
+                inspector=visual_quality_inspector,
+                audio_quality_status=result.audio_quality_status,
+                quality_issue_codes=result.quality_issue_codes,
+                frame_extractor=video_frame_extractor,
+            )
+        except GeneratedVideoValidationUnavailable:
+            with pg_transaction() as raw_conn:
+                release_generation_visual_validation_retry(
+                    BusinessConnection.postgres(raw_conn), lease=lease
+                )
+            return
+        try:
             stored = store_generation_result(
                 storage,
                 task_id=task_id,
@@ -550,8 +595,8 @@ def _run_pg_generation_step(
                     BusinessConnection.postgres(raw_conn),
                     lease=lease,
                     stored=stored,
-                    audio_quality_status=result.audio_quality_status,
-                    quality_issue_codes=result.quality_issue_codes,
+                    quality_status=quality_status,
+                    quality_issue_codes=quality_issue_codes,
                 )
         except Exception:
             storage.delete_object(stored.key, actor_id=None)
@@ -628,7 +673,22 @@ def _run_pg_generation_step(
         try:
             content = provider.download_result(str(lease["provider_result_url"]))
             audio_quality_status, quality_issue_codes = h3_audio_quality(content)
+            quality_status, quality_issue_codes = final_generation_quality(
+                content=content,
+                first_frame_uri=str(lease["first_frame_uri"]),
+                first_frame_storage=first_frame_storage,
+                inspector=visual_quality_inspector,
+                audio_quality_status=audio_quality_status,
+                quality_issue_codes=quality_issue_codes,
+                frame_extractor=video_frame_extractor,
+            )
             stored = store_generation_result(storage, task_id=task_id, content=content)
+        except GeneratedVideoValidationUnavailable:
+            with pg_transaction() as raw_conn:
+                release_generation_visual_validation_retry(
+                    BusinessConnection.postgres(raw_conn), lease=lease
+                )
+            return
         except (H3ProviderFailed, StorageBackendUnavailable, StoragePermissionError, ValueError):
             with pg_transaction() as raw_conn:
                 release_generation_archive_retry(BusinessConnection.postgres(raw_conn), lease=lease)
@@ -639,7 +699,7 @@ def _run_pg_generation_step(
                     BusinessConnection.postgres(raw_conn),
                     lease=lease,
                     stored=stored,
-                    audio_quality_status=audio_quality_status,
+                    quality_status=quality_status,
                     quality_issue_codes=quality_issue_codes,
                 )
         except Exception:
@@ -659,6 +719,8 @@ def run_pg_worker_once(
     image_provider: ImageProvider | None = None,
     first_frame_quality_inspector: FirstFrameQualityInspector | None = None,
     source_frame_extractor: SourceFrameExtractor | None = None,
+    source_frame_quality_inspector: SourceFrameQualityInspector | None = None,
+    video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks on the PostgreSQL lane.
@@ -685,6 +747,8 @@ def run_pg_worker_once(
                 storage=generation_storage or storage,
                 first_frame_storage=first_frame_storage or storage,
                 provider_override=generation_provider,
+                visual_quality_inspector=first_frame_quality_inspector,
+                video_frame_extractor=video_frame_extractor,
             )
             processed += 1
             processed_round = True
@@ -800,6 +864,9 @@ def run_pg_worker_once(
                 reconcile_outcome = perform_generation_reconcile_operation(
                     reconcile_work,
                     storage=generation_storage or storage,
+                    first_frame_storage=first_frame_storage or storage,
+                    visual_quality_inspector=first_frame_quality_inspector,
+                    video_frame_extractor=video_frame_extractor,
                 )
                 with pg_transaction() as raw_conn:
                     complete_generation_reconcile_operation(
@@ -833,14 +900,21 @@ def run_pg_worker_once(
             source_frame_stored = None
             try:
                 with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
                     source_frame_plan = prepare_source_frame_task(
-                        BusinessConnection.postgres(raw_conn),
+                        conn,
                         lease=source_frame_lease,
+                    )
+                    semantic_inspector = (
+                        source_frame_quality_inspector
+                        or first_frame_quality_inspector
+                        or get_first_frame_quality_inspector(conn)
                     )
                 source_frame_stored = perform_source_frame_extraction(
                     source_frame_plan,
                     storage=storage,
                     extractor=source_frame_extractor or FFmpegSourceFrameExtractor(),
+                    quality_inspector=semantic_inspector,
                 )
                 with pg_transaction() as raw_conn:
                     complete_source_frame_task(
@@ -890,6 +964,14 @@ def run_pg_worker_once(
                         lease=first_frame_lease,
                     )
 
+            def persist_pg_first_frame_checkpoint(candidates: list[Any]) -> None:
+                with pg_transaction() as raw_conn:
+                    save_first_frame_task_checkpoint(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=first_frame_lease,
+                        candidates=candidates,
+                    )
+
             try:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
@@ -907,6 +989,7 @@ def run_pg_worker_once(
                     before_provider_call=mark_pg_submission_started,
                     after_provider_call=mark_pg_submission_completed,
                     heartbeat=renew_pg_first_frame_lease,
+                    checkpoint_candidates=persist_pg_first_frame_checkpoint,
                 )
                 with pg_transaction() as raw_conn:
                     complete_first_frame_task(
@@ -950,6 +1033,9 @@ def run_pg_worker_once(
                         lease=character_sheet_lease,
                         storage=storage,
                         provider=image_provider or get_image_provider(conn),
+                        quality_inspector=(
+                            first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
+                        ),
                     )
                 submission_started = True
                 sheet_generation = perform_character_sheet_task(prepared_sheet)
@@ -985,12 +1071,14 @@ def run_forever(*, db_path: Path, worker_id: str, idle_seconds: float) -> None:
                 # 云端模式下所有需要持久保留的生成资产都进入 COS；
                 # 未配置 COS 的桌面开发环境仍由 get_media_storage 回退本地盘。
                 asset_storage = get_media_storage(conn)
+                quality_inspector = get_first_frame_quality_inspector(conn)
                 processed = run_worker_once(
                     conn,
                     worker_id=worker_id,
                     storage=asset_storage,
                     generation_storage=asset_storage,
                     first_frame_storage=asset_storage,
+                    first_frame_quality_inspector=quality_inspector,
                 )
         except HTTPException as exc:
             code = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
@@ -1011,11 +1099,13 @@ def run_forever_pg(*, worker_id: str, idle_seconds: float) -> None:
             with pg_transaction() as raw_conn:
                 conn = BusinessConnection.postgres(raw_conn)
                 asset_storage = get_media_storage(conn)
+                quality_inspector = get_first_frame_quality_inspector(conn)
             processed = run_pg_worker_once(
                 worker_id=worker_id,
                 storage=asset_storage,
                 generation_storage=asset_storage,
                 first_frame_storage=asset_storage,
+                first_frame_quality_inspector=quality_inspector,
             )
         except HTTPException as exc:
             code = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
@@ -1081,11 +1171,13 @@ def main() -> None:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
                     asset_storage = get_media_storage(conn)
+                    quality_inspector = get_first_frame_quality_inspector(conn)
                 processed = run_pg_worker_once(
                     worker_id=args.worker_id,
                     storage=asset_storage,
                     generation_storage=asset_storage,
                     first_frame_storage=asset_storage,
+                    first_frame_quality_inspector=quality_inspector,
                     max_tasks=args.max_tasks,
                 )
             finally:
@@ -1106,12 +1198,14 @@ def main() -> None:
     if args.once:
         with BusinessConnection.sqlite(connect_database(db_path)) as conn:
             asset_storage = get_media_storage(conn)
+            quality_inspector = get_first_frame_quality_inspector(conn)
             processed = run_worker_once(
                 conn,
                 worker_id=args.worker_id,
                 storage=asset_storage,
                 generation_storage=asset_storage,
                 first_frame_storage=asset_storage,
+                first_frame_quality_inspector=quality_inspector,
                 max_tasks=args.max_tasks,
             )
         logger.info("generation worker processed %s task(s)", processed)
