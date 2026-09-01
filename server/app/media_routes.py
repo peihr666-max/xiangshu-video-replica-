@@ -4,14 +4,20 @@ import hmac
 import json
 import os
 import time
-from typing import Annotated
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.auth import AuthenticatedUser, Database
+from app.auth import AuthenticatedUser, CurrentUser, Database, authenticate_user
 from app.customer_fence import BusinessDbDep, BusinessReadConn
+from app.db import connect_database
+from app.db_pg import DATABASE_URL_ENV, pg_transaction
+from app.db_portable import BusinessConnection
 from app.media import (
     MAX_UPLOAD_BYTES,
     FFprobeVideoProbe,
@@ -19,16 +25,29 @@ from app.media import (
     VideoProbe,
     complete_upload,
     create_upload_intent,
+    storage_key_from_uri,
 )
-from app.permissions import require_not_auditor, require_project_access, require_role
+from app.permissions import (
+    AuditedSecurityDenial,
+    persist_security_denial,
+    remap_security_denial,
+    require_asset_access,
+    require_not_auditor,
+    require_project_access,
+    require_role,
+)
 from app.settings import SettingsRepository, SettingsUnavailableError, settings_encryption_key
 from app.storage import (
+    LocalStorageAdapter,
     StorageAdapter,
     StorageBackendUnavailable,
     cloud_storage_config_from_settings,
     create_local_storage_from_environment,
     create_storage_adapter,
     local_download_signature,
+    local_storage_root,
+    require_storage_match,
+    storage_object_ref_from_uri,
 )
 
 router = APIRouter(prefix="/api/assets", tags=["media"])
@@ -102,7 +121,7 @@ class UploadIntentRequest(BaseModel):
 class UploadIntentResponse(BaseModel):
     asset_id: str
     project_id: str
-    storage_key: str
+    storage_key: str | None = None
     method: str | None
     url: str | None
     headers: dict[str, str]
@@ -114,7 +133,7 @@ class CompleteUploadResponse(BaseModel):
     asset_id: str
     project_id: str
     status: str
-    storage_uri: str
+    storage_uri: str | None = None
     sha256: str
     size_bytes: int
     content_type: str
@@ -139,6 +158,43 @@ def get_media_storage(conn: BusinessReadConn) -> StorageAdapter:
         ) from exc
 
 
+def storage_for_asset(conn: BusinessConnection, storage_uri: str) -> StorageAdapter:
+    """Resolve the adapter named by a persisted asset URI, including its bucket."""
+    reference = storage_object_ref_from_uri(storage_uri)
+    if reference.provider == "local":
+        local_storage = LocalStorageAdapter(root=local_storage_root(), bucket=reference.bucket)
+        require_storage_match(local_storage, reference)
+        return local_storage
+    if reference.provider != "cos":
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
+        )
+    try:
+        config = SettingsRepository(conn).load_provider_config(reference.provider)
+    except SettingsUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
+        ) from exc
+    if config.get("bucket") != reference.bucket:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "STORAGE_BUCKET_MISMATCH"},
+        )
+    try:
+        cloud_storage = create_storage_adapter(
+            cloud_storage_config_from_settings(reference.provider, config)
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
+        ) from exc
+    require_storage_match(cloud_storage, reference)
+    return cloud_storage
+
+
 def get_video_probe() -> VideoProbe:
     return FFprobeVideoProbe()
 
@@ -147,12 +203,217 @@ MediaStorage = Annotated[StorageAdapter, Depends(get_media_storage)]
 InjectedVideoProbe = Annotated[VideoProbe, Depends(get_video_probe)]
 
 
-@router.post("/upload-intent", response_model=UploadIntentResponse)
+def signed_asset_session_epoch(conn: BusinessConnection, actor: CurrentUser) -> str:
+    """Bind customer grants to the live session epoch; internal grants use zero."""
+    if actor.role != "customer":
+        return "0"
+    row = conn.execute(
+        "SELECT session_epoch FROM customer_session_state WHERE user_id = %s",
+        (actor.id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=401, detail={"code": "SESSION_REPLACED"})
+    return str(row["session_epoch"])
+
+
+def validate_signed_asset_grant(
+    conn: BusinessConnection,
+    *,
+    user_id: str,
+    asset_id: str,
+    session_epoch: str,
+    expected_object_key: str | None = None,
+) -> Any:
+    """Revalidate identity, authorization, asset existence and session state."""
+    try:
+        actor = authenticate_user(conn, user_id)
+        asset = require_asset_access(
+            conn,
+            actor=actor,
+            asset_id=asset_id,
+            action="asset.signed_download.read",
+        )
+    except HTTPException as exc:
+        raise remap_security_denial(
+            exc,
+            status_code=403,
+            detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},
+        ) from exc
+    if expected_object_key is not None:
+        try:
+            current_key = storage_key_from_uri(str(asset["storage_uri"]))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},
+            ) from exc
+        if not hmac.compare_digest(current_key, expected_object_key):
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},
+            )
+    if actor.role != "customer":
+        if session_epoch != "0":
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},
+            )
+        return asset
+    if not session_epoch.isdigit():
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},
+        )
+    state = conn.execute(
+        """
+        SELECT css.session_epoch, css.lease_until, ac.status AS code_status,
+               device.status AS device_status
+        FROM customer_session_state AS css
+        JOIN activation_codes AS ac ON ac.id = css.activation_code_id
+        JOIN customer_devices AS device ON device.id = css.device_id
+        WHERE css.user_id = %s
+        """,
+        (user_id,),
+    ).fetchone()
+    if state is None:
+        raise HTTPException(status_code=403, detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"})
+    lease_until = datetime.fromisoformat(str(state["lease_until"]))
+    if lease_until.tzinfo is None:
+        lease_until = lease_until.replace(tzinfo=UTC)
+    if (
+        int(state["session_epoch"]) != int(session_epoch)
+        or str(state["code_status"]) != "ACTIVE"
+        or str(state["device_status"]) != "BOUND"
+        or lease_until <= datetime.now(UTC)
+    ):
+        raise HTTPException(status_code=403, detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"})
+    return asset
+
+
+def _validate_signed_object_request(
+    conn: BusinessConnection,
+    *,
+    object_key: str,
+    request: Request,
+) -> Any:
+    expires_at = request.query_params.get("expires")
+    signature = request.query_params.get("sig")
+    user_id = request.query_params.get("user_id")
+    asset_id = request.query_params.get("asset_id")
+    session_epoch = request.query_params.get("session_epoch")
+    secret = settings_encryption_key()
+    if expires_at is not None and len(expires_at) > 20:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_EXPIRES"})
+    if (
+        not expires_at
+        or not signature
+        or not user_id
+        or not asset_id
+        or session_epoch is None
+        or not secret
+        or not expires_at.isdigit()
+        or int(expires_at) < int(time.time())
+        or not hmac.compare_digest(
+            signature,
+            local_download_signature(
+                object_key,
+                expires_at,
+                user_id=user_id,
+                asset_id=asset_id,
+                session_epoch=session_epoch,
+                secret=secret,
+            ),
+        )
+    ):
+        raise HTTPException(status_code=403, detail={"code": "LOCAL_DOWNLOAD_FORBIDDEN"})
+    return validate_signed_asset_grant(
+        conn,
+        user_id=user_id,
+        asset_id=asset_id,
+        session_epoch=session_epoch,
+        expected_object_key=object_key,
+    )
+
+
+def _signed_object_response(
+    conn: BusinessConnection,
+    *,
+    object_key: str,
+    request: Request,
+    storage: StorageAdapter,
+    asset: Any | None = None,
+) -> Response:
+    if asset is None:
+        asset = _validate_signed_object_request(conn, object_key=object_key, request=request)
+    reference = storage_object_ref_from_uri(str(asset["storage_uri"]))
+    require_storage_match(storage, reference)
+    return _read_stored_object(storage, object_key=object_key)
+
+
+def _read_stored_object(storage: StorageAdapter, *, object_key: str) -> Response:
+    try:
+        stored = storage.head_object(object_key)
+        if stored is None:
+            raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
+        content = storage.get_object(object_key)
+    except StorageBackendUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
+        ) from exc
+    return Response(
+        content=content,
+        media_type=stored.content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'attachment; filename="{Path(object_key).name}"',
+        },
+    )
+
+
+def _prepare_signed_object_read(
+    *,
+    object_key: str,
+    request: Request,
+) -> StorageAdapter:
+    """Authorize and resolve storage in a short DB scope before cloud I/O."""
+    if os.environ.get(DATABASE_URL_ENV, "").strip():
+        try:
+            with pg_transaction() as raw_conn:
+                conn = BusinessConnection.postgres(raw_conn)
+                asset = _validate_signed_object_request(
+                    conn,
+                    object_key=object_key,
+                    request=request,
+                )
+                return storage_for_asset(conn, str(asset["storage_uri"]))
+        except AuditedSecurityDenial as exc:
+            persist_security_denial(exc)
+            raise
+    db_path = os.environ.get("VIDEO_REPLICA_DB_PATH", "").strip()
+    if not db_path:
+        raise HTTPException(status_code=503, detail={"code": "DATABASE_NOT_CONFIGURED"})
+    conn = BusinessConnection.sqlite(connect_database(Path(db_path)))
+    try:
+        asset = _validate_signed_object_request(
+            conn,
+            object_key=object_key,
+            request=request,
+        )
+        return storage_for_asset(conn, str(asset["storage_uri"]))
+    finally:
+        conn.close()
+
+
+@router.post(
+    "/upload-intent",
+    response_model=UploadIntentResponse,
+)
 def create_asset_upload_intent(
     payload: UploadIntentRequest,
     db: BusinessDbDep,
     storage: MediaStorage,
-) -> UploadIntentResponse:
+) -> UploadIntentResponse | JSONResponse:
     with db.write() as (conn, actor):
         intent = create_upload_intent(
             conn,
@@ -164,6 +425,7 @@ def create_asset_upload_intent(
             size_bytes=payload.size_bytes,
             sha256=payload.sha256,
         )
+        is_customer = actor.role == "customer"
     upload_url = intent.url
     if intent.upload_required and storage.provider == "local":
         # The client cannot PUT to a `local://` scheme URL; route uploads through
@@ -171,7 +433,7 @@ def create_asset_upload_intent(
         upload_url = (
             f"{api_base_url()}/api/assets/local-objects/{quote(intent.storage_key, safe='/')}"
         )
-    return UploadIntentResponse(
+    result = UploadIntentResponse(
         asset_id=intent.asset_id,
         project_id=intent.project_id,
         storage_key=intent.storage_key,
@@ -181,20 +443,27 @@ def create_asset_upload_intent(
         expires_at=intent.expires_at,
         upload_required=intent.upload_required,
     )
+    if is_customer:
+        return JSONResponse(content=result.model_dump(mode="json", exclude={"storage_key"}))
+    return result
 
 
-@router.post("/{asset_id}/complete", response_model=CompleteUploadResponse)
+@router.post(
+    "/{asset_id}/complete",
+    response_model=CompleteUploadResponse,
+)
 def complete_asset_upload(
     asset_id: str,
     db: BusinessDbDep,
     storage: MediaStorage,
     probe: InjectedVideoProbe,
-) -> CompleteUploadResponse:
+) -> CompleteUploadResponse | JSONResponse:
     with db.write() as (conn, actor):
         completed = complete_upload(
             conn, actor=actor, storage=storage, probe=probe, asset_id=asset_id
         )
-    return CompleteUploadResponse(
+        is_customer = actor.role == "customer"
+    result = CompleteUploadResponse(
         asset_id=completed.asset_id,
         project_id=completed.project_id,
         status=completed.status,
@@ -206,6 +475,9 @@ def complete_asset_upload(
         analysis_task_id=completed.analysis_task_id,
         analysis_task_status=completed.analysis_task_status,
     )
+    if is_customer:
+        return JSONResponse(content=result.model_dump(mode="json", exclude={"storage_uri"}))
+    return result
 
 
 @router.put("/local-objects/{object_key:path}")
@@ -303,34 +575,32 @@ async def put_local_object(
 def get_local_object(
     object_key: str,
     request: Request,
+    conn: Database,
     storage: MediaStorage,
 ) -> Response:
     """Serve a local-storage object through the API.
 
     The download URL carries a short-lived HMAC signature (issued by
     create_download_url) because an <img> tag cannot attach the dev identity
-    header. The signature is bound to the object key and expiry, so a leaked URL
-    cannot be replayed after it expires.
+    header. The signature is bound to object, actor, asset and session epoch;
+    the database grant is revalidated before every read so deletion, session
+    replacement and activation revocation take effect immediately.
     """
     if storage.provider != "local":
         raise HTTPException(status_code=404, detail={"code": "LOCAL_DOWNLOAD_UNAVAILABLE"})
-    expires_at = request.query_params.get("expires")
-    signature = request.query_params.get("sig")
-    secret = settings_encryption_key()
-    if (
-        not expires_at
-        or not signature
-        or not secret
-        or not expires_at.isdigit()
-        or int(expires_at) < int(time.time())
-        or not hmac.compare_digest(
-            signature,
-            local_download_signature(object_key, expires_at, secret=secret),
-        )
-    ):
-        raise HTTPException(status_code=403, detail={"code": "LOCAL_DOWNLOAD_FORBIDDEN"})
-    stored = storage.head_object(object_key)
-    if stored is None:
-        raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
-    content = storage.get_object(object_key)
-    return Response(content=content, media_type=stored.content_type)
+    return _signed_object_response(
+        conn,
+        object_key=object_key,
+        request=request,
+        storage=storage,
+    )
+
+
+@router.get("/signed-objects/{object_key:path}")
+def get_signed_object(
+    object_key: str,
+    request: Request,
+) -> Response:
+    """Proxy a revocable signed grant for local or private cloud storage."""
+    storage = _prepare_signed_object_read(object_key=object_key, request=request)
+    return _read_stored_object(storage, object_key=object_key)

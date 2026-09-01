@@ -264,9 +264,14 @@ def test_source_frame_extraction_requires_owner_and_ready_reference(
         json={"asset_id": "reference_owned"},
         headers=auth_headers("employee_2"),
     )
+    missing = client.post(
+        "/api/projects/project_missing/source-frames/extract",
+        json={"asset_id": "reference_owned"},
+        headers=auth_headers("employee_2"),
+    )
 
-    assert forbidden.status_code == 403
-    assert forbidden.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert forbidden.status_code == 404
+    assert forbidden.content == missing.content
 
 
 def test_confirmation_rejects_assets_outside_the_latest_candidate_set(

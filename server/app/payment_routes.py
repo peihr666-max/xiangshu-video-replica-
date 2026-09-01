@@ -77,6 +77,7 @@ def zpay_notify(request: Request, conn: Database) -> PlainTextResponse:
             amount_fen=amount_fen,
             channel=channel,
             source_digest=source_digest,
+            allowed_channels=merchant.allowed_channels,
         )
     except PaymentConfirmationError as exc:
         logger.warning("ZPay callback rejected: %s", exc.code)
@@ -173,6 +174,7 @@ def sync_recharge_order_with_zpay(
             amount_fen=remote_order.amount_fen,
             channel=remote_order.channel,
             source_digest=remote_order.response_digest,
+            allowed_channels=merchant.allowed_channels,
         )
     except PaymentConfirmationError as exc:
         raise HTTPException(

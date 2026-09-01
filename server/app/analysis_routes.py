@@ -40,6 +40,7 @@ from app.media import (
 )
 from app.media_routes import get_media_storage
 from app.permissions import (
+    remap_security_denial,
     require_asset_access,
     require_not_auditor,
     require_project_access,
@@ -404,12 +405,21 @@ def read_analysis_task(
     actor: AuthenticatedUser,
 ) -> AnalysisTaskResponse:
     row = load_analysis_task(conn, task_id)
-    require_project_access(
-        conn,
-        actor=actor,
-        project_id=str(row["project_id"]),
-        action="analysis.task.read",
-    )
+    try:
+        require_project_access(
+            conn,
+            actor=actor,
+            project_id=str(row["project_id"]),
+            action="analysis.task.read",
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise remap_security_denial(
+                exc,
+                status_code=404,
+                detail={"code": "ANALYSIS_TASK_NOT_FOUND"},
+            ) from exc
+        raise
     return analysis_task_response(row)
 
 
@@ -420,12 +430,24 @@ def read_analysis(
     actor: AuthenticatedUser,
 ) -> VersionResponse:
     row = load_analysis_version(conn, analysis_id)
-    require_project_access(
-        conn,
-        actor=actor,
-        project_id=str(row["project_id"]),
-        action="analysis.read",
-    )
+    try:
+        require_project_access(
+            conn,
+            actor=actor,
+            project_id=str(row["project_id"]),
+            action="analysis.read",
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise remap_security_denial(
+                exc,
+                status_code=404,
+                detail={
+                    "code": "ANALYSIS_NOT_FOUND",
+                    "message": "Analysis version does not exist.",
+                },
+            ) from exc
+        raise
     return version_response(row)
 
 

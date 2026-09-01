@@ -331,9 +331,11 @@ def customer_production_security_violations() -> list[str]:
     # the first exchange — the same fail-later shape PR #40 P2-2 fixed for
     # keys. Delayed import: bootstrap must not pull the FastAPI layer.
     from app.admin_auth_routes import (
+        ADMIN_SESSION_IDLE_TIMEOUT_ENV,
         ADMIN_SESSION_TTL_ENV,
         MAX_ADMIN_SESSION_TTL_SECONDS,
         MIN_ADMIN_SESSION_TTL_SECONDS,
+        resolve_admin_session_idle_timeout_seconds,
         resolve_admin_session_ttl_seconds,
     )
 
@@ -345,6 +347,14 @@ def customer_production_security_violations() -> list[str]:
                 f"{ADMIN_SESSION_TTL_ENV} is invalid: must be an integer between "
                 f"{MIN_ADMIN_SESSION_TTL_SECONDS} and {MAX_ADMIN_SESSION_TTL_SECONDS} "
                 "seconds"
+            )
+    if os.environ.get(ADMIN_SESSION_IDLE_TIMEOUT_ENV, "").strip():
+        try:
+            resolve_admin_session_idle_timeout_seconds()
+        except ValueError:
+            violations.append(
+                f"{ADMIN_SESSION_IDLE_TIMEOUT_ENV} is invalid: must be an integer between "
+                f"{MIN_ADMIN_SESSION_TTL_SECONDS} and {MAX_ADMIN_SESSION_TTL_SECONDS} seconds"
             )
     return violations
 

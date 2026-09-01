@@ -4,6 +4,28 @@
 >
 > **Evidence location (M0 review M8 unification, 2026-08-21)**: per-task evidence documents live under `docs/evidence/` (T02–T06 evidence files moved from the repository root; run-fix evidence under `docs/evidence/m0-review-fixes/`). Historical self-references inside those documents to their original root paths are preserved as record snapshots.
 
+## T45 — Security Defense-in-Depth Closure
+
+| Field | Value |
+| --- | --- |
+| **Task ID** | T45 |
+| **Owner / Reviewer** | Backend/Frontend/Security/QA/Release (Agent); repository self-review |
+| **Branch / Base SHA** | `feat/customer-v3-t45-defense-in-depth` / `92bace869c413d4403372e324530d7ff1052804b` |
+| **Verified Implementation SHA** | Pending final commit; evidence is bound to the reviewed branch diff over the base SHA |
+| **Upstream Spec Sections** | T45 work order B-2 plus S/D/C/A/E defense-in-depth findings |
+| **Failure Test or Regression Lock** | Session replay state gates; account-scoped keyed idempotency; late CLOSED payment; enabled-channel callback; revocable local/COS grants; per-device/preauth/reset limits; fencing dedupe; slot conflict mapping; customer response redaction; byte-identical 404; internal write contract; admin idle/context checks and self-service audit; billing actor split; auditor/reveal audit; executable release preflight |
+| **Implementation Result** | All T45 findings are closed in code or an explicit release-policy artifact; simple character and same-machine full-code reinstall remain direct without administrator review |
+| **Verification Command and Pass Count** | `npm run check`: secret scan pass; client 592/592; E2E format pass; Cargo pass; Ruff/format pass; Mypy 74 modules; Python 3.12.13 server full 943 passed / 504 skipped / 0 failed. PG tests skipped because no local PostgreSQL fixture is available |
+| **Evidence Level** | `CODE_PRESENT`; PostgreSQL 16 execution is required before `AUTOMATED_VERIFIED` |
+| **Security and Observability** | No plaintext secrets in audit/idempotency/log output; denial/reveal/auditor/self-service events are traceable; application grants are revocable; deploy preflight reports names and metadata only |
+| **Migration and Rollback** | No new migration; behavior is application/configuration level. Rollback must keep the upgraded client before restoring legacy recovery behavior |
+| **External Authorization Record** | None; no production DB/server/payment/COS/Provider/code issuance/gray/release action |
+| **Untested Items** | Real PG16 concurrency/integration, staging topology, real ZPay/COS/Provider, signed desktop installer and production deployment |
+
+Full evidence: `docs/evidence/T45-EVIDENCE.md`.
+
+---
+
 ## T44 — T43 Security Follow-up Remediation
 
 | Field | Value |

@@ -189,7 +189,12 @@ def test_admin_crud_preserves_reference_order_and_employee_reads_only_available(
         f"/api/characters/{available['id']}?project_id=project_owned",
         headers=headers("employee_2"),
     )
-    assert foreign_detail.status_code == 403
+    missing_project_detail = client.get(
+        f"/api/characters/{available['id']}?project_id=project_missing",
+        headers=headers("employee_2"),
+    )
+    assert foreign_detail.status_code == 404
+    assert foreign_detail.content == missing_project_detail.content
     assert admin_list.status_code == 200
     assert {item["id"] for item in admin_list.json()} == {
         available["id"],

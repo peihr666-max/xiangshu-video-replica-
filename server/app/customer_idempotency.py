@@ -5,7 +5,8 @@ The extracted, reusable core of the T13 activation envelope (dev doc
 T19 login, T22 recharge) can share one idempotency contract:
 
 - operation/scope/key digest — exactly one envelope per triple (the raw
-  client key never reaches the database, only its SHA-256 digest);
+  client key never reaches the database, only a domain-separated keyed
+  digest; legacy SHA-256 rows remain readable during the migration window);
 - request hash — the frozen fingerprint of the *normalized* request; a
   retry with the same key and the same parameters replays the sealed
   response, a retry with different parameters answers 409;
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -152,8 +154,24 @@ def recovery_window_seconds() -> int:
 
 
 def idempotency_key_digest(key: str) -> str:
-    """The raw client key never reaches the database — only this digest."""
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+    """Return the current, domain-separated keyed digest of a client key."""
+    _version, digest_key = highest_customer_aead_key()
+    return _idempotency_hmac(key, digest_key)
+
+
+def idempotency_key_digests(key: str) -> list[str]:
+    """Accepted digests during rotation, newest first, plus legacy SHA-256."""
+    digests = [
+        _idempotency_hmac(key, customer_aead_key(version))
+        for version in reversed(configured_aead_key_versions())
+    ]
+    legacy = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return list(dict.fromkeys([*digests, legacy]))
+
+
+def _idempotency_hmac(key: str, digest_key: bytes) -> str:
+    message = f"customer-idempotency-key:v1:{key}".encode()
+    return hmac.new(digest_key, message, hashlib.sha256).hexdigest()
 
 
 def request_hash(payload: Mapping[str, str]) -> str:

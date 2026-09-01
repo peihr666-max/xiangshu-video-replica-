@@ -722,6 +722,31 @@ def test_failure_record_holds_no_plaintext_code(clean_counters: str) -> None:
         assert str(row[0]) == digest
 
 
+def test_fencing_failure_audit_is_deduplicated_within_the_window(
+    clean_counters: str,
+) -> None:
+    from app.security_rate_limit import record_auth_failure
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    with psycopg.connect(_t15_dsn()) as conn:
+        for index in range(5):
+            record_auth_failure(
+                conn,
+                dimension="session:fencing",
+                identifier="same-session-fencing-fact",
+                request_id=f"fence-{index}",
+                now=now + timedelta(seconds=index),
+                dedupe_window_seconds=300,
+            )
+        count = conn.execute(
+            f"SELECT count(*) FROM {FAILURES_TABLE} "
+            "WHERE dimension = 'session:fencing' "
+            "AND identifier = 'same-session-fencing-fact'"
+        ).fetchone()
+
+    assert count is not None and int(count[0]) == 1
+
+
 # ---------------------------------------------------------------------------
 # Route integration: the activation endpoint behind the shared limiter
 # ---------------------------------------------------------------------------

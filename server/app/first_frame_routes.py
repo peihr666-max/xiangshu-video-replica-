@@ -37,7 +37,7 @@ from app.image_tasks import (
     require_first_frame_task_access,
 )
 from app.media_routes import get_media_storage
-from app.permissions import require_project_access
+from app.permissions import remap_security_denial, require_project_access
 from app.settings import SettingsRepository, SettingsUnavailableError
 from app.source_frames import latest_version
 from app.storage import StorageAdapter
@@ -317,7 +317,16 @@ def read_first_frame_task(
     actor: AuthenticatedUser,
 ) -> FirstFrameTaskResponse:
     row = load_image_task(conn, table="first_frame_tasks", task_id=task_id)
-    require_first_frame_task_access(conn, actor=actor, row=row)
+    try:
+        require_first_frame_task_access(conn, actor=actor, row=row)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise remap_security_denial(
+                exc,
+                status_code=404,
+                detail={"code": "IMAGE_TASK_NOT_FOUND", "message": "生成任务不存在。"},
+            ) from exc
+        raise
     return first_frame_task_response(row)
 
 

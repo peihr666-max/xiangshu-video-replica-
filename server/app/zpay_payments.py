@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Collection
 from typing import Literal, TypedDict, cast
 from uuid import uuid4
 
 import psycopg
 
 from app.db_portable import BusinessConnection
+from app.zpay import ALLOWED_ZPAY_CHANNELS
 
 ZPAY_NOTIFY_BUSY_TIMEOUT_MS = 1000
 RechargeStatus = Literal["PENDING", "PAID", "FAILED", "CLOSED"]
@@ -69,6 +71,7 @@ def confirm_recharge_payment(
     amount_fen: int,
     channel: str,
     source_digest: str,
+    allowed_channels: Collection[str] | None = None,
 ) -> sqlite3.Row:
     if not merchant_order_no or not provider_trade_no.strip():
         raise PaymentConfirmationError(
@@ -97,10 +100,11 @@ def confirm_recharge_payment(
                 "ZPAY_AMOUNT_MISMATCH",
                 "ZPay amount does not match the stored recharge order.",
             )
-        if str(order["channel"]) != channel:
+        merchant_channels = set(allowed_channels or (str(order["channel"]),))
+        if channel not in ALLOWED_ZPAY_CHANNELS or channel not in merchant_channels:
             raise PaymentConfirmationError(
                 "ZPAY_CHANNEL_MISMATCH",
-                "ZPay channel does not match the stored recharge order.",
+                "ZPay channel is not enabled for this merchant.",
             )
 
         bound_order = conn.execute(
@@ -129,7 +133,7 @@ def confirm_recharge_payment(
             # where the outer pg_transaction owns commit authority).
             conn.rollback()
             return order
-        if str(order["status"]) != "PENDING":
+        if str(order["status"]) not in {"PENDING", "CLOSED"}:
             raise PaymentConfirmationError(
                 "ZPAY_ORDER_NOT_SETTLEABLE",
                 "Recharge order is not waiting for settlement.",
@@ -142,7 +146,7 @@ def confirm_recharge_payment(
                 provider_trade_no = %s,
                 notify_digest = %s,
                 paid_at = CURRENT_TIMESTAMP
-            WHERE id = %s AND status = 'PENDING'
+            WHERE id = %s AND status IN ('PENDING', 'CLOSED')
             """,
             (provider_trade_no, source_digest, str(order["id"])),
         )

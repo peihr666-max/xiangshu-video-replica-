@@ -40,6 +40,7 @@ from app.internal_billing import (
 )
 from app.permissions import (
     insert_audit,
+    remap_security_denial,
     require_asset_access,
     require_not_auditor,
     require_project_access,
@@ -1828,7 +1829,7 @@ def regenerate_generation_batch(
     request: PaidRegenerationRequest,
 ) -> BatchResult:
     source_context = conn.execute(
-        "SELECT project_id FROM generation_batches WHERE id = %s",
+        "SELECT project_id, created_by_user_id FROM generation_batches WHERE id = %s",
         (batch_id,),
     ).fetchone()
     if source_context is None:
@@ -1853,7 +1854,7 @@ def regenerate_generation_batch(
         conn.execute("BEGIN IMMEDIATE")
         source_batch = conn.execute(
             """
-            SELECT id, project_id, request_snapshot_json
+            SELECT id, project_id, created_by_user_id, request_snapshot_json
             FROM generation_batches
             WHERE id = %s
             """,
@@ -1861,6 +1862,7 @@ def regenerate_generation_batch(
         ).fetchone()
         if source_batch is None:
             raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
+        billed_user_id = str(source_batch["created_by_user_id"])
         source_tasks = conn.execute(
             """
             SELECT id, generation_mode, provider, model, prompt_version_id,
@@ -1893,7 +1895,7 @@ def regenerate_generation_batch(
         )
         existing = _find_idempotent_batch(
             conn,
-            actor_id=actor.id,
+            actor_id=billed_user_id,
             project_id=project_id,
             key=request.idempotency_key,
         )
@@ -1926,7 +1928,7 @@ def regenerate_generation_batch(
             (
                 new_batch_id,
                 project_id,
-                actor.id,
+                billed_user_id,
                 request.idempotency_key,
                 request_hash,
                 request_snapshot,
@@ -1968,7 +1970,7 @@ def regenerate_generation_batch(
             )
             _reserve_generation_credit(
                 conn,
-                user_id=actor.id,
+                user_id=billed_user_id,
                 task_id=replacement_task_id,
             )
         insert_audit(
@@ -1985,11 +1987,13 @@ def regenerate_generation_batch(
                 "generation_reason": request.generation_reason,
                 "estimated_cost_snapshot": request.estimated_cost_snapshot,
                 "idempotency_key_hash": content_hash(request.idempotency_key),
+                "billed_user_id": billed_user_id,
+                "requested_by_user_id": actor.id,
             },
         )
         # Pattern D: regeneration also makes the user a queue participant
         # (same-transaction upsert; rotation serves them on the next round).
-        ensure_user_queue_cursor(conn, user_id=actor.id)
+        ensure_user_queue_cursor(conn, user_id=billed_user_id)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -2006,7 +2010,7 @@ def regenerate_generation_task(
 ) -> BatchResult:
     source_context = conn.execute(
         """
-        SELECT generation_batches.project_id
+        SELECT generation_batches.project_id, generation_batches.created_by_user_id
         FROM generation_tasks
         JOIN generation_batches ON generation_batches.id = generation_tasks.batch_id
         WHERE generation_tasks.id = %s
@@ -2052,6 +2056,7 @@ def regenerate_generation_task(
                 task.prompt_snapshot_json,
                 task.superseded_by_task_id,
                 batch.project_id,
+                batch.created_by_user_id,
                 batch.request_snapshot_json
             FROM generation_tasks AS task
             JOIN generation_batches AS batch ON batch.id = task.batch_id
@@ -2061,6 +2066,7 @@ def regenerate_generation_task(
         ).fetchone()
         if source is None:
             raise generation_error(404, "TASK_NOT_FOUND", "Generation task does not exist.")
+        billed_user_id = str(source["created_by_user_id"])
 
         request_snapshot = required_snapshot_text(source["request_snapshot_json"])
         prompt_snapshot = required_snapshot_text(source["prompt_snapshot_json"])
@@ -2075,7 +2081,7 @@ def regenerate_generation_task(
         )
         existing = _find_idempotent_batch(
             conn,
-            actor_id=actor.id,
+            actor_id=billed_user_id,
             project_id=project_id,
             key=request.idempotency_key,
         )
@@ -2107,7 +2113,7 @@ def regenerate_generation_task(
             (
                 new_batch_id,
                 project_id,
-                actor.id,
+                billed_user_id,
                 request.idempotency_key,
                 request_hash,
                 request_snapshot,
@@ -2144,7 +2150,7 @@ def regenerate_generation_task(
         )
         _reserve_generation_credit(
             conn,
-            user_id=actor.id,
+            user_id=billed_user_id,
             task_id=replacement_task_id,
         )
         cursor = conn.execute(
@@ -2177,11 +2183,13 @@ def regenerate_generation_task(
                 "generation_reason": request.generation_reason,
                 "estimated_cost_snapshot": request.estimated_cost_snapshot,
                 "idempotency_key_hash": content_hash(request.idempotency_key),
+                "billed_user_id": billed_user_id,
+                "requested_by_user_id": actor.id,
             },
         )
         # Pattern D: the replacement makes the user a queue participant
         # (same-transaction upsert; rotation serves them on the next round).
-        ensure_user_queue_cursor(conn, user_id=actor.id)
+        ensure_user_queue_cursor(conn, user_id=billed_user_id)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -3233,6 +3241,8 @@ def retry_generation_task(
                 "retry_path": retry_path,
                 "retry_reason": request.retry_reason,
                 "idempotency_key_hash": content_hash(request.idempotency_key),
+                "billed_user_id": str(row["created_by_user_id"]),
+                "requested_by_user_id": actor.id,
             },
         )
         _refresh_batch_status_in_transaction(conn, batch_id=str(row["batch_id"]))
@@ -5578,12 +5588,24 @@ def get_generation_batch(
     ).fetchone()
     if batch is None:
         raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
-    require_project_access(
-        conn,
-        actor=actor,
-        project_id=str(batch["project_id"]),
-        action="generation_batch.read",
-    )
+    try:
+        require_project_access(
+            conn,
+            actor=actor,
+            project_id=str(batch["project_id"]),
+            action="generation_batch.read",
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise remap_security_denial(
+                exc,
+                status_code=404,
+                detail={
+                    "code": "BATCH_NOT_FOUND",
+                    "message": "Generation batch does not exist.",
+                },
+            ) from exc
+        raise
     rows = conn.execute(
         """
         SELECT
@@ -5681,9 +5703,9 @@ def rename_generation_batch(
         raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
     if actor.role != "admin" and str(batch["created_by_user_id"]) != actor.id:
         raise generation_error(
-            403,
-            "GENERATION_BATCH_FORBIDDEN",
-            "只有批次创建者或管理员可以修改批次名称。",
+            404,
+            "BATCH_NOT_FOUND",
+            "Generation batch does not exist.",
         )
     clean_name = display_name.strip()
     if not clean_name:

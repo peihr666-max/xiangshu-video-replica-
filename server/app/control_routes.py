@@ -13,7 +13,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from app.admin_activation_routes import AdminWriteContract, _write_with_idempotency
+from app.admin_activation_routes import (
+    AdminWriteContract,
+    _require_write_contract,
+    _write_with_idempotency,
+)
 from app.auth import Database, Role
 from app.control_auth import ControlUser
 from app.db_portable import BusinessConnection
@@ -238,6 +242,7 @@ def _run_control_settings_write(
     business: Callable[[BusinessConnection, str], dict[str, object]],
 ) -> dict[str, object]:
     if not _is_customer_production():
+        _require_write_contract(request, body)
         return business(conn, get_or_create_request_id(request))
 
     def pg_business(raw_conn: psycopg.Connection, request_id: str) -> dict[str, object]:

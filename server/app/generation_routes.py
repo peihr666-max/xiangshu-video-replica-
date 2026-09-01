@@ -51,13 +51,13 @@ from app.generation import (
     version_state,
 )
 from app.media import storage_key_from_uri
+from app.media_routes import storage_for_asset
 from app.permissions import (
     require_not_auditor,
     require_project_access,
     require_role,
     write_audit,
 )
-from app.rbac_routes import storage_for_asset
 from app.script_rewrite import (
     ScriptRewriteRequest,
     ScriptRewriteResult,
@@ -370,11 +370,8 @@ def delete_generation_batch_record(
             raise HTTPException(status_code=404, detail={"code": "BATCH_NOT_FOUND"})
         if actor.role != "admin" and str(batch["created_by_user_id"]) != actor.id:
             raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "GENERATION_BATCH_FORBIDDEN",
-                    "message": "只有批次创建者或管理员可以删除批次。",
-                },
+                status_code=404,
+                detail={"code": "BATCH_NOT_FOUND"},
             )
 
         # 付费 provider 调用仍在途时禁止删除（与项目删除同一约束），否则

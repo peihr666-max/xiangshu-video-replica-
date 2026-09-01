@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NoReturn
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from cryptography.fernet import Fernet
@@ -14,6 +15,11 @@ from app.auth import get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.main import app
+from app.permissions import (
+    AuditedSecurityDenial,
+    SecurityDenialAudit,
+    remap_security_denial,
+)
 from app.storage import LocalStorageAdapter, StorageBackendUnavailable
 
 
@@ -525,9 +531,14 @@ def test_project_rename_forbidden_for_other_owner_and_auditor(
         headers=auth_headers("auditor_1"),
         json={"name": "不应改名"},
     )
+    missing = client.patch(
+        "/api/projects/project_missing/name",
+        headers=auth_headers("employee_1"),
+        json={"name": "不应改名"},
+    )
 
-    assert other_owner.status_code == 403
-    assert other_owner.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert other_owner.status_code == 404
+    assert other_owner.content == missing.content
     assert auditor.status_code == 403
     assert auditor.json()["detail"]["code"] == "ROLE_FORBIDDEN"
 
@@ -550,7 +561,10 @@ def test_auditor_cannot_create_projects_and_admin_can_list_all_projects(
     ]
 
 
-def test_auditor_can_read_all_project_asset_and_task_evidence(client: TestClient) -> None:
+def test_auditor_can_read_all_project_asset_and_task_evidence(
+    client: TestClient,
+    db_path: Path,
+) -> None:
     headers = auth_headers("auditor_1")
 
     projects = client.get("/api/projects", headers=headers)
@@ -566,6 +580,16 @@ def test_auditor_can_read_all_project_asset_and_task_evidence(client: TestClient
     assert project.status_code == 200
     assert asset.status_code == 200
     assert batch.status_code == 200
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        audit = conn.execute(
+            "SELECT actor_user_id, entity_id, metadata_json FROM audit_logs "
+            "WHERE action = 'auditor.asset_metadata.read'"
+        ).fetchall()
+    assert len(audit) == 1
+    assert (audit[0]["actor_user_id"], audit[0]["entity_id"]) == (
+        "auditor_1",
+        "asset_owned",
+    )
 
 
 def test_project_list_exposes_reference_video_state_for_upload_recovery(
@@ -746,9 +770,10 @@ def test_auditor_cannot_generate_retry_or_download(client: TestClient) -> None:
 
 def test_user_without_project_permission_cannot_read_asset(client: TestClient) -> None:
     response = client.get("/api/assets/asset_other", headers=auth_headers("employee_1"))
+    missing = client.get("/api/assets/asset_missing", headers=auth_headers("employee_1"))
 
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert response.status_code == 404
+    assert response.content == missing.content
 
 
 def test_project_owner_can_read_asset(client: TestClient) -> None:
@@ -771,10 +796,64 @@ def test_project_owner_receives_short_lived_storage_download_url(
 
     assert response.status_code == 200
     assert response.json()["url"].startswith(
-        "https://video.example.com/api/assets/local-objects/outputs/asset_owned.mp4?"
+        "https://video.example.com/api/assets/signed-objects/outputs/asset_owned.mp4?"
     )
     assert "expires=" in response.json()["url"]
     assert "sig=" in response.json()["url"]
+    query = parse_qs(urlsplit(response.json()["url"]).query)
+    assert query["user_id"] == ["employee_1"]
+    assert query["asset_id"] == ["asset_owned"]
+
+
+def test_cloud_asset_download_uses_revocable_application_grant(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE assets SET storage_uri = ? WHERE id = ?",
+            ("cos://private-bucket/outputs/asset_owned.mp4", "asset_owned"),
+        )
+        conn.commit()
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://video.example.com")
+    monkeypatch.setattr(
+        "app.rbac_routes.storage_for_asset",
+        lambda _conn, _uri: object(),
+    )
+
+    response = client.post(
+        "/api/assets/asset_owned/download-url",
+        headers=auth_headers("employee_1"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["url"].startswith(
+        "https://video.example.com/api/assets/signed-objects/outputs/asset_owned.mp4?"
+    )
+    assert "cos.example" not in response.json()["url"]
+
+
+def test_local_download_rejects_tampered_asset_binding_and_sets_safe_headers(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://video.example.com")
+    issued = client.post(
+        "/api/assets/asset_owned/download-url",
+        headers=auth_headers("employee_1"),
+    )
+    parsed = urlsplit(issued.json()["url"])
+    query = parse_qs(parsed.query)
+    query["asset_id"] = ["asset_other"]
+
+    tampered = client.get(f"{parsed.path}?{urlencode(query, doseq=True)}")
+    valid = client.get(f"{parsed.path}?{parsed.query}")
+
+    assert tampered.status_code == 403
+    assert valid.status_code == 200
+    assert valid.headers["x-content-type-options"] == "nosniff"
+    assert valid.headers["content-disposition"].startswith("attachment;")
 
 
 def test_non_character_asset_cannot_use_character_cache(client: TestClient) -> None:
@@ -849,28 +928,77 @@ def test_audit_logs_are_readable_only_by_admin_and_auditor(client: TestClient) -
 
 
 @pytest.mark.parametrize(
-    ("path", "expected"),
+    ("path", "missing_path"),
     [
-        ("/api/projects/project_owned", 403),
-        ("/api/projects/project_owned/analysis/latest", 403),
-        ("/api/projects/project_owned/shot-cards/latest", 403),
-        ("/api/projects/project_owned/first-frames/latest", 403),
-        ("/api/projects/project_owned/source-frames/latest", 403),
-        ("/api/projects/project_owned/scripts/latest", 403),
-        ("/api/projects/project_owned/prompts/latest", 403),
-        ("/api/generation-batches?project_id=project_owned", 403),
-        ("/api/assets/asset_owned", 403),
+        ("/api/projects/project_owned", "/api/projects/project_missing"),
+        (
+            "/api/projects/project_owned/analysis/latest",
+            "/api/projects/project_missing/analysis/latest",
+        ),
+        (
+            "/api/projects/project_owned/shot-cards/latest",
+            "/api/projects/project_missing/shot-cards/latest",
+        ),
+        (
+            "/api/projects/project_owned/first-frames/latest",
+            "/api/projects/project_missing/first-frames/latest",
+        ),
+        (
+            "/api/projects/project_owned/source-frames/latest",
+            "/api/projects/project_missing/source-frames/latest",
+        ),
+        (
+            "/api/projects/project_owned/scripts/latest",
+            "/api/projects/project_missing/scripts/latest",
+        ),
+        (
+            "/api/projects/project_owned/prompts/latest",
+            "/api/projects/project_missing/prompts/latest",
+        ),
+        (
+            "/api/generation-batches?project_id=project_owned",
+            "/api/generation-batches?project_id=project_missing",
+        ),
+        ("/api/assets/asset_owned", "/api/assets/asset_missing"),
     ],
 )
-def test_cross_user_read_matrix_answers_forbidden(
+def test_cross_user_read_matrix_matches_missing_resource(
     client: TestClient,
     path: str,
-    expected: int,
+    missing_path: str,
 ) -> None:
-    """SES-05: another employee's read of a foreign project's resources answers
-    403 — every project-scoped read route enforces the owner boundary."""
+    """C-2: foreign and absent resources have byte-identical responses."""
     response = client.get(path, headers=auth_headers("employee_2"))
-    assert response.status_code == expected, (path, response.text)
+    missing = client.get(missing_path, headers=auth_headers("employee_2"))
+    assert response.status_code == 404, (path, response.text)
+    assert response.content == missing.content, (path, response.text, missing.text)
+
+
+def test_not_found_remap_preserves_deferred_postgres_denial_audit() -> None:
+    audit = SecurityDenialAudit(
+        id="audit_1",
+        actor_user_id="employee_2",
+        action="security.project_denied",
+        entity_type="project",
+        entity_id="project_owned",
+        metadata_json='{"attempted_action":"analysis.task.read"}',
+    )
+    original = AuditedSecurityDenial(
+        code="PROJECT_NOT_FOUND",
+        message="Project does not exist.",
+        audit=audit,
+        status_code=404,
+    )
+
+    remapped = remap_security_denial(
+        original,
+        status_code=404,
+        detail={"code": "ANALYSIS_TASK_NOT_FOUND"},
+    )
+
+    assert isinstance(remapped, AuditedSecurityDenial)
+    assert remapped.detail == {"code": "ANALYSIS_TASK_NOT_FOUND"}
+    assert remapped.audit is audit
 
 
 def test_cross_user_wallet_is_owner_scoped_and_not_leakable(

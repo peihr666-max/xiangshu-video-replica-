@@ -778,8 +778,7 @@ def test_successful_project_owner_authorization_persists_digest_evidence(
 
 
 def test_other_customer_cannot_touch_a_foreign_project(client: TestClient) -> None:
-    """Two-code IDOR: B's fenced session cannot rename A's project — 403
-    PROJECT_FORBIDDEN inside the business write transaction."""
+    """Two-code IDOR: B cannot distinguish A's project from a missing project."""
     alice = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
     bob = _activated_customer(client, code=SECOND_CODE, fingerprint="fp-b", suffix="b")
     alice_token = _business_login(client, alice, "idem-login-alice")
@@ -790,13 +789,20 @@ def test_other_customer_cannot_touch_a_foreign_project(client: TestClient) -> No
     project_id = created.json()["id"]
 
     bob_token = _business_login(client, bob, "idem-login-bob")
+    missing = client.patch(
+        f"{PROJECTS_PATH}/00000000-0000-4000-8000-000000000000/name",
+        json={"name": "Hijack"},
+        headers=_bearer(bob_token),
+    )
     renamed = client.patch(
         f"{PROJECTS_PATH}/{project_id}/name",
         json={"name": "Hijack"},
         headers=_bearer(bob_token),
     )
-    assert renamed.status_code == 403, renamed.text
-    assert renamed.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert missing.status_code == 404, missing.text
+    assert renamed.status_code == missing.status_code, renamed.text
+    assert renamed.content == missing.content
+    assert renamed.json()["detail"]["code"] == "PROJECT_NOT_FOUND"
     with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
         row = conn.execute("SELECT name FROM projects WHERE id = %s", (project_id,)).fetchone()
         denial = conn.execute(

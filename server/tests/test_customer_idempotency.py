@@ -15,6 +15,7 @@ decided on the server clock, never the client's.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -89,11 +90,15 @@ def test_request_hash_distinguishes_different_params() -> None:
     assert first != second
 
 
-def test_idempotency_key_digest_hides_the_raw_key() -> None:
+def test_idempotency_key_digest_is_keyed_and_hides_the_raw_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CUSTOMER_IDEMPOTENCY_AEAD_KEY_ENV, _V1_AEAD_KEY)
     digest = idempotency_key_digest("client-secret-key")
     assert digest != "client-secret-key"
     assert "client-secret-key" not in digest
-    assert len(digest) == 64  # sha256 hex
+    assert digest != hashlib.sha256(b"client-secret-key").hexdigest()
+    assert len(digest) == 64
     assert idempotency_key_digest("client-secret-key") == digest
 
 

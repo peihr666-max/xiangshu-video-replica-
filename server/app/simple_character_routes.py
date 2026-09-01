@@ -37,8 +37,8 @@ from app.image_tasks import (
     load_image_task,
     require_character_sheet_task_access,
 )
+from app.media_routes import storage_for_asset
 from app.permissions import require_not_auditor, require_project_access
-from app.rbac_routes import storage_for_asset
 from app.simple_character import (
     SIMPLE_UPLOAD_ALLOWED_TYPES,
     SIMPLE_UPLOAD_MAX_BYTES,
@@ -432,9 +432,9 @@ def enqueue_regenerate_contact_sheet(
         identity = read_identity_row(conn, identity_id)
         if actor.role != "admin" and str(identity["owner_user_id"]) != actor.id:
             raise character_error(
-                403,
-                "IDENTITY_REGENERATE_FORBIDDEN",
-                "只有创建者或管理员可以重新生成多视图。",
+                404,
+                "PERSON_IDENTITY_NOT_FOUND",
+                "人物身份不存在或不可用。",
             )
         source_asset = conn.execute(
             "SELECT storage_uri, content_type, sha256, size_bytes FROM assets WHERE id = %s",

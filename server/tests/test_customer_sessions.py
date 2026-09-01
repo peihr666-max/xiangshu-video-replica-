@@ -1850,6 +1850,67 @@ def test_switch_lost_response_replays_same_token_and_epoch(client: TestClient) -
     assert events.count("LOGIN") == 1
 
 
+def test_login_replay_rechecks_suspended_code(client: TestClient) -> None:
+    """T45 S-1: a sealed login cannot bypass a later code suspension."""
+    customer = _activated_customer(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-login-replay-suspended",
+        suffix="login-replay-suspended",
+    )
+    headers = {
+        **_bearer(customer["device_token"]),
+        IDEMPOTENCY_KEY_HEADER: "idem-login-replay-suspended",
+    }
+    first = client.post(LOGIN_PATH, json={}, headers=headers)
+    assert first.status_code == 201, first.text
+    suspended = _admin_code_action(client, "code-login-replay-suspended", "suspend")
+    assert suspended.status_code == 200, suspended.text
+
+    replay = client.post(LOGIN_PATH, json={}, headers=headers)
+
+    assert replay.status_code == 403
+    assert replay.json()["detail"]["code"] == "CODE_SUSPENDED"
+
+
+def test_switch_replay_rejects_a_session_replaced_by_later_switch(
+    client: TestClient,
+) -> None:
+    """T45 S-1: replay never returns a sealed token that is no longer live."""
+    customer = _activated_customer(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-switch-replay-stale",
+        suffix="switch-replay-stale",
+    )
+    second_token = _second_device_row(
+        user_id=customer["user_id"],
+        activation_code_id="code-switch-replay-stale",
+        device_id="device-switch-replay-stale-b",
+        slot_no=2,
+    )
+    replay_headers = {
+        **_bearer(second_token),
+        IDEMPOTENCY_KEY_HEADER: "idem-switch-replay-stale-b",
+    }
+    first_switch = client.post(SWITCH_PATH, json={}, headers=replay_headers)
+    assert first_switch.status_code == 201, first_switch.text
+    switch_back = client.post(
+        SWITCH_PATH,
+        json={},
+        headers={
+            **_bearer(customer["device_token"]),
+            IDEMPOTENCY_KEY_HEADER: "idem-switch-replay-stale-a",
+        },
+    )
+    assert switch_back.status_code == 201, switch_back.text
+
+    stale_replay = client.post(SWITCH_PATH, json={}, headers=replay_headers)
+
+    assert stale_replay.status_code == 409
+    assert stale_replay.json()["detail"]["code"] == "SESSION_REPLAY_STALE"
+
+
 def test_switch_is_rate_limited_through_the_login_ip_budget(
     monkeypatch: pytest.MonkeyPatch, route_state: str
 ) -> None:
