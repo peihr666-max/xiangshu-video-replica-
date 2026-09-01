@@ -10,6 +10,7 @@ import { SessionConflictDialog } from "./customer/SessionConflictDialog";
 import {
   type CustomerWorkspaceUser,
   customerCredentialStore,
+  isTauriRuntime,
   useCustomerSession,
 } from "./customer/useCustomerSession";
 
@@ -18,7 +19,11 @@ export function RootApp({
 }: {
   path?: string;
 }) {
-  if (path === "/customer" || path.startsWith("/customer/")) {
+  if (
+    isTauriRuntime() ||
+    path === "/customer" ||
+    path.startsWith("/customer/")
+  ) {
     return (
       <CustomerShell startInPairing={path.startsWith("/customer/pairing")} />
     );
