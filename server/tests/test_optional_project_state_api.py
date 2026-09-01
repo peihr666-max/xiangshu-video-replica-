@@ -74,7 +74,7 @@ def test_empty_optional_project_state_returns_successful_nulls(client: TestClien
 
 @pytest.mark.parametrize(
     ("project_id", "expected_status"),
-    (("project_missing", 404), ("project_other", 403)),
+    (("project_missing", 404), ("project_other", 404)),
 )
 def test_optional_project_state_preserves_access_failures(
     client: TestClient,
@@ -98,3 +98,9 @@ def test_optional_project_state_preserves_access_failures(
         )
 
         assert response.status_code == expected_status, path
+        if project_id == "project_other":
+            missing = client.get(
+                f"/api/projects/project_missing/{path}",
+                headers={"X-Dev-User-Id": "employee_1"},
+            )
+            assert response.content == missing.content, path

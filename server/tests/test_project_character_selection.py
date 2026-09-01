@@ -385,8 +385,12 @@ def test_project_lists_only_current_published_versions_with_seven_assets(
         "/api/projects/project-other/character-versions/available",
         headers=headers("employee_1"),
     )
-    assert forbidden.status_code == 403
-    assert forbidden.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    missing_project = client.get(
+        "/api/projects/project-missing/character-versions/available",
+        headers=headers("employee_1"),
+    )
+    assert forbidden.status_code == 404
+    assert forbidden.content == missing_project.content
 
     for unavailable in (wrong_authorization_scope, wrong_persona_scope):
         denied = client.put(

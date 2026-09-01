@@ -713,9 +713,9 @@ def rename_simple_character_identity(
     row = read_identity_row(conn, identity_id)
     if actor.role != "admin" and str(row["owner_user_id"]) != actor.id:
         raise character_error(
-            403,
-            "IDENTITY_RENAME_FORBIDDEN",
-            "只有创建者或管理员可以修改人物名称。",
+            404,
+            "PERSON_IDENTITY_NOT_FOUND",
+            "人物身份不存在或不可用。",
         )
     if str(row["status"]) == "ARCHIVED":
         raise character_error(409, "IDENTITY_ARCHIVED", "已归档人物身份不能修改。")
@@ -781,9 +781,9 @@ def regenerate_simple_character_contact_sheet(
     identity = read_identity_row(conn, identity_id)
     if actor.role != "admin" and str(identity["owner_user_id"]) != actor.id:
         raise character_error(
-            403,
-            "IDENTITY_REGENERATE_FORBIDDEN",
-            "只有创建者或管理员可以重新生成多视图。",
+            404,
+            "PERSON_IDENTITY_NOT_FOUND",
+            "人物身份不存在或不可用。",
         )
     if str(identity["status"]) == "ARCHIVED":
         raise character_error(409, "IDENTITY_ARCHIVED", "已归档人物身份不能重新生成。")
@@ -1007,9 +1007,9 @@ def delete_simple_character_identity(
     row = read_identity_row(conn, identity_id)
     if actor.role != "admin" and str(row["owner_user_id"]) != actor.id:
         raise character_error(
-            403,
-            "IDENTITY_DELETE_FORBIDDEN",
-            "只有创建者或管理员可以删除人物。",
+            404,
+            "PERSON_IDENTITY_NOT_FOUND",
+            "人物身份不存在或不可用。",
         )
 
     # Paid provider calls may still be in flight for this character; deleting

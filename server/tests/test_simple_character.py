@@ -238,6 +238,29 @@ def test_character_sheet_task_is_idempotent_and_recovers_from_server_state(
     assert task.json()["result"]["generation_source"] == "image_provider"
 
 
+def test_character_sheet_task_status_hides_foreign_task(client: TestClient) -> None:
+    created = client.post(
+        "/api/simple-characters/tasks/generate",
+        headers=headers("employee_1"),
+        files=upload_files(),
+        data={"display_name": "荣哥", "idempotency_key": "character-sheet-task-private"},
+    )
+    assert created.status_code == 202, created.text
+
+    foreign = client.get(
+        f"/api/simple-characters/task-status/{created.json()['id']}",
+        headers=headers("employee_2"),
+    )
+    missing = client.get(
+        "/api/simple-characters/task-status/task-missing",
+        headers=headers("employee_2"),
+    )
+
+    assert foreign.status_code == 404
+    assert foreign.content == missing.content
+    assert foreign.json()["detail"]["code"] == "IMAGE_TASK_NOT_FOUND"
+
+
 def test_character_sheet_task_requires_auth_and_enforces_actual_upload_size(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -279,8 +302,15 @@ def test_character_sheet_task_authorizes_before_persisting_upload(
         files=upload_files(),
         data={"display_name": "荣哥", "idempotency_key": "character-sheet-task-4"},
     )
+    missing = client.post(
+        "/api/simple-characters/tasks/project-missing/generate",
+        headers=headers("employee_2"),
+        files=upload_files(),
+        data={"display_name": "荣哥", "idempotency_key": "character-sheet-task-5"},
+    )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
+    assert response.content == missing.content
     assert writes == []
 
 
@@ -458,7 +488,14 @@ def test_auditor_cannot_generate(client: TestClient) -> None:
 
 def test_employee_cannot_generate_for_foreign_project(client: TestClient) -> None:
     response = generate(client, user_id="employee_2")
-    assert response.status_code == 403
+    missing = client.post(
+        "/api/simple-characters/project-missing/generate",
+        headers=headers("employee_2"),
+        files=upload_files(),
+        data={"display_name": "荣哥", "persona_name": "乡墅项目管理专家"},
+    )
+    assert response.status_code == 404
+    assert response.content == missing.content
 
 
 def test_generated_character_appears_in_available_versions(
@@ -645,6 +682,7 @@ def test_contact_sheet_download_url_isolated_to_owner_and_privileged_roles(
     storage: FakeStorageAdapter,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
     created = generate_global(client).json()
     # The fake adapter's storage_uri cannot be re-signed by storage_for_asset;
     # reroute resolution to the same in-memory adapter so the endpoint covers
@@ -663,12 +701,21 @@ def test_contact_sheet_download_url_isolated_to_owner_and_privileged_roles(
         assert response.status_code == 200, response.text
         assert response.json()["url"]
 
-    for user_id in ("employee_2", "auditor_1"):
-        forbidden = client.post(
-            f"/api/assets/{created['contact_sheet_asset_id']}/download-url",
-            headers=headers(user_id),
-        )
-        assert forbidden.status_code == 403
+    foreign = client.post(
+        f"/api/assets/{created['contact_sheet_asset_id']}/download-url",
+        headers=headers("employee_2"),
+    )
+    absent = client.post(
+        "/api/assets/asset-missing/download-url",
+        headers=headers("employee_2"),
+    )
+    auditor = client.post(
+        f"/api/assets/{created['contact_sheet_asset_id']}/download-url",
+        headers=headers("auditor_1"),
+    )
+    assert foreign.status_code == 404
+    assert foreign.content == absent.content
+    assert auditor.status_code == 403
 
 
 def test_character_cache_downloads_once_and_serves_local_copy(
@@ -1072,9 +1119,14 @@ def test_other_employee_cannot_rename_identity(client: TestClient) -> None:
         headers=headers("employee_2"),
         json={"display_name": "越权改名"},
     )
+    missing = client.patch(
+        "/api/simple-characters/identities/identity-missing/name",
+        headers=headers("employee_2"),
+        json={"display_name": "越权改名"},
+    )
 
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "IDENTITY_RENAME_FORBIDDEN"
+    assert response.status_code == 404
+    assert response.content == missing.content
 
 
 def test_rename_rejects_empty_name(client: TestClient) -> None:
@@ -1203,9 +1255,13 @@ def test_other_employee_cannot_delete_identity(client: TestClient) -> None:
         f"/api/simple-characters/identities/{created['identity_id']}",
         headers=headers("employee_2"),
     )
+    missing = client.delete(
+        "/api/simple-characters/identities/identity-missing",
+        headers=headers("employee_2"),
+    )
 
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "IDENTITY_DELETE_FORBIDDEN"
+    assert response.status_code == 404
+    assert response.content == missing.content
 
 
 def test_delete_rejects_identity_selected_by_project(
@@ -1303,8 +1359,12 @@ def test_regenerate_contact_sheet_requires_owner_or_admin(client: TestClient) ->
     url = f"/api/simple-characters/identities/{created['identity_id']}/regenerate-contact-sheet"
 
     forbidden = client.post(url, headers=headers("employee_2"))
-    assert forbidden.status_code == 403
-    assert forbidden.json()["detail"]["code"] == "IDENTITY_REGENERATE_FORBIDDEN"
+    foreign_missing = client.post(
+        "/api/simple-characters/identities/identity-missing/regenerate-contact-sheet",
+        headers=headers("employee_2"),
+    )
+    assert forbidden.status_code == 404
+    assert forbidden.content == foreign_missing.content
 
     auditor = client.post(url, headers=headers("auditor_1"))
     assert auditor.status_code == 403
@@ -1319,6 +1379,25 @@ def test_regenerate_contact_sheet_requires_owner_or_admin(client: TestClient) ->
     admin_ok = client.post(url, headers=headers("admin_1"))
     assert admin_ok.status_code == 201, admin_ok.text
     assert admin_ok.json()["version_number"] == 2
+
+
+def test_async_regenerate_task_hides_foreign_identity(client: TestClient) -> None:
+    created = generate_global(client).json()
+    task_url = (
+        f"/api/simple-characters/identities/{created['identity_id']}/regenerate-contact-sheet-task"
+    )
+    form = {"idempotency_key": "idem-regenerate-foreign"}
+
+    foreign = client.post(task_url, data=form, headers=headers("employee_2"))
+    missing = client.post(
+        "/api/simple-characters/identities/identity-missing/regenerate-contact-sheet-task",
+        data=form,
+        headers=headers("employee_2"),
+    )
+
+    assert foreign.status_code == 404
+    assert foreign.content == missing.content
+    assert foreign.json()["detail"]["code"] == "PERSON_IDENTITY_NOT_FOUND"
 
 
 # ---------------------------------------------------------------------------

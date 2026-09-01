@@ -32,10 +32,12 @@ token, same epoch, no second LOGIN event). Same key against a different
 request body answers 409 ``IDEMPOTENCY_CONFLICT``. Heartbeat is naturally
 idempotent (renewal) and carries no envelope.
 
-Rate limiting (T15 infrastructure): login and switch both draw the
-``login:ip`` budget (a switch is a login-shaped attempt — the limiter must
-not be bypassable by switching instead) and answer 429 ``RATE_LIMITED``
-with ``Retry-After`` once spent.
+Rate limiting (T15/T45 infrastructure): login and switch both draw a
+per-device credential budget. The shared ``login:ip`` bucket remains an
+auxiliary barrier for unknown credentials, while a known credential is not
+locked out merely because other customers share its NAT address. Heartbeat
+and logout use a separate pre-authentication IP budget. Spent budgets answer
+429 ``RATE_LIMITED`` with ``Retry-After``.
 
 Stable error codes (dev doc §13.2 plus the T16 precedent for REQUIRED /
 INVALID variants):
@@ -80,7 +82,7 @@ from app.customer_idempotency import (
     customer_aead_key,
     envelope_aad,
     highest_customer_aead_key,
-    idempotency_key_digest,
+    idempotency_key_digests,
     insert_envelope,
     load_envelope,
     open_response,
@@ -104,9 +106,13 @@ from app.customer_session_service import (
 from app.db_pg import get_pg_pool, pg_transaction
 from app.ops_metrics import get_or_create_request_id, set_current_result_code
 from app.security_rate_limit import (
+    DIMENSION_CUSTOMER_PREAUTH_IP,
+    DIMENSION_LOGIN_ACCOUNT,
     DIMENSION_LOGIN_IP,
     client_ip_from_request,
     consume_rate_limit,
+    customer_preauth_ip_limit,
+    login_account_limit,
     login_ip_limit,
     rate_limit_window_seconds,
 )
@@ -204,6 +210,21 @@ def _require_pg() -> None:
         ) from exc
 
 
+def _consume_customer_preauth(request: Request) -> None:
+    with pg_transaction() as conn:
+        decision = consume_rate_limit(
+            conn,
+            dimension=DIMENSION_CUSTOMER_PREAUTH_IP,
+            identifier=client_ip_from_request(request),
+            limit=customer_preauth_ip_limit(),
+            window_seconds=rate_limit_window_seconds(),
+        )
+    if not decision.allowed:
+        blocked = _http(429, "RATE_LIMITED", "Too many customer session requests.")
+        blocked.headers = {RETRY_AFTER_HEADER: str(decision.retry_after_seconds)}
+        raise blocked
+
+
 def _transaction_now(conn: psycopg.Connection) -> datetime:
     """SES-01: PostgreSQL is the only trusted clock — sample it inside the
     business transaction (the unbind/activation precedents) so the lease
@@ -224,8 +245,8 @@ def _find_envelope(
     *,
     operation: str,
     scopes: list[str],
-    key_digest: str,
-) -> tuple[str, EnvelopeRecord, datetime] | None:
+    key_digests: list[str],
+) -> tuple[str, str, EnvelopeRecord, datetime] | None:
     """The committed envelope for this key across the scope candidates.
 
     Returns the PostgreSQL ``now()`` sampled in this same envelope-read
@@ -233,9 +254,15 @@ def _find_envelope(
     server-side clock, never the application process clock (SES-01, the
     activation-route ``_server_now`` precedent; PR #51 review P2)."""
     for scope in scopes:
-        record = load_envelope(conn, operation=operation, scope=scope, key_digest=key_digest)
-        if record is not None:
-            return scope, record, _transaction_now(conn)
+        for key_digest in key_digests:
+            record = load_envelope(
+                conn,
+                operation=operation,
+                scope=scope,
+                key_digest=key_digest,
+            )
+            if record is not None:
+                return scope, key_digest, record, _transaction_now(conn)
     return None
 
 
@@ -296,6 +323,82 @@ def _replay_login_response(
     outcome = str(sealed.pop(OUTCOME_FIELD, LOGIN_CREATED))
     status_code = 200 if outcome == LOGIN_RENEWED else 201
     return LoginResponse.model_validate(sealed), status_code
+
+
+def _replay_validated_login_response(
+    conn: psycopg.Connection,
+    record: EnvelopeRecord,
+    *,
+    req_hash: str,
+    scope: str,
+    key_digest: str,
+    now: datetime,
+    operation: str,
+    device_token: str,
+) -> tuple[LoginResponse, int]:
+    """Open a sealed response only if its credential and live row still agree."""
+    replayed, status_code = _replay_login_response(
+        record,
+        req_hash=req_hash,
+        scope=scope,
+        key_digest=key_digest,
+        now=now,
+        operation=operation,
+    )
+    try:
+        lookup = lookup_device_credential(conn, device_token)
+    except ActivationKeyError:
+        raise _http(
+            503,
+            "SESSION_SERVICE_UNAVAILABLE",
+            "Device credential keys are not configured.",
+        ) from None
+    if lookup.device is None:
+        if lookup.row_status is not None:
+            raise _http(401, "DEVICE_REVOKED", "This device credential has been revoked.")
+        raise _http(401, "DEVICE_CREDENTIAL_INVALID", "The device credential is invalid.")
+    device = lookup.device
+    _require_active_code(conn, device.activation_code_id)
+    try:
+        session_digests = _token_digests(replayed.session_token)
+    except ActivationKeyError:
+        raise _http(
+            503,
+            "SESSION_SERVICE_UNAVAILABLE",
+            "Session keys are not configured.",
+        ) from None
+    row = conn.execute(
+        """
+        SELECT user_id, activation_code_id, device_id, session_id,
+               session_epoch, lease_until
+        FROM customer_session_state
+        WHERE token_digest = ANY(%s)
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (session_digests,),
+    ).fetchone()
+    lease_until = None if row is None else datetime.fromisoformat(str(row[5]))
+    if lease_until is not None and lease_until.tzinfo is None:
+        lease_until = lease_until.replace(tzinfo=UTC)
+    if (
+        row is None
+        or str(row[0]) != replayed.user_id
+        or str(row[0]) != device.user_id
+        or str(row[1]) != device.activation_code_id
+        or str(row[2]) != replayed.device_id
+        or str(row[2]) != device.id
+        or str(row[3]) != replayed.session_id
+        or int(row[4]) != replayed.session_epoch
+        or lease_until is None
+        or lease_until <= now
+    ):
+        raise _http(
+            409,
+            "SESSION_REPLAY_STALE",
+            "The sealed session has been replaced or expired.",
+        )
+    return replayed, status_code
 
 
 def _replay_logout_response(
@@ -385,8 +488,8 @@ def _establish_session_route(
     """Drive the §12.3 state machine for one authenticated device.
 
     ``login`` and ``switch`` share every layer — device-credential auth, the
-    code-status gate, the idempotency envelope, the shared ``login:ip``
-    budget, the sealed response. The only difference is the ``takeover``
+    code-status gate, the idempotency envelope, the per-device plus auxiliary
+    IP budgets, and the sealed response. The only difference is the ``takeover``
     flag handed to the state machine, which turns a live-other-device
     conflict into the explicit atomic switch (§12.3 fifth line) instead of
     the 409. The envelope ``operation`` keeps the two routes' sealed
@@ -403,8 +506,6 @@ def _establish_session_route(
         raise _http(401, "DEVICE_CREDENTIAL_REQUIRED", "A Bearer device credential is required.")
 
     request_id = _request_id(request)
-    key_digest = idempotency_key_digest(idempotency_key)
-
     # Request hash over the normalized body (session_token is the only field;
     # its sha256 stands in so the raw secret never reaches the hash).
     req_hash = request_hash(
@@ -422,6 +523,8 @@ def _establish_session_route(
     # enroll precedent).
     try:
         aead_key_version, aead_key = highest_customer_aead_key()
+        key_digests = idempotency_key_digests(idempotency_key)
+        key_digest = key_digests[0]
         scope_candidates = list(reversed(_token_digests(device_token)))
     except (ActivationKeyError, IdempotencyKeyError):
         logger.warning("session keys unavailable: configuration is incomplete")
@@ -440,21 +543,26 @@ def _establish_session_route(
     # and scoped to the presented credential's digest.
     with pg_transaction() as conn:
         found = _find_envelope(
-            conn, operation=operation, scopes=scope_candidates, key_digest=key_digest
-        )
-    if found is not None:
-        scope, existing, envelope_now = found
-        replayed, replay_status = _replay_login_response(
-            existing,
-            req_hash=req_hash,
-            scope=scope,
-            key_digest=key_digest,
-            now=envelope_now,
+            conn,
             operation=operation,
+            scopes=scope_candidates,
+            key_digests=key_digests,
         )
-        response.headers[REPLAY_HEADER] = "true"
-        response.status_code = replay_status
-        return replayed
+        if found is not None:
+            scope, matched_digest, existing, envelope_now = found
+            replayed, replay_status = _replay_validated_login_response(
+                conn,
+                existing,
+                req_hash=req_hash,
+                scope=scope,
+                key_digest=matched_digest,
+                now=envelope_now,
+                operation=operation,
+                device_token=device_token,
+            )
+            response.headers[REPLAY_HEADER] = "true"
+            response.status_code = replay_status
+            return replayed
 
     # IP-dimension rate limit (T15 shared counters, a separate transaction —
     # the spent budget is never refunded). Login and switch draw the *same*
@@ -462,16 +570,33 @@ def _establish_session_route(
     # must not be bypassable by switching instead.
     client_ip = client_ip_from_request(request)
     with pg_transaction() as conn:
-        decision = consume_rate_limit(
+        ip_decision = consume_rate_limit(
             conn,
             dimension=DIMENSION_LOGIN_IP,
             identifier=client_ip,
             limit=login_ip_limit(),
             window_seconds=rate_limit_window_seconds(),
         )
-    if decision.allowed is False:
+        account_decision = consume_rate_limit(
+            conn,
+            dimension=DIMENSION_LOGIN_ACCOUNT,
+            identifier=scope_candidates[0],
+            limit=login_account_limit(),
+            window_seconds=rate_limit_window_seconds(),
+        )
+        known_device = True
+        if not ip_decision.allowed:
+            try:
+                known_device = lookup_device_credential(conn, device_token).device is not None
+            except ActivationKeyError:
+                known_device = False
+    if not account_decision.allowed or (not ip_decision.allowed and not known_device):
+        retry_after = max(
+            ip_decision.retry_after_seconds,
+            account_decision.retry_after_seconds,
+        )
         blocked = _http(429, "RATE_LIMITED", "Too many login attempts from this address.")
-        blocked.headers = {RETRY_AFTER_HEADER: str(decision.retry_after_seconds)}
+        blocked.headers = {RETRY_AFTER_HEADER: str(retry_after)}
         raise blocked
 
     # The business transaction: authenticate, gate the code status, take the
@@ -511,7 +636,10 @@ def _establish_session_route(
             # answer from the winner's envelope. This transaction holds no
             # writes of its own, so returning while the block unwinds is safe.
             found = _find_envelope(
-                conn, operation=operation, scopes=scope_candidates, key_digest=key_digest
+                conn,
+                operation=operation,
+                scopes=scope_candidates,
+                key_digests=key_digests,
             )
             if found is None:
                 raise _http(
@@ -519,14 +647,16 @@ def _establish_session_route(
                     "IDEMPOTENCY_CONFLICT",
                     "The sealed response is no longer recoverable.",
                 )
-            scope, existing, envelope_now = found
-            replayed, replay_status = _replay_login_response(
+            scope, matched_digest, existing, envelope_now = found
+            replayed, replay_status = _replay_validated_login_response(
+                conn,
                 existing,
                 req_hash=req_hash,
                 scope=scope,
-                key_digest=key_digest,
+                key_digest=matched_digest,
                 now=envelope_now,
                 operation=operation,
+                device_token=device_token,
             )
             response.headers[REPLAY_HEADER] = "true"
             response.status_code = replay_status
@@ -653,6 +783,7 @@ def switch(body: LoginRequest, request: Request, response: Response) -> LoginRes
 def heartbeat(request: Request) -> HeartbeatResponse:
     """Renew the session lease (epoch untouched)."""
     _require_pg()
+    _consume_customer_preauth(request)
 
     session_token = _bearer_token(request)
     if session_token is None:
@@ -700,6 +831,7 @@ def heartbeat(request: Request) -> HeartbeatResponse:
 def logout(request: Request, response: Response) -> None:
     """Pull the lease into the past and append the LOGOUT event."""
     _require_pg()
+    _consume_customer_preauth(request)
 
     idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER, "").strip()
     if not idempotency_key:
@@ -710,7 +842,6 @@ def logout(request: Request, response: Response) -> None:
         raise _http(401, "SESSION_TOKEN_REQUIRED", "A Bearer session token is required.")
 
     request_id = _request_id(request)
-    key_digest = idempotency_key_digest(idempotency_key)
     req_hash = request_hash({"operation": LOGOUT_OPERATION})
 
     # Envelope keys + scope: fail closed with 503 when *either* key family
@@ -718,6 +849,8 @@ def logout(request: Request, response: Response) -> None:
     # session token digest (probed across key versions).
     try:
         aead_key_version, aead_key = highest_customer_aead_key()
+        key_digests = idempotency_key_digests(idempotency_key)
+        key_digest = key_digests[0]
         scope_candidates = list(reversed(_token_digests(session_token)))
     except (ActivationKeyError, IdempotencyKeyError):
         logger.warning("session keys unavailable: configuration is incomplete")
@@ -731,12 +864,19 @@ def logout(request: Request, response: Response) -> None:
     # is the proof even though the token is by then expired).
     with pg_transaction() as conn:
         found = _find_envelope(
-            conn, operation=LOGOUT_OPERATION, scopes=scope_candidates, key_digest=key_digest
+            conn,
+            operation=LOGOUT_OPERATION,
+            scopes=scope_candidates,
+            key_digests=key_digests,
         )
     if found is not None:
-        scope, existing, envelope_now = found
+        scope, matched_digest, existing, envelope_now = found
         _replay_logout_response(
-            existing, req_hash=req_hash, scope=scope, key_digest=key_digest, now=envelope_now
+            existing,
+            req_hash=req_hash,
+            scope=scope,
+            key_digest=matched_digest,
+            now=envelope_now,
         )
         response.headers[REPLAY_HEADER] = "true"
         return None
@@ -754,7 +894,10 @@ def logout(request: Request, response: Response) -> None:
             # This transaction holds no writes of its own, so returning while
             # the block unwinds is safe.
             found = _find_envelope(
-                conn, operation=LOGOUT_OPERATION, scopes=scope_candidates, key_digest=key_digest
+                conn,
+                operation=LOGOUT_OPERATION,
+                scopes=scope_candidates,
+                key_digests=key_digests,
             )
             if found is None:
                 raise _http(
@@ -762,9 +905,13 @@ def logout(request: Request, response: Response) -> None:
                     "IDEMPOTENCY_CONFLICT",
                     "The sealed response is no longer recoverable.",
                 )
-            scope, existing, envelope_now = found
+            scope, matched_digest, existing, envelope_now = found
             _replay_logout_response(
-                existing, req_hash=req_hash, scope=scope, key_digest=key_digest, now=envelope_now
+                existing,
+                req_hash=req_hash,
+                scope=scope,
+                key_digest=matched_digest,
+                now=envelope_now,
             )
             response.headers[REPLAY_HEADER] = "true"
             return None

@@ -752,11 +752,16 @@ def test_analysis_routes_require_existing_rbac(client: TestClient) -> None:
         json={"asset_id": "asset_owned", "duration_seconds": 10},
         headers=auth_headers("employee_2"),
     )
+    missing = client.post(
+        "/api/projects/project_missing/analysis",
+        json={"asset_id": "asset_owned", "duration_seconds": 10},
+        headers=auth_headers("employee_2"),
+    )
 
     assert auditor.status_code == 403
     assert auditor.json()["detail"]["code"] == "ROLE_FORBIDDEN"
-    assert other_owner.status_code == 403
-    assert other_owner.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert other_owner.status_code == 404
+    assert other_owner.content == missing.content
 
 
 def test_analysis_rejects_pending_or_non_reference_assets(

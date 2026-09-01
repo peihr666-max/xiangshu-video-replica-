@@ -35,10 +35,39 @@ class SecurityDenialAudit:
 class AuditedSecurityDenial(HTTPException):
     """A PG denial whose audit must commit after the business rollback."""
 
-    def __init__(self, *, code: str, message: str, audit: SecurityDenialAudit) -> None:
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        audit: SecurityDenialAudit,
+        status_code: int = 403,
+        detail: Any | None = None,
+    ) -> None:
         set_current_result_code(code)
-        super().__init__(status_code=403, detail={"code": code, "message": message})
+        super().__init__(
+            status_code=status_code,
+            detail=detail if detail is not None else {"code": code, "message": message},
+        )
         self.audit = audit
+
+
+def remap_security_denial(
+    error: HTTPException,
+    *,
+    status_code: int,
+    detail: dict[str, str],
+) -> HTTPException:
+    """Change a denial's public resource shape without dropping its PG audit fact."""
+    if isinstance(error, AuditedSecurityDenial):
+        return AuditedSecurityDenial(
+            code=detail["code"],
+            message=detail.get("message", ""),
+            audit=error.audit,
+            status_code=status_code,
+            detail=detail,
+        )
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 def persist_security_denial(error: AuditedSecurityDenial) -> None:
@@ -80,11 +109,13 @@ def _raise_denial_with_audit(
     metadata: dict[str, Any],
     code: str,
     message: str,
+    status_code: int = 403,
 ) -> Never:
     if conn.is_postgres:
         raise AuditedSecurityDenial(
             code=code,
             message=message,
+            status_code=status_code,
             audit=SecurityDenialAudit(
                 id=str(uuid4()),
                 actor_user_id=actor.id,
@@ -102,7 +133,7 @@ def _raise_denial_with_audit(
         entity_id=entity_id,
         metadata=metadata,
     )
-    raise forbidden(code, message)
+    raise HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
 def insert_audit(
@@ -237,8 +268,9 @@ def require_project_access(
         entity_type="project",
         entity_id=project_id,
         metadata={"attempted_action": action},
-        code="PROJECT_FORBIDDEN",
-        message="User is not the project owner or an allowed project team member.",
+        code="PROJECT_NOT_FOUND",
+        message="Project does not exist.",
+        status_code=404,
     )
 
 
@@ -265,13 +297,28 @@ def require_asset_access(
         )
 
     if row["project_id"] is not None:
-        require_project_access(
-            conn,
-            actor=actor,
-            project_id=str(row["project_id"]),
-            action=action,
-            evidence_type="asset",
-        )
+        try:
+            require_project_access(
+                conn,
+                actor=actor,
+                project_id=str(row["project_id"]),
+                action=action,
+                evidence_type="asset",
+            )
+        except AuditedSecurityDenial as exc:
+            raise AuditedSecurityDenial(
+                code="ASSET_NOT_FOUND",
+                message="Asset does not exist.",
+                audit=exc.audit,
+                status_code=404,
+            ) from exc
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "ASSET_NOT_FOUND", "message": "Asset does not exist."},
+                ) from exc
+            raise
         return cast(sqlite3.Row, row)
 
     if actor.role in {"admin", "auditor"}:
@@ -335,8 +382,9 @@ def require_asset_access(
         entity_type="asset",
         entity_id=asset_id,
         metadata={"attempted_action": action},
-        code="ASSET_FORBIDDEN",
-        message=ASSET_FORBIDDEN_MESSAGE,
+        code="ASSET_NOT_FOUND",
+        message="Asset does not exist.",
+        status_code=404,
     )
 
 

@@ -747,7 +747,7 @@ def require_first_frame_task_access(
 
 def require_character_sheet_task_access(*, actor: CurrentUser, row: sqlite3.Row) -> None:
     if actor.role != "admin" and str(row["created_by_user_id"]) != actor.id:
-        raise _task_error(403, "CHARACTER_SHEET_TASK_FORBIDDEN", "无权查看该人物生成任务。")
+        raise _task_error(404, "IMAGE_TASK_NOT_FOUND", "生成任务不存在。")
 
 
 def _require_owned_task(

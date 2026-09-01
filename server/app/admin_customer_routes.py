@@ -42,6 +42,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Never
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -218,8 +219,46 @@ class DeferredHTTPWriteError(Exception):
 
     def __init__(self, status_code: int, code: str, message: str) -> None:
         super().__init__(code)
+        set_current_result_code(code)
         self.status_code = status_code
         self.body: dict[str, object] = {"detail": {"code": code, "message": message}}
+
+
+def _deny_admin_self_service(
+    conn: psycopg.Connection,
+    *,
+    actor_user_id: str,
+    target_user_id: str,
+    attempted_action: str,
+    reason: str,
+    request_id: str,
+) -> Never:
+    conn.execute(
+        """
+        INSERT INTO audit_logs
+            (id, actor_user_id, action, entity_type, entity_id, metadata_json)
+        VALUES (%s, %s, 'security.admin_self_service_denied', 'user', %s, %s)
+        """,
+        (
+            str(uuid.uuid4()),
+            actor_user_id,
+            target_user_id,
+            json.dumps(
+                {
+                    "attempted_action": attempted_action,
+                    "reason": reason,
+                    "request_id": request_id,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        ),
+    )
+    raise DeferredHTTPWriteError(
+        403,
+        "ADMIN_SELF_SERVICE_FORBIDDEN",
+        "An administrator cannot change their own balance or pricing.",
+    )
 
 
 def _write_with_idempotency(
@@ -426,6 +465,15 @@ def update_customer_unit_price(
     """Set or clear a customer's sale price without applying a cost floor."""
 
     def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        if user_id == actor.user_id:
+            _deny_admin_self_service(
+                conn,
+                actor_user_id=actor.user_id,
+                target_user_id=user_id,
+                attempted_action="customer_unit_price.update",
+                reason=body.reason.strip(),
+                request_id=request_id,
+            )
         current = _customer_unit_price_payload(conn, user_id=user_id)
         unit_price_fen = body.unit_price_fen
         if unit_price_fen is not None and not 1 <= unit_price_fen <= 2_147_483_647:
@@ -510,6 +558,15 @@ def create_admin_adjustment(
     """Create an admin adjustment: PAID order + CHARGE + wallet + audit row."""
 
     def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        if user_id == actor.user_id:
+            _deny_admin_self_service(
+                conn,
+                actor_user_id=actor.user_id,
+                target_user_id=user_id,
+                attempted_action="customer_adjustment.create",
+                reason=body.reason.strip(),
+                request_id=request_id,
+            )
         # Validate credits (positive; the amount-overflow guard runs after the
         # unit price snapshot is loaded, because int4 overflow depends on it)
         if body.credits <= 0:

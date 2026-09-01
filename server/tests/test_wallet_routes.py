@@ -91,6 +91,23 @@ def test_wallet_returns_only_the_authenticated_users_balance(wallet_client: Test
     }
 
 
+def test_customer_wallet_response_hides_internal_price_fields(
+    wallet_client: TestClient,
+    wallet_db_path: Path,
+) -> None:
+    with BusinessConnection.sqlite(connect_database(wallet_db_path)) as conn:
+        conn.execute("UPDATE users SET role = 'customer' WHERE id = ?", ("user_1",))
+        conn.commit()
+
+    response = wallet_client.get("/api/wallet", headers={"X-Dev-User-Id": "user_1"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "available_credits": 7,
+        "reserved_credits": 2,
+    }
+
+
 def test_wallet_transactions_are_owner_scoped_and_paginated(wallet_client: TestClient) -> None:
     first_page = wallet_client.get(
         "/api/wallet/transactions?limit=2&offset=0",

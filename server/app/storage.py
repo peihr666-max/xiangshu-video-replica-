@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import logging
@@ -10,6 +12,9 @@ from mimetypes import guess_type
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from urllib.parse import quote, urlencode
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 StorageProvider = Literal["cos", "local", "fake"]
 
@@ -163,10 +168,28 @@ COS_LIFECYCLE_RULES: list[dict[str, object]] = [
 STORAGE_ROOT_ENV = "VIDEO_REPLICA_STORAGE_ROOT"
 
 
-def local_download_signature(key: str, expires_at: str, *, secret: str) -> str:
-    """HMAC over (key, expires_at) so a local `local://` object can be served
-    through the API without leaking the X-Dev-User-Id header to an <img> tag."""
-    return hmac.new(secret.encode(), f"{key}|{expires_at}".encode(), hashlib.sha256).hexdigest()
+def local_download_signature(
+    key: str,
+    expires_at: str,
+    *,
+    user_id: str,
+    asset_id: str,
+    session_epoch: str,
+    secret: str,
+) -> str:
+    """Sign a revocable user/asset grant with a domain-separated sub-key."""
+    try:
+        master_key = base64.urlsafe_b64decode(secret + "=" * (-len(secret) % 4))
+    except (binascii.Error, ValueError, TypeError) as exc:
+        raise StorageBackendUnavailable("settings key is not valid base64") from exc
+    signing_key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"video-replica:url-signing:v1",
+    ).derive(master_key)
+    message = f"{key}|{expires_at}|{user_id}|{asset_id}|{session_epoch}".encode()
+    return hmac.new(signing_key, message, hashlib.sha256).hexdigest()
 
 
 def local_storage_root() -> Path:

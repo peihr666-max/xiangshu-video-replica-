@@ -843,6 +843,71 @@ def test_batch_paid_regeneration_hash_rejects_same_key_for_another_source(
     assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
 
 
+def test_admin_regeneration_bills_source_creator_and_audits_requester(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    source = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "admin-billing-source",
+        },
+    )
+    assert source.status_code == 200, source.text
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        before = {
+            str(row["user_id"]): (int(row["available_credits"]), int(row["reserved_credits"]))
+            for row in conn.execute(
+                "SELECT user_id, available_credits, reserved_credits FROM wallets "
+                "WHERE user_id IN (?, ?)",
+                ("employee_1", "admin_1"),
+            ).fetchall()
+        }
+
+    regenerated = client.post(
+        f"/api/generation-batches/{source.json()['id']}/regenerate",
+        headers=auth_headers("admin_1"),
+        json=paid_regeneration_payload("admin-regeneration-billing"),
+    )
+
+    assert regenerated.status_code == 200, regenerated.text
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        batch = conn.execute(
+            "SELECT created_by_user_id FROM generation_batches WHERE id = ?",
+            (regenerated.json()["id"],),
+        ).fetchone()
+        after = {
+            str(row["user_id"]): (int(row["available_credits"]), int(row["reserved_credits"]))
+            for row in conn.execute(
+                "SELECT user_id, available_credits, reserved_credits FROM wallets "
+                "WHERE user_id IN (?, ?)",
+                ("employee_1", "admin_1"),
+            ).fetchall()
+        }
+        audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'generation_batch.regenerate' AND entity_id = ?",
+            (regenerated.json()["id"],),
+        ).fetchone()
+    assert batch is not None and batch["created_by_user_id"] == "employee_1"
+    assert after["employee_1"] == (
+        before["employee_1"][0] - 1,
+        before["employee_1"][1] + 1,
+    )
+    assert after["admin_1"] == before["admin_1"]
+    assert audit is not None
+    metadata = json.loads(str(audit["metadata_json"]))
+    assert metadata["billed_user_id"] == "employee_1"
+    assert metadata["requested_by_user_id"] == "admin_1"
+
+
 def test_task_paid_regeneration_supersedes_audio_failure_once_and_keeps_history(
     db_path: Path,
     client: TestClient,
@@ -2863,6 +2928,10 @@ def test_generation_batch_list_filters_and_enforces_project_scope(
         conn.execute("UPDATE users SET role = 'customer' WHERE id = %s", ("employee_1",))
         conn.commit()
     customer = client.get("/api/generation-batches", headers=auth_headers("employee_1"))
+    missing_project = client.get(
+        "/api/generation-batches?project_id=project_missing",
+        headers=auth_headers("employee_1"),
+    )
 
     assert employee.status_code == 200
     assert {item["project_id"] for item in employee.json()["items"]} == {"project_owned"}
@@ -2873,8 +2942,8 @@ def test_generation_batch_list_filters_and_enforces_project_scope(
         "batch-owned-superseded-quality",
         "batch-owned-uncertain",
     }
-    assert forbidden_project.status_code == 403
-    assert forbidden_project.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert forbidden_project.status_code == 404
+    assert forbidden_project.content == missing_project.content
     assert [item["id"] for item in attention.json()["items"]] == [
         "batch-owned-uncertain",
         "batch-owned-quality-status-only",
@@ -3065,9 +3134,21 @@ def test_generation_requires_owner_and_configured_real_provider(client: TestClie
             "provider": "metaso",
         },
     )
+    missing_project = client.post(
+        "/api/projects/project_missing/generation-batches",
+        headers=auth_headers("employee_2"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "missing-project",
+        },
+    )
 
-    assert other_owner.status_code == 403
-    assert other_owner.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert other_owner.status_code == 404
+    assert other_owner.content == missing_project.content
     assert real_provider.status_code == 503
     assert real_provider.json()["detail"]["code"] == "METASO_SETTINGS_UNAVAILABLE"
 
@@ -4914,12 +4995,18 @@ def test_generation_batch_rename_by_creator_or_admin_only(
         headers=auth_headers("employee_1"),
         json={"display_name": "超" * 121},
     )
+    missing = client.patch(
+        "/api/generation-batches/batch-missing/name",
+        headers=auth_headers("employee_2"),
+        json={"display_name": "不应生效"},
+    )
 
     assert renamed.status_code == 200
     assert renamed.json()["display_name"] == "乡墅爆款第 2 期"
-    assert other_creator.status_code == 403
-    assert other_creator.json()["detail"]["code"] == "GENERATION_BATCH_FORBIDDEN"
-    assert auditor.status_code == 403
+    assert other_creator.status_code == 404
+    assert other_creator.content == missing.content
+    assert auditor.status_code == 404
+    assert auditor.content == missing.content
     assert admin.status_code == 200
     assert admin.json()["display_name"] == "管理员改名"
     assert blank.status_code == 422
@@ -5009,7 +5096,7 @@ def test_generation_batch_delete_blocked_while_tasks_active(
     assert response.json()["detail"]["code"] == "BATCH_DELETE_HAS_ACTIVE_TASKS"
 
 
-def test_generation_batch_delete_forbidden_for_non_creator_and_auditor(
+def test_generation_batch_delete_hides_foreign_batch_from_non_creator_and_auditor(
     client: TestClient,
     db_path: Path,
 ) -> None:
@@ -5025,13 +5112,18 @@ def test_generation_batch_delete_forbidden_for_non_creator_and_auditor(
     auditor = client.delete(
         "/api/generation-batches/batch-guard", headers=auth_headers("auditor_1")
     )
-    missing = client.delete("/api/generation-batches/not-exist", headers=auth_headers("employee_1"))
+    other_missing = client.delete(
+        "/api/generation-batches/not-exist", headers=auth_headers("employee_2")
+    )
+    auditor_missing = client.delete(
+        "/api/generation-batches/not-exist", headers=auth_headers("auditor_1")
+    )
     admin = client.delete("/api/generation-batches/batch-guard", headers=auth_headers("admin_1"))
 
-    assert other.status_code == 403
-    assert other.json()["detail"]["code"] == "GENERATION_BATCH_FORBIDDEN"
-    assert auditor.status_code == 403
-    assert missing.status_code == 404
+    assert other.status_code == 404
+    assert other.content == other_missing.content
+    assert auditor.status_code == 404
+    assert auditor.content == auditor_missing.content
     assert admin.status_code == 204
 
 

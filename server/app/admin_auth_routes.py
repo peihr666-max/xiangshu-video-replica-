@@ -59,9 +59,11 @@ ADMIN_SESSION_COOKIE = "admin_session"
 ADMIN_CSRF_HEADER = "X-Admin-CSRF"
 ADMIN_SESSION_HMAC_KEY_ENV = "VIDEO_REPLICA_ADMIN_SESSION_HMAC_KEY"
 ADMIN_SESSION_TTL_ENV = "VIDEO_REPLICA_ADMIN_SESSION_TTL_SECONDS"
+ADMIN_SESSION_IDLE_TIMEOUT_ENV = "VIDEO_REPLICA_ADMIN_SESSION_IDLE_TIMEOUT_SECONDS"
 CUSTOMER_PRODUCTION_ENV = "VIDEO_REPLICA_CUSTOMER_PRODUCTION"
 
 DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 3600
+DEFAULT_ADMIN_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60
 MIN_ADMIN_SESSION_TTL_SECONDS = 60
 MAX_ADMIN_SESSION_TTL_SECONDS = 24 * 3600
 MIN_HMAC_KEY_BYTES = 32
@@ -338,6 +340,24 @@ def resolve_admin_session_ttl_seconds() -> int:
     return value
 
 
+def resolve_admin_session_idle_timeout_seconds() -> int:
+    raw = os.environ.get(ADMIN_SESSION_IDLE_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_ADMIN_SESSION_IDLE_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{ADMIN_SESSION_IDLE_TIMEOUT_ENV} must be an integer number of seconds"
+        ) from exc
+    if not MIN_ADMIN_SESSION_TTL_SECONDS <= value <= MAX_ADMIN_SESSION_TTL_SECONDS:
+        raise ValueError(
+            f"{ADMIN_SESSION_IDLE_TIMEOUT_ENV} must be between "
+            f"{MIN_ADMIN_SESSION_TTL_SECONDS} and {MAX_ADMIN_SESSION_TTL_SECONDS} seconds"
+        )
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Session storage / verification (PostgreSQL only — customer data plane)
 # ---------------------------------------------------------------------------
@@ -590,7 +610,12 @@ def create_password_admin_session(
     )
 
 
-def load_admin_session(session_token: str) -> tuple[AdminActor, str]:
+def load_admin_session(
+    session_token: str,
+    *,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
+) -> tuple[AdminActor, str]:
     """Verify an admin session cookie and refresh its activity timestamp.
 
     PostgreSQL time is the only clock: the stored ISO expiry is compared against
@@ -598,11 +623,14 @@ def load_admin_session(session_token: str) -> tuple[AdminActor, str]:
     role are re-checked on every request, so disabling a user or revoking a
     session invalidates it immediately.
     """
+    rejection: tuple[str, str] | None = None
+    actor: AdminActor | None = None
+    csrf_digest = ""
     with pg_transaction() as conn:
         row = conn.execute(
             "SELECT s.id, s.csrf_digest, s.expires_at, s.last_activity_at, "
             "       s.auth_method, s.actor_user_id, u.username, u.display_name, u.role, "
-            "       now() AS db_now "
+            "       s.created_ip_digest, s.created_ua_digest, now() AS db_now "
             "FROM admin_sessions s JOIN users u ON u.id = s.actor_user_id "
             "WHERE s.session_digest = %s AND s.revoked_at IS NULL AND u.is_active = 1",
             (_sha256_hex(session_token),),
@@ -611,7 +639,7 @@ def load_admin_session(session_token: str) -> tuple[AdminActor, str]:
             raise _http(
                 401, "ADMIN_SESSION_INVALID", "Admin session is missing, revoked or invalid."
             )
-        db_now = _as_datetime(row[9])
+        db_now = _as_datetime(row[11])
         expires_at = _as_datetime(row[2])
         if db_now >= expires_at:
             raise _http(401, "ADMIN_SESSION_EXPIRED", "Admin session has expired.")
@@ -620,21 +648,58 @@ def load_admin_session(session_token: str) -> tuple[AdminActor, str]:
             raise _http(
                 401, "ADMIN_SESSION_INVALID", "Operator role no longer permits admin access."
             )
-        conn.execute(
-            "UPDATE admin_sessions SET last_activity_at = %s WHERE id = %s",
-            (db_now.isoformat(), str(row[0])),
+        last_activity_at = _as_datetime(row[3])
+        idle_timeout = timedelta(seconds=resolve_admin_session_idle_timeout_seconds())
+        context_changed = (
+            client_ip is not None and not hmac.compare_digest(str(row[9]), _sha256_hex(client_ip))
+        ) or (
+            user_agent is not None
+            and not hmac.compare_digest(str(row[10]), _sha256_hex(user_agent))
         )
-        actor = AdminActor(
-            user_id=str(row[5]),
-            username=str(row[6]),
-            display_name=str(row[7]),
-            role=role,
-            auth_method=str(row[4]),
-            session_id=str(row[0]),
-            session_expires_at=expires_at.isoformat(),
-            last_activity_at=db_now.isoformat(),
-        )
-    return actor, str(row[1])
+        if db_now >= last_activity_at + idle_timeout:
+            rejection = ("ADMIN_SESSION_IDLE_EXPIRED", "Admin session was idle for too long.")
+        elif context_changed:
+            rejection = (
+                "ADMIN_SESSION_CONTEXT_CHANGED",
+                "Admin session network or browser context changed; sign in again.",
+            )
+        if rejection is not None:
+            conn.execute(
+                "UPDATE admin_sessions SET revoked_at = %s WHERE id = %s",
+                (db_now.isoformat(), str(row[0])),
+            )
+            conn.execute(
+                "INSERT INTO audit_logs "
+                "(id, actor_user_id, action, entity_type, entity_id, metadata_json) "
+                "VALUES (%s, %s, 'admin_session.security_rejected', "
+                "'admin_session', %s, %s)",
+                (
+                    str(uuid.uuid4()),
+                    str(row[5]),
+                    str(row[0]),
+                    json.dumps({"code": rejection[0]}, separators=(",", ":")),
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE admin_sessions SET last_activity_at = %s WHERE id = %s",
+                (db_now.isoformat(), str(row[0])),
+            )
+            actor = AdminActor(
+                user_id=str(row[5]),
+                username=str(row[6]),
+                display_name=str(row[7]),
+                role=role,
+                auth_method=str(row[4]),
+                session_id=str(row[0]),
+                session_expires_at=expires_at.isoformat(),
+                last_activity_at=db_now.isoformat(),
+            )
+            csrf_digest = str(row[1])
+    if rejection is not None:
+        raise _http(401, rejection[0], rejection[1])
+    assert actor is not None
+    return actor, csrf_digest
 
 
 def revoke_admin_session(session_id: str, actor_user_id: str = "") -> None:
@@ -670,7 +735,11 @@ def get_admin_actor(request: Request) -> AdminActor:
     if not token:
         raise _http(401, "ADMIN_SESSION_INVALID", "An admin session cookie is required.")
     try:
-        actor, csrf_digest = load_admin_session(token)
+        actor, csrf_digest = load_admin_session(
+            token,
+            client_ip=client_ip_from_request(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
     except RuntimeError as exc:
         # The PG runtime is unavailable (internal SQLite deployments): fail
         # closed with 503 instead of falling back to any legacy identity.

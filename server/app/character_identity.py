@@ -1281,7 +1281,7 @@ def read_identity_row(conn: BusinessConnection, identity_id: str) -> sqlite3.Row
         (identity_id,),
     ).fetchone()
     if row is None:
-        raise character_not_found("PERSON_IDENTITY_NOT_FOUND", "人物身份不存在。")
+        raise character_not_found("PERSON_IDENTITY_NOT_FOUND", "人物身份不存在或不可用。")
     return cast(sqlite3.Row, row)
 
 
@@ -1291,7 +1291,7 @@ def read_persona_row(conn: BusinessConnection, persona_id: str) -> sqlite3.Row:
         (persona_id,),
     ).fetchone()
     if row is None:
-        raise character_not_found("CHARACTER_PERSONA_NOT_FOUND", "角色人设不存在。")
+        raise character_not_found("CHARACTER_PERSONA_NOT_FOUND", "角色人设不存在或不可用。")
     return cast(sqlite3.Row, row)
 
 
@@ -1301,7 +1301,7 @@ def read_version_row(conn: BusinessConnection, version_id: str) -> sqlite3.Row:
         (version_id,),
     ).fetchone()
     if row is None:
-        raise character_not_found("CHARACTER_VERSION_NOT_FOUND", "角色版本不存在。")
+        raise character_not_found("CHARACTER_VERSION_NOT_FOUND", "角色版本不存在或不可用。")
     return cast(sqlite3.Row, row)
 
 

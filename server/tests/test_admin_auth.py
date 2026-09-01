@@ -37,6 +37,7 @@ from app.admin_auth_routes import (
     hash_admin_password,
     issue_exchange_credential,
     parse_and_verify_exchange_credential,
+    resolve_admin_session_idle_timeout_seconds,
     resolve_admin_session_ttl_seconds,
     verify_admin_password,
 )
@@ -212,6 +213,18 @@ def test_admin_session_ttl_bounds_enforced() -> None:
         with _env(**{"VIDEO_REPLICA_ADMIN_SESSION_TTL_SECONDS": invalid}):
             with pytest.raises(ValueError):
                 resolve_admin_session_ttl_seconds()
+
+
+def test_admin_session_idle_timeout_bounds_enforced() -> None:
+    key = "VIDEO_REPLICA_ADMIN_SESSION_IDLE_TIMEOUT_SECONDS"
+    with _env(**{key: ""}):
+        assert resolve_admin_session_idle_timeout_seconds() == 30 * 60
+    with _env(**{key: "3600"}):
+        assert resolve_admin_session_idle_timeout_seconds() == 3600
+    for invalid in ("0", "-5", "not-a-number", str(24 * 3600 + 1)):
+        with _env(**{key: invalid}):
+            with pytest.raises(ValueError):
+                resolve_admin_session_idle_timeout_seconds()
 
 
 def test_admin_password_hash_is_memory_hard_salted_and_verifiable() -> None:
@@ -623,6 +636,64 @@ def test_exchange_credential_single_use(client: TestClient, clean_sessions: str)
             "SELECT count(*) FROM security_auth_failures WHERE dimension = 'admin:exchange:ip'"
         ).fetchone()[0]
     assert int(failure_count) == 1
+
+
+def test_admin_session_idle_expiry_revokes_cookie_and_is_audited(
+    client: TestClient,
+    clean_sessions: str,
+    admin_session: dict[str, str],
+) -> None:
+    with psycopg.connect(clean_sessions, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE admin_sessions SET last_activity_at = now() - interval '31 minutes' "
+            "WHERE id = %s",
+            (admin_session["session_id"],),
+        )
+
+    expired = client.get("/api/control/admin/session")
+
+    assert expired.status_code == 401
+    assert expired.json()["detail"]["code"] == "ADMIN_SESSION_IDLE_EXPIRED"
+    with psycopg.connect(clean_sessions) as conn:
+        row = conn.execute(
+            "SELECT revoked_at FROM admin_sessions WHERE id = %s",
+            (admin_session["session_id"],),
+        ).fetchone()
+        audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'admin_session.security_rejected' AND entity_id = %s",
+            (admin_session["session_id"],),
+        ).fetchone()
+    assert row is not None and row[0] is not None
+    assert audit is not None
+    assert json.loads(str(audit[0]))["code"] == "ADMIN_SESSION_IDLE_EXPIRED"
+
+
+def test_admin_session_context_change_revokes_cookie_and_is_audited(
+    client: TestClient,
+    clean_sessions: str,
+    admin_session: dict[str, str],
+) -> None:
+    changed = client.get(
+        "/api/control/admin/session",
+        headers={"User-Agent": "different-admin-browser"},
+    )
+
+    assert changed.status_code == 401
+    assert changed.json()["detail"]["code"] == "ADMIN_SESSION_CONTEXT_CHANGED"
+    with psycopg.connect(clean_sessions) as conn:
+        row = conn.execute(
+            "SELECT revoked_at FROM admin_sessions WHERE id = %s",
+            (admin_session["session_id"],),
+        ).fetchone()
+        audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'admin_session.security_rejected' AND entity_id = %s",
+            (admin_session["session_id"],),
+        ).fetchone()
+    assert row is not None and row[0] is not None
+    assert audit is not None
+    assert json.loads(str(audit[0]))["code"] == "ADMIN_SESSION_CONTEXT_CHANGED"
 
 
 def test_exchange_recovery_sets_password_then_password_login_survives_refresh(

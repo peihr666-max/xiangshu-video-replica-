@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
 from app.media_routes import get_media_storage
-from app.permissions import require_project_access
+from app.permissions import remap_security_denial, require_project_access
 from app.source_frames import (
     SOURCE_FRAME_CANDIDATES_KIND,
     SOURCE_FRAME_SELECTION_KIND,
@@ -137,12 +137,21 @@ def read_source_frame_task(
     actor: AuthenticatedUser,
 ) -> SourceFrameTaskResponse:
     row = load_source_frame_task(conn, task_id)
-    require_project_access(
-        conn,
-        actor=actor,
-        project_id=str(row["project_id"]),
-        action="source_frame.task.read",
-    )
+    try:
+        require_project_access(
+            conn,
+            actor=actor,
+            project_id=str(row["project_id"]),
+            action="source_frame.task.read",
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise remap_security_denial(
+                exc,
+                status_code=404,
+                detail={"code": "SOURCE_FRAME_TASK_NOT_FOUND", "message": "取帧任务不存在。"},
+            ) from exc
+        raise
     return source_frame_task_response(row)
 
 

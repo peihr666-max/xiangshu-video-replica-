@@ -16,9 +16,9 @@ class WalletResponse(BaseModel):
 
     available_credits: int
     reserved_credits: int
-    internal_unit_price_fen: int
-    min_recharge_fen: int
-    recharge_step_fen: int
+    internal_unit_price_fen: int | None = None
+    min_recharge_fen: int | None = None
+    recharge_step_fen: int | None = None
 
 
 class WalletTransactionResponse(BaseModel):
@@ -44,7 +44,7 @@ class WalletTransactionPage(BaseModel):
     offset: int
 
 
-@router.get("", response_model=WalletResponse)
+@router.get("", response_model=WalletResponse, response_model_exclude_none=True)
 def read_wallet(conn: Database, actor: AuthenticatedUser) -> WalletResponse:
     row = conn.execute(
         """
@@ -75,12 +75,15 @@ def read_wallet(conn: Database, actor: AuthenticatedUser) -> WalletResponse:
             "recharge_step_fen": int(billing_row["recharge_step_fen"]),
         }
     )
+    expose_internal_prices = actor.role != "customer"
     return WalletResponse(
         available_credits=int(row["available_credits"]),
         reserved_credits=int(row["reserved_credits"]),
-        internal_unit_price_fen=billing["internal_base_unit_price_fen"],
-        min_recharge_fen=billing["min_recharge_fen"],
-        recharge_step_fen=billing["recharge_step_fen"],
+        internal_unit_price_fen=(
+            billing["internal_base_unit_price_fen"] if expose_internal_prices else None
+        ),
+        min_recharge_fen=billing["min_recharge_fen"] if expose_internal_prices else None,
+        recharge_step_fen=billing["recharge_step_fen"] if expose_internal_prices else None,
     )
 
 

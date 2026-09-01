@@ -414,10 +414,15 @@ def test_first_frame_idempotent_replay_requires_project_access(client: TestClien
         json=request,
         headers=headers("employee_2"),
     )
+    missing = client.post(
+        "/api/projects/project_missing/first-frame-tasks",
+        json=request,
+        headers=headers("employee_2"),
+    )
 
     assert created.status_code == 202
-    assert replay.status_code == 403
-    assert replay.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert replay.status_code == 404
+    assert replay.content == missing.content
 
 
 def test_first_frame_task_replay_survives_input_change_but_worker_fails_closed(

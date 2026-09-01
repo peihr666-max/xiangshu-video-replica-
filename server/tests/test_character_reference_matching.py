@@ -529,6 +529,10 @@ def test_recommendation_preview_is_read_only_and_lists_all_published_assets(
         "/api/projects/project-owned/character-reference-recommendation",
         headers=headers("employee_2"),
     )
+    missing = client.get(
+        "/api/projects/project-missing/character-reference-recommendation",
+        headers=headers("employee_2"),
+    )
 
     assert preview.status_code == 200
     body = preview.json()
@@ -546,7 +550,8 @@ def test_recommendation_preview_is_read_only_and_lists_all_published_assets(
     )
     assert body["recommendation_reason_json"]["body_view_type"] == "RIGHT_45"
     assert auditor_preview.json() == body
-    assert forbidden.status_code == 403
+    assert forbidden.status_code == 404
+    assert forbidden.content == missing.content
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         selection_count = conn.execute(
             "SELECT COUNT(*) FROM character_reference_selections WHERE project_id = ?",
@@ -590,6 +595,11 @@ def test_employee_can_choose_one_to_four_published_assets_and_roles_fail_closed(
         headers=headers("employee_2"),
         json=reference_selection_payload(seeded),
     )
+    missing_project = client.post(
+        "/api/projects/project-missing/character-reference-selection",
+        headers=headers("employee_2"),
+        json=reference_selection_payload(seeded),
+    )
     auditor = client.post(
         "/api/projects/project-owned/character-reference-selection",
         headers=headers("auditor_1"),
@@ -601,7 +611,8 @@ def test_employee_can_choose_one_to_four_published_assets_and_roles_fail_closed(
     assert foreign.status_code == 422
     assert foreign.json()["detail"]["code"] == "CHARACTER_REFERENCE_ASSET_INVALID"
     assert too_many.status_code == 422
-    assert other_employee.status_code == 403
+    assert other_employee.status_code == 404
+    assert other_employee.content == missing_project.content
     assert auditor.status_code == 403
 
 

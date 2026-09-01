@@ -283,7 +283,7 @@ export type Project = {
 export type UploadIntent = {
   asset_id: string;
   project_id: string;
-  storage_key: string;
+  storage_key?: string | null;
   method: "PUT" | null;
   url: string | null;
   headers: Record<string, string>;
@@ -295,7 +295,7 @@ export type CompletedUpload = {
   asset_id: string;
   project_id: string;
   status: string;
-  storage_uri: string;
+  storage_uri?: string | null;
   sha256: string;
   size_bytes: number;
   content_type: string;

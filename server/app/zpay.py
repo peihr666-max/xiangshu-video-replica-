@@ -32,6 +32,11 @@ class ZPayMerchantConfig:
     pid: str
     key: str
     channel: str
+    enabled_channels: tuple[str, ...] = ()
+
+    @property
+    def allowed_channels(self) -> tuple[str, ...]:
+        return self.enabled_channels or (self.channel,)
 
 
 @dataclass(frozen=True)
@@ -110,7 +115,12 @@ def merchant_config_from_settings(settings: Mapping[str, str]) -> ZPayMerchantCo
     channels = parse_enabled_channels(settings.get("enabled_channels", ""))
     if not pid or not key or not channels:
         raise ValueError("ZPay merchant settings are incomplete")
-    return ZPayMerchantConfig(pid=pid, key=key, channel=channels[0])
+    return ZPayMerchantConfig(
+        pid=pid,
+        key=key,
+        channel=channels[0],
+        enabled_channels=channels,
+    )
 
 
 def parse_enabled_channels(value: str) -> tuple[str, ...]:

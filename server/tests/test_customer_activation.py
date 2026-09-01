@@ -17,7 +17,7 @@ Locked behaviours:
   identical username / device token / session token and only one CHARGE
   (envelope recovery, §12.1);
 - two threads racing the same device fingerprint with different codes leave
-  one activation and one ``USER_ALREADY_ACTIVATED``;
+  one activation and one unified ``ACTIVATION_UNAVAILABLE`` response;
 - a business failure (suspended code) rolls the idempotency envelope back
   with the transaction, so the same key stays reusable;
 - a colliding server-generated username is regenerated inside the same
@@ -449,9 +449,10 @@ def test_active_code_same_fingerprint_recovers_credentials_without_duplicate_cha
     assert wrong_machine.status_code == 400
     assert wrong_machine.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
-    # A reinstalled desktop has the durable machine fingerprint but no local
-    # credential envelope and should not ask the user to type the code again.
-    recovery_body = _activate_body("", fingerprint)
+    # A reinstalled desktop has no local credential envelope. Recovery is
+    # direct (no administrator approval) but requires the complete code in
+    # addition to the stable machine fingerprint.
+    recovery_body = _activate_body(plaintext, fingerprint)
     recovery_body["device_name"] = "自动恢复占位名称"
     recovered_response = client.post(
         ACTIVATE_PATH,
@@ -493,7 +494,7 @@ def test_active_code_same_fingerprint_recovers_credentials_without_duplicate_cha
         )
     suspended = _post_activate(
         client,
-        "",
+        plaintext,
         fingerprint,
         "key-recovery-suspended-code",
     )
@@ -504,7 +505,7 @@ def test_active_code_same_fingerprint_recovers_credentials_without_duplicate_cha
 def test_revoked_device_same_fingerprint_stays_revoked(
     client: TestClient, clean_state: str
 ) -> None:
-    """An administrator revocation is terminal for unattended recovery."""
+    """An administrator revocation is terminal even for code-authenticated recovery."""
 
     from datetime import UTC, datetime
 
@@ -539,7 +540,7 @@ def test_revoked_device_same_fingerprint_stays_revoked(
             (first["device_id"],),
         ).fetchone() == ("REVOKED",)
 
-    recovered_response = _post_activate(client, "", fingerprint, "key-revoke-recover")
+    recovered_response = _post_activate(client, plaintext, fingerprint, "key-revoke-recover")
     assert recovered_response.status_code == 400
     assert recovered_response.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
@@ -632,9 +633,9 @@ def test_concurrent_second_code_same_fingerprint_one_success(
         thread.join(timeout=60)
 
     statuses = sorted(status for status, _ in results)
-    assert statuses == [201, 409], results
-    conflict_body = [body for status, body in results if status == 409][0]
-    assert "USER_ALREADY_ACTIVATED" in conflict_body
+    assert statuses == [201, 400], results
+    conflict_body = [body for status, body in results if status == 400][0]
+    assert "ACTIVATION_UNAVAILABLE" in conflict_body
 
     with psycopg.connect(clean_state) as conn:
         assert _count(conn, "SELECT COUNT(*) FROM activation_code_activations") == 1
@@ -680,8 +681,8 @@ def test_rotation_window_cross_version_same_fingerprint_one_activation(
     # Instance A: still V1-only (the rollout has not reached it yet).
     monkeypatch.delenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY_V2", raising=False)
     second = _post_activate(client, second_code, "fp-rotation", "key-rot-b")
-    assert second.status_code == 409, second.text
-    assert "USER_ALREADY_ACTIVATED" in second.text
+    assert second.status_code == 400, second.text
+    assert "ACTIVATION_UNAVAILABLE" in second.text
 
     with psycopg.connect(clean_state) as conn:
         assert _count(conn, "SELECT COUNT(*) FROM activation_code_activations") == 1

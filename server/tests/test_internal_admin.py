@@ -124,7 +124,10 @@ def internal_admin_context(
         yield (
             TestClient(app),
             db_path,
-            {"X-Control-Proxy-Token": CONTROL_TOKEN},
+            {
+                "X-Control-Proxy-Token": CONTROL_TOKEN,
+                "Idempotency-Key": "internal-control-write-test-key",
+            },
             {"Authorization": f"Bearer {business_token['token']}"},
         )
     finally:
@@ -214,6 +217,8 @@ def test_control_settings_mask_zpay_secret_and_keep_deployment_read_only(
             "pid": "merchant-456",
             "key": "",
             "enabled_channels": ["wxpay"],
+            "confirm": True,
+            "reason": "rotate the configured merchant account",
         },
     )
 
@@ -230,6 +235,8 @@ def test_control_settings_mask_zpay_secret_and_keep_deployment_read_only(
             "pid": "merchant-456",
             "enabled_channels": ["wxpay"],
             "gateway_url": "https://evil.example/submit.php",
+            "confirm": True,
+            "reason": "verify read-only deployment fields",
         },
     )
     assert forbidden_field.status_code == 422
@@ -253,6 +260,40 @@ def test_control_settings_use_documented_gateway_without_gateway_environment(
     assert snapshot.json()["providers"]["metaso"]["provider"] == "metaso"
 
 
+def test_internal_control_writes_require_the_admin_write_contract(
+    internal_admin_context: tuple[TestClient, Path, dict[str, str], dict[str, str]],
+) -> None:
+    client, _, control_headers, _ = internal_admin_context
+    payload = {
+        "max_generation_count_per_batch": 2,
+        "max_concurrent_h3_tasks": 1,
+        "active_storage_provider": "cos",
+    }
+
+    missing_confirmation = client.patch(
+        "/api/control/settings/runtime",
+        headers=control_headers,
+        json=payload,
+    )
+    missing_reason = client.patch(
+        "/api/control/settings/runtime",
+        headers=control_headers,
+        json={**payload, "confirm": True},
+    )
+    missing_key = client.patch(
+        "/api/control/settings/runtime",
+        headers={"X-Control-Proxy-Token": CONTROL_TOKEN},
+        json={**payload, "confirm": True, "reason": "test missing key"},
+    )
+
+    assert missing_confirmation.status_code == 400
+    assert missing_confirmation.json()["detail"]["code"] == "CONFIRMATION_REQUIRED"
+    assert missing_reason.status_code == 400
+    assert missing_reason.json()["detail"]["code"] == "REASON_REQUIRED"
+    assert missing_key.status_code == 400
+    assert missing_key.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+
 def test_control_settings_manage_encrypted_service_configs_and_runtime(
     internal_admin_context: tuple[TestClient, Path, dict[str, str], dict[str, str]],
 ) -> None:
@@ -261,7 +302,11 @@ def test_control_settings_manage_encrypted_service_configs_and_runtime(
     saved = client.put(
         "/api/control/settings/providers/metaso",
         headers=control_headers,
-        json={"config": {"api_key": "video-service-secret"}},
+        json={
+            "config": {"api_key": "video-service-secret"},
+            "confirm": True,
+            "reason": "configure the metaso provider",
+        },
     )
     snapshot = client.get("/api/control/settings", headers=control_headers)
     connection = client.post(
@@ -275,6 +320,8 @@ def test_control_settings_manage_encrypted_service_configs_and_runtime(
             "max_generation_count_per_batch": 2,
             "max_concurrent_h3_tasks": 1,
             "active_storage_provider": "cos",
+            "confirm": True,
+            "reason": "adjust generation runtime limits",
         },
     )
 
@@ -317,6 +364,8 @@ def test_control_billing_settings_only_update_internal_price_rules(
             "internal_base_unit_price_fen": 500,
             "min_recharge_fen": 10000,
             "recharge_step_fen": 1000,
+            "confirm": True,
+            "reason": "adjust internal billing settings",
         },
     )
 
@@ -338,6 +387,8 @@ def test_control_billing_settings_only_update_internal_price_rules(
             "internal_base_unit_price_fen": 500,
             "min_recharge_fen": 9900,
             "recharge_step_fen": 1000,
+            "confirm": True,
+            "reason": "verify billing lower bound",
         },
     )
     customer_price_field = client.patch(
@@ -348,6 +399,8 @@ def test_control_billing_settings_only_update_internal_price_rules(
             "charged_unit_price_fen": 1500,
             "min_recharge_fen": 10000,
             "recharge_step_fen": 1000,
+            "confirm": True,
+            "reason": "verify customer price cannot be changed here",
         },
     )
 

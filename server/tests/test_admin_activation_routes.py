@@ -1155,10 +1155,20 @@ def test_list_codes_stays_masked_and_single_code_reveal_is_audited(
             "WHERE action = 'admin.activation_code.revealed' AND entity_id = %s",
             (items[0]["code_id"],),
         ).fetchall()
+        replay_audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'admin.activation_code.revealed_replay' AND entity_id = %s",
+            (items[0]["code_id"],),
+        ).fetchall()
     assert len(audit) == 1
     metadata = json.loads(audit[0][0])
     assert metadata["reason"] == "客服复制给客户"
     assert revealed.json()["activation_code"] not in str(audit[0][0])
+    assert len(replay_audit) == 1
+    replay_metadata = json.loads(replay_audit[0][0])
+    assert replay_metadata["original_request_id"] == revealed.json()["request_id"]
+    assert replay_metadata["replay_request_id"]
+    assert revealed.json()["activation_code"] not in str(replay_audit[0][0])
 
     issued = client.get(
         "/api/control/activation-codes",

@@ -1074,6 +1074,7 @@ def reveal_activation_code(
     route = _canonical_route(request)
     request_hash = _request_hash(route, dict(request.path_params), body)
     request_id = get_or_create_request_id(request)
+    replay_attempt_request_id = request_id
     response.headers["Cache-Control"] = "no-store"
     try:
         with pg_transaction() as conn:
@@ -1147,6 +1148,27 @@ def reveal_activation_code(
                     placeholder,
                     response_status=200,
                     response_body=safe_payload,
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO audit_logs "
+                    "(id, actor_user_id, action, entity_type, entity_id, metadata_json) "
+                    "VALUES (%s, %s, %s, 'activation_code', %s, %s)",
+                    (
+                        str(uuid.uuid4()),
+                        actor.user_id,
+                        "admin.activation_code.revealed_replay",
+                        code_id,
+                        json.dumps(
+                            {
+                                "original_request_id": request_id,
+                                "replay_request_id": replay_attempt_request_id,
+                                "reason": reason,
+                            },
+                            ensure_ascii=True,
+                            sort_keys=True,
+                        ),
+                    ),
                 )
             response.headers[REQUEST_ID_HEADER] = request_id
             if replay:

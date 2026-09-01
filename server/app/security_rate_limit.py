@@ -64,15 +64,25 @@ DIMENSION_LOGIN_IP = "login:ip"
 DIMENSION_LOGIN_ACCOUNT = "login:account"
 DIMENSION_ADMIN_EXCHANGE_IP = "admin:exchange:ip"
 DIMENSION_SESSION_FENCING = "session:fencing"
+DIMENSION_CUSTOMER_PREAUTH_IP = "customer:preauth:ip"
+DIMENSION_ACTIVATION_RESET_IP = "activation-reset:ip"
+DIMENSION_ACTIVATION_RESET_DEVICE = "activation-reset:device"
 RATE_LIMIT_DIMENSIONS = (
     DIMENSION_ACTIVATE_IP,
     DIMENSION_ACTIVATE_CODE,
     DIMENSION_LOGIN_IP,
     DIMENSION_LOGIN_ACCOUNT,
     DIMENSION_ADMIN_EXCHANGE_IP,
+    DIMENSION_CUSTOMER_PREAUTH_IP,
+    DIMENSION_ACTIVATION_RESET_IP,
+    DIMENSION_ACTIVATION_RESET_DEVICE,
 )
 AUDIT_DIMENSIONS = (
-    *RATE_LIMIT_DIMENSIONS,
+    DIMENSION_ACTIVATE_IP,
+    DIMENSION_ACTIVATE_CODE,
+    DIMENSION_LOGIN_IP,
+    DIMENSION_LOGIN_ACCOUNT,
+    DIMENSION_ADMIN_EXCHANGE_IP,
     DIMENSION_SESSION_FENCING,
 )
 # Backward-compatible public vocabulary for callers/tests that inspect all
@@ -84,6 +94,9 @@ RATE_LIMIT_ACTIVATE_CODE_ENV = "VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE"
 RATE_LIMIT_LOGIN_IP_ENV = "VIDEO_REPLICA_RATE_LIMIT_LOGIN_IP"
 RATE_LIMIT_LOGIN_ACCOUNT_ENV = "VIDEO_REPLICA_RATE_LIMIT_LOGIN_ACCOUNT"
 RATE_LIMIT_ADMIN_EXCHANGE_IP_ENV = "VIDEO_REPLICA_RATE_LIMIT_ADMIN_EXCHANGE_IP"
+RATE_LIMIT_CUSTOMER_PREAUTH_IP_ENV = "VIDEO_REPLICA_RATE_LIMIT_CUSTOMER_PREAUTH_IP"
+RATE_LIMIT_ACTIVATION_RESET_IP_ENV = "VIDEO_REPLICA_RATE_LIMIT_ACTIVATION_RESET_IP"
+RATE_LIMIT_ACTIVATION_RESET_DEVICE_ENV = "VIDEO_REPLICA_RATE_LIMIT_ACTIVATION_RESET_DEVICE"
 RATE_LIMIT_WINDOW_ENV = "VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS"
 RATE_LIMIT_FAILURE_ALERT_ENV = "VIDEO_REPLICA_RATE_LIMIT_FAILURE_ALERT_THRESHOLD"
 
@@ -92,6 +105,9 @@ DEFAULT_ACTIVATE_CODE_LIMIT = 5
 DEFAULT_LOGIN_IP_LIMIT = 10
 DEFAULT_LOGIN_ACCOUNT_LIMIT = 5
 DEFAULT_ADMIN_EXCHANGE_IP_LIMIT = 10
+DEFAULT_CUSTOMER_PREAUTH_IP_LIMIT = 60
+DEFAULT_ACTIVATION_RESET_IP_LIMIT = 10
+DEFAULT_ACTIVATION_RESET_DEVICE_LIMIT = 3
 DEFAULT_WINDOW_SECONDS = 300
 DEFAULT_FAILURE_ALERT_THRESHOLD = 20
 
@@ -172,6 +188,27 @@ def admin_exchange_ip_limit() -> int:
     return _positive_int_env(
         RATE_LIMIT_ADMIN_EXCHANGE_IP_ENV,
         DEFAULT_ADMIN_EXCHANGE_IP_LIMIT,
+    )
+
+
+def customer_preauth_ip_limit() -> int:
+    return _positive_int_env(
+        RATE_LIMIT_CUSTOMER_PREAUTH_IP_ENV,
+        DEFAULT_CUSTOMER_PREAUTH_IP_LIMIT,
+    )
+
+
+def activation_reset_ip_limit() -> int:
+    return _positive_int_env(
+        RATE_LIMIT_ACTIVATION_RESET_IP_ENV,
+        DEFAULT_ACTIVATION_RESET_IP_LIMIT,
+    )
+
+
+def activation_reset_device_limit() -> int:
+    return _positive_int_env(
+        RATE_LIMIT_ACTIVATION_RESET_DEVICE_ENV,
+        DEFAULT_ACTIVATION_RESET_DEVICE_LIMIT,
     )
 
 
@@ -289,6 +326,7 @@ def record_auth_failure(
     identifier: str,
     request_id: str | None,
     now: datetime | None = None,
+    dedupe_window_seconds: int | None = None,
 ) -> None:
     """Append one security rejection event for metrics and alerting.
 
@@ -299,10 +337,38 @@ def record_auth_failure(
         raise ValueError(f"unknown failure dimension {dimension!r}")
     current = now if now is not None else _server_now(conn)
     current = current.astimezone(UTC).replace(microsecond=0)
+    if dedupe_window_seconds is None:
+        conn.execute(
+            f"INSERT INTO {FAILURES_TABLE} (id, dimension, identifier, request_id, occurred_at) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (str(uuid.uuid4()), dimension, identifier, request_id, current.isoformat()),
+        )
+        return
+    if dedupe_window_seconds <= 0:
+        raise ValueError("dedupe_window_seconds must be positive")
+    # Serialize the check-and-insert for this exact rejection fact. Without a
+    # transaction-scoped advisory lock, two concurrent requests can both pass
+    # NOT EXISTS and append duplicate permanent rows.
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"security-auth-failure:{dimension}:{identifier}",),
+    )
+    cutoff = (current - timedelta(seconds=dedupe_window_seconds)).isoformat()
     conn.execute(
         f"INSERT INTO {FAILURES_TABLE} (id, dimension, identifier, request_id, occurred_at) "
-        "VALUES (%s, %s, %s, %s, %s)",
-        (str(uuid.uuid4()), dimension, identifier, request_id, current.isoformat()),
+        "SELECT %s, %s, %s, %s, %s WHERE NOT EXISTS ("
+        f"SELECT 1 FROM {FAILURES_TABLE} "
+        "WHERE dimension = %s AND identifier = %s AND occurred_at > %s)",
+        (
+            str(uuid.uuid4()),
+            dimension,
+            identifier,
+            request_id,
+            current.isoformat(),
+            dimension,
+            identifier,
+            cutoff,
+        ),
     )
 
 
