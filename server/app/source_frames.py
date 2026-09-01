@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -105,6 +106,8 @@ class StoredSourceFrameCandidates:
     candidates: list[dict[str, object]]
     created_assets: list[tuple[str, str]]
     semantic_quality_status: Literal["VERIFIED", "UNAVAILABLE", "NOT_REQUESTED"]
+    semantic_provider: str | None
+    semantic_model: str | None
 
 
 @dataclass(frozen=True)
@@ -159,13 +162,68 @@ class FFmpegSourceFrameExtractor:
         # close it before invoking ffmpeg; the directory cleanup still
         # removes everything on exit.
         with tempfile.TemporaryDirectory(prefix="video-replica-source-frame-") as directory:
-            video_path = str(Path(directory) / f"reference{suffix}")
+            directory_path = Path(directory)
+            video_path = str(directory_path / f"reference{suffix}")
             with open(video_path, "wb") as video_file:
                 video_file.write(content)
-            frames = []
+            image_paths = [
+                directory_path / f"frame-{index}.jpg" for index in range(len(timestamps_seconds))
+            ]
+            grayscale_paths = [
+                directory_path / f"frame-{index}.gray" for index in range(len(timestamps_seconds))
+            ]
+            command = [ffmpeg, "-v", "error", "-y"]
             for timestamp in timestamps_seconds:
-                image = self._extract_jpeg(ffmpeg, video_path, timestamp)
-                grayscale = self._extract_grayscale(ffmpeg, video_path, timestamp)
+                command.extend(["-ss", str(timestamp), "-i", video_path])
+            for index, (image_path, grayscale_path) in enumerate(
+                zip(image_paths, grayscale_paths, strict=True)
+            ):
+                command.extend(
+                    [
+                        "-map",
+                        f"{index}:v:0",
+                        "-frames:v",
+                        "1",
+                        "-q:v",
+                        "2",
+                        str(image_path),
+                        "-map",
+                        f"{index}:v:0",
+                        "-frames:v",
+                        "1",
+                        "-vf",
+                        "scale=160:-2,format=gray",
+                        "-f",
+                        "rawvideo",
+                        "-pix_fmt",
+                        "gray",
+                        str(grayscale_path),
+                    ]
+                )
+            if not timestamps_seconds:
+                return []
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    check=False,
+                    timeout=min(45, FFMPEG_TIMEOUT_SECONDS + 5 * len(timestamps_seconds)),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise SourceFrameExtractionFailed("ffmpeg timed out") from exc
+            if result.returncode != 0:
+                raise SourceFrameExtractionFailed("ffmpeg could not extract source frames")
+            frames: list[ExtractedSourceFrame] = []
+            for timestamp, image_path, grayscale_path in zip(
+                timestamps_seconds,
+                image_paths,
+                grayscale_paths,
+                strict=True,
+            ):
+                image = image_path.read_bytes() if image_path.exists() else b""
+                grayscale = grayscale_path.read_bytes() if grayscale_path.exists() else b""
+                if not image or not grayscale:
+                    raise SourceFrameExtractionFailed("ffmpeg could not extract a source frame")
                 frames.append(
                     ExtractedSourceFrame(
                         timestamp_seconds=timestamp,
@@ -174,68 +232,6 @@ class FFmpegSourceFrameExtractor:
                     )
                 )
             return frames
-
-    def _extract_jpeg(self, ffmpeg: str, source_path: str, timestamp: float) -> bytes:
-        command = [
-            ffmpeg,
-            "-v",
-            "error",
-            "-ss",
-            str(timestamp),
-            "-i",
-            source_path,
-            "-frames:v",
-            "1",
-            "-f",
-            "image2",
-            "-vcodec",
-            "mjpeg",
-            "pipe:1",
-        ]
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                check=False,
-                timeout=FFMPEG_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise SourceFrameExtractionFailed("ffmpeg timed out") from exc
-        if result.returncode != 0 or not result.stdout:
-            raise SourceFrameExtractionFailed("ffmpeg could not extract a source frame")
-        return result.stdout
-
-    def _extract_grayscale(self, ffmpeg: str, source_path: str, timestamp: float) -> bytes:
-        command = [
-            ffmpeg,
-            "-v",
-            "error",
-            "-ss",
-            str(timestamp),
-            "-i",
-            source_path,
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale=160:-2,format=gray",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "gray",
-            "pipe:1",
-        ]
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                check=False,
-                timeout=FFMPEG_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise SourceFrameExtractionFailed("ffmpeg timed out") from exc
-        if result.returncode != 0 or not result.stdout:
-            raise SourceFrameExtractionFailed("ffmpeg could not score a source frame")
-        return result.stdout
 
 
 def score_grayscale_frame(pixels: bytes) -> float:
@@ -347,6 +343,7 @@ def perform_source_frame_extraction(
     storage: StorageAdapter,
     extractor: SourceFrameExtractor,
     quality_inspector: SourceFrameQualityInspector | None = None,
+    before_quality_call: Callable[[], None] | None = None,
 ) -> StoredSourceFrameCandidates:
     try:
         reference = storage_object_ref_from_uri(plan.source_storage_uri)
@@ -392,8 +389,12 @@ def perform_source_frame_extraction(
         )
 
     semantic_quality_status: Literal["VERIFIED", "UNAVAILABLE", "NOT_REQUESTED"] = "NOT_REQUESTED"
+    semantic_provider: str | None = None
+    semantic_model: str | None = None
     assessments_by_index: dict[int, SourceFrameCandidateAssessment] = {}
     if quality_inspector is not None:
+        if before_quality_call is not None:
+            before_quality_call()
         try:
             semantic = quality_inspector.inspect_source_frame_candidates(frames)
             assessments_by_index = {
@@ -402,8 +403,12 @@ def perform_source_frame_extraction(
             if set(assessments_by_index) != set(range(len(frames))):
                 raise ValueError("source-frame semantic inspection does not match candidates")
             semantic_quality_status = "VERIFIED"
+            semantic_provider = semantic.provider
+            semantic_model = semantic.model
         except (RuntimeError, ValueError) as exc:
             semantic_quality_status = "UNAVAILABLE"
+            semantic_provider = cast(str | None, getattr(quality_inspector, "provider_name", None))
+            semantic_model = cast(str | None, getattr(quality_inspector, "model", None))
             logger.warning(
                 "source-frame semantic inspection unavailable",
                 extra={"project_id": plan.project_id, "error_type": type(exc).__name__},
@@ -454,6 +459,8 @@ def perform_source_frame_extraction(
             candidates=candidates,
             created_assets=created_assets,
             semantic_quality_status=semantic_quality_status,
+            semantic_provider=semantic_provider,
+            semantic_model=semantic_model,
         )
     except (OSError, StorageBackendUnavailable, ValueError) as exc:
         delete_created_source_frames(
@@ -507,6 +514,8 @@ def complete_source_frame_extraction(
                 "source_asset_id": plan.asset_id,
                 "requested_timestamps_seconds": list(plan.requested_timestamps),
                 "semantic_quality_status": stored.semantic_quality_status,
+                "semantic_provider": stored.semantic_provider,
+                "semantic_model": stored.semantic_model,
                 "candidates": stored.candidates,
             },
             commit=False,
@@ -654,12 +663,13 @@ def acquire_source_frame_task(
     conn.execute(
         """
         UPDATE source_frame_tasks
-        SET status = 'PENDING', locked_by = NULL, locked_until = NULL,
-            error_code = NULL, error_message_redacted = NULL, retryable = 0,
-            updated_at = %s
+        SET status = 'FAILED', locked_by = NULL, locked_until = NULL,
+            error_code = 'SOURCE_FRAME_TASK_RECOVERY_REQUIRED',
+            error_message_redacted = '取帧任务执行中断，请重新开始。',
+            retryable = 1, completed_at = %s, updated_at = %s
         WHERE status = 'RUNNING' AND locked_until IS NOT NULL AND locked_until <= %s
         """,
-        (now, now),
+        (now, now, now),
     )
     row = conn.execute(
         """
@@ -706,6 +716,32 @@ def prepare_source_frame_task(
         actor=actor,
         timestamps_seconds=tuple(float(value) for value in raw_timestamps),
     )
+
+
+def record_source_frame_quality_started(
+    conn: BusinessConnection,
+    *,
+    lease: SourceFrameTaskLease,
+    provider: str | None,
+    model: str | None,
+) -> None:
+    row = require_owned_source_frame_task(conn, lease)
+    actor = load_source_frame_task_actor(conn, lease.created_by_user_id)
+    write_audit(
+        conn,
+        actor=actor,
+        action="source_frame.semantic_quality_started",
+        entity_type="source_frame_task",
+        entity_id=lease.id,
+        metadata={
+            "project_id": str(row["project_id"]),
+            "provider": provider,
+            "model": model,
+            "attempt": lease.attempt,
+        },
+        commit=False,
+    )
+    conn.commit()
 
 
 def complete_source_frame_task(
@@ -794,6 +830,65 @@ def load_source_frame_task(
             "取帧任务不存在。",
         )
     return cast(sqlite3.Row, row)
+
+
+def cancel_source_frame_task(
+    conn: BusinessConnection,
+    *,
+    task_id: str,
+    actor: CurrentUser,
+) -> sqlite3.Row:
+    row = load_source_frame_task(conn, task_id)
+    project_id = str(row["project_id"])
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="source_frame.task.cancel",
+        entity_type="source_frame_task",
+        entity_id=task_id,
+    )
+    require_project_access(
+        conn,
+        actor=actor,
+        project_id=project_id,
+        action="source_frame.task.cancel",
+    )
+    status = str(row["status"])
+    if status == "RUNNING":
+        raise source_frame_error(
+            409,
+            "SOURCE_FRAME_TASK_RUNNING",
+            "任务正在执行，完成或超时后才能重新开始。",
+        )
+    if status != "PENDING":
+        return row
+    now = _time_text(datetime.now(UTC))
+    updated = conn.execute(
+        """
+        UPDATE source_frame_tasks
+        SET status = 'FAILED', locked_by = NULL, locked_until = NULL,
+            error_code = 'SOURCE_FRAME_TASK_CANCELLED',
+            error_message_redacted = '取帧任务已停止，可以重新开始。',
+            retryable = 1, completed_at = %s, updated_at = %s
+        WHERE id = %s AND status = 'PENDING'
+        RETURNING *
+        """,
+        (now, now, task_id),
+    ).fetchone()
+    if updated is None:
+        conn.commit()
+        return load_source_frame_task(conn, task_id)
+    write_audit(
+        conn,
+        actor=actor,
+        action="source_frame.task_cancelled",
+        entity_type="source_frame_task",
+        entity_id=task_id,
+        metadata={"project_id": project_id},
+        commit=False,
+    )
+    conn.commit()
+    return cast(sqlite3.Row, updated)
 
 
 def latest_source_frame_task(

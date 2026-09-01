@@ -185,6 +185,234 @@ def test_control_accounts_and_orders_are_proxy_only_and_paginated(
     )
 
 
+def test_control_generation_records_include_paid_images_and_ai_scoring(
+    internal_admin_context: tuple[TestClient, Path, dict[str, str], dict[str, str]],
+) -> None:
+    client, db_path, control_headers, _ = internal_admin_context
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+            ("project-records", "user_1", "生成追溯项目"),
+        )
+        conn.execute(
+            """
+            INSERT INTO generation_batches (
+                id, project_id, created_by_user_id, idempotency_key,
+                request_hash, request_snapshot_json, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'RUNNING')
+            """,
+            (
+                "batch-records",
+                "project-records",
+                "user_1",
+                "batch-records-key",
+                "batch-records-hash",
+                "{}",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO generation_tasks (
+                id, batch_id, generation_mode, provider, model, status,
+                estimated_cost, actual_cost, prompt_snapshot_json
+            ) VALUES (%s, %s, 'I2V', 'minimax', 'Hailuo-02', 'RUNNING', %s, NULL, %s)
+            """,
+            ("video-estimated-record", "batch-records", 1.25, "{}"),
+        )
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id, project_id, kind, storage_uri, sha256, size_bytes,
+                content_type, created_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                "reference-records",
+                "project-records",
+                "reference_video",
+                "local://reference-records.mp4",
+                "reference-hash",
+                10,
+                "video/mp4",
+                "user_1",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO versions (
+                id, project_id, kind, version_number, payload_json, created_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                "first-frame-record-version",
+                "project-records",
+                "first_frame_candidates",
+                1,
+                '{"provider":"apilio","model":"gpt-image-2","candidates":[]}',
+                "user_1",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO versions (
+                id, project_id, kind, version_number, payload_json, created_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                "corrupt-first-frame-version",
+                "project-records",
+                "first_frame_candidates",
+                2,
+                "not-json",
+                "user_1",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO versions (
+                id, project_id, kind, version_number, payload_json, created_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                "source-score-record-version",
+                "project-records",
+                "source_frame_candidates",
+                1,
+                '{"semantic_quality_status":"VERIFIED","semantic_provider":"apilio_gemini",'
+                '"semantic_model":"gemini-3.1-pro-preview","candidates":[]}',
+                "user_1",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO first_frame_tasks (
+                id, project_id, created_by_user_id, idempotency_key, request_hash,
+                request_json, status, result_version_id, completed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'SUCCEEDED', %s, CURRENT_TIMESTAMP)
+            """,
+            (
+                "first-frame-record",
+                "project-records",
+                "user_1",
+                "first-frame-record-key",
+                "first-frame-record-hash",
+                '{"model":"gpt-image-2","quantity":1}',
+                "first-frame-record-version",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO source_frame_tasks (
+                id, project_id, asset_id, created_by_user_id, idempotency_key,
+                request_hash, request_json, result_version_id, status, completed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'SUCCEEDED', CURRENT_TIMESTAMP)
+            """,
+            (
+                "source-score-record",
+                "project-records",
+                "reference-records",
+                "user_1",
+                "source-score-record-key",
+                "source-score-record-hash",
+                '{"timestamps_seconds":[1.0]}',
+                "source-score-record-version",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO first_frame_tasks (
+                id, project_id, created_by_user_id, idempotency_key, request_hash,
+                request_json, status, result_version_id, completed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'SUCCEEDED', %s, CURRENT_TIMESTAMP)
+            """,
+            (
+                "corrupt-first-frame-record",
+                "project-records",
+                "user_1",
+                "corrupt-first-frame-key",
+                "corrupt-first-frame-hash",
+                '{"model":"gpt-image-2","quantity":1}',
+                "corrupt-first-frame-version",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO source_frame_tasks (
+                id, project_id, asset_id, created_by_user_id, idempotency_key,
+                request_hash, request_json, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
+            """,
+            (
+                "source-local-record",
+                "project-records",
+                "reference-records",
+                "user_1",
+                "source-local-key",
+                "source-local-hash",
+                '{"timestamps_seconds":[2.0]}',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_logs (
+                id, actor_user_id, action, entity_type, entity_id, metadata_json
+            ) VALUES (%s, NULL, %s, %s, %s, %s)
+            """,
+            (
+                "audit-source-local-000",
+                "source_frame.semantic_quality_started",
+                "source_frame_task",
+                "source-local-record",
+                '{"provider":"apilio_gemini","model":"gemini-3.1-pro-preview"}',
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO audit_logs (
+                id, actor_user_id, action, entity_type, entity_id, metadata_json
+            ) VALUES (%s, NULL, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    f"audit-unrelated-{index:03d}",
+                    "source_frame.semantic_quality_started",
+                    "source_frame_task",
+                    f"unrelated-source-task-{index:03d}",
+                    "{}",
+                )
+                for index in range(20)
+            ],
+        )
+        conn.commit()
+
+    response = client.get(
+        "/api/control/generation-records?limit=20&offset=0",
+        headers=control_headers,
+    )
+
+    assert response.status_code == 200
+    records = response.json()["items"]
+    by_id = {item["record_id"]: item for item in records}
+    assert by_id["first-frame-record"]["username"] == "operator-1"
+    assert by_id["first-frame-record"]["provider"] == "apilio"
+    assert by_id["first-frame-record"]["model"] == "gpt-image-2"
+    assert by_id["first-frame-record"]["provider_cost_status"] == "UNAVAILABLE"
+    assert by_id["source-score-record"]["provider"] == "apilio_gemini"
+    assert by_id["source-score-record"]["model"] == "gemini-3.1-pro-preview"
+    assert by_id["source-score-record"]["charged_credits"] == 0
+    assert by_id["video-estimated-record"]["provider_cost_status"] == "ESTIMATED"
+    assert by_id["corrupt-first-frame-record"]["record_data_status"] == "CORRUPTED"
+    assert by_id["source-local-record"]["record_type"] == "SOURCE_FRAME_AI_SCORE"
+    assert by_id["source-local-record"]["provider"] == "apilio_gemini"
+    assert by_id["source-local-record"]["provider_cost_status"] == "UNAVAILABLE"
+
+    deep_offset = client.get(
+        "/api/control/generation-records?limit=20&offset=1001",
+        headers=control_headers,
+    )
+    assert deep_offset.status_code == 200
+
+
 def test_control_settings_mask_zpay_secret_and_keep_deployment_read_only(
     internal_admin_context: tuple[TestClient, Path, dict[str, str], dict[str, str]],
 ) -> None:

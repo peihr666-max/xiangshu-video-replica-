@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -8,13 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.auth import get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
-from app.generation_worker import run_worker_once
+from app.generation_worker import (
+    run_sqlite_worker_round,
+    run_worker_once,
+    source_frame_semantic_inspector,
+)
 from app.main import app
 from app.media_routes import get_media_storage
 from app.source_frame_routes import ExtractSourceFramesRequest, get_source_frame_extractor
@@ -23,6 +29,7 @@ from app.source_frames import (
     FFmpegSourceFrameExtractor,
     SourceFrameCandidateAssessment,
     SourceFrameSemanticInspection,
+    acquire_source_frame_task,
     score_grayscale_frame,
 )
 from app.storage import FakeStorageAdapter
@@ -175,6 +182,85 @@ def auth_headers(user_id: str) -> dict[str, str]:
     return {"X-Dev-User-Id": user_id}
 
 
+def test_missing_semantic_settings_fall_back_to_local_scoring(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(_: BusinessConnection) -> object:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "FIRST_FRAME_QUALITY_SETTINGS_UNAVAILABLE"},
+        )
+
+    monkeypatch.setattr(
+        "app.generation_worker.get_first_frame_quality_inspector",
+        unavailable,
+    )
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        inspector = source_frame_semantic_inspector(
+            conn,
+            override=None,
+            shared_inspector=None,
+        )
+
+    assert inspector is None
+
+
+def test_worker_round_processes_source_frames_when_quality_settings_are_missing(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage.put_object(
+        "projects/project_owned/uploads/reference_owned/reference.mp4",
+        b"reference-video",
+        content_type="video/mp4",
+    )
+    queued = client.post(
+        "/api/projects/project_owned/source-frames/extract",
+        json={"asset_id": "reference_owned"},
+        headers=auth_headers("employee_1"),
+    )
+    assert queued.status_code == 202
+
+    def unavailable(_: BusinessConnection) -> object:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "FIRST_FRAME_QUALITY_SETTINGS_UNAVAILABLE"},
+        )
+
+    monkeypatch.setattr(
+        "app.generation_worker.get_first_frame_quality_inspector",
+        unavailable,
+    )
+    monkeypatch.setattr("app.generation_worker.get_media_storage", lambda _: storage)
+    monkeypatch.setattr(
+        "app.generation_worker.FFmpegSourceFrameExtractor",
+        lambda: FakeSourceFrameExtractor(),
+    )
+
+    processed = run_sqlite_worker_round(
+        db_path=db_path,
+        worker_id="source-frame-fallback-worker",
+        max_tasks=1,
+    )
+
+    assert processed == 1
+    task = client.get(
+        f"/api/source-frame-tasks/{queued.json()['id']}",
+        headers=auth_headers("employee_1"),
+    )
+    assert task.status_code == 200
+    assert task.json()["status"] == "SUCCEEDED"
+    latest = client.get(
+        "/api/projects/project_owned/source-frames/latest",
+        headers=auth_headers("employee_1"),
+    )
+    assert latest.status_code == 200
+    assert latest.json()["payload"]["semantic_quality_status"] == "NOT_REQUESTED"
+
+
 def complete_source_frame_task(
     client: TestClient,
     db_path: Path,
@@ -285,6 +371,157 @@ def test_owner_can_extract_candidates_and_confirm_one(
     assert asset["content_type"] == "image/jpeg"
 
 
+def test_owner_can_cancel_a_stuck_source_frame_task_and_enqueue_again(
+    client: TestClient,
+) -> None:
+    queued = client.post(
+        "/api/projects/project_owned/source-frames/extract",
+        json={"asset_id": "reference_owned"},
+        headers=auth_headers("employee_1"),
+    )
+    assert queued.status_code == 202
+
+    cancelled = client.post(
+        f"/api/source-frame-tasks/{queued.json()['id']}/cancel",
+        headers=auth_headers("employee_1"),
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "FAILED"
+    assert cancelled.json()["error_code"] == "SOURCE_FRAME_TASK_CANCELLED"
+    assert cancelled.json()["retryable"] is True
+
+    retried = client.post(
+        "/api/projects/project_owned/source-frames/extract",
+        json={"asset_id": "reference_owned"},
+        headers=auth_headers("employee_1"),
+    )
+    assert retried.status_code == 202
+    assert retried.json()["id"] != queued.json()["id"]
+
+
+def test_owner_can_submit_all_five_adaptive_timestamps(client: TestClient) -> None:
+    queued = client.post(
+        "/api/projects/project_owned/source-frames/extract",
+        json={
+            "asset_id": "reference_owned",
+            "timestamps_seconds": [1.2, 3.6, 6.0, 8.4, 10.8],
+        },
+        headers=auth_headers("employee_1"),
+    )
+
+    assert queued.status_code == 202
+    assert queued.json()["status"] == "PENDING"
+
+
+def test_expired_source_frame_task_requires_manual_recovery_without_retry(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    queued = client.post(
+        "/api/projects/project_owned/source-frames/extract",
+        json={"asset_id": "reference_owned"},
+        headers=auth_headers("employee_1"),
+    )
+    assert queued.status_code == 202
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            UPDATE source_frame_tasks
+            SET status = 'RUNNING', attempt = 1, locked_by = 'dead-worker',
+                locked_until = '2000-01-01 00:00:00'
+            WHERE id = %s
+            """,
+            (queued.json()["id"],),
+        )
+        conn.commit()
+
+        assert acquire_source_frame_task(conn, worker_id="replacement-worker") is None
+        row = conn.execute(
+            "SELECT status, error_code, retryable FROM source_frame_tasks WHERE id = %s",
+            (queued.json()["id"],),
+        ).fetchone()
+
+    assert row is not None
+    assert row["status"] == "FAILED"
+    assert row["error_code"] == "SOURCE_FRAME_TASK_RECOVERY_REQUIRED"
+    assert bool(row["retryable"]) is True
+
+
+def test_owner_cannot_restart_a_running_source_frame_task(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    queued = client.post(
+        "/api/projects/project_owned/source-frames/extract",
+        json={"asset_id": "reference_owned"},
+        headers=auth_headers("employee_1"),
+    )
+    assert queued.status_code == 202
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            UPDATE source_frame_tasks
+            SET status = 'RUNNING', locked_by = 'active-worker',
+                locked_until = '2099-01-01 00:00:00'
+            WHERE id = %s
+            """,
+            (queued.json()["id"],),
+        )
+        conn.commit()
+
+    cancelled = client.post(
+        f"/api/source-frame-tasks/{queued.json()['id']}/cancel",
+        headers=auth_headers("employee_1"),
+    )
+
+    assert cancelled.status_code == 409
+    assert cancelled.json()["detail"]["code"] == "SOURCE_FRAME_TASK_RUNNING"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT status, locked_by FROM source_frame_tasks WHERE id = %s",
+            (queued.json()["id"],),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "RUNNING"
+    assert row["locked_by"] == "active-worker"
+
+
+def test_ffmpeg_extractor_uses_one_process_for_all_requested_frames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        capture_output: bool,
+        check: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        for value in command:
+            path = Path(value)
+            if value.endswith(".jpg"):
+                path.write_bytes(b"\xff\xd8frame")
+            elif value.endswith(".gray"):
+                path.write_bytes(bytes(range(64)))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(shutil, "which", lambda _: "ffmpeg")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    frames = FFmpegSourceFrameExtractor().extract(
+        b"video",
+        filename="reference.mp4",
+        timestamps_seconds=(0.5, 1.5, 2.5),
+    )
+
+    assert len(calls) == 1
+    assert [frame.timestamp_seconds for frame in frames] == [0.5, 1.5, 2.5]
+    assert all(frame.technical_score is not None for frame in frames)
+
+
 def test_semantic_source_frame_score_can_beat_a_sharper_but_unsuitable_frame(
     client: TestClient,
     db_path: Path,
@@ -309,6 +546,17 @@ def test_semantic_source_frame_score_can_beat_a_sharper_but_unsuitable_frame(
     assert candidates[0]["semantic_score"] == 0.98
     assert candidates[0]["score"] > candidates[-1]["score"]
     assert "人物完整度" in candidates[0]["selection_reason"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        audit = conn.execute(
+            """
+            SELECT metadata_json
+            FROM audit_logs
+            WHERE action = 'source_frame.semantic_quality_started'
+            ORDER BY created_at DESC LIMIT 1
+            """
+        ).fetchone()
+    assert audit is not None
+    assert json.loads(str(audit["metadata_json"]))["attempt"] == 1
 
 
 def test_source_frame_extraction_requires_owner_and_ready_reference(

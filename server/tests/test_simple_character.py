@@ -293,6 +293,17 @@ def test_character_sheet_task_is_idempotent_and_recovers_from_server_state(
     assert task.json()["status"] == "SUCCEEDED"
     assert task.json()["result_identity_id"]
     assert task.json()["result"]["generation_source"] == "image_provider"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        stored_result = json.loads(
+            str(
+                conn.execute(
+                    "SELECT result_json FROM character_sheet_tasks WHERE id = %s",
+                    (first.json()["id"],),
+                ).fetchone()[0]
+            )
+        )
+    assert stored_result["provider"] == "stub"
+    assert stored_result["model"] == "gpt-image-2"
 
 
 def test_character_sheet_task_status_hides_foreign_task(client: TestClient) -> None:

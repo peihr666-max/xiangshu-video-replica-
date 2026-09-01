@@ -497,7 +497,11 @@ export function FirstFrameSelection({
           onClick={handleGenerate}
           type="button"
         >
-          {isSubmitting ? "正在生成" : "重新生成候选首帧"}
+          {isSubmitting
+            ? "正在生成"
+            : payload
+              ? "重新生成候选首帧"
+              : "生成人物置换首帧"}
         </button>
         <button
           className="secondary-button"

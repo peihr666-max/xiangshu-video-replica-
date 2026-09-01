@@ -66,7 +66,15 @@ export type CurrentUser = {
 // from the regenerated OpenAPI contract instead of handwritten shapes, so the
 // schema-drift gate (tsc) catches a later server response change. The internal
 // and customer lanes share these aliases; the Control* views extend them.
-export type WalletSnapshot = components["schemas"]["WalletResponse"];
+type OpenApiWalletSnapshot = components["schemas"]["WalletResponse"];
+export type WalletSnapshot = Omit<
+  OpenApiWalletSnapshot,
+  "internal_unit_price_fen" | "min_recharge_fen" | "recharge_step_fen"
+> & {
+  internal_unit_price_fen: number;
+  min_recharge_fen: number;
+  recharge_step_fen: number;
+};
 export type WalletTransaction =
   components["schemas"]["WalletTransactionResponse"];
 export type WalletTransactionPage =
@@ -483,6 +491,16 @@ export type SourceFrameTask = {
   completed_at: string | null;
 };
 
+export class SourceFrameTaskFailedError extends Error {
+  readonly task: SourceFrameTask;
+
+  constructor(task: SourceFrameTask) {
+    super(task.error_message || "候选源画面提取失败，请重新提交。");
+    this.name = "SourceFrameTaskFailedError";
+    this.task = task;
+  }
+}
+
 const sourceFrameTaskWaiters = new Map<string, Promise<SourceFrameTask>>();
 
 export type SourceFrameCharacterFeatures =
@@ -675,7 +693,11 @@ function workspaceAccessToken(): string | null {
 }
 
 export async function getWallet(): Promise<WalletSnapshot> {
-  return requestApiJson<WalletSnapshot>("/api/wallet", "读取钱包失败");
+  const wallet = await requestApiJson<OpenApiWalletSnapshot>(
+    "/api/wallet",
+    "读取钱包失败",
+  );
+  return requireWalletPricing(wallet);
 }
 
 export async function listWalletTransactions({
@@ -2270,6 +2292,16 @@ export async function getSourceFrameTask(
   );
 }
 
+export async function cancelSourceFrameTask(
+  taskId: string,
+): Promise<SourceFrameTask> {
+  return requestApiJson<SourceFrameTask>(
+    `/api/source-frame-tasks/${encodeURIComponent(taskId)}/cancel`,
+    "停止候选源画面任务失败",
+    { method: "POST" },
+  );
+}
+
 export async function getLatestProjectSourceFrameTask(
   projectId: string,
   assetId: string,
@@ -2313,7 +2345,7 @@ async function pollSourceFrameTask(taskId: string): Promise<SourceFrameTask> {
       return task;
     }
     if (task.status === "FAILED") {
-      throw new Error(task.error_message || "候选源画面提取失败，请重新提交。");
+      throw new SourceFrameTaskFailedError(task);
     }
     await waitForPoll();
   }
@@ -3992,10 +4024,25 @@ export async function customerResetActivationCode(
 export async function customerGetWallet(
   credential: CustomerSessionCredential,
 ): Promise<WalletSnapshot> {
-  const { body } = await customerJson<WalletSnapshot>("/api/customer/wallet", {
-    credential,
-  });
-  return body;
+  const { body } = await customerJson<OpenApiWalletSnapshot>(
+    "/api/customer/wallet",
+    { credential },
+  );
+  return requireWalletPricing(body);
+}
+
+function requireWalletPricing(wallet: OpenApiWalletSnapshot): WalletSnapshot {
+  if (
+    typeof wallet.internal_unit_price_fen !== "number" ||
+    wallet.internal_unit_price_fen <= 0 ||
+    typeof wallet.min_recharge_fen !== "number" ||
+    wallet.min_recharge_fen <= 0 ||
+    typeof wallet.recharge_step_fen !== "number" ||
+    wallet.recharge_step_fen <= 0
+  ) {
+    throw new Error("钱包定价配置不完整，请联系管理员");
+  }
+  return wallet as WalletSnapshot;
 }
 
 export type CustomerProfile = components["schemas"]["CustomerProfileResponse"];

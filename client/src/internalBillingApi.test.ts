@@ -29,7 +29,14 @@ describe("internal billing API", () => {
     setInternalAccessToken("internal-user-token");
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ items: [] }),
+      json: async () => ({
+        items: [],
+        available_credits: 10,
+        reserved_credits: 0,
+        internal_unit_price_fen: 1000,
+        min_recharge_fen: 10000,
+        recharge_step_fen: 1000,
+      }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -55,6 +62,25 @@ describe("internal billing API", () => {
         body: JSON.stringify({ amount_fen: 10000 }),
       }),
     );
+  });
+
+  it("rejects a wallet response without usable pricing", async () => {
+    setInternalAccessToken("internal-user-token");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          available_credits: 10,
+          reserved_credits: 0,
+          internal_unit_price_fen: null,
+          min_recharge_fen: null,
+          recharge_step_fen: null,
+        }),
+      }),
+    );
+
+    await expect(getWallet()).rejects.toThrow("钱包定价配置不完整");
   });
 
   it("keeps control requests separate from business and development identity", async () => {

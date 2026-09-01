@@ -17,6 +17,7 @@ from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_image_provider
 from app.first_frames import (
     FIRST_FRAME_NO_TEXT_CONSTRAINT,
+    ApilioFirstFrameQualityInspector,
     FirstFrameCandidateInspection,
     FirstFrameCharacterInputs,
     FirstFrameQualityInspectorFailed,
@@ -25,6 +26,7 @@ from app.first_frames import (
     ImageInput,
     RetryableImageProviderFailed,
     apply_selected_scene_look,
+    bounded_source_frame_quality_inspector,
     derive_project_appearance_spec,
     normalize_prompt,
 )
@@ -97,6 +99,16 @@ class FlakyImageProvider(RecordingImageProvider):
             character_reference_images=character_reference_images,
             output_count=output_count,
         )
+
+
+def test_source_frame_quality_wrapper_uses_one_bounded_attempt() -> None:
+    inspector = ApilioFirstFrameQualityInspector(api_key="test-key")
+
+    bounded = bounded_source_frame_quality_inspector(inspector)
+
+    assert isinstance(bounded, ApilioFirstFrameQualityInspector)
+    assert bounded.max_attempts == 1
+    assert getattr(bounded.transport, "timeout_seconds") == 8.0
 
 
 @dataclass
@@ -809,7 +821,12 @@ def test_first_frame_task_reuses_checkpoint_after_quality_service_recovers(
         ).fetchone()
         assert interrupted is not None
         assert interrupted["status"] == "PENDING"
-        assert json.loads(str(interrupted["result_json"]))["checkpoint"]["candidates"]
+        interrupted_payload = json.loads(str(interrupted["result_json"]))
+        assert interrupted_payload["checkpoint"]["candidates"]
+        assert interrupted_payload["execution"] == {
+            "provider": "fake",
+            "model": "gpt-image-2",
+        }
         conn.execute(
             """
             UPDATE first_frame_tasks
@@ -845,6 +862,242 @@ def test_first_frame_task_reuses_checkpoint_after_quality_service_recovers(
     assert completed is not None
     assert completed["status"] == "SUCCEEDED"
     assert completed["result_version_id"] is not None
+
+
+def test_first_frame_checkpoint_rejects_a_different_provider(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+) -> None:
+    prepare_inputs(client)
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={
+            "model": "gpt-image-2",
+            "quantity": 1,
+            "idempotency_key": "first-frame-checkpoint-provider-change-1",
+        },
+        headers=headers("employee_1"),
+    )
+    assert created.status_code == 202
+    provider_a = RecordingImageProvider(provider_name="provider-a")
+    provider_b = RecordingImageProvider(provider_name="provider-b")
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-provider-a",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider_a,
+                first_frame_quality_inspector=UnavailableCandidateQualityInspector(),
+                max_tasks=1,
+            )
+            == 1
+        )
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-provider-b",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider_b,
+                first_frame_quality_inspector=SequenceFirstFrameQualityInspector(
+                    candidate_inspections=[passing_candidate_inspection()]
+                ),
+                max_tasks=1,
+            )
+            == 1
+        )
+        task = conn.execute(
+            "SELECT status, error_code, result_json FROM first_frame_tasks WHERE id = %s",
+            (created.json()["id"],),
+        ).fetchone()
+
+    assert task is not None
+    assert task["status"] == "FAILED"
+    assert task["error_code"] == "IMAGE_TASK_PROVIDER_CHANGED"
+    assert json.loads(str(task["result_json"]))["execution"]["provider"] == "provider-a"
+    assert len(provider_a.calls) == 1
+    assert provider_b.calls == []
+
+    retried = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={
+            "model": "gpt-image-2",
+            "quantity": 1,
+            "idempotency_key": "first-frame-checkpoint-provider-change-2",
+        },
+        headers=headers("employee_1"),
+    )
+    assert retried.status_code == 202
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        pending = conn.execute(
+            "SELECT result_json FROM first_frame_tasks WHERE id = %s",
+            (retried.json()["id"],),
+        ).fetchone()
+        assert pending is not None
+        assert pending["result_json"] is None
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-provider-b-retry",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider_b,
+                first_frame_quality_inspector=SequenceFirstFrameQualityInspector(
+                    candidate_inspections=[passing_candidate_inspection()]
+                ),
+                max_tasks=1,
+            )
+            == 1
+        )
+        retried_task = conn.execute(
+            "SELECT status FROM first_frame_tasks WHERE id = %s",
+            (retried.json()["id"],),
+        ).fetchone()
+
+    assert len(provider_b.calls) == 1
+    assert retried_task is not None
+    assert retried_task["status"] == "SUCCEEDED"
+
+
+def test_new_first_frame_task_does_not_copy_legacy_checkpoint_without_execution(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    prepare_inputs(client)
+    request = {
+        "model": "gpt-image-2",
+        "quantity": 1,
+        "idempotency_key": "legacy-checkpoint-copy-1",
+    }
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json=request,
+        headers=headers("employee_1"),
+    )
+    assert created.status_code == 202
+    legacy_checkpoint = {"checkpoint": {"schema_version": 1, "candidates": [{"quality": None}]}}
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            UPDATE first_frame_tasks
+            SET status = 'FAILED', result_json = %s
+            WHERE id = %s
+            """,
+            (json.dumps(legacy_checkpoint), created.json()["id"]),
+        )
+        conn.commit()
+
+    replacement = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={**request, "idempotency_key": "legacy-checkpoint-copy-2"},
+        headers=headers("employee_1"),
+    )
+
+    assert replacement.status_code == 202
+    assert replacement.json()["id"] != created.json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT result_json FROM first_frame_tasks WHERE id = %s",
+            (replacement.json()["id"],),
+        ).fetchone()
+    assert row is not None
+    assert row["result_json"] is None
+
+
+def test_expired_first_frame_task_does_not_resume_legacy_checkpoint_without_execution(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    prepare_inputs(client)
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={
+            "model": "gpt-image-2",
+            "quantity": 1,
+            "idempotency_key": "legacy-checkpoint-expired-1",
+        },
+        headers=headers("employee_1"),
+    )
+    assert created.status_code == 202
+    legacy_checkpoint = {"checkpoint": {"schema_version": 1, "candidates": [{"quality": None}]}}
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            UPDATE first_frame_tasks
+            SET status = 'RUNNING', attempt = 1, locked_by = 'legacy-worker',
+                locked_until = datetime('now', '-1 minute'), result_json = %s
+            WHERE id = %s
+            """,
+            (json.dumps(legacy_checkpoint), created.json()["id"]),
+        )
+        conn.commit()
+
+        lease = acquire_first_frame_task(conn, worker_id="replacement-worker")
+        row = conn.execute(
+            "SELECT status, error_code, result_json FROM first_frame_tasks WHERE id = %s",
+            (created.json()["id"],),
+        ).fetchone()
+
+    assert lease is None
+    assert row is not None
+    assert row["status"] == "SUBMISSION_UNCERTAIN"
+    assert row["error_code"] == "IMAGE_TASK_LEASE_EXPIRED"
+    assert json.loads(str(row["result_json"])) == legacy_checkpoint
+
+
+def test_acquired_first_frame_task_rejects_legacy_checkpoint_without_execution(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+) -> None:
+    prepare_inputs(client)
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={
+            "model": "gpt-image-2",
+            "quantity": 1,
+            "idempotency_key": "legacy-checkpoint-acquired-1",
+        },
+        headers=headers("employee_1"),
+    )
+    assert created.status_code == 202
+    legacy_checkpoint = {"checkpoint": {"schema_version": 1, "candidates": [{"quality": None}]}}
+    provider = RecordingImageProvider(provider_name="current-provider")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE first_frame_tasks SET result_json = %s WHERE id = %s",
+            (json.dumps(legacy_checkpoint), created.json()["id"]),
+        )
+        conn.commit()
+
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="image-worker-legacy-checkpoint",
+                storage=storage,
+                first_frame_storage=storage,
+                image_provider=provider,
+                first_frame_quality_inspector=SequenceFirstFrameQualityInspector(
+                    candidate_inspections=[passing_candidate_inspection()]
+                ),
+                max_tasks=1,
+            )
+            == 1
+        )
+        row = conn.execute(
+            "SELECT status, error_code, result_json FROM first_frame_tasks WHERE id = %s",
+            (created.json()["id"],),
+        ).fetchone()
+
+    assert provider.calls == []
+    assert row is not None
+    assert row["status"] == "FAILED"
+    assert row["error_code"] == "IMAGE_TASK_EXECUTION_UNKNOWN"
+    assert json.loads(str(row["result_json"])) == legacy_checkpoint
 
 
 def test_new_first_frame_task_reuses_checkpoint_from_uncertain_task(

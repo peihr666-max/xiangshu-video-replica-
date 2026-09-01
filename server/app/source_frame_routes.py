@@ -18,6 +18,7 @@ from app.source_frames import (
     SOURCE_FRAME_SELECTION_KIND,
     FFmpegSourceFrameExtractor,
     SourceFrameExtractor,
+    cancel_source_frame_task,
     confirm_source_frame,
     enqueue_source_frame_task,
     latest_source_frame_task,
@@ -33,7 +34,7 @@ class ExtractSourceFramesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     asset_id: str = Field(min_length=1)
-    timestamps_seconds: list[float] | None = Field(default=None, min_length=1, max_length=3)
+    timestamps_seconds: list[float] | None = Field(default=None, min_length=1, max_length=5)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=200)
 
     @model_validator(mode="after")
@@ -153,6 +154,19 @@ def read_source_frame_task(
             ) from exc
         raise
     return source_frame_task_response(row)
+
+
+@router.post(
+    "/source-frame-tasks/{task_id}/cancel",
+    response_model=SourceFrameTaskResponse,
+)
+def cancel_project_source_frame_task(
+    task_id: str,
+    db: BusinessDbDep,
+) -> SourceFrameTaskResponse:
+    with db.write() as (conn, actor):
+        row = cancel_source_frame_task(conn, task_id=task_id, actor=actor)
+        return source_frame_task_response(row)
 
 
 @router.get(

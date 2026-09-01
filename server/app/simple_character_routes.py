@@ -895,6 +895,12 @@ def character_sheet_task_response(row: sqlite3.Row) -> CharacterSheetTaskRespons
     task = row
     request_payload = json.loads(str(task["request_json"]))
     result_payload = None if task["result_json"] is None else json.loads(str(task["result_json"]))
+    if isinstance(result_payload, dict):
+        result_payload = {
+            key: value
+            for key, value in result_payload.items()
+            if key not in {"provider", "model", "execution"}
+        }
     return CharacterSheetTaskResponse(
         id=str(task["id"]),
         project_id=(None if task["project_id"] is None else str(task["project_id"])),

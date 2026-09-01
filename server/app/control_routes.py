@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import logging
 import os
 import sqlite3
 from collections.abc import Callable
@@ -35,11 +37,22 @@ from app.settings_routes import (
 from app.zpay import deployment_config_from_environment
 
 router = APIRouter(prefix="/api/control", tags=["control"])
+logger = logging.getLogger(__name__)
 CUSTOMER_PRODUCTION_ENV = "VIDEO_REPLICA_CUSTOMER_PRODUCTION"
 _TRUTHY = {"1", "true", "yes", "on"}
 
 OrderStatus = Literal["PENDING", "PAID", "FAILED", "CLOSED"]
 TransactionType = Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE"]
+GenerationRecordType = Literal[
+    "VIDEO",
+    "FIRST_FRAME_IMAGE",
+    "CHARACTER_SHEET_IMAGE",
+    "CHARACTER_VIEW_IMAGE",
+    "SOURCE_FRAME_AI_SCORE",
+    "SOURCE_FRAME_PROCESS",
+]
+ProviderCostStatus = Literal["KNOWN", "ESTIMATED", "UNAVAILABLE", "NOT_APPLICABLE"]
+RecordDataStatus = Literal["VALID", "UNAVAILABLE", "CORRUPTED"]
 
 
 class AccountWallet(BaseModel):
@@ -109,6 +122,39 @@ class ControlWalletTransactionPage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[ControlWalletTransaction]
+    total: int
+    limit: int
+    offset: int
+
+
+class ControlGenerationRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_id: str
+    record_type: GenerationRecordType
+    operation: str
+    user_id: str
+    username: str
+    display_name: str
+    project_id: str | None
+    project_name: str | None
+    status: str
+    provider: str | None
+    model: str | None
+    provider_cost: float | None
+    provider_cost_status: ProviderCostStatus
+    record_data_status: RecordDataStatus
+    charged_credits: int
+    result_reference: str | None
+    error_code: str | None
+    created_at: str
+    completed_at: str | None
+
+
+class ControlGenerationRecordPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ControlGenerationRecord]
     total: int
     limit: int
     offset: int
@@ -555,6 +601,295 @@ def list_wallet_transactions(
     )
 
 
+@router.get("/generation-records", response_model=ControlGenerationRecordPage)
+def list_generation_records(
+    conn: Database,
+    _actor: ControlUser,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> ControlGenerationRecordPage:
+    records: list[ControlGenerationRecord] = []
+    scan_limit = offset + limit
+    total = int(
+        conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM generation_tasks)
+              + (SELECT COUNT(*) FROM first_frame_tasks)
+              + (SELECT COUNT(*) FROM character_sheet_tasks)
+              + (SELECT COUNT(*) FROM character_generation_tasks)
+              + (SELECT COUNT(*) FROM source_frame_tasks)
+                AS total
+            """
+        ).fetchone()["total"]
+    )
+
+    video_rows = conn.execute(
+        """
+        SELECT
+            task.id, task.generation_mode AS operation, task.status,
+            task.provider, task.model, task.actual_cost, task.estimated_cost,
+            task.result_asset_id AS result_reference, task.error_code,
+            task.created_at, task.completed_at,
+            batch.created_by_user_id AS user_id,
+            users.username, users.display_name,
+            batch.project_id, projects.name AS project_name,
+            COALESCE((
+                SELECT SUM(-tx.reserved_delta)
+                FROM wallet_transactions AS tx
+                WHERE tx.task_id = task.id AND tx.type = 'SETTLE'
+            ), 0) AS charged_credits
+        FROM generation_tasks AS task
+        JOIN generation_batches AS batch ON batch.id = task.batch_id
+        JOIN users ON users.id = batch.created_by_user_id
+        JOIN projects ON projects.id = batch.project_id
+        ORDER BY task.created_at DESC, task.id DESC
+        LIMIT %s
+        """,
+        (scan_limit,),
+    ).fetchall()
+    for row in video_rows:
+        provider_cost = row["actual_cost"]
+        provider_cost_status: ProviderCostStatus = "KNOWN"
+        if provider_cost is None:
+            provider_cost = row["estimated_cost"]
+            provider_cost_status = "ESTIMATED"
+        if provider_cost is None:
+            provider_cost_status = "UNAVAILABLE"
+        records.append(
+            ControlGenerationRecord(
+                record_id=str(row["id"]),
+                record_type="VIDEO",
+                operation=str(row["operation"]),
+                user_id=str(row["user_id"]),
+                username=str(row["username"]),
+                display_name=str(row["display_name"]),
+                project_id=str(row["project_id"]),
+                project_name=str(row["project_name"]),
+                status=str(row["status"]),
+                provider=str(row["provider"]),
+                model=str(row["model"]),
+                provider_cost=None if provider_cost is None else float(provider_cost),
+                provider_cost_status=provider_cost_status,
+                record_data_status="VALID",
+                charged_credits=int(row["charged_credits"]),
+                result_reference=(
+                    None if row["result_reference"] is None else str(row["result_reference"])
+                ),
+                error_code=None if row["error_code"] is None else str(row["error_code"]),
+                created_at=str(row["created_at"]),
+                completed_at=(None if row["completed_at"] is None else str(row["completed_at"])),
+            )
+        )
+
+    first_frame_rows = conn.execute(
+        """
+        SELECT task.*, users.username, users.display_name,
+               projects.name AS project_name, versions.payload_json
+        FROM first_frame_tasks AS task
+        JOIN users ON users.id = task.created_by_user_id
+        JOIN projects ON projects.id = task.project_id
+        LEFT JOIN versions ON versions.id = task.result_version_id
+        ORDER BY task.created_at DESC, task.id DESC
+        LIMIT %s
+        """,
+        (scan_limit,),
+    ).fetchall()
+    for row in first_frame_rows:
+        request, request_status = _json_object(
+            row["request_json"],
+            record_id=str(row["id"]),
+            field_name="request_json",
+        )
+        result, result_status = _json_object(
+            row["payload_json"],
+            record_id=str(row["id"]),
+            field_name="payload_json",
+        )
+        task_result, task_result_status = _json_object(
+            row["result_json"],
+            record_id=str(row["id"]),
+            field_name="result_json",
+        )
+        execution = _execution_metadata(task_result)
+        records.append(
+            _image_generation_record(
+                row=row,
+                record_type="FIRST_FRAME_IMAGE",
+                operation="GENERATE",
+                provider=_optional_text(result.get("provider") or execution.get("provider")),
+                model=_optional_text(
+                    result.get("model") or execution.get("model") or request.get("model")
+                ),
+                result_reference=_optional_text(row["result_version_id"]),
+                record_data_status=_combined_record_data_status(
+                    request_status,
+                    result_status,
+                    task_result_status,
+                ),
+            )
+        )
+
+    sheet_rows = conn.execute(
+        """
+        SELECT task.*, users.username, users.display_name,
+               projects.name AS project_name
+        FROM character_sheet_tasks AS task
+        JOIN users ON users.id = task.created_by_user_id
+        LEFT JOIN projects ON projects.id = task.project_id
+        ORDER BY task.created_at DESC, task.id DESC
+        LIMIT %s
+        """,
+        (scan_limit,),
+    ).fetchall()
+    for row in sheet_rows:
+        result, result_status = _json_object(
+            row["result_json"],
+            record_id=str(row["id"]),
+            field_name="result_json",
+        )
+        execution = _execution_metadata(result)
+        generation_source = _optional_text(result.get("generation_source"))
+        provider = _optional_text(result.get("provider") or execution.get("provider"))
+        if provider is None and generation_source not in {None, "image_provider"}:
+            provider = generation_source
+        records.append(
+            _image_generation_record(
+                row=row,
+                record_type="CHARACTER_SHEET_IMAGE",
+                operation=str(row["operation"]),
+                provider=provider,
+                model=_optional_text(result.get("model") or execution.get("model")),
+                result_reference=_optional_text(row["result_version_id"]),
+                record_data_status=result_status,
+            )
+        )
+
+    character_view_rows = conn.execute(
+        """
+        SELECT task.*, users.username, users.display_name
+        FROM character_generation_tasks AS task
+        JOIN users ON users.id = task.created_by
+        ORDER BY task.created_at DESC, task.id DESC
+        LIMIT %s
+        """,
+        (scan_limit,),
+    ).fetchall()
+    for row in character_view_rows:
+        cost = None if row["cost_amount"] is None else float(row["cost_amount"])
+        records.append(
+            ControlGenerationRecord(
+                record_id=str(row["id"]),
+                record_type="CHARACTER_VIEW_IMAGE",
+                operation=str(row["view_type"]),
+                user_id=str(row["created_by"]),
+                username=str(row["username"]),
+                display_name=str(row["display_name"]),
+                project_id=None,
+                project_name=None,
+                status=str(row["status"]),
+                provider=str(row["provider"]),
+                model=str(row["model"]),
+                provider_cost=cost,
+                provider_cost_status="UNAVAILABLE" if cost is None else "KNOWN",
+                record_data_status="VALID",
+                charged_credits=0,
+                result_reference=_optional_text(row["provider_task_id"]),
+                error_code=_optional_text(row["error_code"]),
+                created_at=str(row["created_at"]),
+                completed_at=_optional_text(row["completed_at"]),
+            )
+        )
+
+    source_rows = conn.execute(
+        """
+        SELECT task.*, users.username, users.display_name,
+               projects.name AS project_name, versions.payload_json
+        FROM source_frame_tasks AS task
+        JOIN users ON users.id = task.created_by_user_id
+        JOIN projects ON projects.id = task.project_id
+        LEFT JOIN versions ON versions.id = task.result_version_id
+        ORDER BY task.created_at DESC, task.id DESC
+        LIMIT %s
+        """,
+        (scan_limit,),
+    ).fetchall()
+    source_task_ids = [str(row["id"]) for row in source_rows]
+    source_quality_audits = []
+    if source_task_ids:
+        placeholders = ", ".join("%s" for _ in source_task_ids)
+        source_quality_audits = conn.execute(
+            f"""
+            SELECT entity_id, metadata_json
+            FROM audit_logs
+            WHERE action = 'source_frame.semantic_quality_started'
+              AND entity_id IN ({placeholders})
+            ORDER BY created_at DESC, id DESC
+            """,
+            tuple(source_task_ids),
+        ).fetchall()
+    source_quality_by_task: dict[str, object] = {}
+    for audit in source_quality_audits:
+        source_quality_by_task.setdefault(str(audit["entity_id"]), audit["metadata_json"])
+    for row in source_rows:
+        payload, payload_status = _json_object(
+            row["payload_json"],
+            record_id=str(row["id"]),
+            field_name="payload_json",
+        )
+        semantic_status = payload.get("semantic_quality_status")
+        audit_payload, _ = _json_object(
+            source_quality_by_task.get(str(row["id"])),
+            record_id=str(row["id"]),
+            field_name="source_quality_audit",
+        )
+        semantic_requested = semantic_status in {"VERIFIED", "UNAVAILABLE"} or bool(audit_payload)
+        semantic_unknown = payload_status == "CORRUPTED"
+        records.append(
+            ControlGenerationRecord(
+                record_id=str(row["id"]),
+                record_type=(
+                    "SOURCE_FRAME_AI_SCORE" if semantic_requested else "SOURCE_FRAME_PROCESS"
+                ),
+                operation=(
+                    "SCORE_CANDIDATES"
+                    if semantic_requested
+                    else "UNKNOWN"
+                    if semantic_unknown
+                    else "EXTRACT_CANDIDATES"
+                ),
+                user_id=str(row["created_by_user_id"]),
+                username=str(row["username"]),
+                display_name=str(row["display_name"]),
+                project_id=str(row["project_id"]),
+                project_name=str(row["project_name"]),
+                status=str(row["status"]),
+                provider=_optional_text(
+                    payload.get("semantic_provider") or audit_payload.get("provider")
+                ),
+                model=_optional_text(payload.get("semantic_model") or audit_payload.get("model")),
+                provider_cost=None,
+                provider_cost_status=(
+                    "UNAVAILABLE" if semantic_requested or semantic_unknown else "NOT_APPLICABLE"
+                ),
+                record_data_status=payload_status,
+                charged_credits=0,
+                result_reference=_optional_text(row["result_version_id"]),
+                error_code=_optional_text(row["error_code"]),
+                created_at=str(row["created_at"]),
+                completed_at=_optional_text(row["completed_at"]),
+            )
+        )
+
+    records.sort(key=lambda item: (item.created_at, item.record_id), reverse=True)
+    return ControlGenerationRecordPage(
+        items=records[offset : offset + limit],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @router.get("/billing-reconciliation", response_model=ReconciliationSummary)
 def read_reconciliation(conn: Database, _actor: ControlUser) -> ReconciliationSummary:
     row = conn.execute(
@@ -879,6 +1214,92 @@ def _transaction_filters(
         clauses.append("tx.type = %s")
         params.append(transaction_type)
     return (f"WHERE {' AND '.join(clauses)}" if clauses else "", tuple(params))
+
+
+def _image_generation_record(
+    *,
+    row: sqlite3.Row,
+    record_type: Literal["FIRST_FRAME_IMAGE", "CHARACTER_SHEET_IMAGE"],
+    operation: str,
+    provider: str | None,
+    model: str | None,
+    result_reference: str | None,
+    record_data_status: RecordDataStatus,
+) -> ControlGenerationRecord:
+    return ControlGenerationRecord(
+        record_id=str(row["id"]),
+        record_type=record_type,
+        operation=operation,
+        user_id=str(row["created_by_user_id"]),
+        username=str(row["username"]),
+        display_name=str(row["display_name"]),
+        project_id=None if row["project_id"] is None else str(row["project_id"]),
+        project_name=None if row["project_name"] is None else str(row["project_name"]),
+        status=str(row["status"]),
+        provider=provider,
+        model=model,
+        provider_cost=None,
+        provider_cost_status=(
+            "NOT_APPLICABLE"
+            if provider in {"fake", "uploaded", "local_placeholder"}
+            else "UNAVAILABLE"
+        ),
+        record_data_status=record_data_status,
+        charged_credits=0,
+        result_reference=result_reference,
+        error_code=_optional_text(row["error_code"]),
+        created_at=str(row["created_at"]),
+        completed_at=_optional_text(row["completed_at"]),
+    )
+
+
+def _json_object(
+    raw: object,
+    *,
+    record_id: str,
+    field_name: str,
+) -> tuple[dict[str, object], RecordDataStatus]:
+    if raw is None:
+        return {}, "UNAVAILABLE"
+    try:
+        value = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.error(
+            "generation record payload is corrupt: record_id=%s field=%s",
+            record_id,
+            field_name,
+        )
+        return {}, "CORRUPTED"
+    if not isinstance(value, dict):
+        logger.error(
+            "generation record payload is not an object: record_id=%s field=%s",
+            record_id,
+            field_name,
+        )
+        return {}, "CORRUPTED"
+    return cast(dict[str, object], value), "VALID"
+
+
+def _combined_record_data_status(
+    *statuses: RecordDataStatus,
+) -> RecordDataStatus:
+    if "CORRUPTED" in statuses:
+        return "CORRUPTED"
+    if "UNAVAILABLE" in statuses:
+        return "UNAVAILABLE"
+    return "VALID"
+
+
+def _execution_metadata(payload: dict[str, object]) -> dict[str, object]:
+    execution = payload.get("execution")
+    return cast(dict[str, object], execution) if isinstance(execution, dict) else {}
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _csv_response(
