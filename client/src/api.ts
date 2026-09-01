@@ -530,10 +530,14 @@ export type FirstFrameModel = "gpt-image-2" | "nano-banana-pro-2k";
 export type GenerateFirstFramesInput =
   components["schemas"]["GenerateFirstFramesRequest"];
 
+export type FirstFrameTaskStage =
+  components["schemas"]["FirstFrameTaskResponse"]["stage"];
+
 export interface FirstFrameTask {
   id: string;
   project_id: string;
   status: DurableImageTaskStatus;
+  stage: FirstFrameTaskStage;
   attempt: number;
   result_version_id: string | null;
   error_code: string | null;
@@ -1969,7 +1973,14 @@ const characterSheetTaskWaiters = new Map<
   string,
   Promise<CharacterSheetTask>
 >();
-const firstFrameTaskWaiters = new Map<string, Promise<FirstFrameTask>>();
+type FirstFrameTaskObserver = (task: FirstFrameTask) => void;
+
+type FirstFrameTaskWaiter = {
+  observers: Set<FirstFrameTaskObserver>;
+  promise: Promise<FirstFrameTask>;
+};
+
+const firstFrameTaskWaiters = new Map<string, FirstFrameTaskWaiter>();
 export async function uploadSimpleCharacter(
   projectId: string | null,
   file: File,
@@ -2470,6 +2481,7 @@ export async function getLatestProjectFirstFrameSelection(
 export async function generateFirstFrames(
   projectId: string,
   input: GenerateFirstFramesInput,
+  onTaskUpdate?: FirstFrameTaskObserver,
 ): Promise<AnalysisVersion> {
   const task = await requestApiJson<FirstFrameTask>(
     `/api/projects/${encodeURIComponent(projectId)}/first-frame-tasks`,
@@ -2482,14 +2494,16 @@ export async function generateFirstFrames(
       }),
     },
   );
-  return resumeFirstFrameGeneration(projectId, task.id);
+  onTaskUpdate?.(task);
+  return resumeFirstFrameGeneration(projectId, task.id, onTaskUpdate);
 }
 
 export async function resumeFirstFrameGeneration(
   projectId: string,
   taskId: string,
+  onTaskUpdate?: FirstFrameTaskObserver,
 ): Promise<AnalysisVersion> {
-  const completed = await waitForFirstFrameTask(taskId);
+  const completed = await waitForFirstFrameTask(taskId, onTaskUpdate);
   const latest = await getLatestProjectFirstFrames(projectId);
   if (
     !completed.result_version_id ||
@@ -2521,26 +2535,43 @@ export async function getLatestFirstFrameTask(
 
 export async function waitForFirstFrameTask(
   taskId: string,
+  onTaskUpdate?: FirstFrameTaskObserver,
 ): Promise<FirstFrameTask> {
-  const existing = firstFrameTaskWaiters.get(taskId);
-  if (existing) {
-    return existing;
+  let waiter = firstFrameTaskWaiters.get(taskId);
+  if (!waiter) {
+    const observers = new Set<FirstFrameTaskObserver>();
+    const promise = pollFirstFrameTask(taskId, (task) => {
+      for (const observer of observers) {
+        observer(task);
+      }
+    });
+    waiter = { observers, promise };
+    firstFrameTaskWaiters.set(taskId, waiter);
+    const clear = () => {
+      if (firstFrameTaskWaiters.get(taskId) === waiter) {
+        firstFrameTaskWaiters.delete(taskId);
+      }
+    };
+    void promise.then(clear, clear);
   }
-  const waiter = pollFirstFrameTask(taskId);
-  firstFrameTaskWaiters.set(taskId, waiter);
-  const clear = () => {
-    if (firstFrameTaskWaiters.get(taskId) === waiter) {
-      firstFrameTaskWaiters.delete(taskId);
+  if (onTaskUpdate) {
+    waiter.observers.add(onTaskUpdate);
+  }
+  return waiter.promise.finally(() => {
+    if (onTaskUpdate) {
+      waiter.observers.delete(onTaskUpdate);
     }
-  };
-  void waiter.then(clear, clear);
-  return waiter;
+  });
 }
 
-async function pollFirstFrameTask(taskId: string): Promise<FirstFrameTask> {
+async function pollFirstFrameTask(
+  taskId: string,
+  onTaskUpdate: FirstFrameTaskObserver,
+): Promise<FirstFrameTask> {
   const deadline = Date.now() + 20 * 60_000;
   while (Date.now() < deadline) {
     const task = await getFirstFrameTask(taskId);
+    onTaskUpdate(task);
     if (task.status === "SUCCEEDED") {
       return task;
     }

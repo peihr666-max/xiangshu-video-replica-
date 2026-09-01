@@ -65,12 +65,24 @@ class EnqueueFirstFramesRequest(GenerateFirstFramesRequest):
     idempotency_key: str = Field(min_length=8, max_length=200)
 
 
+FirstFrameTaskStage = Literal[
+    "QUEUED",
+    "PREPARING",
+    "GENERATING",
+    "VERIFYING",
+    "SUCCEEDED",
+    "FAILED",
+    "NEEDS_REVIEW",
+]
+
+
 class FirstFrameTaskResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
     project_id: str
     status: str
+    stage: FirstFrameTaskStage
     attempt: int
     result_version_id: str | None
     error_code: str | None
@@ -462,6 +474,7 @@ def first_frame_task_response(row: sqlite3.Row) -> FirstFrameTaskResponse:
         id=str(row["id"]),
         project_id=str(row["project_id"]),
         status=str(row["status"]),
+        stage=first_frame_task_stage(row),
         attempt=int(row["attempt"]),
         result_version_id=(
             None if row["result_version_id"] is None else str(row["result_version_id"])
@@ -476,3 +489,30 @@ def first_frame_task_response(row: sqlite3.Row) -> FirstFrameTaskResponse:
         started_at=None if row["started_at"] is None else str(row["started_at"]),
         completed_at=(None if row["completed_at"] is None else str(row["completed_at"])),
     )
+
+
+def first_frame_task_stage(row: sqlite3.Row) -> FirstFrameTaskStage:
+    task_status = str(row["status"])
+    if task_status == "PENDING":
+        return "QUEUED"
+    if task_status == "SUCCEEDED":
+        return "SUCCEEDED"
+    if task_status == "FAILED":
+        return "FAILED"
+    if task_status == "SUBMISSION_UNCERTAIN":
+        return "NEEDS_REVIEW"
+
+    result_json = row["result_json"]
+    if result_json is None:
+        return "PREPARING"
+    try:
+        result = json.loads(str(result_json))
+    except json.JSONDecodeError:
+        return "PREPARING"
+    if not isinstance(result, dict):
+        return "PREPARING"
+    if isinstance(result.get("checkpoint"), dict):
+        return "VERIFYING"
+    if isinstance(result.get("execution"), dict):
+        return "GENERATING"
+    return "PREPARING"

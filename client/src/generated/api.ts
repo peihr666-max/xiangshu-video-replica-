@@ -4574,6 +4574,15 @@ export interface components {
       project_id: string;
       /** Status */
       status: string;
+      /** Stage */
+      stage:
+        | "QUEUED"
+        | "PREPARING"
+        | "GENERATING"
+        | "VERIFYING"
+        | "SUCCEEDED"
+        | "FAILED"
+        | "NEEDS_REVIEW";
       /** Attempt */
       attempt: number;
       /** Result Version Id */
