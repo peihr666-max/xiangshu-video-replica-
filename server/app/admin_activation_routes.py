@@ -1216,35 +1216,65 @@ def list_activation_codes(
     clauses: list[str] = []
     params: list[object] = []
     if batch_id:
-        clauses.append("batch_id = %s")
+        clauses.append("code.batch_id = %s")
         params.append(batch_id)
     if status:
-        clauses.append("status = %s")
+        clauses.append("code.status = %s")
         params.append(status)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     try:
         with pg_transaction() as conn:
             rows = conn.execute(
-                f"SELECT id, batch_id, code_digest, masked_code, status, "
-                f"bound_user_id, issued_at "
-                f"FROM activation_codes {where} "
-                f"ORDER BY id LIMIT %s OFFSET %s",
+                f"SELECT code.id, code.batch_id, code.masked_code, code.status, "
+                f"code.bound_user_id, code.issued_at, customer.username "
+                f"FROM activation_codes AS code "
+                f"LEFT JOIN users AS customer ON customer.id = code.bound_user_id "
+                f"{where} ORDER BY code.id LIMIT %s OFFSET %s",
                 (*params, bounded_limit, bounded_offset),
             ).fetchall()
+            code_ids = [str(row[0]) for row in rows]
+            device_rows = (
+                conn.execute(
+                    "SELECT activation_code_id, id, slot_no, display_name, platform, "
+                    "status, bound_at, last_active_at, unbound_at, revoked_at "
+                    "FROM customer_devices WHERE activation_code_id = ANY(%s) "
+                    "ORDER BY activation_code_id, slot_no, bound_at",
+                    (code_ids,),
+                ).fetchall()
+                if code_ids
+                else []
+            )
     except RuntimeError as exc:
         raise _http(
             503,
             "ACTIVATION_SERVICE_UNAVAILABLE",
             "Activation code management requires the PostgreSQL runtime.",
         ) from exc
+    devices_by_code: dict[str, list[dict[str, object]]] = {}
+    for device in device_rows:
+        devices_by_code.setdefault(str(device[0]), []).append(
+            {
+                "device_id": str(device[1]),
+                "slot_no": int(device[2]),
+                "display_name": device[3],
+                "platform": str(device[4]),
+                "status": str(device[5]),
+                "bound_at": device[6],
+                "last_active_at": device[7],
+                "unbound_at": device[8],
+                "revoked_at": device[9],
+            }
+        )
     items = [
         {
             "code_id": str(row[0]),
             "batch_id": str(row[1]),
-            "masked_code": str(row[3]),
-            "status": str(row[4]),
-            "bound_user_id": row[5],
-            "issued_at": row[6],
+            "masked_code": str(row[2]),
+            "status": str(row[3]),
+            "bound_user_id": row[4],
+            "issued_at": row[5],
+            "bound_username": row[6],
+            "devices": devices_by_code.get(str(row[0]), []),
         }
         for row in rows
     ]

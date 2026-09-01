@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "./api";
@@ -9,6 +15,8 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     listSimpleCharacterLibrary: vi.fn(),
+    listCharacterSceneLooks: vi.fn(),
+    createCharacterSceneLook: vi.fn(),
     regenerateContactSheet: vi.fn(),
     renamePersonIdentity: vi.fn(),
     deleteSimpleCharacterIdentity: vi.fn(),
@@ -56,6 +64,19 @@ const foreignEntry: api.SimpleLibraryEntry = {
   views: viewsFor("foreign"),
 };
 
+const sceneLook: api.SimpleSceneLook = {
+  identity_id: "identity-1",
+  persona_id: "persona-scene-1",
+  character_version_id: "version-scene-1",
+  scene_name: "工地巡检",
+  scene_description: "乡村别墅施工现场，白天自然光",
+  costume_description: "黄色安全帽、深蓝色工装和反光背心",
+  contact_sheet_asset_id: "sheet-scene-1",
+  generation_source: "image_provider",
+  views: viewsFor("scene"),
+  published_at: "2026-09-01T08:00:00Z",
+};
+
 function characterTask(
   status: api.DurableImageTaskStatus,
   overrides: Partial<api.CharacterSheetTask> = {},
@@ -97,8 +118,65 @@ describe("CharacterLibrary", () => {
     );
     vi.mocked(api.downloadCharacterAsset).mockResolvedValue(undefined);
     vi.mocked(api.deleteSimpleCharacterIdentity).mockResolvedValue(undefined);
+    vi.mocked(api.listCharacterSceneLooks).mockResolvedValue([]);
     vi.mocked(api.getLatestCharacterSheetTask).mockResolvedValue(null);
     vi.spyOn(window, "confirm").mockReturnValue(true);
+  });
+
+  it("separates the base appearance from scene looks and directly generates a new look", async () => {
+    vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([entry]);
+    vi.mocked(api.listCharacterSceneLooks).mockResolvedValue([sceneLook]);
+    vi.mocked(api.createCharacterSceneLook).mockResolvedValue({
+      ...sceneLook,
+      persona_id: "persona-scene-2",
+      character_version_id: "version-scene-2",
+      scene_name: "商务讲解",
+      scene_description: "现代会议室，落地窗自然光",
+      costume_description: "深灰色西装和浅色衬衫",
+    });
+
+    render(<CharacterLibrary userRole="employee" userId="employee_1" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看人物 林夏 大图" }),
+    );
+
+    expect(screen.getByRole("tab", { name: "人物基准" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "场景造型" }));
+
+    expect(await screen.findByText("工地巡检")).toBeInTheDocument();
+    expect(
+      screen.getByText("黄色安全帽、深蓝色工装和反光背心"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看工地巡检五视图" }));
+    const sceneViews = screen.getByRole("region", {
+      name: "工地巡检五视图",
+    });
+    expect(
+      within(sceneViews).getByRole("img", {
+        name: "林夏 工地巡检 场景五视图",
+      }),
+    ).toHaveAttribute("src", "http://127.0.0.1:8000/mock/sheet-scene-1");
+    fireEvent.click(screen.getByRole("button", { name: "新增场景造型" }));
+    fireEvent.change(screen.getByLabelText("场景名称"), {
+      target: { value: "商务讲解" },
+    });
+    fireEvent.change(screen.getByLabelText("场景描述"), {
+      target: { value: "现代会议室，落地窗自然光" },
+    });
+    fireEvent.change(screen.getByLabelText("服装描述"), {
+      target: { value: "深灰色西装和浅色衬衫" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成场景五视图" }));
+
+    await waitFor(() =>
+      expect(api.createCharacterSceneLook).toHaveBeenCalledWith("identity-1", {
+        scene_name: "商务讲解",
+        scene_description: "现代会议室，落地窗自然光",
+        costume_description: "深灰色西装和浅色衬衫",
+      }),
+    );
+    expect(await screen.findByText("商务讲解")).toBeInTheDocument();
+    expect(screen.queryByText("等待管理员审核")).toBeNull();
   });
 
   afterEach(() => {

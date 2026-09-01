@@ -39,7 +39,9 @@ from app.simple_character import (
     PreparedSimpleCharacterGeneration,
     SimpleCharacterCreationResult,
     SimpleCharacterRegenerationResult,
+    SimpleSceneLookResult,
     create_simple_character,
+    create_simple_scene_look,
     prepare_simple_character_generation,
     regenerate_simple_character_contact_sheet,
     store_simple_character_publication,
@@ -78,11 +80,13 @@ class FirstFrameTaskPrepared:
 class CharacterSheetTaskPrepared:
     lease: ImageTaskLease
     actor: CurrentUser
-    operation: Literal["CREATE", "REGENERATE"]
+    operation: Literal["CREATE", "REGENERATE", "SCENE"]
     project_id: str | None
     identity_id: str | None
     display_name: str
     persona_name: str
+    scene_description: str | None
+    costume_description: str | None
     source_content: bytes
     source_content_type: str
     source_storage_key: str
@@ -215,7 +219,7 @@ def enqueue_character_sheet_task(
     conn: BusinessConnection,
     *,
     actor: CurrentUser,
-    operation: Literal["CREATE", "REGENERATE"],
+    operation: Literal["CREATE", "REGENERATE", "SCENE"],
     project_id: str | None,
     identity_id: str | None,
     display_name: str,
@@ -225,6 +229,8 @@ def enqueue_character_sheet_task(
     source_sha256: str,
     source_size_bytes: int,
     idempotency_key: str,
+    scene_description: str | None = None,
+    costume_description: str | None = None,
 ) -> sqlite3.Row:
     request_payload = {
         "operation": operation,
@@ -232,6 +238,10 @@ def enqueue_character_sheet_task(
         "identity_id": identity_id,
         "display_name": display_name.strip(),
         "persona_name": persona_name.strip(),
+        "scene_description": None if scene_description is None else scene_description.strip(),
+        "costume_description": (
+            None if costume_description is None else costume_description.strip()
+        ),
         "source_sha256": source_sha256,
         "source_content_type": source_content_type,
         "source_size_bytes": source_size_bytes,
@@ -531,11 +541,19 @@ def prepare_character_sheet_task(
     return CharacterSheetTaskPrepared(
         lease=lease,
         actor=actor,
-        operation=cast(Literal["CREATE", "REGENERATE"], str(row["operation"])),
+        operation=cast(Literal["CREATE", "REGENERATE", "SCENE"], str(row["operation"])),
         project_id=None if row["project_id"] is None else str(row["project_id"]),
         identity_id=None if row["identity_id"] is None else str(row["identity_id"]),
         display_name=str(payload["display_name"]),
         persona_name=str(payload["persona_name"]),
+        scene_description=(
+            None if payload.get("scene_description") is None else str(payload["scene_description"])
+        ),
+        costume_description=(
+            None
+            if payload.get("costume_description") is None
+            else str(payload["costume_description"])
+        ),
         source_content=source_content,
         source_content_type=str(row["source_content_type"]),
         source_storage_key=reference.key,
@@ -551,6 +569,8 @@ def perform_character_sheet_task(
         source_content_type=prepared.source_content_type,
         display_name=prepared.display_name,
         image_provider=prepared.provider,
+        scene_description=prepared.scene_description,
+        costume_description=prepared.costume_description,
     )
 
 
@@ -564,7 +584,11 @@ def complete_character_sheet_task(
     _require_owned_task(conn, "character_sheet_tasks", prepared.lease)
 
     def mark_task_succeeded(
-        result: SimpleCharacterCreationResult | SimpleCharacterRegenerationResult,
+        result: (
+            SimpleCharacterCreationResult
+            | SimpleCharacterRegenerationResult
+            | SimpleSceneLookResult
+        ),
     ) -> None:
         result_payload = asdict(result)
         now = _now_text()
@@ -616,7 +640,7 @@ def complete_character_sheet_task(
         except Exception:
             cleanup_publication_objects(storage, list(publication.object_keys))
             raise
-    else:
+    elif prepared.operation == "REGENERATE":
         if prepared.identity_id is None:
             raise _task_error(409, "CHARACTER_SHEET_IDENTITY_MISSING", "人物身份不存在。")
         regenerate_simple_character_contact_sheet(
@@ -626,6 +650,24 @@ def complete_character_sheet_task(
             storage=storage,
             prepared_generation=generation,
             source_content_override=prepared.source_content,
+            before_commit=mark_task_succeeded,
+        )
+    else:
+        if (
+            prepared.identity_id is None
+            or prepared.scene_description is None
+            or prepared.costume_description is None
+        ):
+            raise _task_error(409, "SCENE_LOOK_INPUTS_MISSING", "场景造型参数不完整。")
+        create_simple_scene_look(
+            conn,
+            actor=prepared.actor,
+            identity_id=prepared.identity_id,
+            scene_name=prepared.persona_name,
+            scene_description=prepared.scene_description,
+            costume_description=prepared.costume_description,
+            storage=storage,
+            prepared_generation=generation,
             before_commit=mark_task_succeeded,
         )
     if prepared.operation == "CREATE":

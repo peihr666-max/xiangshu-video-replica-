@@ -30,7 +30,11 @@ from app.customer_fence import BusinessDb
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_image_provider
-from app.first_frames import GeneratedImage, ImageProviderFailed
+from app.first_frames import (
+    GeneratedImage,
+    ImageProviderFailed,
+    effective_reference_asset_ids,
+)
 from app.generation_worker import run_worker_once
 from app.image_tasks import (
     acquire_character_sheet_task,
@@ -1299,6 +1303,30 @@ def test_delete_rejects_identity_selected_by_project(
     assert any(entry["identity_id"] == created["identity_id"] for entry in library)
 
 
+def test_delete_rejects_identity_with_active_scene_task(client: TestClient) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    queued = client.post(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "商务讲解",
+            "scene_description": "现代会议室",
+            "costume_description": "深色西装",
+            "idempotency_key": "scene-look-delete-guard",
+        },
+    )
+    assert queued.status_code == 202
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "IDENTITY_DELETE_HAS_ACTIVE_TASKS"
+
+
 def test_delete_missing_identity_returns_404(client: TestClient) -> None:
     response = client.delete(
         "/api/simple-characters/identities/identity-missing",
@@ -1398,6 +1426,202 @@ def test_async_regenerate_task_hides_foreign_identity(client: TestClient) -> Non
     assert foreign.status_code == 404
     assert foreign.content == missing.content
     assert foreign.json()["detail"]["code"] == "PERSON_IDENTITY_NOT_FOUND"
+
+
+def test_owner_generates_and_lists_a_direct_publish_scene_look(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    contact_sheet_provider: StubContactSheetProvider,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+
+    queued = client.post(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "工地巡检",
+            "scene_description": "乡村别墅施工现场，白天自然光",
+            "costume_description": "黄色安全帽、深蓝色工装和反光背心",
+            "idempotency_key": "scene-look-task-1",
+        },
+    )
+    assert queued.status_code == 202, queued.text
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="scene-look-worker",
+                storage=storage,
+                image_provider=contact_sheet_provider,
+                max_tasks=1,
+            )
+            == 1
+        )
+
+    task = client.get(
+        f"/api/simple-characters/task-status/{queued.json()['id']}",
+        headers=headers("employee_1"),
+    )
+    assert task.status_code == 200
+    assert task.json()["status"] == "SUCCEEDED"
+    result = task.json()["result"]
+    assert result["identity_id"] == identity_id
+    assert result["scene_name"] == "工地巡检"
+    assert len(result["views"]) == len(REQUIRED_CHARACTER_VIEW_TYPES)
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        source_asset_id = str(
+            conn.execute(
+                "SELECT source_asset_id FROM person_identities WHERE id = %s",
+                (identity_id,),
+            ).fetchone()[0]
+        )
+        reference_asset_ids, reference_asset_roles = effective_reference_asset_ids(
+            conn,
+            character_version_id=result["character_version_id"],
+            legacy_selected=[view["asset_id"] for view in result["views"]],
+        )
+    assert reference_asset_ids == [result["contact_sheet_asset_id"], source_asset_id]
+    assert reference_asset_roles == ["contact_sheet", "source_photo"]
+
+    looks = client.get(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks",
+        headers=headers("employee_1"),
+    )
+    assert looks.status_code == 200, looks.text
+    assert looks.json() == [
+        {
+            **result,
+            "published_at": looks.json()[0]["published_at"],
+        }
+    ]
+
+    # Creating a scene look must not replace the identity's base appearance.
+    library = client.get(
+        "/api/simple-characters/library",
+        headers=headers("employee_1"),
+    ).json()
+    base = next(item for item in library if item["identity_id"] == identity_id)
+    assert base["contact_sheet_asset_id"] == created["contact_sheet_asset_id"]
+
+    # The first-frame flow can select this exact scene look while the base
+    # appearance remains the safe automatic default in the client.
+    options = client.get(
+        "/api/projects/project-owned/character-versions/available",
+        headers=headers("employee_1"),
+    )
+    assert options.status_code == 200, options.text
+    scene_option = next(
+        option
+        for option in options.json()
+        if option["character_version_id"] == result["character_version_id"]
+    )
+    assert scene_option["persona_snapshot_json"]["name"] == "工地巡检"
+    assert scene_option["persona_snapshot_json"]["scene_description"] == (
+        "乡村别墅施工现场，白天自然光"
+    )
+    assert scene_option["persona_snapshot_json"]["costume_description"] == (
+        "黄色安全帽、深蓝色工装和反光背心"
+    )
+    assert scene_option["persona_snapshot_json"]["appearance_constraints_json"] == {
+        "appearance_type": "scene"
+    }
+
+    prompt = str(contact_sheet_provider.calls[-1]["prompt"])
+    assert "乡村别墅施工现场" in prompt
+    assert "黄色安全帽" in prompt
+    assert "Do not change the person's identity or gender" in prompt
+
+
+def test_scene_looks_hide_foreign_identities_and_reject_auditors(
+    client: TestClient,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    url = f"/api/simple-characters/identities/{identity_id}/scene-looks"
+
+    foreign = client.get(url, headers=headers("employee_2"))
+    missing = client.get(
+        "/api/simple-characters/identities/identity-missing/scene-looks",
+        headers=headers("employee_2"),
+    )
+    assert foreign.status_code == 404
+    assert foreign.content == missing.content
+
+    auditor = client.post(
+        f"{url}/tasks/generate",
+        headers=headers("auditor_1"),
+        json={
+            "scene_name": "商务讲解",
+            "scene_description": "现代会议室",
+            "costume_description": "深色西装",
+            "idempotency_key": "scene-look-auditor",
+        },
+    )
+    assert auditor.status_code == 403
+
+
+def test_scene_look_rejects_archived_identity_before_enqueue(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE person_identities SET status = 'ARCHIVED' WHERE id = %s",
+            (identity_id,),
+        )
+        conn.commit()
+
+    response = client.post(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "商务讲解",
+            "scene_description": "现代会议室",
+            "costume_description": "深色西装",
+            "idempotency_key": "scene-look-archived",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "IDENTITY_ARCHIVED"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM character_sheet_tasks WHERE identity_id = %s",
+            (identity_id,),
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_scene_look_rejects_blank_inputs_before_provider_work(
+    client: TestClient,
+    db_path: Path,
+    contact_sheet_provider: StubContactSheetProvider,
+) -> None:
+    created = generate_global(client).json()
+    provider_calls = len(contact_sheet_provider.calls)
+
+    response = client.post(
+        f"/api/simple-characters/identities/{created['identity_id']}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "   ",
+            "scene_description": "现代会议室",
+            "costume_description": "深色西装",
+            "idempotency_key": "scene-look-blank",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "SCENE_LOOK_NAME_REQUIRED"
+    assert len(contact_sheet_provider.calls) == provider_calls
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM character_sheet_tasks").fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------

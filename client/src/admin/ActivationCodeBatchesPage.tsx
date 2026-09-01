@@ -30,9 +30,11 @@ type CompletedGeneration = {
  */
 export function ActivationCodeBatchesPage({
   readOnly = false,
+  onGenerated,
   onSessionExpired,
 }: {
   readOnly?: boolean;
+  onGenerated?: () => void;
   onSessionExpired?: () => void;
 }) {
   const [quantity, setQuantity] = useState("1");
@@ -142,6 +144,7 @@ export function ActivationCodeBatchesPage({
       setCreateKey(null);
       setGenerateKey(null);
       setDownloadKey(null);
+      onGenerated?.();
     } catch (cause) {
       handleFailure(cause, phaseErrorFallback(currentPhase));
       if (cause instanceof AdminActivationError && cause.status !== undefined) {

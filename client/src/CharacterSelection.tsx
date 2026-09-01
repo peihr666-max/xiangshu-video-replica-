@@ -144,7 +144,13 @@ export function CharacterSelection({
           );
           return;
         }
-        const latestVersion = availableVersions.reduce((latest, current) =>
+        const baseVersions = availableVersions.filter(
+          (version) => !isSceneAppearance(version),
+        );
+        const automaticCandidates = baseVersions.length
+          ? baseVersions
+          : availableVersions;
+        const latestVersion = automaticCandidates.reduce((latest, current) =>
           Date.parse(current.published_at) > Date.parse(latest.published_at)
             ? current
             : latest,
@@ -307,14 +313,18 @@ export function CharacterSelection({
     (version) => version.character_version_id === selectedVersionId,
   );
   const currentIdentityId = currentSelection?.character_snapshot.identity?.id;
+  const currentPersonaId = currentSelection?.character_snapshot.persona_id;
   const currentVersionNumber =
     currentSelection?.character_snapshot.character_version_number;
   const newerVersion =
-    currentIdentityId && typeof currentVersionNumber === "number"
+    currentIdentityId &&
+    currentPersonaId &&
+    typeof currentVersionNumber === "number"
       ? versions
           .filter(
             (version) =>
               version.identity_id === currentIdentityId &&
+              version.persona_id === currentPersonaId &&
               version.version_number > currentVersionNumber,
           )
           .reduce<ProjectCharacterVersionOption | null>(
@@ -361,9 +371,8 @@ export function CharacterSelection({
                 key={version.character_version_id}
                 value={version.character_version_id}
               >
-                {version.identity_name} ·{" "}
-                {stringValue(version.persona_snapshot_json.name, "未命名人设")}{" "}
-                V{version.version_number}
+                {version.identity_name} · {versionAppearanceLabel(version)} · V
+                {version.version_number}
               </option>
             ))}
           </select>
@@ -489,13 +498,18 @@ export function CharacterSelection({
             <fieldset className="character-options">
               <legend>选择一个不可变角色版本</legend>
               {versions.map((version) => {
-                const personaName = stringValue(
-                  version.persona_snapshot_json.name,
-                  "未命名人设",
-                );
+                const isScene = isSceneAppearance(version);
                 const occupation = stringValue(
                   version.persona_snapshot_json.occupation,
                   "未填写职业",
+                );
+                const sceneDescription = stringValue(
+                  version.persona_snapshot_json.scene_description,
+                  "未填写场景描述",
+                );
+                const costumeDescription = stringValue(
+                  version.persona_snapshot_json.costume_description,
+                  "未填写服装描述",
                 );
                 const isSelected =
                   selectedVersionId === version.character_version_id;
@@ -520,9 +534,17 @@ export function CharacterSelection({
                     <span className="character-option-copy">
                       <strong>{version.identity_name}</strong>
                       <span>
-                        {personaName} · V{version.version_number}
+                        {versionAppearanceLabel(version)} · V
+                        {version.version_number}
                       </span>
-                      <small>{occupation}</small>
+                      {isScene ? (
+                        <>
+                          <small>{sceneDescription}</small>
+                          <small>服装：{costumeDescription}</small>
+                        </>
+                      ) : (
+                        <small>{occupation}</small>
+                      )}
                       <small>
                         {authorizationLabel(version.authorization_expires_at)}
                       </small>
@@ -620,6 +642,26 @@ function selectionSummary(
 
 function stringValue(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function isSceneAppearance(version: ProjectCharacterVersionOption): boolean {
+  const constraints = version.persona_snapshot_json.appearance_constraints_json;
+  return (
+    typeof constraints === "object" &&
+    constraints !== null &&
+    "appearance_type" in constraints &&
+    constraints.appearance_type === "scene"
+  );
+}
+
+function versionAppearanceLabel(
+  version: ProjectCharacterVersionOption,
+): string {
+  const name = stringValue(
+    version.persona_snapshot_json.name,
+    isSceneAppearance(version) ? "未命名场景" : "未命名人设",
+  );
+  return isSceneAppearance(version) ? `场景：${name}` : `人物基准：${name}`;
 }
 
 function authorizationLabel(value: string | null): string {

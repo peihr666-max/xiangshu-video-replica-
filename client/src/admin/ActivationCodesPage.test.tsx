@@ -12,11 +12,10 @@ function jsonResponse(payload: unknown, status = 200) {
     ok: status >= 200 && status < 300,
     status,
     json: async () => payload,
+    text: async () => JSON.stringify(payload),
   });
 }
 
-// The mock literal is indirect so the repo secret scan (which flags
-// `token:` followed by a quoted literal) stays quiet — the T29 precedent.
 const CSRF_TOKEN_TEXT = "csrf-token-1";
 
 const exchangePayload = {
@@ -39,7 +38,9 @@ const codesPage = {
       masked_code: "XS****01",
       status: "GENERATED",
       bound_user_id: null,
+      bound_username: null,
       issued_at: null,
+      devices: [],
     },
     {
       code_id: "code-2",
@@ -47,25 +48,34 @@ const codesPage = {
       masked_code: "XS****02",
       status: "ACTIVE",
       bound_user_id: "user-9",
+      bound_username: "customer_9",
       issued_at: "2026-08-20T10:00:00+00:00",
+      devices: [
+        {
+          device_id: "device-1",
+          slot_no: 1,
+          display_name: "办公室电脑",
+          platform: "windows",
+          status: "BOUND",
+          bound_at: "2026-08-20T10:05:00+00:00",
+          last_active_at: "2026-08-21T10:05:00+00:00",
+          unbound_at: null,
+          revoked_at: null,
+        },
+      ],
     },
   ],
   limit: 50,
   offset: 0,
 };
 
-function installFetch(options?: {
-  list?: "ok" | "unauthorized";
-  suspend?: "ok" | "invalid-transition";
-}) {
-  const listState = options?.list ?? "ok";
-  const suspendState = options?.suspend ?? "ok";
+function installFetch(options?: { list?: "ok" | "unauthorized" }) {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url.endsWith("/api/control/admin/session/exchange")) {
       return jsonResponse(exchangePayload);
     }
     if (url.includes("/api/control/activation-codes?")) {
-      if (listState === "unauthorized") {
+      if (options?.list === "unauthorized") {
         return jsonResponse(
           {
             detail: {
@@ -89,23 +99,22 @@ function installFetch(options?: {
         request_id: "req-reveal-1",
       });
     }
-    if (url.endsWith("/suspend") && init?.method === "POST") {
-      if (suspendState === "invalid-transition") {
-        return jsonResponse(
-          {
-            detail: {
-              code: "CODE_TRANSITION_INVALID",
-              message:
-                "The activation code cannot move from REVOKED to SUSPENDED.",
-            },
-          },
-          409,
-        );
-      }
+    if (
+      url.endsWith("/activation-codes/code-2/revoke") &&
+      init?.method === "POST"
+    ) {
       return jsonResponse({
         code_id: "code-2",
-        status: "SUSPENDED",
-        request_id: "req-suspend-1",
+        status: "REVOKED",
+        request_id: "req-revoke-1",
+      });
+    }
+    if (url.endsWith("/devices/device-1/unbind") && init?.method === "POST") {
+      return jsonResponse({
+        device_id: "device-1",
+        status: "UNBOUND",
+        outcome: "unbound",
+        request_id: "req-unbind-1",
       });
     }
     throw new Error(`unexpected request: ${url}`);
@@ -125,7 +134,23 @@ describe("ActivationCodesPage", () => {
     clearAdminActivationSession();
   });
 
-  it("shows masked codes and copies one code through the audited reveal route", async () => {
+  it("shows activation codes, bound accounts and related devices together", async () => {
+    render(<ActivationCodesPage />);
+
+    expect(await screen.findByText("XS****01")).toBeInTheDocument();
+    expect(screen.getByText("customer_9")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "1 台设备" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "1 台设备" }));
+
+    expect(screen.getByText("办公室电脑")).toBeInTheDocument();
+    expect(screen.getByText("Windows")).toBeInTheDocument();
+    expect(screen.getByText("已绑定")).toBeInTheDocument();
+  });
+
+  it("copies a code through the audited reveal route", async () => {
     const fetchMock = installFetch();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -134,19 +159,10 @@ describe("ActivationCodesPage", () => {
     });
 
     render(<ActivationCodesPage />);
+    fireEvent.click(
+      (await screen.findAllByRole("button", { name: "复制" }))[0],
+    );
 
-    expect(await screen.findByText("XS****01")).toBeInTheDocument();
-    expect(screen.getByText("XS****02")).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "已生成" })).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "已激活" })).toBeInTheDocument();
-    expect(screen.getByText("user-9")).toBeInTheDocument();
-    const listCall = fetchMock.mock.calls.find(([url]) =>
-      String(url).includes("/api/control/activation-codes?"),
-    );
-    expect(String(listCall?.[0])).toBe(
-      "http://127.0.0.1:8000/api/control/activation-codes?limit=50&offset=0",
-    );
-    fireEvent.click(screen.getAllByRole("button", { name: "复制激活码" })[0]);
     expect(await screen.findByText(/req-reveal-1/)).toBeInTheDocument();
     expect(writeText).toHaveBeenCalledWith(
       "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
@@ -159,115 +175,86 @@ describe("ActivationCodesPage", () => {
     );
   });
 
-  it("filters the list by batch id and status", async () => {
+  it("revokes a code with reason and explicit confirmation", async () => {
     const fetchMock = installFetch();
+    render(<ActivationCodesPage />);
 
+    fireEvent.click(
+      (await screen.findAllByRole("button", { name: "撤销激活码" }))[1],
+    );
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "客户申请停用" },
+    });
+    fireEvent.click(screen.getByLabelText("我已确认操作"));
+    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+
+    expect(await screen.findByText(/req-revoke-1/)).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "已撤销" })).toBeInTheDocument();
+    const revokeCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/activation-codes/code-2/revoke"),
+    );
+    expect(revokeCall?.[1]?.body).toBe(
+      JSON.stringify({ confirm: true, reason: "客户申请停用" }),
+    );
+  });
+
+  it("unbinds a device without revoking its activation code", async () => {
+    render(<ActivationCodesPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "1 台设备" }));
+    fireEvent.click(screen.getByRole("button", { name: "解绑设备" }));
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "客户更换电脑" },
+    });
+    fireEvent.click(screen.getByLabelText("我已确认操作"));
+    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+
+    expect(await screen.findByText(/req-unbind-1/)).toBeInTheDocument();
+    expect(screen.getByText("已解绑")).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "使用中" })).toBeInTheDocument();
+  });
+
+  it("filters locally by account and requests the selected status", async () => {
+    const fetchMock = installFetch();
     render(<ActivationCodesPage />);
     await screen.findByText("XS****01");
 
-    fireEvent.change(screen.getByLabelText("批次 ID"), {
-      target: { value: "batch-1" },
+    fireEvent.change(screen.getByLabelText("搜索"), {
+      target: { value: "customer_9" },
     });
-    fireEvent.change(screen.getByLabelText("状态"), {
-      target: { value: "SUSPENDED" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "查询" }));
+    expect(screen.queryByText("XS****01")).toBeNull();
+    expect(screen.getByText("XS****02")).toBeInTheDocument();
 
+    fireEvent.change(screen.getByLabelText("状态"), {
+      target: { value: "ACTIVE" },
+    });
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([url]) =>
           String(url).endsWith(
-            "/api/control/activation-codes?batch_id=batch-1&status=SUSPENDED&limit=50&offset=0",
+            "/api/control/activation-codes?status=ACTIVE&limit=50&offset=0",
           ),
         ),
       ).toBe(true),
     );
   });
 
-  it("suspends a code with reason, confirmation and the request id", async () => {
-    const fetchMock = installFetch();
-
-    render(<ActivationCodesPage />);
-    fireEvent.click(
-      (await screen.findAllByRole("button", { name: "暂停" }))[1],
-    );
-
-    fireEvent.change(await screen.findByLabelText("操作原因"), {
-      target: { value: "风控暂停" },
-    });
-    fireEvent.click(screen.getByLabelText("我已确认操作"));
-    fireEvent.click(screen.getByRole("button", { name: "确认暂停" }));
-
-    expect(await screen.findByText(/req-suspend-1/)).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "已暂停" })).toBeInTheDocument();
-    const suspendCall = fetchMock.mock.calls.find(([url]) =>
-      String(url).endsWith("/activation-codes/code-2/suspend"),
-    );
-    expect(suspendCall?.[1]?.body).toBe(
-      JSON.stringify({ confirm: true, reason: "风控暂停" }),
-    );
-    expect(suspendCall?.[1]?.headers).toMatchObject({
-      "X-Admin-CSRF": "csrf-token-1",
-      "Idempotency-Key": expect.any(String),
-    });
-  });
-
-  it("refuses a transition without a reason", async () => {
-    const fetchMock = installFetch();
-
-    render(<ActivationCodesPage />);
-    fireEvent.click(
-      (await screen.findAllByRole("button", { name: "暂停" }))[1],
-    );
-
-    fireEvent.click(screen.getByLabelText("我已确认操作"));
-    fireEvent.click(screen.getByRole("button", { name: "确认暂停" }));
-
-    expect(await screen.findByText("请填写操作原因")).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/suspend")),
-    ).toBe(false);
-  });
-
-  it("maps an invalid transition to a deterministic message", async () => {
-    installFetch({ suspend: "invalid-transition" });
-
-    render(<ActivationCodesPage />);
-    fireEvent.click(
-      (await screen.findAllByRole("button", { name: "暂停" }))[1],
-    );
-
-    fireEvent.change(await screen.findByLabelText("操作原因"), {
-      target: { value: "尝试暂停" },
-    });
-    fireEvent.click(screen.getByLabelText("我已确认操作"));
-    fireEvent.click(screen.getByRole("button", { name: "确认暂停" }));
-
-    expect(await screen.findByText(/当前状态不允许该操作/)).toBeInTheDocument();
-  });
-
-  it("reports the session as expired on a 401 read", async () => {
+  it("reports an expired session and hides writes for auditors", async () => {
     installFetch({ list: "unauthorized" });
     const onSessionExpired = vi.fn();
-
-    render(<ActivationCodesPage onSessionExpired={onSessionExpired} />);
-
+    const { unmount } = render(
+      <ActivationCodesPage onSessionExpired={onSessionExpired} />,
+    );
     expect(
       await screen.findByText(/会话已失效，请重新登录/),
     ).toBeInTheDocument();
     expect(onSessionExpired).toHaveBeenCalled();
-  });
+    unmount();
 
-  it("hides every write action in read-only mode", async () => {
     installFetch();
-
     render(<ActivationCodesPage readOnly />);
-
     expect(await screen.findByText("XS****01")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "复制激活码" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "暂停" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "恢复" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "作废" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "复制" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "撤销激活码" })).toBeNull();
     expect(screen.getByText(/当前为只读模式/)).toBeInTheDocument();
   });
 });

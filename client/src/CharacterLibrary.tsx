@@ -1,16 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   type CharacterViewType,
+  createCharacterSceneLook,
   deleteSimpleCharacterIdentity,
   downloadCharacterAsset,
   getCachedCharacterAssetUrl,
   getLatestCharacterSheetTask,
+  listCharacterSceneLooks,
   listSimpleCharacterLibrary,
   regenerateContactSheet,
   renamePersonIdentity,
   type SimpleCharacterView,
   type SimpleLibraryEntry,
+  type SimpleSceneLook,
   type UserRole,
   waitForCharacterSheetTask,
 } from "./api";
@@ -35,6 +44,12 @@ function entryAssetIds(entry: SimpleLibraryEntry): string[] {
     ...(entry.contact_sheet_asset_id ? [entry.contact_sheet_asset_id] : []),
     ...entry.views.map((view) => view.asset_id),
   ];
+}
+
+function sceneLookAssetIds(look: SimpleSceneLook): string[] {
+  const preview =
+    look.views.find((view) => view.view_type === "FRONT_FACE") ?? look.views[0];
+  return [look.contact_sheet_asset_id, ...(preview ? [preview.asset_id] : [])];
 }
 
 type PreviewStatus = "loading" | "ready" | "error";
@@ -632,6 +647,7 @@ export function CharacterLibrary({
           onDownloadSheet={handleDownloadSheet}
           onDownloadView={handleDownloadView}
           onDownloadAll={handleDownloadAll}
+          onLoadPreviewUrls={loadPreviewUrls}
           previewUrls={previewUrls}
         />
       ) : null}
@@ -709,6 +725,7 @@ function CharacterLightbox({
   onDownloadSheet,
   onDownloadView,
   onDownloadAll,
+  onLoadPreviewUrls,
   previewUrls,
 }: {
   busyDownloadKey: string;
@@ -721,8 +738,20 @@ function CharacterLightbox({
     view: SimpleCharacterView,
   ) => Promise<void>;
   onDownloadAll: (entry: SimpleLibraryEntry) => Promise<void>;
+  onLoadPreviewUrls: (assetIds: string[]) => Promise<void>;
   previewUrls: Record<string, string>;
 }) {
+  const [activeTab, setActiveTab] = useState<"base" | "scenes">("base");
+  const [sceneLooks, setSceneLooks] = useState<SimpleSceneLook[]>([]);
+  const [sceneError, setSceneError] = useState("");
+  const [sceneLoading, setSceneLoading] = useState(true);
+  const [sceneFormOpen, setSceneFormOpen] = useState(false);
+  const [sceneName, setSceneName] = useState("");
+  const [sceneDescription, setSceneDescription] = useState("");
+  const [costumeDescription, setCostumeDescription] = useState("");
+  const [sceneGenerating, setSceneGenerating] = useState(false);
+  const [expandedSceneId, setExpandedSceneId] = useState("");
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -732,6 +761,73 @@ function CharacterLightbox({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    let active = true;
+    setSceneLoading(true);
+    void listCharacterSceneLooks(entry.identity_id)
+      .then((looks) => {
+        if (!active) {
+          return;
+        }
+        setSceneLooks(looks);
+        setSceneError("");
+        void onLoadPreviewUrls(looks.flatMap(sceneLookAssetIds));
+      })
+      .catch((loadError) => {
+        if (active) {
+          setSceneError(
+            errorMessage(loadError, "场景造型暂不可用，请稍后重试。"),
+          );
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setSceneLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [entry.identity_id, onLoadPreviewUrls]);
+
+  async function submitSceneLook(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (sceneGenerating) {
+      return;
+    }
+    const input = {
+      scene_name: sceneName.trim(),
+      scene_description: sceneDescription.trim(),
+      costume_description: costumeDescription.trim(),
+    };
+    if (
+      !input.scene_name ||
+      !input.scene_description ||
+      !input.costume_description
+    ) {
+      setSceneError("请完整填写场景名称、场景描述和服装描述。");
+      return;
+    }
+    setSceneGenerating(true);
+    setSceneError("");
+    try {
+      const created = await createCharacterSceneLook(entry.identity_id, input);
+      setSceneLooks((current) => [
+        created,
+        ...current.filter((look) => look.persona_id !== created.persona_id),
+      ]);
+      await onLoadPreviewUrls(sceneLookAssetIds(created));
+      setSceneName("");
+      setSceneDescription("");
+      setCostumeDescription("");
+      setSceneFormOpen(false);
+    } catch (createError) {
+      setSceneError(errorMessage(createError, "场景造型生成失败，请重试。"));
+    } finally {
+      setSceneGenerating(false);
+    }
+  }
 
   const sheetUrl = entry.contact_sheet_asset_id
     ? previewUrls[entry.contact_sheet_asset_id]
@@ -756,7 +852,11 @@ function CharacterLightbox({
         role="dialog"
       >
         <div className="character-lightbox__head">
-          <h3 className="character-lightbox__title">{entry.display_name}</h3>
+          <div>
+            <span className="character-detail__eyebrow">人物形象</span>
+            <h3 className="character-lightbox__title">{entry.display_name}</h3>
+            <p>人物身份保持不变，不同造型只调整场景、服装与视觉氛围。</p>
+          </div>
           <button
             aria-label="关闭人物预览"
             className="secondary-button"
@@ -766,7 +866,188 @@ function CharacterLightbox({
             关闭
           </button>
         </div>
-        {entry.contact_sheet_asset_id ? (
+        <div
+          aria-label="人物形象类型"
+          className="character-detail__tabs"
+          role="tablist"
+        >
+          <button
+            aria-selected={activeTab === "base"}
+            className={activeTab === "base" ? "is-active" : undefined}
+            onClick={() => setActiveTab("base")}
+            role="tab"
+            type="button"
+          >
+            人物基准
+          </button>
+          <button
+            aria-selected={activeTab === "scenes"}
+            className={activeTab === "scenes" ? "is-active" : undefined}
+            onClick={() => setActiveTab("scenes")}
+            role="tab"
+            type="button"
+          >
+            场景造型
+          </button>
+        </div>
+        {activeTab === "scenes" ? (
+          <section className="character-scene-panel" role="tabpanel">
+            <div className="character-scene-panel__head">
+              <div>
+                <h4>场景造型</h4>
+                <p>基于人物基准生成特定场景下的服装与五视图形象。</p>
+              </div>
+              {canManage ? (
+                <button
+                  className="primary-button"
+                  onClick={() => setSceneFormOpen((open) => !open)}
+                  type="button"
+                >
+                  {sceneFormOpen ? "收起" : "新增场景造型"}
+                </button>
+              ) : null}
+            </div>
+            {sceneFormOpen ? (
+              <form className="character-scene-form" onSubmit={submitSceneLook}>
+                <label>
+                  场景名称
+                  <input
+                    maxLength={80}
+                    placeholder="例如：工地巡检"
+                    value={sceneName}
+                    onChange={(event) => setSceneName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  场景描述
+                  <textarea
+                    maxLength={600}
+                    placeholder="例如：乡村别墅施工现场，白天自然光"
+                    value={sceneDescription}
+                    onChange={(event) =>
+                      setSceneDescription(event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  服装描述
+                  <textarea
+                    maxLength={600}
+                    placeholder="例如：黄色安全帽、深蓝色工装和反光背心"
+                    value={costumeDescription}
+                    onChange={(event) =>
+                      setCostumeDescription(event.target.value)
+                    }
+                  />
+                </label>
+                <p>提交后直接生成并发布五视图，无需管理员审核。</p>
+                <button
+                  className="primary-button"
+                  disabled={sceneGenerating}
+                  type="submit"
+                >
+                  {sceneGenerating
+                    ? "正在生成，预计 1–3 分钟…"
+                    : "生成场景五视图"}
+                </button>
+              </form>
+            ) : null}
+            {sceneError ? (
+              <p className="settings-error" role="alert">
+                {sceneError}
+              </p>
+            ) : null}
+            {sceneLoading ? (
+              <p className="status-note">正在读取场景造型…</p>
+            ) : sceneLooks.length ? (
+              <div className="character-scene-grid">
+                {sceneLooks.map((look) => {
+                  const preview =
+                    look.views.find(
+                      (view) => view.view_type === "FRONT_FACE",
+                    ) ?? look.views[0];
+                  return (
+                    <article
+                      className="character-scene-card"
+                      key={look.persona_id}
+                    >
+                      <div className="character-scene-card__image">
+                        {preview && previewUrls[preview.asset_id] ? (
+                          <img
+                            alt={`${entry.display_name} ${look.scene_name}`}
+                            src={previewUrls[preview.asset_id]}
+                          />
+                        ) : (
+                          <span className="source-frame-placeholder">
+                            场景预览加载中…
+                          </span>
+                        )}
+                      </div>
+                      <div className="character-scene-card__body">
+                        <strong>{look.scene_name}</strong>
+                        <span>{look.scene_description}</span>
+                        <small>{look.costume_description}</small>
+                        <em>五视图已发布</em>
+                        <button
+                          aria-label={`查看${look.scene_name}五视图`}
+                          className="secondary-button"
+                          onClick={() =>
+                            setExpandedSceneId((current) =>
+                              current === look.persona_id
+                                ? ""
+                                : look.persona_id,
+                            )
+                          }
+                          type="button"
+                        >
+                          {expandedSceneId === look.persona_id
+                            ? "收起五视图"
+                            : "查看五视图"}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="character-scene-empty">
+                还没有场景造型，可从人物基准创建第一套。
+              </p>
+            )}
+            {sceneLooks
+              .filter((look) => look.persona_id === expandedSceneId)
+              .map((look) => (
+                <section
+                  aria-label={`${look.scene_name}五视图`}
+                  className="character-scene-views"
+                  key={look.persona_id}
+                >
+                  <div className="character-scene-views__head">
+                    <strong>{look.scene_name} · 场景五视图</strong>
+                    <button
+                      className="secondary-button"
+                      onClick={() => setExpandedSceneId("")}
+                      type="button"
+                    >
+                      收起
+                    </button>
+                  </div>
+                  <div className="character-contact-sheet">
+                    {previewUrls[look.contact_sheet_asset_id] ? (
+                      <img
+                        alt={`${entry.display_name} ${look.scene_name} 场景五视图`}
+                        src={previewUrls[look.contact_sheet_asset_id]}
+                      />
+                    ) : (
+                      <span className="source-frame-placeholder">
+                        五视图加载中…
+                      </span>
+                    )}
+                  </div>
+                </section>
+              ))}
+          </section>
+        ) : entry.contact_sheet_asset_id ? (
           <div className="character-contact-sheet">
             {sheetUrl ? (
               <img alt={`${entry.display_name} 五视角拼合图`} src={sheetUrl} />

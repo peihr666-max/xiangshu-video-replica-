@@ -56,6 +56,23 @@ const option: api.ProjectCharacterVersionOption = {
   })),
 };
 
+const sceneOption: api.ProjectCharacterVersionOption = {
+  ...option,
+  character_version_id: "character-version-scene-1",
+  version_number: 1,
+  persona_id: "persona-scene-1",
+  persona_snapshot_json: {
+    ...option.persona_snapshot_json,
+    name: "工地巡检",
+    scene_description: "在施工现场检查工程进度",
+    costume_description: "白色安全帽和反光工程马甲",
+    appearance_constraints_json: {
+      appearance_type: "scene",
+    },
+  },
+  published_at: "2031-01-01T00:00:00Z",
+};
+
 const selected: api.ProjectMainCharacter = {
   project_id: "project-1",
   character_id: null,
@@ -71,6 +88,7 @@ const selected: api.ProjectMainCharacter = {
       display_name: option.identity_name,
       authorization_expires_at: option.authorization_expires_at,
     },
+    persona_id: option.persona_id,
     persona_snapshot_json: option.persona_snapshot_json,
     provider: option.provider,
     model: option.model,
@@ -277,6 +295,43 @@ describe("CharacterSelection", () => {
     fireEvent.click(screen.getByRole("button", { name: "更换" }));
     expect(
       await screen.findByText("选择一个不可变角色版本"),
+    ).toBeInTheDocument();
+  });
+
+  it("prefers the base appearance over a newer scene look for automatic selection", async () => {
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      sceneOption,
+      option,
+    ]);
+
+    render(<CharacterSelection projectId="project-1" />);
+
+    await waitFor(() =>
+      expect(api.chooseProjectMainCharacterVersion).toHaveBeenCalledWith(
+        "project-1",
+        option.character_version_id,
+      ),
+    );
+  });
+
+  it("labels scene looks explicitly in the inline first-frame selector", async () => {
+    vi.mocked(api.getProjectMainCharacter).mockResolvedValue(selected);
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      option,
+      sceneOption,
+    ]);
+
+    render(<CharacterSelection projectId="project-1" variant="inline" />);
+
+    expect(
+      await screen.findByRole("option", {
+        name: "林夏 · 场景：工地巡检 · V1",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: "林夏 · 人物基准：乡墅项目管理专家 · V3",
+      }),
     ).toBeInTheDocument();
   });
 
