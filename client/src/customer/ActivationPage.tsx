@@ -28,10 +28,12 @@ export function ActivationPage({
   onActivate,
   isBusy,
   error,
+  onPairDevice,
 }: {
   onActivate(input: CustomerActivationFormInput): void;
   isBusy: boolean;
   error: CustomerApiError | null;
+  onPairDevice?(): void;
 }) {
   const [activationCode, setActivationCode] = useState("");
   const [deviceName, setDeviceName] = useState("");
@@ -92,6 +94,11 @@ export function ActivationPage({
             <button type="submit" disabled={isBusy}>
               {isBusy ? "正在激活…" : "激活并进入工作台"}
             </button>
+            {onPairDevice ? (
+              <button type="button" disabled={isBusy} onClick={onPairDevice}>
+                已有账号，添加或更换设备
+              </button>
+            ) : null}
           </form>
         </div>
         <footer className="customer-access-footer">
@@ -103,6 +110,9 @@ export function ActivationPage({
 }
 
 function activationErrorText(error: CustomerApiError): string {
+  if (error.code === "PAIRING_APPROVAL_REQUIRED") {
+    return "该账号已激活，请使用设备配对并由主设备或管理员审批。";
+  }
   if (error.code === "ACTIVATION_UNAVAILABLE") {
     return customerVisibleErrorMessage(error);
   }

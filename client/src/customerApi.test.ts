@@ -451,8 +451,8 @@ describe("customer API adapter requests", () => {
       "pairing-1",
     );
     const reset = await customerResetActivationCode({
-      kind: "device",
-      token: deviceTokenText,
+      kind: "session",
+      token: sessionTokenText,
     });
 
     expect(reset.masked_code).toContain("***");
@@ -464,6 +464,11 @@ describe("customer API adapter requests", () => {
       `${BASE}/api/customer/activation-code/reset`,
     );
     expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBe("POST");
+    expect(
+      ((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers).get(
+        "Authorization",
+      ),
+    ).toBe("Bearer session-token");
   });
 
   it("updates the customer display name and closes an unpaid order", async () => {

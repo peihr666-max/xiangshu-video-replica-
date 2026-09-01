@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "049_async_generation_reconcile"
+    assert version == "050_activation_license_zero_credit"
     assert {
         "characters",
         "project_main_characters",
@@ -185,6 +185,11 @@ def test_admin_crud_preserves_reference_order_and_employee_reads_only_available(
 
     assert employee_list.status_code == 200
     assert [item["id"] for item in employee_list.json()] == [available["id"]]
+    foreign_detail = client.get(
+        f"/api/characters/{available['id']}?project_id=project_owned",
+        headers=headers("employee_2"),
+    )
+    assert foreign_detail.status_code == 403
     assert admin_list.status_code == 200
     assert {item["id"] for item in admin_list.json()} == {
         available["id"],

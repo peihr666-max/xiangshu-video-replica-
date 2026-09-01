@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AdminApp } from "./AdminApp";
 import { App } from "./App";
 import type { CurrentUser, CustomerProfile } from "./api";
 import { ActivationPage } from "./customer/ActivationPage";
+import { CustomerPairingFlow } from "./customer/CustomerPairingFlow";
 import { CustomerWorkspace } from "./customer/CustomerWorkspace";
 import { LoginPage } from "./customer/LoginPage";
 import { SessionConflictDialog } from "./customer/SessionConflictDialog";
@@ -18,7 +19,9 @@ export function RootApp({
   path?: string;
 }) {
   if (path === "/customer" || path.startsWith("/customer/")) {
-    return <CustomerShell />;
+    return (
+      <CustomerShell startInPairing={path.startsWith("/customer/pairing")} />
+    );
   }
   return path === "/admin" || path.startsWith("/admin/") ? (
     <AdminApp />
@@ -31,12 +34,29 @@ export function RootApp({
  * dev doc §4.1. It never renders the internal login shell, so the internal
  * access-token input is structurally not a customer entry. The workspace
  * screen reuses the shared shell under the customer identity. */
-function CustomerShell() {
+function CustomerShell({
+  startInPairing = false,
+}: {
+  startInPairing?: boolean;
+}) {
   // A stable store identity for the whole mount: the in-memory browser store
   // keeps its credentials in closures, so a per-render store would lose them
   // (and every lifecycle listener would re-mount on each render).
   const store = useMemo(customerCredentialStore, []);
   const session = useCustomerSession(store);
+  const [pairing, setPairing] = useState(startInPairing);
+
+  if (pairing) {
+    return (
+      <CustomerPairingFlow
+        store={store}
+        onPaired={() => {
+          setPairing(false);
+          void session.retryLogin();
+        }}
+      />
+    );
+  }
 
   switch (session.screen) {
     case "checking":
@@ -54,6 +74,7 @@ function CustomerShell() {
           onActivate={(input) => void session.activate(input)}
           isBusy={session.isBusy}
           error={session.error}
+          onPairDevice={() => setPairing(true)}
         />
       );
     case "login":

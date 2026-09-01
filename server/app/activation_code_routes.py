@@ -404,13 +404,14 @@ def _recover_or_bind_active_device(
     request_id: str,
     server_now: datetime,
 ) -> dict[str, object]:
-    """Restore a known machine or bind a free slot for one ACTIVE code.
+    """Restore a known machine for one ACTIVE code.
 
     The activation code is the customer's only login entry. A historical
     fingerprint restores its original device row even after local credential
-    loss or an administrator-forced logout. Supplying the ACTIVE code on a new
-    machine binds the next free slot directly. Empty-code boot recovery remains
-    limited to a known fingerprint, and the two-device ceiling stays enforced.
+    loss or an administrator-forced logout. Unknown hardware must use the
+    explicit pairing workflow and receive approval from a bound device or an
+    administrator; presenting the account's reusable activation code is not
+    itself authority to bind a new device.
     """
 
     if not bound_user_id:
@@ -448,38 +449,15 @@ def _recover_or_bind_active_device(
     now_iso = server_now.replace(microsecond=0).isoformat()
 
     if row is None:
-        if not allow_new_binding:
-            # Unattended boot recovery never enrolls unknown hardware.
-            raise _unavailable()
-        free_slot = next((slot for slot in (1, 2) if slot not in occupied_slots), None)
-        if free_slot is None:
+        if allow_new_binding:
             raise _http(
                 409,
-                "DEVICE_SLOTS_FULL",
-                "This activation code has reached its device limit.",
+                "PAIRING_APPROVAL_REQUIRED",
+                "This account is already active. Approve this device through device pairing.",
             )
-        device_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO customer_devices "
-            "(id, activation_code_id, user_id, slot_no, display_name, platform, "
-            " fingerprint_hmac, fingerprint_key_version, fingerprint_canonical, "
-            " token_digest, token_key_version, last_active_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                device_id,
-                code_id,
-                user_id,
-                free_slot,
-                device_name,
-                device_platform,
-                fingerprint_digests[-1],
-                fingerprint_key_version,
-                fingerprint_digests[0],
-                token_digest,
-                fingerprint_key_version,
-                now_iso,
-            ),
-        )
+        # Unattended boot recovery never reveals whether an unknown machine
+        # presented a code; keep its anti-enumeration response unchanged.
+        raise _unavailable()
     else:
         device_id = str(row[0])
         previous_slot = int(row[3])
@@ -686,42 +664,50 @@ def _run_activation(
         ),
     )
 
-    # The PAID first-charge order, priced by the frozen batch snapshot:
-    # credits x frozen unit price. PRICE-01 keeps the charged price at or
-    # above the order's own base snapshot; the activation lane carries no
-    # third-party trade number (revision 026 shapes).
-    order_id = str(uuid.uuid4())
-    merchant_order_no = f"ACT-{uuid.uuid4().hex}"
-    amount_fen = credits * unit_price_fen
+    # Account activation and recharge are separate business events. New
+    # licence-only batches carry zero credits and create no synthetic payment
+    # or wallet CHARGE. Positive legacy/gift batches retain their historical
+    # frozen-credit behavior so already-issued value is never discarded.
+    order_id: str | None = None
     now_iso = server_now.replace(microsecond=0).isoformat()
-    conn.execute(
-        "INSERT INTO recharge_orders "
-        "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, "
-        " status, pricing_scope, base_unit_price_fen_snapshot, "
-        " charged_unit_price_fen_snapshot, min_recharge_fen_snapshot, "
-        " recharge_step_fen_snapshot, amount_fen, credits, paid_at) "
-        "VALUES (%s, %s, %s, 'activation_code', NULL, NULL, 'PAID', "
-        " 'CUSTOMER_STANDARD', %s, %s, %s, %s, %s, %s, %s)",
-        (
-            order_id,
-            user_id,
-            merchant_order_no,
-            unit_price_fen,
-            unit_price_fen,
-            1,
-            1,
-            amount_fen,
-            credits,
-            now_iso,
-        ),
-    )
-    conn.execute(
-        "INSERT INTO wallet_transactions "
-        "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
-        " idempotency_key) "
-        "VALUES (%s, %s, 'CHARGE', %s, 0, %s, %s)",
-        (str(uuid.uuid4()), user_id, credits, order_id, f"activation_code:charge:{order_id}"),
-    )
+    if credits > 0:
+        order_id = str(uuid.uuid4())
+        merchant_order_no = f"ACT-{uuid.uuid4().hex}"
+        amount_fen = credits * unit_price_fen
+        conn.execute(
+            "INSERT INTO recharge_orders "
+            "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, "
+            " status, pricing_scope, base_unit_price_fen_snapshot, "
+            " charged_unit_price_fen_snapshot, min_recharge_fen_snapshot, "
+            " recharge_step_fen_snapshot, amount_fen, credits, paid_at) "
+            "VALUES (%s, %s, %s, 'activation_code', NULL, NULL, 'PAID', "
+            " 'CUSTOMER_STANDARD', %s, %s, %s, %s, %s, %s, %s)",
+            (
+                order_id,
+                user_id,
+                merchant_order_no,
+                unit_price_fen,
+                unit_price_fen,
+                1,
+                1,
+                amount_fen,
+                credits,
+                now_iso,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO wallet_transactions "
+            "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+            " idempotency_key) "
+            "VALUES (%s, %s, 'CHARGE', %s, 0, %s, %s)",
+            (
+                str(uuid.uuid4()),
+                user_id,
+                credits,
+                order_id,
+                f"activation_code:charge:{order_id}",
+            ),
+        )
 
     conn.execute(
         "INSERT INTO activation_code_activations "

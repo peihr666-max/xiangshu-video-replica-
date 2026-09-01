@@ -593,14 +593,15 @@ def list_simple_library(
 ) -> list[SimpleLibraryEntry]:
     """List characters with the published seven-view assets for previews.
 
-    Every authenticated role can read the library (mirroring the existing
-    identity list), and for each identity only the latest published version's
-    approved selection is returned so the preview always matches what video
-    generation would actually consume.
+    Customer-workspace roles only see identities they own.  Administrators and
+    auditors retain the cross-account control-plane view.  For each identity
+    only the latest published version's approved selection is returned so the
+    preview always matches what video generation would actually consume.
     """
-    del actor  # visibility intentionally matches GET /api/person-identities
+    owner_clause = "" if actor.role in {"admin", "auditor"} else "WHERE identity.owner_user_id = %s"
+    parameters: tuple[object, ...] = () if not owner_clause else (actor.id,)
     rows = conn.execute(
-        """
+        f"""
         SELECT identity.id AS identity_id,
                identity.display_name AS display_name,
                identity.owner_user_id AS owner_user_id,
@@ -619,9 +620,11 @@ def list_simple_library(
           ON view.character_version_id = version.id
          AND view.review_status = 'APPROVED'
          AND view.is_published_selection = 1
+        {owner_clause}
         ORDER BY identity.created_at DESC, identity.id,
                  version.published_at DESC, view.view_type
-        """
+        """,
+        parameters,
     ).fetchall()
 
     entries: list[SimpleLibraryEntry] = []

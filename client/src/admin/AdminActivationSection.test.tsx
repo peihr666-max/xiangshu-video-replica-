@@ -13,11 +13,7 @@ const adminActor = {
 describe("AdminActivationSection", () => {
   it("shows activation management inside an authenticated admin session", () => {
     render(
-      <AdminActivationSection
-        actor={adminActor}
-        unitPriceFen={1000}
-        onSessionExpired={vi.fn()}
-      />,
+      <AdminActivationSection actor={adminActor} onSessionExpired={vi.fn()} />,
     );
 
     expect(
@@ -38,7 +34,6 @@ describe("AdminActivationSection", () => {
     render(
       <AdminActivationSection
         actor={{ ...adminActor, role: "auditor" }}
-        unitPriceFen={1000}
         onSessionExpired={vi.fn()}
       />,
     );
@@ -49,11 +44,7 @@ describe("AdminActivationSection", () => {
 
   it("switches between activation subpages", () => {
     render(
-      <AdminActivationSection
-        actor={adminActor}
-        unitPriceFen={1000}
-        onSessionExpired={vi.fn()}
-      />,
+      <AdminActivationSection actor={adminActor} onSessionExpired={vi.fn()} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "激活码发放" }));

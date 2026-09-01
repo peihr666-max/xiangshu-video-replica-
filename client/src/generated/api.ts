@@ -1165,7 +1165,7 @@ export interface paths {
     put?: never;
     /**
      * Reset Customer Activation Code
-     * @description Rotate the main activation code while preserving bound devices/session.
+     * @description Rotate the main activation code from the live primary-device session.
      *
      *     The old digest is replaced atomically. The replacement plaintext is not
      *     persisted and is returned exactly once with a no-store cache directive.
@@ -1417,6 +1417,29 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/activation-codes/{code_id}/reveal": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Reveal Activation Code
+     * @description Reveal one retained code for an explicit, audited administrator copy.
+     *
+     *     The plaintext is decrypted in memory and returned with ``no-store``. The
+     *     idempotency snapshot contains identifiers only; it never stores the code.
+     */
+    post: operations["reveal_activation_code_api_control_activation_codes__code_id__reveal_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/activation-codes": {
     parameters: {
       query?: never;
@@ -1426,7 +1449,7 @@ export interface paths {
     };
     /**
      * List Activation Codes
-     * @description List codes; administrators may recover full values from sealed exports.
+     * @description List masked code metadata without bulk-recovering plaintext values.
      */
     get: operations["list_activation_codes_api_control_activation_codes_get"];
     put?: never;
@@ -8319,6 +8342,43 @@ export interface operations {
     };
   };
   revoke_activation_code_api_control_activation_codes__code_id__revoke_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        code_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AdminWriteContract"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  reveal_activation_code_api_control_activation_codes__code_id__reveal_post: {
     parameters: {
       query?: never;
       header?: never;

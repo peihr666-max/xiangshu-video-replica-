@@ -7,6 +7,7 @@ import {
   createIdempotencyKey,
   listActivationCodes,
   resumeActivationCode,
+  revealActivationCode,
   revokeActivationCode,
   suspendActivationCode,
 } from "../api.admin";
@@ -60,6 +61,7 @@ export function ActivationCodesPage({
   const [actionReason, setActionReason] = useState("");
   const [actionConfirmed, setActionConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [copyingCodeId, setCopyingCodeId] = useState<string | null>(null);
   // One idempotency key per logical transition: ambiguous failures (timeout /
   // network) keep the key so a retry replays the T12 server snapshot; a new
   // openAction or a definitive outcome releases it.
@@ -115,6 +117,25 @@ export function ActivationCodesPage({
     setActionKey(null);
     setError("");
     setNotice("");
+  }
+
+  async function copyActivationCode(codeId: string) {
+    setError("");
+    setNotice("");
+    setCopyingCodeId(codeId);
+    try {
+      const result = await revealActivationCode(
+        codeId,
+        "后台复制激活码",
+        createIdempotencyKey(),
+      );
+      await navigator.clipboard.writeText(result.activation_code);
+      setNotice(`激活码已复制（request id: ${result.request_id}）`);
+    } catch (cause) {
+      handleFailure(cause, "复制激活码失败");
+    } finally {
+      setCopyingCodeId(null);
+    }
   }
 
   async function submitAction(event: FormEvent<HTMLFormElement>) {
@@ -236,6 +257,17 @@ export function ActivationCodesPage({
                 <td>{item.code_id}</td>
                 <td>
                   <code>{item.masked_code}</code>
+                  {readOnly ? null : (
+                    <button
+                      type="button"
+                      disabled={copyingCodeId !== null}
+                      onClick={() => void copyActivationCode(item.code_id)}
+                    >
+                      {copyingCodeId === item.code_id
+                        ? "复制中…"
+                        : "复制激活码"}
+                    </button>
+                  )}
                 </td>
                 <td>{statusLabel(item.status)}</td>
                 <td>{item.bound_user_id ?? "—"}</td>

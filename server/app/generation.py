@@ -5349,7 +5349,7 @@ def list_generation_batches(
     if project_id is not None:
         clauses.append("batch.project_id = %s")
         parameters.append(project_id)
-    elif actor.role == "employee":
+    elif actor.role in {"employee", "customer"}:
         clauses.append("project.owner_user_id = %s")
         parameters.append(actor.id)
     if created_by_user_id is not None:

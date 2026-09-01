@@ -125,6 +125,7 @@ from app.activation_code_service import (
     mask_activation_code,
     normalize_activation_code,
 )
+from app.customer_auth import CustomerSessionContext, SessionFencingError, verify_session_context
 from app.customer_device_service import (
     APPROVE_ALREADY_CONSUMED,
     APPROVE_EXPIRED,
@@ -1425,7 +1426,7 @@ def reset_customer_activation_code(
     request: Request,
     response: Response,
 ) -> ActivationCodeResetResponse:
-    """Rotate the main activation code while preserving bound devices/session.
+    """Rotate the main activation code from the live primary-device session.
 
     The old digest is replaced atomically. The replacement plaintext is not
     persisted and is returned exactly once with a no-store cache directive.
@@ -1433,12 +1434,37 @@ def reset_customer_activation_code(
     """
     _require_pg()
     token = _bearer_token(request)
+    if token is None:
+        raise _http(401, "SESSION_REQUIRED", "A live customer session is required.")
     request_id = _request_id(request)
     with pg_transaction() as conn:
-        device = _authenticate(conn, token)
+        try:
+            session: CustomerSessionContext = verify_session_context(
+                conn,
+                presentation_session_token=token,
+            )
+        except ActivationKeyError:
+            raise _http(
+                503,
+                "SESSION_SERVICE_UNAVAILABLE",
+                "Session verification is unavailable.",
+            ) from None
+        except SessionFencingError as exc:
+            raise _http(401, exc.code, exc.message) from None
+        activation_row = conn.execute(
+            "SELECT first_device_id FROM activation_code_activations "
+            "WHERE code_id = %s AND user_id = %s",
+            (session.activation_code_id, session.user_id),
+        ).fetchone()
+        if activation_row is None or str(activation_row[0]) != session.device_id:
+            raise _http(
+                403,
+                "PRIMARY_DEVICE_REQUIRED",
+                "Only the primary bound device may reset the activation code.",
+            )
         code_row = conn.execute(
             "SELECT status FROM activation_codes WHERE id = %s FOR UPDATE",
-            (device.activation_code_id,),
+            (session.activation_code_id,),
         ).fetchone()
         if code_row is None or str(code_row[0]) != "ACTIVE":
             raise _http(
@@ -1484,28 +1510,28 @@ def reset_customer_activation_code(
                 replacement_digest,
                 key_version,
                 masked,
-                device.activation_code_id,
+                session.activation_code_id,
             ),
         )
         expired_pairings = conn.execute(
             "UPDATE device_pairing_requests SET status = 'EXPIRED' "
             "WHERE activation_code_id = %s AND status IN ('PENDING', 'APPROVED')",
-            (device.activation_code_id,),
+            (session.activation_code_id,),
         ).rowcount
         _insert_customer_device_audit(
             conn,
-            actor_user_id=device.user_id,
+            actor_user_id=session.user_id,
             action="customer.activation_code.rotated",
             entity_type="activation_code",
-            entity_id=device.activation_code_id,
+            entity_id=session.activation_code_id,
             request_id=request_id,
             metadata={"expired_pairing_count": expired_pairings},
         )
     response.headers["Cache-Control"] = "no-store"
     logger.info(
         "customer activation code rotated: code=%s actor_device=%s request=%s",
-        device.activation_code_id,
-        device.id,
+        session.activation_code_id,
+        session.device_id,
         request_id,
     )
     return ActivationCodeResetResponse(

@@ -120,7 +120,7 @@ def read_characters(
     actor: AuthenticatedUser,
     project_id: str | None = Query(default=None),
 ) -> list[CharacterResponse]:
-    if actor.role == "employee" and project_id is not None:
+    if actor.role in {"employee", "customer"} and project_id is not None:
         require_project_access(
             conn,
             actor=actor,
@@ -146,7 +146,7 @@ def read_available_project_character_versions(
         project_id=project_id,
         action="project.main_character.options.read",
     )
-    return list_available_project_character_versions(conn, project_id=project_id)
+    return list_available_project_character_versions(conn, actor=actor, project_id=project_id)
 
 
 @router.post("/characters", response_model=CharacterResponse, status_code=status.HTTP_201_CREATED)
@@ -182,6 +182,13 @@ def read_character_route(
     actor: AuthenticatedUser,
     project_id: str | None = Query(default=None),
 ) -> CharacterResponse:
+    if actor.role in {"employee", "customer"} and project_id is not None:
+        require_project_access(
+            conn,
+            actor=actor,
+            project_id=project_id,
+            action="character.read",
+        )
     character = get_character(conn, character_id=character_id, actor=actor, project_id=project_id)
     return character_response(character)
 

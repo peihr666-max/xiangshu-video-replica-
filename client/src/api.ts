@@ -3916,7 +3916,7 @@ export type CustomerActivationCodeReset =
 /** Rotate the active account code. The replacement plaintext is returned
  * once and must never be persisted by the desktop. */
 export async function customerResetActivationCode(
-  credential: CustomerDeviceCredential,
+  credential: CustomerSessionCredential,
 ): Promise<CustomerActivationCodeReset> {
   const { body } = await customerJson<CustomerActivationCodeReset>(
     "/api/customer/activation-code/reset",

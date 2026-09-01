@@ -17,6 +17,7 @@ the one-time download response handed to the operator (T11 principle).
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import secrets
 import threading
@@ -431,8 +432,10 @@ def test_create_batch_idempotency_conflict_on_different_payload(
 def test_create_batch_validates_payload(client: TestClient, admin_headers: dict[str, str]) -> None:
     for overrides in (
         {"name": "   "},
-        {"face_value_fen": 0},
-        {"credits": 0},
+        {"face_value_fen": -1},
+        {"credits": -1},
+        {"face_value_fen": 0, "credits": 1},
+        {"face_value_fen": 1, "credits": 0},
         {"quantity": 0},
         {"activation_expires_at": "2000-01-01T00:00:00+00:00"},
         {"activation_expires_at": "not-a-timestamp"},
@@ -440,6 +443,23 @@ def test_create_batch_validates_payload(client: TestClient, admin_headers: dict[
         response = _create_batch(client, admin_headers, **overrides)  # type: ignore[arg-type]
         assert response.status_code == 400, overrides
         assert response.json()["detail"]["code"] == "BATCH_VALIDATION_FAILED"
+
+
+def test_create_license_only_batch_allows_zero_initial_credits(
+    client: TestClient, admin_headers: dict[str, str]
+) -> None:
+    response = _create_batch(
+        client,
+        admin_headers,
+        name="零额度授权码",
+        quantity=2,
+        face_value_fen=0,
+        credits=0,
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["face_value_fen"] == 0
+    assert response.json()["unit_price_fen_snapshot"] == 0
+    assert response.json()["credits_snapshot"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1084,8 +1104,8 @@ def test_status_action_requires_write_contract(
 # ---------------------------------------------------------------------------
 
 
-def test_list_codes_filters_returns_recoverable_plaintext_and_never_digests(
-    client: TestClient, admin_headers: dict[str, str]
+def test_list_codes_stays_masked_and_single_code_reveal_is_audited(
+    client: TestClient, admin_headers: dict[str, str], clean_state: str
 ) -> None:
     batch_a = _create_batch(client, admin_headers, name="批次A", quantity=2).json()
     batch_b = _create_batch(client, admin_headers, name="批次B", quantity=1).json()
@@ -1108,10 +1128,37 @@ def test_list_codes_filters_returns_recoverable_plaintext_and_never_digests(
         assert item["status"] == "GENERATED"
         assert item["masked_code"].startswith("XS04-")
         assert "***" in item["masked_code"]
-        assert item["activation_code"] in plaintext_a
+        assert "activation_code" not in item
         assert "code_digest" not in item
 
-    assert {item["activation_code"] for item in items} == set(plaintext_a)
+    reveal_headers = {**admin_headers, "Idempotency-Key": "idem-reveal-code-a"}
+    revealed = client.post(
+        f"/api/control/activation-codes/{items[0]['code_id']}/reveal",
+        json={"confirm": True, "reason": "客服复制给客户"},
+        headers=reveal_headers,
+    )
+    assert revealed.status_code == 200, revealed.text
+    assert revealed.headers["Cache-Control"] == "no-store"
+    assert revealed.json()["activation_code"] in plaintext_a
+    replayed = client.post(
+        f"/api/control/activation-codes/{items[0]['code_id']}/reveal",
+        json={"confirm": True, "reason": "客服复制给客户"},
+        headers=reveal_headers,
+    )
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.headers["X-Idempotent-Replay"] == "true"
+    assert replayed.json() == revealed.json()
+
+    with psycopg.connect(clean_state) as conn:
+        audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'admin.activation_code.revealed' AND entity_id = %s",
+            (items[0]["code_id"],),
+        ).fetchall()
+    assert len(audit) == 1
+    metadata = json.loads(audit[0][0])
+    assert metadata["reason"] == "客服复制给客户"
+    assert revealed.json()["activation_code"] not in str(audit[0][0])
 
     issued = client.get(
         "/api/control/activation-codes",
@@ -1148,9 +1195,16 @@ def test_list_codes_does_not_expose_bearer_code_to_auditor(
 
     assert response.status_code == 200
     item = response.json()["items"][0]
-    assert item["activation_code"] is None
+    assert "activation_code" not in item
     assert "***" in item["masked_code"]
     assert "code_digest" not in item
+
+    forbidden = client.post(
+        f"/api/control/activation-codes/{item['code_id']}/reveal",
+        json={"confirm": True, "reason": "只读账号不允许查看"},
+        headers={**auditor_headers, "Idempotency-Key": "idem-auditor-reveal"},
+    )
+    assert forbidden.status_code == 403
 
 
 # ---------------------------------------------------------------------------

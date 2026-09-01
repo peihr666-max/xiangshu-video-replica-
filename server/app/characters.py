@@ -62,11 +62,16 @@ def list_characters(
         """
     ).fetchall()
     characters = [character_from_row(row) for row in rows]
-    if actor.role == "employee":
+    if actor.role in {"employee", "customer"}:
         return [
             character
             for character in characters
-            if character_is_available(character, project_id=project_id)
+            if character_is_owned_or_project_authorized(
+                character,
+                actor=actor,
+                project_id=project_id,
+            )
+            and character_is_available(character, project_id=project_id)
         ]
     return characters
 
@@ -79,8 +84,13 @@ def get_character(
     project_id: str | None,
 ) -> CharacterData:
     character = read_character(conn, character_id)
-    if actor.role == "employee" and not character_is_available(character, project_id=project_id):
-        raise character_not_available()
+    if actor.role in {"employee", "customer"}:
+        if not character_is_owned_or_project_authorized(
+            character,
+            actor=actor,
+            project_id=project_id,
+        ) or not character_is_available(character, project_id=project_id):
+            raise character_not_available()
     return character
 
 
@@ -383,6 +393,7 @@ def sync_legacy_character_domain(
     scope_json = encode_json_list(character.authorization_project_ids)
     source_asset_id = character.reference_asset_ids[0] if character.reference_asset_ids else None
     source_sha256 = asset_sha256(conn, source_asset_id)
+    owner_user_id = legacy_character_owner_user_id(conn, character=character, actor=actor)
     snapshot_json = json.dumps(
         character_snapshot(character),
         ensure_ascii=True,
@@ -405,7 +416,7 @@ def sync_legacy_character_domain(
             """,
             (
                 identity_id,
-                actor.id,
+                owner_user_id,
                 character.name,
                 authorization_status,
                 scope_json,
@@ -429,13 +440,15 @@ def sync_legacy_character_domain(
         conn.execute(
             """
             UPDATE person_identities
-            SET display_name = %s, authorization_status = %s, authorization_scope = %s,
+            SET owner_user_id = %s, display_name = %s, authorization_status = %s,
+                authorization_scope = %s,
                 authorization_expires_at = %s, source_asset_id = %s,
                 source_quality_status = 'IMPORTED', status = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
             (
+                owner_user_id,
                 character.name,
                 authorization_status,
                 scope_json,
@@ -612,6 +625,34 @@ def character_is_available(character: CharacterData, *, project_id: str | None) 
     if not character.authorization_project_ids:
         return True
     return project_id in character.authorization_project_ids
+
+
+def character_is_owned_or_project_authorized(
+    character: CharacterData,
+    *,
+    actor: CurrentUser,
+    project_id: str | None,
+) -> bool:
+    if character.created_by_user_id == actor.id:
+        return True
+    return project_id is not None and project_id in character.authorization_project_ids
+
+
+def legacy_character_owner_user_id(
+    conn: BusinessConnection,
+    *,
+    character: CharacterData,
+    actor: CurrentUser,
+) -> str:
+    if not character.authorization_project_ids:
+        return actor.id
+    placeholders = ", ".join("%s" for _ in character.authorization_project_ids)
+    rows = conn.execute(
+        f"SELECT DISTINCT owner_user_id FROM projects WHERE id IN ({placeholders})",
+        tuple(character.authorization_project_ids),
+    ).fetchall()
+    owners = {str(row[0]) for row in rows}
+    return next(iter(owners)) if len(owners) == 1 else actor.id
 
 
 def next_version_number(conn: BusinessConnection, project_id: str) -> int:

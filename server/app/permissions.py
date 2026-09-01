@@ -281,7 +281,11 @@ def require_asset_access(
     # published character version referenced in their asset metadata.
     if str(row["kind"]) == "character_contact_sheet":
         sheet_identity = _published_contact_sheet_identity(conn, row)
-        if sheet_identity is not None and character_identity_is_current(sheet_identity):
+        if (
+            sheet_identity is not None
+            and identity_owned_by_actor(sheet_identity, actor)
+            and character_identity_is_current(sheet_identity)
+        ):
             return cast(sqlite3.Row, row)
 
     # Simple-upload source photos also live outside character_assets; grant
@@ -289,12 +293,17 @@ def require_asset_access(
     # generation can use the uploaded photo as the authoritative face input.
     if str(row["kind"]) == "character_source_image":
         source_identity = _identity_from_asset_metadata(conn, row)
-        if source_identity is not None and character_identity_is_current(source_identity):
+        if (
+            source_identity is not None
+            and identity_owned_by_actor(source_identity, actor)
+            and character_identity_is_current(source_identity)
+        ):
             return cast(sqlite3.Row, row)
 
     published_character = conn.execute(
         """
         SELECT
+            identity.owner_user_id,
             identity.authorization_status,
             identity.authorization_expires_at,
             identity.source_quality_status,
@@ -312,7 +321,11 @@ def require_asset_access(
         """,
         (asset_id,),
     ).fetchone()
-    if published_character is not None and character_identity_is_current(published_character):
+    if (
+        published_character is not None
+        and identity_owned_by_actor(published_character, actor)
+        and character_identity_is_current(published_character)
+    ):
         return cast(sqlite3.Row, row)
 
     _raise_denial_with_audit(
@@ -334,6 +347,11 @@ def character_identity_is_current(row: sqlite3.Row) -> bool:
         authorization_expires_at=row["authorization_expires_at"],
         source_quality_status=row["source_quality_status"],
     )
+
+
+def identity_owned_by_actor(row: sqlite3.Row, actor: CurrentUser) -> bool:
+    owner_user_id = row["owner_user_id"]
+    return owner_user_id is not None and str(owner_user_id) == actor.id
 
 
 def _record_authorization_evidence(
@@ -382,6 +400,7 @@ def _identity_from_asset_metadata(conn: BusinessConnection, row: sqlite3.Row) ->
     identity: sqlite3.Row | None = conn.execute(
         """
         SELECT
+            owner_user_id,
             authorization_status,
             authorization_expires_at,
             source_quality_status,
@@ -408,6 +427,7 @@ def _published_contact_sheet_identity(
     identity: sqlite3.Row | None = conn.execute(
         """
         SELECT
+            identity.owner_user_id,
             identity.authorization_status,
             identity.authorization_expires_at,
             identity.source_quality_status,

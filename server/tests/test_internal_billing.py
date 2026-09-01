@@ -11,7 +11,7 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository
 
-HEAD_REVISION = "049_async_generation_reconcile"
+HEAD_REVISION = "050_activation_license_zero_credit"
 
 
 def seed_subjects(conn: sqlite3.Connection) -> None:

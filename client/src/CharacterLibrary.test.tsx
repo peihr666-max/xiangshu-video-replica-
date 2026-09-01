@@ -111,7 +111,7 @@ describe("CharacterLibrary", () => {
       foreignEntry,
     ]);
 
-    render(<CharacterLibrary userRole="employee" userId="employee_1" />);
+    render(<CharacterLibrary userRole="admin" userId="admin_1" />);
 
     // 卡片封面一律用正脸近景，下载与拼合详情收进灯箱。
     expect(await screen.findByAltText("林夏 正脸近景")).toBeInTheDocument();
@@ -436,12 +436,15 @@ describe("CharacterLibrary", () => {
     expect(await screen.findByText("荣哥二号")).toBeInTheDocument();
   });
 
-  it("hides rename controls from non-owner employees", async () => {
+  it("does not render identities owned by another workspace account", async () => {
     vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([entry]);
 
     render(<CharacterLibrary userRole="employee" userId="employee_2" />);
 
-    expect(await screen.findByText("林夏")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(api.listSimpleCharacterLibrary).toHaveBeenCalled(),
+    );
+    expect(screen.queryByText("林夏")).toBeNull();
     expect(screen.queryByRole("button", { name: "改名" })).toBeNull();
   });
 
@@ -480,12 +483,15 @@ describe("CharacterLibrary", () => {
     expect(screen.getByText("林夏")).toBeInTheDocument();
   });
 
-  it("hides the delete button from non-owners", async () => {
+  it("does not expose delete controls for filtered foreign identities", async () => {
     vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([foreignEntry]);
 
     render(<CharacterLibrary userRole="employee" userId="employee_1" />);
 
-    expect(await screen.findByText("荣哥")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(api.listSimpleCharacterLibrary).toHaveBeenCalled(),
+    );
+    expect(screen.queryByText("荣哥")).toBeNull();
     expect(screen.queryByRole("button", { name: "删除人物 荣哥" })).toBeNull();
   });
 
@@ -597,12 +603,15 @@ describe("CharacterLibrary", () => {
     ).toBeEnabled();
   });
 
-  it("hides the regenerate button from non-owners and auditors", async () => {
+  it("does not render a non-owner's character entry", async () => {
     vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([foreignEntry]);
 
     render(<CharacterLibrary userRole="employee" userId="employee_1" />);
 
-    expect(await screen.findByText("荣哥")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(api.listSimpleCharacterLibrary).toHaveBeenCalledTimes(1),
+    );
+    expect(screen.queryByText("荣哥")).toBeNull();
     expect(
       screen.queryByRole("button", {
         name: "重新生成人物 荣哥 的多视图",
