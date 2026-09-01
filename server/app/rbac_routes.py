@@ -947,6 +947,13 @@ def create_cached_character_url(
         # the fenced PG transaction, then release the pooled connection before
         # any COS HEAD/GET/PUT network operation.
         with db.write() as (conn, actor):
+            require_not_auditor(
+                conn,
+                actor=actor,
+                action="asset.character_cache.read",
+                entity_type="asset",
+                entity_id=asset_id,
+            )
             row = require_asset_access(
                 conn,
                 actor=actor,
@@ -957,6 +964,13 @@ def create_cached_character_url(
         cache_name, _ = _populate_customer_character_cache(plan)
     else:
         with db.write() as (conn, actor):
+            require_not_auditor(
+                conn,
+                actor=actor,
+                action="asset.character_cache.read",
+                entity_type="asset",
+                entity_id=asset_id,
+            )
             row = require_asset_access(
                 conn,
                 actor=actor,

@@ -501,13 +501,10 @@ def test_active_code_same_fingerprint_recovers_credentials_without_duplicate_cha
     assert suspended.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
 
-def test_revoked_device_same_fingerprint_recovers_automatically(
+def test_revoked_device_same_fingerprint_stays_revoked(
     client: TestClient, clean_state: str
 ) -> None:
-    """Revoking a credential logs the device out but does not permanently
-    strand the owner while the activation code remains ACTIVE. The durable
-    fingerprint is enough to restore the historical device row and rotate
-    both credentials without creating a second customer or charge."""
+    """An administrator revocation is terminal for unattended recovery."""
 
     from datetime import UTC, datetime
 
@@ -543,17 +540,17 @@ def test_revoked_device_same_fingerprint_recovers_automatically(
         ).fetchone() == ("REVOKED",)
 
     recovered_response = _post_activate(client, "", fingerprint, "key-revoke-recover")
-    assert recovered_response.status_code == 201, recovered_response.text
-    recovered = recovered_response.json()
-    assert recovered["user_id"] == first["user_id"]
-    assert recovered["device_id"] == first["device_id"]
-    assert recovered["device_token"] != first["device_token"]
+    assert recovered_response.status_code == 400
+    assert recovered_response.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
     with psycopg.connect(clean_state) as conn:
-        assert conn.execute(
+        revoked = conn.execute(
             "SELECT status, revoked_at, unbound_at FROM customer_devices WHERE id = %s",
             (first["device_id"],),
-        ).fetchone() == ("BOUND", None, None)
+        ).fetchone()
+        assert revoked is not None
+        assert revoked[0] == "REVOKED"
+        assert revoked[1] is not None
         assert _count(conn, "SELECT COUNT(*) FROM users WHERE role = 'customer'") == 1
         assert _count(conn, "SELECT COUNT(*) FROM activation_code_activations") == 1
         assert _count(conn, "SELECT COUNT(*) FROM customer_devices") == 1

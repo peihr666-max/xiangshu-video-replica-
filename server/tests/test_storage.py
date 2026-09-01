@@ -359,8 +359,15 @@ def test_local_adapter_stores_objects_under_root_and_rejects_path_escape(tmp_pat
     assert stored is not None
     assert stored.content_type == "video/mp4"
 
-    with pytest.raises(ValueError, match="unsafe object key"):
-        adapter.put_object("../escape.mp4", b"bad", content_type="video/mp4")
+    for unsafe_key in (
+        "../escape.mp4",
+        "projects/p1/../../users/victim/identity.jpg",
+        r"projects/p1/uploads/id/..\..\..\users\victim.jpg",
+        "projects//p1/output.mp4",
+        "projects/./p1/output.mp4",
+    ):
+        with pytest.raises(ValueError, match="unsafe object key"):
+            adapter.put_object(unsafe_key, b"bad", content_type="video/mp4")
 
 
 def test_storage_uri_reference_rejects_wrong_provider_or_bucket() -> None:

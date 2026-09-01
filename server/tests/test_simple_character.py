@@ -473,7 +473,8 @@ def test_generated_character_appears_in_available_versions(
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         row = conn.execute(
             """
-            SELECT status, generation_mode, published_at, persona_snapshot_json
+            SELECT status, generation_mode, published_at, persona_snapshot_json,
+                   publication_snapshot_json
             FROM character_versions
             WHERE id = ?
             """,
@@ -533,6 +534,24 @@ def test_generated_character_appears_in_available_versions(
         assert {row["view_type"] for row in assets} == set(REQUIRED_CHARACTER_VIEW_TYPES)
         assert all(row["review_status"] == "APPROVED" for row in assets)
         assert all(row["is_published_selection"] == 1 for row in assets)
+        reviews = conn.execute(
+            """
+            SELECT review.reviewer_user_id, review.decision, review.comment
+            FROM character_asset_reviews AS review
+            JOIN character_assets AS asset ON asset.id = review.character_asset_id
+            WHERE asset.character_version_id = ?
+            """,
+            (version_id,),
+        ).fetchall()
+        assert len(reviews) == len(REQUIRED_CHARACTER_VIEW_TYPES)
+        assert all(review["reviewer_user_id"] is None for review in reviews)
+        assert all(review["decision"] == "APPROVED" for review in reviews)
+        assert all(
+            review["comment"] == "System auto-approved by direct-publish policy."
+            for review in reviews
+        )
+        publication = json.loads(str(row["publication_snapshot_json"]))
+        assert publication["review_policy"] == "SYSTEM_AUTO_PUBLISH"
 
     # Downstream: the version is selectable for the owning project.
     versions_response = client.get(
@@ -703,7 +722,8 @@ def test_character_cache_downloads_once_and_serves_local_copy(
         f"/api/assets/{asset_id}/cached-url",
         headers=headers("auditor_1"),
     )
-    assert auditor.status_code == 200, auditor.text
+    assert auditor.status_code == 403, auditor.text
+    assert auditor.json()["detail"]["code"] == "ROLE_FORBIDDEN"
     assert len(get_object_calls) == 1
 
     parsed = urlsplit(second.json()["url"])
