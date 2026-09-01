@@ -571,7 +571,7 @@ export function useCustomerSession(
 // activation screen, and no secret ever lands in Web Storage (§7).
 // ---------------------------------------------------------------------------
 
-function isTauriRuntime(): boolean {
+export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 

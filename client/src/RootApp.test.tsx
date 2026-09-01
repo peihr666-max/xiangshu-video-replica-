@@ -59,6 +59,7 @@ function stubCustomerWorkspaceFetch() {
 describe("RootApp", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
     window.history.replaceState(null, "", "/");
   });
 
@@ -102,6 +103,28 @@ describe("RootApp", () => {
       await screen.findByRole("heading", { name: "项目" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "运营管理后台" })).toBeNull();
+  });
+
+  it("routes the Tauri desktop root path to the customer activation flow", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: vi.fn(async (command: string) => {
+          if (command === "customer_load_credentials") {
+            return null;
+          }
+          throw new Error(`unexpected Tauri command: ${command}`);
+        }),
+      },
+    });
+    vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
+
+    render(<RootApp path="/" />);
+
+    expect(
+      await screen.findByRole("heading", { name: "激活短视频复刻工作台" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });
 
   it("routes the pairing URL to the explicit existing-account device flow", async () => {
