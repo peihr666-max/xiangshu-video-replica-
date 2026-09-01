@@ -212,6 +212,36 @@ function installFetch(options?: { session?: "valid" | "missing" }) {
         page_size: 20,
       });
     }
+    if (url.includes("/api/control/generation-records?")) {
+      return jsonResponse({
+        items: [
+          {
+            record_id: "first-frame-1",
+            record_type: "FIRST_FRAME_IMAGE",
+            operation: "GENERATE",
+            user_id: "user-1",
+            username: "customer-1",
+            display_name: "客户一",
+            project_id: "project-1",
+            project_name: "演示项目",
+            status: "SUCCEEDED",
+            provider: "apilio",
+            model: "gpt-image-2",
+            provider_cost: null,
+            provider_cost_status: "UNAVAILABLE",
+            record_data_status: "VALID",
+            charged_credits: 0,
+            result_reference: "version-1",
+            error_code: null,
+            created_at: "2026-09-02T10:00:00Z",
+            completed_at: "2026-09-02T10:01:00Z",
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+    }
     if (url.endsWith("/api/control/billing-reconciliation")) {
       return jsonResponse(reconciliation);
     }
@@ -458,6 +488,19 @@ describe("AdminApp", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: "激活码与设备" }),
     ).toBeInTheDocument();
+  });
+
+  it("opens the unified image and video generation records", async () => {
+    installFetch({ session: "valid" });
+
+    render(<AdminApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "生成记录" }));
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "用户生成记录" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("人物置换首帧")).toBeInTheDocument();
+    expect(screen.getByText("上游未回传")).toBeInTheDocument();
   });
 
   it("restores a writable session after refresh without another login", async () => {

@@ -350,7 +350,7 @@ describe("ProjectDetailFlow", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByText("源画面自动处理")).toBeInTheDocument();
-    expect(screen.getByText("已自动选择")).toBeInTheDocument();
+    expect(screen.getByText("已确认")).toBeInTheDocument();
     expect(screen.queryByLabelText("人物朝向")).toBeNull();
     expect(screen.queryByLabelText("人物景别")).toBeNull();
     expect(screen.queryByLabelText("面部可见性")).toBeNull();
@@ -444,7 +444,9 @@ describe("ProjectDetailFlow", () => {
         source_frame_selection_version_id: "sel-version-1",
       }),
     );
-    expect(await screen.findByText(/已自动匹配人物参考/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/人物参考已匹配，可直接生成人物置换首帧/),
+    ).toBeInTheDocument();
     // 同一组合只自动匹配一次。
     expect(api.selectCharacterReferences).toHaveBeenCalledTimes(1);
   });
@@ -468,7 +470,9 @@ describe("ProjectDetailFlow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "重试匹配" }));
 
-    expect(await screen.findByText(/已自动匹配人物参考/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/人物参考已匹配，可直接生成人物置换首帧/),
+    ).toBeInTheDocument();
     expect(api.selectCharacterReferences).toHaveBeenCalledTimes(2);
   });
 
@@ -484,7 +488,7 @@ describe("ProjectDetailFlow", () => {
 
     await waitFor(() => expect(api.getProjectMainCharacter).toHaveBeenCalled());
     expect(api.selectCharacterReferences).not.toHaveBeenCalled();
-    expect(screen.queryByText(/已自动匹配人物参考/)).toBeNull();
+    expect(screen.queryByText(/人物参考已匹配/)).toBeNull();
     // 只读身份没有提示词编辑入口。
     expect(screen.queryByRole("button", { name: "编辑" })).toBeNull();
   });
@@ -670,7 +674,7 @@ describe("ProjectDetailFlow", () => {
     );
 
     const generateButton = await screen.findByRole("button", {
-      name: "重新生成候选首帧",
+      name: "生成人物置换首帧",
     });
     await waitFor(() => expect(generateButton).toBeEnabled());
     workspaceBusy.mockClear();

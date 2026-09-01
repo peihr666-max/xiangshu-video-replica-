@@ -45,6 +45,7 @@ from app.first_frames import (
 )
 from app.permissions import require_not_auditor, require_project_access
 from app.simple_character import (
+    SIMPLE_CONTACT_SHEET_MODEL,
     PreparedSimpleCharacterGeneration,
     SimpleCharacterCreationResult,
     SimpleCharacterRegenerationResult,
@@ -145,6 +146,17 @@ def _parse_first_frame_checkpoint(raw: object) -> list[dict[str, object]] | None
 
 
 def _has_recoverable_first_frame_checkpoint(raw: object) -> bool:
+    try:
+        payload = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    execution = payload.get("execution")
+    if not isinstance(execution, dict):
+        return False
+    if not str(execution.get("provider") or "") or not str(execution.get("model") or ""):
+        return False
     candidates = _parse_first_frame_checkpoint(raw)
     if candidates is None:
         return False
@@ -309,7 +321,7 @@ def enqueue_first_frame_task(
     checkpoint_json: str | None = None
     previous = conn.execute(
         """
-        SELECT result_json FROM first_frame_tasks
+        SELECT result_json, error_code FROM first_frame_tasks
         WHERE project_id = %s AND request_hash = %s
           AND status IN ('FAILED','SUBMISSION_UNCERTAIN')
           AND result_json IS NOT NULL
@@ -317,7 +329,15 @@ def enqueue_first_frame_task(
         """,
         (project_id, request_hash),
     ).fetchone()
-    if previous is not None and _has_recoverable_first_frame_checkpoint(previous["result_json"]):
+    checkpoint_blocked = previous is not None and previous["error_code"] in {
+        "IMAGE_TASK_PROVIDER_CHANGED",
+        "IMAGE_TASK_EXECUTION_UNKNOWN",
+    }
+    if (
+        previous is not None
+        and not checkpoint_blocked
+        and _has_recoverable_first_frame_checkpoint(previous["result_json"])
+    ):
         checkpoint_json = str(previous["result_json"])
     task_id = str(uuid4())
     conn.execute(
@@ -565,6 +585,80 @@ def renew_image_task_lease(
         raise RuntimeError("image task lease was lost")
 
 
+def record_image_task_provider(
+    conn: BusinessConnection,
+    *,
+    table: Literal["first_frame_tasks", "character_sheet_tasks"],
+    lease: ImageTaskLease,
+    provider: str,
+    model: str,
+) -> None:
+    """Persist the selected provider before any paid image call can begin."""
+
+    current = conn.execute(
+        f"SELECT result_json FROM {table} WHERE id = %s AND status = 'RUNNING' AND locked_by = %s",
+        (lease.id, lease.worker_id),
+    ).fetchone()
+    if current is None:
+        raise RuntimeError("image task lease was lost")
+    payload: dict[str, object] = {}
+    if current["result_json"] is not None:
+        try:
+            stored_payload = json.loads(str(current["result_json"]))
+        except json.JSONDecodeError as exc:
+            raise _task_error(
+                409,
+                "IMAGE_TASK_RESULT_INVALID",
+                "已保存的图像任务记录无效，请联系管理员核对。",
+            ) from exc
+        if not isinstance(stored_payload, dict):
+            raise _task_error(
+                409,
+                "IMAGE_TASK_RESULT_INVALID",
+                "已保存的图像任务记录无效，请联系管理员核对。",
+            )
+        payload.update(stored_payload)
+    existing_execution = payload.get("execution")
+    if existing_execution is not None:
+        if not isinstance(existing_execution, dict):
+            raise _task_error(
+                409,
+                "IMAGE_TASK_RESULT_INVALID",
+                "已保存的图像任务记录无效，请联系管理员核对。",
+            )
+        if (
+            existing_execution.get("provider") != provider
+            or existing_execution.get("model") != model
+        ):
+            raise _task_error(
+                409,
+                "IMAGE_TASK_PROVIDER_CHANGED",
+                "图像服务配置已变化，不能复用旧生成结果，请重新提交任务。",
+            )
+    else:
+        if "checkpoint" in payload:
+            raise _task_error(
+                409,
+                "IMAGE_TASK_EXECUTION_UNKNOWN",
+                "旧版图像生成结果缺少服务来源，不能自动复用，请重新提交任务。",
+            )
+        payload["execution"] = {
+            "provider": provider,
+            "model": model,
+        }
+    updated = conn.execute(
+        f"""
+        UPDATE {table}
+        SET result_json = %s, updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        """,
+        (json.dumps(payload, ensure_ascii=False, sort_keys=True), lease.id, lease.worker_id),
+    )
+    conn.commit()
+    if updated.rowcount != 1:
+        raise RuntimeError("image task lease was lost")
+
+
 def prepare_first_frame_task(
     conn: BusinessConnection,
     *,
@@ -630,12 +724,26 @@ def save_first_frame_task_checkpoint(
     lease: ImageTaskLease,
     candidates: list[GeneratedImage],
 ) -> None:
-    payload = {
+    current = conn.execute(
+        "SELECT result_json FROM first_frame_tasks WHERE id = %s",
+        (lease.id,),
+    ).fetchone()
+    execution: object = None
+    if current is not None and current["result_json"] is not None:
+        try:
+            current_payload = json.loads(str(current["result_json"]))
+            if isinstance(current_payload, dict):
+                execution = current_payload.get("execution")
+        except json.JSONDecodeError:
+            execution = None
+    payload: dict[str, object] = {
         "checkpoint": {
             "schema_version": 1,
             "candidates": [_checkpoint_candidate_payload(candidate) for candidate in candidates],
         }
     }
+    if isinstance(execution, dict):
+        payload["execution"] = execution
     updated = conn.execute(
         """
         UPDATE first_frame_tasks
@@ -878,6 +986,8 @@ def complete_character_sheet_task(
         ),
     ) -> None:
         result_payload = asdict(result)
+        result_payload["provider"] = prepared.provider.provider_name
+        result_payload["model"] = SIMPLE_CONTACT_SHEET_MODEL
         now = _now_text()
         updated = conn.execute(
             """

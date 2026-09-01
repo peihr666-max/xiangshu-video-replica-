@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type AnalysisVersion,
+  cancelSourceFrameTask,
   confirmSourceFrame,
   extractSourceFrames,
   getAssetDownloadUrl,
@@ -11,12 +12,15 @@ import {
   readSourceFrameCandidates,
   type SourceFrameCandidate,
   type SourceFrameCharacterFeatures,
+  type SourceFrameTask,
+  SourceFrameTaskFailedError,
   waitForSourceFrameTask,
 } from "./api";
 
 export function SourceFrameSelection({
   featureSuggestion = null,
   onBusyChange,
+  onConfirmed,
   onSelectionChange,
   projectId,
   readOnly = false,
@@ -26,6 +30,7 @@ export function SourceFrameSelection({
 }: {
   featureSuggestion?: SourceFrameCharacterFeatures | null;
   onBusyChange?: (isBusy: boolean) => void;
+  onConfirmed?: () => void;
   onSelectionChange?: (selection: AnalysisVersion | null) => void;
   projectId: string;
   readOnly?: boolean;
@@ -46,6 +51,10 @@ export function SourceFrameSelection({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [manualConfirmationRequired, setManualConfirmationRequired] =
     useState(false);
+  const [activeTask, setActiveTask] = useState<SourceFrameTask | null>(null);
+  const [manualTimestamp, setManualTimestamp] = useState(() =>
+    defaultManualTimestamp(videoDurationSeconds),
+  );
   const loadRequestId = useRef(0);
   // P0-03-02：特征建议取最新值（latest-ref），避免建议变化触发候选重载；
   // 自动提取按项目去重，每项目仅自动一次，失败不自动重试（手动态仍可重提）。
@@ -57,7 +66,6 @@ export function SourceFrameSelection({
   const onBusyChangeRef = useRef(onBusyChange);
   onBusyChangeRef.current = onBusyChange;
   const autoExtractProjectRef = useRef<string | null>(null);
-  const autoConfirmAttemptRef = useRef<Set<string>>(new Set());
 
   const loadCandidates = useCallback(async () => {
     const requestId = loadRequestId.current + 1;
@@ -77,6 +85,46 @@ export function SourceFrameSelection({
       if (!isCurrentRequest()) {
         return;
       }
+      if (
+        latestTask?.status === "PENDING" ||
+        latestTask?.status === "RUNNING"
+      ) {
+        setCandidates([]);
+        setPreviewUrls({});
+        setFailedPreviewAssetIds([]);
+        setSelectedAssetId("");
+        setManualConfirmationRequired(false);
+        onSelectionChange?.(null);
+        setActiveTask(latestTask);
+        setIsLoading(false);
+        setIsSubmitting(true);
+        setStatus(sourceFrameTaskStatus(latestTask));
+        try {
+          await waitForSourceFrameTask(latestTask.id);
+          if (!isCurrentRequest()) {
+            return;
+          }
+          setActiveTask(null);
+          setStatus("候选源画面已提取，正在读取推荐结果。");
+          await loadCandidates();
+        } catch (requestError) {
+          if (isCurrentRequest()) {
+            if (requestError instanceof SourceFrameTaskFailedError) {
+              setActiveTask(null);
+            }
+            setError(
+              requestError instanceof Error
+                ? requestError.message
+                : "候选源画面提取失败。",
+            );
+          }
+        } finally {
+          if (isCurrentRequest()) {
+            setIsSubmitting(false);
+          }
+        }
+        return;
+      }
       if (!version) {
         const defaultTimestamps =
           adaptiveSourceFrameTimestamps(videoDurationSeconds);
@@ -86,41 +134,15 @@ export function SourceFrameSelection({
         setSelectedAssetId("");
         onSelectionChange?.(null);
         setStatus(selection.stale ? "候选已更新，正在自动选择源画面。" : "");
-        if (
-          latestTask?.status === "PENDING" ||
-          latestTask?.status === "RUNNING"
-        ) {
-          setIsSubmitting(true);
-          setStatus("候选源画面正在后台提取，可离开本页继续其他操作。");
-          try {
-            await waitForSourceFrameTask(latestTask.id);
-            if (!isCurrentRequest()) {
-              return;
-            }
-            setStatus("候选源画面已提取，正在自动选择。");
-            await loadCandidates();
-          } catch (requestError) {
-            if (isCurrentRequest()) {
-              setError(
-                requestError instanceof Error
-                  ? requestError.message
-                  : "候选源画面提取失败。",
-              );
-            }
-          } finally {
-            if (isCurrentRequest()) {
-              setIsSubmitting(false);
-            }
-          }
-          return;
-        }
         if (latestTask?.status === "FAILED") {
+          setActiveTask(null);
           setError(
             latestTask.error_message || "候选源画面提取失败，请重新提交。",
           );
           return;
         }
         if (latestTask?.status === "SUCCEEDED") {
+          setActiveTask(null);
           setError("取帧任务已完成，但候选记录暂不可用，请刷新后重试。");
           return;
         }
@@ -144,17 +166,22 @@ export function SourceFrameSelection({
             if (!isCurrentRequest()) {
               return;
             }
+            setActiveTask(task);
             enqueuePending = false;
             onBusyChangeRef.current?.(false);
-            setStatus("候选源画面正在后台提取，可离开本页继续其他操作。");
+            setStatus(sourceFrameTaskStatus(task));
             await waitForSourceFrameTask(task.id);
             if (!isCurrentRequest()) {
               return;
             }
-            setStatus("已自动提取候选源画面，正在自动选择。");
+            setActiveTask(null);
+            setStatus("已提取候选源画面，正在读取推荐结果。");
             await loadCandidates();
           } catch (requestError) {
             if (isCurrentRequest()) {
+              if (requestError instanceof SourceFrameTaskFailedError) {
+                setActiveTask(null);
+              }
               setError(
                 requestError instanceof Error
                   ? requestError.message
@@ -178,60 +205,29 @@ export function SourceFrameSelection({
         return;
       }
       setCandidates(payload.candidates);
+      setActiveTask(null);
       setManualConfirmationRequired(false);
       setPreviewUrls({});
       setFailedPreviewAssetIds([]);
       const confirmedAssetId = selection.version?.payload.source_frame_asset_id;
       if (typeof confirmedAssetId === "string" && !selection.stale) {
         setSelectedAssetId(confirmedAssetId);
-        setStatus("已自动选择源画面，将保留原视频的构图与动作。");
+        setStatus("已确认源画面，将保留原视频的构图与动作。");
         onSelectionChange?.(selection.version);
       } else {
         const preferredAssetId = preferredCandidateAssetId(payload.candidates);
         setSelectedAssetId(preferredAssetId);
         onSelectionChange?.(null);
-        if (
-          !readOnly &&
-          preferredAssetId &&
-          payload.semantic_quality_status !== "VERIFIED"
-        ) {
+        if (!readOnly && preferredAssetId) {
           setManualConfirmationRequired(true);
-          setStatus("语义评分暂不可用，请查看候选画面后手动确认。");
-        } else if (!readOnly && preferredAssetId) {
-          const confirmationKey = `${version.id}:${preferredAssetId}`;
-          if (!autoConfirmAttemptRef.current.has(confirmationKey)) {
-            autoConfirmAttemptRef.current.add(confirmationKey);
-            onBusyChangeRef.current?.(true);
-            setIsSubmitting(true);
-            setStatus("正在后台选择最合适的源画面…");
-            try {
-              const confirmed = await confirmSourceFrame(
-                projectId,
-                preferredAssetId,
-                featureSuggestionRef.current,
-              );
-              if (!isCurrentRequest()) {
-                return;
-              }
-              setStatus("已自动选择源画面，将保留原视频的构图与动作。");
-              onSelectionChange?.(confirmed);
-            } catch (requestError) {
-              if (isCurrentRequest()) {
-                autoConfirmAttemptRef.current.delete(confirmationKey);
-                setStatus("自动选择未完成，可展开“查看或更换”手动处理。");
-                setError(
-                  requestError instanceof Error
-                    ? requestError.message
-                    : "自动选择源画面失败。",
-                );
-              }
-            } finally {
-              if (isCurrentRequest()) {
-                setIsSubmitting(false);
-              }
-              onBusyChangeRef.current?.(false);
-            }
-          }
+          const preferredIndex = payload.candidates.findIndex(
+            (candidate) => candidate.asset_id === preferredAssetId,
+          );
+          setStatus(
+            payload.semantic_quality_status === "VERIFIED"
+              ? `已推荐画面 ${preferredIndex + 1}，请确认或更换源画面。`
+              : "AI评分暂不可用，已按本地画质推荐，请查看后确认。",
+          );
         }
       }
       if (readOnly) {
@@ -287,7 +283,11 @@ export function SourceFrameSelection({
     };
   }, [loadCandidates]);
 
-  async function handleExtract() {
+  useEffect(() => {
+    setManualTimestamp(defaultManualTimestamp(videoDurationSeconds));
+  }, [videoDurationSeconds]);
+
+  async function runExtraction(timestamps: number[]) {
     if (readOnly) {
       return;
     }
@@ -295,7 +295,6 @@ export function SourceFrameSelection({
       setError("参考视频尚未就绪，不能提取源画面。");
       return;
     }
-    const timestamps = adaptiveSourceFrameTimestamps(videoDurationSeconds);
     const requestId = loadRequestId.current + 1;
     loadRequestId.current = requestId;
     onBusyChangeRef.current?.(true);
@@ -312,20 +311,25 @@ export function SourceFrameSelection({
       if (requestId !== loadRequestId.current) {
         return;
       }
+      setActiveTask(task);
       enqueuePending = false;
       onBusyChangeRef.current?.(false);
-      setStatus("候选源画面正在后台提取，可离开本页继续其他操作。");
+      setStatus(sourceFrameTaskStatus(task));
       await waitForSourceFrameTask(task.id);
       if (requestId !== loadRequestId.current) {
         return;
       }
       setSelectedAssetId("");
+      setActiveTask(null);
       onSelectionChange?.(null);
-      setStatus("候选源画面已更新，正在自动选择。");
+      setStatus("候选源画面已更新，正在读取推荐结果。");
       await loadCandidates();
     } catch (requestError) {
       if (requestId !== loadRequestId.current) {
         return;
+      }
+      if (requestError instanceof SourceFrameTaskFailedError) {
+        setActiveTask(null);
       }
       setError(
         requestError instanceof Error
@@ -342,6 +346,46 @@ export function SourceFrameSelection({
     }
   }
 
+  async function handleExtract() {
+    await runExtraction(adaptiveSourceFrameTimestamps(videoDurationSeconds));
+  }
+
+  async function handleManualExtract() {
+    if (
+      !Number.isFinite(manualTimestamp) ||
+      manualTimestamp < 0 ||
+      (videoDurationSeconds !== null && manualTimestamp >= videoDurationSeconds)
+    ) {
+      setError("手动取帧时间必须位于视频时长范围内。");
+      return;
+    }
+    await runExtraction([manualTimestamp]);
+  }
+
+  async function handleRestart() {
+    const task = activeTask;
+    loadRequestId.current += 1;
+    setError("");
+    if (task?.status === "RUNNING") {
+      setError("任务正在执行，请等待完成或超时后再重新开始。");
+      return;
+    }
+    if (task?.status === "PENDING") {
+      try {
+        await cancelSourceFrameTask(task.id);
+      } catch (requestError) {
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "停止旧取帧任务失败。",
+        );
+        return;
+      }
+    }
+    setActiveTask(null);
+    await runExtraction(adaptiveSourceFrameTimestamps(videoDurationSeconds));
+  }
+
   async function handleConfirm() {
     if (readOnly) {
       return;
@@ -351,7 +395,7 @@ export function SourceFrameSelection({
       return;
     }
     const requestId = loadRequestId.current;
-    onBusyChange?.(true);
+    onBusyChangeRef.current?.(true);
     setIsSubmitting(true);
     setError("");
     try {
@@ -366,8 +410,10 @@ export function SourceFrameSelection({
       const selectedIndex = candidates.findIndex(
         (candidate) => candidate.asset_id === selectedAssetId,
       );
-      setStatus(`已改用源画面 ${selectedIndex + 1}。`);
+      setManualConfirmationRequired(false);
+      setStatus(`已确认源画面 ${selectedIndex + 1}，正在匹配人物参考。`);
       onSelectionChange?.(selection);
+      onConfirmed?.();
     } catch (requestError) {
       if (requestId !== loadRequestId.current) {
         return;
@@ -381,7 +427,7 @@ export function SourceFrameSelection({
       if (requestId === loadRequestId.current) {
         setIsSubmitting(false);
       }
-      onBusyChange?.(false);
+      onBusyChangeRef.current?.(false);
     }
   }
 
@@ -397,7 +443,7 @@ export function SourceFrameSelection({
       <div className="source-frame-summary">
         <div>
           <h3 id="source-frame-title">源画面自动处理</h3>
-          <p>系统会保留原视频的构图与动作，并自动匹配已选人物视觉。</p>
+          <p>系统会推荐适合置换的画面，由你确认后再匹配人物视觉。</p>
         </div>
         <span
           className={
@@ -410,16 +456,57 @@ export function SourceFrameSelection({
         >
           {error
             ? "需要处理"
-            : manualConfirmationRequired
-              ? "待手动确认"
-              : selectedAssetId && !isLoading && !isSubmitting
-                ? "已自动选择"
-                : "自动处理中"}
+            : activeTask
+              ? "取帧中"
+              : isSubmitting
+                ? candidates.length > 0
+                  ? "确认中"
+                  : "自动处理中"
+                : manualConfirmationRequired
+                  ? "待手动确认"
+                  : selectedAssetId && !isLoading
+                    ? "已确认"
+                    : "自动处理中"}
         </span>
       </div>
       {isLoading ? <p className="status-note">正在读取候选源画面</p> : null}
       {error ? <p className="settings-error">{error}</p> : null}
       {status ? <p className="setup-success">{status}</p> : null}
+      {!readOnly && activeTask ? (
+        <div className="source-frame-toolbar">
+          <p>
+            {activeTask.status === "PENDING"
+              ? "任务尚未开始，可停止后重新取帧。"
+              : "任务正在后台执行；为避免重复调用，请等待完成或超时后再重新开始。"}
+          </p>
+          <button
+            className="secondary-button"
+            onClick={() => void loadCandidates()}
+            type="button"
+          >
+            重新检查状态
+          </button>
+          {activeTask.status === "PENDING" ? (
+            <button
+              className="secondary-button"
+              onClick={() => void handleRestart()}
+              type="button"
+            >
+              停止并重新取帧
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {!readOnly && error && candidates.length === 0 && !activeTask ? (
+        <button
+          className="secondary-button"
+          disabled={isSubmitting || !referenceAssetId}
+          onClick={() => void handleRestart()}
+          type="button"
+        >
+          重新开始取帧
+        </button>
+      ) : null}
       {!isLoading && !error && candidates.length === 0 ? (
         <p className="file-note">尚未提取候选源画面。</p>
       ) : null}
@@ -427,14 +514,15 @@ export function SourceFrameSelection({
         <p className="status-note">只读身份不加载素材预览。</p>
       ) : null}
       {candidates.length > 0 ? (
-        <details className="source-frame-advanced">
+        <details
+          className="source-frame-advanced"
+          open={manualConfirmationRequired}
+        >
           <summary>{readOnly ? "查看源画面记录" : "查看或更换源画面"}</summary>
           <div className="source-frame-advanced__body">
             {!readOnly ? (
               <div className="source-frame-toolbar">
-                <p>
-                  通常无需修改。仅当人物遮挡、构图不合适或自动处理失败时更换。
-                </p>
+                <p>系统已预选推荐画面。请检查人物遮挡、姿态和构图后确认。</p>
                 <button
                   className="secondary-button"
                   disabled={isSubmitting || !referenceAssetId}
@@ -443,12 +531,36 @@ export function SourceFrameSelection({
                 >
                   {isSubmitting ? "正在处理" : "重新自动取帧"}
                 </button>
+                <label>
+                  手动取帧时间（秒）
+                  <input
+                    disabled={isSubmitting}
+                    max={
+                      videoDurationSeconds === null
+                        ? undefined
+                        : Math.max(0, videoDurationSeconds - 0.1)
+                    }
+                    min="0"
+                    onChange={(event) =>
+                      setManualTimestamp(Number(event.target.value))
+                    }
+                    step="0.1"
+                    type="number"
+                    value={manualTimestamp}
+                  />
+                </label>
+                <button
+                  className="secondary-button"
+                  disabled={isSubmitting || !referenceAssetId}
+                  onClick={() => void handleManualExtract()}
+                  type="button"
+                >
+                  从该时间取帧
+                </button>
               </div>
             ) : null}
             <fieldset className="source-frame-options">
-              <legend>
-                {readOnly ? "源画面记录" : "选择其他源画面（可选）"}
-              </legend>
+              <legend>{readOnly ? "源画面记录" : "选择源画面"}</legend>
               {candidates.map((candidate, index) => (
                 <label
                   className={
@@ -488,7 +600,13 @@ export function SourceFrameSelection({
                     </span>
                   )}
                   <span>
-                    <strong>画面 {index + 1}</strong>
+                    <strong>
+                      画面 {index + 1}
+                      {candidate.asset_id ===
+                      preferredCandidateAssetId(candidates)
+                        ? " · 推荐"
+                        : ""}
+                    </strong>
                     <small>{candidate.timestamp_seconds.toFixed(1)} 秒</small>
                   </span>
                 </label>
@@ -507,7 +625,7 @@ export function SourceFrameSelection({
                 onClick={handleConfirm}
                 type="button"
               >
-                使用所选画面
+                确认源画面并继续
               </button>
             )}
           </div>
@@ -540,4 +658,21 @@ function adaptiveSourceFrameTimestamps(
   return [0.1, 0.3, 0.5, 0.7, 0.9].map((ratio) =>
     Number((durationSeconds * ratio).toFixed(3)),
   );
+}
+
+function defaultManualTimestamp(durationSeconds: number | null): number {
+  if (
+    typeof durationSeconds !== "number" ||
+    !Number.isFinite(durationSeconds) ||
+    durationSeconds <= 0
+  ) {
+    return 0.5;
+  }
+  return Number((durationSeconds / 2).toFixed(1));
+}
+
+function sourceFrameTaskStatus(task: SourceFrameTask): string {
+  return task.status === "RUNNING"
+    ? "正在从原视频批量提取候选画面。"
+    : "已进入处理队列，后台即将开始取帧。";
 }

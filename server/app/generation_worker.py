@@ -34,7 +34,12 @@ from app.db_pg import (
 )
 from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_first_frame_quality_inspector, get_image_provider
-from app.first_frames import FirstFrameQualityInspector, ImageInput, ImageProvider
+from app.first_frames import (
+    FirstFrameQualityInspector,
+    ImageInput,
+    ImageProvider,
+    bounded_source_frame_quality_inspector,
+)
 from app.generation import (
     GeneratedVideoValidationUnavailable,
     H3Provider,
@@ -75,6 +80,7 @@ from app.image_tasks import (
     perform_character_sheet_task,
     prepare_character_sheet_task,
     prepare_first_frame_task,
+    record_image_task_provider,
     renew_image_task_lease,
     run_first_frame_task_outside_transaction,
     save_first_frame_task_checkpoint,
@@ -88,16 +94,19 @@ from app.script_rewrite import (
     perform_script_rewrite_task,
     prepare_script_rewrite_task,
 )
+from app.simple_character import SIMPLE_CONTACT_SHEET_MODEL
 from app.source_frames import (
     FFmpegSourceFrameExtractor,
     SourceFrameExtractor,
     SourceFrameQualityInspector,
+    SourceFrameTaskLease,
     acquire_source_frame_task,
     complete_source_frame_task,
     delete_created_source_frames,
     fail_source_frame_task,
     perform_source_frame_extraction,
     prepare_source_frame_task,
+    record_source_frame_quality_started,
 )
 from app.storage import (
     StorageAdapter,
@@ -106,6 +115,159 @@ from app.storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def source_frame_semantic_inspector(
+    conn: BusinessConnection,
+    *,
+    override: SourceFrameQualityInspector | None,
+    shared_inspector: FirstFrameQualityInspector | None,
+) -> SourceFrameQualityInspector | None:
+    if override is not None:
+        return override
+    if shared_inspector is not None:
+        return bounded_source_frame_quality_inspector(shared_inspector)
+    try:
+        return bounded_source_frame_quality_inspector(get_first_frame_quality_inspector(conn))
+    except HTTPException as exc:
+        detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+        logger.warning(
+            "source-frame semantic scoring unavailable: code=%s",
+            detail.get("code", "UNKNOWN"),
+        )
+        return None
+
+
+def _record_pg_source_frame_quality_started(
+    lease: SourceFrameTaskLease,
+    inspector: SourceFrameQualityInspector,
+) -> None:
+    with pg_transaction() as raw_conn:
+        record_source_frame_quality_started(
+            BusinessConnection.postgres(raw_conn),
+            lease=lease,
+            provider=getattr(inspector, "provider_name", None),
+            model=getattr(inspector, "model", None),
+        )
+
+
+def _run_source_frame_once(
+    conn: BusinessConnection,
+    *,
+    worker_id: str,
+    storage: StorageAdapter,
+    extractor: SourceFrameExtractor | None,
+    quality_inspector: SourceFrameQualityInspector | None,
+    shared_inspector: FirstFrameQualityInspector | None,
+) -> bool:
+    lease = acquire_source_frame_task(conn, worker_id=worker_id)
+    if lease is None:
+        return False
+    plan = None
+    stored = None
+    try:
+        plan = prepare_source_frame_task(conn, lease=lease)
+        semantic_inspector = source_frame_semantic_inspector(
+            conn,
+            override=quality_inspector,
+            shared_inspector=shared_inspector,
+        )
+
+        def mark_quality_started() -> None:
+            record_source_frame_quality_started(
+                conn,
+                lease=lease,
+                provider=getattr(semantic_inspector, "provider_name", None),
+                model=getattr(semantic_inspector, "model", None),
+            )
+
+        stored = perform_source_frame_extraction(
+            plan,
+            storage=storage,
+            extractor=extractor or FFmpegSourceFrameExtractor(),
+            quality_inspector=semantic_inspector,
+            before_quality_call=(mark_quality_started if semantic_inspector is not None else None),
+        )
+        complete_source_frame_task(
+            conn,
+            lease=lease,
+            plan=plan,
+            stored=stored,
+        )
+    except Exception as exc:
+        if plan is not None and stored is not None:
+            delete_created_source_frames(
+                storage,
+                stored.created_assets,
+                actor_id=plan.actor.id,
+            )
+        fail_source_frame_task(conn, lease=lease, cause=exc)
+    return True
+
+
+def _run_pg_source_frame_once(
+    *,
+    worker_id: str,
+    storage: StorageAdapter,
+    extractor: SourceFrameExtractor | None,
+    quality_inspector: SourceFrameQualityInspector | None,
+    shared_inspector: FirstFrameQualityInspector | None,
+) -> bool:
+    with pg_transaction() as raw_conn:
+        lease = acquire_source_frame_task(
+            BusinessConnection.postgres(raw_conn),
+            worker_id=worker_id,
+        )
+    if lease is None:
+        return False
+    plan = None
+    stored = None
+    try:
+        with pg_transaction() as raw_conn:
+            conn = BusinessConnection.postgres(raw_conn)
+            plan = prepare_source_frame_task(conn, lease=lease)
+            semantic_inspector = source_frame_semantic_inspector(
+                conn,
+                override=quality_inspector,
+                shared_inspector=shared_inspector,
+            )
+        stored = perform_source_frame_extraction(
+            plan,
+            storage=storage,
+            extractor=extractor or FFmpegSourceFrameExtractor(),
+            quality_inspector=semantic_inspector,
+            before_quality_call=(
+                lambda: _record_pg_source_frame_quality_started(lease, semantic_inspector)
+            )
+            if semantic_inspector is not None
+            else None,
+        )
+        with pg_transaction() as raw_conn:
+            complete_source_frame_task(
+                BusinessConnection.postgres(raw_conn),
+                lease=lease,
+                plan=plan,
+                stored=stored,
+            )
+    except Exception as exc:
+        if plan is not None and stored is not None:
+            delete_created_source_frames(
+                storage,
+                stored.created_assets,
+                actor_id=plan.actor.id,
+            )
+        with pg_transaction() as raw_conn:
+            fail_source_frame_task(
+                BusinessConnection.postgres(raw_conn),
+                lease=lease,
+                cause=exc,
+            )
+    return True
+
+
+def _is_quality_settings_failure(exc: HTTPException) -> bool:
+    detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+    return str(detail.get("code", "")).startswith("FIRST_FRAME_QUALITY_SETTINGS_")
 
 
 def run_worker_once(
@@ -249,43 +411,14 @@ def run_worker_once(
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
                 return processed
-        source_frame_lease = acquire_source_frame_task(conn, worker_id=worker_id)
-        if source_frame_lease is not None:
-            source_frame_plan = None
-            source_frame_stored = None
-            try:
-                source_frame_plan = prepare_source_frame_task(
-                    conn,
-                    lease=source_frame_lease,
-                )
-                source_frame_stored = perform_source_frame_extraction(
-                    source_frame_plan,
-                    storage=storage,
-                    extractor=source_frame_extractor or FFmpegSourceFrameExtractor(),
-                    quality_inspector=(
-                        source_frame_quality_inspector
-                        or first_frame_quality_inspector
-                        or get_first_frame_quality_inspector(conn)
-                    ),
-                )
-                complete_source_frame_task(
-                    conn,
-                    lease=source_frame_lease,
-                    plan=source_frame_plan,
-                    stored=source_frame_stored,
-                )
-            except Exception as exc:
-                if source_frame_plan is not None and source_frame_stored is not None:
-                    delete_created_source_frames(
-                        storage,
-                        source_frame_stored.created_assets,
-                        actor_id=source_frame_plan.actor.id,
-                    )
-                fail_source_frame_task(
-                    conn,
-                    lease=source_frame_lease,
-                    cause=exc,
-                )
+        if _run_source_frame_once(
+            conn,
+            worker_id=worker_id,
+            storage=storage,
+            extractor=source_frame_extractor,
+            quality_inspector=source_frame_quality_inspector,
+            shared_inspector=first_frame_quality_inspector,
+        ):
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
@@ -327,6 +460,13 @@ def run_worker_once(
                     quality_inspector=(
                         first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
                     ),
+                )
+                record_image_task_provider(
+                    conn,
+                    table="first_frame_tasks",
+                    lease=first_frame_lease,
+                    provider=prepared.provider.provider_name,
+                    model=prepared.plan.model,
                 )
                 work, stored = run_first_frame_task_outside_transaction(
                     prepared,
@@ -374,6 +514,13 @@ def run_worker_once(
                     quality_inspector=(
                         first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
                     ),
+                )
+                record_image_task_provider(
+                    conn,
+                    table="character_sheet_tasks",
+                    lease=character_sheet_lease,
+                    provider=prepared_sheet.provider.provider_name,
+                    model=SIMPLE_CONTACT_SHEET_MODEL,
                 )
                 submission_started = True
                 sheet_generation = perform_character_sheet_task(prepared_sheet)
@@ -890,52 +1037,13 @@ def run_pg_worker_once(
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
                 return processed
-        with pg_transaction() as raw_conn:
-            source_frame_lease = acquire_source_frame_task(
-                BusinessConnection.postgres(raw_conn),
-                worker_id=worker_id,
-            )
-        if source_frame_lease is not None:
-            source_frame_plan = None
-            source_frame_stored = None
-            try:
-                with pg_transaction() as raw_conn:
-                    conn = BusinessConnection.postgres(raw_conn)
-                    source_frame_plan = prepare_source_frame_task(
-                        conn,
-                        lease=source_frame_lease,
-                    )
-                    semantic_inspector = (
-                        source_frame_quality_inspector
-                        or first_frame_quality_inspector
-                        or get_first_frame_quality_inspector(conn)
-                    )
-                source_frame_stored = perform_source_frame_extraction(
-                    source_frame_plan,
-                    storage=storage,
-                    extractor=source_frame_extractor or FFmpegSourceFrameExtractor(),
-                    quality_inspector=semantic_inspector,
-                )
-                with pg_transaction() as raw_conn:
-                    complete_source_frame_task(
-                        BusinessConnection.postgres(raw_conn),
-                        lease=source_frame_lease,
-                        plan=source_frame_plan,
-                        stored=source_frame_stored,
-                    )
-            except Exception as exc:
-                if source_frame_plan is not None and source_frame_stored is not None:
-                    delete_created_source_frames(
-                        storage,
-                        source_frame_stored.created_assets,
-                        actor_id=source_frame_plan.actor.id,
-                    )
-                with pg_transaction() as raw_conn:
-                    fail_source_frame_task(
-                        BusinessConnection.postgres(raw_conn),
-                        lease=source_frame_lease,
-                        cause=exc,
-                    )
+        if _run_pg_source_frame_once(
+            worker_id=worker_id,
+            storage=storage,
+            extractor=source_frame_extractor,
+            quality_inspector=source_frame_quality_inspector,
+            shared_inspector=first_frame_quality_inspector,
+        ):
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
@@ -982,6 +1090,13 @@ def run_pg_worker_once(
                         quality_inspector=(
                             first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
                         ),
+                    )
+                    record_image_task_provider(
+                        conn,
+                        table="first_frame_tasks",
+                        lease=first_frame_lease,
+                        provider=prepared.provider.provider_name,
+                        model=prepared.plan.model,
                     )
                 work, stored = run_first_frame_task_outside_transaction(
                     prepared,
@@ -1037,6 +1152,13 @@ def run_pg_worker_once(
                             first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
                         ),
                     )
+                    record_image_task_provider(
+                        conn,
+                        table="character_sheet_tasks",
+                        lease=character_sheet_lease,
+                        provider=prepared_sheet.provider.provider_name,
+                        model=SIMPLE_CONTACT_SHEET_MODEL,
+                    )
                 submission_started = True
                 sheet_generation = perform_character_sheet_task(prepared_sheet)
                 with pg_transaction() as raw_conn:
@@ -1064,22 +1186,49 @@ def run_pg_worker_once(
     return processed
 
 
-def run_forever(*, db_path: Path, worker_id: str, idle_seconds: float) -> None:
-    while True:
-        try:
-            with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-                # 云端模式下所有需要持久保留的生成资产都进入 COS；
-                # 未配置 COS 的桌面开发环境仍由 get_media_storage 回退本地盘。
-                asset_storage = get_media_storage(conn)
-                quality_inspector = get_first_frame_quality_inspector(conn)
-                processed = run_worker_once(
+def run_sqlite_worker_round(
+    *,
+    db_path: Path,
+    worker_id: str,
+    max_tasks: int | None = None,
+) -> int:
+    try:
+        with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+            # 云端模式下所有需要持久保留的生成资产都进入 COS；
+            # 未配置 COS 的桌面开发环境仍由 get_media_storage 回退本地盘。
+            asset_storage = get_media_storage(conn)
+            quality_inspector = get_first_frame_quality_inspector(conn)
+            return run_worker_once(
+                conn,
+                worker_id=worker_id,
+                storage=asset_storage,
+                generation_storage=asset_storage,
+                first_frame_storage=asset_storage,
+                first_frame_quality_inspector=quality_inspector,
+                max_tasks=max_tasks,
+            )
+    except HTTPException as exc:
+        if not _is_quality_settings_failure(exc):
+            raise
+        logger.warning("visual quality settings unavailable; processing source frames locally")
+        with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+            asset_storage = get_media_storage(conn)
+            return int(
+                _run_source_frame_once(
                     conn,
                     worker_id=worker_id,
                     storage=asset_storage,
-                    generation_storage=asset_storage,
-                    first_frame_storage=asset_storage,
-                    first_frame_quality_inspector=quality_inspector,
+                    extractor=None,
+                    quality_inspector=None,
+                    shared_inspector=None,
                 )
+            )
+
+
+def run_forever(*, db_path: Path, worker_id: str, idle_seconds: float) -> None:
+    while True:
+        try:
+            processed = run_sqlite_worker_round(db_path=db_path, worker_id=worker_id)
         except HTTPException as exc:
             code = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
             logger.error("generation worker configuration unavailable: %s", code)
@@ -1091,22 +1240,43 @@ def run_forever(*, db_path: Path, worker_id: str, idle_seconds: float) -> None:
             time.sleep(idle_seconds)
 
 
+def run_pg_worker_round(*, worker_id: str, max_tasks: int | None = None) -> int:
+    try:
+        # The media-storage configuration lives in the business database;
+        # read it once per round inside a short fenced transaction.
+        with pg_transaction() as raw_conn:
+            conn = BusinessConnection.postgres(raw_conn)
+            asset_storage = get_media_storage(conn)
+            quality_inspector = get_first_frame_quality_inspector(conn)
+        return run_pg_worker_once(
+            worker_id=worker_id,
+            storage=asset_storage,
+            generation_storage=asset_storage,
+            first_frame_storage=asset_storage,
+            first_frame_quality_inspector=quality_inspector,
+            max_tasks=max_tasks,
+        )
+    except HTTPException as exc:
+        if not _is_quality_settings_failure(exc):
+            raise
+        logger.warning("visual quality settings unavailable; processing source frames locally")
+        with pg_transaction() as raw_conn:
+            asset_storage = get_media_storage(BusinessConnection.postgres(raw_conn))
+        return int(
+            _run_pg_source_frame_once(
+                worker_id=worker_id,
+                storage=asset_storage,
+                extractor=None,
+                quality_inspector=None,
+                shared_inspector=None,
+            )
+        )
+
+
 def run_forever_pg(*, worker_id: str, idle_seconds: float) -> None:
     while True:
         try:
-            # The media-storage configuration lives in the business database;
-            # read it once per round inside a short fenced transaction.
-            with pg_transaction() as raw_conn:
-                conn = BusinessConnection.postgres(raw_conn)
-                asset_storage = get_media_storage(conn)
-                quality_inspector = get_first_frame_quality_inspector(conn)
-            processed = run_pg_worker_once(
-                worker_id=worker_id,
-                storage=asset_storage,
-                generation_storage=asset_storage,
-                first_frame_storage=asset_storage,
-                first_frame_quality_inspector=quality_inspector,
-            )
+            processed = run_pg_worker_round(worker_id=worker_id)
         except HTTPException as exc:
             code = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
             logger.error("generation worker configuration unavailable: %s", code)
@@ -1168,16 +1338,8 @@ def main() -> None:
         )
         if args.once:
             try:
-                with pg_transaction() as raw_conn:
-                    conn = BusinessConnection.postgres(raw_conn)
-                    asset_storage = get_media_storage(conn)
-                    quality_inspector = get_first_frame_quality_inspector(conn)
-                processed = run_pg_worker_once(
+                processed = run_pg_worker_round(
                     worker_id=args.worker_id,
-                    storage=asset_storage,
-                    generation_storage=asset_storage,
-                    first_frame_storage=asset_storage,
-                    first_frame_quality_inspector=quality_inspector,
                     max_tasks=args.max_tasks,
                 )
             finally:
@@ -1196,18 +1358,11 @@ def main() -> None:
     db_path = Path(db_path_value)
 
     if args.once:
-        with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-            asset_storage = get_media_storage(conn)
-            quality_inspector = get_first_frame_quality_inspector(conn)
-            processed = run_worker_once(
-                conn,
-                worker_id=args.worker_id,
-                storage=asset_storage,
-                generation_storage=asset_storage,
-                first_frame_storage=asset_storage,
-                first_frame_quality_inspector=quality_inspector,
-                max_tasks=args.max_tasks,
-            )
+        processed = run_sqlite_worker_round(
+            db_path=db_path,
+            worker_id=args.worker_id,
+            max_tasks=args.max_tasks,
+        )
         logger.info("generation worker processed %s task(s)", processed)
         return
     run_forever(db_path=db_path, worker_id=args.worker_id, idle_seconds=args.idle_seconds)

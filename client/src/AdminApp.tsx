@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { AdminActivationSection } from "./admin/AdminActivationSection";
 import { AuditEventsPage } from "./admin/AuditEventsPage";
 import { CustomersPage } from "./admin/CustomersPage";
+import { GenerationRecordsPage } from "./admin/GenerationRecordsPage";
 import { SessionsPage } from "./admin/SessionsPage";
 import {
   type BillingSettings,
@@ -50,6 +51,7 @@ type AdminTab =
   | "services"
   | "activation"
   | "customers"
+  | "generationRecords"
   | "sessions"
   | "audit";
 
@@ -80,6 +82,11 @@ const tabGroups: Array<{
         label: "客户",
         helper: "管理客户账户、授权状态、生成结果与结算消耗",
       },
+      {
+        id: "generationRecords",
+        label: "生成记录",
+        helper: "视频、图片与 AI 评分费用追溯",
+      },
       { id: "sessions", label: "会话", helper: "在线态与单在线约束" },
     ],
   },
@@ -101,6 +108,7 @@ const tabPageTitles: Record<AdminTab, string> = {
   services: "服务配置",
   activation: "激活码与设备",
   customers: "客户管理",
+  generationRecords: "用户生成记录",
   sessions: "会话管理",
   audit: "审计日志",
 };
@@ -947,6 +955,7 @@ export function AdminApp() {
               onOpenDevices={() => setActiveTab("activation")}
             />
           ) : null}
+          {activeTab === "generationRecords" ? <GenerationRecordsPage /> : null}
           {activeTab === "sessions" ? (
             <SessionsPage readOnly={actor.role === "auditor"} />
           ) : null}

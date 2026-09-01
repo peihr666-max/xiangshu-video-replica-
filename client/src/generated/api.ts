@@ -636,6 +636,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/generation-records": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Generation Records */
+    get: operations["list_generation_records_api_control_generation_records_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/billing-reconciliation": {
     parameters: {
       query?: never;
@@ -1028,7 +1045,7 @@ export interface paths {
     put?: never;
     /**
      * Activate First Device
-     * @description Create a first activation or recover its already-bound machine atomically.
+     * @description Create a first activation or recover its code-authenticated machine atomically.
      */
     post: operations["activate_first_device_api_customer_activate_post"];
     delete?: never;
@@ -1964,8 +1981,9 @@ export interface paths {
      *
      *     The download URL carries a short-lived HMAC signature (issued by
      *     create_download_url) because an <img> tag cannot attach the dev identity
-     *     header. The signature is bound to the object key and expiry, so a leaked URL
-     *     cannot be replayed after it expires.
+     *     header. The signature is bound to object, actor, asset and session epoch;
+     *     the database grant is revalidated before every read so deletion, session
+     *     replacement and activation revocation take effect immediately.
      */
     get: operations["get_local_object_api_assets_local_objects__object_key__get"];
     /**
@@ -1978,6 +1996,26 @@ export interface paths {
      *     read-only and only the project owner/admin may write objects.
      */
     put: operations["put_local_object_api_assets_local_objects__object_key__put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/assets/signed-objects/{object_key}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Signed Object
+     * @description Proxy a revocable signed grant for local or private cloud storage.
+     */
+    get: operations["get_signed_object_api_assets_signed_objects__object_key__get"];
+    put?: never;
     post?: never;
     delete?: never;
     options?: never;
@@ -2580,6 +2618,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/source-frame-tasks/{task_id}/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Cancel Project Source Frame Task */
+    post: operations["cancel_project_source_frame_task_api_source_frame_tasks__task_id__cancel_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/projects/{project_id}/source-frame-tasks/latest": {
     parameters: {
       query?: never;
@@ -2876,6 +2931,40 @@ export interface paths {
     get: operations["read_simple_library_api_simple_characters_library_get"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/simple-characters/identities/{identity_id}/scene-looks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Scene Looks */
+    get: operations["read_scene_looks_api_simple_characters_identities__identity_id__scene_looks_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Enqueue Scene Look */
+    post: operations["enqueue_scene_look_api_simple_characters_identities__identity_id__scene_looks_tasks_generate_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -3903,7 +3992,7 @@ export interface components {
       /** Status */
       status: string;
       /** Storage Uri */
-      storage_uri: string;
+      storage_uri?: string | null;
       /** Sha256 */
       sha256: string;
       /** Size Bytes */
@@ -3948,6 +4037,77 @@ export interface components {
       character_features?:
         | components["schemas"]["SourceFrameCharacterFeatures"]
         | null;
+    };
+    /** ControlGenerationRecord */
+    ControlGenerationRecord: {
+      /** Record Id */
+      record_id: string;
+      /**
+       * Record Type
+       * @enum {string}
+       */
+      record_type:
+        | "VIDEO"
+        | "FIRST_FRAME_IMAGE"
+        | "CHARACTER_SHEET_IMAGE"
+        | "CHARACTER_VIEW_IMAGE"
+        | "SOURCE_FRAME_AI_SCORE"
+        | "SOURCE_FRAME_PROCESS";
+      /** Operation */
+      operation: string;
+      /** User Id */
+      user_id: string;
+      /** Username */
+      username: string;
+      /** Display Name */
+      display_name: string;
+      /** Project Id */
+      project_id: string | null;
+      /** Project Name */
+      project_name: string | null;
+      /** Status */
+      status: string;
+      /** Provider */
+      provider: string | null;
+      /** Model */
+      model: string | null;
+      /** Provider Cost */
+      provider_cost: number | null;
+      /**
+       * Provider Cost Status
+       * @enum {string}
+       */
+      provider_cost_status:
+        | "KNOWN"
+        | "ESTIMATED"
+        | "UNAVAILABLE"
+        | "NOT_APPLICABLE";
+      /**
+       * Record Data Status
+       * @enum {string}
+       */
+      record_data_status: "VALID" | "UNAVAILABLE" | "CORRUPTED";
+      /** Charged Credits */
+      charged_credits: number;
+      /** Result Reference */
+      result_reference: string | null;
+      /** Error Code */
+      error_code: string | null;
+      /** Created At */
+      created_at: string;
+      /** Completed At */
+      completed_at: string | null;
+    };
+    /** ControlGenerationRecordPage */
+    ControlGenerationRecordPage: {
+      /** Items */
+      items: components["schemas"]["ControlGenerationRecord"][];
+      /** Total */
+      total: number;
+      /** Limit */
+      limit: number;
+      /** Offset */
+      offset: number;
     };
     /** ControlProviderSettingsUpdate */
     ControlProviderSettingsUpdate: {
@@ -5272,6 +5432,40 @@ export interface components {
       /** Views */
       views: components["schemas"]["SimpleCharacterViewResponse"][];
     };
+    /** SimpleSceneLookCreateRequest */
+    SimpleSceneLookCreateRequest: {
+      /** Scene Name */
+      scene_name: string;
+      /** Scene Description */
+      scene_description: string;
+      /** Costume Description */
+      costume_description: string;
+      /** Idempotency Key */
+      idempotency_key: string;
+    };
+    /** SimpleSceneLookResponse */
+    SimpleSceneLookResponse: {
+      /** Identity Id */
+      identity_id: string;
+      /** Persona Id */
+      persona_id: string;
+      /** Character Version Id */
+      character_version_id: string;
+      /** Scene Name */
+      scene_name: string;
+      /** Scene Description */
+      scene_description: string;
+      /** Costume Description */
+      costume_description: string;
+      /** Contact Sheet Asset Id */
+      contact_sheet_asset_id: string;
+      /** Generation Source */
+      generation_source: string;
+      /** Views */
+      views: components["schemas"]["SimpleCharacterViewResponse"][];
+      /** Published At */
+      published_at?: string | null;
+    };
     /** SimpleUploadIntentResponse */
     SimpleUploadIntentResponse: {
       /** Generate Url */
@@ -5528,7 +5722,7 @@ export interface components {
       /** Project Id */
       project_id: string;
       /** Storage Key */
-      storage_key: string;
+      storage_key?: string | null;
       /** Method */
       method: string | null;
       /** Url */
@@ -5628,11 +5822,11 @@ export interface components {
       /** Reserved Credits */
       reserved_credits: number;
       /** Internal Unit Price Fen */
-      internal_unit_price_fen: number;
+      internal_unit_price_fen?: number | null;
       /** Min Recharge Fen */
-      min_recharge_fen: number;
+      min_recharge_fen?: number | null;
       /** Recharge Step Fen */
-      recharge_step_fen: number;
+      recharge_step_fen?: number | null;
     };
     /** WalletTransactionPage */
     WalletTransactionPage: {
@@ -7040,6 +7234,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ControlWalletTransactionPage"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  list_generation_records_api_control_generation_records_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+      };
+      header?: {
+        "X-Control-Proxy-Token"?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ControlGenerationRecordPage"];
         };
       };
       /** @description Validation Error */
@@ -9475,6 +9703,37 @@ export interface operations {
       };
     };
   };
+  get_signed_object_api_assets_signed_objects__object_key__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        object_key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   create_project_analysis_api_projects__project_id__analysis_post: {
     parameters: {
       query?: never;
@@ -11033,6 +11292,37 @@ export interface operations {
       };
     };
   };
+  cancel_project_source_frame_task_api_source_frame_tasks__task_id__cancel_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SourceFrameTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_latest_source_frame_task_api_projects__project_id__source_frame_tasks_latest_get: {
     parameters: {
       query: {
@@ -11603,6 +11893,75 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SimpleLibraryEntryResponse"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_scene_looks_api_simple_characters_identities__identity_id__scene_looks_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        identity_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SimpleSceneLookResponse"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  enqueue_scene_look_api_simple_characters_identities__identity_id__scene_looks_tasks_generate_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        identity_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SimpleSceneLookCreateRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CharacterSheetTaskResponse"];
         };
       };
       /** @description Validation Error */

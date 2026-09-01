@@ -98,6 +98,7 @@ export function ProjectDetailFlow({
   // 用户修改文案、Prompt、首帧或生成参数后必须生成新键，避免服务端 409。
   const idempotencyEnvelopeRef = useRef<IdempotencyEnvelope | null>(null);
   const autoMatchAttemptedRef = useRef<Set<string>>(new Set());
+  const firstFrameStepRef = useRef<HTMLFieldSetElement>(null);
   const onBusyChangeRef = useRef(onBusyChange);
   onBusyChangeRef.current = onBusyChange;
 
@@ -457,7 +458,7 @@ export function ProjectDetailFlow({
     if (referenceSelection) {
       return (
         <p className="setup-success" role="status">
-          已自动匹配人物参考。
+          人物参考已匹配，可直接生成人物置换首帧。
         </p>
       );
     }
@@ -475,7 +476,11 @@ export function ProjectDetailFlow({
         </p>
       );
     }
-    return <p className="status-note">正在自动匹配人物参考…</p>;
+    return (
+      <p className="status-note" role="status">
+        源画面已确认，正在自动匹配人物五视图…
+      </p>
+    );
   })();
   const outputDurationSeconds = defaultDurationSeconds();
   const sourceDurationSeconds = sourceVideoDurationSeconds();
@@ -544,6 +549,12 @@ export function ProjectDetailFlow({
         />
         <SourceFrameSelection
           onBusyChange={(busy) => markUpstreamBusy("source-frame", busy)}
+          onConfirmed={() =>
+            firstFrameStepRef.current?.scrollIntoView?.({
+              behavior: "smooth",
+              block: "start",
+            })
+          }
           onSelectionChange={handleSourceFrameChange}
           projectId={project.id}
           readOnly={readOnly}
@@ -553,7 +564,7 @@ export function ProjectDetailFlow({
         />
       </fieldset>
 
-      <fieldset className="flow-step">
+      <fieldset className="flow-step" ref={firstFrameStepRef}>
         <legend>③ 人物置换首帧</legend>
         {referenceStatus ? (
           referenceStatus

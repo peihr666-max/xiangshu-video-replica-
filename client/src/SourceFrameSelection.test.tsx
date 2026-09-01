@@ -8,6 +8,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  cancelSourceFrameTask,
   confirmSourceFrame,
   extractSourceFrames,
   getAssetDownloadUrl,
@@ -20,6 +21,7 @@ import {
 import { SourceFrameSelection } from "./SourceFrameSelection";
 
 vi.mock("./api", () => ({
+  cancelSourceFrameTask: vi.fn(),
   confirmSourceFrame: vi.fn(),
   extractSourceFrames: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
@@ -94,6 +96,13 @@ describe("SourceFrameSelection", () => {
       },
     });
     vi.mocked(extractSourceFrames).mockResolvedValue(sourceFrameTask);
+    vi.mocked(cancelSourceFrameTask).mockResolvedValue({
+      ...sourceFrameTask,
+      status: "FAILED",
+      error_code: "SOURCE_FRAME_TASK_CANCELLED",
+      error_message: "取帧任务已停止，可以重新开始。",
+      retryable: true,
+    });
     vi.mocked(waitForSourceFrameTask).mockResolvedValue({
       ...sourceFrameTask,
       status: "SUCCEEDED",
@@ -101,7 +110,7 @@ describe("SourceFrameSelection", () => {
     });
   });
 
-  it("automatically confirms the best candidate and hides technical controls", async () => {
+  it("recommends the best candidate but requires the user to confirm it", async () => {
     render(
       <SourceFrameSelection
         projectId="project-1"
@@ -110,16 +119,10 @@ describe("SourceFrameSelection", () => {
     );
 
     expect(await screen.findByText("源画面自动处理")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(confirmSourceFrame).toHaveBeenCalledWith(
-        "project-1",
-        "source-1",
-        null,
-      ),
-    );
     expect(
-      await screen.findByText("已自动选择源画面，将保留原视频的构图与动作。"),
+      await screen.findByText("已推荐画面 1，请确认或更换源画面。"),
     ).toBeInTheDocument();
+    expect(confirmSourceFrame).not.toHaveBeenCalled();
     expect(screen.getByAltText("候选源画面 1")).toHaveAttribute(
       "src",
       "https://private.example/source-1.jpg",
@@ -129,17 +132,24 @@ describe("SourceFrameSelection", () => {
     expect(screen.queryByLabelText("人物景别")).toBeNull();
     expect(screen.queryByLabelText("面部可见性")).toBeNull();
     expect(screen.queryByLabelText("身体完整度")).toBeNull();
+    const confirmButton = screen.getByRole("button", {
+      name: "确认源画面并继续",
+    });
+    await waitFor(() => expect(confirmButton).toBeEnabled());
+    fireEvent.click(confirmButton);
+    await waitFor(() =>
+      expect(confirmSourceFrame).toHaveBeenCalledWith(
+        "project-1",
+        "source-1",
+        null,
+      ),
+    );
   });
 
-  it("keeps a manual recovery path when automatic confirmation fails", async () => {
-    vi.mocked(confirmSourceFrame)
-      .mockRejectedValueOnce(new Error("自动确认暂不可用"))
-      .mockResolvedValueOnce({
-        ...candidatesVersion,
-        id: "source-selection-recovered",
-        kind: "source_frame_selection",
-        payload: { source_frame_asset_id: "source-1" },
-      });
+  it("keeps the selected candidate when manual confirmation fails", async () => {
+    vi.mocked(confirmSourceFrame).mockRejectedValueOnce(
+      new Error("确认暂不可用"),
+    );
 
     render(
       <SourceFrameSelection
@@ -148,13 +158,15 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
-    expect(await screen.findByText("自动确认暂不可用")).toBeInTheDocument();
-    const useButton = screen.getByRole("button", { name: "使用所选画面" });
+    const useButton = await screen.findByRole("button", {
+      name: "确认源画面并继续",
+    });
     await waitFor(() => expect(useButton).toBeEnabled());
     fireEvent.click(useButton);
 
-    await waitFor(() => expect(confirmSourceFrame).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText("已改用源画面 1。")).toBeInTheDocument();
+    expect(await screen.findByText("确认暂不可用")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("source-1")).toBeChecked();
+    expect(confirmSourceFrame).toHaveBeenCalledOnce();
   });
 
   it("re-extracts at adaptive timestamps without exposing technical inputs", async () => {
@@ -179,6 +191,30 @@ describe("SourceFrameSelection", () => {
     expect(screen.queryByLabelText("重新取帧时间点（秒）")).toBeNull();
   });
 
+  it("extracts one manually chosen timestamp for human intervention", async () => {
+    render(
+      <SourceFrameSelection
+        projectId="project-1"
+        referenceAssetId="reference-1"
+        videoDurationSeconds={12}
+      />,
+    );
+
+    await screen.findByAltText("候选源画面 1");
+    fireEvent.change(screen.getByLabelText("手动取帧时间（秒）"), {
+      target: { value: "4.2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "从该时间取帧" }));
+
+    await waitFor(() =>
+      expect(extractSourceFrames).toHaveBeenCalledWith(
+        "project-1",
+        "reference-1",
+        [4.2],
+      ),
+    );
+  });
+
   it("keeps an unavailable preview out of the manual fallback", async () => {
     vi.mocked(getAssetDownloadUrl).mockRejectedValueOnce(
       new Error("签名 URL 不可用"),
@@ -192,7 +228,9 @@ describe("SourceFrameSelection", () => {
 
     expect(await screen.findByText("预览加载失败")).toBeInTheDocument();
     expect(screen.getByDisplayValue("source-1")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "使用所选画面" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "确认源画面并继续" }),
+    ).toBeDisabled();
   });
 
   it("requires manual confirmation when semantic scoring is unavailable", async () => {
@@ -212,12 +250,14 @@ describe("SourceFrameSelection", () => {
     );
 
     expect(
-      await screen.findByText("语义评分暂不可用，请查看候选画面后手动确认。"),
+      await screen.findByText(
+        "AI评分暂不可用，已按本地画质推荐，请查看后确认。",
+      ),
     ).toBeInTheDocument();
     expect(confirmSourceFrame).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "使用所选画面" }),
+        screen.getByRole("button", { name: "确认源画面并继续" }),
       ).toBeEnabled(),
     );
   });
@@ -258,7 +298,7 @@ describe("SourceFrameSelection", () => {
     );
 
     expect(
-      await screen.findByText("已自动选择源画面，将保留原视频的构图与动作。"),
+      await screen.findByText("已确认源画面，将保留原视频的构图与动作。"),
     ).toBeInTheDocument();
     expect(onSelectionChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ id: "source-selection-legacy" }),
@@ -297,9 +337,14 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
+    const confirmButton = await screen.findByRole("button", {
+      name: "确认源画面并继续",
+    });
+    await waitFor(() => expect(confirmButton).toBeEnabled());
+    fireEvent.click(confirmButton);
     await waitFor(() => expect(confirmSourceFrame).toHaveBeenCalledOnce());
     expect(onBusyChange).toHaveBeenLastCalledWith(true);
-    expect(screen.getByText("自动处理中")).toBeInTheDocument();
+    expect(screen.getByText("确认中")).toBeInTheDocument();
     expect(screen.getByDisplayValue("source-1")).toBeDisabled();
     expect(screen.getByDisplayValue("source-2")).toBeDisabled();
 
@@ -340,6 +385,11 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
+    const confirmButton = await screen.findByRole("button", {
+      name: "确认源画面并继续",
+    });
+    await waitFor(() => expect(confirmButton).toBeEnabled());
+    fireEvent.click(confirmButton);
     await waitFor(() => expect(confirmSourceFrame).toHaveBeenCalledOnce());
 
     rerender(
@@ -413,7 +463,7 @@ describe("SourceFrameSelection", () => {
     await waitFor(() => expect(extractSourceFrames).toHaveBeenCalledOnce());
     await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
     expect(
-      screen.getByText("候选源画面正在后台提取，可离开本页继续其他操作。"),
+      screen.getByText("已进入处理队列，后台即将开始取帧。"),
     ).toBeInTheDocument();
 
     await act(async () => {
@@ -446,6 +496,90 @@ describe("SourceFrameSelection", () => {
     expect(extractSourceFrames).not.toHaveBeenCalled();
   });
 
+  it("does not expose old candidates while a replacement task is active", async () => {
+    vi.mocked(getLatestProjectSourceFrameTask).mockResolvedValue({
+      ...sourceFrameTask,
+      status: "RUNNING",
+    });
+    vi.mocked(waitForSourceFrameTask).mockReturnValue(
+      new Promise<SourceFrameTask>(() => undefined),
+    );
+    const onSelectionChange = vi.fn();
+
+    render(
+      <SourceFrameSelection
+        onSelectionChange={onSelectionChange}
+        projectId="project-1"
+        referenceAssetId="reference-1"
+      />,
+    );
+
+    expect(
+      await screen.findByText("正在从原视频批量提取候选画面。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByAltText("候选源画面 1")).toBeNull();
+    expect(onSelectionChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("lets the user stop a pending task and restart extraction", async () => {
+    vi.mocked(getLatestProjectSourceFrames).mockResolvedValue(null);
+    vi.mocked(getLatestProjectSourceFrameTask).mockResolvedValue(
+      sourceFrameTask,
+    );
+    vi.mocked(waitForSourceFrameTask).mockReturnValue(
+      new Promise<SourceFrameTask>(() => undefined),
+    );
+
+    render(
+      <SourceFrameSelection
+        projectId="project-1"
+        referenceAssetId="reference-1"
+        videoDurationSeconds={12}
+      />,
+    );
+
+    expect(
+      await screen.findByText("已进入处理队列，后台即将开始取帧。"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "停止并重新取帧" }));
+
+    await waitFor(() =>
+      expect(cancelSourceFrameTask).toHaveBeenCalledWith(sourceFrameTask.id),
+    );
+    await waitFor(() =>
+      expect(extractSourceFrames).toHaveBeenCalledWith(
+        "project-1",
+        "reference-1",
+        [1.2, 3.6, 6, 8.4, 10.8],
+      ),
+    );
+  });
+
+  it("offers a direct retry after the latest task failed", async () => {
+    vi.mocked(getLatestProjectSourceFrames).mockResolvedValue(null);
+    vi.mocked(getLatestProjectSourceFrameTask).mockResolvedValue({
+      ...sourceFrameTask,
+      status: "FAILED",
+      error_code: "SOURCE_FRAME_TASK_RECOVERY_REQUIRED",
+      error_message: "取帧任务执行中断，请重新开始。",
+      retryable: true,
+    });
+
+    render(
+      <SourceFrameSelection
+        projectId="project-1"
+        referenceAssetId="reference-1"
+      />,
+    );
+
+    expect(
+      await screen.findByText("取帧任务执行中断，请重新开始。"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新开始取帧" }));
+
+    await waitFor(() => expect(extractSourceFrames).toHaveBeenCalledOnce());
+  });
+
   // P0-03-02：候选自动提取与特征预填（红灯先行）。
 
   it("auto-extracts default candidates when the project has none", async () => {
@@ -468,7 +602,7 @@ describe("SourceFrameSelection", () => {
     expect(await screen.findByAltText("候选源画面 1")).toBeInTheDocument();
   });
 
-  it("automatically confirms after candidates are extracted", async () => {
+  it("requires confirmation after candidates are extracted", async () => {
     vi.mocked(getLatestProjectSourceFrames).mockResolvedValueOnce(null);
     render(
       <SourceFrameSelection
@@ -479,13 +613,9 @@ describe("SourceFrameSelection", () => {
 
     expect(await screen.findByAltText("候选源画面 1")).toBeInTheDocument();
     expect(
-      await screen.findByText("已自动选择源画面，将保留原视频的构图与动作。"),
+      await screen.findByText("已推荐画面 1，请确认或更换源画面。"),
     ).toBeInTheDocument();
-    expect(confirmSourceFrame).toHaveBeenCalledWith(
-      "project-1",
-      "source-1",
-      null,
-    );
+    expect(confirmSourceFrame).not.toHaveBeenCalled();
   });
 
   it("does not auto-extract for a read-only auditor", async () => {
@@ -541,7 +671,7 @@ describe("SourceFrameSelection", () => {
     expect(screen.getByDisplayValue("source-2")).not.toBeChecked();
   });
 
-  it("passes the latest visual suggestion to automatic confirmation", async () => {
+  it("passes the latest visual suggestion to manual confirmation", async () => {
     render(
       <SourceFrameSelection
         featureSuggestion={{
@@ -555,6 +685,11 @@ describe("SourceFrameSelection", () => {
       />,
     );
 
+    const confirmButton = await screen.findByRole("button", {
+      name: "确认源画面并继续",
+    });
+    await waitFor(() => expect(confirmButton).toBeEnabled());
+    fireEvent.click(confirmButton);
     await waitFor(() =>
       expect(confirmSourceFrame).toHaveBeenCalledWith("project-1", "source-1", {
         body_completeness: "FACE_ONLY",
@@ -584,7 +719,7 @@ describe("SourceFrameSelection", () => {
     await screen.findByAltText("候选源画面 1");
     const initialLoadCount = vi.mocked(getLatestProjectSourceFrames).mock.calls
       .length;
-    await waitFor(() => expect(confirmSourceFrame).toHaveBeenCalledOnce());
+    expect(confirmSourceFrame).not.toHaveBeenCalled();
 
     rerender(
       <SourceFrameSelection
@@ -603,7 +738,7 @@ describe("SourceFrameSelection", () => {
     expect(getLatestProjectSourceFrames).toHaveBeenCalledTimes(
       initialLoadCount,
     );
-    expect(confirmSourceFrame).toHaveBeenCalledOnce();
+    expect(confirmSourceFrame).not.toHaveBeenCalled();
   });
 
   it("keeps an existing confirmed source frame over incoming suggestions", async () => {
@@ -638,7 +773,7 @@ describe("SourceFrameSelection", () => {
     );
 
     expect(
-      await screen.findByText("已自动选择源画面，将保留原视频的构图与动作。"),
+      await screen.findByText("已确认源画面，将保留原视频的构图与动作。"),
     ).toBeInTheDocument();
     expect(screen.getByDisplayValue("source-2")).toBeChecked();
     expect(confirmSourceFrame).not.toHaveBeenCalled();

@@ -4,6 +4,7 @@ import {
   attachCustomerSessionToken,
   CUSTOMER_SESSION_REPLACED_EVENT,
   CUSTOMER_SESSION_REVOKED_EVENT,
+  cancelSourceFrameTask,
   chooseProjectMainCharacterVersion,
   compileGenerationPrompt,
   completeVideoUpload,
@@ -1211,6 +1212,59 @@ describe("startVideoAnalysis", () => {
         timestamps_seconds: [2.4, 6, 9.6],
         idempotency_key: expect.any(String),
       }),
+    );
+  });
+
+  it("preserves the failed source-frame task for safe UI recovery", async () => {
+    const failed = {
+      id: "source-frame-task-failed",
+      project_id: "project-1",
+      asset_id: "asset-1",
+      timestamps_seconds: [2.4],
+      status: "FAILED",
+      attempt: 1,
+      result_version_id: null,
+      error_code: "SOURCE_FRAME_TASK_RECOVERY_REQUIRED",
+      error_message: "取帧任务执行中断，请重新开始。",
+      retryable: true,
+      created_at: "2026-09-02T00:00:00Z",
+      updated_at: "2026-09-02T00:01:00Z",
+      started_at: "2026-09-02T00:00:01Z",
+      completed_at: "2026-09-02T00:01:00Z",
+    } as const;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => failed }),
+    );
+
+    await expect(waitForSourceFrameTask(failed.id)).rejects.toMatchObject({
+      name: "SourceFrameTaskFailedError",
+      task: failed,
+    });
+  });
+
+  it("cancels a source-frame task through its recovery endpoint", async () => {
+    const cancelled = {
+      id: "source-frame-task-cancelled",
+      project_id: "project-1",
+      asset_id: "asset-1",
+      timestamps_seconds: [2.4],
+      status: "FAILED",
+      error_code: "SOURCE_FRAME_TASK_CANCELLED",
+      retryable: true,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => cancelled,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      cancelSourceFrameTask("source-frame-task-cancelled"),
+    ).resolves.toEqual(cancelled);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/source-frame-tasks/source-frame-task-cancelled/cancel",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 

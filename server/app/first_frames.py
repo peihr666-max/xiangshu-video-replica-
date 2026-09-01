@@ -62,6 +62,7 @@ APILIO_IMAGE_EDIT_PATH = "/v1/images/edits"
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_QUALITY_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_QUALITY_REQUEST_IMAGE_BYTES = 32 * 1024 * 1024
+SOURCE_FRAME_QUALITY_TIMEOUT_SECONDS = 8.0
 MAX_FIRST_FRAME_QUALITY_ATTEMPTS = 3
 MAX_SCENE_CONTACT_SHEET_QUALITY_ATTEMPTS = 3
 MIN_FIRST_FRAME_IDENTITY_SCORE = 0.78
@@ -612,6 +613,8 @@ class ApilioImageProvider:
 class ApilioFirstFrameQualityInspector:
     """Fail-closed Gemini comparison for the single-person first-frame lane."""
 
+    provider_name = "apilio_gemini"
+
     def __init__(
         self,
         *,
@@ -619,11 +622,13 @@ class ApilioFirstFrameQualityInspector:
         base_url: str = APILIO_DEFAULT_BASE_URL,
         model: str = APILIO_GEMINI_MODEL,
         transport: ApilioTransport | None = None,
+        max_attempts: int = 2,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.transport = transport or UrllibApilioTransport()
+        self.max_attempts = max(1, max_attempts)
 
     def inspect_source(self, source_image: ImageInput) -> FirstFrameSourceInspection:
         _validate_quality_images((source_image.content,))
@@ -840,7 +845,7 @@ class ApilioFirstFrameQualityInspector:
             separators=(",", ":"),
         ).encode()
         last_error: Exception | None = None
-        for attempt in range(2):
+        for attempt in range(self.max_attempts):
             try:
                 raw_body, _ = self.transport.post(
                     f"{self.base_url}/v1/chat/completions",
@@ -859,7 +864,7 @@ class ApilioFirstFrameQualityInspector:
                 return cast(dict[str, object], payload)
             except RetryableImageProviderFailed as exc:
                 last_error = exc
-                if attempt == 0:
+                if attempt + 1 < self.max_attempts:
                     continue
             except (
                 ImageProviderFailed,
@@ -872,6 +877,24 @@ class ApilioFirstFrameQualityInspector:
                 last_error = exc
             break
         raise FirstFrameQualityInspectorFailed("first-frame quality request failed") from last_error
+
+
+def bounded_source_frame_quality_inspector(
+    inspector: FirstFrameQualityInspector,
+) -> FirstFrameQualityInspector:
+    """Keep optional source-frame scoring from blocking the required local extraction."""
+
+    if not isinstance(inspector, ApilioFirstFrameQualityInspector):
+        return inspector
+    return ApilioFirstFrameQualityInspector(
+        api_key=inspector.api_key,
+        base_url=inspector.base_url,
+        model=inspector.model,
+        transport=UrllibApilioTransport(
+            timeout_seconds=SOURCE_FRAME_QUALITY_TIMEOUT_SECONDS,
+        ),
+        max_attempts=1,
+    )
 
 
 def _chat_image_item(content: bytes, content_type: str) -> dict[str, object]:

@@ -18,6 +18,7 @@ import {
   resolveApiBaseUrl,
   setAdminCsrfToken,
 } from "./api";
+import type { components } from "./generated/api";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CSRF_HEADER = "X-Admin-CSRF";
@@ -1018,6 +1019,33 @@ export async function listAuditLog(
   }
 
   return response.json() as Promise<AuditLogResponse>;
+}
+
+// ---------------------------------------------------------------------------
+// Generation records — paid media and AI-operation traceability
+// ---------------------------------------------------------------------------
+
+export type AdminGenerationRecord =
+  components["schemas"]["ControlGenerationRecord"];
+export type AdminGenerationRecordPage =
+  components["schemas"]["ControlGenerationRecordPage"];
+
+export async function getAdminGenerationRecords(
+  limit = 50,
+  offset = 0,
+): Promise<AdminGenerationRecordPage> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  const response = await requestControl(
+    `/api/control/generation-records?${params.toString()}`,
+    { method: "GET" },
+  );
+  if (!response.ok) {
+    throw await parseActivationError(response, "读取生成记录失败");
+  }
+  return response.json() as Promise<AdminGenerationRecordPage>;
 }
 
 // ---------------------------------------------------------------------------
