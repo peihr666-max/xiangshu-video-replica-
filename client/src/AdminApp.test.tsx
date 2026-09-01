@@ -450,10 +450,13 @@ describe("AdminApp", () => {
 
     render(<AdminApp />);
     await signInWithPassword();
-    fireEvent.click(screen.getByRole("button", { name: "激活码" }));
+    fireEvent.click(screen.getByRole("button", { name: "激活码与设备" }));
 
     expect(
-      await screen.findByRole("button", { name: "生成激活码" }),
+      await screen.findByRole("heading", { name: "直接生成激活码" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "激活码与设备" }),
     ).toBeInTheDocument();
   });
 

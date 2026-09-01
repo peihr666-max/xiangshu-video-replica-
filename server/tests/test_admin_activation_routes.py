@@ -1194,6 +1194,55 @@ def test_list_codes_requires_session_and_allows_auditor(
     assert response.json()["items"] == []
 
 
+def test_list_codes_returns_bound_account_and_related_devices(
+    client: TestClient, admin_headers: dict[str, str], clean_state: str
+) -> None:
+    code_id = _generated_code_id(client, admin_headers)
+    _activate_code_directly(clean_state, code_id)
+    with psycopg.connect(clean_state) as conn:
+        conn.execute(
+            "INSERT INTO customer_devices ("
+            "id, activation_code_id, user_id, slot_no, display_name, platform, "
+            "fingerprint_hmac, fingerprint_key_version, token_digest, token_key_version, "
+            "status, bound_at, last_active_at) "
+            "VALUES (%s, %s, %s, 1, %s, %s, %s, 1, %s, 1, 'BOUND', %s, %s)",
+            (
+                "device-unified-1",
+                code_id,
+                "customer_u",
+                "办公室电脑",
+                "windows",
+                "fingerprint-test",
+                "token-test",
+                "2026-09-01T08:00:00+00:00",
+                "2026-09-01T09:00:00+00:00",
+            ),
+        )
+        conn.commit()
+
+    response = client.get("/api/control/activation-codes", headers=admin_headers)
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["code_id"] == code_id
+    assert item["bound_username"] == "customer_u"
+    assert item["devices"] == [
+        {
+            "device_id": "device-unified-1",
+            "slot_no": 1,
+            "display_name": "办公室电脑",
+            "platform": "windows",
+            "status": "BOUND",
+            "bound_at": "2026-09-01T08:00:00+00:00",
+            "last_active_at": "2026-09-01T09:00:00+00:00",
+            "unbound_at": None,
+            "revoked_at": None,
+        }
+    ]
+    assert "fingerprint_hmac" not in str(item)
+    assert "token_digest" not in str(item)
+
+
 def test_list_codes_does_not_expose_bearer_code_to_auditor(
     client: TestClient, admin_headers: dict[str, str]
 ) -> None:

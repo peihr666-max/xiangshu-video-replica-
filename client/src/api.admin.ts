@@ -272,7 +272,21 @@ export type ActivationCodeListItem = {
   masked_code: string;
   status: string;
   bound_user_id: string | null;
+  bound_username: string | null;
   issued_at: string | null;
+  devices: ActivationCodeDevice[];
+};
+
+export type ActivationCodeDevice = {
+  device_id: string;
+  slot_no: number;
+  display_name: string | null;
+  platform: string;
+  status: string;
+  bound_at: string | null;
+  last_active_at: string | null;
+  unbound_at: string | null;
+  revoked_at: string | null;
 };
 
 export type ActivationCodePage = {

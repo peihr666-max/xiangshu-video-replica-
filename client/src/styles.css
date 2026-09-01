@@ -7540,6 +7540,71 @@ button.activation-generator__submit {
   background: rgba(198, 164, 95, 0.15);
 }
 
+.activation-device-page {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.activation-device-page .admin-page-header h2 {
+  margin: 0 0 5px;
+  color: var(--admin-text);
+  font-size: 18px;
+}
+
+.activation-device-page .admin-page-header p {
+  margin: 0;
+}
+
+.activation-device-filters label:first-child {
+  flex: 1 1 280px;
+}
+
+.activation-device-filters input {
+  width: 100%;
+}
+
+.activation-device-toggle {
+  min-width: 86px;
+}
+
+.activation-device-detail-row > td {
+  padding: 16px 18px;
+  background: #121211;
+}
+
+.activation-device-subtable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.activation-device-subtable th,
+.activation-device-subtable td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--admin-line-soft);
+  color: #aaa39a;
+  font-size: 10px;
+  text-align: left;
+}
+
+.activation-device-subtable th {
+  color: #706b64;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.activation-device-empty {
+  margin: 0;
+  padding: 16px;
+  color: #77716a;
+  text-align: center;
+}
+
+.activation-device-action {
+  border-color: rgba(198, 164, 95, 0.28);
+  background: #151514;
+}
+
 .admin-detail-row > td {
   padding: 0;
   border-bottom: 1px solid rgba(198, 164, 95, 0.28);
