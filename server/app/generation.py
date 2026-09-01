@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.analysis import get_version, insert_version
 from app.auth import CurrentUser, Role
+from app.bootstrap import is_customer_production
 from app.db_portable import BusinessConnection
 from app.internal_billing import (
     BillingInvariantError,
@@ -577,6 +578,10 @@ def metaso_h3_provider_from_settings(conn: BusinessConnection) -> MetasoH3Provid
 
 def h3_provider_for_task(conn: BusinessConnection, provider_name: str) -> H3Provider:
     if provider_name == "fake_h3":
+        if is_customer_production():
+            raise H3ProviderSettingsUnavailable(
+                "fake H3 provider is forbidden in customer production"
+            )
         outcome = os.environ.get(FAKE_H3_OUTCOME_ENV, "ok").strip()
         if outcome not in {"ok", "provider_failed", "submission_uncertain"}:
             raise H3ProviderSettingsUnavailable(f"{FAKE_H3_OUTCOME_ENV} has an unsupported value")
@@ -705,9 +710,6 @@ class TaskSummary(BaseModel):
 
 class TaskResult(TaskSummary):
     prompt_snapshot: dict[str, Any] | None
-    # Provider 返回的成片直连播放链接（临时签名 URL）。客户端优先用它
-    # 在线播放，链接过期后回退到本地归档副本；非 HTTPS（如 fake://）不外露。
-    provider_result_url: str | None = None
 
 
 class BatchProgress(BaseModel):
@@ -1609,6 +1611,13 @@ def create_generation_batch(
                 actor=actor,
             )
 
+        if request.provider == "fake_h3" and is_customer_production():
+            raise generation_error(
+                503,
+                "FAKE_H3_PROVIDER_FORBIDDEN",
+                "Customer production cannot create simulated H3 generation tasks.",
+            )
+
         runtime = read_runtime_limits(conn)
         max_quantity = runtime["max_generation_count_per_batch"]
         if request.quantity > max_quantity:
@@ -2338,26 +2347,37 @@ def require_confirmed_first_frame(
     candidate_values = (
         candidate_payload.get("candidates") if isinstance(candidate_payload, dict) else None
     )
-    candidate_asset_ids = (
-        {
-            value.get("asset_id")
-            for value in candidate_values
-            if isinstance(value, dict) and isinstance(value.get("asset_id"), str)
-        }
+    selected_candidate = (
+        next(
+            (
+                value
+                for value in candidate_values
+                if isinstance(value, dict) and value.get("asset_id") == first_frame_asset_id
+            ),
+            None,
+        )
         if isinstance(candidate_values, list)
-        else set()
+        else None
     )
     is_current_confirmation = (
         isinstance(selection_payload, dict)
         and selection_payload.get("first_frame_candidates_version_id") == str(candidates["id"])
         and selection_payload.get("first_frame_asset_id") == first_frame_asset_id
-        and first_frame_asset_id in candidate_asset_ids
+        and selected_candidate is not None
     )
     if not is_current_confirmation:
         raise generation_error(
             409,
             "FIRST_FRAME_CONFIRMATION_REQUIRED",
             "Confirm a first-frame candidate from the latest candidate set before H3 generation.",
+        )
+    quality = selected_candidate.get("quality") if isinstance(selected_candidate, dict) else None
+    if not isinstance(quality, dict) or quality.get("passed") is not True:
+        raise generation_error(
+            409,
+            "FIRST_FRAME_QUALITY_NOT_VERIFIED",
+            "The confirmed first frame has no current quality evidence; "
+            "generate and confirm it again.",
         )
     if (
         isinstance(candidate_payload, dict)
@@ -6195,15 +6215,9 @@ def task_result(row: sqlite3.Row) -> TaskResult:
         if row["prompt_snapshot_json"] is None
         else json.loads(str(row["prompt_snapshot_json"]))
     )
-    provider_result_url = optional_text(row["provider_result_url"])
     return TaskResult(
         **summary.model_dump(),
         prompt_snapshot=prompt_snapshot,
-        provider_result_url=(
-            provider_result_url
-            if provider_result_url is not None and provider_result_url.startswith("https://")
-            else None
-        ),
     )
 
 

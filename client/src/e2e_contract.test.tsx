@@ -112,7 +112,7 @@ describe("Fake provider E2E contract", () => {
     expect(screen.getAllByText("阶段：已归档")).toHaveLength(2);
     expect(screen.queryByText("需要处理")).not.toBeInTheDocument();
     expect(screen.getAllByText("结果已归档")).toHaveLength(2);
-    expect(window.localStorage.getItem("generation.batchId")).toBe(
+    expect(window.localStorage.getItem("generation.batchId:employee_1")).toBe(
       "batch-fake-e2e",
     );
     await waitFor(() =>

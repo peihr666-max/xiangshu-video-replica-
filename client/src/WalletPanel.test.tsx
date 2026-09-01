@@ -92,7 +92,7 @@ describe("WalletPanel", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<WalletPanel />);
+    render(<WalletPanel currentUserId="user-1" />);
 
     expect(await screen.findByText("10元 / 条")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
@@ -111,9 +111,10 @@ describe("WalletPanel", () => {
         options?.method === "POST",
     );
     expect(createCall?.[1]?.body).toBe(JSON.stringify({ amount_fen: 20000 }));
-    expect(window.localStorage.getItem("wallet.pendingOrderNo")).toBe(
+    expect(window.localStorage.getItem("wallet.pendingOrderNo:user-1")).toBe(
       "202608190001",
     );
+    expect(window.localStorage.getItem("wallet.pendingOrderNo")).toBeNull();
   });
 
   it("rejects a custom amount that is not an integer 10-yuan step", async () => {
@@ -142,7 +143,11 @@ describe("WalletPanel", () => {
 
   it("restores a pending order and stops polling after it becomes paid", async () => {
     vi.useFakeTimers();
-    window.localStorage.setItem("wallet.pendingOrderNo", "pending-1");
+    window.localStorage.setItem("wallet.pendingOrderNo:user-1", "pending-1");
+    window.localStorage.setItem(
+      "wallet.pendingOrderNo:user-2",
+      "other-user-order",
+    );
     let statusChecks = 0;
     let walletReads = 0;
     const fetchMock = vi.fn((url: string) => {
@@ -175,7 +180,7 @@ describe("WalletPanel", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<WalletPanel />);
+    render(<WalletPanel currentUserId="user-1" />);
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -192,7 +197,12 @@ describe("WalletPanel", () => {
     expect(
       screen.getByText("充值已到账，钱包余额已更新。"),
     ).toBeInTheDocument();
-    expect(window.localStorage.getItem("wallet.pendingOrderNo")).toBeNull();
+    expect(
+      window.localStorage.getItem("wallet.pendingOrderNo:user-1"),
+    ).toBeNull();
+    expect(window.localStorage.getItem("wallet.pendingOrderNo:user-2")).toBe(
+      "other-user-order",
+    );
     expect(walletReads).toBeGreaterThanOrEqual(2);
   });
 

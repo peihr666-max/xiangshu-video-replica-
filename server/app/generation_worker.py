@@ -71,6 +71,7 @@ from app.image_tasks import (
     perform_character_sheet_task,
     prepare_character_sheet_task,
     prepare_first_frame_task,
+    renew_image_task_lease,
     run_first_frame_task_outside_transaction,
 )
 from app.media_routes import get_media_storage
@@ -282,8 +283,18 @@ def run_worker_once(
                 submission_started = True
 
             def mark_submission_completed() -> None:
-                nonlocal submission_started
-                submission_started = False
+                # A known provider response ends transport uncertainty, but
+                # the paid output is still only in worker memory until QC and
+                # archival complete. Keep the durable task non-retryable if a
+                # later infrastructure failure loses that output.
+                return
+
+            def renew_first_frame_lease() -> None:
+                renew_image_task_lease(
+                    conn,
+                    table="first_frame_tasks",
+                    lease=first_frame_lease,
+                )
 
             try:
                 prepared = prepare_first_frame_task(
@@ -299,6 +310,7 @@ def run_worker_once(
                     storage=first_frame_storage or storage,
                     before_provider_call=mark_submission_started,
                     after_provider_call=mark_submission_completed,
+                    heartbeat=renew_first_frame_lease,
                 )
                 complete_first_frame_task(
                     conn,
@@ -868,8 +880,15 @@ def run_pg_worker_once(
                 submission_started = True
 
             def mark_pg_submission_completed() -> None:
-                nonlocal submission_started
-                submission_started = False
+                return
+
+            def renew_pg_first_frame_lease() -> None:
+                with pg_transaction() as raw_conn:
+                    renew_image_task_lease(
+                        BusinessConnection.postgres(raw_conn),
+                        table="first_frame_tasks",
+                        lease=first_frame_lease,
+                    )
 
             try:
                 with pg_transaction() as raw_conn:
@@ -887,6 +906,7 @@ def run_pg_worker_once(
                     storage=first_frame_storage or storage,
                     before_provider_call=mark_pg_submission_started,
                     after_provider_call=mark_pg_submission_completed,
+                    heartbeat=renew_pg_first_frame_lease,
                 )
                 with pg_transaction() as raw_conn:
                     complete_first_frame_task(

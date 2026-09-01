@@ -12,7 +12,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -51,7 +51,10 @@ from app.storage import (
     storage_object_ref_from_uri,
 )
 
-IMAGE_TASK_LEASE_MINUTES = 12
+# Each external image/QC request has a 240-second timeout and may retry once.
+# Keep a moderate crash-detection window and renew it between every long I/O
+# phase instead of relying on one fixed lease for the whole multi-round job.
+IMAGE_TASK_LEASE_MINUTES = 30
 ACTIVE_IMAGE_TASK_STATUSES = ("PENDING", "RUNNING")
 
 
@@ -302,8 +305,6 @@ def _acquire_image_task(
     table: Literal["first_frame_tasks", "character_sheet_tasks"],
     worker_id: str,
 ) -> ImageTaskLease | None:
-    now = _now_text()
-    locked_until = _time_text(datetime.now(UTC) + timedelta(minutes=IMAGE_TASK_LEASE_MINUTES))
     conn.execute(
         f"""
         UPDATE {table}
@@ -311,17 +312,20 @@ def _acquire_image_task(
             error_code = 'IMAGE_TASK_LEASE_EXPIRED',
             error_message_redacted = '任务执行中断，已停止自动重试，请联系管理员核对。',
             retryable = 0, locked_by = NULL, locked_until = NULL,
-            completed_at = %s, updated_at = %s
-        WHERE status = 'RUNNING' AND locked_until IS NOT NULL AND locked_until <= %s
-        """,
-        (now, now, now),
+            completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'RUNNING'
+          AND locked_until IS NOT NULL
+          AND locked_until::timestamptz <= now()
+        """
     )
     row = conn.execute(
         f"""
         UPDATE {table}
         SET status = 'RUNNING', attempt = attempt + 1,
-            locked_by = %s, locked_until = %s,
-            started_at = COALESCE(started_at, %s), updated_at = %s,
+            locked_by = %s,
+            locked_until = now() + interval '{IMAGE_TASK_LEASE_MINUTES} minutes',
+            started_at = COALESCE(started_at::timestamptz, CURRENT_TIMESTAMP),
+            updated_at = CURRENT_TIMESTAMP,
             error_code = NULL, error_message_redacted = NULL, retryable = 0
         WHERE id = (
             SELECT id FROM {table}
@@ -330,7 +334,7 @@ def _acquire_image_task(
         ) AND status = 'PENDING'
         RETURNING *
         """,
-        (worker_id, locked_until, now, now),
+        (worker_id,),
     ).fetchone()
     conn.commit()
     if row is None:
@@ -341,6 +345,28 @@ def _acquire_image_task(
         worker_id=worker_id,
         attempt=int(row["attempt"]),
     )
+
+
+def renew_image_task_lease(
+    conn: BusinessConnection,
+    *,
+    table: Literal["first_frame_tasks", "character_sheet_tasks"],
+    lease: ImageTaskLease,
+) -> None:
+    """Extend an owned lease before the next bounded external-I/O phase."""
+
+    updated = conn.execute(
+        f"""
+        UPDATE {table}
+        SET locked_until = now() + interval '{IMAGE_TASK_LEASE_MINUTES} minutes',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        """,
+        (lease.id, lease.worker_id),
+    )
+    conn.commit()
+    if updated.rowcount != 1:
+        raise RuntimeError("image task lease was lost")
 
 
 def prepare_first_frame_task(
@@ -407,7 +433,10 @@ def run_first_frame_task_outside_transaction(
     storage: StorageAdapter,
     before_provider_call: Callable[[], None] | None = None,
     after_provider_call: Callable[[], None] | None = None,
+    heartbeat: Callable[[], None] | None = None,
 ) -> tuple[FirstFrameGenerationWork, StoredFirstFrameCandidates]:
+    if heartbeat is not None:
+        heartbeat()
     work = load_first_frame_generation_work(prepared.plan, storage=storage)
     generated = perform_first_frame_generation(
         work,
@@ -415,7 +444,10 @@ def run_first_frame_task_outside_transaction(
         quality_inspector=prepared.quality_inspector,
         before_provider_call=before_provider_call,
         after_provider_call=after_provider_call,
+        heartbeat=heartbeat,
     )
+    if heartbeat is not None:
+        heartbeat()
     stored = store_first_frame_generation(work, storage=storage, generated=generated)
     return work, stored
 
@@ -604,7 +636,10 @@ def fail_image_task(
         code = str(detail.get("code") or code)
         message = str(detail.get("message") or message)
         retryable = cause.status_code in {429, 502, 503, 504}
-        known_failure = True
+        # A validation/business rejection is a known outcome. A 5xx after a
+        # paid provider call is not: the upstream may have accepted or even
+        # completed the request before the transport/quality/storage failure.
+        known_failure = cause.status_code < 500
     elif isinstance(cause, (StorageBackendUnavailable, OSError, ValueError)):
         code = "IMAGE_TASK_STORAGE_UNAVAILABLE"
         message = "素材库暂不可用，请稍后重试。"

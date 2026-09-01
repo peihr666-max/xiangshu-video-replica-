@@ -57,6 +57,8 @@ MAX_FIRST_FRAME_CANDIDATES = 3
 APILIO_DEFAULT_BASE_URL = "https://api.apilio.ai"
 APILIO_IMAGE_EDIT_PATH = "/v1/images/edits"
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_QUALITY_IMAGE_BYTES = 12 * 1024 * 1024
+MAX_QUALITY_REQUEST_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_FIRST_FRAME_QUALITY_ATTEMPTS = 3
 MIN_FIRST_FRAME_IDENTITY_SCORE = 0.78
 MIN_FIRST_FRAME_RECONSTRUCTION_SCORE = 0.75
@@ -460,6 +462,7 @@ class ApilioFirstFrameQualityInspector:
         self.transport = transport or UrllibApilioTransport()
 
     def inspect_source(self, source_image: ImageInput) -> FirstFrameSourceInspection:
+        _validate_quality_images((source_image.content,))
         content: list[dict[str, object]] = [
             {
                 "type": "text",
@@ -489,6 +492,13 @@ class ApilioFirstFrameQualityInspector:
         candidate: GeneratedImage,
         expected_outfit: str,
     ) -> FirstFrameCandidateInspection:
+        _validate_quality_images(
+            (
+                source_image.content,
+                *(reference.content for reference in character_reference_images),
+                candidate.content,
+            )
+        )
         content: list[dict[str, object]] = [
             {
                 "type": "text",
@@ -583,6 +593,13 @@ class ApilioFirstFrameQualityInspector:
 def _chat_image_item(content: bytes, content_type: str) -> dict[str, object]:
     data_url = f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
     return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _validate_quality_images(images: tuple[bytes, ...]) -> None:
+    if any(len(image) > MAX_QUALITY_IMAGE_BYTES for image in images):
+        raise FirstFrameQualityInspectorFailed("first-frame quality image exceeds size limit")
+    if sum(len(image) for image in images) > MAX_QUALITY_REQUEST_IMAGE_BYTES:
+        raise FirstFrameQualityInspectorFailed("first-frame quality request exceeds size limit")
 
 
 def build_apilio_edit_multipart(
@@ -798,13 +815,17 @@ def derive_project_appearance_spec(
     if isinstance(shots, list):
         valid_shots = [shot for shot in shots if isinstance(shot, Mapping)]
         if source_timestamp_seconds is not None:
-            for shot in valid_shots:
+            for index, shot in enumerate(valid_shots):
                 start = _appearance_number(shot.get("start_time"))
                 end = _appearance_number(shot.get("end_time"))
                 if (
                     start is not None
                     and end is not None
-                    and start <= source_timestamp_seconds <= end
+                    and start <= source_timestamp_seconds
+                    and (
+                        source_timestamp_seconds < end
+                        or (index == len(valid_shots) - 1 and source_timestamp_seconds <= end)
+                    )
                 ):
                     selected_shot = shot
                     break
@@ -913,11 +934,11 @@ def require_single_person_video_analysis(
     *,
     project_id: str,
 ) -> None:
-    """Block known multi-person videos before any paid image generation call.
+    """Require a current single-person analysis before any paid image call.
 
-    Older analyses did not record person_count. They remain recoverable through
-    the mandatory source-frame semantic check, while every newly analyzed video
-    carries a per-segment count and is rejected here when any segment exceeds one.
+    Legacy analysis rows without a trustworthy per-segment count must be
+    re-analysed under the current strict provider contract. A later source-frame
+    inspection remains defense in depth; it must not be the first paid-work gate.
     """
 
     analysis_version = latest_version(conn, project_id, "analysis")
@@ -926,20 +947,34 @@ def require_single_person_video_analysis(
     try:
         payload = json.loads(str(analysis_version["payload_json"]))
     except json.JSONDecodeError:
-        return
+        raise first_frame_error(
+            409,
+            "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
+            "当前拆解结果版本过旧或已损坏，请先重新拆解视频。",
+        )
     analysis = payload.get("analysis") if isinstance(payload, dict) else None
     shots = analysis.get("shots") if isinstance(analysis, dict) else None
-    if not isinstance(shots, list):
-        return
+    if not isinstance(shots, list) or not shots:
+        raise first_frame_error(
+            409,
+            "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
+            "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
+        )
     for shot in shots:
         if not isinstance(shot, dict):
-            continue
+            raise first_frame_error(
+                409,
+                "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
+                "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
+            )
         person_count = shot.get("person_count")
-        if (
-            isinstance(person_count, int)
-            and not isinstance(person_count, bool)
-            and person_count > 1
-        ):
+        if not isinstance(person_count, int) or isinstance(person_count, bool):
+            raise first_frame_error(
+                409,
+                "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
+                "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
+            )
+        if person_count > 1:
             raise first_frame_error(
                 422,
                 "MULTI_PERSON_VIDEO_UNSUPPORTED",
@@ -1129,11 +1164,14 @@ def perform_first_frame_generation(
     quality_inspector: FirstFrameQualityInspector | None = None,
     before_provider_call: Callable[[], None] | None = None,
     after_provider_call: Callable[[], None] | None = None,
+    heartbeat: Callable[[], None] | None = None,
 ) -> list[GeneratedImage]:
     """Generate, semantically verify and repair candidates outside the DB fence."""
 
     inspector = quality_inspector or FakeFirstFrameQualityInspector()
     try:
+        if heartbeat is not None:
+            heartbeat()
         source_inspection = inspector.inspect_source(work.source_image)
     except FirstFrameQualityInspectorFailed as exc:
         raise first_frame_error(
@@ -1155,6 +1193,13 @@ def perform_first_frame_generation(
         if remaining <= 0:
             return accepted
         prompt = quality_retry_prompt(work.effective_prompt, retry_issue_codes, quality_attempt)
+
+        def before_paid_call() -> None:
+            if heartbeat is not None:
+                heartbeat()
+            if before_provider_call is not None:
+                before_provider_call()
+
         generated = edit_once_with_retry(
             provider,
             model=work.model,
@@ -1162,7 +1207,7 @@ def perform_first_frame_generation(
             source_image=work.source_image,
             character_reference_images=work.reference_images,
             quantity=remaining,
-            before_provider_call=before_provider_call,
+            before_provider_call=before_paid_call,
             after_provider_call=after_provider_call,
         )
         if len(generated) != remaining or any(
@@ -1177,6 +1222,8 @@ def perform_first_frame_generation(
         retry_issue_codes = []
         for candidate in generated:
             try:
+                if heartbeat is not None:
+                    heartbeat()
                 inspection = inspector.inspect_candidate(
                     source_image=work.source_image,
                     character_reference_images=work.reference_images,
@@ -1496,6 +1543,13 @@ def confirm_first_frame(
     if candidate is None:
         raise first_frame_error(
             422, "FIRST_FRAME_CANDIDATE_NOT_FOUND", "Select a candidate from the latest set."
+        )
+    quality = candidate.get("quality")
+    if not isinstance(quality, dict) or quality.get("passed") is not True:
+        raise first_frame_error(
+            409,
+            "FIRST_FRAME_QUALITY_NOT_VERIFIED",
+            "该首帧没有通过当前版本自动质检，请重新生成后再确认。",
         )
     asset = require_asset_access(
         conn,

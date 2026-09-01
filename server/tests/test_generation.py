@@ -259,7 +259,12 @@ def seed_data(conn: sqlite3.Connection) -> None:
                 1,
                 json.dumps(
                     {
-                        "candidates": [{"asset_id": "first_frame_owned"}],
+                        "candidates": [
+                            {
+                                "asset_id": "first_frame_owned",
+                                "quality": {"passed": True},
+                            }
+                        ],
                         "reconstruction_mode": "full_person_replace.v1",
                         "character_contract": {
                             "identity_source": "contact_sheet+source_photo",
@@ -2231,6 +2236,49 @@ def test_prompt_compile_requires_the_currently_confirmed_first_frame(
     assert response.json()["detail"]["code"] == "FIRST_FRAME_CONFIRMATION_REQUIRED"
 
 
+def test_prompt_compile_rejects_legacy_confirmation_without_quality_evidence(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM versions WHERE id = %s",
+            ("first_frame_candidates_v1",),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(str(row["payload_json"]))
+        payload["candidates"] = [{"asset_id": "first_frame_owned"}]
+        conn.execute(
+            "UPDATE versions SET payload_json = %s WHERE id = %s",
+            (json.dumps(payload), "first_frame_candidates_v1"),
+        )
+        conn.commit()
+
+    script = client.post(
+        "/api/projects/project_owned/scripts",
+        headers=auth_headers("employee_1"),
+        json={
+            "source": "custom",
+            "text": "第一句。第二句。",
+            "shot_card_version_id": "shot_card_v1",
+        },
+    ).json()
+    response = client.post(
+        "/api/projects/project_owned/prompts/compile",
+        headers=auth_headers("employee_1"),
+        json={
+            "script_version_id": script["id"],
+            "shot_card_version_id": "shot_card_v1",
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "FIRST_FRAME_QUALITY_NOT_VERIFIED"
+
+
 def test_prompt_must_be_locked_and_batch_keeps_locked_snapshot_without_provider_call(
     client: TestClient,
     db_path: Path,
@@ -2305,6 +2353,30 @@ def test_prompt_must_be_locked_and_batch_keeps_locked_snapshot_without_provider_
     assert json.loads(str(stored["prompt_snapshot_json"]))["status"] == "LOCKED"
     assert stored["provider_task_id"] is None
     assert stored["provider_request_json"] is None
+
+
+def test_customer_production_refuses_a_new_fake_h3_batch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    monkeypatch.setattr("app.generation.is_customer_production", lambda: True)
+
+    response = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "provider": "fake_h3",
+            "idempotency_key": "customer-fake-provider",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "FAKE_H3_PROVIDER_FORBIDDEN"
 
 
 @pytest.mark.parametrize(
@@ -2654,12 +2726,11 @@ def test_generation_batch_list_paginates_and_returns_safe_task_summaries(
     assert invalid_cursor.json()["detail"]["code"] == "INVALID_CURSOR"
 
 
-def test_batch_detail_exposes_https_provider_result_url_for_direct_playback(
+def test_batch_detail_never_exposes_provider_result_urls(
     client: TestClient,
     db_path: Path,
 ) -> None:
-    """成片直连播放契约：任务详情返回 Provider 的 HTTPS 链接，非 HTTPS
-    （如 fake://）不外露；列表摘要依旧不携带该链接。"""
+    """客户详情只能返回归档资产 id，不能泄露 Provider 临时 URL。"""
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         insert_generation_history(
             conn,
@@ -2694,14 +2765,15 @@ def test_batch_detail_exposes_https_provider_result_url_for_direct_playback(
     )
     assert detail.status_code == 200
     task = detail.json()["tasks"][0]
-    assert task["provider_result_url"] == "https://provider.example/signed-result.mp4"
+    assert "provider_result_url" not in task
+    assert task["result_asset_id"] == "first_frame_owned"
 
     fake_detail = client.get(
         "/api/generation-batches/batch-direct-play-02",
         headers=auth_headers("employee_1"),
     )
     assert fake_detail.status_code == 200
-    assert fake_detail.json()["tasks"][0]["provider_result_url"] is None
+    assert "provider_result_url" not in fake_detail.json()["tasks"][0]
 
     summary = client.get(
         "/api/generation-batches",
@@ -3753,7 +3825,7 @@ def test_worker_archive_retry_recovers_after_initial_failure(
     # 归档成功后仍保留 Provider 直连链接：客户端优先在线播放该链接，
     # 过期后才回退到刚归档好的本地副本。
     assert row2["provider_result_url"] is not None
-    assert result.provider_result_url is None  # fake:// 链接不外露给客户端
+    assert not hasattr(result, "provider_result_url")
     assert row2["result_asset_id"] is not None
 
 
@@ -4590,7 +4662,14 @@ def test_idempotency_key_is_scoped_per_project(db_path: Path, client: TestClient
             """,
             (
                 json.dumps(
-                    {"candidates": [{"asset_id": "first_frame_other"}]},
+                    {
+                        "candidates": [
+                            {
+                                "asset_id": "first_frame_other",
+                                "quality": {"passed": True},
+                            }
+                        ]
+                    },
                     ensure_ascii=True,
                     sort_keys=True,
                 ),

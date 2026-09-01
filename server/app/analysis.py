@@ -170,6 +170,20 @@ class VideoAnalysis(BaseModel):
         return self
 
 
+class ProviderShotCard(ShotCard):
+    """Strict contract for newly purchased provider analysis output.
+
+    ``ShotCard`` remains backward-compatible for stored/manual legacy rows.
+    Fresh provider responses must never silently downgrade the fields used by
+    single-person gating and deterministic H3 prompt compilation.
+    """
+
+    person_count: int = Field(ge=0)
+    segment_kind: Literal["SHOT_CUT", "ACTION_BEAT"]
+    boundary_reason: str = Field(min_length=1)
+    motion: ShotMotion
+
+
 class ProviderResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -417,9 +431,12 @@ def parse_analysis_response(text: str, *, duration_seconds: float) -> VideoAnaly
     payload = json.loads(text)
     if not isinstance(payload, dict):
         raise ValueError("analysis response must be a JSON object")
-    _discard_invalid_optional_motion(payload)
     _normalize_timeline_rounding(payload, duration_seconds=duration_seconds)
     payload["duration_seconds"] = duration_seconds
+    shots = payload.get("shots")
+    if isinstance(shots, list):
+        for shot in shots:
+            ProviderShotCard.model_validate(shot)
     return VideoAnalysis.model_validate(payload)
 
 
@@ -480,25 +497,6 @@ def _validation_diagnostic(exc: Exception) -> str:
     if isinstance(exc, json.JSONDecodeError):
         return f"json_decode:line={exc.lineno}:column={exc.colno}"
     return type(exc).__name__
-
-
-def _discard_invalid_optional_motion(payload: dict[str, Any]) -> None:
-    """Keep b2 responses usable when the provider omits or misshapes b3 motion data.
-
-    The motion extension improves video prompts but is not part of the proven legacy
-    analysis contract.  Invalid motion must therefore not trigger a second paid
-    provider request or discard an otherwise valid analysis response.
-    """
-    shots = payload.get("shots")
-    if not isinstance(shots, list):
-        return
-    for shot in shots:
-        if not isinstance(shot, dict) or "motion" not in shot:
-            continue
-        try:
-            ShotMotion.model_validate(shot["motion"])
-        except ValidationError:
-            shot.pop("motion", None)
 
 
 def is_https_video_url(value: str) -> bool:
@@ -897,6 +895,8 @@ def _default_analysis_payload(duration_seconds: float) -> dict[str, Any]:
                 "scene": "室内",
                 "spoken_text": "",
                 "transition": "硬切",
+                "segment_kind": "ACTION_BEAT",
+                "boundary_reason": "开场建立人物与场景",
                 "motion": {
                     "subject_motion_state": "WALKING",
                     "subject_direction": "toward_camera",
@@ -919,6 +919,8 @@ def _default_analysis_payload(duration_seconds: float) -> dict[str, Any]:
                 "scene": "室内",
                 "spoken_text": "",
                 "transition": "硬切",
+                "segment_kind": "ACTION_BEAT",
+                "boundary_reason": "人物动作与运镜阶段发生变化",
                 "motion": {
                     "subject_motion_state": "GESTURING_ONLY",
                     "subject_direction": "in_place",

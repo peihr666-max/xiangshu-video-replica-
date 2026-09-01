@@ -427,6 +427,7 @@ export function WorkspaceShell({
             ) : null}
             {page === "tasks" ? (
               <TaskRecordsPanel
+                currentUserId={currentUser.id}
                 handoffBatch={pendingBatchHandoff}
                 onHandoffConsumed={consumeBatchHandoff}
                 userRole={currentUser.role}
@@ -441,7 +442,7 @@ export function WorkspaceShell({
                   onSessionExpired={customerWallet.onSessionExpired}
                 />
               ) : (
-                <WalletPanel />
+                <WalletPanel currentUserId={currentUser.id} />
               )
             ) : null}
             {page === "profile" && customerAccount ? (

@@ -54,13 +54,6 @@ type VideoResultStageProps = {
   resultErrors: Record<string, string>;
 };
 
-// Provider 直连播放链接：只接受 HTTPS（fake:// 等本地模拟通道不可播）。
-export function playableProviderUrl(task: GenerationTask): string | null {
-  return task.provider_result_url?.startsWith("https://")
-    ? task.provider_result_url
-    : null;
-}
-
 export function VideoResultStage({
   activeResultAction,
   activeTaskAction,
@@ -107,14 +100,11 @@ export function VideoResultStage({
     ? activeResultAction === `${activeTask.id}:preview`
     : false;
   const hasPreviewSource = activeTask
-    ? Boolean(activeTask.result_asset_id) ||
-      Boolean(playableProviderUrl(activeTask))
+    ? Boolean(activeTask.result_asset_id)
     : false;
 
-  // 完成态自动加载在线播放地址：以视频为主角的视图不应要求手动点
-  // 「加载预览」。优先直连 Provider 返回的链接，其次签发本地归档副
-  // 本。失败后停止自动重试（resultErrors 门控），改由手动重试，避免
-  // 循环拉取。审计只读不签发。
+  // 完成态自动签发归档资产的短期预览地址。Provider 临时 URL 永不
+  // 进入客户 API，避免绕过归档权限、审计和统一过期策略。
   const activePreviewError = activeTask ? resultErrors[activeTask.id] : "";
   useEffect(() => {
     if (!activeTask || !canOperate) {

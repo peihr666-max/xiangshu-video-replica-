@@ -14,16 +14,18 @@ import {
 
 const RECHARGE_PRESETS_YUAN = [100, 200, 500, 1000] as const;
 const PENDING_ORDER_STORAGE_KEY = "wallet.pendingOrderNo";
+const PENDING_ORDER_STORAGE_KEY_PREFIX = `${PENDING_ORDER_STORAGE_KEY}:`;
 const ORDER_POLL_INTERVAL_MS = 2_000;
 const MAX_ORDER_POLL_ATTEMPTS = 30;
 
-export function WalletPanel() {
+export function WalletPanel({ currentUserId }: { currentUserId?: string }) {
+  const storageKey = pendingOrderStorageKey(currentUserId);
   const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [orders, setOrders] = useState<RechargeOrder[]>([]);
   const [customAmount, setCustomAmount] = useState("");
   const [pendingOrderNo, setPendingOrderNo] = useState(() =>
-    readPendingOrderNo(),
+    readPendingOrderNo(storageKey),
   );
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -81,14 +83,14 @@ export function WalletPanel() {
         }
         setError("");
         if (order.status === "PAID") {
-          clearPendingOrderNo();
+          clearPendingOrderNo(storageKey);
           setPendingOrderNo(null);
           setNotice("充值已到账，钱包余额已更新。");
           await refresh();
           return;
         }
         if (order.status === "FAILED" || order.status === "CLOSED") {
-          clearPendingOrderNo();
+          clearPendingOrderNo(storageKey);
           setPendingOrderNo(null);
           setNotice("该充值订单已结束，未增加条数。");
           await refresh();
@@ -119,7 +121,7 @@ export function WalletPanel() {
         window.clearTimeout(timer);
       }
     };
-  }, [pendingOrderNo, refresh]);
+  }, [pendingOrderNo, refresh, storageKey]);
 
   async function startRecharge(amountYuan: number) {
     if (!wallet || isCreating) {
@@ -141,7 +143,7 @@ export function WalletPanel() {
     setNotice("");
     try {
       const created = await createRechargeOrder(amountFen);
-      savePendingOrderNo(created.order_no);
+      savePendingOrderNo(storageKey, created.order_no);
       setPendingOrderNo(created.order_no);
       setNotice("支付页已打开，本页会自动确认到账。");
       submitPaymentForm(created);
@@ -341,25 +343,31 @@ function createdOrderStatus(order: CreatedRechargeOrder): RechargeOrder {
   };
 }
 
-function readPendingOrderNo(): string | null {
+function pendingOrderStorageKey(currentUserId?: string): string {
+  return currentUserId
+    ? `${PENDING_ORDER_STORAGE_KEY_PREFIX}${encodeURIComponent(currentUserId)}`
+    : PENDING_ORDER_STORAGE_KEY;
+}
+
+function readPendingOrderNo(storageKey: string): string | null {
   try {
-    return window.localStorage.getItem(PENDING_ORDER_STORAGE_KEY);
+    return window.localStorage.getItem(storageKey);
   } catch {
     return null;
   }
 }
 
-function savePendingOrderNo(orderNo: string) {
+function savePendingOrderNo(storageKey: string, orderNo: string) {
   try {
-    window.localStorage.setItem(PENDING_ORDER_STORAGE_KEY, orderNo);
+    window.localStorage.setItem(storageKey, orderNo);
   } catch {
     // The active page still polls even when browser storage is unavailable.
   }
 }
 
-function clearPendingOrderNo() {
+function clearPendingOrderNo(storageKey: string) {
   try {
-    window.localStorage.removeItem(PENDING_ORDER_STORAGE_KEY);
+    window.localStorage.removeItem(storageKey);
   } catch {
     // Nothing else is required when browser storage is unavailable.
   }

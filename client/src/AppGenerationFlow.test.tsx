@@ -127,7 +127,9 @@ describe("App generation handoff", () => {
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
     expect(window.location.hash).toBe("#tasks");
-    expect(window.localStorage.getItem("generation.batchId")).toBe(batch.id);
+    expect(window.localStorage.getItem("generation.batchId:employee_1")).toBe(
+      batch.id,
+    );
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         `http://127.0.0.1:8000/api/generation-batches/${batch.id}`,

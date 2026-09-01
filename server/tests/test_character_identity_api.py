@@ -922,6 +922,21 @@ def test_gate1_fake_source_inspector_requires_explicit_environment_opt_in(
     )
 
 
+def test_customer_production_rejects_fake_source_inspector_override(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    monkeypatch.setenv("VIDEO_REPLICA_FAKE_SOURCE_IMAGE_INSPECTOR", "1")
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        with pytest.raises(HTTPException) as error:
+            get_source_image_inspector(conn)
+
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "FAKE_SOURCE_IMAGE_INSPECTOR_FORBIDDEN"
+
+
 def test_null_required_identity_and_persona_updates_return_validation_errors(
     client: TestClient,
     storage: FakeStorageAdapter,

@@ -334,6 +334,20 @@ def test_generation_migration_adds_reversible_lease_and_call_log_contract(
     assert "character_generation_task_id" not in downgraded_call_columns
 
 
+def test_customer_production_refuses_fake_character_generation(
+    client: TestClient,
+    storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = create_character_version(client, storage)
+    monkeypatch.setattr("app.character_image_generation.is_customer_production", lambda: True)
+
+    response = enqueue(client, str(version["id"]), key="customer-fake-character")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "FAKE_CHARACTER_PROVIDER_FORBIDDEN"
+
+
 def test_admin_queues_seven_views_idempotently_and_roles_fail_closed(
     client: TestClient,
     db_path: Path,

@@ -163,6 +163,14 @@ def get_image_provider(conn: BusinessReadConn) -> ImageProvider:
 
 def get_first_frame_quality_inspector(conn: BusinessReadConn) -> FirstFrameQualityInspector:
     if os.environ.get("VIDEO_REPLICA_FAKE_FIRST_FRAME_QUALITY_INSPECTOR") == "1":
+        if is_customer_production():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "FAKE_FIRST_FRAME_QUALITY_FORBIDDEN",
+                    "message": "客户生产环境禁止使用模拟首帧质检器。",
+                },
+            )
         return FakeFirstFrameQualityInspector()
     has_saved_apilio_config = (
         conn.execute(

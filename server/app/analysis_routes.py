@@ -30,6 +30,7 @@ from app.analysis import (
 )
 from app.async_compat import reject_legacy_sync_operation
 from app.auth import AuthenticatedUser, CurrentUser, Database, Role
+from app.bootstrap import is_customer_production
 from app.customer_fence import BusinessDbDep
 from app.db_portable import BusinessConnection
 from app.media import (
@@ -76,9 +77,25 @@ def get_video_analysis_provider(conn: Database) -> VideoAnalysisProvider:
                 status_code=503,
                 detail={"code": "APILIO_SETTINGS_UNAVAILABLE"},
             ) from exc
+        if is_customer_production():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "ANALYSIS_PROVIDER_SETTINGS_REQUIRED",
+                    "message": "客户生产环境必须配置可用的视频分析服务。",
+                },
+            ) from exc
         return FakeGemini()
     api_key = config.get("analysis_api_key") or config.get("api_key")
     if not api_key:
+        if is_customer_production():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "ANALYSIS_PROVIDER_SETTINGS_REQUIRED",
+                    "message": "客户生产环境必须配置可用的视频分析服务。",
+                },
+            )
         return FakeGemini()
     return ApilioGemini(
         api_key=api_key,
@@ -744,7 +761,11 @@ def complete_analysis_task(
     ):
         conn.rollback()
         return
-    row, created = create_or_recover_analysis_version(
+    # The durable task row is already the idempotency/concurrency boundary.
+    # Reusing an older version by asset id here made an explicit re-analysis
+    # pay the provider and then discard the fresh result. Every successfully
+    # completed new task therefore publishes the next immutable version.
+    row = create_analysis_version(
         conn,
         project_id=work.lease.project_id,
         asset_id=work.lease.asset_id,
@@ -768,7 +789,7 @@ def complete_analysis_task(
     write_audit(
         conn,
         actor=load_task_actor(conn, work.lease.created_by_user_id),
-        action="analysis.task_succeeded" if created else "analysis.task_recovered",
+        action="analysis.task_succeeded",
         entity_type="analysis_task",
         entity_id=work.lease.id,
         metadata={

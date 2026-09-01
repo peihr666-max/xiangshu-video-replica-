@@ -1649,7 +1649,9 @@ export async function startVideoAnalysis(
       errorPrefix,
       {
         method: "POST",
-        body: JSON.stringify({ asset_id: assetId, reuse_existing: true }),
+        // Clicking “重新拆解” must publish a fresh immutable analysis version;
+        // existing versions are loaded separately when the workspace opens.
+        body: JSON.stringify({ asset_id: assetId, reuse_existing: false }),
       },
     );
   } catch (error) {
