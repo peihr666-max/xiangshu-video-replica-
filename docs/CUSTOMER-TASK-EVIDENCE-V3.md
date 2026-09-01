@@ -11,7 +11,7 @@
 | **Task ID** | T45 |
 | **Owner / Reviewer** | Backend/Frontend/Security/QA/Release (Agent); repository self-review |
 | **Branch / Base SHA** | `feat/customer-v3-t45-defense-in-depth` / `92bace869c413d4403372e324530d7ff1052804b` |
-| **Verified Implementation SHA** | Pending final commit; evidence is bound to the reviewed branch diff over the base SHA |
+| **Verified Implementation SHA** | `cc563a54eadf9c746b1683fd15d89b2e530dbe7e` |
 | **Upstream Spec Sections** | T45 work order B-2 plus S/D/C/A/E defense-in-depth findings |
 | **Failure Test or Regression Lock** | Session replay state gates; account-scoped keyed idempotency; late CLOSED payment; enabled-channel callback; revocable local/COS grants; per-device/preauth/reset limits; fencing dedupe; slot conflict mapping; customer response redaction; byte-identical 404; internal write contract; admin idle/context checks and self-service audit; billing actor split; auditor/reveal audit; executable release preflight |
 | **Implementation Result** | All T45 findings are closed in code or an explicit release-policy artifact; simple character and same-machine full-code reinstall remain direct without administrator review |
