@@ -4,6 +4,28 @@
 >
 > **Evidence location (M0 review M8 unification, 2026-08-21)**: per-task evidence documents live under `docs/evidence/` (T02–T06 evidence files moved from the repository root; run-fix evidence under `docs/evidence/m0-review-fixes/`). Historical self-references inside those documents to their original root paths are preserved as record snapshots.
 
+## T43 — Tenant Isolation and Activation Security Remediation
+
+| Field | Value |
+| --- | --- |
+| **Task ID** | T43 |
+| **Owner / Reviewer** | Backend/Frontend/Security/QA (Agent); repository self-review |
+| **Branch / Base SHA** | `feat/customer-v3-t43-isolation-security` / `e084cf1` |
+| **Verified Implementation SHA** | `dddfa70` |
+| **Upstream Spec Sections** | Task list T43; activation-code dev doc §3/§5/§6/§11/§12; acceptance spec §2–§3 |
+| **Failure Test or Regression Lock** | Cross-account person/persona/version/assets/batches; project-detail IDOR; 100-device activation race; primary-session-only code reset; masked list + audited single reveal; zero-credit activation and DB shape constraints; Windows deep cache path; current first-frame E2E fixture |
+| **Implementation Result** | Owner isolation across customer content; explicit pairing for unknown hardware; known-device reinstall recovery retained; primary-device session reset; masked list and audited one-code copy; zero-credit normal issuance with legacy positive-credit compatibility; migration 050 |
+| **Verification Command and Pass Count** | Client 592/592; PG16 key suite 157/157; server full 1416 passed / 1 skipped (`ffmpeg` unavailable) / 0 failed; Ruff/format/Mypy/Tauri/secret scan passed |
+| **Evidence Level** | `AUTOMATED_VERIFIED`; no staging, real-chain, gray or production claim |
+| **Security and Observability** | Plaintext is neither listed, logged nor stored in audit/idempotency snapshots; reveal is AdminWriter-only and audited once; customer reads enforce owner/project access; unknown devices cannot self-bind |
+| **Migration and Rollback** | 050 allows zero-value license batches and nullable activation recharge reference; database shape CHECK; downgrade fails closed when incompatible rows exist |
+| **External Authorization Record** | None; no production deployment, real payment, COS, Provider or external code issuance |
+| **Untested Items** | One local source-frame case requires `ffmpeg`; staging topology, production migration, signed installer, real chain and gray release |
+
+Full evidence: `docs/evidence/T43-EVIDENCE.md`.
+
+---
+
 ## T38 — PostgreSQL PITR and Recovery Drill
 
 | Field | Value |
