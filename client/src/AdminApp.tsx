@@ -929,7 +929,6 @@ export function AdminApp() {
           {activeTab === "activation" ? (
             <AdminActivationSection
               actor={actor}
-              unitPriceFen={billing?.internal_base_unit_price_fen ?? null}
               onSessionExpired={handleSessionExpired}
             />
           ) : null}

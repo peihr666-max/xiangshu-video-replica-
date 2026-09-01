@@ -31,10 +31,10 @@ const exchangePayload = {
 
 const batchCreated = {
   batch_id: "batch-1",
-  name: "200元激活码",
-  face_value_fen: 1000,
-  unit_price_fen_snapshot: 1000,
-  credits_snapshot: 20,
+  name: "零额度授权码",
+  face_value_fen: 0,
+  unit_price_fen_snapshot: 0,
+  credits_snapshot: 0,
   quantity: 2,
   activation_expires_at: "2027-08-27T10:00:00.000Z",
   status: "OPEN",
@@ -126,18 +126,14 @@ describe("ActivationCodeBatchesPage", () => {
     clearAdminActivationSession();
   });
 
-  it("replaces batch fields with fixed amounts and one custom option", () => {
-    render(<ActivationCodeBatchesPage unitPriceFen={1000} />);
+  it("makes the zero initial quota policy explicit", () => {
+    render(<ActivationCodeBatchesPage />);
 
     expect(
       screen.getByRole("heading", { name: "直接生成激活码" }),
     ).toBeInTheDocument();
-    for (const amount of ["¥100", "¥200", "¥500", "¥1000"]) {
-      expect(screen.getByRole("button", { name: amount })).toBeInTheDocument();
-    }
-    expect(
-      screen.getByRole("button", { name: "自定义金额" }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("每个激活码初始额度")).toBeInTheDocument();
+    expect(screen.getByText(/充值或后台调账获得生成额度/)).toBeInTheDocument();
     expect(screen.queryByLabelText("批次名称")).toBeNull();
     expect(screen.queryByLabelText("批次 ID")).toBeNull();
     expect(screen.queryByLabelText("创建原因")).toBeNull();
@@ -146,19 +142,16 @@ describe("ActivationCodeBatchesPage", () => {
 
   it("creates the hidden batch, generates and reveals plaintext in one action", async () => {
     const fetchMock = installFetch();
-    render(<ActivationCodeBatchesPage unitPriceFen={1000} />);
+    render(<ActivationCodeBatchesPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "¥200" }));
     fireEvent.change(screen.getByLabelText("生成数量"), {
       target: { value: "2" },
     });
-    fireEvent.click(
-      screen.getByRole("button", { name: "生成 2 个 ¥200 激活码" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "生成 2 个激活码" }));
 
     expect(await screen.findByText("XS-AAAA-BBBB-01")).toBeInTheDocument();
     expect(screen.getByText("XS-CCCC-DDDD-02")).toBeInTheDocument();
-    expect(screen.getByText("已生成 2 个 ¥200 激活码")).toBeInTheDocument();
+    expect(screen.getByText("已生成 2 个零初始额度激活码")).toBeInTheDocument();
     expect(
       screen.getByText(/明文激活码仅在本页显示这一次/),
     ).toBeInTheDocument();
@@ -167,8 +160,8 @@ describe("ActivationCodeBatchesPage", () => {
       String(url).endsWith("/api/control/activation-code-batches"),
     );
     expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
-      face_value_fen: 1000,
-      credits: 20,
+      face_value_fen: 0,
+      credits: 0,
       quantity: 2,
       activation_expires_at: "2027-08-27T10:00:00.000Z",
       confirm: true,
@@ -189,58 +182,11 @@ describe("ActivationCodeBatchesPage", () => {
     ).toBe(true);
   });
 
-  it("accepts a custom amount when it is an exact multiple of the unit price", async () => {
-    const fetchMock = installFetch();
-    render(<ActivationCodeBatchesPage unitPriceFen={1000} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "自定义金额" }));
-    fireEvent.change(screen.getByLabelText("自定义金额（元）"), {
-      target: { value: "30" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: "生成 1 个 ¥30 激活码" }),
-    );
-
-    await screen.findByText("XS-AAAA-BBBB-01");
-    const createCall = fetchMock.mock.calls.find(([url]) =>
-      String(url).endsWith("/api/control/activation-code-batches"),
-    );
-    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
-      face_value_fen: 1000,
-      credits: 3,
-      quantity: 1,
-    });
-  });
-
-  it("explains why an unsupported custom amount cannot be generated", async () => {
-    const fetchMock = installFetch();
-    render(<ActivationCodeBatchesPage unitPriceFen={1000} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "自定义金额" }));
-    fireEvent.change(screen.getByLabelText("自定义金额（元）"), {
-      target: { value: "35" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: "生成 1 个 ¥35 激活码" }),
-    );
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "金额需为 10 元的整数倍",
-    );
-    expect(
-      fetchMock.mock.calls.some(([url]) =>
-        String(url).endsWith("/api/control/activation-code-batches"),
-      ),
-    ).toBe(false);
-  });
-
   it("surfaces a deterministic error when the one-time plaintext was consumed", async () => {
     installFetch({ download: "already" });
-    render(<ActivationCodeBatchesPage unitPriceFen={1000} />);
+    render(<ActivationCodeBatchesPage />);
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "生成 1 个 ¥100 激活码" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "生成 1 个激活码" }));
 
     expect(
       await screen.findByText(/已被下载过，无法再次下载/),
@@ -251,16 +197,9 @@ describe("ActivationCodeBatchesPage", () => {
   it("reports the session as expired on a 401 write", async () => {
     installFetch({ createBatch: "unauthorized" });
     const onSessionExpired = vi.fn();
-    render(
-      <ActivationCodeBatchesPage
-        unitPriceFen={1000}
-        onSessionExpired={onSessionExpired}
-      />,
-    );
+    render(<ActivationCodeBatchesPage onSessionExpired={onSessionExpired} />);
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "生成 1 个 ¥100 激活码" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "生成 1 个激活码" }));
 
     expect(
       await screen.findByText(/会话已失效，请重新登录/),
@@ -269,20 +208,11 @@ describe("ActivationCodeBatchesPage", () => {
   });
 
   it("keeps activation creation unavailable for auditors", () => {
-    render(<ActivationCodeBatchesPage readOnly unitPriceFen={1000} />);
+    render(<ActivationCodeBatchesPage readOnly />);
 
     expect(
-      screen.getByRole("button", { name: "生成 1 个 ¥100 激活码" }),
+      screen.getByRole("button", { name: "生成 1 个激活码" }),
     ).toBeDisabled();
     expect(screen.getByText(/当前为只读模式/)).toBeInTheDocument();
-  });
-
-  it("waits for the configured unit price before allowing generation", () => {
-    render(<ActivationCodeBatchesPage unitPriceFen={null} />);
-
-    expect(screen.getByText("正在读取当前价格…")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "生成 1 个 ¥100 激活码" }),
-    ).toBeDisabled();
   });
 });

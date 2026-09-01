@@ -304,16 +304,22 @@ def _populate_character_cache(
             asset_id=str(row["id"]),
         )
 
-        temporary_path = cache_path.with_name(f".{cache_path.name}.{uuid4().hex}.tmp")
+        # Keep the temporary basename short. Appending a full UUID to the
+        # already hash-sized cache name exceeds the legacy Windows MAX_PATH
+        # limit when the application home is nested deeply.
+        temporary_path = cache_path.with_name(f".cache-{uuid4().hex[:12]}.tmp")
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             temporary_path.write_bytes(content)
             temporary_path.replace(cache_path)
         except OSError as exc:
             logger.error(
-                "character cache write failed for asset %s: %s",
+                "character cache write failed for asset %s at %s via %s: %s",
                 row["id"],
+                cache_path,
+                temporary_path,
                 type(exc).__name__,
+                exc_info=True,
             )
             raise HTTPException(
                 status_code=503,

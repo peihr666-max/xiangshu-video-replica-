@@ -9,7 +9,6 @@ type SubPage = "batches" | "codes" | "deliveries";
 
 type AdminActivationSectionProps = {
   actor: AdminActorInfo;
-  unitPriceFen: number | null;
   onSessionExpired: () => void;
 };
 
@@ -22,7 +21,6 @@ const subPages: Array<{ id: SubPage; label: string }> = [
 /** Activation-code pages inside the application-wide administrator session. */
 export function AdminActivationSection({
   actor,
-  unitPriceFen,
   onSessionExpired,
 }: AdminActivationSectionProps) {
   const [activePage, setActivePage] = useState<SubPage>("batches");
@@ -55,7 +53,6 @@ export function AdminActivationSection({
       {activePage === "batches" ? (
         <ActivationCodeBatchesPage
           readOnly={readOnly}
-          unitPriceFen={unitPriceFen}
           onSessionExpired={onSessionExpired}
         />
       ) : null}

@@ -12,16 +12,12 @@ import {
   generateActivationCodes,
 } from "../api.admin";
 
-const FIXED_AMOUNTS_YUAN = [100, 200, 500, 1000] as const;
 const MAX_CODES_PER_REQUEST = 100;
 
-type AmountChoice = (typeof FIXED_AMOUNTS_YUAN)[number] | "custom";
 type GenerationPhase = "idle" | "creating" | "generating" | "retrieving";
 
 type CompletedGeneration = {
-  amountYuan: number;
   quantity: number;
-  credits: number;
   result: ActivationDownloadResult;
 };
 
@@ -33,16 +29,12 @@ type CompletedGeneration = {
  * generates its codes and retrieves the one-time plaintext export.
  */
 export function ActivationCodeBatchesPage({
-  unitPriceFen,
   readOnly = false,
   onSessionExpired,
 }: {
-  unitPriceFen: number | null;
   readOnly?: boolean;
   onSessionExpired?: () => void;
 }) {
-  const [amountChoice, setAmountChoice] = useState<AmountChoice>(100);
-  const [customAmountYuan, setCustomAmountYuan] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [phase, setPhase] = useState<GenerationPhase>("idle");
   const [error, setError] = useState("");
@@ -60,15 +52,8 @@ export function ActivationCodeBatchesPage({
   const [generateKey, setGenerateKey] = useState<string | null>(null);
   const [downloadKey, setDownloadKey] = useState<string | null>(null);
 
-  const amountYuan =
-    amountChoice === "custom" ? Number(customAmountYuan) : amountChoice;
   const parsedQuantity = Number(quantity);
-  const amountLabel =
-    Number.isFinite(amountYuan) && amountYuan > 0
-      ? `¥${formatNumber(amountYuan)}`
-      : "";
-  const actionLabel = phaseLabel(phase, parsedQuantity, amountLabel);
-  const credits = calculateCredits(amountYuan, unitPriceFen);
+  const actionLabel = phaseLabel(phase, parsedQuantity);
   const selectionLocked =
     phase !== "idle" ||
     pendingBatch !== null ||
@@ -91,21 +76,13 @@ export function ActivationCodeBatchesPage({
     setError("");
     setCopyNotice("");
 
-    const validationError = validateGeneration(
-      amountYuan,
-      parsedQuantity,
-      unitPriceFen,
-    );
+    const validationError = validateGeneration(parsedQuantity);
     if (validationError) {
       setError(validationError);
       return;
     }
 
-    // Validation above proves all three values are positive integers and the
-    // amount is exactly divisible by the configured unit price.
-    const priceFen = unitPriceFen as number;
-    const creditCount = (amountYuan * 100) / priceFen;
-    const reason = `后台直接生成：${parsedQuantity} 个 ${amountLabel} 激活码`;
+    const reason = `后台直接生成：${parsedQuantity} 个零初始额度激活码`;
     let batch = pendingBatch;
     let generated = pendingExport;
     let currentPhase: GenerationPhase = "creating";
@@ -117,11 +94,9 @@ export function ActivationCodeBatchesPage({
         setCreateKey(key);
         batch = await createActivationCodeBatch(
           {
-            name: createAutomaticBatchName(amountYuan),
-            // The current server contract stores the charged per-video price
-            // in this frozen field. Total code value is credits × unit price.
-            face_value_fen: priceFen,
-            credits: creditCount,
+            name: createAutomaticBatchName(),
+            face_value_fen: 0,
+            credits: 0,
             quantity: parsedQuantity,
             activation_expires_at: oneYearFromNow(),
             reason,
@@ -159,9 +134,7 @@ export function ActivationCodeBatchesPage({
       );
 
       setCompleted({
-        amountYuan,
         quantity: parsedQuantity,
-        credits: creditCount,
         result,
       });
       setPendingBatch(null);
@@ -217,65 +190,8 @@ export function ActivationCodeBatchesPage({
             <p className="activation-generator__eyebrow">快速发码</p>
             <h2>直接生成激活码</h2>
           </div>
-          <p>选择金额和数量即可。批次、有效期和审计信息由系统自动处理。</p>
+          <p>激活码仅开通账号，初始生成额度固定为 0；充值额度单独管理。</p>
         </header>
-
-        <fieldset className="activation-amount-picker">
-          <legend>每个激活码的金额</legend>
-          <div className="activation-amount-grid">
-            {FIXED_AMOUNTS_YUAN.map((amount) => (
-              <button
-                aria-pressed={amountChoice === amount}
-                className={
-                  amountChoice === amount
-                    ? "activation-amount-option is-active"
-                    : "activation-amount-option"
-                }
-                disabled={selectionLocked}
-                key={amount}
-                type="button"
-                onClick={() => setAmountChoice(amount)}
-              >
-                ¥{amount}
-              </button>
-            ))}
-            <button
-              aria-pressed={amountChoice === "custom"}
-              className={
-                amountChoice === "custom"
-                  ? "activation-amount-option is-active"
-                  : "activation-amount-option"
-              }
-              disabled={selectionLocked}
-              type="button"
-              onClick={() => setAmountChoice("custom")}
-            >
-              自定义金额
-            </button>
-          </div>
-        </fieldset>
-
-        {amountChoice === "custom" ? (
-          <div className="activation-generator__field">
-            <label htmlFor="activation-custom-amount">自定义金额（元）</label>
-            <input
-              aria-describedby="activation-custom-amount-hint"
-              id="activation-custom-amount"
-              inputMode="numeric"
-              min="1"
-              step="1"
-              type="number"
-              value={customAmountYuan}
-              disabled={selectionLocked}
-              onChange={(event) => setCustomAmountYuan(event.target.value)}
-            />
-            {unitPriceFen ? (
-              <span id="activation-custom-amount-hint">
-                金额需为 {formatFenAsYuan(unitPriceFen)} 元的整数倍
-              </span>
-            ) : null}
-          </div>
-        ) : null}
 
         <div className="activation-generator__field">
           <label htmlFor="activation-code-quantity">生成数量</label>
@@ -297,22 +213,16 @@ export function ActivationCodeBatchesPage({
         </div>
 
         <div className="activation-generator__summary" aria-live="polite">
-          {unitPriceFen === null ? (
-            <span>正在读取当前价格…</span>
-          ) : credits ? (
-            <>
-              <span>每个激活码</span>
-              <strong>{amountLabel}</strong>
-              <span>激活后可生成 {credits} 个视频 · 领取有效期 1 年</span>
-            </>
-          ) : (
-            <span>选择金额后显示到账次数</span>
-          )}
+          <span>每个激活码初始额度</span>
+          <strong>0</strong>
+          <span>
+            激活后需要通过充值或后台调账获得生成额度 · 领取有效期 1 年
+          </span>
         </div>
 
         <button
           className="activation-generator__submit"
-          disabled={readOnly || phase !== "idle" || unitPriceFen === null}
+          disabled={readOnly || phase !== "idle"}
           type="submit"
         >
           {actionLabel}
@@ -324,10 +234,7 @@ export function ActivationCodeBatchesPage({
           <div className="activation-code-result__header">
             <div>
               <p className="activation-generator__eyebrow">生成成功</p>
-              <h3>
-                已生成 {completed.quantity} 个 ¥
-                {formatNumber(completed.amountYuan)} 激活码
-              </h3>
+              <h3>已生成 {completed.quantity} 个零初始额度激活码</h3>
             </div>
             <button type="button" onClick={copyAllCodes}>
               复制全部
@@ -354,40 +261,7 @@ export function ActivationCodeBatchesPage({
   );
 }
 
-function calculateCredits(
-  amountYuan: number,
-  unitPriceFen: number | null,
-): number | null {
-  if (
-    !unitPriceFen ||
-    !Number.isInteger(unitPriceFen) ||
-    unitPriceFen <= 0 ||
-    !Number.isInteger(amountYuan) ||
-    amountYuan <= 0
-  ) {
-    return null;
-  }
-  const amountFen = amountYuan * 100;
-  if (amountFen % unitPriceFen !== 0) {
-    return null;
-  }
-  return amountFen / unitPriceFen;
-}
-
-function validateGeneration(
-  amountYuan: number,
-  quantity: number,
-  unitPriceFen: number | null,
-): string | null {
-  if (!unitPriceFen || !Number.isInteger(unitPriceFen) || unitPriceFen <= 0) {
-    return "当前价格尚未加载，请稍后重试";
-  }
-  if (!Number.isInteger(amountYuan) || amountYuan <= 0) {
-    return "请输入正整数金额";
-  }
-  if ((amountYuan * 100) % unitPriceFen !== 0) {
-    return `金额需为 ${formatFenAsYuan(unitPriceFen)} 元的整数倍`;
-  }
+function validateGeneration(quantity: number): string | null {
   if (
     !Number.isInteger(quantity) ||
     quantity < 1 ||
@@ -404,16 +278,12 @@ function oneYearFromNow(): string {
   return expiresAt.toISOString();
 }
 
-function createAutomaticBatchName(amountYuan: number): string {
+function createAutomaticBatchName(): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 13);
-  return `${formatNumber(amountYuan)}元激活码-${stamp}`;
+  return `零额度授权码-${stamp}`;
 }
 
-function phaseLabel(
-  phase: GenerationPhase,
-  quantity: number,
-  amountLabel: string,
-): string {
+function phaseLabel(phase: GenerationPhase, quantity: number): string {
   if (phase === "creating") {
     return "正在准备…";
   }
@@ -424,9 +294,7 @@ function phaseLabel(
     return "正在取回激活码…";
   }
   const count = Number.isInteger(quantity) && quantity > 0 ? quantity : 1;
-  return amountLabel
-    ? `生成 ${count} 个 ${amountLabel} 激活码`
-    : `生成 ${count} 个激活码`;
+  return `生成 ${count} 个激活码`;
 }
 
 function phaseErrorFallback(phase: GenerationPhase): string {
@@ -437,14 +305,4 @@ function phaseErrorFallback(phase: GenerationPhase): string {
     return "生成激活码失败";
   }
   return "读取明文激活码失败";
-}
-
-function formatFenAsYuan(value: number): string {
-  return formatNumber(value / 100);
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat("zh-CN", {
-    maximumFractionDigits: 2,
-  }).format(value);
 }

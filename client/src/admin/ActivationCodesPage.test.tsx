@@ -78,6 +78,17 @@ function installFetch(options?: {
       }
       return jsonResponse(codesPage);
     }
+    if (
+      url.endsWith("/activation-codes/code-1/reveal") &&
+      init?.method === "POST"
+    ) {
+      return jsonResponse({
+        code_id: "code-1",
+        activation_code: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
+        masked_code: "XS****01",
+        request_id: "req-reveal-1",
+      });
+    }
     if (url.endsWith("/suspend") && init?.method === "POST") {
       if (suspendState === "invalid-transition") {
         return jsonResponse(
@@ -114,8 +125,13 @@ describe("ActivationCodesPage", () => {
     clearAdminActivationSession();
   });
 
-  it("shows masked activation codes without reopening the one-time export", async () => {
+  it("shows masked codes and copies one code through the audited reveal route", async () => {
     const fetchMock = installFetch();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
 
     render(<ActivationCodesPage />);
 
@@ -130,7 +146,17 @@ describe("ActivationCodesPage", () => {
     expect(String(listCall?.[0])).toBe(
       "http://127.0.0.1:8000/api/control/activation-codes?limit=50&offset=0",
     );
-    expect(screen.queryByRole("button", { name: /复制激活码/ })).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "复制激活码" })[0]);
+    expect(await screen.findByText(/req-reveal-1/)).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith(
+      "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
+    );
+    const revealCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/activation-codes/code-1/reveal"),
+    );
+    expect(revealCall?.[1]?.body).toBe(
+      JSON.stringify({ confirm: true, reason: "后台复制激活码" }),
+    );
   });
 
   it("filters the list by batch id and status", async () => {
@@ -238,6 +264,7 @@ describe("ActivationCodesPage", () => {
     render(<ActivationCodesPage readOnly />);
 
     expect(await screen.findByText("XS****01")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "复制激活码" })).toBeNull();
     expect(screen.queryByRole("button", { name: "暂停" })).toBeNull();
     expect(screen.queryByRole("button", { name: "恢复" })).toBeNull();
     expect(screen.queryByRole("button", { name: "作废" })).toBeNull();

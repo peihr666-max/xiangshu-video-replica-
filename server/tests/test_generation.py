@@ -2859,9 +2859,14 @@ def test_generation_batch_list_filters_and_enforces_project_scope(
     )
     admin = client.get("/api/generation-batches", headers=auth_headers("admin_1"))
     auditor = client.get("/api/generation-batches", headers=auth_headers("auditor_1"))
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute("UPDATE users SET role = 'customer' WHERE id = %s", ("employee_1",))
+        conn.commit()
+    customer = client.get("/api/generation-batches", headers=auth_headers("employee_1"))
 
     assert employee.status_code == 200
     assert {item["project_id"] for item in employee.json()["items"]} == {"project_owned"}
+    assert {item["project_id"] for item in customer.json()["items"]} == {"project_owned"}
     assert {item["id"] for item in employee.json()["items"]} == {
         "batch-owned-normal",
         "batch-owned-quality-status-only",

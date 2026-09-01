@@ -1425,9 +1425,39 @@ def test_activation_code_reset_rotates_code_without_unbinding_current_device(
         fingerprint="fp-code-reset",
         suffix="code-reset",
     )
-    response = client.post(
+    device_credential_attempt = client.post(
         "/api/customer/activation-code/reset",
         headers=_bearer(customer["device_token"]),
+    )
+    assert device_credential_attempt.status_code == 401
+
+    secondary_id = "device-code-reset-secondary"
+    _second_device_row(
+        user_id=customer["user_id"],
+        activation_code_id="code-code-reset",
+        device_id=secondary_id,
+        slot_no=2,
+    )
+    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE customer_session_state SET device_id = %s WHERE user_id = %s",
+            (secondary_id, customer["user_id"]),
+        )
+    secondary_attempt = client.post(
+        "/api/customer/activation-code/reset",
+        headers=_bearer(customer["session_token"]),
+    )
+    assert secondary_attempt.status_code == 403
+    assert secondary_attempt.json()["detail"]["code"] == "PRIMARY_DEVICE_REQUIRED"
+    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE customer_session_state SET device_id = %s WHERE user_id = %s",
+            (customer["device_id"], customer["user_id"]),
+        )
+        conn.execute("DELETE FROM customer_devices WHERE id = %s", (secondary_id,))
+    response = client.post(
+        "/api/customer/activation-code/reset",
+        headers=_bearer(customer["session_token"]),
     )
 
     assert response.status_code == 200, response.text
@@ -2525,7 +2555,7 @@ def test_admin_device_events_downgrade_guard(route_state: str) -> None:
         command.downgrade(config, "037_device_pairing_requests")
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "049_async_generation_reconcile"
+    assert version == "050_activation_license_zero_credit"
 
 
 # ---------------------------------------------------------------------------
@@ -2567,7 +2597,7 @@ def test_pairing_downgrade_refuses_once_rows_exist(route_state: str) -> None:
     # the version stays at the current head.
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "049_async_generation_reconcile"
+    assert version == "050_activation_license_zero_credit"
 
     # An emptied table downgrades symmetrically, and upgrading back restores
     # the schema for any rerun of this module. Revision 038 added the

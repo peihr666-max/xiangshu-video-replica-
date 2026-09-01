@@ -104,19 +104,19 @@ describe("RootApp", () => {
     expect(screen.queryByRole("heading", { name: "运营管理后台" })).toBeNull();
   });
 
-  it("routes the legacy pairing URL to the same unified activation entry", async () => {
+  it("routes the pairing URL to the explicit existing-account device flow", async () => {
     vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
 
     render(<RootApp path="/customer/pairing" />);
 
     expect(
-      await screen.findByRole("heading", { name: "激活短视频复刻工作台" }),
+      await screen.findByRole("heading", { name: "添加已有账号设备" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("激活码")).toBeInTheDocument();
     expect(screen.queryByLabelText(/fingerprint|机器码/i)).toBeNull();
     expect(
-      screen.queryByRole("heading", { name: "添加已有账号设备" }),
-    ).toBeNull();
+      screen.getByRole("button", { name: "返回首次激活" }),
+    ).toBeInTheDocument();
   });
 
   it("routes /customer to the activation screen without any internal-token field", async () => {

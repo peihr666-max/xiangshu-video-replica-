@@ -621,7 +621,7 @@ def test_generate_creates_contact_sheet_asset(
         assert snapshot["contact_sheet_asset_id"] == contact_asset_id
 
 
-def test_contact_sheet_download_url_allowed_for_employees(
+def test_contact_sheet_download_url_isolated_to_owner_and_privileged_roles(
     client: TestClient,
     storage: FakeStorageAdapter,
     monkeypatch: pytest.MonkeyPatch,
@@ -636,13 +636,20 @@ def test_contact_sheet_download_url_allowed_for_employees(
         lambda conn, storage_uri: storage,
     )
 
-    for user_id in ("employee_1", "employee_2"):
+    for user_id in ("employee_1", "admin_1"):
         response = client.post(
             f"/api/assets/{created['contact_sheet_asset_id']}/download-url",
             headers=headers(user_id),
         )
         assert response.status_code == 200, response.text
         assert response.json()["url"]
+
+    for user_id in ("employee_2", "auditor_1"):
+        forbidden = client.post(
+            f"/api/assets/{created['contact_sheet_asset_id']}/download-url",
+            headers=headers(user_id),
+        )
+        assert forbidden.status_code == 403
 
 
 def test_character_cache_downloads_once_and_serves_local_copy(
@@ -959,13 +966,22 @@ def test_library_falls_back_to_views_when_snapshot_has_no_contact_sheet(
     assert len(entry["views"]) == len(REQUIRED_CHARACTER_VIEW_TYPES)
 
 
-def test_library_is_visible_to_all_roles(client: TestClient) -> None:
-    generate_global(client)
+def test_library_is_isolated_by_owner_outside_control_roles(client: TestClient) -> None:
+    first = generate_global(client, user_id="employee_1").json()
+    second = generate_global(client, user_id="employee_2").json()
 
-    for user_id in ("employee_1", "admin_1", "auditor_1"):
+    employee_one = client.get("/api/simple-characters/library", headers=headers("employee_1"))
+    employee_two = client.get("/api/simple-characters/library", headers=headers("employee_2"))
+    assert [item["identity_id"] for item in employee_one.json()] == [first["identity_id"]]
+    assert [item["identity_id"] for item in employee_two.json()] == [second["identity_id"]]
+
+    for user_id in ("admin_1", "auditor_1"):
         response = client.get("/api/simple-characters/library", headers=headers(user_id))
         assert response.status_code == 200, response.text
-        assert len(response.json()) == 1
+        assert {item["identity_id"] for item in response.json()} == {
+            first["identity_id"],
+            second["identity_id"],
+        }
 
 
 def generate_global(client: TestClient, *, user_id: str = "employee_1"):

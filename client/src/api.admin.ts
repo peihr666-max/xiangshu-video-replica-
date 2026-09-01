@@ -269,7 +269,6 @@ export async function deleteAdminSession(): Promise<void> {
 export type ActivationCodeListItem = {
   code_id: string;
   batch_id: string;
-  activation_code: string | null;
   masked_code: string;
   status: string;
   bound_user_id: string | null;
@@ -321,6 +320,13 @@ export type ActivationDeliverResult = {
 export type ActivationCodeMutationResult = {
   code_id: string;
   status: string;
+  request_id: string;
+};
+
+export type ActivationCodeRevealResult = {
+  code_id: string;
+  activation_code: string;
+  masked_code: string;
   request_id: string;
 };
 
@@ -408,6 +414,20 @@ export async function listActivationCodes({
     throw await parseActivationError(response, "读取激活码列表失败");
   }
   return (await response.json()) as ActivationCodePage;
+}
+
+export async function revealActivationCode(
+  codeId: string,
+  reason: string,
+  idempotencyKey?: string,
+): Promise<ActivationCodeRevealResult> {
+  return adminWrite<ActivationCodeRevealResult>(
+    `/api/control/activation-codes/${encodeURIComponent(codeId)}/reveal`,
+    {},
+    reason,
+    "读取激活码失败",
+    idempotencyKey,
+  );
 }
 
 export async function deliverActivationCode(

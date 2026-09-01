@@ -140,15 +140,19 @@ export function CharacterLibrary({
     setIsLoading(true);
     try {
       const result = await listSimpleCharacterLibrary();
-      setEntries(result);
+      const visibleEntries =
+        userRole === "admin" || userRole === "auditor"
+          ? result
+          : result.filter((entry) => entry.owner_user_id === userId);
+      setEntries(visibleEntries);
       setError("");
-      void loadPreviewUrls(result.flatMap(entryAssetIds));
+      void loadPreviewUrls(visibleEntries.flatMap(entryAssetIds));
     } catch (loadError) {
       setError(errorMessage(loadError, "人物库暂不可用，请重试。"));
     } finally {
       setIsLoading(false);
     }
-  }, [loadPreviewUrls]);
+  }, [loadPreviewUrls, userId, userRole]);
 
   const releasePendingPreview = useCallback(() => {
     if (pendingPreviewUrlRef.current) {

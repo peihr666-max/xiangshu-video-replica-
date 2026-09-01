@@ -21,9 +21,9 @@ index insert (PostgreSQL waits on the conflicting transaction).
 The one-time download deliberately stays *outside* the snapshot layer: its
 response carries the plaintext codes, which must never persist anywhere
 (No-Go red line), and the ``downloaded_at`` one-shot constraint already
-makes a second download impossible. An authenticated administrator may also
-recover codes on the list page by opening the retained AEAD envelope in
-memory; this does not add a plaintext database field or log record.
+makes a second download impossible. A later copy is an explicit, audited
+single-code reveal: list responses stay masked and never bulk-decrypt every
+code visible on the page.
 
 No-Go red lines: plaintext activation codes are never stored in a column,
 event, idempotency snapshot or log record. Generation responses carry masked
@@ -390,10 +390,12 @@ def _validate_batch_payload(body: BatchCreateRequest) -> None:
     problems: list[str] = []
     if not body.name.strip():
         problems.append("name must not be blank")
-    if body.face_value_fen <= 0:
-        problems.append("face_value_fen must be positive")
-    if body.credits <= 0:
-        problems.append("credits must be positive")
+    if body.face_value_fen < 0:
+        problems.append("face_value_fen must not be negative")
+    if body.credits < 0:
+        problems.append("credits must not be negative")
+    if (body.face_value_fen == 0) != (body.credits == 0):
+        problems.append("face_value_fen and credits must both be zero or both be positive")
     if body.quantity <= 0:
         problems.append("quantity must be positive")
     try:
@@ -1055,6 +1057,127 @@ def _recover_plaintext_codes(
     return recovered
 
 
+@router.post("/activation-codes/{code_id}/reveal")
+def reveal_activation_code(
+    code_id: str,
+    body: AdminWriteContract,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    """Reveal one retained code for an explicit, audited administrator copy.
+
+    The plaintext is decrypted in memory and returned with ``no-store``. The
+    idempotency snapshot contains identifiers only; it never stores the code.
+    """
+    idempotency_key, reason = _require_write_contract(request, body)
+    route = _canonical_route(request)
+    request_hash = _request_hash(route, dict(request.path_params), body)
+    request_id = get_or_create_request_id(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        with pg_transaction() as conn:
+            placeholder = _begin_idempotent_write(
+                conn,
+                actor_user_id=actor.user_id,
+                route=route,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+            replay = placeholder is None
+            if replay:
+                snapshot = _load_idempotent_snapshot(
+                    conn,
+                    actor_user_id=actor.user_id,
+                    route=route,
+                    idempotency_key=idempotency_key,
+                )
+                if (
+                    snapshot is None
+                    or snapshot.request_hash != request_hash
+                    or snapshot.response_status != 200
+                    or snapshot.response_body is None
+                ):
+                    raise _http(
+                        409,
+                        "IDEMPOTENCY_CONFLICT",
+                        "This idempotency key was already used for a different request.",
+                    )
+                stored = json.loads(snapshot.response_body)
+                request_id = str(stored["request_id"])
+
+            row = conn.execute(
+                "SELECT id, batch_id, code_digest, masked_code, status, "
+                "bound_user_id, issued_at FROM activation_codes WHERE id = %s",
+                (code_id,),
+            ).fetchone()
+            if row is None:
+                raise _http(404, "CODE_NOT_FOUND", "Unknown activation code.")
+            plaintext = _recover_plaintext_codes(conn, [row]).get(str(row[2]))
+            if plaintext is None:
+                raise _http(
+                    409,
+                    "CODE_PLAINTEXT_UNAVAILABLE",
+                    "The retained recovery envelope for this code is no longer available.",
+                )
+            safe_payload: dict[str, object] = {
+                "code_id": code_id,
+                "masked_code": str(row[3]),
+                "request_id": request_id,
+            }
+            if placeholder is not None:
+                conn.execute(
+                    "INSERT INTO audit_logs "
+                    "(id, actor_user_id, action, entity_type, entity_id, metadata_json) "
+                    "VALUES (%s, %s, %s, 'activation_code', %s, %s)",
+                    (
+                        str(uuid.uuid4()),
+                        actor.user_id,
+                        "admin.activation_code.revealed",
+                        code_id,
+                        json.dumps(
+                            {"request_id": request_id, "reason": reason},
+                            ensure_ascii=True,
+                            sort_keys=True,
+                        ),
+                    ),
+                )
+                _finish_idempotent_write(
+                    conn,
+                    placeholder,
+                    response_status=200,
+                    response_body=safe_payload,
+                )
+            response.headers[REQUEST_ID_HEADER] = request_id
+            if replay:
+                response.headers[REPLAY_HEADER] = "true"
+    except (ActivationKeyError, ActivationExportError) as exc:
+        logger.warning(
+            "activation code reveal unavailable: code=%s actor=%s error=%s",
+            code_id,
+            actor.user_id,
+            type(exc).__name__,
+        )
+        raise _http(
+            503,
+            "ACTIVATION_DETAILS_UNAVAILABLE",
+            "Activation code details are temporarily unavailable.",
+        ) from exc
+    except RuntimeError as exc:
+        raise _http(
+            503,
+            "ACTIVATION_SERVICE_UNAVAILABLE",
+            "Activation code management requires the PostgreSQL runtime.",
+        ) from exc
+    logger.info(
+        "activation code revealed: code=%s actor=%s request=%s",
+        code_id,
+        actor.user_id,
+        request_id,
+    )
+    return {**safe_payload, "activation_code": plaintext}
+
+
 @router.get("/activation-codes")
 def list_activation_codes(
     actor: AdminReader,
@@ -1064,7 +1187,7 @@ def list_activation_codes(
     limit: int = DEFAULT_LIST_LIMIT,
     offset: int = 0,
 ) -> dict[str, object]:
-    """List codes; administrators may recover full values from sealed exports."""
+    """List masked code metadata without bulk-recovering plaintext values."""
     response.headers["Cache-Control"] = "no-store"
     bounded_limit = max(0, min(limit, MAX_LIST_LIMIT))
     bounded_offset = max(0, offset)
@@ -1086,20 +1209,6 @@ def list_activation_codes(
                 f"ORDER BY id LIMIT %s OFFSET %s",
                 (*params, bounded_limit, bounded_offset),
             ).fetchall()
-            plaintext_by_digest = (
-                _recover_plaintext_codes(conn, rows) if actor.role == "admin" else {}
-            )
-    except (ActivationKeyError, ActivationExportError) as exc:
-        logger.warning(
-            "activation code detail recovery unavailable: actor=%s error=%s",
-            actor.user_id,
-            type(exc).__name__,
-        )
-        raise _http(
-            503,
-            "ACTIVATION_DETAILS_UNAVAILABLE",
-            "Activation code details are temporarily unavailable.",
-        ) from exc
     except RuntimeError as exc:
         raise _http(
             503,
@@ -1110,7 +1219,6 @@ def list_activation_codes(
         {
             "code_id": str(row[0]),
             "batch_id": str(row[1]),
-            "activation_code": plaintext_by_digest.get(str(row[2])),
             "masked_code": str(row[3]),
             "status": str(row[4]),
             "bound_user_id": row[5],

@@ -205,13 +205,13 @@ export function CustomerWorkspace({
   }
 
   async function handleResetActivationCode(): Promise<CustomerActivationCodeReset> {
-    const token = await store.loadDeviceCredentialToken();
+    const token = await store.loadSessionToken();
     if (token === null) {
       onSessionExpired();
-      throw new Error("设备授权已失效，请重新激活。");
+      throw new Error("登录已失效，请重新进入工作台。");
     }
     try {
-      return await customerResetActivationCode({ kind: "device", token });
+      return await customerResetActivationCode({ kind: "session", token });
     } catch (cause) {
       if (cause instanceof CustomerApiError && cause.status === 401) {
         onSessionExpired();
