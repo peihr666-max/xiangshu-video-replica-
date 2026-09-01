@@ -51,7 +51,7 @@ from app.db import connect_database
 from app.db_pg import IsolationLevel, get_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
 from app.permissions import AuditedSecurityDenial, persist_security_denial
-from app.security_rate_limit import record_auth_failure
+from app.security_rate_limit import rate_limit_window_seconds, record_auth_failure
 
 AUTHORIZATION_HEADER = "Authorization"
 BEARER_SCHEME = "bearer"
@@ -272,6 +272,7 @@ def _record_fencing_failure_audit(snapshot: CustomerSessionSnapshot) -> None:
                 dimension=FENCING_FAILURE_DIMENSION,
                 identifier=_fencing_failure_identifier(snapshot),
                 request_id=request_id,
+                dedupe_window_seconds=rate_limit_window_seconds(),
             )
     except Exception as audit_error:
         logger.warning(

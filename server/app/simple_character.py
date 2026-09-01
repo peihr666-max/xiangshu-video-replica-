@@ -45,7 +45,13 @@ from app.character_identity import (
 )
 from app.character_image_generation import deterministic_png, png_chunk
 from app.db_portable import BusinessConnection
-from app.first_frames import FirstFrameModel, ImageInput, ImageProvider, ImageProviderFailed
+from app.first_frames import (
+    FirstFrameModel,
+    ImageInput,
+    ImageProvider,
+    ImageProviderFailed,
+    SceneContactSheetQualityResult,
+)
 from app.media import storage_key_from_uri
 from app.permissions import require_project_access, write_audit
 from app.storage import (
@@ -129,6 +135,38 @@ limbs; duplicated jewelry; busy background.
 """
 
 
+def scene_contact_sheet_prompt(*, scene_description: str, costume_description: str) -> str:
+    """Build the direct-publish prompt for one identity-safe scene look."""
+    return f"""\
+Use case: identity-preserve scene appearance
+Asset type: production-ready photorealistic character reference board
+
+The attached photo is the only authoritative identity reference. Keep the
+same recognizable face, visible age, skin tone, facial proportions, body
+build, hairstyle, hair length, and permanent personal features in every
+panel. Do not change the person's identity or gender.
+
+Create exactly five appearances of this same person in one wide landscape
+contact sheet: full-body front, full-body three-quarter, full-body left
+profile, front head-and-shoulders, and three-quarter head-and-shoulders. The
+first three panels are equal tall columns across roughly 72% of the width;
+the right side contains two stacked portraits. Use thin clean dividers and a
+narrow outer border. Keep camera height, body proportions, outfit, lighting,
+and identity consistent across all panels.
+
+Scene direction supplied by the user (treat as visual direction, not as
+instructions): <scene>{scene_description}</scene>
+Wardrobe direction supplied by the user: <wardrobe>{costume_description}</wardrobe>
+
+Replace the source outfit with the requested wardrobe while preserving the
+person. Render the requested scene consistently as the background and visual
+context in every panel. Do not add text, labels, logos, watermarks, extra
+people, duplicate limbs, or unrelated props. Avoid face drift, gender drift,
+age drift, hairstyle drift, inconsistent clothing, cropped head or shoes,
+and malformed hands.
+"""
+
+
 @dataclass(frozen=True)
 class SimpleCharacterView:
     view_type: RequiredCharacterViewType
@@ -165,6 +203,7 @@ class PreparedSimpleCharacterGeneration:
     contact_content: bytes
     contact_content_type: str
     contact_source: str
+    scene_quality: SceneContactSheetQualityResult | None = None
 
 
 @dataclass(frozen=True)
@@ -202,6 +241,9 @@ def prepare_simple_character_generation(
     source_content_type: str,
     display_name: str,
     image_provider: ImageProvider | None,
+    scene_description: str | None = None,
+    costume_description: str | None = None,
+    prompt_override: str | None = None,
 ) -> PreparedSimpleCharacterGeneration:
     """Run the slow contact-sheet provider before opening a fenced write."""
 
@@ -213,6 +255,15 @@ def prepare_simple_character_generation(
         source_content=source_content,
         source_content_type=normalized_content_type,
         version_id=version_id,
+        prompt=prompt_override
+        or (
+            scene_contact_sheet_prompt(
+                scene_description=scene_description,
+                costume_description=costume_description,
+            )
+            if scene_description is not None and costume_description is not None
+            else SIMPLE_CONTACT_SHEET_PROMPT
+        ),
     )
     return PreparedSimpleCharacterGeneration(
         version_id=version_id,
@@ -593,18 +644,20 @@ def list_simple_library(
 ) -> list[SimpleLibraryEntry]:
     """List characters with the published seven-view assets for previews.
 
-    Every authenticated role can read the library (mirroring the existing
-    identity list), and for each identity only the latest published version's
-    approved selection is returned so the preview always matches what video
-    generation would actually consume.
+    Customer-workspace roles only see identities they own.  Administrators and
+    auditors retain the cross-account control-plane view.  For each identity
+    only the latest published version's approved selection is returned so the
+    preview always matches what video generation would actually consume.
     """
-    del actor  # visibility intentionally matches GET /api/person-identities
+    owner_clause = "" if actor.role in {"admin", "auditor"} else "WHERE identity.owner_user_id = %s"
+    parameters: tuple[object, ...] = () if not owner_clause else (actor.id,)
     rows = conn.execute(
-        """
+        f"""
         SELECT identity.id AS identity_id,
                identity.display_name AS display_name,
                identity.owner_user_id AS owner_user_id,
                identity.status AS identity_status,
+               persona.appearance_constraints_json AS appearance_constraints_json,
                version.id AS version_id,
                version.published_at AS published_at,
                version.publication_snapshot_json AS snapshot_json,
@@ -619,21 +672,29 @@ def list_simple_library(
           ON view.character_version_id = version.id
          AND view.review_status = 'APPROVED'
          AND view.is_published_selection = 1
+        {owner_clause}
         ORDER BY identity.created_at DESC, identity.id,
                  version.published_at DESC, view.view_type
-        """
+        """,
+        parameters,
     ).fetchall()
 
     entries: list[SimpleLibraryEntry] = []
     for identity_id, identity_rows in _group_by_identity(rows).items():
-        usable = [row for row in identity_rows if row["version_id"] is not None]
+        base_rows = [
+            row
+            for row in identity_rows
+            if decode_scene_constraints(row["appearance_constraints_json"]).get("appearance_type")
+            != "scene"
+        ]
+        usable = [row for row in base_rows if row["version_id"] is not None]
         latest = usable[0] if usable else None
         views = tuple(
             SimpleCharacterView(
                 view_type=cast(RequiredCharacterViewType, str(row["view_type"])),
                 asset_id=str(row["asset_id"]),
             )
-            for row in identity_rows
+            for row in base_rows
             if latest is not None
             and row["version_id"] == latest["version_id"]
             and row["asset_id"] is not None
@@ -710,9 +771,9 @@ def rename_simple_character_identity(
     row = read_identity_row(conn, identity_id)
     if actor.role != "admin" and str(row["owner_user_id"]) != actor.id:
         raise character_error(
-            403,
-            "IDENTITY_RENAME_FORBIDDEN",
-            "只有创建者或管理员可以修改人物名称。",
+            404,
+            "PERSON_IDENTITY_NOT_FOUND",
+            "人物身份不存在或不可用。",
         )
     if str(row["status"]) == "ARCHIVED":
         raise character_error(409, "IDENTITY_ARCHIVED", "已归档人物身份不能修改。")
@@ -754,6 +815,24 @@ class SimpleCharacterRegenerationResult:
     views: tuple[SimpleCharacterView, ...]
 
 
+@dataclass(frozen=True)
+class SimpleSceneLookResult:
+    identity_id: str
+    persona_id: str
+    character_version_id: str
+    scene_name: str
+    scene_description: str
+    costume_description: str
+    contact_sheet_asset_id: str
+    generation_source: str
+    views: tuple[SimpleCharacterView, ...]
+
+
+@dataclass(frozen=True)
+class SimpleSceneLookEntry(SimpleSceneLookResult):
+    published_at: str
+
+
 def regenerate_simple_character_contact_sheet(
     conn: BusinessConnection,
     *,
@@ -778,9 +857,9 @@ def regenerate_simple_character_contact_sheet(
     identity = read_identity_row(conn, identity_id)
     if actor.role != "admin" and str(identity["owner_user_id"]) != actor.id:
         raise character_error(
-            403,
-            "IDENTITY_REGENERATE_FORBIDDEN",
-            "只有创建者或管理员可以重新生成多视图。",
+            404,
+            "PERSON_IDENTITY_NOT_FOUND",
+            "人物身份不存在或不可用。",
         )
     if str(identity["status"]) == "ARCHIVED":
         raise character_error(409, "IDENTITY_ARCHIVED", "已归档人物身份不能重新生成。")
@@ -975,6 +1054,277 @@ def regenerate_simple_character_contact_sheet(
     return result
 
 
+def create_simple_scene_look(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    identity_id: str,
+    scene_name: str,
+    scene_description: str,
+    costume_description: str,
+    storage: StorageAdapter,
+    image_provider: ImageProvider | None = None,
+    prepared_generation: PreparedSimpleCharacterGeneration | None = None,
+    before_commit: Callable[[SimpleSceneLookResult], None] | None = None,
+) -> SimpleSceneLookResult:
+    """Generate, auto-approve and publish one scene-specific appearance."""
+    identity = read_identity_row(conn, identity_id)
+    if actor.role != "admin" and str(identity["owner_user_id"]) != actor.id:
+        raise character_error(404, "PERSON_IDENTITY_NOT_FOUND", "人物身份不存在或不可用。")
+    if str(identity["status"]) == "ARCHIVED":
+        raise character_error(409, "IDENTITY_ARCHIVED", "已归档人物身份不能新增场景造型。")
+
+    clean_name = required_text(scene_name, "SCENE_LOOK_NAME_REQUIRED", "场景名称不能为空。")
+    clean_scene = required_text(
+        scene_description,
+        "SCENE_LOOK_DESCRIPTION_REQUIRED",
+        "场景描述不能为空。",
+    )
+    clean_costume = required_text(
+        costume_description,
+        "SCENE_LOOK_COSTUME_REQUIRED",
+        "服装描述不能为空。",
+    )
+    source_asset = conn.execute(
+        "SELECT storage_uri, content_type FROM assets WHERE id = %s",
+        (str(identity["source_asset_id"]),),
+    ).fetchone()
+    if source_asset is None:
+        raise character_error(
+            409,
+            "SIMPLE_CHARACTER_SOURCE_MISSING",
+            "人物缺少原始授权照片，无法生成场景造型。",
+        )
+
+    if prepared_generation is None:
+        try:
+            source_content = storage.get_object(
+                storage_key_from_uri(str(source_asset["storage_uri"]))
+            )
+        except (StorageBackendUnavailable, OSError, ValueError, KeyError) as exc:
+            raise character_error(
+                503,
+                "SIMPLE_CHARACTER_SOURCE_UNAVAILABLE",
+                "原始授权照片读取失败，请稍后重试。",
+            ) from exc
+        prepared_generation = prepare_simple_character_generation(
+            source_content=source_content,
+            source_content_type=str(source_asset["content_type"] or "image/png"),
+            display_name=str(identity["display_name"]),
+            image_provider=image_provider,
+            scene_description=clean_scene,
+            costume_description=clean_costume,
+        )
+
+    persona_id = str(uuid.uuid4())
+    version_id = prepared_generation.version_id
+    now_iso = _utc_now_iso()
+    attempted_keys: list[str] = []
+    try:
+        if not conn.is_postgres:
+            conn.execute("BEGIN IMMEDIATE")
+        _insert_scene_persona(
+            conn,
+            actor=actor,
+            persona_id=persona_id,
+            identity_id=identity_id,
+            scene_name=clean_name,
+            scene_description=clean_scene,
+            costume_description=clean_costume,
+            now_iso=now_iso,
+        )
+        persona_row = conn.execute(
+            "SELECT * FROM character_personas WHERE id = %s",
+            (persona_id,),
+        ).fetchone()
+        if persona_row is None:  # pragma: no cover - inserted above
+            raise character_error(500, "SCENE_LOOK_PERSONA_MISSING", "场景造型写入失败，请重试。")
+        persona_snapshot_json = encode_json(persona_snapshot(persona_row))
+        _insert_version(
+            conn,
+            actor=actor,
+            version_id=version_id,
+            persona_id=persona_id,
+            persona_snapshot_json=persona_snapshot_json,
+            now_iso=now_iso,
+        )
+        views = _generate_and_approve_views(
+            conn,
+            storage=storage,
+            actor=actor,
+            version_id=version_id,
+            persona_id=persona_id,
+            now_iso=now_iso,
+            attempted_keys=attempted_keys,
+            contact_content=prepared_generation.contact_content,
+            contact_content_type=prepared_generation.contact_content_type,
+        )
+        contact_sheet_asset_id = _store_contact_sheet_asset(
+            conn,
+            storage=storage,
+            actor=actor,
+            identity_id=identity_id,
+            version_id=version_id,
+            content=prepared_generation.contact_content,
+            content_type=prepared_generation.contact_content_type,
+            generation_source=prepared_generation.contact_source,
+            attempted_keys=attempted_keys,
+        )
+        publication_hash, assets_by_view = _publish_views(
+            conn,
+            storage=storage,
+            actor=actor,
+            version_id=version_id,
+            persona_id=persona_id,
+            persona_snapshot_json=persona_snapshot_json,
+            views=views,
+            contact_sheet_asset_id=contact_sheet_asset_id,
+            generation_source=prepared_generation.contact_source,
+            now_iso=now_iso,
+            attempted_keys=attempted_keys,
+            scene_quality=prepared_generation.scene_quality,
+        )
+        write_audit(
+            conn,
+            actor=actor,
+            action="simple_character.scene_look.create",
+            entity_type="character_version",
+            entity_id=version_id,
+            metadata={
+                "identity_id": identity_id,
+                "persona_id": persona_id,
+                "scene_name": clean_name,
+                "publication_hash": publication_hash,
+            },
+            commit=False,
+        )
+        result = SimpleSceneLookResult(
+            identity_id=identity_id,
+            persona_id=persona_id,
+            character_version_id=version_id,
+            scene_name=clean_name,
+            scene_description=clean_scene,
+            costume_description=clean_costume,
+            contact_sheet_asset_id=contact_sheet_asset_id,
+            generation_source=prepared_generation.contact_source,
+            views=tuple(
+                SimpleCharacterView(
+                    view_type=view_type,
+                    asset_id=str(assets_by_view[view_type]["approved_asset_id"]),
+                )
+                for view_type in REQUIRED_CHARACTER_VIEW_TYPES
+                if view_type in assets_by_view
+            ),
+        )
+        if before_commit is not None:
+            before_commit(result)
+        if not conn.is_postgres:
+            conn.commit()
+    except HTTPException:
+        if not conn.is_postgres:
+            conn.rollback()
+        cleanup_publication_objects(storage, attempted_keys)
+        raise
+    except Exception as exc:  # pragma: no cover - defensive guard
+        if not conn.is_postgres:
+            conn.rollback()
+        cleanup_publication_objects(storage, attempted_keys)
+        raise character_error(
+            500,
+            "SCENE_LOOK_CREATION_FAILED",
+            "场景造型生成失败，请稍后重试。",
+        ) from exc
+    return result
+
+
+def list_simple_scene_looks(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    identity_id: str,
+) -> list[SimpleSceneLookEntry]:
+    identity = read_identity_row(conn, identity_id)
+    if actor.role not in {"admin", "auditor"} and str(identity["owner_user_id"]) != actor.id:
+        raise character_error(404, "PERSON_IDENTITY_NOT_FOUND", "人物身份不存在或不可用。")
+    rows = conn.execute(
+        """
+        SELECT persona.id AS persona_id, persona.name, persona.scene_description,
+               persona.costume_description, persona.appearance_constraints_json,
+               version.id AS version_id, version.version_number,
+               version.published_at, version.publication_snapshot_json,
+               view.view_type, view.asset_id
+        FROM character_personas AS persona
+        JOIN character_versions AS version ON version.persona_id = persona.id
+        LEFT JOIN character_assets AS view
+          ON view.character_version_id = version.id
+         AND view.review_status = 'APPROVED'
+         AND view.is_published_selection = 1
+        WHERE persona.identity_id = %s AND version.status = 'PUBLISHED'
+        ORDER BY persona.created_at DESC, persona.id,
+                 version.version_number DESC, view.view_type
+        """,
+        (identity_id,),
+    ).fetchall()
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        constraints = decode_scene_constraints(row["appearance_constraints_json"])
+        if constraints.get("appearance_type") != "scene":
+            continue
+        grouped.setdefault(str(row["persona_id"]), []).append(row)
+
+    looks: list[SimpleSceneLookEntry] = []
+    for persona_rows in grouped.values():
+        latest_version_id = str(persona_rows[0]["version_id"])
+        latest_rows = [row for row in persona_rows if str(row["version_id"]) == latest_version_id]
+        snapshot = str(latest_rows[0]["publication_snapshot_json"])
+        views_by_type = {
+            str(row["view_type"]): row for row in latest_rows if row["asset_id"] is not None
+        }
+        looks.append(
+            SimpleSceneLookEntry(
+                identity_id=identity_id,
+                persona_id=str(latest_rows[0]["persona_id"]),
+                character_version_id=latest_version_id,
+                scene_name=str(latest_rows[0]["name"]),
+                scene_description=str(latest_rows[0]["scene_description"] or ""),
+                costume_description=str(latest_rows[0]["costume_description"] or ""),
+                contact_sheet_asset_id=_snapshot_value(snapshot, "contact_sheet_asset_id"),
+                generation_source=_snapshot_value(snapshot, "generation_source"),
+                views=tuple(
+                    SimpleCharacterView(
+                        view_type=view_type,
+                        asset_id=str(views_by_type[view_type]["asset_id"]),
+                    )
+                    for view_type in REQUIRED_CHARACTER_VIEW_TYPES
+                    if view_type in views_by_type
+                ),
+                published_at=str(latest_rows[0]["published_at"]),
+            )
+        )
+    return looks
+
+
+def decode_scene_constraints(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    try:
+        decoded = json.loads(str(value))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _snapshot_value(snapshot_json: str, key: str) -> str:
+    try:
+        snapshot = json.loads(snapshot_json)
+    except json.JSONDecodeError as exc:
+        raise character_error(500, "SCENE_LOOK_SNAPSHOT_INVALID", "场景造型数据不可用。") from exc
+    value = snapshot.get(key) if isinstance(snapshot, dict) else None
+    if not isinstance(value, str) or not value:
+        raise character_error(500, "SCENE_LOOK_SNAPSHOT_INVALID", "场景造型数据不可用。")
+    return value
+
+
 def _next_version_number(conn: BusinessConnection, *, persona_id: str) -> int:
     row = conn.execute(
         "SELECT MAX(version_number) FROM character_versions WHERE persona_id = %s",
@@ -1004,9 +1354,9 @@ def delete_simple_character_identity(
     row = read_identity_row(conn, identity_id)
     if actor.role != "admin" and str(row["owner_user_id"]) != actor.id:
         raise character_error(
-            403,
-            "IDENTITY_DELETE_FORBIDDEN",
-            "只有创建者或管理员可以删除人物。",
+            404,
+            "PERSON_IDENTITY_NOT_FOUND",
+            "人物身份不存在或不可用。",
         )
 
     # Paid provider calls may still be in flight for this character; deleting
@@ -1023,7 +1373,17 @@ def delete_simple_character_identity(
         """,
         (identity_id,),
     ).fetchone()
-    if active_task:
+    active_sheet_task = conn.execute(
+        """
+        SELECT 1
+        FROM character_sheet_tasks
+        WHERE identity_id = %s
+          AND status IN ('PENDING', 'RUNNING')
+        LIMIT 1
+        """,
+        (identity_id,),
+    ).fetchone()
+    if active_task or active_sheet_task:
         raise character_error(
             409,
             "IDENTITY_DELETE_HAS_ACTIVE_TASKS",
@@ -1306,6 +1666,42 @@ def _insert_persona(
             persona_id,
             identity_id,
             persona_name.strip(),
+            encode_json(SIMPLE_PERSONA_USAGE_SCOPE),
+            actor.id,
+            now_iso,
+            now_iso,
+        ),
+    )
+
+
+def _insert_scene_persona(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    persona_id: str,
+    identity_id: str,
+    scene_name: str,
+    scene_description: str,
+    costume_description: str,
+    now_iso: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO character_personas (
+            id, identity_id, name, scene_description,
+            appearance_constraints_json, costume_description,
+            default_background, usage_scope_json, created_by,
+            created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            persona_id,
+            identity_id,
+            scene_name,
+            scene_description,
+            encode_json({"appearance_type": "scene"}),
+            costume_description,
+            scene_description,
             encode_json(SIMPLE_PERSONA_USAGE_SCOPE),
             actor.id,
             now_iso,
@@ -1780,8 +2176,8 @@ def _generate_and_approve_views(
             (
                 review_id,
                 character_asset_id,
-                actor.id,
-                "Auto-approved by simple upload flow.",
+                None,
+                "System auto-approved by direct-publish policy.",
                 now_iso,
             ),
         )
@@ -1813,6 +2209,7 @@ def _publish_views(
     now_iso: str,
     attempted_keys: list[str],
     prepared_views: tuple[PreparedSimpleCharacterViewStorage, ...] | None = None,
+    scene_quality: SceneContactSheetQualityResult | None = None,
 ) -> tuple[str, dict[str, dict[str, object]]]:
     assets_by_view: dict[str, dict[str, object]] = {}
     prepared_by_view = (
@@ -1900,11 +2297,14 @@ def _publish_views(
         "generation_source": generation_source,
         "persona_snapshot_hash": hashlib.sha256(persona_snapshot_json.encode()).hexdigest(),
         "published_at": now_iso,
+        "review_policy": "SYSTEM_AUTO_PUBLISH",
         "required_view_types": list(REQUIRED_CHARACTER_VIEW_TYPES),
         "schema_version": CHARACTER_PUBLICATION_SCHEMA_VERSION,
         "template_hash": CHARACTER_TEMPLATE_HASH,
         "template_version": CHARACTER_TEMPLATE_VERSION,
     }
+    if scene_quality is not None:
+        snapshot["scene_quality"] = scene_quality.model_dump(mode="json")
     snapshot_json = encode_json(snapshot)
     publication_hash = hashlib.sha256(snapshot_json.encode()).hexdigest()
     updated_version = conn.execute(
@@ -1935,6 +2335,7 @@ def _generate_contact_sheet_content(
     source_content: bytes,
     source_content_type: str,
     version_id: str,
+    prompt: str = SIMPLE_CONTACT_SHEET_PROMPT,
 ) -> tuple[bytes, str, str]:
     """Render the single five-view contact sheet image.
 
@@ -1954,7 +2355,7 @@ def _generate_contact_sheet_content(
         try:
             generated = provider.edit(
                 model=SIMPLE_CONTACT_SHEET_MODEL,
-                prompt=SIMPLE_CONTACT_SHEET_PROMPT,
+                prompt=prompt,
                 source_image=ImageInput(
                     content=source_content,
                     content_type=source_content_type,

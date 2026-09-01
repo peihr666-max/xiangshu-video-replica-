@@ -59,8 +59,9 @@ Stable error codes (dev doc §13.2):
 - 404 ``PAIRING_NOT_FOUND`` — the pairing does not exist or belongs to
   another activation code (one answer, no IDOR oracle);
 - 409 ``DEVICE_ALREADY_UNBOUND`` — the target row is already released;
-- 409 ``USER_ALREADY_ACTIVATED`` — the candidate fingerprint already holds
-  a current binding;
+- 400 ``PAIRING_UNAVAILABLE`` — also covers a candidate fingerprint that
+  already holds a current binding, so enrollment cannot be used as an
+  account-existence oracle;
 - 409 ``DEVICE_SLOTS_FULL`` — both slots are BOUND (third-device block);
 - 409 ``PAIRING_EXPIRED`` / ``PAIRING_ALREADY_CONSUMED`` /
   ``PAIRING_SELF_APPROVAL`` — the one-shot pairing state machine;
@@ -68,22 +69,11 @@ Stable error codes (dev doc §13.2):
   (request-hash mismatch) or is no longer recoverable (see below).
 
 The DELETE carries an ``Idempotency-Key`` sealed with the shared envelope
-engine (PR #47 Codex review P2): the unbind is a single-row state flip, but
-a client that *lost* the 204 could not previously recover the successful
-result — retrying the unbind of the caller's own device answered
-401 ``DEVICE_REVOKED`` (the credential it just released) and retrying the
-unbind of the other device answered 409 ``DEVICE_ALREADY_UNBOUND``, so an
-ordinary network retry surfaced as an ambiguous fresh failure. The envelope
-seals the minimal audit payload (target device id + request id) and the
-replay answers 204 with ``X-Idempotent-Replay: true``. The recovery probe
-runs *before* credential authentication on purpose: after unbinding its own
-device the caller's credential is by design no longer resolvable, yet the
-same key + same target must still replay the original 204 — the sealed
-envelope itself is the proof of the completed submission. The envelope
-scope is the fixed ``devices`` namespace (the operation plus the client's
-random key already identify the submission; the target rides the request
-hash, so the same key against a different target answers 409
-``IDEMPOTENCY_CONFLICT``).
+engine (PR #47 Codex review P2). Its scope is derived from the target device
+identifier and every replay remains behind credential authentication. That
+prevents a globally reused low-entropy key from becoming a cross-account
+ownership oracle; unauthenticated callers never receive another request's
+request id or success replay.
 
 The enroll envelope mirrors the T13 activation route exactly: operation
 ``device_enroll``, scope the candidate fingerprint digest (probed across
@@ -102,6 +92,7 @@ routes fail closed with 503 (the SQLite lane keeps its internal P0 shape).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -125,6 +116,7 @@ from app.activation_code_service import (
     mask_activation_code,
     normalize_activation_code,
 )
+from app.customer_auth import CustomerSessionContext, SessionFencingError, verify_session_context
 from app.customer_device_service import (
     APPROVE_ALREADY_CONSUMED,
     APPROVE_EXPIRED,
@@ -159,7 +151,7 @@ from app.customer_idempotency import (
     customer_aead_key,
     envelope_aad,
     highest_customer_aead_key,
-    idempotency_key_digest,
+    idempotency_key_digests,
     insert_envelope,
     load_envelope,
     open_response,
@@ -174,12 +166,18 @@ from app.ops_metrics import get_or_create_request_id, set_current_result_code
 from app.security_rate_limit import (
     DIMENSION_ACTIVATE_CODE,
     DIMENSION_ACTIVATE_IP,
+    DIMENSION_ACTIVATION_RESET_DEVICE,
+    DIMENSION_ACTIVATION_RESET_IP,
+    DIMENSION_CUSTOMER_PREAUTH_IP,
     RateLimitDecision,
     activation_code_limit,
     activation_ip_limit,
+    activation_reset_device_limit,
+    activation_reset_ip_limit,
     apply_anti_enumeration_delay,
     client_ip_from_request,
     consume_rate_limit,
+    customer_preauth_ip_limit,
     failure_alert_active,
     failure_alert_threshold,
     rate_limit_window_seconds,
@@ -195,11 +193,8 @@ IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 REPLAY_HEADER = "X-Idempotent-Replay"
 RETRY_AFTER_HEADER = "Retry-After"
 
-# The unbind envelope operation and its fixed scope namespace (see the
-# module docstring: the probe runs before authentication, so the scope
-# cannot derive from the authenticated caller).
 UNBIND_OPERATION = "device_unbind"
-UNBIND_SCOPE = "devices"
+RESET_CODE_OPERATION = "activation_code_reset"
 
 # The enroll envelope operation; the scope is the candidate fingerprint
 # digest (probed across configured key versions, the T13 activation
@@ -207,6 +202,23 @@ UNBIND_SCOPE = "devices"
 ENROLL_OPERATION = "device_enroll"
 
 router = APIRouter(prefix="/api/customer", tags=["customer-devices"])
+
+
+def _unbind_scope(user_id: str, device_id: str) -> str:
+    """A non-reversible account/target namespace avoids cross-account key slots."""
+    return hashlib.sha256(f"device-unbind:v2:{user_id}:{device_id}".encode()).hexdigest()
+
+
+def _reset_code_scope(activation_code_id: str) -> str:
+    return hashlib.sha256(f"activation-code-reset:v1:{activation_code_id}".encode()).hexdigest()
+
+
+def _lock_reset_code_scope(conn: psycopg.Connection, scope: str) -> None:
+    """Serialize reset keys for one activation code during its recovery window."""
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"{RESET_CODE_OPERATION}:{scope}",),
+    )
 
 
 def _http(status: int, code: str, message: str) -> HTTPException:
@@ -352,6 +364,21 @@ def _request_id(request: Request) -> str:
     return get_or_create_request_id(request)
 
 
+def _consume_customer_preauth(request: Request) -> None:
+    with pg_transaction() as conn:
+        decision = consume_rate_limit(
+            conn,
+            dimension=DIMENSION_CUSTOMER_PREAUTH_IP,
+            identifier=client_ip_from_request(request),
+            limit=customer_preauth_ip_limit(),
+            window_seconds=rate_limit_window_seconds(),
+        )
+    if not decision.allowed:
+        blocked = _http(429, "RATE_LIMITED", "Too many customer device requests.")
+        blocked.headers = {RETRY_AFTER_HEADER: str(decision.retry_after_seconds)}
+        raise blocked
+
+
 def _insert_customer_device_audit(
     conn: psycopg.Connection,
     *,
@@ -409,6 +436,7 @@ def list_devices(request: Request) -> DeviceListResponse:
     """The two-slot status view: current bindings plus unbind history, and
     any PENDING second-device pairing awaiting this account's approval."""
     _require_pg()
+    _consume_customer_preauth(request)
     token = _bearer_token(request)
     with pg_transaction() as conn:
         device = _authenticate(conn, token)
@@ -436,6 +464,7 @@ def _replay_unbind_response(
     record: EnvelopeRecord,
     *,
     req_hash: str,
+    scope: str,
     key_digest: str,
 ) -> Response:
     """Replay the sealed 204 of a previously committed unbind.
@@ -467,7 +496,7 @@ def _replay_unbind_response(
         replayed = open_response(
             str(record.ciphertext),
             key=customer_aead_key(int(record.key_version)),
-            aad=envelope_aad(UNBIND_OPERATION, UNBIND_SCOPE, key_digest),
+            aad=envelope_aad(UNBIND_OPERATION, scope, key_digest),
         )
     except IdempotencyKeyError:
         raise _http(
@@ -477,8 +506,6 @@ def _replay_unbind_response(
         ) from None
     headers = {REPLAY_HEADER: "true"}
     replay_request_id = replayed.get("request_id")
-    if isinstance(replay_request_id, str) and replay_request_id:
-        headers[REQUEST_ID_HEADER] = replay_request_id
     logger.info(
         "customer device unbind idempotent replay: key_version=%s request=%s",
         record.key_version,
@@ -491,6 +518,7 @@ def _replay_unbind_response(
 def unbind_device_route(device_id: str, request: Request) -> Response:
     """Unbind one of the caller's own devices; the row stays as history."""
     _require_pg()
+    _consume_customer_preauth(request)
     idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER, "").strip()
     if not idempotency_key:
         raise _http(
@@ -501,9 +529,10 @@ def unbind_device_route(device_id: str, request: Request) -> Response:
     token = _bearer_token(request)
     request_id = _request_id(request)
     req_hash = compute_request_hash({"device_id": device_id})
-    key_digest = idempotency_key_digest(idempotency_key)
     try:
         aead_key_version, aead_key = highest_customer_aead_key()
+        key_digests = idempotency_key_digests(idempotency_key)
+        key_digest = key_digests[0]
     except IdempotencyKeyError:
         logger.warning("idempotency AEAD keys unavailable: configuration is incomplete")
         raise _http(
@@ -512,18 +541,56 @@ def unbind_device_route(device_id: str, request: Request) -> Response:
             "Idempotency keys are not configured; device management is refused.",
         ) from None
 
-    # Recovery probe *before* authentication (see the module docstring): the
-    # caller that unbound its own device can no longer authenticate — the
-    # sealed envelope is the only proof of that completed submission.
+    # Authenticate the presented credential before deriving or probing the
+    # account-scoped envelope. A released credential may recover only the
+    # response for that exact device; it never regains general device access.
     with pg_transaction() as conn:
-        record = load_envelope(
-            conn,
-            operation=UNBIND_OPERATION,
-            scope=UNBIND_SCOPE,
-            key_digest=key_digest,
+        if token is None:
+            raise _http(
+                401,
+                "DEVICE_CREDENTIAL_REQUIRED",
+                "A Bearer device credential is required.",
+            )
+        try:
+            credential = lookup_device_credential(conn, token)
+        except ActivationKeyError:
+            raise _http(
+                503,
+                "DEVICE_SERVICE_UNAVAILABLE",
+                "Device credential keys are not configured; device management is refused.",
+            ) from None
+        matched_device = credential.matched_device
+        if matched_device is None:
+            raise _http(401, "DEVICE_CREDENTIAL_INVALID", "The device credential is invalid.")
+        if credential.device is None and matched_device.id != device_id:
+            raise _http(401, "DEVICE_REVOKED", "This device credential has been revoked.")
+        scope = _unbind_scope(matched_device.user_id, device_id)
+        matched = next(
+            (
+                (digest, record)
+                for digest in key_digests
+                if (
+                    record := load_envelope(
+                        conn,
+                        operation=UNBIND_OPERATION,
+                        scope=scope,
+                        key_digest=digest,
+                    )
+                )
+                is not None
+            ),
+            None,
         )
-    if record is not None:
-        return _replay_unbind_response(record, req_hash=req_hash, key_digest=key_digest)
+    if matched is not None:
+        matched_digest, record = matched
+        return _replay_unbind_response(
+            record,
+            req_hash=req_hash,
+            scope=scope,
+            key_digest=matched_digest,
+        )
+    if credential.device is None:
+        raise _http(401, "DEVICE_REVOKED", "This device credential has been revoked.")
 
     recovery_seconds = recovery_window_seconds()
     with pg_transaction() as conn:
@@ -531,20 +598,30 @@ def unbind_device_route(device_id: str, request: Request) -> Response:
         envelope_id = insert_envelope(
             conn,
             operation=UNBIND_OPERATION,
-            scope=UNBIND_SCOPE,
+            scope=scope,
             key_digest=key_digest,
             request_hash=req_hash,
         )
         if envelope_id is None:
             # A concurrent same-key writer committed first: replay the
             # committed envelope instead of unbinding twice.
-            loaded = load_envelope(
-                conn,
-                operation=UNBIND_OPERATION,
-                scope=UNBIND_SCOPE,
-                key_digest=key_digest,
+            matched = next(
+                (
+                    (digest, record)
+                    for digest in key_digests
+                    if (
+                        record := load_envelope(
+                            conn,
+                            operation=UNBIND_OPERATION,
+                            scope=scope,
+                            key_digest=digest,
+                        )
+                    )
+                    is not None
+                ),
+                None,
             )
-            if loaded is None:
+            if matched is None:
                 raise _http(
                     503,
                     "DEVICE_SERVICE_UNAVAILABLE",
@@ -553,7 +630,13 @@ def unbind_device_route(device_id: str, request: Request) -> Response:
             # This transaction holds no writes of its own (the insert above
             # lost the race), so answering from the sealed copy while the
             # block unwinds — committing nothing — is safe.
-            return _replay_unbind_response(loaded, req_hash=req_hash, key_digest=key_digest)
+            matched_digest, loaded = matched
+            return _replay_unbind_response(
+                loaded,
+                req_hash=req_hash,
+                scope=scope,
+                key_digest=matched_digest,
+            )
         # SES-01: PostgreSQL is the only trusted clock — sample it inside
         # the transaction (the activation-route precedent) so unbound_at,
         # the pulled lease and the audit event share one server-side
@@ -585,7 +668,7 @@ def unbind_device_route(device_id: str, request: Request) -> Response:
         sealed_ciphertext = seal_response(
             {"device_id": device_id, "request_id": request_id},
             key=aead_key,
-            aad=envelope_aad(UNBIND_OPERATION, UNBIND_SCOPE, key_digest),
+            aad=envelope_aad(UNBIND_OPERATION, scope, key_digest),
         )
         recovery_expires_at = (
             (now + timedelta(seconds=recovery_seconds)).replace(microsecond=0).isoformat()
@@ -792,7 +875,7 @@ def _probe_enroll_replay(
     conn: psycopg.Connection,
     *,
     scope_candidates: list[str],
-    key_digest: str,
+    key_digests: list[str],
     req_hash: str,
 ) -> Response | None:
     """Read-only probe for a replayable enroll envelope (the loose twin).
@@ -804,36 +887,37 @@ def _probe_enroll_replay(
     original limiter + transaction path, whose checks stay authoritative.
     """
     for scope_candidate in scope_candidates:
-        record = load_envelope(
-            conn,
-            operation=ENROLL_OPERATION,
-            scope=scope_candidate,
-            key_digest=key_digest,
-        )
-        if record is None:
-            continue
-        if record.request_hash != req_hash:
-            return None
-        if record.ciphertext is None or record.key_version is None:
-            return None
-        if record.recovery_expires_at is not None and (
-            datetime.fromisoformat(str(record.recovery_expires_at)) <= datetime.now(UTC)
-        ):
-            return None
-        try:
-            open_response(
-                record.ciphertext,
-                key=customer_aead_key(record.key_version),
-                aad=envelope_aad(ENROLL_OPERATION, scope_candidate, key_digest),
+        for key_digest in key_digests:
+            record = load_envelope(
+                conn,
+                operation=ENROLL_OPERATION,
+                scope=scope_candidate,
+                key_digest=key_digest,
             )
-        except IdempotencyKeyError:
-            return None
-        return _replay_enroll_response(
-            record,
-            scope=scope_candidate,
-            req_hash=req_hash,
-            key_digest=key_digest,
-        )
+            if record is None:
+                continue
+            if record.request_hash != req_hash:
+                return None
+            if record.ciphertext is None or record.key_version is None:
+                return None
+            if record.recovery_expires_at is not None and (
+                datetime.fromisoformat(str(record.recovery_expires_at)) <= datetime.now(UTC)
+            ):
+                return None
+            try:
+                open_response(
+                    record.ciphertext,
+                    key=customer_aead_key(record.key_version),
+                    aad=envelope_aad(ENROLL_OPERATION, scope_candidate, key_digest),
+                )
+            except IdempotencyKeyError:
+                return None
+            return _replay_enroll_response(
+                record,
+                scope=scope_candidate,
+                req_hash=req_hash,
+                key_digest=key_digest,
+            )
     return None
 
 
@@ -898,6 +982,7 @@ def enroll_second_device(body: DeviceEnrollRequest, request: Request) -> Respons
         )
 
     _require_pg()
+    _consume_customer_preauth(request)
 
     try:
         fingerprint_digests, fingerprint_key_version = fingerprint_digests_for(fingerprint)
@@ -918,7 +1003,8 @@ def enroll_second_device(body: DeviceEnrollRequest, request: Request) -> Respons
 
     fingerprint_hmac = fingerprint_digests[-1]
     scope_candidates = list(reversed(fingerprint_digests))
-    key_digest = idempotency_key_digest(idempotency_key)
+    key_digests = idempotency_key_digests(idempotency_key)
+    key_digest = key_digests[0]
     req_hash = compute_request_hash(
         {
             "activation_code": canonical_code or "",
@@ -935,7 +1021,7 @@ def enroll_second_device(body: DeviceEnrollRequest, request: Request) -> Respons
         replayed = _probe_enroll_replay(
             conn,
             scope_candidates=scope_candidates,
-            key_digest=key_digest,
+            key_digests=key_digests,
             req_hash=req_hash,
         )
     if replayed is not None:
@@ -995,25 +1081,31 @@ def enroll_second_device(body: DeviceEnrollRequest, request: Request) -> Respons
             # scope (highest first), the T13 precedent.
             found_scope: str | None = None
             record: EnvelopeRecord | None = None
+            found_key_digest: str | None = None
             for scope_candidate in scope_candidates:
-                loaded = load_envelope(
-                    conn,
-                    operation=ENROLL_OPERATION,
-                    scope=scope_candidate,
-                    key_digest=key_digest,
-                )
-                if loaded is not None:
-                    found_scope = scope_candidate
-                    record = loaded
+                for candidate_key_digest in key_digests:
+                    loaded = load_envelope(
+                        conn,
+                        operation=ENROLL_OPERATION,
+                        scope=scope_candidate,
+                        key_digest=candidate_key_digest,
+                    )
+                    if loaded is not None:
+                        found_scope = scope_candidate
+                        found_key_digest = candidate_key_digest
+                        record = loaded
+                        break
+                if record is not None:
                     break
 
             if record is not None:
                 assert found_scope is not None
+                assert found_key_digest is not None
                 return _replay_enroll_response(
                     record,
                     scope=found_scope,
                     req_hash=req_hash,
-                    key_digest=key_digest,
+                    key_digest=found_key_digest,
                 )
 
             # SES-01: PostgreSQL is the only trusted clock — sample it inside
@@ -1078,11 +1170,7 @@ def enroll_second_device(body: DeviceEnrollRequest, request: Request) -> Respons
                 (fingerprint_digests, fingerprint_digests[0]),
             ).fetchone()
             if bound is not None:
-                raise _http(
-                    409,
-                    "USER_ALREADY_ACTIVATED",
-                    "This device already holds a customer activation.",
-                )
+                raise _unified_pairing_rejection()
 
             pairing = lookup_active_pairing(
                 conn,
@@ -1255,11 +1343,7 @@ def enroll_second_device(body: DeviceEnrollRequest, request: Request) -> Respons
             # Defensive: the candidate lost the partial-unique race against a
             # concurrent binding (the pre-check inside the code-row lock
             # already covers the normal path, the T13 precedent).
-            raise _http(
-                409,
-                "USER_ALREADY_ACTIVATED",
-                "This device already holds a customer activation.",
-            ) from exc
+            raise _unified_pairing_rejection() from exc
         raise
     except HTTPException as exc:
         # The unified code-side rejection is audited and pays the constant
@@ -1285,6 +1369,7 @@ def approve_device_pairing(pairing_id: str, request: Request) -> PairingApproveR
     surface, §12.2 step 6).
     """
     _require_pg()
+    _consume_customer_preauth(request)
     token = _bearer_token(request)
     request_id = _request_id(request)
     with pg_transaction() as conn:
@@ -1365,6 +1450,7 @@ def approve_device_pairing(pairing_id: str, request: Request) -> PairingApproveR
 def dismiss_device_pairing(pairing_id: str, request: Request) -> Response:
     """Dismiss an invalid pending/approved pairing without deleting audit lineage."""
     _require_pg()
+    _consume_customer_preauth(request)
     token = _bearer_token(request)
     request_id = _request_id(request)
     with pg_transaction() as conn:
@@ -1417,6 +1503,49 @@ def dismiss_device_pairing(pairing_id: str, request: Request) -> Response:
     return Response(status_code=204)
 
 
+def _replay_reset_code_response(
+    record: EnvelopeRecord,
+    *,
+    scope: str,
+    key_digest: str,
+    req_hash: str,
+    response: Response,
+) -> ActivationCodeResetResponse:
+    if record.request_hash != req_hash:
+        raise _http(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "This idempotency key was already used for a different request.",
+        )
+    if (
+        record.ciphertext is None
+        or record.key_version is None
+        or record.recovery_expires_at is None
+        or record.purged_at is not None
+        or datetime.fromisoformat(str(record.recovery_expires_at)) <= datetime.now(UTC)
+    ):
+        raise _http(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "This idempotency key is no longer recoverable.",
+        )
+    try:
+        replayed = open_response(
+            record.ciphertext,
+            key=customer_aead_key(record.key_version),
+            aad=envelope_aad(RESET_CODE_OPERATION, scope, key_digest),
+        )
+    except IdempotencyKeyError:
+        raise _http(
+            503,
+            "DEVICE_SERVICE_UNAVAILABLE",
+            "The reset response cannot be recovered.",
+        ) from None
+    response.headers["Cache-Control"] = "no-store"
+    response.headers[REPLAY_HEADER] = "true"
+    return ActivationCodeResetResponse.model_validate(replayed)
+
+
 @router.post(
     "/activation-code/reset",
     response_model=ActivationCodeResetResponse,
@@ -1425,26 +1554,173 @@ def reset_customer_activation_code(
     request: Request,
     response: Response,
 ) -> ActivationCodeResetResponse:
-    """Rotate the main activation code while preserving bound devices/session.
+    """Rotate the main activation code from the live primary-device session.
 
     The old digest is replaced atomically. The replacement plaintext is not
     persisted and is returned exactly once with a no-store cache directive.
     Any unconsumed pairing created with the previous code is invalidated.
     """
     _require_pg()
+    _consume_customer_preauth(request)
+    idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER, "").strip()
+    if not idempotency_key:
+        raise _http(400, "IDEMPOTENCY_KEY_REQUIRED", "An Idempotency-Key header is required.")
     token = _bearer_token(request)
+    if token is None:
+        raise _http(401, "SESSION_REQUIRED", "A live customer session is required.")
     request_id = _request_id(request)
+    try:
+        aead_key_version, aead_key = highest_customer_aead_key()
+        key_digests = idempotency_key_digests(idempotency_key)
+        key_digest = key_digests[0]
+    except IdempotencyKeyError:
+        raise _http(
+            503,
+            "DEVICE_SERVICE_UNAVAILABLE",
+            "Idempotency keys are not configured.",
+        ) from None
+    req_hash = compute_request_hash({"operation": RESET_CODE_OPERATION})
+
     with pg_transaction() as conn:
-        device = _authenticate(conn, token)
+        ip_decision = consume_rate_limit(
+            conn,
+            dimension=DIMENSION_ACTIVATION_RESET_IP,
+            identifier=client_ip_from_request(request),
+            limit=activation_reset_ip_limit(),
+            window_seconds=rate_limit_window_seconds(),
+        )
+    if not ip_decision.allowed:
+        blocked = _http(429, "RATE_LIMITED", "Too many activation-code reset requests.")
+        blocked.headers = {RETRY_AFTER_HEADER: str(ip_decision.retry_after_seconds)}
+        raise blocked
+    with pg_transaction() as conn:
+        try:
+            preliminary_session = verify_session_context(
+                conn,
+                presentation_session_token=token,
+            )
+        except ActivationKeyError:
+            raise _http(
+                503,
+                "SESSION_SERVICE_UNAVAILABLE",
+                "Session verification is unavailable.",
+            ) from None
+        except SessionFencingError as exc:
+            raise _http(401, exc.code, exc.message) from None
+        device_decision = consume_rate_limit(
+            conn,
+            dimension=DIMENSION_ACTIVATION_RESET_DEVICE,
+            identifier=preliminary_session.device_id,
+            limit=activation_reset_device_limit(),
+            window_seconds=rate_limit_window_seconds(),
+        )
+    if not device_decision.allowed:
+        blocked = _http(429, "RATE_LIMITED", "Too many activation-code reset requests.")
+        blocked.headers = {RETRY_AFTER_HEADER: str(device_decision.retry_after_seconds)}
+        raise blocked
+
+    with pg_transaction() as conn:
+        try:
+            session: CustomerSessionContext = verify_session_context(
+                conn,
+                presentation_session_token=token,
+            )
+        except ActivationKeyError:
+            raise _http(
+                503,
+                "SESSION_SERVICE_UNAVAILABLE",
+                "Session verification is unavailable.",
+            ) from None
+        except SessionFencingError as exc:
+            raise _http(401, exc.code, exc.message) from None
+        scope = _reset_code_scope(session.activation_code_id)
+        _lock_reset_code_scope(conn, scope)
+        matched = next(
+            (
+                (digest, record)
+                for digest in key_digests
+                if (
+                    record := load_envelope(
+                        conn,
+                        operation=RESET_CODE_OPERATION,
+                        scope=scope,
+                        key_digest=digest,
+                    )
+                )
+                is not None
+            ),
+            None,
+        )
+        if matched is not None:
+            matched_digest, record = matched
+            return _replay_reset_code_response(
+                record,
+                scope=scope,
+                key_digest=matched_digest,
+                req_hash=req_hash,
+                response=response,
+            )
+        active_other_key = conn.execute(
+            "SELECT 1 FROM customer_idempotency_envelopes "
+            "WHERE operation = %s AND scope = %s "
+            "AND NOT (key_digest = ANY(%s)) "
+            "AND purged_at IS NULL AND ciphertext IS NOT NULL "
+            "AND recovery_expires_at::timestamptz > now() LIMIT 1",
+            (RESET_CODE_OPERATION, scope, key_digests),
+        ).fetchone()
+        if active_other_key is not None:
+            raise _http(
+                409,
+                "IDEMPOTENCY_CONFLICT",
+                "A previous activation-code reset is still recoverable with its original key.",
+            )
+        activation_row = conn.execute(
+            "SELECT first_device_id FROM activation_code_activations "
+            "WHERE code_id = %s AND user_id = %s",
+            (session.activation_code_id, session.user_id),
+        ).fetchone()
+        if activation_row is None or str(activation_row[0]) != session.device_id:
+            raise _http(
+                403,
+                "PRIMARY_DEVICE_REQUIRED",
+                "Only the primary bound device may reset the activation code.",
+            )
         code_row = conn.execute(
             "SELECT status FROM activation_codes WHERE id = %s FOR UPDATE",
-            (device.activation_code_id,),
+            (session.activation_code_id,),
         ).fetchone()
         if code_row is None or str(code_row[0]) != "ACTIVE":
             raise _http(
                 409,
                 "ACTIVATION_CODE_NOT_ACTIVE",
                 "Only an active authorization can be reset.",
+            )
+        envelope_id = insert_envelope(
+            conn,
+            operation=RESET_CODE_OPERATION,
+            scope=scope,
+            key_digest=key_digest,
+            request_hash=req_hash,
+        )
+        if envelope_id is None:
+            winner = load_envelope(
+                conn,
+                operation=RESET_CODE_OPERATION,
+                scope=scope,
+                key_digest=key_digest,
+            )
+            if winner is None:
+                raise _http(
+                    503,
+                    "DEVICE_SERVICE_UNAVAILABLE",
+                    "The reset envelope could not be loaded after a key conflict.",
+                )
+            return _replay_reset_code_response(
+                winner,
+                scope=scope,
+                key_digest=key_digest,
+                req_hash=req_hash,
+                response=response,
             )
         try:
             key_version = highest_code_hmac_key_version()
@@ -1484,28 +1760,48 @@ def reset_customer_activation_code(
                 replacement_digest,
                 key_version,
                 masked,
-                device.activation_code_id,
+                session.activation_code_id,
             ),
         )
         expired_pairings = conn.execute(
             "UPDATE device_pairing_requests SET status = 'EXPIRED' "
             "WHERE activation_code_id = %s AND status IN ('PENDING', 'APPROVED')",
-            (device.activation_code_id,),
+            (session.activation_code_id,),
         ).rowcount
         _insert_customer_device_audit(
             conn,
-            actor_user_id=device.user_id,
+            actor_user_id=session.user_id,
             action="customer.activation_code.rotated",
             entity_type="activation_code",
-            entity_id=device.activation_code_id,
+            entity_id=session.activation_code_id,
             request_id=request_id,
             metadata={"expired_pairing_count": expired_pairings},
+        )
+        sealed_payload: dict[str, object] = {
+            "activation_code": replacement,
+            "masked_code": masked,
+        }
+        sealed = seal_response(
+            sealed_payload,
+            key=aead_key,
+            aad=envelope_aad(RESET_CODE_OPERATION, scope, key_digest),
+        )
+        now_row = conn.execute("SELECT now()").fetchone()
+        server_now = now_row[0] if now_row is not None else server_now_utc()
+        complete_envelope(
+            conn,
+            envelope_id,
+            ciphertext=sealed,
+            key_version=aead_key_version,
+            recovery_expires_at=(server_now + timedelta(seconds=recovery_window_seconds()))
+            .replace(microsecond=0)
+            .isoformat(),
         )
     response.headers["Cache-Control"] = "no-store"
     logger.info(
         "customer activation code rotated: code=%s actor_device=%s request=%s",
-        device.activation_code_id,
-        device.id,
+        session.activation_code_id,
+        session.device_id,
         request_id,
     )
     return ActivationCodeResetResponse(

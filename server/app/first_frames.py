@@ -8,7 +8,7 @@ import logging
 import socket
 import sqlite3
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -34,6 +34,9 @@ from app.permissions import (
 from app.source_frames import (
     SOURCE_FRAME_CANDIDATES_KIND,
     SOURCE_FRAME_SELECTION_KIND,
+    ExtractedSourceFrame,
+    SourceFrameCandidateAssessment,
+    SourceFrameSemanticInspection,
     latest_version,
 )
 from app.storage import (
@@ -49,7 +52,7 @@ FIRST_FRAME_CANDIDATES_KIND = "first_frame_candidates"
 FIRST_FRAME_SELECTION_KIND = "first_frame_selection"
 FIRST_FRAME_SCHEMA_VERSION = "b5.first-frame.v1"
 PROJECT_CHARACTER_APPEARANCE_KIND = "project_character_appearance"
-PROJECT_CHARACTER_APPEARANCE_SCHEMA_VERSION = "wp1.project-character-appearance.v1"
+PROJECT_CHARACTER_APPEARANCE_SCHEMA_VERSION = "wp1.project-character-appearance.v2"
 FIRST_FRAME_RECONSTRUCTION_MODE = "full_person_replace.v1"
 FIRST_FRAME_MODELS = ("gpt-image-2", "nano-banana-pro-2k")
 FIRST_FRAME_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -57,10 +60,19 @@ MAX_FIRST_FRAME_CANDIDATES = 3
 APILIO_DEFAULT_BASE_URL = "https://api.apilio.ai"
 APILIO_IMAGE_EDIT_PATH = "/v1/images/edits"
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_QUALITY_IMAGE_BYTES = 12 * 1024 * 1024
+MAX_QUALITY_REQUEST_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_FIRST_FRAME_QUALITY_ATTEMPTS = 3
+MAX_SCENE_CONTACT_SHEET_QUALITY_ATTEMPTS = 3
 MIN_FIRST_FRAME_IDENTITY_SCORE = 0.78
 MIN_FIRST_FRAME_RECONSTRUCTION_SCORE = 0.75
 MIN_FIRST_FRAME_OUTFIT_SCORE = 0.7
+MIN_SCENE_CONTACT_SHEET_IDENTITY_SCORE = 0.78
+MIN_SCENE_CONTACT_SHEET_OUTFIT_SCORE = 0.7
+MIN_SCENE_CONTACT_SHEET_SCENE_SCORE = 0.7
+MIN_GENERATED_VIDEO_IDENTITY_SCORE = 0.75
+MIN_GENERATED_VIDEO_OUTFIT_SCORE = 0.7
+MIN_GENERATED_VIDEO_MOTION_SCORE = 0.65
 APILIO_OUTPUT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
@@ -115,11 +127,60 @@ class FirstFrameQualityResult(BaseModel):
     inspection: FirstFrameCandidateInspection
 
 
+class SceneContactSheetInspection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    view_count: int = Field(ge=0)
+    identity_consistency_score: float = Field(ge=0, le=1)
+    outfit_match_score: float = Field(ge=0, le=1)
+    scene_match_score: float = Field(ge=0, le=1)
+    anatomy_valid: bool
+    text_detected: bool
+    extra_people_detected: bool
+    notes: list[str]
+    provider: str
+    model: str
+
+
+class SceneContactSheetQualityResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool
+    attempt: int = Field(ge=1)
+    issue_codes: list[str]
+    inspection: SceneContactSheetInspection
+
+
+class GeneratedVideoInspection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    frame_count: int = Field(ge=0)
+    identity_consistency_score: float = Field(ge=0, le=1)
+    outfit_consistency_score: float = Field(ge=0, le=1)
+    motion_continuity_score: float = Field(ge=0, le=1)
+    anatomy_valid: bool
+    extra_people_detected: bool
+    severe_flicker_detected: bool
+    notes: list[str]
+    provider: str
+    model: str
+
+
+class GeneratedVideoQualityResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool
+    issue_codes: list[str]
+    inspection: GeneratedVideoInspection
+
+
 @dataclass(frozen=True)
 class GeneratedImage:
     content: bytes
     content_type: str
     quality: FirstFrameQualityResult | None = None
+    stored_candidate: dict[str, object] | None = None
+    quality_attempt: int | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +214,10 @@ class ProjectAppearanceSpec:
     outfit_description: str
     selection_reason: str
     fingerprint: str
+    appearance_source: Literal["VIDEO_ANALYSIS", "SCENE_LOOK"] = "VIDEO_ANALYSIS"
+    scene_look_name: str | None = None
+    scene_look_description: str | None = None
+    scene_look_version_id: str | None = None
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -165,6 +230,10 @@ class ProjectAppearanceSpec:
             "outfit_description": self.outfit_description,
             "selection_reason": self.selection_reason,
             "fingerprint": self.fingerprint,
+            "appearance_source": self.appearance_source,
+            "scene_look_name": self.scene_look_name,
+            "scene_look_description": self.scene_look_description,
+            "scene_look_version_id": self.scene_look_version_id,
         }
 
 
@@ -232,6 +301,27 @@ class FirstFrameQualityInspector(Protocol):
         expected_outfit: str,
     ) -> FirstFrameCandidateInspection: ...
 
+    def inspect_scene_contact_sheet(
+        self,
+        *,
+        source_image: ImageInput,
+        contact_sheet: GeneratedImage,
+        scene_description: str,
+        costume_description: str,
+    ) -> SceneContactSheetInspection: ...
+
+    def inspect_source_frame_candidates(
+        self,
+        frames: list[ExtractedSourceFrame],
+    ) -> SourceFrameSemanticInspection: ...
+
+    def inspect_generated_video(
+        self,
+        *,
+        first_frame: ImageInput,
+        sampled_frames: list[ImageInput],
+    ) -> GeneratedVideoInspection: ...
+
 
 class ImageProviderFailed(RuntimeError):
     pass
@@ -285,6 +375,82 @@ class FakeFirstFrameQualityInspector:
             head_only_replacement_detected=False,
             original_body_retained=False,
             text_detected=False,
+            notes=["本地测试质检"],
+            provider="fake-first-frame-quality",
+            model="fake-first-frame-quality-v1",
+        )
+
+    def inspect_scene_contact_sheet(
+        self,
+        *,
+        source_image: ImageInput,
+        contact_sheet: GeneratedImage,
+        scene_description: str,
+        costume_description: str,
+    ) -> SceneContactSheetInspection:
+        if (
+            not source_image.content
+            or not contact_sheet.content
+            or not scene_description
+            or not costume_description
+        ):
+            raise FirstFrameQualityInspectorFailed("scene contact-sheet input is incomplete")
+        return SceneContactSheetInspection(
+            view_count=5,
+            identity_consistency_score=0.95,
+            outfit_match_score=0.95,
+            scene_match_score=0.95,
+            anatomy_valid=True,
+            text_detected=False,
+            extra_people_detected=False,
+            notes=["本地测试质检"],
+            provider="fake-first-frame-quality",
+            model="fake-first-frame-quality-v1",
+        )
+
+    def inspect_source_frame_candidates(
+        self,
+        frames: list[ExtractedSourceFrame],
+    ) -> SourceFrameSemanticInspection:
+        if not frames or any(not frame.image for frame in frames):
+            raise FirstFrameQualityInspectorFailed("source-frame candidates are incomplete")
+        assessments: list[SourceFrameCandidateAssessment] = []
+        for index, frame in enumerate(frames):
+            score = float(frame.technical_score) if frame.technical_score is not None else 0.5
+            assessments.append(
+                SourceFrameCandidateAssessment(
+                    candidate_index=index,
+                    person_count=1,
+                    person_visibility_score=score,
+                    face_clarity_score=score,
+                    unobstructed_score=score,
+                    pose_suitability_score=score,
+                    motion_blur_detected=False,
+                    notes=["本地测试质检"],
+                )
+            )
+        return SourceFrameSemanticInspection(
+            candidates=assessments,
+            provider="fake-first-frame-quality",
+            model="fake-first-frame-quality-v1",
+        )
+
+    def inspect_generated_video(
+        self,
+        *,
+        first_frame: ImageInput,
+        sampled_frames: list[ImageInput],
+    ) -> GeneratedVideoInspection:
+        if not first_frame.content or len(sampled_frames) != 5:
+            raise FirstFrameQualityInspectorFailed("generated-video quality input is invalid")
+        return GeneratedVideoInspection(
+            frame_count=5,
+            identity_consistency_score=0.95,
+            outfit_consistency_score=0.95,
+            motion_continuity_score=0.9,
+            anatomy_valid=True,
+            extra_people_detected=False,
+            severe_flicker_detected=False,
             notes=["本地测试质检"],
             provider="fake-first-frame-quality",
             model="fake-first-frame-quality-v1",
@@ -460,6 +626,7 @@ class ApilioFirstFrameQualityInspector:
         self.transport = transport or UrllibApilioTransport()
 
     def inspect_source(self, source_image: ImageInput) -> FirstFrameSourceInspection:
+        _validate_quality_images((source_image.content,))
         content: list[dict[str, object]] = [
             {
                 "type": "text",
@@ -489,6 +656,13 @@ class ApilioFirstFrameQualityInspector:
         candidate: GeneratedImage,
         expected_outfit: str,
     ) -> FirstFrameCandidateInspection:
+        _validate_quality_images(
+            (
+                source_image.content,
+                *(reference.content for reference in character_reference_images),
+                candidate.content,
+            )
+        )
         content: list[dict[str, object]] = [
             {
                 "type": "text",
@@ -532,6 +706,126 @@ class ApilioFirstFrameQualityInspector:
         except ValidationError as exc:
             raise FirstFrameQualityInspectorFailed(
                 "first-frame candidate inspection response was invalid"
+            ) from exc
+
+    def inspect_scene_contact_sheet(
+        self,
+        *,
+        source_image: ImageInput,
+        contact_sheet: GeneratedImage,
+        scene_description: str,
+        costume_description: str,
+    ) -> SceneContactSheetInspection:
+        _validate_quality_images((source_image.content, contact_sheet.content))
+        content: list[dict[str, object]] = [
+            {
+                "type": "text",
+                "text": (
+                    "你是人物场景五视图的严格视觉质检器。依次给出人物原始授权照片和生成的五视图参考板。"
+                    "只返回 JSON 对象，必须严格包含：view_count（参考板中人物视图数量）、"
+                    "identity_consistency_score、outfit_match_score、scene_match_score（三项均为0到1）、"
+                    "anatomy_valid、text_detected、extra_people_detected（布尔）、notes（中文短句数组）。"
+                    "五个视角必须是同一个人，身份以原始照片为准；服装要求为："
+                    f"{costume_description}；场景要求为：{scene_description}。"
+                    "检查脸型、年龄、性别、发型、服装、配饰、手脚和肢体连接是否一致自然，"
+                    "不得包含额外人物、文字、水印或重复肢体。"
+                ),
+            },
+            {"type": "text", "text": "人物原始授权照片："},
+            _chat_image_item(source_image.content, source_image.content_type),
+            {"type": "text", "text": "待质检的场景五视图参考板："},
+            _chat_image_item(contact_sheet.content, contact_sheet.content_type),
+        ]
+        payload = self._chat_json(content)
+        payload["provider"] = "apilio_gemini"
+        payload["model"] = self.model
+        try:
+            return SceneContactSheetInspection.model_validate(payload)
+        except ValidationError as exc:
+            raise FirstFrameQualityInspectorFailed(
+                "scene contact-sheet inspection response was invalid"
+            ) from exc
+
+    def inspect_source_frame_candidates(
+        self,
+        frames: list[ExtractedSourceFrame],
+    ) -> SourceFrameSemanticInspection:
+        if not frames:
+            raise FirstFrameQualityInspectorFailed("source-frame candidates are empty")
+        _validate_quality_images(tuple(frame.image for frame in frames))
+        content: list[dict[str, object]] = [
+            {
+                "type": "text",
+                "text": (
+                    "你是替换视频首帧的候选画面质检器。后续图片按 candidate_index 从 0 开始编号。"
+                    "只返回 JSON 对象，根字段必须严格为 candidates。每个候选必须包含："
+                    "candidate_index、person_count、person_visibility_score、face_clarity_score、"
+                    "unobstructed_score、pose_suitability_score、motion_blur_detected、notes。"
+                    "四项分数均为0到1。优先选择人物完整、脸部清晰、无遮挡、姿态自然、"
+                    "没有运动模糊并且适合进行整个人物重构的画面。"
+                    "海报、屏幕和照片中的人物不计入 person_count。"
+                ),
+            }
+        ]
+        for index, frame in enumerate(frames):
+            content.extend(
+                [
+                    {"type": "text", "text": f"candidate_index={index}"},
+                    _chat_image_item(frame.image, "image/jpeg"),
+                ]
+            )
+        payload = self._chat_json(content)
+        payload["provider"] = "apilio_gemini"
+        payload["model"] = self.model
+        try:
+            return SourceFrameSemanticInspection.model_validate(payload)
+        except ValidationError as exc:
+            raise FirstFrameQualityInspectorFailed(
+                "source-frame semantic inspection response was invalid"
+            ) from exc
+
+    def inspect_generated_video(
+        self,
+        *,
+        first_frame: ImageInput,
+        sampled_frames: list[ImageInput],
+    ) -> GeneratedVideoInspection:
+        if len(sampled_frames) != 5:
+            raise FirstFrameQualityInspectorFailed("generated-video sample count is invalid")
+        _validate_quality_images(
+            (first_frame.content, *(frame.content for frame in sampled_frames))
+        )
+        content: list[dict[str, object]] = [
+            {
+                "type": "text",
+                "text": (
+                    "你是图生视频成片的严格视觉质检器。第一张图是已确认的首帧，后续五张图按时间顺序"
+                    "来自生成视频。只返回 JSON 对象，必须严格包含：frame_count、"
+                    "identity_consistency_score、outfit_consistency_score、motion_continuity_score"
+                    "（三项均为0到1）、anatomy_valid、extra_people_detected、"
+                    "severe_flicker_detected（布尔）、notes（中文短句数组）。"
+                    "身份、脸部、发型、身形、服装、鞋履和配饰均以首帧为准；检查五个时间点是否"
+                    "出现身份或服装漂移、额外人物、肢体异常、严重闪烁或不连续运动。"
+                ),
+            },
+            {"type": "text", "text": "已确认首帧："},
+            _chat_image_item(first_frame.content, first_frame.content_type),
+        ]
+        for index, frame in enumerate(sampled_frames, start=1):
+            content.extend(
+                [
+                    {"type": "text", "text": f"生成视频采样帧 {index}："},
+                    _chat_image_item(frame.content, frame.content_type),
+                ]
+            )
+        payload = self._chat_json(content)
+        payload["provider"] = "apilio_gemini"
+        payload["model"] = self.model
+        try:
+            return GeneratedVideoInspection.model_validate(payload)
+        except ValidationError as exc:
+            raise FirstFrameQualityInspectorFailed(
+                "generated-video inspection response was invalid"
             ) from exc
 
     def _chat_json(self, content: list[dict[str, object]]) -> dict[str, object]:
@@ -583,6 +877,13 @@ class ApilioFirstFrameQualityInspector:
 def _chat_image_item(content: bytes, content_type: str) -> dict[str, object]:
     data_url = f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
     return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _validate_quality_images(images: tuple[bytes, ...]) -> None:
+    if any(len(image) > MAX_QUALITY_IMAGE_BYTES for image in images):
+        raise FirstFrameQualityInspectorFailed("first-frame quality image exceeds size limit")
+    if sum(len(image) for image in images) > MAX_QUALITY_REQUEST_IMAGE_BYTES:
+        raise FirstFrameQualityInspectorFailed("first-frame quality request exceeds size limit")
 
 
 def build_apilio_edit_multipart(
@@ -798,13 +1099,17 @@ def derive_project_appearance_spec(
     if isinstance(shots, list):
         valid_shots = [shot for shot in shots if isinstance(shot, Mapping)]
         if source_timestamp_seconds is not None:
-            for shot in valid_shots:
+            for index, shot in enumerate(valid_shots):
                 start = _appearance_number(shot.get("start_time"))
                 end = _appearance_number(shot.get("end_time"))
                 if (
                     start is not None
                     and end is not None
-                    and start <= source_timestamp_seconds <= end
+                    and start <= source_timestamp_seconds
+                    and (
+                        source_timestamp_seconds < end
+                        or (index == len(valid_shots) - 1 and source_timestamp_seconds <= end)
+                    )
                 ):
                     selected_shot = shot
                     break
@@ -868,6 +1173,71 @@ def derive_project_appearance_spec(
     )
 
 
+def apply_selected_scene_look(
+    appearance: ProjectAppearanceSpec,
+    *,
+    character_inputs: FirstFrameCharacterInputs,
+) -> ProjectAppearanceSpec:
+    return _apply_scene_look_snapshot(
+        appearance,
+        character_snapshot=character_inputs.character_snapshot,
+        character_version_id=character_inputs.character_version_id,
+    )
+
+
+def _apply_scene_look_snapshot(
+    appearance: ProjectAppearanceSpec,
+    *,
+    character_snapshot: Mapping[str, object],
+    character_version_id: str | None,
+) -> ProjectAppearanceSpec:
+    persona = character_snapshot.get("persona_snapshot_json")
+    if not isinstance(persona, Mapping):
+        return appearance
+    constraints = persona.get("appearance_constraints_json")
+    if not isinstance(constraints, Mapping) or constraints.get("appearance_type") != "scene":
+        return appearance
+    name = str(persona.get("name") or "").strip()
+    scene_description = str(persona.get("scene_description") or "").strip()
+    costume_description = str(persona.get("costume_description") or "").strip()
+    if not name or not scene_description or not costume_description or not character_version_id:
+        return appearance
+    fingerprint_source = {
+        "schema_version": PROJECT_CHARACTER_APPEARANCE_SCHEMA_VERSION,
+        "source_analysis_version_id": appearance.source_analysis_version_id,
+        "source_timestamp_seconds": appearance.source_timestamp_seconds,
+        "source_scene": appearance.scene,
+        "subject": appearance.subject,
+        "appearance_source": "SCENE_LOOK",
+        "scene_look_name": name,
+        "scene_look_description": scene_description,
+        "scene_look_version_id": character_version_id,
+        "outfit_description": costume_description,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_source,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return replace(
+        appearance,
+        category="SCENE_LOOK",
+        outfit_description=costume_description,
+        selection_reason=(
+            f"用户已选择场景造型“{name}”；服装与配饰以该版本为准，"
+            f"原视频场景“{appearance.scene}”仍作为构图和背景模板。"
+        ),
+        fingerprint=fingerprint,
+        appearance_source="SCENE_LOOK",
+        scene_look_name=name,
+        scene_look_description=scene_description,
+        scene_look_version_id=character_version_id,
+    )
+
+
 def resolve_project_appearance_spec(
     conn: BusinessConnection,
     *,
@@ -913,11 +1283,11 @@ def require_single_person_video_analysis(
     *,
     project_id: str,
 ) -> None:
-    """Block known multi-person videos before any paid image generation call.
+    """Require a current single-person analysis before any paid image call.
 
-    Older analyses did not record person_count. They remain recoverable through
-    the mandatory source-frame semantic check, while every newly analyzed video
-    carries a per-segment count and is rejected here when any segment exceeds one.
+    Legacy analysis rows without a trustworthy per-segment count must be
+    re-analysed under the current strict provider contract. A later source-frame
+    inspection remains defense in depth; it must not be the first paid-work gate.
     """
 
     analysis_version = latest_version(conn, project_id, "analysis")
@@ -926,20 +1296,34 @@ def require_single_person_video_analysis(
     try:
         payload = json.loads(str(analysis_version["payload_json"]))
     except json.JSONDecodeError:
-        return
+        raise first_frame_error(
+            409,
+            "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
+            "当前拆解结果版本过旧或已损坏，请先重新拆解视频。",
+        )
     analysis = payload.get("analysis") if isinstance(payload, dict) else None
     shots = analysis.get("shots") if isinstance(analysis, dict) else None
-    if not isinstance(shots, list):
-        return
+    if not isinstance(shots, list) or not shots:
+        raise first_frame_error(
+            409,
+            "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
+            "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
+        )
     for shot in shots:
         if not isinstance(shot, dict):
-            continue
+            raise first_frame_error(
+                409,
+                "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
+                "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
+            )
         person_count = shot.get("person_count")
-        if (
-            isinstance(person_count, int)
-            and not isinstance(person_count, bool)
-            and person_count > 1
-        ):
+        if not isinstance(person_count, int) or isinstance(person_count, bool):
+            raise first_frame_error(
+                409,
+                "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
+                "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
+            )
+        if person_count > 1:
             raise first_frame_error(
                 422,
                 "MULTI_PERSON_VIDEO_UNSUPPORTED",
@@ -1006,6 +1390,81 @@ def quality_retry_prompt(base_prompt: str, issue_codes: list[str], attempt: int)
     return f"{base_prompt}\n\n自动质检未通过，第 {attempt} 次生成必须修正以下问题：\n{corrections}"
 
 
+def evaluate_scene_contact_sheet_quality(
+    inspection: SceneContactSheetInspection,
+    *,
+    attempt: int,
+) -> SceneContactSheetQualityResult:
+    issues: list[str] = []
+    if inspection.view_count != 5:
+        issues.append("VIEW_COUNT_INVALID")
+    if inspection.identity_consistency_score < MIN_SCENE_CONTACT_SHEET_IDENTITY_SCORE:
+        issues.append("IDENTITY_INCONSISTENT")
+    if inspection.outfit_match_score < MIN_SCENE_CONTACT_SHEET_OUTFIT_SCORE:
+        issues.append("OUTFIT_MISMATCH")
+    if inspection.scene_match_score < MIN_SCENE_CONTACT_SHEET_SCENE_SCORE:
+        issues.append("SCENE_MISMATCH")
+    if not inspection.anatomy_valid:
+        issues.append("ANATOMY_INVALID")
+    if inspection.text_detected:
+        issues.append("TEXT_DETECTED")
+    if inspection.extra_people_detected:
+        issues.append("EXTRA_PEOPLE_DETECTED")
+    return SceneContactSheetQualityResult(
+        passed=not issues,
+        attempt=attempt,
+        issue_codes=issues,
+        inspection=inspection,
+    )
+
+
+def evaluate_generated_video_quality(
+    inspection: GeneratedVideoInspection,
+) -> GeneratedVideoQualityResult:
+    issues: list[str] = []
+    if inspection.frame_count != 5:
+        issues.append("VIDEO_SAMPLE_COUNT_INVALID")
+    if inspection.identity_consistency_score < MIN_GENERATED_VIDEO_IDENTITY_SCORE:
+        issues.append("VIDEO_IDENTITY_DRIFT")
+    if inspection.outfit_consistency_score < MIN_GENERATED_VIDEO_OUTFIT_SCORE:
+        issues.append("VIDEO_OUTFIT_DRIFT")
+    if inspection.motion_continuity_score < MIN_GENERATED_VIDEO_MOTION_SCORE:
+        issues.append("VIDEO_MOTION_DISCONTINUITY")
+    if not inspection.anatomy_valid:
+        issues.append("VIDEO_ANATOMY_INVALID")
+    if inspection.extra_people_detected:
+        issues.append("VIDEO_EXTRA_PEOPLE_DETECTED")
+    if inspection.severe_flicker_detected:
+        issues.append("VIDEO_SEVERE_FLICKER")
+    return GeneratedVideoQualityResult(
+        passed=not issues,
+        issue_codes=issues,
+        inspection=inspection,
+    )
+
+
+def scene_contact_sheet_retry_prompt(
+    base_prompt: str,
+    issue_codes: list[str],
+    attempt: int,
+) -> str:
+    if attempt == 1 or not issue_codes:
+        return base_prompt
+    guidance = {
+        "VIEW_COUNT_INVALID": "必须生成且只生成五个人物视角，并严格遵循规定布局。",
+        "IDENTITY_INCONSISTENT": "五个视角必须保持与授权照片完全相同的人物身份。",
+        "OUTFIT_MISMATCH": "五个视角的服装、鞋履与配饰必须完整符合用户描述并保持一致。",
+        "SCENE_MISMATCH": "背景和光线必须符合用户给定的场景描述并在五个视角中一致。",
+        "ANATOMY_INVALID": "修正手指、四肢、颈部和身体连接，保持真实人体结构。",
+        "TEXT_DETECTED": "移除所有文字、水印、Logo、数字和符号。",
+        "EXTRA_PEOPLE_DETECTED": "每个视角只允许出现目标人物，不得增加其他人物。",
+    }
+    corrections = "\n".join(
+        f"- {guidance[code]}" for code in dict.fromkeys(issue_codes) if code in guidance
+    )
+    return f"{base_prompt}\n\n自动质检未通过，第 {attempt} 次生成必须修正以下问题：\n{corrections}"
+
+
 def prepare_first_frame_generation(
     conn: BusinessConnection,
     *,
@@ -1064,10 +1523,13 @@ def prepare_first_frame_generation(
         and not isinstance(raw_source_timestamp, bool)
         else None
     )
-    project_appearance = resolve_project_appearance_spec(
-        conn,
-        project_id=project_id,
-        source_timestamp_seconds=source_timestamp_seconds,
+    project_appearance = apply_selected_scene_look(
+        resolve_project_appearance_spec(
+            conn,
+            project_id=project_id,
+            source_timestamp_seconds=source_timestamp_seconds,
+        ),
+        character_inputs=character_inputs,
     )
     reference_assets = [
         read_character_reference_asset(
@@ -1129,11 +1591,17 @@ def perform_first_frame_generation(
     quality_inspector: FirstFrameQualityInspector | None = None,
     before_provider_call: Callable[[], None] | None = None,
     after_provider_call: Callable[[], None] | None = None,
+    heartbeat: Callable[[], None] | None = None,
+    resumed_candidates: list[GeneratedImage] | None = None,
+    archive_generated: Callable[[list[GeneratedImage], int], list[GeneratedImage]] | None = None,
+    checkpoint_candidates: Callable[[list[GeneratedImage]], None] | None = None,
 ) -> list[GeneratedImage]:
     """Generate, semantically verify and repair candidates outside the DB fence."""
 
     inspector = quality_inspector or FakeFirstFrameQualityInspector()
     try:
+        if heartbeat is not None:
+            heartbeat()
         source_inspection = inspector.inspect_source(work.source_image)
     except FirstFrameQualityInspectorFailed as exc:
         raise first_frame_error(
@@ -1148,35 +1616,69 @@ def perform_first_frame_generation(
             "当前版本仅支持单人视频；所选源画面必须且只能包含一名真实人物。",
         )
 
+    candidates = list(resumed_candidates or [])
     accepted: list[GeneratedImage] = []
     retry_issue_codes: list[str] = []
     for quality_attempt in range(1, MAX_FIRST_FRAME_QUALITY_ATTEMPTS + 1):
+        attempt_candidates = [
+            candidate for candidate in candidates if candidate.quality_attempt == quality_attempt
+        ]
+        for candidate in attempt_candidates:
+            if candidate.quality is not None and candidate.quality.passed:
+                accepted.append(candidate)
         remaining = work.quantity - len(accepted)
         if remaining <= 0:
             return accepted
-        prompt = quality_retry_prompt(work.effective_prompt, retry_issue_codes, quality_attempt)
-        generated = edit_once_with_retry(
-            provider,
-            model=work.model,
-            prompt=prompt,
-            source_image=work.source_image,
-            character_reference_images=work.reference_images,
-            quantity=remaining,
-            before_provider_call=before_provider_call,
-            after_provider_call=after_provider_call,
-        )
-        if len(generated) != remaining or any(
-            not item.content or item.content_type not in FIRST_FRAME_IMAGE_CONTENT_TYPES
-            for item in generated
-        ):
-            raise first_frame_error(
-                502,
-                "FIRST_FRAME_PROVIDER_RESPONSE_INVALID",
-                "The image provider did not return the requested candidates.",
+        if not attempt_candidates:
+            prompt = quality_retry_prompt(
+                work.effective_prompt,
+                retry_issue_codes,
+                quality_attempt,
             )
+
+            def before_paid_call() -> None:
+                if heartbeat is not None:
+                    heartbeat()
+                if before_provider_call is not None:
+                    before_provider_call()
+
+            generated = edit_once_with_retry(
+                provider,
+                model=work.model,
+                prompt=prompt,
+                source_image=work.source_image,
+                character_reference_images=work.reference_images,
+                quantity=remaining,
+                before_provider_call=before_paid_call,
+                after_provider_call=after_provider_call,
+            )
+            if len(generated) != remaining or any(
+                not item.content or item.content_type not in FIRST_FRAME_IMAGE_CONTENT_TYPES
+                for item in generated
+            ):
+                raise first_frame_error(
+                    502,
+                    "FIRST_FRAME_PROVIDER_RESPONSE_INVALID",
+                    "The image provider did not return the requested candidates.",
+                )
+            attempt_candidates = [
+                replace(candidate, quality_attempt=quality_attempt) for candidate in generated
+            ]
+            if archive_generated is not None:
+                attempt_candidates = archive_generated(attempt_candidates, quality_attempt)
+            candidates.extend(attempt_candidates)
+            if checkpoint_candidates is not None:
+                checkpoint_candidates(candidates)
+
         retry_issue_codes = []
-        for candidate in generated:
+        for candidate in attempt_candidates:
+            if candidate.quality is not None:
+                if not candidate.quality.passed:
+                    retry_issue_codes.extend(candidate.quality.issue_codes)
+                continue
             try:
+                if heartbeat is not None:
+                    heartbeat()
                 inspection = inspector.inspect_candidate(
                     source_image=work.source_image,
                     character_reference_images=work.reference_images,
@@ -1193,14 +1695,15 @@ def perform_first_frame_generation(
                 inspection,
                 attempt=quality_attempt,
             )
+            inspected = replace(candidate, quality=quality)
+            candidate_position = next(
+                index for index, value in enumerate(candidates) if value is candidate
+            )
+            candidates[candidate_position] = inspected
+            if checkpoint_candidates is not None:
+                checkpoint_candidates(candidates)
             if quality.passed:
-                accepted.append(
-                    GeneratedImage(
-                        content=candidate.content,
-                        content_type=candidate.content_type,
-                        quality=quality,
-                    )
-                )
+                accepted.append(inspected)
             else:
                 retry_issue_codes.extend(quality.issue_codes)
 
@@ -1223,24 +1726,29 @@ def store_first_frame_generation(
     try:
         candidates: list[dict[str, object]] = []
         for image in generated:
-            extension = image_extension(image.content_type)
-            asset_id = str(uuid4())
-            storage_key = f"projects/{work.project_id}/first-frames/{asset_id}.{extension}"
-            created_assets.append((asset_id, storage_key))
-            stored = storage.put_object(storage_key, image.content, content_type=image.content_type)
-            candidates.append(
-                {
+            candidate = dict(image.stored_candidate or {})
+            if not candidate:
+                extension = image_extension(image.content_type)
+                asset_id = str(uuid4())
+                storage_key = f"projects/{work.project_id}/first-frames/{asset_id}.{extension}"
+                created_assets.append((asset_id, storage_key))
+                stored = storage.put_object(
+                    storage_key,
+                    image.content,
+                    content_type=image.content_type,
+                )
+                candidate = {
                     "asset_id": asset_id,
                     "storage_key": storage_key,
                     "storage_uri": stored.uri,
                     "sha256": stored.sha256 or hashlib.sha256(image.content).hexdigest(),
                     "size_bytes": stored.size,
                     "content_type": image.content_type,
-                    "quality": (
-                        image.quality.model_dump(mode="json") if image.quality is not None else None
-                    ),
                 }
+            candidate["quality"] = (
+                image.quality.model_dump(mode="json") if image.quality is not None else None
             )
+            candidates.append(candidate)
         return StoredFirstFrameCandidates(
             candidates=candidates,
             created_assets=created_assets,
@@ -1269,8 +1777,20 @@ def first_frame_character_contract(
         "preserve_scene": True,
         "preserve_pose": True,
         "preserve_framing": True,
-        "clothing_policy": "project_appearance_first",
+        "clothing_policy": (
+            "selected_scene_look"
+            if character_uses_scene_look(character_inputs)
+            else "project_appearance_first"
+        ),
     }
+
+
+def character_uses_scene_look(character_inputs: FirstFrameCharacterInputs) -> bool:
+    persona = character_inputs.character_snapshot.get("persona_snapshot_json")
+    if not isinstance(persona, Mapping):
+        return False
+    constraints = persona.get("appearance_constraints_json")
+    return isinstance(constraints, Mapping) and constraints.get("appearance_type") == "scene"
 
 
 def persist_project_character_appearance(
@@ -1302,7 +1822,11 @@ def persist_project_character_appearance(
             "main_character_version_id": work.character_inputs.main_character_version_id,
             "character_version_id": work.character_inputs.character_version_id,
             "character_name": work.character_inputs.character_name,
-            "generation_mode": "deterministic_scene_match",
+            "generation_mode": (
+                "selected_scene_look"
+                if work.project_appearance.appearance_source == "SCENE_LOOK"
+                else "deterministic_scene_match"
+            ),
         },
         commit=False,
     )
@@ -1327,10 +1851,13 @@ def complete_first_frame_generation(
         character_version_id=work.character_inputs.character_version_id,
         require_usable_character=True,
     )
-    current_appearance = resolve_project_appearance_spec(
-        conn,
-        project_id=work.project_id,
-        source_timestamp_seconds=work.project_appearance.source_timestamp_seconds,
+    current_appearance = apply_selected_scene_look(
+        resolve_project_appearance_spec(
+            conn,
+            project_id=work.project_id,
+            source_timestamp_seconds=work.project_appearance.source_timestamp_seconds,
+        ),
+        character_inputs=work.character_inputs,
     )
     if current_appearance.fingerprint != work.project_appearance.fingerprint:
         raise first_frame_error(
@@ -1496,6 +2023,13 @@ def confirm_first_frame(
     if candidate is None:
         raise first_frame_error(
             422, "FIRST_FRAME_CANDIDATE_NOT_FOUND", "Select a candidate from the latest set."
+        )
+    quality = candidate.get("quality")
+    if not isinstance(quality, dict) or quality.get("passed") is not True:
+        raise first_frame_error(
+            409,
+            "FIRST_FRAME_QUALITY_NOT_VERIFIED",
+            "该首帧没有通过当前版本自动质检，请重新生成后再确认。",
         )
     asset = require_asset_access(
         conn,
@@ -1746,6 +2280,15 @@ def current_first_frame_candidates(conn: BusinessConnection, *, project_id: str)
             project_id=project_id,
             source_timestamp_seconds=source_timestamp_seconds,
         )
+        character_snapshot = payload.get("character_snapshot")
+        if isinstance(character_snapshot, Mapping):
+            current_appearance = _apply_scene_look_snapshot(
+                current_appearance,
+                character_snapshot=character_snapshot,
+                character_version_id=(
+                    character_version_id if isinstance(character_version_id, str) else None
+                ),
+            )
         if (
             not isinstance(stored_fingerprint, str)
             or stored_fingerprint != current_appearance.fingerprint
@@ -1970,25 +2513,45 @@ def normalize_prompt(
         source_analysis_version_id=None,
         source_timestamp_seconds=None,
     )
-    appearance_contract = (
-        f"项目人物造型（后台自动匹配）：场景为“{appearance.scene}”，"
-        f"人物身份为“{appearance.subject}”；服装要求：{appearance.outfit_description}\n"
-        "项目人物造型优先于参考图服装；人物身份特征必须稳定，但不得机械复制参考图的服装。\n"
-        f"目标替换对象仅为源画面中承担“{appearance.subject}”角色的主要人物。"
-        "如果画面中有多人，只重构这一名主要人物；其他人物的身份、服装、数量、位置与动作均保持不变，"
-        "不得把目标人物外观扩散到旁人。"
-    )
+    if appearance.appearance_source == "SCENE_LOOK":
+        appearance_contract = (
+            f"用户已选择的场景造型：“{appearance.scene_look_name}”；"
+            f"服装、鞋履与配饰要求：{appearance.outfit_description}\n"
+            f"场景造型描述“{appearance.scene_look_description}”只用于核对人物造型与环境是否协调；"
+            f"实际背景仍以原视频源帧为准，当前源场景为“{appearance.scene}”。\n"
+            f"目标替换对象仅为源画面中承担“{appearance.subject}”角色的主要人物。"
+            "如果画面中有多人，只重构这一名主要人物；其他人物的身份、服装、数量、位置与动作均保持不变，"
+            "不得把目标人物外观扩散到旁人。"
+        )
+        contact_sheet_role = (
+            "第 2 张输入图是用户选中的场景五视图参考板，用于确定人物身份、长相、发型、身材比例、"
+            "服装、鞋履与配饰；服装、鞋履与配饰必须以该参考板为准。"
+        )
+        clothing_rule = "必须完整复刻所选场景造型中的服装、鞋履与配饰，不得保留原视频人物服装。"
+    else:
+        appearance_contract = (
+            f"项目人物造型（后台自动匹配）：场景为“{appearance.scene}”，"
+            f"人物身份为“{appearance.subject}”；服装要求：{appearance.outfit_description}\n"
+            "项目人物造型优先于参考图服装；人物身份特征必须稳定，但不得机械复制参考图的服装。\n"
+            f"目标替换对象仅为源画面中承担“{appearance.subject}”角色的主要人物。"
+            "如果画面中有多人，只重构这一名主要人物；其他人物的身份、服装、数量、位置与动作均保持不变，"
+            "不得把目标人物外观扩散到旁人。"
+        )
+        contact_sheet_role = (
+            "第 2 张输入图是该角色的五视图参考板，仅用于确定人物身份、长相、发型与身材比例；"
+        )
+        clothing_rule = "参考图中的服装只用于理解人物体型，不得直接照搬。"
     if reference_roles and "contact_sheet" in reference_roles:
         server_template = (
             f"把原视频中的人物完整重构为角色库人物“{character_name}”，严格保留原画面一切要素。\n"
             "第 1 张输入图是原视频源帧，是构图、机位、人物姿态、动作、场景、道具、"
             "光线与色调的唯一模板，不得改动。\n"
-            "第 2 张输入图是该角色的五视图参考板，仅用于确定人物身份、长相、发型与身材比例；"
+            f"{contact_sheet_role}"
             "参考板中的白色分格线、边框与多面板布局只属于参考板本身，严禁以任何形式出现在结果图中。\n"
             "第 3 张输入图是该角色的原始照片，是面部特征最权威的依据，以它为准还原面部细节。\n"
             f"{appearance_contract}\n"
             "必须完整重构原人物的头脸、发型、颈部、肤色、身形比例、上装、下装、鞋子、手部与肢体连接；"
-            "参考图中的服装只用于理解人物体型，不得直接照搬。遮挡边缘、镜面或反射中的人物也要保持一致。\n"
+            f"{clothing_rule}遮挡边缘、镜面或反射中的人物也要保持一致。\n"
             "严禁只替换脸部、只覆盖头部或保留原视频人物的身体与服装；"
             "保持自然皮肤质感、正确肢体结构与真实透视；不得增加或删除画面主体；"
             "不得出现文字、水印或边框。"

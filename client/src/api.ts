@@ -283,7 +283,7 @@ export type Project = {
 export type UploadIntent = {
   asset_id: string;
   project_id: string;
-  storage_key: string;
+  storage_key?: string | null;
   method: "PUT" | null;
   url: string | null;
   headers: Record<string, string>;
@@ -295,7 +295,7 @@ export type CompletedUpload = {
   asset_id: string;
   project_id: string;
   status: string;
-  storage_uri: string;
+  storage_uri?: string | null;
   sha256: string;
   size_bytes: number;
   content_type: string;
@@ -435,6 +435,7 @@ export type ProjectCharacterSnapshot = {
     display_name?: string;
     authorization_expires_at?: string | null;
   };
+  persona_id?: string;
   persona_snapshot_json?: Record<string, unknown>;
   provider?: string | null;
   model?: string | null;
@@ -449,10 +450,14 @@ export type SourceFrameCandidate = {
   asset_id: string;
   timestamp_seconds: number;
   score: number | null;
+  technical_score?: number | null;
+  semantic_score?: number | null;
+  selection_reason?: string;
 };
 
 export type SourceFrameCandidates = {
   requested_timestamps_seconds: number[];
+  semantic_quality_status: "VERIFIED" | "UNAVAILABLE" | "NOT_REQUESTED";
   candidates: SourceFrameCandidate[];
 };
 
@@ -1649,7 +1654,9 @@ export async function startVideoAnalysis(
       errorPrefix,
       {
         method: "POST",
-        body: JSON.stringify({ asset_id: assetId, reuse_existing: true }),
+        // Clicking “重新拆解” must publish a fresh immutable analysis version;
+        // existing versions are loaded separately when the workspace opens.
+        body: JSON.stringify({ asset_id: assetId, reuse_existing: false }),
       },
     );
   } catch (error) {
@@ -1905,13 +1912,17 @@ export interface CharacterSheetTask {
   id: string;
   project_id: string | null;
   identity_id: string | null;
-  operation: "CREATE" | "REGENERATE";
+  operation: "CREATE" | "REGENERATE" | "SCENE";
   display_name: string;
   status: DurableImageTaskStatus;
   attempt: number;
   result_identity_id: string | null;
   result_version_id: string | null;
-  result: SimpleCharacterResult | SimpleCharacterRegenerationResult | null;
+  result:
+    | SimpleCharacterResult
+    | SimpleCharacterRegenerationResult
+    | SimpleSceneLook
+    | null;
   error_code: string | null;
   error_message: string | null;
   retryable: boolean;
@@ -2002,6 +2013,19 @@ export interface SimpleCharacterRegenerationResult {
   views: SimpleCharacterView[];
 }
 
+export interface SimpleSceneLook {
+  identity_id: string;
+  persona_id: string;
+  character_version_id: string;
+  scene_name: string;
+  scene_description: string;
+  costume_description: string;
+  contact_sheet_asset_id: string;
+  generation_source: "image_provider" | "local_placeholder";
+  views: SimpleCharacterView[];
+  published_at?: string | null;
+}
+
 // Re-run the identity-preserve contact sheet from the stored source photo.
 // The provider call can take 1–3 minutes, so reuse the analysis-sized budget.
 export async function regenerateContactSheet(
@@ -2079,6 +2103,41 @@ export async function listSimpleCharacterLibrary(): Promise<
     "/api/simple-characters/library",
     "读取人物库失败",
   );
+}
+
+export async function listCharacterSceneLooks(
+  identityId: string,
+): Promise<SimpleSceneLook[]> {
+  return requestApiJson<SimpleSceneLook[]>(
+    `/api/simple-characters/identities/${encodeURIComponent(identityId)}/scene-looks`,
+    "读取人物场景造型失败",
+  );
+}
+
+export async function createCharacterSceneLook(
+  identityId: string,
+  input: {
+    scene_name: string;
+    scene_description: string;
+    costume_description: string;
+  },
+): Promise<SimpleSceneLook> {
+  const task = await requestApiJson<CharacterSheetTask>(
+    `/api/simple-characters/identities/${encodeURIComponent(identityId)}/scene-looks/tasks/generate`,
+    "启动场景造型生成失败",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ...input,
+        idempotency_key: createRequestKey("scene-look"),
+      }),
+    },
+  );
+  const completed = await waitForCharacterSheetTask(task.id);
+  if (!completed.result || !("scene_name" in completed.result)) {
+    throw new Error("场景造型任务完成但结果不可用，请重新读取人物库。");
+  }
+  return completed.result;
 }
 
 export async function downloadCharacterAsset(
@@ -2514,6 +2573,12 @@ export function readSourceFrameCandidates(
   }
   return {
     requested_timestamps_seconds: payload.requested_timestamps_seconds,
+    semantic_quality_status:
+      payload.semantic_quality_status === "VERIFIED" ||
+      payload.semantic_quality_status === "UNAVAILABLE" ||
+      payload.semantic_quality_status === "NOT_REQUESTED"
+        ? payload.semantic_quality_status
+        : "NOT_REQUESTED",
     candidates: payload.candidates,
   };
 }
@@ -3914,7 +3979,7 @@ export type CustomerActivationCodeReset =
 /** Rotate the active account code. The replacement plaintext is returned
  * once and must never be persisted by the desktop. */
 export async function customerResetActivationCode(
-  credential: CustomerDeviceCredential,
+  credential: CustomerSessionCredential,
 ): Promise<CustomerActivationCodeReset> {
   const { body } = await customerJson<CustomerActivationCodeReset>(
     "/api/customer/activation-code/reset",

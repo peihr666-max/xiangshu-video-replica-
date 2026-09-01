@@ -28,7 +28,7 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
-_HEAD_REVISION = "049_async_generation_reconcile"
+_HEAD_REVISION = "052_character_scene_look_tasks"
 
 
 def _pg_dsn() -> str:
@@ -282,10 +282,19 @@ def test_batch_shapes_enforced(catalog_dsn: str) -> None:
                 _insert_batch(conn, seq, **overrides)
 
         rejected(2, status="DRAFT")  # unknown batch status
-        rejected(3, face_value_fen=0)  # face value must be positive
+        rejected(3, face_value_fen=-1)  # licence value cannot be negative
         rejected(4, unit_price_fen_snapshot=-1)  # price snapshot is unsigned
-        rejected(5, credits_snapshot=0)  # an activation code must carry credits
+        rejected(5, credits_snapshot=-1)  # initial credits cannot be negative
         rejected(6, quantity=0)  # a batch generates at least one code
+        _insert_batch(
+            conn,
+            10,
+            face_value_fen=0,
+            unit_price_fen_snapshot=0,
+            credits_snapshot=0,
+        )
+        rejected(11, face_value_fen=0, credits_snapshot=1)
+        rejected(12, face_value_fen=1, credits_snapshot=0)
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             _insert_batch(conn, 7, created_by_user_id="u-ghost")
         with pytest.raises(psycopg.errors.CheckViolation):

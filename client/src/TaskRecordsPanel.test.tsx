@@ -271,6 +271,28 @@ describe("TaskRecordsPanel", () => {
     );
   });
 
+  it("restores only the current user's last batch", async () => {
+    window.localStorage.setItem("generation.batchId:user-a", "batch-user-a");
+    window.localStorage.setItem("generation.batchId:user-b", "batch-user-b");
+    vi.mocked(api.getGenerationBatch).mockImplementation(async (batchId) =>
+      batch({ id: batchId }),
+    );
+
+    render(
+      <TaskRecordsPanel
+        currentUserId="user-a"
+        handoffBatch={null}
+        onHandoffConsumed={vi.fn()}
+        userRole="employee"
+      />,
+    );
+
+    await waitFor(() =>
+      expect(api.getGenerationBatch).toHaveBeenCalledWith("batch-user-a"),
+    );
+    expect(api.getGenerationBatch).not.toHaveBeenCalledWith("batch-user-b");
+  });
+
   it("keeps polling after repeated network failures and recovers automatically", async () => {
     vi.useFakeTimers();
     window.localStorage.setItem("generation.batchId", "batch-1");
@@ -323,13 +345,12 @@ describe("TaskRecordsPanel", () => {
     expect(screen.queryByText(/网络连接失败/)).not.toBeInTheDocument();
   });
 
-  it("plays the provider result URL directly without signing an archive preview", async () => {
+  it("plays only through a signed archive preview and ignores provider internals", async () => {
     vi.mocked(api.getGenerationBatch).mockResolvedValue(
       batch({
         tasks: [
           task({
             provider: "metaso",
-            provider_result_url: "https://provider.example/signed-result.mp4",
           }),
           task({
             id: "task-audio-failed",
@@ -347,25 +368,19 @@ describe("TaskRecordsPanel", () => {
       />,
     );
 
-    // Provider 直连优先：video src 直接用 metaso 返回的链接，全程不签发
-    // 本地归档预览。
     const video = await screen.findByLabelText("结果预览 task-ok");
-    expect(video).toHaveAttribute(
-      "src",
-      "https://provider.example/signed-result.mp4",
-    );
-    expect(api.createGenerationResultPreviewUrl).not.toHaveBeenCalledWith(
+    expect(video).toHaveAttribute("src", "https://stage-preview/asset-ok");
+    expect(api.createGenerationResultPreviewUrl).toHaveBeenCalledWith(
       "asset-ok",
     );
   });
 
-  it("falls back to the archived copy preview when the provider URL fails to play", async () => {
+  it("lets the user renew an expired archive preview", async () => {
     vi.mocked(api.getGenerationBatch).mockResolvedValue(
       batch({
         tasks: [
           task({
             provider: "metaso",
-            provider_result_url: "https://provider.example/expired-result.mp4",
           }),
           task({ id: "task-audio-failed" }),
         ],
@@ -381,27 +396,10 @@ describe("TaskRecordsPanel", () => {
     );
 
     const video = await screen.findByLabelText("结果预览 task-ok");
-    expect(video).toHaveAttribute(
-      "src",
-      "https://provider.example/expired-result.mp4",
-    );
+    expect(video).toHaveAttribute("src", "https://stage-preview/asset-ok");
 
-    // 直连链接过期（播放报错）：清除直连预览并回退签发本地归档副本。
+    // 归档预览本身过期时，不保留 0:00 / 0:00 黑屏，改为给出恢复动作。
     fireEvent.error(video);
-    const fallbackVideo = await screen.findByLabelText("结果预览 task-ok");
-    await waitFor(() =>
-      expect(fallbackVideo).toHaveAttribute(
-        "src",
-        "https://stage-preview/asset-ok",
-      ),
-    );
-    expect(api.createGenerationResultPreviewUrl).toHaveBeenCalledWith(
-      "asset-ok",
-    );
-
-    // 归档副本本身仍不可播放时，不再保留 0:00 / 0:00 黑屏，而是给出
-    // 可恢复动作。用户可重新签发播放地址，也可直接下载原文件。
-    fireEvent.error(fallbackVideo);
     expect(await screen.findByText("暂时无法播放")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "重新获取播放地址" }),

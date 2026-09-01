@@ -2,7 +2,6 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { AdminActivationSection } from "./admin/AdminActivationSection";
 import { AuditEventsPage } from "./admin/AuditEventsPage";
 import { CustomersPage } from "./admin/CustomersPage";
-import { DevicesPage } from "./admin/DevicesPage";
 import { SessionsPage } from "./admin/SessionsPage";
 import {
   type BillingSettings,
@@ -51,7 +50,6 @@ type AdminTab =
   | "services"
   | "activation"
   | "customers"
-  | "devices"
   | "sessions"
   | "audit";
 
@@ -72,13 +70,16 @@ const tabGroups: Array<{
     id: "operations",
     label: "客户运营",
     tabs: [
-      { id: "activation", label: "激活码", helper: "批次、发放与状态" },
+      {
+        id: "activation",
+        label: "激活码与设备",
+        helper: "生成、绑定、撤销与设备关联",
+      },
       {
         id: "customers",
         label: "客户",
         helper: "管理客户账户、授权状态、生成结果与结算消耗",
       },
-      { id: "devices", label: "设备", helper: "终端在线与风控动作" },
       { id: "sessions", label: "会话", helper: "在线态与单在线约束" },
     ],
   },
@@ -98,9 +99,8 @@ const tabPageTitles: Record<AdminTab, string> = {
   orders: "充值订单",
   settings: "支付与价格",
   services: "服务配置",
-  activation: "激活码",
+  activation: "激活码与设备",
   customers: "客户管理",
-  devices: "设备管理",
   sessions: "会话管理",
   audit: "审计日志",
 };
@@ -929,7 +929,6 @@ export function AdminApp() {
           {activeTab === "activation" ? (
             <AdminActivationSection
               actor={actor}
-              unitPriceFen={billing?.internal_base_unit_price_fen ?? null}
               onSessionExpired={handleSessionExpired}
             />
           ) : null}
@@ -945,11 +944,8 @@ export function AdminApp() {
             <CustomersPage
               embedded
               readOnly={actor.role === "auditor"}
-              onOpenDevices={() => setActiveTab("devices")}
+              onOpenDevices={() => setActiveTab("activation")}
             />
-          ) : null}
-          {activeTab === "devices" ? (
-            <DevicesPage readOnly={actor.role === "auditor"} />
           ) : null}
           {activeTab === "sessions" ? (
             <SessionsPage readOnly={actor.role === "auditor"} />

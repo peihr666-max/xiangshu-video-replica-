@@ -188,11 +188,15 @@ with psycopg.connect("${adminDsn}", autocommit=True) as c:
   mkdirSync(runDir, { recursive: true });
   writeFileSync(
     path.join(runDir, "run.json"),
-    JSON.stringify({
-      apiUrl: API_URL,
-      webUrl: WEB_URL,
-      codes: SEED_CODES,
-    }),
+    `${JSON.stringify(
+      {
+        apiUrl: API_URL,
+        webUrl: WEB_URL,
+        codes: SEED_CODES,
+      },
+      null,
+      2,
+    )}\n`,
   );
 
   globalThis.__customerE2E = { api, web };

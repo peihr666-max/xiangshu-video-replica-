@@ -504,6 +504,9 @@ def test_t37_metrics_and_cluster_alert_jobs_are_private_single_owner_contracts()
         "server/migrations/versions/047_async_source_frame_tasks.py",
         "server/migrations/versions/048_async_script_rewrite_tasks.py",
         "server/migrations/versions/049_async_generation_reconcile.py",
+        "server/migrations/versions/050_activation_license_zero_credit.py",
+        "server/migrations/versions/051_identity_owner_backfill.py",
+        "server/migrations/versions/052_character_scene_look_tasks.py",
         "deploy/systemd/video-replica-ops-alerts.service",
         "deploy/systemd/video-replica-ops-alerts.timer",
     ):
@@ -594,11 +597,19 @@ def test_t39_fault_drill_runbook_requires_staging_guards_and_business_proof() ->
 
 def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     package = _read("package.json")
+    root_package = json.loads(package)
+    client_package = json.loads(_read("client/package.json"))
+    package_lock = json.loads(_read("package-lock.json"))
+    cargo_toml = _read("client/src-tauri/Cargo.toml")
+    cargo_lock = _read("client/src-tauri/Cargo.lock")
+    internal_config = json.loads(_read("client/src-tauri/tauri.conf.json"))
     workflow = _read(".github/workflows/ci.yml")
     origin_guard = _read("scripts/require_customer_api_base.mjs")
     frozen_map = _read("docs/客户版代码开发清单-V3.md")
     customer_config = json.loads(_read("client/src-tauri/tauri.customer.conf.json"))
     customer_installer_hooks = _read("client/src-tauri/customer-installer-hooks.nsh")
+    server_package = _read("server/pyproject.toml")
+    server_main = _read("server/app/main.py")
 
     assert '"check:tauri:customer"' in package
     assert '"tauri:build:customer"' in package
@@ -611,6 +622,16 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     assert "--config src-tauri/tauri.customer.conf.json" in package
     assert customer_config["productName"] == "短视频复刻客户云工作台"
     assert customer_config["version"] == "0.1.11"
+    assert root_package["version"] == customer_config["version"]
+    assert client_package["version"] == customer_config["version"]
+    assert package_lock["version"] == customer_config["version"]
+    assert package_lock["packages"][""]["version"] == customer_config["version"]
+    assert package_lock["packages"]["client"]["version"] == customer_config["version"]
+    assert internal_config["version"] == customer_config["version"]
+    assert 'name = "video-replica-desktop"\nversion = "0.1.11"' in cargo_lock
+    assert 'version = "0.1.11"' in cargo_toml.split("[lib]", maxsplit=1)[0]
+    assert 'version = "0.1.11"' in server_package.split("[project]", maxsplit=1)[1]
+    assert 'version="0.1.11"' in server_main
     assert customer_config["identifier"] == "com.xiangshu.video-replica.customer"
     assert customer_config["app"]["windows"][0]["url"] == "customer"
     assert customer_config["bundle"]["resources"] == []
@@ -627,6 +648,9 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
         "ExecWait '\"$LOCALAPPDATA\\短视频复刻工作台\\uninstall.exe\" /S'"
         in customer_installer_hooks
     )
+    assert "IfErrors legacy_internal_failed" in customer_installer_hooks
+    assert "IntCmp $0 0 legacy_internal_done" in customer_installer_hooks
+    assert "Abort" in customer_installer_hooks
     assert "127.0.0.1:8000" not in customer_config["app"]["security"]["csp"]
     assert "npm run check:tauri:customer" in workflow
     assert "npm run tauri:build -- --bundles nsis --no-sign --ci" in workflow

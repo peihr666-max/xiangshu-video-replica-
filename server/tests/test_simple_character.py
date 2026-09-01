@@ -30,7 +30,15 @@ from app.customer_fence import BusinessDb
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.first_frame_routes import get_image_provider
-from app.first_frames import GeneratedImage, ImageProviderFailed
+from app.first_frames import (
+    FirstFrameCandidateInspection,
+    FirstFrameSourceInspection,
+    GeneratedImage,
+    ImageInput,
+    ImageProviderFailed,
+    SceneContactSheetInspection,
+    effective_reference_asset_ids,
+)
 from app.generation_worker import run_worker_once
 from app.image_tasks import (
     acquire_character_sheet_task,
@@ -112,6 +120,55 @@ class StubContactSheetProvider:
 class FailingContactSheetProvider(StubContactSheetProvider):
     def edit(self, **kwargs: object) -> list[GeneratedImage]:
         raise ImageProviderFailed("provider down")
+
+
+@dataclass
+class SequenceSceneLookQualityInspector:
+    inspections: list[SceneContactSheetInspection]
+    calls: int = 0
+
+    def inspect_source(self, source_image: ImageInput) -> FirstFrameSourceInspection:
+        raise AssertionError("source-frame inspection is not expected")
+
+    def inspect_candidate(
+        self,
+        *,
+        source_image: ImageInput,
+        character_reference_images: list[ImageInput],
+        candidate: GeneratedImage,
+        expected_outfit: str,
+    ) -> FirstFrameCandidateInspection:
+        raise AssertionError("first-frame inspection is not expected")
+
+    def inspect_scene_contact_sheet(
+        self,
+        *,
+        source_image: ImageInput,
+        contact_sheet: GeneratedImage,
+        scene_description: str,
+        costume_description: str,
+    ) -> SceneContactSheetInspection:
+        assert source_image.content
+        assert contact_sheet.content
+        assert scene_description
+        assert costume_description
+        self.calls += 1
+        return self.inspections.pop(0)
+
+
+def scene_sheet_inspection(*, identity_score: float = 0.95) -> SceneContactSheetInspection:
+    return SceneContactSheetInspection(
+        view_count=5,
+        identity_consistency_score=identity_score,
+        outfit_match_score=0.95,
+        scene_match_score=0.95,
+        anatomy_valid=True,
+        text_detected=False,
+        extra_people_detected=False,
+        notes=[],
+        provider="test-scene-quality",
+        model="test-scene-quality-v1",
+    )
 
 
 @pytest.fixture()
@@ -238,6 +295,29 @@ def test_character_sheet_task_is_idempotent_and_recovers_from_server_state(
     assert task.json()["result"]["generation_source"] == "image_provider"
 
 
+def test_character_sheet_task_status_hides_foreign_task(client: TestClient) -> None:
+    created = client.post(
+        "/api/simple-characters/tasks/generate",
+        headers=headers("employee_1"),
+        files=upload_files(),
+        data={"display_name": "荣哥", "idempotency_key": "character-sheet-task-private"},
+    )
+    assert created.status_code == 202, created.text
+
+    foreign = client.get(
+        f"/api/simple-characters/task-status/{created.json()['id']}",
+        headers=headers("employee_2"),
+    )
+    missing = client.get(
+        "/api/simple-characters/task-status/task-missing",
+        headers=headers("employee_2"),
+    )
+
+    assert foreign.status_code == 404
+    assert foreign.content == missing.content
+    assert foreign.json()["detail"]["code"] == "IMAGE_TASK_NOT_FOUND"
+
+
 def test_character_sheet_task_requires_auth_and_enforces_actual_upload_size(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -279,8 +359,15 @@ def test_character_sheet_task_authorizes_before_persisting_upload(
         files=upload_files(),
         data={"display_name": "荣哥", "idempotency_key": "character-sheet-task-4"},
     )
+    missing = client.post(
+        "/api/simple-characters/tasks/project-missing/generate",
+        headers=headers("employee_2"),
+        files=upload_files(),
+        data={"display_name": "荣哥", "idempotency_key": "character-sheet-task-5"},
+    )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
+    assert response.content == missing.content
     assert writes == []
 
 
@@ -458,7 +545,14 @@ def test_auditor_cannot_generate(client: TestClient) -> None:
 
 def test_employee_cannot_generate_for_foreign_project(client: TestClient) -> None:
     response = generate(client, user_id="employee_2")
-    assert response.status_code == 403
+    missing = client.post(
+        "/api/simple-characters/project-missing/generate",
+        headers=headers("employee_2"),
+        files=upload_files(),
+        data={"display_name": "荣哥", "persona_name": "乡墅项目管理专家"},
+    )
+    assert response.status_code == 404
+    assert response.content == missing.content
 
 
 def test_generated_character_appears_in_available_versions(
@@ -473,7 +567,8 @@ def test_generated_character_appears_in_available_versions(
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         row = conn.execute(
             """
-            SELECT status, generation_mode, published_at, persona_snapshot_json
+            SELECT status, generation_mode, published_at, persona_snapshot_json,
+                   publication_snapshot_json
             FROM character_versions
             WHERE id = ?
             """,
@@ -533,6 +628,24 @@ def test_generated_character_appears_in_available_versions(
         assert {row["view_type"] for row in assets} == set(REQUIRED_CHARACTER_VIEW_TYPES)
         assert all(row["review_status"] == "APPROVED" for row in assets)
         assert all(row["is_published_selection"] == 1 for row in assets)
+        reviews = conn.execute(
+            """
+            SELECT review.reviewer_user_id, review.decision, review.comment
+            FROM character_asset_reviews AS review
+            JOIN character_assets AS asset ON asset.id = review.character_asset_id
+            WHERE asset.character_version_id = ?
+            """,
+            (version_id,),
+        ).fetchall()
+        assert len(reviews) == len(REQUIRED_CHARACTER_VIEW_TYPES)
+        assert all(review["reviewer_user_id"] is None for review in reviews)
+        assert all(review["decision"] == "APPROVED" for review in reviews)
+        assert all(
+            review["comment"] == "System auto-approved by direct-publish policy."
+            for review in reviews
+        )
+        publication = json.loads(str(row["publication_snapshot_json"]))
+        assert publication["review_policy"] == "SYSTEM_AUTO_PUBLISH"
 
     # Downstream: the version is selectable for the owning project.
     versions_response = client.get(
@@ -621,11 +734,12 @@ def test_generate_creates_contact_sheet_asset(
         assert snapshot["contact_sheet_asset_id"] == contact_asset_id
 
 
-def test_contact_sheet_download_url_allowed_for_employees(
+def test_contact_sheet_download_url_isolated_to_owner_and_privileged_roles(
     client: TestClient,
     storage: FakeStorageAdapter,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
     created = generate_global(client).json()
     # The fake adapter's storage_uri cannot be re-signed by storage_for_asset;
     # reroute resolution to the same in-memory adapter so the endpoint covers
@@ -636,13 +750,29 @@ def test_contact_sheet_download_url_allowed_for_employees(
         lambda conn, storage_uri: storage,
     )
 
-    for user_id in ("employee_1", "employee_2"):
+    for user_id in ("employee_1", "admin_1"):
         response = client.post(
             f"/api/assets/{created['contact_sheet_asset_id']}/download-url",
             headers=headers(user_id),
         )
         assert response.status_code == 200, response.text
         assert response.json()["url"]
+
+    foreign = client.post(
+        f"/api/assets/{created['contact_sheet_asset_id']}/download-url",
+        headers=headers("employee_2"),
+    )
+    absent = client.post(
+        "/api/assets/asset-missing/download-url",
+        headers=headers("employee_2"),
+    )
+    auditor = client.post(
+        f"/api/assets/{created['contact_sheet_asset_id']}/download-url",
+        headers=headers("auditor_1"),
+    )
+    assert foreign.status_code == 404
+    assert foreign.content == absent.content
+    assert auditor.status_code == 403
 
 
 def test_character_cache_downloads_once_and_serves_local_copy(
@@ -696,7 +826,8 @@ def test_character_cache_downloads_once_and_serves_local_copy(
         f"/api/assets/{asset_id}/cached-url",
         headers=headers("auditor_1"),
     )
-    assert auditor.status_code == 200, auditor.text
+    assert auditor.status_code == 403, auditor.text
+    assert auditor.json()["detail"]["code"] == "ROLE_FORBIDDEN"
     assert len(get_object_calls) == 1
 
     parsed = urlsplit(second.json()["url"])
@@ -959,13 +1090,22 @@ def test_library_falls_back_to_views_when_snapshot_has_no_contact_sheet(
     assert len(entry["views"]) == len(REQUIRED_CHARACTER_VIEW_TYPES)
 
 
-def test_library_is_visible_to_all_roles(client: TestClient) -> None:
-    generate_global(client)
+def test_library_is_isolated_by_owner_outside_control_roles(client: TestClient) -> None:
+    first = generate_global(client, user_id="employee_1").json()
+    second = generate_global(client, user_id="employee_2").json()
 
-    for user_id in ("employee_1", "admin_1", "auditor_1"):
+    employee_one = client.get("/api/simple-characters/library", headers=headers("employee_1"))
+    employee_two = client.get("/api/simple-characters/library", headers=headers("employee_2"))
+    assert [item["identity_id"] for item in employee_one.json()] == [first["identity_id"]]
+    assert [item["identity_id"] for item in employee_two.json()] == [second["identity_id"]]
+
+    for user_id in ("admin_1", "auditor_1"):
         response = client.get("/api/simple-characters/library", headers=headers(user_id))
         assert response.status_code == 200, response.text
-        assert len(response.json()) == 1
+        assert {item["identity_id"] for item in response.json()} == {
+            first["identity_id"],
+            second["identity_id"],
+        }
 
 
 def generate_global(client: TestClient, *, user_id: str = "employee_1"):
@@ -1036,9 +1176,14 @@ def test_other_employee_cannot_rename_identity(client: TestClient) -> None:
         headers=headers("employee_2"),
         json={"display_name": "越权改名"},
     )
+    missing = client.patch(
+        "/api/simple-characters/identities/identity-missing/name",
+        headers=headers("employee_2"),
+        json={"display_name": "越权改名"},
+    )
 
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "IDENTITY_RENAME_FORBIDDEN"
+    assert response.status_code == 404
+    assert response.content == missing.content
 
 
 def test_rename_rejects_empty_name(client: TestClient) -> None:
@@ -1167,9 +1312,13 @@ def test_other_employee_cannot_delete_identity(client: TestClient) -> None:
         f"/api/simple-characters/identities/{created['identity_id']}",
         headers=headers("employee_2"),
     )
+    missing = client.delete(
+        "/api/simple-characters/identities/identity-missing",
+        headers=headers("employee_2"),
+    )
 
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "IDENTITY_DELETE_FORBIDDEN"
+    assert response.status_code == 404
+    assert response.content == missing.content
 
 
 def test_delete_rejects_identity_selected_by_project(
@@ -1205,6 +1354,30 @@ def test_delete_rejects_identity_selected_by_project(
     # Nothing was removed.
     library = client.get("/api/simple-characters/library", headers=headers("employee_1")).json()
     assert any(entry["identity_id"] == created["identity_id"] for entry in library)
+
+
+def test_delete_rejects_identity_with_active_scene_task(client: TestClient) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    queued = client.post(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "商务讲解",
+            "scene_description": "现代会议室",
+            "costume_description": "深色西装",
+            "idempotency_key": "scene-look-delete-guard",
+        },
+    )
+    assert queued.status_code == 202
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "IDENTITY_DELETE_HAS_ACTIVE_TASKS"
 
 
 def test_delete_missing_identity_returns_404(client: TestClient) -> None:
@@ -1267,8 +1440,12 @@ def test_regenerate_contact_sheet_requires_owner_or_admin(client: TestClient) ->
     url = f"/api/simple-characters/identities/{created['identity_id']}/regenerate-contact-sheet"
 
     forbidden = client.post(url, headers=headers("employee_2"))
-    assert forbidden.status_code == 403
-    assert forbidden.json()["detail"]["code"] == "IDENTITY_REGENERATE_FORBIDDEN"
+    foreign_missing = client.post(
+        "/api/simple-characters/identities/identity-missing/regenerate-contact-sheet",
+        headers=headers("employee_2"),
+    )
+    assert forbidden.status_code == 404
+    assert forbidden.content == foreign_missing.content
 
     auditor = client.post(url, headers=headers("auditor_1"))
     assert auditor.status_code == 403
@@ -1283,6 +1460,242 @@ def test_regenerate_contact_sheet_requires_owner_or_admin(client: TestClient) ->
     admin_ok = client.post(url, headers=headers("admin_1"))
     assert admin_ok.status_code == 201, admin_ok.text
     assert admin_ok.json()["version_number"] == 2
+
+
+def test_async_regenerate_task_hides_foreign_identity(client: TestClient) -> None:
+    created = generate_global(client).json()
+    task_url = (
+        f"/api/simple-characters/identities/{created['identity_id']}/regenerate-contact-sheet-task"
+    )
+    form = {"idempotency_key": "idem-regenerate-foreign"}
+
+    foreign = client.post(task_url, data=form, headers=headers("employee_2"))
+    missing = client.post(
+        "/api/simple-characters/identities/identity-missing/regenerate-contact-sheet-task",
+        data=form,
+        headers=headers("employee_2"),
+    )
+
+    assert foreign.status_code == 404
+    assert foreign.content == missing.content
+    assert foreign.json()["detail"]["code"] == "PERSON_IDENTITY_NOT_FOUND"
+
+
+def test_owner_generates_and_lists_a_direct_publish_scene_look(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    contact_sheet_provider: StubContactSheetProvider,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    scene_quality = SequenceSceneLookQualityInspector(
+        inspections=[
+            scene_sheet_inspection(identity_score=0.2),
+            scene_sheet_inspection(identity_score=0.4),
+            scene_sheet_inspection(),
+        ]
+    )
+    provider_calls_before_scene = len(contact_sheet_provider.calls)
+
+    queued = client.post(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "工地巡检",
+            "scene_description": "乡村别墅施工现场，白天自然光",
+            "costume_description": "黄色安全帽、深蓝色工装和反光背心",
+            "idempotency_key": "scene-look-task-1",
+        },
+    )
+    assert queued.status_code == 202, queued.text
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="scene-look-worker",
+                storage=storage,
+                image_provider=contact_sheet_provider,
+                first_frame_quality_inspector=scene_quality,
+                max_tasks=1,
+            )
+            == 1
+        )
+
+    task = client.get(
+        f"/api/simple-characters/task-status/{queued.json()['id']}",
+        headers=headers("employee_1"),
+    )
+    assert task.status_code == 200
+    assert task.json()["status"] == "SUCCEEDED"
+    result = task.json()["result"]
+    assert result["identity_id"] == identity_id
+    assert result["scene_name"] == "工地巡检"
+    assert len(result["views"]) == len(REQUIRED_CHARACTER_VIEW_TYPES)
+    assert scene_quality.calls == 3
+    assert len(contact_sheet_provider.calls) - provider_calls_before_scene == 3
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        source_asset_id = str(
+            conn.execute(
+                "SELECT source_asset_id FROM person_identities WHERE id = %s",
+                (identity_id,),
+            ).fetchone()[0]
+        )
+        reference_asset_ids, reference_asset_roles = effective_reference_asset_ids(
+            conn,
+            character_version_id=result["character_version_id"],
+            legacy_selected=[view["asset_id"] for view in result["views"]],
+        )
+        publication = json.loads(
+            str(
+                conn.execute(
+                    "SELECT publication_snapshot_json FROM character_versions WHERE id = %s",
+                    (result["character_version_id"],),
+                ).fetchone()[0]
+            )
+        )
+    assert reference_asset_ids == [result["contact_sheet_asset_id"], source_asset_id]
+    assert reference_asset_roles == ["contact_sheet", "source_photo"]
+    assert publication["scene_quality"]["passed"] is True
+    assert publication["scene_quality"]["attempt"] == 3
+
+    looks = client.get(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks",
+        headers=headers("employee_1"),
+    )
+    assert looks.status_code == 200, looks.text
+    assert looks.json() == [
+        {
+            **result,
+            "published_at": looks.json()[0]["published_at"],
+        }
+    ]
+
+    # Creating a scene look must not replace the identity's base appearance.
+    library = client.get(
+        "/api/simple-characters/library",
+        headers=headers("employee_1"),
+    ).json()
+    base = next(item for item in library if item["identity_id"] == identity_id)
+    assert base["contact_sheet_asset_id"] == created["contact_sheet_asset_id"]
+
+    # The first-frame flow can select this exact scene look while the base
+    # appearance remains the safe automatic default in the client.
+    options = client.get(
+        "/api/projects/project-owned/character-versions/available",
+        headers=headers("employee_1"),
+    )
+    assert options.status_code == 200, options.text
+    scene_option = next(
+        option
+        for option in options.json()
+        if option["character_version_id"] == result["character_version_id"]
+    )
+    assert scene_option["persona_snapshot_json"]["name"] == "工地巡检"
+    assert scene_option["persona_snapshot_json"]["scene_description"] == (
+        "乡村别墅施工现场，白天自然光"
+    )
+    assert scene_option["persona_snapshot_json"]["costume_description"] == (
+        "黄色安全帽、深蓝色工装和反光背心"
+    )
+    assert scene_option["persona_snapshot_json"]["appearance_constraints_json"] == {
+        "appearance_type": "scene"
+    }
+
+    prompt = str(contact_sheet_provider.calls[-1]["prompt"])
+    assert "乡村别墅施工现场" in prompt
+    assert "黄色安全帽" in prompt
+    assert "Do not change the person's identity or gender" in prompt
+
+
+def test_scene_looks_hide_foreign_identities_and_reject_auditors(
+    client: TestClient,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    url = f"/api/simple-characters/identities/{identity_id}/scene-looks"
+
+    foreign = client.get(url, headers=headers("employee_2"))
+    missing = client.get(
+        "/api/simple-characters/identities/identity-missing/scene-looks",
+        headers=headers("employee_2"),
+    )
+    assert foreign.status_code == 404
+    assert foreign.content == missing.content
+
+    auditor = client.post(
+        f"{url}/tasks/generate",
+        headers=headers("auditor_1"),
+        json={
+            "scene_name": "商务讲解",
+            "scene_description": "现代会议室",
+            "costume_description": "深色西装",
+            "idempotency_key": "scene-look-auditor",
+        },
+    )
+    assert auditor.status_code == 403
+
+
+def test_scene_look_rejects_archived_identity_before_enqueue(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE person_identities SET status = 'ARCHIVED' WHERE id = %s",
+            (identity_id,),
+        )
+        conn.commit()
+
+    response = client.post(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "商务讲解",
+            "scene_description": "现代会议室",
+            "costume_description": "深色西装",
+            "idempotency_key": "scene-look-archived",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "IDENTITY_ARCHIVED"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM character_sheet_tasks WHERE identity_id = %s",
+            (identity_id,),
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_scene_look_rejects_blank_inputs_before_provider_work(
+    client: TestClient,
+    db_path: Path,
+    contact_sheet_provider: StubContactSheetProvider,
+) -> None:
+    created = generate_global(client).json()
+    provider_calls = len(contact_sheet_provider.calls)
+
+    response = client.post(
+        f"/api/simple-characters/identities/{created['identity_id']}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "   ",
+            "scene_description": "现代会议室",
+            "costume_description": "深色西装",
+            "idempotency_key": "scene-look-blank",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "SCENE_LOOK_NAME_REQUIRED"
+    assert len(contact_sheet_provider.calls) == provider_calls
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM character_sheet_tasks").fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------

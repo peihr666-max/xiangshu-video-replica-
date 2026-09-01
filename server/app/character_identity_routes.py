@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.analysis import APILIO_DEFAULT_BASE_URL, APILIO_GEMINI_MODEL
 from app.auth import AuthenticatedUser, CurrentUser, Database
+from app.bootstrap import is_customer_production
 from app.character_contracts import CharacterPersona, CharacterVersion, PersonIdentity
 from app.character_identity import (
     ApilioSourceImageInspector,
@@ -119,6 +120,11 @@ def get_character_storage(conn: BusinessReadConn) -> StorageAdapter:
 
 def get_source_image_inspector(conn: Database) -> SourceImageInspector:
     if os.environ.get("VIDEO_REPLICA_FAKE_SOURCE_IMAGE_INSPECTOR") == "1":
+        if is_customer_production():
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "FAKE_SOURCE_IMAGE_INSPECTOR_FORBIDDEN"},
+            )
         return FakeSourceImageInspector()
     has_saved_config = (
         conn.execute("SELECT 1 FROM provider_settings WHERE provider = 'apilio'").fetchone()

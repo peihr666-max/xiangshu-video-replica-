@@ -345,7 +345,9 @@ describe("ProjectDetailFlow", () => {
     const roleSelect = await screen.findByLabelText("角色版本");
     expect(roleSelect).toHaveValue("cv-1");
     expect(
-      screen.getByRole("option", { name: /林夏 · 田园博主 V1/ }),
+      screen.getByRole("option", {
+        name: /林夏 · 人物基准：田园博主 · V1/,
+      }),
     ).toBeInTheDocument();
     expect(screen.getByText("源画面自动处理")).toBeInTheDocument();
     expect(screen.getByText("已自动选择")).toBeInTheDocument();
@@ -383,7 +385,7 @@ describe("ProjectDetailFlow", () => {
       expect(api.extractSourceFrames).toHaveBeenCalledWith(
         "project-1",
         "ref-1",
-        [12, 30, 48],
+        [6, 18, 30, 42, 54],
       ),
     );
     expect(screen.getByText(/15 秒成片建议约 60–75 字/)).toBeInTheDocument();
@@ -403,7 +405,9 @@ describe("ProjectDetailFlow", () => {
     // 等版本列表加载完成且下拉可用后再交互（恢复/加载窗口内 select 禁用）。
     await waitFor(() =>
       expect(
-        screen.getByRole("option", { name: /小叮当 · 工地管家 V2/ }),
+        screen.getByRole("option", {
+          name: /小叮当 · 人物基准：工地管家 · V2/,
+        }),
       ).toBeInTheDocument(),
     );
     await waitFor(() => expect(roleSelect).toBeEnabled());

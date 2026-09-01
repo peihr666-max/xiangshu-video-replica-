@@ -8,60 +8,6 @@ class GenerationTaskRepository:
     def __init__(self, conn: BusinessConnection) -> None:
         self.conn = conn
 
-    def create_minimal_task(
-        self,
-        *,
-        user_id: str,
-        project_id: str,
-        batch_id: str,
-        task_id: str,
-    ) -> str:
-        with self.conn:
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO users (id, username, display_name)
-                VALUES (%s, %s, %s)
-                """,
-                (user_id, user_id, user_id),
-            )
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO projects (id, owner_user_id, name)
-                VALUES (%s, %s, %s)
-                """,
-                (project_id, user_id, project_id),
-            )
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO generation_batches (
-                    id,
-                    project_id,
-                    created_by_user_id,
-                    idempotency_key,
-                    request_hash,
-                    request_snapshot_json
-                )
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (batch_id, project_id, user_id, f"{batch_id}:key", f"{batch_id}:hash", "{}"),
-            )
-            self.conn.execute(
-                """
-                INSERT INTO generation_tasks (
-                    id,
-                    batch_id,
-                    generation_mode,
-                    provider,
-                    model,
-                    status,
-                    next_poll_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                """,
-                (task_id, batch_id, "I2V", "metaso", "MiniMax-H3", "PENDING"),
-            )
-        return task_id
-
     def acquire_next_lease(
         self,
         *,

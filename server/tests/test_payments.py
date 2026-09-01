@@ -110,7 +110,11 @@ def payment_context(
             user_token = issue_token(conn, user_id="user_1", raw_token="user-token")
             other_token = issue_token(conn, user_id="user_2", raw_token="other-token")
             SettingsRepository(conn).save_zpay_config(
-                {"pid": "merchant-123", "key": "merchant-secret", "enabled_channels": "alipay"},
+                {
+                    "pid": "merchant-123",
+                    "key": "merchant-secret",
+                    "enabled_channels": "alipay,wxpay",
+                },
                 actor_user_id=str(admin["user_id"]),
             )
             insert_pending_order(conn, order_id="order_1", user_id="user_1", order_no=ORDER_NO)
@@ -148,6 +152,7 @@ def signed_notify_params(
     money: str = "100.00",
     trade_status: str = "TRADE_SUCCESS",
     pid: str = "merchant-123",
+    channel: str = "alipay",
 ) -> dict[str, str]:
     params = {
         "pid": pid,
@@ -156,7 +161,7 @@ def signed_notify_params(
         "out_trade_no": order_no,
         "trade_no": trade_no,
         "trade_status": trade_status,
-        "type": "alipay",
+        "type": channel,
     }
     params["sign"] = sign_zpay_params(params, "merchant-secret")
     params["sign_type"] = "MD5"
@@ -213,6 +218,48 @@ def test_valid_notify_credits_wallet_and_duplicate_notify_is_idempotent(
         "recharge_order_id": "order_1",
         "idempotency_key": "zpay:charge:order_1",
     }
+
+
+def test_closed_order_callback_is_settled_and_remains_reconcilable(
+    payment_context: PaymentTestContext,
+) -> None:
+    """T45 D-1: a late valid payment must never be discarded after local close."""
+    with BusinessConnection.sqlite(connect_database(payment_context.db_path)) as conn:
+        conn.execute(
+            "UPDATE recharge_orders SET status = 'CLOSED' WHERE merchant_order_no = ?",
+            (ORDER_NO,),
+        )
+        conn.commit()
+
+    response = payment_context.client.get(
+        "/api/payments/zpay/notify",
+        params=signed_notify_params(),
+    )
+
+    assert response.status_code == 200
+    assert response.text == "success"
+    assert wallet_snapshot(payment_context.db_path) == (10, 0, 1)
+    with BusinessConnection.sqlite(connect_database(payment_context.db_path)) as conn:
+        order = conn.execute(
+            "SELECT status, notify_digest FROM recharge_orders WHERE merchant_order_no = ?",
+            (ORDER_NO,),
+        ).fetchone()
+    assert order["status"] == "PAID"
+    assert len(str(order["notify_digest"])) == 64
+
+
+def test_notify_accepts_a_different_enabled_checkout_channel(
+    payment_context: PaymentTestContext,
+) -> None:
+    """T45 D-2: a user may switch between merchant-enabled channels."""
+    response = payment_context.client.get(
+        "/api/payments/zpay/notify",
+        params=signed_notify_params(channel="wxpay"),
+    )
+
+    assert response.status_code == 200
+    assert response.text == "success"
+    assert wallet_snapshot(payment_context.db_path) == (10, 0, 1)
 
 
 @pytest.mark.parametrize("invalid_field", ["sign", "pid", "money", "trade_status"])

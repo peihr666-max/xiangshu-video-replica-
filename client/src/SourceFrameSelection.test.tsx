@@ -38,6 +38,7 @@ const candidatesVersion = {
   version_number: 1,
   payload: {
     requested_timestamps_seconds: [0.5, 1.5, 2.5],
+    semantic_quality_status: "VERIFIED",
     candidates: [
       { asset_id: "source-1", timestamp_seconds: 1.5, score: 0.83 },
       { asset_id: "source-2", timestamp_seconds: 0.5, score: 0.52 },
@@ -172,7 +173,7 @@ describe("SourceFrameSelection", () => {
       expect(extractSourceFrames).toHaveBeenCalledWith(
         "project-1",
         "reference-1",
-        [2.4, 6, 9.6],
+        [1.2, 3.6, 6, 8.4, 10.8],
       ),
     );
     expect(screen.queryByLabelText("重新取帧时间点（秒）")).toBeNull();
@@ -192,6 +193,33 @@ describe("SourceFrameSelection", () => {
     expect(await screen.findByText("预览加载失败")).toBeInTheDocument();
     expect(screen.getByDisplayValue("source-1")).toBeDisabled();
     expect(screen.getByRole("button", { name: "使用所选画面" })).toBeDisabled();
+  });
+
+  it("requires manual confirmation when semantic scoring is unavailable", async () => {
+    vi.mocked(getLatestProjectSourceFrames).mockResolvedValue({
+      ...candidatesVersion,
+      payload: {
+        ...candidatesVersion.payload,
+        semantic_quality_status: "UNAVAILABLE",
+      },
+    });
+
+    render(
+      <SourceFrameSelection
+        projectId="project-1"
+        referenceAssetId="reference-1"
+      />,
+    );
+
+    expect(
+      await screen.findByText("语义评分暂不可用，请查看候选画面后手动确认。"),
+    ).toBeInTheDocument();
+    expect(confirmSourceFrame).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "使用所选画面" }),
+      ).toBeEnabled(),
+    );
   });
 
   it("does not request protected preview downloads for a read-only auditor", async () => {
@@ -434,7 +462,7 @@ describe("SourceFrameSelection", () => {
       expect(extractSourceFrames).toHaveBeenCalledWith(
         "project-1",
         "reference-1",
-        [2.4, 6, 9.6],
+        [1.2, 3.6, 6, 8.4, 10.8],
       ),
     );
     expect(await screen.findByAltText("候选源画面 1")).toBeInTheDocument();

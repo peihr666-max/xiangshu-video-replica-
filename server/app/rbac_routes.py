@@ -14,7 +14,7 @@ from datetime import timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
@@ -28,11 +28,19 @@ from app.auth import (
 )
 from app.bootstrap import is_customer_production
 from app.customer_fence import BusinessDbDep
-from app.db_pg import pg_transaction
+from app.db import connect_database
+from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media import storage_key_from_uri
-from app.media_routes import api_base_url
+from app.media_routes import (
+    api_base_url,
+    signed_asset_session_epoch,
+    storage_for_asset,
+    validate_signed_asset_grant,
+)
 from app.permissions import (
+    AuditedSecurityDenial,
+    persist_security_denial,
     require_asset_access,
     require_not_auditor,
     require_project_access,
@@ -41,15 +49,12 @@ from app.permissions import (
 )
 from app.settings import SettingsRepository, SettingsUnavailableError, settings_encryption_key
 from app.storage import (
-    LocalStorageAdapter,
     StorageAdapter,
     StorageBackendUnavailable,
     cloud_storage_config_from_settings,
     create_storage_adapter,
     local_download_signature,
     local_storage_root,
-    require_storage_match,
-    storage_object_ref_from_uri,
 )
 
 router = APIRouter(prefix="/api", tags=["rbac"])
@@ -184,6 +189,41 @@ def _load_customer_character_cache_storage() -> StorageAdapter:
         return _customer_character_cache_storage(BusinessConnection.postgres(raw_conn))
 
 
+def _validate_character_cache_grant(
+    *,
+    user_id: str,
+    asset_id: str,
+    session_epoch: str,
+) -> None:
+    """Use a short DB scope so a later COS read never holds a PG connection."""
+    if os.environ.get(DATABASE_URL_ENV, "").strip():
+        try:
+            with pg_transaction() as raw_conn:
+                validate_signed_asset_grant(
+                    BusinessConnection.postgres(raw_conn),
+                    user_id=user_id,
+                    asset_id=asset_id,
+                    session_epoch=session_epoch,
+                )
+        except AuditedSecurityDenial as exc:
+            persist_security_denial(exc)
+            raise
+        return
+    db_path = os.environ.get("VIDEO_REPLICA_DB_PATH", "").strip()
+    if not db_path:
+        raise HTTPException(status_code=503, detail={"code": "DATABASE_NOT_CONFIGURED"})
+    conn = BusinessConnection.sqlite(connect_database(Path(db_path)))
+    try:
+        validate_signed_asset_grant(
+            conn,
+            user_id=user_id,
+            asset_id=asset_id,
+            session_epoch=session_epoch,
+        )
+    finally:
+        conn.close()
+
+
 def _read_verified_character_cache_source(
     *,
     source_storage: StorageAdapter,
@@ -304,16 +344,22 @@ def _populate_character_cache(
             asset_id=str(row["id"]),
         )
 
-        temporary_path = cache_path.with_name(f".{cache_path.name}.{uuid4().hex}.tmp")
+        # Keep the temporary basename short. Appending a full UUID to the
+        # already hash-sized cache name exceeds the legacy Windows MAX_PATH
+        # limit when the application home is nested deeply.
+        temporary_path = cache_path.with_name(f".cache-{uuid4().hex[:12]}.tmp")
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             temporary_path.write_bytes(content)
             temporary_path.replace(cache_path)
         except OSError as exc:
             logger.error(
-                "character cache write failed for asset %s: %s",
+                "character cache write failed for asset %s at %s via %s: %s",
                 row["id"],
+                cache_path,
+                temporary_path,
                 type(exc).__name__,
+                exc_info=True,
             )
             raise HTTPException(
                 status_code=503,
@@ -329,42 +375,6 @@ def _populate_character_cache(
                     type(exc).__name__,
                 )
     return cache_name, content_type
-
-
-def storage_for_asset(conn: BusinessConnection, storage_uri: str) -> StorageAdapter:
-    reference = storage_object_ref_from_uri(storage_uri)
-    if reference.provider == "local":
-        local_storage = LocalStorageAdapter(root=local_storage_root(), bucket=reference.bucket)
-        require_storage_match(local_storage, reference)
-        return local_storage
-    if reference.provider != "cos":
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
-        )
-    try:
-        config = SettingsRepository(conn).load_provider_config(reference.provider)
-    except SettingsUnavailableError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
-        ) from exc
-    if config.get("bucket") != reference.bucket:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "STORAGE_BUCKET_MISMATCH"},
-        )
-    try:
-        cloud_storage = create_storage_adapter(
-            cloud_storage_config_from_settings(reference.provider, config)
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
-        ) from exc
-    require_storage_match(cloud_storage, reference)
-    return cloud_storage
 
 
 class AuditLogResponse(BaseModel):
@@ -876,6 +886,15 @@ def read_asset(
     actor: AuthenticatedUser,
 ) -> AssetResponse:
     row = require_asset_access(conn, actor=actor, asset_id=asset_id, action="asset.read")
+    if actor.role == "auditor":
+        write_audit(
+            conn,
+            actor=actor,
+            action="auditor.asset_metadata.read",
+            entity_type="asset",
+            entity_id=asset_id,
+            metadata={"kind": str(row["kind"]), "project_id": row["project_id"]},
+        )
     return asset_response(row)
 
 
@@ -907,28 +926,36 @@ def create_download_url(
         metadata={"project_id": str(row["project_id"])},
     )
     try:
-        storage = storage_for_asset(conn, str(row["storage_uri"]))
+        storage_for_asset(conn, str(row["storage_uri"]))
         object_key = storage_key_from_uri(str(row["storage_uri"]))
-        if storage.provider == "local":
-            secret = settings_encryption_key()
-            expires_at = str(int(time.time()) + int(DOWNLOAD_URL_EXPIRES_IN.total_seconds()))
-            signature = local_download_signature(object_key, expires_at, secret=secret)
-            url = (
-                f"{api_base_url()}/api/assets/local-objects/{quote(object_key, safe='/')}"
-                f"?expires={expires_at}&sig={signature}"
-            )
-            return DownloadUrlResponse(url=url)
-        intent = storage.create_download_intent(
+        secret = settings_encryption_key()
+        expires_at = str(int(time.time()) + int(DOWNLOAD_URL_EXPIRES_IN.total_seconds()))
+        session_epoch = signed_asset_session_epoch(conn, actor)
+        query = {
+            "expires": expires_at,
+            "user_id": actor.id,
+            "asset_id": asset_id,
+            "session_epoch": session_epoch,
+        }
+        signature = local_download_signature(
             object_key,
-            expires_in=DOWNLOAD_URL_EXPIRES_IN,
-            can_read=True,
+            expires_at,
+            user_id=actor.id,
+            asset_id=asset_id,
+            session_epoch=session_epoch,
+            secret=secret,
+        )
+        query["sig"] = signature
+        url = (
+            f"{api_base_url()}/api/assets/signed-objects/{quote(object_key, safe='/')}"
+            f"?{urlencode(query)}"
         )
     except StorageBackendUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
         ) from exc
-    return DownloadUrlResponse(url=intent.url)
+    return DownloadUrlResponse(url=url)
 
 
 @router.post("/assets/{asset_id}/cached-url", response_model=DownloadUrlResponse)
@@ -941,6 +968,13 @@ def create_cached_character_url(
         # the fenced PG transaction, then release the pooled connection before
         # any COS HEAD/GET/PUT network operation.
         with db.write() as (conn, actor):
+            require_not_auditor(
+                conn,
+                actor=actor,
+                action="asset.character_cache.read",
+                entity_type="asset",
+                entity_id=asset_id,
+            )
             row = require_asset_access(
                 conn,
                 actor=actor,
@@ -948,9 +982,18 @@ def create_cached_character_url(
                 action="asset.character_cache.read",
             )
             plan = _prepare_customer_character_cache(conn, row)
+            grant_user_id = actor.id
+            grant_session_epoch = signed_asset_session_epoch(conn, actor)
         cache_name, _ = _populate_customer_character_cache(plan)
     else:
         with db.write() as (conn, actor):
+            require_not_auditor(
+                conn,
+                actor=actor,
+                action="asset.character_cache.read",
+                entity_type="asset",
+                entity_id=asset_id,
+            )
             row = require_asset_access(
                 conn,
                 actor=actor,
@@ -958,18 +1001,29 @@ def create_cached_character_url(
                 action="asset.character_cache.read",
             )
             cache_name, _ = _populate_character_cache(conn, row)
+            grant_user_id = actor.id
+            grant_session_epoch = signed_asset_session_epoch(conn, actor)
     expires_at = str(int(time.time()) + int(DOWNLOAD_URL_EXPIRES_IN.total_seconds()))
     signed_key = f"character-cache/{cache_name}"
     signature = local_download_signature(
         signed_key,
         expires_at,
+        user_id=grant_user_id,
+        asset_id=asset_id,
+        session_epoch=grant_session_epoch,
         secret=settings_encryption_key(),
     )
+    query = urlencode(
+        {
+            "expires": expires_at,
+            "user_id": grant_user_id,
+            "asset_id": asset_id,
+            "session_epoch": grant_session_epoch,
+            "sig": signature,
+        }
+    )
     return DownloadUrlResponse(
-        url=(
-            f"{api_base_url()}/api/assets/character-cache/{cache_name}"
-            f"?expires={expires_at}&sig={signature}"
-        )
+        url=f"{api_base_url()}/api/assets/character-cache/{cache_name}?{query}"
     )
 
 
@@ -977,10 +1031,16 @@ def create_cached_character_url(
 def read_cached_character_asset(cache_name: str, request: Request) -> Response:
     expires_at = request.query_params.get("expires")
     signature = request.query_params.get("sig")
+    user_id = request.query_params.get("user_id")
+    asset_id = request.query_params.get("asset_id")
+    session_epoch = request.query_params.get("session_epoch")
     signed_key = f"character-cache/{cache_name}"
     if (
         not expires_at
         or not signature
+        or not user_id
+        or not asset_id
+        or session_epoch is None
         or not expires_at.isdigit()
         or len(expires_at) > 20
         or int(expires_at) < int(time.time())
@@ -989,6 +1049,9 @@ def read_cached_character_asset(cache_name: str, request: Request) -> Response:
             local_download_signature(
                 signed_key,
                 expires_at,
+                user_id=user_id,
+                asset_id=asset_id,
+                session_epoch=session_epoch,
                 secret=settings_encryption_key(),
             ),
         )
@@ -997,6 +1060,11 @@ def read_cached_character_asset(cache_name: str, request: Request) -> Response:
             status_code=403,
             detail={"code": "CHARACTER_CACHE_FORBIDDEN"},
         )
+    _validate_character_cache_grant(
+        user_id=user_id,
+        asset_id=asset_id,
+        session_epoch=session_epoch,
+    )
     if is_customer_production():
         cache_key = _character_cache_object_key(cache_name)
         try:
@@ -1017,7 +1085,11 @@ def read_cached_character_asset(cache_name: str, request: Request) -> Response:
         return Response(
             content=content,
             media_type=CHARACTER_CACHE_CONTENT_TYPES[Path(cache_name).suffix],
-            headers={"Cache-Control": "private, max-age=900"},
+            headers={
+                "Cache-Control": "private, max-age=900",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": f'attachment; filename="{cache_name}"',
+            },
         )
     try:
         cache_path = _character_cache_path(cache_name)
@@ -1046,7 +1118,11 @@ def read_cached_character_asset(cache_name: str, request: Request) -> Response:
     return Response(
         content=content,
         media_type=CHARACTER_CACHE_CONTENT_TYPES[cache_path.suffix],
-        headers={"Cache-Control": "private, max-age=900"},
+        headers={
+            "Cache-Control": "private, max-age=900",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'attachment; filename="{cache_name}"',
+        },
     )
 
 

@@ -793,7 +793,7 @@ describe("App", () => {
         method: "POST",
         body: JSON.stringify({
           asset_id: "asset-ready",
-          reuse_existing: true,
+          reuse_existing: false,
         }),
       }),
     );
@@ -1410,7 +1410,7 @@ describe("App", () => {
         method: "POST",
         body: JSON.stringify({
           asset_id: "asset-1",
-          reuse_existing: true,
+          reuse_existing: false,
         }),
       }),
     );
@@ -2248,7 +2248,9 @@ describe("App", () => {
     expect(screen.getByText("结果已归档")).toBeInTheDocument();
     expect(screen.getByText("task-running")).toBeInTheDocument();
     expect(screen.getAllByText("需要处理")).toHaveLength(2);
-    expect(window.localStorage.getItem("generation.batchId")).toBe("batch-1");
+    expect(window.localStorage.getItem("generation.batchId:employee_1")).toBe(
+      "batch-1",
+    );
   });
 
   it("marks a batch as historical when its frozen inputs are stale", async () => {
@@ -2528,12 +2530,17 @@ describe("App", () => {
     expect(
       screen.getByText("该任务记录不存在，已停止自动刷新。"),
     ).toBeInTheDocument();
-    expect(window.localStorage.getItem("generation.batchId")).toBeNull();
+    expect(
+      window.localStorage.getItem("generation.batchId:employee_1"),
+    ).toBeNull();
     expect(generationRequestCount).toBe(1);
   });
 
   it("restores the last batch id from localStorage when reopening the workspace", async () => {
-    window.localStorage.setItem("generation.batchId", "batch-restored");
+    window.localStorage.setItem(
+      "generation.batchId:employee_1",
+      "batch-restored",
+    );
     const fetchMock = vi.fn((url: string) => {
       if (url.endsWith("/health")) {
         return Promise.resolve({

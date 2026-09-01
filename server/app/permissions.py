@@ -35,10 +35,39 @@ class SecurityDenialAudit:
 class AuditedSecurityDenial(HTTPException):
     """A PG denial whose audit must commit after the business rollback."""
 
-    def __init__(self, *, code: str, message: str, audit: SecurityDenialAudit) -> None:
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        audit: SecurityDenialAudit,
+        status_code: int = 403,
+        detail: Any | None = None,
+    ) -> None:
         set_current_result_code(code)
-        super().__init__(status_code=403, detail={"code": code, "message": message})
+        super().__init__(
+            status_code=status_code,
+            detail=detail if detail is not None else {"code": code, "message": message},
+        )
         self.audit = audit
+
+
+def remap_security_denial(
+    error: HTTPException,
+    *,
+    status_code: int,
+    detail: dict[str, str],
+) -> HTTPException:
+    """Change a denial's public resource shape without dropping its PG audit fact."""
+    if isinstance(error, AuditedSecurityDenial):
+        return AuditedSecurityDenial(
+            code=detail["code"],
+            message=detail.get("message", ""),
+            audit=error.audit,
+            status_code=status_code,
+            detail=detail,
+        )
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 def persist_security_denial(error: AuditedSecurityDenial) -> None:
@@ -80,11 +109,13 @@ def _raise_denial_with_audit(
     metadata: dict[str, Any],
     code: str,
     message: str,
+    status_code: int = 403,
 ) -> Never:
     if conn.is_postgres:
         raise AuditedSecurityDenial(
             code=code,
             message=message,
+            status_code=status_code,
             audit=SecurityDenialAudit(
                 id=str(uuid4()),
                 actor_user_id=actor.id,
@@ -102,7 +133,7 @@ def _raise_denial_with_audit(
         entity_id=entity_id,
         metadata=metadata,
     )
-    raise forbidden(code, message)
+    raise HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
 def insert_audit(
@@ -237,8 +268,9 @@ def require_project_access(
         entity_type="project",
         entity_id=project_id,
         metadata={"attempted_action": action},
-        code="PROJECT_FORBIDDEN",
-        message="User is not the project owner or an allowed project team member.",
+        code="PROJECT_NOT_FOUND",
+        message="Project does not exist.",
+        status_code=404,
     )
 
 
@@ -265,13 +297,28 @@ def require_asset_access(
         )
 
     if row["project_id"] is not None:
-        require_project_access(
-            conn,
-            actor=actor,
-            project_id=str(row["project_id"]),
-            action=action,
-            evidence_type="asset",
-        )
+        try:
+            require_project_access(
+                conn,
+                actor=actor,
+                project_id=str(row["project_id"]),
+                action=action,
+                evidence_type="asset",
+            )
+        except AuditedSecurityDenial as exc:
+            raise AuditedSecurityDenial(
+                code="ASSET_NOT_FOUND",
+                message="Asset does not exist.",
+                audit=exc.audit,
+                status_code=404,
+            ) from exc
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "ASSET_NOT_FOUND", "message": "Asset does not exist."},
+                ) from exc
+            raise
         return cast(sqlite3.Row, row)
 
     if actor.role in {"admin", "auditor"}:
@@ -281,7 +328,11 @@ def require_asset_access(
     # published character version referenced in their asset metadata.
     if str(row["kind"]) == "character_contact_sheet":
         sheet_identity = _published_contact_sheet_identity(conn, row)
-        if sheet_identity is not None and character_identity_is_current(sheet_identity):
+        if (
+            sheet_identity is not None
+            and identity_owned_by_actor(sheet_identity, actor)
+            and character_identity_is_current(sheet_identity)
+        ):
             return cast(sqlite3.Row, row)
 
     # Simple-upload source photos also live outside character_assets; grant
@@ -289,12 +340,17 @@ def require_asset_access(
     # generation can use the uploaded photo as the authoritative face input.
     if str(row["kind"]) == "character_source_image":
         source_identity = _identity_from_asset_metadata(conn, row)
-        if source_identity is not None and character_identity_is_current(source_identity):
+        if (
+            source_identity is not None
+            and identity_owned_by_actor(source_identity, actor)
+            and character_identity_is_current(source_identity)
+        ):
             return cast(sqlite3.Row, row)
 
     published_character = conn.execute(
         """
         SELECT
+            identity.owner_user_id,
             identity.authorization_status,
             identity.authorization_expires_at,
             identity.source_quality_status,
@@ -312,7 +368,11 @@ def require_asset_access(
         """,
         (asset_id,),
     ).fetchone()
-    if published_character is not None and character_identity_is_current(published_character):
+    if (
+        published_character is not None
+        and identity_owned_by_actor(published_character, actor)
+        and character_identity_is_current(published_character)
+    ):
         return cast(sqlite3.Row, row)
 
     _raise_denial_with_audit(
@@ -322,8 +382,9 @@ def require_asset_access(
         entity_type="asset",
         entity_id=asset_id,
         metadata={"attempted_action": action},
-        code="ASSET_FORBIDDEN",
-        message=ASSET_FORBIDDEN_MESSAGE,
+        code="ASSET_NOT_FOUND",
+        message="Asset does not exist.",
+        status_code=404,
     )
 
 
@@ -334,6 +395,11 @@ def character_identity_is_current(row: sqlite3.Row) -> bool:
         authorization_expires_at=row["authorization_expires_at"],
         source_quality_status=row["source_quality_status"],
     )
+
+
+def identity_owned_by_actor(row: sqlite3.Row, actor: CurrentUser) -> bool:
+    owner_user_id = row["owner_user_id"]
+    return owner_user_id is not None and str(owner_user_id) == actor.id
 
 
 def _record_authorization_evidence(
@@ -382,6 +448,7 @@ def _identity_from_asset_metadata(conn: BusinessConnection, row: sqlite3.Row) ->
     identity: sqlite3.Row | None = conn.execute(
         """
         SELECT
+            owner_user_id,
             authorization_status,
             authorization_expires_at,
             source_quality_status,
@@ -408,6 +475,7 @@ def _published_contact_sheet_identity(
     identity: sqlite3.Row | None = conn.execute(
         """
         SELECT
+            identity.owner_user_id,
             identity.authorization_status,
             identity.authorization_expires_at,
             identity.source_quality_status,

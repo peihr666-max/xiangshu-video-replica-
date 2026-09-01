@@ -374,7 +374,7 @@ def _seed_chain_assets(*, project_id: str, user_id: str) -> tuple[str, str]:
             "VALUES ('ff-candidates-1', %s, 'ff-1', 'first_frame_candidates', 1, %s, %s)",
             (
                 project_id,
-                '{"candidates": [{"asset_id": "ff-1"}]}',
+                '{"candidates": [{"asset_id": "ff-1", "quality": {"passed": true}}]}',
                 user_id,
             ),
         )

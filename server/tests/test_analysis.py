@@ -163,6 +163,8 @@ def valid_analysis_payload() -> dict[str, object]:
                 "scene": "室内",
                 "spoken_text": "你好",
                 "transition": "硬切",
+                "segment_kind": "ACTION_BEAT",
+                "boundary_reason": "开场建立人物与场景",
                 "motion": {
                     "subject_motion_state": "GESTURING_ONLY",
                     "subject_direction": "in_place",
@@ -185,6 +187,8 @@ def valid_analysis_payload() -> dict[str, object]:
                 "scene": "桌面",
                 "spoken_text": "再见",
                 "transition": "淡出",
+                "segment_kind": "ACTION_BEAT",
+                "boundary_reason": "表达重点切换到产品展示",
                 "motion": {
                     "subject_motion_state": "OBJECT_MOTION",
                     "subject_direction": "none",
@@ -217,8 +221,7 @@ def test_fake_gemini_analysis_repairs_invalid_json_once() -> None:
     assert "video_uri" not in result.provider_response_ref["raw"]
 
 
-def test_analysis_accepts_legacy_shots_without_motion_without_paid_repair() -> None:
-    """旧版 b2 结果没有 motion，也必须直接完成，不能触发第二次供应商调用。"""
+def test_fresh_analysis_repairs_shots_without_required_motion() -> None:
     payload_without_motion = valid_analysis_payload()
     for shot in payload_without_motion["shots"]:
         del shot["motion"]
@@ -233,12 +236,11 @@ def test_analysis_accepts_legacy_shots_without_motion_without_paid_repair() -> N
         provider=provider,
     )
 
-    assert provider.repair_calls == 0
-    assert all(shot.motion is None for shot in result.analysis.shots)
+    assert provider.repair_calls == 1
+    assert all(shot.motion is not None for shot in result.analysis.shots)
 
 
-def test_analysis_ignores_only_invalid_optional_motion_without_paid_repair() -> None:
-    """供应商把可选 motion 返回成旧格式时，保留主体拆解并保留其他有效 motion。"""
+def test_fresh_analysis_repairs_invalid_motion_instead_of_silently_dropping_it() -> None:
     payload = valid_analysis_payload()
     payload["shots"][0]["motion"] = {
         "subject_motion_state": "行走",
@@ -247,7 +249,7 @@ def test_analysis_ignores_only_invalid_optional_motion_without_paid_repair() -> 
     expected_valid_motion = payload["shots"][1]["motion"]
     provider = FakeGemini(
         analysis_json=json.dumps(payload),
-        repair_json='{"must_not_be_called": true}',
+        repair_json=json.dumps(valid_analysis_payload()),
     )
 
     result = analyze_video(
@@ -256,10 +258,31 @@ def test_analysis_ignores_only_invalid_optional_motion_without_paid_repair() -> 
         provider=provider,
     )
 
-    assert provider.repair_calls == 0
-    assert result.analysis.shots[0].motion is None
+    assert provider.repair_calls == 1
+    assert result.analysis.shots[0].motion is not None
     assert result.analysis.shots[1].motion is not None
     assert result.analysis.shots[1].motion.model_dump() == expected_valid_motion
+
+
+@pytest.mark.parametrize("required_field", ["person_count", "segment_kind", "boundary_reason"])
+def test_fresh_analysis_repairs_when_a_required_segment_field_is_missing(
+    required_field: str,
+) -> None:
+    invalid = valid_analysis_payload()
+    del invalid["shots"][0][required_field]
+    provider = FakeGemini(
+        analysis_json=json.dumps(invalid),
+        repair_json=json.dumps(valid_analysis_payload()),
+    )
+
+    result = analyze_video(
+        video_uri="local://owned.mp4",
+        video_duration_seconds=10,
+        provider=provider,
+    )
+
+    assert provider.repair_calls == 1
+    assert getattr(result.analysis.shots[0], required_field) is not None
 
 
 def test_analysis_preserves_precise_duration_and_snaps_last_shot_rounding() -> None:
@@ -443,6 +466,18 @@ def test_video_analysis_uses_the_fixed_apilio_origin_when_legacy_base_url_exists
 
     assert isinstance(provider, ApilioGemini)
     assert provider.base_url == APILIO_DEFAULT_BASE_URL
+
+
+def test_customer_production_refuses_fake_video_analysis_provider(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        with pytest.raises(HTTPException) as exc_info:
+            get_video_analysis_provider(conn)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["code"] == "ANALYSIS_PROVIDER_SETTINGS_REQUIRED"
 
 
 def test_real_video_analysis_refuses_a_non_https_storage_download_intent() -> None:
@@ -717,11 +752,16 @@ def test_analysis_routes_require_existing_rbac(client: TestClient) -> None:
         json={"asset_id": "asset_owned", "duration_seconds": 10},
         headers=auth_headers("employee_2"),
     )
+    missing = client.post(
+        "/api/projects/project_missing/analysis",
+        json={"asset_id": "asset_owned", "duration_seconds": 10},
+        headers=auth_headers("employee_2"),
+    )
 
     assert auditor.status_code == 403
     assert auditor.json()["detail"]["code"] == "ROLE_FORBIDDEN"
-    assert other_owner.status_code == 403
-    assert other_owner.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert other_owner.status_code == 404
+    assert other_owner.content == missing.content
 
 
 def test_analysis_rejects_pending_or_non_reference_assets(
@@ -1073,6 +1113,56 @@ def test_analysis_task_is_queued_without_calling_the_provider_and_worker_complet
     )
     assert latest.status_code == 200
     assert latest.json()["payload"]["analysis"]["summary"].startswith("FakeGemini")
+
+
+def test_async_reanalysis_of_the_same_asset_publishes_a_new_version(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    original = client.post(
+        "/api/projects/project_owned/analysis",
+        json={"asset_id": "asset_owned", "duration_seconds": 10},
+        headers=auth_headers("employee_1"),
+    )
+    assert original.status_code == 200
+    assert original.json()["version_number"] == 1
+
+    queued = client.post(
+        "/api/projects/project_owned/analysis-tasks",
+        json={
+            "asset_id": "asset_owned",
+            "duration_seconds": 10,
+            "reuse_existing": False,
+        },
+        headers=auth_headers("employee_1"),
+    )
+    assert queued.status_code == 202
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="analysis-worker-reanalysis",
+                storage=FakeStorageAdapter(provider="fake", bucket="analysis"),
+                analysis_provider=FakeGemini(),
+                max_tasks=1,
+            )
+            == 1
+        )
+
+    completed = client.get(
+        f"/api/analysis-tasks/{queued.json()['id']}",
+        headers=auth_headers("employee_1"),
+    )
+    latest = client.get(
+        "/api/projects/project_owned/analysis/latest",
+        headers=auth_headers("employee_1"),
+    )
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "SUCCEEDED"
+    assert completed.json()["result_version_id"] != original.json()["id"]
+    assert latest.status_code == 200
+    assert latest.json()["version_number"] == 2
 
 
 def test_analysis_task_lease_covers_two_provider_attempts(

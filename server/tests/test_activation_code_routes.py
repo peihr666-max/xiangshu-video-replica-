@@ -14,7 +14,7 @@ Contract under test (activation-code dev doc §12.1 / §13.1 / §13.2):
   malformed, undelivered, expired, suspended, revoked or already-active
   codes (anti-enumeration, ACT-08 groundwork);
 - a fingerprint already bound to a live customer answers 409
-  ``USER_ALREADY_ACTIVATED`` (one account never redeems a second main code);
+  unified ``ACTIVATION_UNAVAILABLE`` (one account never redeems a second main code);
 - the same Idempotency-Key with a different request body answers 409
   ``IDEMPOTENCY_CONFLICT``; with the same body it replays the stored
   response without re-billing;
@@ -543,7 +543,7 @@ def test_activate_unavailable_is_unified(
 
 
 # ---------------------------------------------------------------------------
-# 409 USER_ALREADY_ACTIVATED: one account never redeems a second main code
+# Unified rejection: one account never redeems a second main code
 # ---------------------------------------------------------------------------
 
 
@@ -560,8 +560,8 @@ def test_activate_second_code_with_same_fingerprint_conflicts(
     assert first.status_code == 201, first.text
 
     second = _activate(client, code=second_code, fingerprint="fp-same", key="key-second")
-    assert second.status_code == 409, second.text
-    assert second.json()["detail"]["code"] == "USER_ALREADY_ACTIVATED"
+    assert second.status_code == 400, second.text
+    assert second.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
     with psycopg.connect(clean_state) as conn:
         # Only the first activation chain exists.
@@ -848,8 +848,8 @@ def test_fingerprint_rotation_window_blocks_second_activation(
     # Rotation: V2 is configured while V1 stays retained.
     monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY_V2", secrets.token_urlsafe(48))
     second = _activate(client, code=second_code, fingerprint="fp-rotating", key="key-rot-b")
-    assert second.status_code == 409, second.text
-    assert second.json()["detail"]["code"] == "USER_ALREADY_ACTIVATED"
+    assert second.status_code == 400, second.text
+    assert second.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
     with psycopg.connect(clean_state) as conn:
         assert _count(conn, "SELECT COUNT(*) FROM users WHERE role = 'customer'") == 1

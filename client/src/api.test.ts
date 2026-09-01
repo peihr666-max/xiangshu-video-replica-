@@ -1137,7 +1137,7 @@ describe("startVideoAnalysis", () => {
       expect.objectContaining({
         body: JSON.stringify({
           asset_id: "asset-1",
-          reuse_existing: true,
+          reuse_existing: false,
         }),
       }),
     );

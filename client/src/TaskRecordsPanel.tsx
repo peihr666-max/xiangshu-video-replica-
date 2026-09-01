@@ -28,13 +28,13 @@ import {
   waitForGenerationReconcileOperation,
 } from "./api";
 import {
-  playableProviderUrl,
   readSnapshotNumber,
   readSnapshotString,
   VideoResultStage,
 } from "./VideoResultStage";
 
 const BATCH_STORAGE_KEY = "generation.batchId";
+const BATCH_STORAGE_KEY_PREFIX = `${BATCH_STORAGE_KEY}:`;
 const POLL_INTERVAL_MS = 2_000;
 const MAX_RETRY_DELAY_MS = 16_000;
 const TERMINAL_BATCH_STATUSES = new Set([
@@ -46,6 +46,7 @@ const TERMINAL_BATCH_STATUSES = new Set([
 ]);
 
 type TaskRecordsPanelProps = {
+  currentUserId?: string;
   handoffBatch: GenerationBatch | null;
   onHandoffConsumed: () => void;
   userRole: UserRole;
@@ -54,11 +55,14 @@ type TaskRecordsPanelProps = {
 type TaskViewMode = "stage" | "ops";
 
 export function TaskRecordsPanel({
+  currentUserId,
   handoffBatch,
   onHandoffConsumed,
   userRole,
 }: TaskRecordsPanelProps) {
-  const restoredBatchId = handoffBatch?.id ?? readStoredBatchId() ?? "";
+  const storageKey = batchStorageKey(currentUserId);
+  const restoredBatchId =
+    handoffBatch?.id ?? readStoredBatchId(storageKey) ?? "";
   const [batchIdInput, setBatchIdInput] = useState(restoredBatchId);
   const [activeBatchId, setActiveBatchId] = useState(restoredBatchId);
   const activeBatchIdRef = useRef(restoredBatchId);
@@ -122,9 +126,9 @@ export function TaskRecordsPanel({
       setTaskActionReasons({});
       setTaskPaymentConfirmations({});
       requeuedTaskIdsRef.current.clear();
-      storeBatchId(batchId);
+      storeBatchId(storageKey, batchId);
     },
-    [releasePreviewUrls],
+    [releasePreviewUrls, storageKey],
   );
 
   useEffect(() => {
@@ -224,7 +228,7 @@ export function TaskRecordsPanel({
         setBatchError("");
         setRetryDelaySeconds(null);
         nextRetryDelayMs = POLL_INTERVAL_MS;
-        storeBatchId(activeBatchId);
+        storeBatchId(storageKey, activeBatchId);
         if (
           !isTerminalBatch(nextBatch) ||
           hasRequeuedTaskStillProcessing(nextBatch, requeuedTaskIdsRef.current)
@@ -239,7 +243,7 @@ export function TaskRecordsPanel({
         if (status === 404) {
           setBatchError("该任务记录不存在，已停止自动刷新。");
           setRetryDelaySeconds(null);
-          clearStoredBatchId();
+          clearStoredBatchId(storageKey);
           activeBatchIdRef.current = "";
           setActiveBatchId("");
           setBatch(null);
@@ -276,7 +280,7 @@ export function TaskRecordsPanel({
         window.clearTimeout(timeoutId);
       }
     };
-  }, [activeBatchId, pollingRevision]);
+  }, [activeBatchId, pollingRevision, storageKey]);
 
   const reconcileRecoveryKey = (batch?.tasks ?? [])
     .filter((task) => task.status === "SUBMISSION_UNCERTAIN")
@@ -424,7 +428,7 @@ export function TaskRecordsPanel({
           setBatchIdInput("");
           setBatch(null);
           setBatchError("");
-          clearStoredBatchId();
+          clearStoredBatchId(storageKey);
         }
       }
     } catch (error) {
@@ -639,25 +643,12 @@ export function TaskRecordsPanel({
     }
   }
 
-  // 在线播放：优先直连 Provider 返回的成片链接（metaso 临时签名 URL，
-  // 零服务端往返、生成完即可播）；无直连链接或已确认失效（过期）时，
-  // 签发本地归档副本的预签名 URL。useCallback 保持引用稳定，避免舞台
-  // 的自动签发 effect 反复触发。
-  const providerUrlFailedRef = useRef<Record<string, boolean>>({});
+  // 在线播放只签发已归档资产的短期 URL；Provider 临时地址不跨越
+  // 服务端边界，所有客户播放都经过同一权限与审计路径。
   const handlePreview = useCallback(
     async (task: GenerationTask) => {
       if (!canOperate) {
         return;
-      }
-      if (!providerUrlFailedRef.current[task.id]) {
-        const directUrl = playableProviderUrl(task);
-        if (directUrl) {
-          setPreviewUrls((current) => ({
-            ...current,
-            [task.id]: directUrl,
-          }));
-          return;
-        }
       }
       if (!task.result_asset_id) {
         return;
@@ -698,23 +689,8 @@ export function TaskRecordsPanel({
     [canOperate],
   );
 
-  // 直连链接播放失败（典型为签名过期）时自动回退归档副本；归档副本
-  // 仍无法播放时，清除黑屏播放器并展示可恢复的错误动作。
+  // 归档预览地址失效时清除黑屏播放器并展示可恢复动作。
   const handlePreviewSourceError = useCallback((task: GenerationTask) => {
-    const directUrl = playableProviderUrl(task);
-    if (directUrl && !providerUrlFailedRef.current[task.id]) {
-      providerUrlFailedRef.current[task.id] = true;
-      setPreviewUrls((current) => {
-        if (current[task.id] !== directUrl) {
-          return current;
-        }
-        const next = { ...current };
-        delete next[task.id];
-        return next;
-      });
-      return;
-    }
-
     setPreviewUrls((current) => {
       const next = { ...current };
       delete next[task.id];
@@ -1735,25 +1711,31 @@ function formatTimestamp(value: string) {
   return value.replace("T", " ").replace("Z", "").slice(0, 19);
 }
 
-function readStoredBatchId(): string | null {
+function batchStorageKey(currentUserId?: string): string {
+  return currentUserId
+    ? `${BATCH_STORAGE_KEY_PREFIX}${encodeURIComponent(currentUserId)}`
+    : BATCH_STORAGE_KEY;
+}
+
+function readStoredBatchId(storageKey: string): string | null {
   try {
-    return window.localStorage.getItem(BATCH_STORAGE_KEY);
+    return window.localStorage.getItem(storageKey);
   } catch {
     return null;
   }
 }
 
-function storeBatchId(batchId: string): void {
+function storeBatchId(storageKey: string, batchId: string): void {
   try {
-    window.localStorage.setItem(BATCH_STORAGE_KEY, batchId);
+    window.localStorage.setItem(storageKey, batchId);
   } catch {
     // The active batch remains available in memory when browser storage is blocked.
   }
 }
 
-function clearStoredBatchId(): void {
+function clearStoredBatchId(storageKey: string): void {
   try {
-    window.localStorage.removeItem(BATCH_STORAGE_KEY);
+    window.localStorage.removeItem(storageKey);
   } catch {
     // A blocked storage backend must not interrupt task navigation or polling.
   }

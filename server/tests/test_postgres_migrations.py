@@ -252,7 +252,7 @@ def test_pg_upgrade_from_published_040_head_applies_fair_queue() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "049_async_generation_reconcile"
+            assert version == "052_character_scene_look_tasks"
             fair_queue_column = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.columns "
                 "WHERE table_name = 'runtime_settings' AND column_name = 'fair_queue_enabled'"
@@ -286,7 +286,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
 
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "049_async_generation_reconcile", (
+            assert version == "052_character_scene_look_tasks", (
                 f"unexpected head revision: {version}"
             )
 
@@ -326,6 +326,11 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
             assert "generation_tasks_batch_id_fkey" in constraints, (
                 "009 must re-attach the FK on PG"
             )
+            scene_operation_constraint = conn.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'ck_character_sheet_tasks_operation'"
+            ).fetchone()[0]
+            assert "'SCENE'" in scene_operation_constraint
 
             # Partial unique indexes must exist on PG with their WHERE clauses
             # (sqlite_where is silently ignored by PG — DB-04/P1 review).
@@ -398,7 +403,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "049_async_generation_reconcile"
+            assert version == "052_character_scene_look_tasks"
     finally:
         _drop_database("t06_migrate_test")
 
@@ -520,7 +525,7 @@ def test_pg_wallet_downgrade_blocked_when_ledger_has_settled_rounds() -> None:
         # The database must be left exactly at head (no partial rollback).
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "049_async_generation_reconcile"
+        assert version == "052_character_scene_look_tasks"
     finally:
         _drop_database(db_name)
 
@@ -846,7 +851,7 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             command.downgrade(_alembic_config(sqlalchemy_dsn), "025_postgres_runtime_compatibility")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "049_async_generation_reconcile"
+        assert version == "052_character_scene_look_tasks"
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
@@ -948,7 +953,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "049_async_generation_reconcile"
+            assert version == "052_character_scene_look_tasks"
 
             indexes = {
                 row[0]
@@ -1129,11 +1134,190 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
         # indexes intact when the append-only evidence guard refuses rollback.
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "049_async_generation_reconcile"
+            assert version == "052_character_scene_look_tasks"
             index_count = conn.execute(
                 "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
                 "AND indexname = 'idx_wallets_updated_at_user'"
             ).fetchone()[0]
             assert int(index_count) == 1
+    finally:
+        _drop_database(db_name)
+
+
+def test_t44_backfills_identity_owners_and_makes_owner_required() -> None:
+    """T44: deployed NULL owners are deterministically repaired before isolation."""
+    from alembic import command
+
+    db_name = "t44_identity_owner_backfill"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+
+    try:
+        command.upgrade(_alembic_config(sqlalchemy_dsn), "050_activation_license_zero_credit")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name, role) VALUES "
+                "('owner-t44', 'owner-t44', 'Owner', 'employee'), "
+                "('fallback-t44', 'fallback-t44', 'Fallback', 'customer'), "
+                "('admin-t44', 'admin-t44', 'Admin', 'admin')"
+            )
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) "
+                "VALUES ('project-t44', 'owner-t44', 'T44 Project')"
+            )
+            conn.execute(
+                "INSERT INTO assets "
+                "(id, project_id, kind, storage_uri, sha256, size_bytes, content_type, "
+                "created_by_user_id) VALUES "
+                "('source-t44', 'project-t44', 'image', 'local://source-t44.png', "
+                "'sha-source-t44', 1, 'image/png', 'admin-t44')"
+            )
+            conn.execute(
+                "INSERT INTO person_identities "
+                "(id, owner_user_id, display_name, authorization_status, authorization_scope, "
+                "source_asset_id, source_quality_status, status, created_by) VALUES "
+                "('identity-project-t44', NULL, 'Project Identity', 'AUTHORIZED', '[]', "
+                "'source-t44', 'PASSED', 'ACTIVE', 'admin-t44'), "
+                "('identity-fallback-t44', NULL, 'Fallback Identity', 'AUTHORIZED', '[]', "
+                "NULL, 'PASSED', 'ACTIVE', 'fallback-t44')"
+            )
+
+        command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
+        with psycopg.connect(dsn) as conn:
+            owners = dict(
+                conn.execute(
+                    "SELECT id, owner_user_id FROM person_identities "
+                    "WHERE id LIKE 'identity-%-t44' ORDER BY id"
+                ).fetchall()
+            )
+            nullable = conn.execute(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'person_identities' "
+                "AND column_name = 'owner_user_id'"
+            ).fetchone()
+        assert owners == {
+            "identity-fallback-t44": "fallback-t44",
+            "identity-project-t44": "owner-t44",
+        }
+        assert nullable == ("NO",)
+
+        command.downgrade(_alembic_config(sqlalchemy_dsn), "050_activation_license_zero_credit")
+        with psycopg.connect(dsn) as conn:
+            nullable_after_downgrade = conn.execute(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'person_identities' "
+                "AND column_name = 'owner_user_id'"
+            ).fetchone()
+        assert nullable_after_downgrade == ("YES",)
+    finally:
+        _drop_database(db_name)
+
+
+def test_t44_refuses_ambiguous_identity_project_owners() -> None:
+    """T44: conflicting tenant evidence must block deployment, not guess."""
+    from alembic import command
+
+    db_name = "t44_identity_owner_conflict"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+
+    try:
+        command.upgrade(_alembic_config(sqlalchemy_dsn), "050_activation_license_zero_credit")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name, role) VALUES "
+                "('owner-a-t44', 'owner-a-t44', 'Owner A', 'employee'), "
+                "('owner-b-t44', 'owner-b-t44', 'Owner B', 'employee')"
+            )
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES "
+                "('project-a-t44', 'owner-a-t44', 'Project A'), "
+                "('project-b-t44', 'owner-b-t44', 'Project B')"
+            )
+            conn.execute(
+                "INSERT INTO assets "
+                "(id, project_id, kind, storage_uri, sha256, size_bytes, content_type) VALUES "
+                "('source-a-t44', 'project-a-t44', 'image', 'local://source-a-t44.png', "
+                "'sha-source-a-t44', 1, 'image/png'), "
+                "('authorization-b-t44', 'project-b-t44', 'authorization', "
+                "'local://authorization-b-t44.pdf', 'sha-authorization-b-t44', 1, "
+                "'application/pdf')"
+            )
+            conn.execute(
+                "INSERT INTO person_identities "
+                "(id, owner_user_id, display_name, authorization_status, authorization_scope, "
+                "authorization_asset_id, source_asset_id, source_quality_status, status) VALUES "
+                "('identity-conflict-t44', NULL, 'Conflict', 'AUTHORIZED', '[]', "
+                "'authorization-b-t44', 'source-a-t44', 'PASSED', 'ACTIVE')"
+            )
+
+        with pytest.raises(RuntimeError, match="multiple owners"):
+            command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
+
+        with psycopg.connect(dsn) as conn:
+            version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+            owner = conn.execute(
+                "SELECT owner_user_id FROM person_identities WHERE id = 'identity-conflict-t44'"
+            ).fetchone()
+        assert version == "050_activation_license_zero_credit"
+        assert owner == (None,)
+    finally:
+        _drop_database(db_name)
+
+
+def test_t46_scene_task_constraint_and_downgrade_guard() -> None:
+    """Scene task history must remain valid across deployment and rollback."""
+    from alembic import command
+
+    db_name = "t46_scene_task_constraint"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+
+    try:
+        command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name, role) "
+                "VALUES ('owner-t46', 'owner-t46', 'Owner', 'employee')"
+            )
+            conn.execute(
+                "INSERT INTO character_sheet_tasks "
+                "(id, created_by_user_id, idempotency_key, request_hash, request_json, "
+                "operation, source_storage_uri, source_content_type, source_sha256, "
+                "source_size_bytes) VALUES "
+                "('scene-task-t46', 'owner-t46', 'scene:t46', 'scene-hash-t46', '{}', "
+                "'SCENE', 'local://scene-source-t46.png', 'image/png', 'sha-t46', 1)"
+            )
+
+        with pytest.raises(RuntimeError, match="cannot downgrade scene-look"):
+            command.downgrade(
+                _alembic_config(sqlalchemy_dsn),
+                "051_identity_owner_backfill",
+            )
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+            assert version == "052_character_scene_look_tasks"
+            conn.execute("DELETE FROM character_sheet_tasks WHERE id = 'scene-task-t46'")
+
+        command.downgrade(
+            _alembic_config(sqlalchemy_dsn),
+            "051_identity_owner_backfill",
+        )
+        with psycopg.connect(dsn) as conn:
+            constraint = conn.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'ck_character_sheet_tasks_operation'"
+            ).fetchone()[0]
+            assert "'SCENE'" not in constraint
     finally:
         _drop_database(db_name)

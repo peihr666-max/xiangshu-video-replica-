@@ -112,13 +112,16 @@ class AuthenticatedDevice:
 class DeviceCredentialLookup:
     """The resolution of one presented device token.
 
-    ``device`` is set only for a currently ``BOUND`` device. ``row_status``
-    carries the stored status when the token matched a released row, which
+    ``device`` is set only for a currently ``BOUND`` device. ``matched_device``
+    preserves the authenticated row identity even after release so a route may
+    recover that same device's sealed idempotent response without treating the
+    credential as live. ``row_status`` carries the stored status, which
     is how the routes distinguish 401 ``DEVICE_REVOKED`` (the client should
     wipe its stored credentials) from 401 ``DEVICE_CREDENTIAL_INVALID``.
     """
 
     device: AuthenticatedDevice | None
+    matched_device: AuthenticatedDevice | None
     row_status: str | None
 
 
@@ -230,11 +233,9 @@ def lookup_device_credential(conn: psycopg.Connection, token: str) -> DeviceCred
         (digests,),
     ).fetchone()
     if row is None:
-        return DeviceCredentialLookup(device=None, row_status=None)
+        return DeviceCredentialLookup(device=None, matched_device=None, row_status=None)
     status = str(row[6])
-    if status != BOUND:
-        return DeviceCredentialLookup(device=None, row_status=status)
-    device = AuthenticatedDevice(
+    matched_device = AuthenticatedDevice(
         id=str(row[0]),
         user_id=str(row[1]),
         activation_code_id=str(row[2]),
@@ -242,7 +243,17 @@ def lookup_device_credential(conn: psycopg.Connection, token: str) -> DeviceCred
         display_name=str(row[4]),
         platform=str(row[5]),
     )
-    return DeviceCredentialLookup(device=device, row_status=status)
+    if status != BOUND:
+        return DeviceCredentialLookup(
+            device=None,
+            matched_device=matched_device,
+            row_status=status,
+        )
+    return DeviceCredentialLookup(
+        device=matched_device,
+        matched_device=matched_device,
+        row_status=status,
+    )
 
 
 # ---------------------------------------------------------------------------

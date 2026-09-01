@@ -44,6 +44,8 @@ export function SourceFrameSelection({
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [manualConfirmationRequired, setManualConfirmationRequired] =
+    useState(false);
   const loadRequestId = useRef(0);
   // P0-03-02：特征建议取最新值（latest-ref），避免建议变化触发候选重载；
   // 自动提取按项目去重，每项目仅自动一次，失败不自动重试（手动态仍可重提）。
@@ -176,6 +178,7 @@ export function SourceFrameSelection({
         return;
       }
       setCandidates(payload.candidates);
+      setManualConfirmationRequired(false);
       setPreviewUrls({});
       setFailedPreviewAssetIds([]);
       const confirmedAssetId = selection.version?.payload.source_frame_asset_id;
@@ -187,7 +190,14 @@ export function SourceFrameSelection({
         const preferredAssetId = preferredCandidateAssetId(payload.candidates);
         setSelectedAssetId(preferredAssetId);
         onSelectionChange?.(null);
-        if (!readOnly && preferredAssetId) {
+        if (
+          !readOnly &&
+          preferredAssetId &&
+          payload.semantic_quality_status !== "VERIFIED"
+        ) {
+          setManualConfirmationRequired(true);
+          setStatus("语义评分暂不可用，请查看候选画面后手动确认。");
+        } else if (!readOnly && preferredAssetId) {
           const confirmationKey = `${version.id}:${preferredAssetId}`;
           if (!autoConfirmAttemptRef.current.has(confirmationKey)) {
             autoConfirmAttemptRef.current.add(confirmationKey);
@@ -400,9 +410,11 @@ export function SourceFrameSelection({
         >
           {error
             ? "需要处理"
-            : selectedAssetId && !isLoading && !isSubmitting
-              ? "已自动选择"
-              : "自动处理中"}
+            : manualConfirmationRequired
+              ? "待手动确认"
+              : selectedAssetId && !isLoading && !isSubmitting
+                ? "已自动选择"
+                : "自动处理中"}
         </span>
       </div>
       {isLoading ? <p className="status-note">正在读取候选源画面</p> : null}
@@ -525,7 +537,7 @@ function adaptiveSourceFrameTimestamps(
   ) {
     return [0.5, 1.5, 2.5];
   }
-  return [0.2, 0.5, 0.8].map((ratio) =>
+  return [0.1, 0.3, 0.5, 0.7, 0.9].map((ratio) =>
     Number((durationSeconds * ratio).toFixed(3)),
   );
 }

@@ -17,6 +17,44 @@ from app.db_portable import BusinessConnection
 from app.repositories import GenerationTaskRepository
 
 
+def _create_minimal_task(
+    conn: BusinessConnection,
+    *,
+    user_id: str,
+    project_id: str,
+    batch_id: str,
+    task_id: str,
+) -> str:
+    """Test fixture only; production repositories never manufacture owners."""
+    with conn:
+        conn.execute(
+            "INSERT INTO users (id, username, display_name) VALUES (%s, %s, %s)",
+            (user_id, user_id, user_id),
+        )
+        conn.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+            (project_id, user_id, project_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO generation_batches (
+                id, project_id, created_by_user_id, idempotency_key,
+                request_hash, request_snapshot_json
+            ) VALUES (%s, %s, %s, %s, %s, '{}')
+            """,
+            (batch_id, project_id, user_id, f"{batch_id}:key", f"{batch_id}:hash"),
+        )
+        conn.execute(
+            """
+            INSERT INTO generation_tasks (
+                id, batch_id, generation_mode, provider, model, status, next_poll_at
+            ) VALUES (%s, %s, 'I2V', 'metaso', 'MiniMax-H3', 'PENDING', CURRENT_TIMESTAMP)
+            """,
+            (task_id, batch_id),
+        )
+    return task_id
+
+
 def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Path) -> None:
     db_path = tmp_path / "data" / "app.db"
 
@@ -38,7 +76,7 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
     assert journal_mode == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5000
-    assert alembic_versions == ["049_async_generation_reconcile"]
+    assert alembic_versions == ["052_character_scene_look_tasks"]
     assert "schema_migrations" not in tables
     assert {
         "users",
@@ -107,7 +145,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             for row in conn.execute("PRAGMA index_list(generation_task_operations)").fetchall()
         }
 
-    assert version == "049_async_generation_reconcile"
+    assert version == "052_character_scene_look_tasks"
     assert {
         "locked_by",
         "locked_until",
@@ -219,7 +257,7 @@ def test_retry_lineage_revision_is_reversible(tmp_path: Path) -> None:
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "049_async_generation_reconcile"
+            "052_character_scene_look_tasks"
         )
 
 
@@ -275,7 +313,7 @@ def test_remove_oss_migration_purges_settings_and_selects_safe_fallback(
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE runtime_settings SET active_storage_provider = 'oss' WHERE id = 1")
 
-    assert version == "049_async_generation_reconcile"
+    assert version == "052_character_scene_look_tasks"
     assert "oss" not in providers
     assert active_provider == expected_provider
 
@@ -379,7 +417,7 @@ def test_runtime_bootstrap_upgrades_an_existing_database_before_startup(
     assert result.returncode == 0, result.stderr
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "049_async_generation_reconcile"
+            "052_character_scene_look_tasks"
         )
         assert (
             conn.execute(
@@ -484,8 +522,8 @@ def test_atomic_task_lease_allows_only_one_worker_with_independent_connections(
     db_path = tmp_path / "app.db"
     with initialize_database(db_path) as raw:
         with BusinessConnection.sqlite(raw) as conn:
-            repo = GenerationTaskRepository(conn)
-            task_id = repo.create_minimal_task(
+            task_id = _create_minimal_task(
+                conn,
                 user_id="user_1",
                 project_id="project_1",
                 batch_id="batch_1",
@@ -527,7 +565,8 @@ def test_expired_lease_can_be_recovered_by_another_worker(tmp_path: Path) -> Non
     with initialize_database(db_path) as raw:
         with BusinessConnection.sqlite(raw) as conn:
             repo = GenerationTaskRepository(conn)
-            repo.create_minimal_task(
+            _create_minimal_task(
+                conn,
                 user_id="user_1",
                 project_id="project_1",
                 batch_id="batch_1",
@@ -548,8 +587,8 @@ def test_backup_restore_preserves_tasks_versions_and_audit_counts(tmp_path: Path
     restored_path = tmp_path / "restored.db"
     with initialize_database(db_path) as raw:
         with BusinessConnection.sqlite(raw) as conn:
-            repo = GenerationTaskRepository(conn)
-            repo.create_minimal_task(
+            _create_minimal_task(
+                conn,
                 user_id="user_1",
                 project_id="project_1",
                 batch_id="batch_1",

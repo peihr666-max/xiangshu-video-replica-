@@ -149,6 +149,7 @@ export function WorkspaceShell({
     onApprovePairing: (pairingId: string) => void;
     onDismissPairing: (pairingId: string) => void;
     onProfileUpdated: (profile: CustomerProfile) => void;
+    onRefreshDevices: () => Promise<void>;
     onResetActivationCode: () => Promise<CustomerActivationCodeReset>;
     onUnbind: (deviceId: string) => void;
     onUpdateProfile: (displayName: string) => Promise<CustomerProfile>;
@@ -427,6 +428,7 @@ export function WorkspaceShell({
             ) : null}
             {page === "tasks" ? (
               <TaskRecordsPanel
+                currentUserId={currentUser.id}
                 handoffBatch={pendingBatchHandoff}
                 onHandoffConsumed={consumeBatchHandoff}
                 userRole={currentUser.role}
@@ -441,7 +443,7 @@ export function WorkspaceShell({
                   onSessionExpired={customerWallet.onSessionExpired}
                 />
               ) : (
-                <WalletPanel />
+                <WalletPanel currentUserId={currentUser.id} />
               )
             ) : null}
             {page === "profile" && customerAccount ? (
@@ -452,6 +454,7 @@ export function WorkspaceShell({
                 onDismissPairing={customerAccount.onDismissPairing}
                 onProfileUpdated={customerAccount.onProfileUpdated}
                 onRecharge={openRecharge}
+                onRefreshDevices={customerAccount.onRefreshDevices}
                 onResetActivationCode={customerAccount.onResetActivationCode}
                 onSessionExpired={customerAccount.onSessionExpired}
                 onUnbind={customerAccount.onUnbind}
@@ -468,6 +471,7 @@ export function WorkspaceShell({
         <CustomerRechargeDialog
           isOpen={isRechargeOpen}
           onClose={() => setIsRechargeOpen(false)}
+          onOrderCreated={() => setWalletRefreshKey((current) => current + 1)}
           onPaid={() => setWalletRefreshKey((current) => current + 1)}
           onSessionExpired={customerSession.onSessionExpired}
           store={customerSession.store}

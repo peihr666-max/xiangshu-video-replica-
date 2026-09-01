@@ -2,17 +2,19 @@
 
 ``POST /api/customer/activate`` redeems an ISSUED activation code and creates
 the whole customer identity chain in exactly one PostgreSQL transaction (dev
-doc §12.1). An empty code is the unattended reinstall-recovery signal: an
-already ACTIVE code is resolved through the same HMAC-protected machine
-fingerprint, then its device/session credentials rotate. Entering that same
-ACTIVE code on a new machine directly occupies the next free device slot and
-enters the existing account; no separate pairing or approval lane is required.
+doc §12.1). Reinstall recovery requires the complete activation code plus the
+same HMAC-protected machine fingerprint, then rotates device/session
+credentials directly without administrator approval. Fingerprint-only empty
+code recovery is deliberately refused: a leaked stable fingerprint is not a
+second authentication factor. Unknown or revoked hardware must use the
+explicit pairing workflow.
 
 Idempotency envelope (revision 029, ``customer_idempotency_envelopes``): the
 engine lives in ``app.customer_idempotency`` since T14 / ACT-07 so the later
 customer write paths (second-device enroll, login, recharge) share one
-contract. The raw client key never reaches the database — only its SHA-256
-digest. The envelope placeholder is inserted first with ``ON CONFLICT DO
+contract. The raw client key never reaches the database — only its
+domain-separated keyed digest (legacy SHA-256 rows remain readable during
+rotation). The envelope placeholder is inserted first with ``ON CONFLICT DO
 NOTHING``, so
 concurrent same-key writers serialize on the unique index; the winner seals
 the one-time response into an AES-GCM envelope (keyed digests of the device
@@ -26,9 +28,9 @@ Anti-enumeration (ACT-08 groundwork): every code-side rejection — unknown,
 malformed, undelivered, expired, suspended or revoked — is the single unified
 400 ``ACTIVATION_UNAVAILABLE`` with a
 message that never distinguishes the sub-state. A device fingerprint already
-bound to another live customer answers 409 ``USER_ALREADY_ACTIVATED``; the
+bound to another live customer receives that same unified answer; the
 concurrent race for one fingerprint is settled by the partial unique index
-``uq_customer_devices_fingerprint`` (§11.3).
+``uq_customer_devices_fingerprint`` (§11.3) without exposing the binding.
 
 No-Go red lines: no plaintext activation code, device token or session token
 in a column, event, envelope scope, log record or error message — only keyed
@@ -68,7 +70,7 @@ from app.customer_idempotency import (
     customer_aead_key,
     envelope_aad,
     highest_customer_aead_key,
-    idempotency_key_digest,
+    idempotency_key_digests,
     insert_envelope,
     load_envelope,
     open_response,
@@ -121,6 +123,14 @@ FINGERPRINT_UNIQUE_CONSTRAINT = "uq_customer_devices_fingerprint"
 # violation is the same "device already holds an activation" fact.
 FINGERPRINT_CANONICAL_UNIQUE_CONSTRAINT = "uq_customer_devices_fingerprint_canonical"
 USERS_USERNAME_CONSTRAINT = "users_username_key"
+DEVICE_SLOT_UNIQUE_CONSTRAINT = "uq_customer_devices_slot"
+ACTIVATION_CODE_UNIQUE_CONSTRAINTS = frozenset(
+    {
+        "activation_code_activations_code_id_key",
+        "activation_code_activations_user_id_key",
+        "activation_code_activations_recharge_order_id_key",
+    }
+)
 ACTIVATE_OPERATION = "activate"
 
 router = APIRouter(prefix="/api/customer", tags=["customer-activation"])
@@ -192,7 +202,7 @@ def _probe_replayable_response(
     conn: psycopg.Connection,
     *,
     scope_candidates: list[str],
-    key_digest: str,
+    key_digests: list[str],
     req_hash: str,
     response: Response,
 ) -> CustomerActivationResponse | None:
@@ -209,44 +219,42 @@ def _probe_replayable_response(
     never writes: a fall-through pays one extra indexed point read.
     """
     for scope_candidate in scope_candidates:
-        record = load_envelope(
-            conn,
-            operation=ACTIVATE_OPERATION,
-            scope=scope_candidate,
-            key_digest=key_digest,
-        )
-        if record is None:
-            continue
-        if record.request_hash != req_hash:
-            return None
-        if record.ciphertext is None or record.key_version is None:
-            return None
-        if record.recovery_expires_at is not None and (
-            datetime.fromisoformat(str(record.recovery_expires_at)) <= _server_now(conn)
-        ):
-            return None
-        try:
-            replayed = open_response(
-                record.ciphertext,
-                key=customer_aead_key(record.key_version),
-                aad=envelope_aad(ACTIVATE_OPERATION, scope_candidate, key_digest),
+        for key_digest in key_digests:
+            record = load_envelope(
+                conn,
+                operation=ACTIVATE_OPERATION,
+                scope=scope_candidate,
+                key_digest=key_digest,
             )
-        except IdempotencyKeyError:
-            return None
-        replay_request_id = replayed.get("request_id")
-        response.headers[REPLAY_HEADER] = "true"
-        if isinstance(replay_request_id, str) and replay_request_id:
-            response.headers[REQUEST_ID_HEADER] = replay_request_id
-        # The replay is a security-sensitive event (a one-time credential
-        # re-issued from the sealed envelope) — log observably, identifiers
-        # only, never plaintext.
-        logger.info(
-            "customer activation idempotent replay: scope=%s key_version=%s request=%s",
-            scope_candidate,
-            record.key_version,
-            replay_request_id if isinstance(replay_request_id, str) else "-",
-        )
-        return _response_from_payload(replayed)
+            if record is None:
+                continue
+            if record.request_hash != req_hash:
+                return None
+            if record.ciphertext is None or record.key_version is None:
+                return None
+            if record.recovery_expires_at is not None and (
+                datetime.fromisoformat(str(record.recovery_expires_at)) <= _server_now(conn)
+            ):
+                return None
+            try:
+                replayed = open_response(
+                    record.ciphertext,
+                    key=customer_aead_key(record.key_version),
+                    aad=envelope_aad(ACTIVATE_OPERATION, scope_candidate, key_digest),
+                )
+            except IdempotencyKeyError:
+                return None
+            replay_request_id = replayed.get("request_id")
+            response.headers[REPLAY_HEADER] = "true"
+            if isinstance(replay_request_id, str) and replay_request_id:
+                response.headers[REQUEST_ID_HEADER] = replay_request_id
+            logger.info(
+                "customer activation idempotent replay: scope=%s key_version=%s request=%s",
+                scope_candidate,
+                record.key_version,
+                replay_request_id if isinstance(replay_request_id, str) else "-",
+            )
+            return _response_from_payload(replayed)
     return None
 
 
@@ -315,9 +323,9 @@ def _keyed_digest(key: bytes, value: str) -> str:
 class CustomerActivationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # An empty code is the automatic same-machine recovery lane. The server
-    # resolves the active code from the HMAC-protected fingerprint binding;
-    # a first activation still requires a non-empty, valid code.
+    # Keep validation at the business layer so blank/malformed codes receive
+    # the same rate-limited anti-enumeration response as other unusable codes.
+    # Reinstall recovery still requires a complete valid activation code.
     activation_code: str = Field(min_length=0, max_length=64)
     device_fingerprint: str = Field(min_length=1, max_length=512)
     device_name: str = Field(min_length=1, max_length=128)
@@ -404,13 +412,14 @@ def _recover_or_bind_active_device(
     request_id: str,
     server_now: datetime,
 ) -> dict[str, object]:
-    """Restore a known machine or bind a free slot for one ACTIVE code.
+    """Restore a known machine for one ACTIVE code.
 
     The activation code is the customer's only login entry. A historical
     fingerprint restores its original device row even after local credential
-    loss or an administrator-forced logout. Supplying the ACTIVE code on a new
-    machine binds the next free slot directly. Empty-code boot recovery remains
-    limited to a known fingerprint, and the two-device ceiling stays enforced.
+    loss or an administrator-forced logout. Unknown hardware must use the
+    explicit pairing workflow and receive approval from a bound device or an
+    administrator; presenting the account's reusable activation code is not
+    itself authority to bind a new device.
     """
 
     if not bound_user_id:
@@ -448,43 +457,26 @@ def _recover_or_bind_active_device(
     now_iso = server_now.replace(microsecond=0).isoformat()
 
     if row is None:
-        if not allow_new_binding:
-            # Unattended boot recovery never enrolls unknown hardware.
-            raise _unavailable()
-        free_slot = next((slot for slot in (1, 2) if slot not in occupied_slots), None)
-        if free_slot is None:
+        if allow_new_binding:
             raise _http(
                 409,
-                "DEVICE_SLOTS_FULL",
-                "This activation code has reached its device limit.",
+                "PAIRING_APPROVAL_REQUIRED",
+                "This account is already active. Approve this device through device pairing.",
             )
-        device_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO customer_devices "
-            "(id, activation_code_id, user_id, slot_no, display_name, platform, "
-            " fingerprint_hmac, fingerprint_key_version, fingerprint_canonical, "
-            " token_digest, token_key_version, last_active_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                device_id,
-                code_id,
-                user_id,
-                free_slot,
-                device_name,
-                device_platform,
-                fingerprint_digests[-1],
-                fingerprint_key_version,
-                fingerprint_digests[0],
-                token_digest,
-                fingerprint_key_version,
-                now_iso,
-            ),
-        )
+        # Unattended boot recovery never reveals whether an unknown machine
+        # presented a code; keep its anti-enumeration response unchanged.
+        raise _unavailable()
     else:
         device_id = str(row[0])
         previous_slot = int(row[3])
         previous_status = str(row[4])
         target_slot: int | None
+        if previous_status == "REVOKED":
+            # Administrator revocation is terminal.  A matching historical
+            # fingerprint must not fall through to the unknown-device pairing
+            # response, which would both leak state and suggest that the
+            # credential can be revived.
+            raise _unavailable()
         if previous_status == "BOUND":
             target_slot = previous_slot
         else:
@@ -564,35 +556,20 @@ def _run_activation(
     server_now: datetime,
 ) -> dict[str, object]:
     unavailable = _unavailable()
-    if code_digests:
-        # Lock the code row: 100 concurrent first activations of one code
-        # serialize here and every loser observes the winner's ACTIVE state.
-        code_row = conn.execute(
-            "SELECT c.id, c.status, "
-            "b.unit_price_fen_snapshot, b.credits_snapshot, b.activation_expires_at, "
-            "c.bound_user_id "
-            "FROM activation_codes c "
-            "JOIN activation_code_batches b ON b.id = c.batch_id "
-            "WHERE c.code_digest = ANY(%s) "
-            "FOR UPDATE OF c",
-            (code_digests,),
-        ).fetchone()
-    else:
-        # No code means unattended desktop recovery. The opaque random
-        # machine fingerprint resolves its already ACTIVE binding; raw
-        # fingerprints never reach the database.
-        code_row = conn.execute(
-            "SELECT c.id, c.status, "
-            "b.unit_price_fen_snapshot, b.credits_snapshot, b.activation_expires_at, "
-            "c.bound_user_id "
-            "FROM customer_devices d "
-            "JOIN activation_codes c ON c.id = d.activation_code_id "
-            "JOIN activation_code_batches b ON b.id = c.batch_id "
-            "WHERE (d.fingerprint_hmac = ANY(%s) OR d.fingerprint_canonical = %s) "
-            "AND d.status IN ('BOUND', 'UNBOUND', 'REVOKED') AND c.status = 'ACTIVE' "
-            "ORDER BY d.created_at DESC, d.id DESC LIMIT 1 FOR UPDATE OF c, d",
-            (fingerprint_digests, fingerprint_digests[0]),
-        ).fetchone()
+    if not code_digests:
+        raise unavailable
+    # Lock the code row: 100 concurrent first activations of one code
+    # serialize here and every loser observes the winner's ACTIVE state.
+    code_row = conn.execute(
+        "SELECT c.id, c.status, "
+        "b.unit_price_fen_snapshot, b.credits_snapshot, b.activation_expires_at, "
+        "c.bound_user_id "
+        "FROM activation_codes c "
+        "JOIN activation_code_batches b ON b.id = c.batch_id "
+        "WHERE c.code_digest = ANY(%s) "
+        "FOR UPDATE OF c",
+        (code_digests,),
+    ).fetchone()
     if code_row is None:
         raise unavailable
     code_id = str(code_row[0])
@@ -611,8 +588,11 @@ def _run_activation(
             hmac_key=hmac_key,
             device_name=device_name,
             device_platform=device_platform,
-            update_device_metadata=bool(code_digests),
-            allow_new_binding=bool(code_digests),
+            # A reinstall can prove that it is the same machine, but the
+            # caller-supplied bootstrap label is not authority to rewrite the
+            # administrator/user-visible device identity.
+            update_device_metadata=False,
+            allow_new_binding=True,
             request_id=request_id,
             server_now=server_now,
         )
@@ -644,11 +624,7 @@ def _run_activation(
         (fingerprint_digests, fingerprint_digests[0]),
     ).fetchone()
     if bound is not None:
-        raise _http(
-            409,
-            "USER_ALREADY_ACTIVATED",
-            "This device already holds a customer activation.",
-        )
+        raise _unavailable()
 
     user_id, username = _insert_customer_user(conn)
 
@@ -686,42 +662,50 @@ def _run_activation(
         ),
     )
 
-    # The PAID first-charge order, priced by the frozen batch snapshot:
-    # credits x frozen unit price. PRICE-01 keeps the charged price at or
-    # above the order's own base snapshot; the activation lane carries no
-    # third-party trade number (revision 026 shapes).
-    order_id = str(uuid.uuid4())
-    merchant_order_no = f"ACT-{uuid.uuid4().hex}"
-    amount_fen = credits * unit_price_fen
+    # Account activation and recharge are separate business events. New
+    # licence-only batches carry zero credits and create no synthetic payment
+    # or wallet CHARGE. Positive legacy/gift batches retain their historical
+    # frozen-credit behavior so already-issued value is never discarded.
+    order_id: str | None = None
     now_iso = server_now.replace(microsecond=0).isoformat()
-    conn.execute(
-        "INSERT INTO recharge_orders "
-        "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, "
-        " status, pricing_scope, base_unit_price_fen_snapshot, "
-        " charged_unit_price_fen_snapshot, min_recharge_fen_snapshot, "
-        " recharge_step_fen_snapshot, amount_fen, credits, paid_at) "
-        "VALUES (%s, %s, %s, 'activation_code', NULL, NULL, 'PAID', "
-        " 'CUSTOMER_STANDARD', %s, %s, %s, %s, %s, %s, %s)",
-        (
-            order_id,
-            user_id,
-            merchant_order_no,
-            unit_price_fen,
-            unit_price_fen,
-            1,
-            1,
-            amount_fen,
-            credits,
-            now_iso,
-        ),
-    )
-    conn.execute(
-        "INSERT INTO wallet_transactions "
-        "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
-        " idempotency_key) "
-        "VALUES (%s, %s, 'CHARGE', %s, 0, %s, %s)",
-        (str(uuid.uuid4()), user_id, credits, order_id, f"activation_code:charge:{order_id}"),
-    )
+    if credits > 0:
+        order_id = str(uuid.uuid4())
+        merchant_order_no = f"ACT-{uuid.uuid4().hex}"
+        amount_fen = credits * unit_price_fen
+        conn.execute(
+            "INSERT INTO recharge_orders "
+            "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, "
+            " status, pricing_scope, base_unit_price_fen_snapshot, "
+            " charged_unit_price_fen_snapshot, min_recharge_fen_snapshot, "
+            " recharge_step_fen_snapshot, amount_fen, credits, paid_at) "
+            "VALUES (%s, %s, %s, 'activation_code', NULL, NULL, 'PAID', "
+            " 'CUSTOMER_STANDARD', %s, %s, %s, %s, %s, %s, %s)",
+            (
+                order_id,
+                user_id,
+                merchant_order_no,
+                unit_price_fen,
+                unit_price_fen,
+                1,
+                1,
+                amount_fen,
+                credits,
+                now_iso,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO wallet_transactions "
+            "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+            " idempotency_key) "
+            "VALUES (%s, %s, 'CHARGE', %s, 0, %s, %s)",
+            (
+                str(uuid.uuid4()),
+                user_id,
+                credits,
+                order_id,
+                f"activation_code:charge:{order_id}",
+            ),
+        )
 
     conn.execute(
         "INSERT INTO activation_code_activations "
@@ -785,7 +769,7 @@ def activate_first_device(
     request: Request,
     response: Response,
 ) -> CustomerActivationResponse:
-    """Create a first activation or recover its already-bound machine atomically."""
+    """Create a first activation or recover its code-authenticated machine atomically."""
     idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER, "").strip()
     if not idempotency_key:
         raise _http(400, "IDEMPOTENCY_KEY_REQUIRED", "An Idempotency-Key header is required.")
@@ -795,14 +779,10 @@ def activate_first_device(
     # a malformed-code burst (format probing) cannot skirt the abuse budget.
     # The unified rejection (audit + constant delay) fires after the limiter.
     canonical_code: str | None
-    recover_by_fingerprint = not body.activation_code.strip()
-    if recover_by_fingerprint:
+    try:
+        canonical_code = normalize_activation_code(body.activation_code)
+    except InvalidActivationCodeError:
         canonical_code = None
-    else:
-        try:
-            canonical_code = normalize_activation_code(body.activation_code)
-        except InvalidActivationCodeError:
-            canonical_code = None
 
     fingerprint = body.device_fingerprint.strip()
     device_name = body.device_name.strip()
@@ -827,6 +807,8 @@ def activate_first_device(
     try:
         fingerprint_key_version, hmac_key = _highest_device_domain_key()
         aead_key_version, aead_key = highest_customer_aead_key()
+        key_digests = idempotency_key_digests(idempotency_key)
+        key_digest = key_digests[0]
         code_digests = (
             [digest for digest, _version in iter_code_digests(canonical_code)]
             if canonical_code is not None
@@ -852,7 +834,6 @@ def activate_first_device(
     ]
     fingerprint_hmac = fingerprint_digests[-1]
     scope_candidates = list(reversed(fingerprint_digests))
-    key_digest = idempotency_key_digest(idempotency_key)
     # canonical_code is None only for malformed codes; those requests are
     # rejected before any envelope is ever written, so their hash value can
     # never match a stored envelope — the empty string just keeps the
@@ -879,7 +860,7 @@ def activate_first_device(
         replayed_response = _probe_replayable_response(
             conn,
             scope_candidates=scope_candidates,
-            key_digest=key_digest,
+            key_digests=key_digests,
             req_hash=req_hash,
             response=response,
         )
@@ -944,7 +925,7 @@ def activate_first_device(
         blocked.headers = {RETRY_AFTER_HEADER: str(retry_after)}
         raise blocked
 
-    if canonical_code is None and not recover_by_fingerprint:
+    if canonical_code is None:
         # T15 / ACT-08: the malformed rejection joins the unified audit and
         # constant-delay path (no valid digest exists for it — the fixed
         # "malformed" identifier keeps the failure countable).
@@ -953,7 +934,7 @@ def activate_first_device(
             request_id=get_or_create_request_id(request),
         )
         raise _unavailable() from None
-    assert canonical_code is not None or recover_by_fingerprint
+    assert canonical_code is not None
 
     recovery_seconds = recovery_window_seconds()
 
@@ -963,17 +944,22 @@ def activate_first_device(
             # digest before a rotation: look through every configured version's
             # scope (highest first) before inserting a fresh placeholder.
             found_scope: str | None = None
+            found_key_digest: str | None = None
             record: EnvelopeRecord | None = None
             for scope_candidate in scope_candidates:
-                loaded = load_envelope(
-                    conn,
-                    operation=ACTIVATE_OPERATION,
-                    scope=scope_candidate,
-                    key_digest=key_digest,
-                )
-                if loaded is not None:
-                    found_scope = scope_candidate
-                    record = loaded
+                for digest in key_digests:
+                    loaded = load_envelope(
+                        conn,
+                        operation=ACTIVATE_OPERATION,
+                        scope=scope_candidate,
+                        key_digest=digest,
+                    )
+                    if loaded is not None:
+                        found_scope = scope_candidate
+                        found_key_digest = digest
+                        record = loaded
+                        break
+                if record is not None:
                     break
 
             envelope_id: str | None = None
@@ -997,10 +983,12 @@ def activate_first_device(
                     )
                     if loaded is not None:
                         found_scope = fingerprint_hmac
+                        found_key_digest = key_digest
                         record = loaded
 
             if record is not None:
                 assert found_scope is not None
+                assert found_key_digest is not None
                 if record.request_hash != req_hash:
                     raise _http(
                         409,
@@ -1029,7 +1017,11 @@ def activate_first_device(
                     replayed = open_response(
                         ciphertext,
                         key=customer_aead_key(key_version),
-                        aad=envelope_aad(ACTIVATE_OPERATION, found_scope, key_digest),
+                        aad=envelope_aad(
+                            ACTIVATE_OPERATION,
+                            found_scope,
+                            found_key_digest,
+                        ),
                     )
                 except IdempotencyKeyError:
                     # The envelope's key version was retired inside the
@@ -1111,10 +1103,18 @@ def activate_first_device(
             # The concurrent second code on the same fingerprint lost the
             # partial-unique-index race (same-string or cross-version
             # canonical): exactly one binding survives.
+            raise _unavailable() from exc
+        if constraint == DEVICE_SLOT_UNIQUE_CONSTRAINT:
             raise _http(
                 409,
-                "USER_ALREADY_ACTIVATED",
-                "This device already holds a customer activation.",
+                "DEVICE_SLOTS_FULL",
+                "This activation code has reached its device limit.",
+            ) from exc
+        if constraint in ACTIVATION_CODE_UNIQUE_CONSTRAINTS:
+            raise _http(
+                409,
+                "ACTIVATION_UNAVAILABLE",
+                "This activation request can no longer be completed.",
             ) from exc
         raise
     except HTTPException as exc:

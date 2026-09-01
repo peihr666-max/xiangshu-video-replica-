@@ -24,7 +24,7 @@ from app.customer_idempotency import (
     customer_aead_key,
     envelope_aad,
     highest_customer_aead_key,
-    idempotency_key_digest,
+    idempotency_key_digests,
     insert_envelope,
     load_envelope,
     open_response,
@@ -34,6 +34,7 @@ from app.customer_idempotency import (
 )
 from app.db_portable import BusinessConnection
 from app.ops_metrics import set_current_trace_fields
+from app.permissions import require_not_auditor
 from app.security_rate_limit import _server_now, client_ip_from_request
 from app.settings import SettingsRepository, effective_customer_billing_settings
 from app.wallet_routes import WalletResponse, WalletTransactionPage, WalletTransactionResponse
@@ -272,6 +273,23 @@ def create_recharge_order(
         merchant_order_no = generate_merchant_order_no()
         try:
             with db.write() as (conn, user):
+                require_not_auditor(
+                    conn,
+                    actor=user,
+                    action="recharge.internal.create",
+                    entity_type="recharge_order",
+                    entity_id="new",
+                )
+                if user.role == "customer":
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "CUSTOMER_RECHARGE_ROUTE_REQUIRED",
+                            "message": (
+                                "Customer accounts must use /api/customer/recharge-orders."
+                            ),
+                        },
+                    )
                 billing, merchant, deployment = _stage_recharge_preconditions(
                     conn,
                     amount_fen=payload.amount_fen,
@@ -333,7 +351,8 @@ def create_customer_recharge_order(
                 "message": "An Idempotency-Key header is required.",
             },
         )
-    key_digest = idempotency_key_digest(idempotency_key)
+    key_digests = idempotency_key_digests(idempotency_key)
+    key_digest = key_digests[0]
     req_hash = request_hash({"amount_fen": str(payload.amount_fen)})
     try:
         aead_key_version, aead_key = highest_customer_aead_key()
@@ -351,12 +370,24 @@ def create_customer_recharge_order(
         try:
             with db.write() as (conn, user):
                 scope = f"recharge:{user.id}"
-                record = load_envelope(
-                    _pg_conn(conn),
-                    operation=RECHARGE_OPERATION,
-                    scope=scope,
-                    key_digest=key_digest,
+                matched = next(
+                    (
+                        (candidate, loaded)
+                        for candidate in key_digests
+                        if (
+                            loaded := load_envelope(
+                                _pg_conn(conn),
+                                operation=RECHARGE_OPERATION,
+                                scope=scope,
+                                key_digest=candidate,
+                            )
+                        )
+                        is not None
+                    ),
+                    None,
                 )
+                record = matched[1] if matched is not None else None
+                matched_key_digest = matched[0] if matched is not None else key_digest
                 envelope_id: str | None = None
                 if record is None:
                     envelope_id = insert_envelope(
@@ -377,7 +408,11 @@ def create_customer_recharge_order(
                         )
                 if record is not None:
                     _enforce_envelope_conflicts(record, req_hash=req_hash, conn=conn)
-                    replayed = _open_recharge_envelope(record, scope=scope, key_digest=key_digest)
+                    replayed = _open_recharge_envelope(
+                        record,
+                        scope=scope,
+                        key_digest=matched_key_digest,
+                    )
                     replayed_order = RechargeOrderResponse.model_validate(replayed)
                     set_current_trace_fields(user_id=user.id, order_id=replayed_order.order_no)
                     response.headers[REPLAY_HEADER] = "true"

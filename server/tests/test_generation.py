@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from app.auth import get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
+from app.first_frames import GeneratedVideoInspection, ImageInput
 from app.generation import (
     MAX_ARCHIVE_RETRIES,
     FakeH3Provider,
@@ -31,6 +32,7 @@ from app.generation import (
     compile_prompt_text,
     generation_task_operation_hash,
     h3_provider_for_task,
+    inspect_generated_video_quality,
     map_script_to_shots,
     mark_expired_active_leases_needing_attention,
     mark_task_submission_uncertain,
@@ -47,6 +49,64 @@ from app.storage import FakeStorageAdapter, StorageBackendUnavailable, StoragePe
 def _fake_public_dns(hostname: str, port: int, type: int) -> list[tuple[object, ...]]:
     del hostname, type
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+
+class FailingGeneratedVideoInspector:
+    def inspect_generated_video(
+        self,
+        *,
+        first_frame: ImageInput,
+        sampled_frames: list[ImageInput],
+    ) -> GeneratedVideoInspection:
+        assert first_frame.content == b"first-frame"
+        assert len(sampled_frames) == 5
+        return GeneratedVideoInspection(
+            frame_count=5,
+            identity_consistency_score=0.62,
+            outfit_consistency_score=0.58,
+            motion_continuity_score=0.81,
+            anatomy_valid=True,
+            extra_people_detected=False,
+            severe_flicker_detected=False,
+            notes=["人物身份和服装发生漂移"],
+            provider="fake-quality",
+            model="fake-quality-v1",
+        )
+
+
+class UnavailableGeneratedVideoInspector:
+    def inspect_generated_video(
+        self,
+        *,
+        first_frame: ImageInput,
+        sampled_frames: list[ImageInput],
+    ) -> GeneratedVideoInspection:
+        del first_frame, sampled_frames
+        raise RuntimeError("quality provider unavailable")
+
+
+def test_generated_video_quality_rejects_identity_and_outfit_drift() -> None:
+    quality = inspect_generated_video_quality(
+        content=b"generated-video",
+        first_frame=ImageInput(
+            content=b"first-frame",
+            content_type="image/png",
+            filename="first-frame.png",
+        ),
+        inspector=FailingGeneratedVideoInspector(),
+        frame_extractor=lambda _: [
+            ImageInput(
+                content=f"frame-{index}".encode(), content_type="image/jpeg", filename="frame.jpg"
+            )
+            for index in range(5)
+        ],
+    )
+
+    assert quality.passed is False
+    assert quality.issue_codes == [
+        "VIDEO_IDENTITY_DRIFT",
+        "VIDEO_OUTFIT_DRIFT",
+    ]
 
 
 class RecordedMetasoTransport:
@@ -259,7 +319,12 @@ def seed_data(conn: sqlite3.Connection) -> None:
                 1,
                 json.dumps(
                     {
-                        "candidates": [{"asset_id": "first_frame_owned"}],
+                        "candidates": [
+                            {
+                                "asset_id": "first_frame_owned",
+                                "quality": {"passed": True},
+                            }
+                        ],
                         "reconstruction_mode": "full_person_replace.v1",
                         "character_contract": {
                             "identity_source": "contact_sheet+source_photo",
@@ -838,6 +903,71 @@ def test_batch_paid_regeneration_hash_rejects_same_key_for_another_source(
     assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
 
 
+def test_admin_regeneration_bills_source_creator_and_audits_requester(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    source = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "admin-billing-source",
+        },
+    )
+    assert source.status_code == 200, source.text
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        before = {
+            str(row["user_id"]): (int(row["available_credits"]), int(row["reserved_credits"]))
+            for row in conn.execute(
+                "SELECT user_id, available_credits, reserved_credits FROM wallets "
+                "WHERE user_id IN (?, ?)",
+                ("employee_1", "admin_1"),
+            ).fetchall()
+        }
+
+    regenerated = client.post(
+        f"/api/generation-batches/{source.json()['id']}/regenerate",
+        headers=auth_headers("admin_1"),
+        json=paid_regeneration_payload("admin-regeneration-billing"),
+    )
+
+    assert regenerated.status_code == 200, regenerated.text
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        batch = conn.execute(
+            "SELECT created_by_user_id FROM generation_batches WHERE id = ?",
+            (regenerated.json()["id"],),
+        ).fetchone()
+        after = {
+            str(row["user_id"]): (int(row["available_credits"]), int(row["reserved_credits"]))
+            for row in conn.execute(
+                "SELECT user_id, available_credits, reserved_credits FROM wallets "
+                "WHERE user_id IN (?, ?)",
+                ("employee_1", "admin_1"),
+            ).fetchall()
+        }
+        audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'generation_batch.regenerate' AND entity_id = ?",
+            (regenerated.json()["id"],),
+        ).fetchone()
+    assert batch is not None and batch["created_by_user_id"] == "employee_1"
+    assert after["employee_1"] == (
+        before["employee_1"][0] - 1,
+        before["employee_1"][1] + 1,
+    )
+    assert after["admin_1"] == before["admin_1"]
+    assert audit is not None
+    metadata = json.loads(str(audit["metadata_json"]))
+    assert metadata["billed_user_id"] == "employee_1"
+    assert metadata["requested_by_user_id"] == "admin_1"
+
+
 def test_task_paid_regeneration_supersedes_audio_failure_once_and_keeps_history(
     db_path: Path,
     client: TestClient,
@@ -971,6 +1101,117 @@ def test_task_paid_regeneration_supersedes_audio_failure_once_and_keeps_history(
     assert completed.quality_status == "AUDIO_OK"
     assert no_duplicate is None
     assert provider.create_calls == 1
+
+
+def test_visual_quality_failure_is_archived_and_allows_explicit_paid_regeneration(
+    db_path: Path,
+    client: TestClient,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    created = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "visual-failure-source",
+        },
+    )
+    assert created.status_code == 200
+    task_id = str(created.json()["tasks"][0]["id"])
+    storage = FakeStorageAdapter(provider="fake", bucket="generation-results")
+    storage.put_object("first-frame.png", b"first-frame", content_type="image/png")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        result = run_next_generation_task(
+            conn,
+            worker_id="visual-failure-worker",
+            provider=FakeH3Provider(),
+            storage=storage,
+            visual_quality_inspector=FailingGeneratedVideoInspector(),
+            video_frame_extractor=lambda _: [
+                ImageInput(
+                    content=f"frame-{index}".encode(),
+                    content_type="image/jpeg",
+                    filename=f"frame-{index}.jpg",
+                )
+                for index in range(5)
+            ],
+        )
+
+    assert result is not None
+    assert result.status == "SUCCEEDED"
+    assert result.archive_status == "ARCHIVED"
+    assert result.quality_status == "VISUAL_QUALITY_FAILED"
+    assert result.quality_issue_codes == ["VIDEO_IDENTITY_DRIFT", "VIDEO_OUTFIT_DRIFT"]
+    regenerated = client.post(
+        f"/api/generation-tasks/{task_id}/regenerate",
+        headers=auth_headers("employee_1"),
+        json=paid_regeneration_payload("visual-failure-regeneration"),
+    )
+    assert regenerated.status_code == 200
+
+
+def test_visual_validation_unavailable_keeps_paid_task_for_reconciliation(
+    db_path: Path,
+    client: TestClient,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    created = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "visual-validation-unavailable",
+        },
+    )
+    assert created.status_code == 200
+    storage = FakeStorageAdapter(provider="fake", bucket="generation-results")
+    storage.put_object("first-frame.png", b"first-frame", content_type="image/png")
+    provider = CountingRetryProvider()
+
+    def extractor(_content: bytes) -> list[ImageInput]:
+        return [
+            ImageInput(content=b"frame", content_type="image/jpeg", filename="frame.jpg")
+            for _ in range(5)
+        ]
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        first = run_next_generation_task(
+            conn,
+            worker_id="visual-unavailable-worker",
+            provider=provider,
+            storage=storage,
+            visual_quality_inspector=UnavailableGeneratedVideoInspector(),
+            video_frame_extractor=extractor,
+        )
+        second = run_next_generation_task(
+            conn,
+            worker_id="visual-unavailable-worker",
+            provider=provider,
+            storage=storage,
+            visual_quality_inspector=UnavailableGeneratedVideoInspector(),
+            video_frame_extractor=extractor,
+        )
+        wallet = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = ?",
+            ("employee_1",),
+        ).fetchone()
+
+    assert first is not None
+    assert first.status == "SUBMISSION_UNCERTAIN"
+    assert first.error_code == "VISUAL_VALIDATION_UNAVAILABLE"
+    assert first.available_actions == ["RECONCILE"]
+    assert second is None
+    assert provider.create_calls == 1
+    assert wallet is not None
+    assert int(wallet["reserved_credits"]) == 1
 
 
 def test_task_paid_regeneration_accepts_a_failed_submitted_provider_call(
@@ -2231,6 +2472,49 @@ def test_prompt_compile_requires_the_currently_confirmed_first_frame(
     assert response.json()["detail"]["code"] == "FIRST_FRAME_CONFIRMATION_REQUIRED"
 
 
+def test_prompt_compile_rejects_legacy_confirmation_without_quality_evidence(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM versions WHERE id = %s",
+            ("first_frame_candidates_v1",),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(str(row["payload_json"]))
+        payload["candidates"] = [{"asset_id": "first_frame_owned"}]
+        conn.execute(
+            "UPDATE versions SET payload_json = %s WHERE id = %s",
+            (json.dumps(payload), "first_frame_candidates_v1"),
+        )
+        conn.commit()
+
+    script = client.post(
+        "/api/projects/project_owned/scripts",
+        headers=auth_headers("employee_1"),
+        json={
+            "source": "custom",
+            "text": "第一句。第二句。",
+            "shot_card_version_id": "shot_card_v1",
+        },
+    ).json()
+    response = client.post(
+        "/api/projects/project_owned/prompts/compile",
+        headers=auth_headers("employee_1"),
+        json={
+            "script_version_id": script["id"],
+            "shot_card_version_id": "shot_card_v1",
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "FIRST_FRAME_QUALITY_NOT_VERIFIED"
+
+
 def test_prompt_must_be_locked_and_batch_keeps_locked_snapshot_without_provider_call(
     client: TestClient,
     db_path: Path,
@@ -2305,6 +2589,30 @@ def test_prompt_must_be_locked_and_batch_keeps_locked_snapshot_without_provider_
     assert json.loads(str(stored["prompt_snapshot_json"]))["status"] == "LOCKED"
     assert stored["provider_task_id"] is None
     assert stored["provider_request_json"] is None
+
+
+def test_customer_production_refuses_a_new_fake_h3_batch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    monkeypatch.setattr("app.generation.is_customer_production", lambda: True)
+
+    response = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "provider": "fake_h3",
+            "idempotency_key": "customer-fake-provider",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "FAKE_H3_PROVIDER_FORBIDDEN"
 
 
 @pytest.mark.parametrize(
@@ -2654,12 +2962,11 @@ def test_generation_batch_list_paginates_and_returns_safe_task_summaries(
     assert invalid_cursor.json()["detail"]["code"] == "INVALID_CURSOR"
 
 
-def test_batch_detail_exposes_https_provider_result_url_for_direct_playback(
+def test_batch_detail_never_exposes_provider_result_urls(
     client: TestClient,
     db_path: Path,
 ) -> None:
-    """成片直连播放契约：任务详情返回 Provider 的 HTTPS 链接，非 HTTPS
-    （如 fake://）不外露；列表摘要依旧不携带该链接。"""
+    """客户详情只能返回归档资产 id，不能泄露 Provider 临时 URL。"""
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         insert_generation_history(
             conn,
@@ -2694,14 +3001,15 @@ def test_batch_detail_exposes_https_provider_result_url_for_direct_playback(
     )
     assert detail.status_code == 200
     task = detail.json()["tasks"][0]
-    assert task["provider_result_url"] == "https://provider.example/signed-result.mp4"
+    assert "provider_result_url" not in task
+    assert task["result_asset_id"] == "first_frame_owned"
 
     fake_detail = client.get(
         "/api/generation-batches/batch-direct-play-02",
         headers=auth_headers("employee_1"),
     )
     assert fake_detail.status_code == 200
-    assert fake_detail.json()["tasks"][0]["provider_result_url"] is None
+    assert "provider_result_url" not in fake_detail.json()["tasks"][0]
 
     summary = client.get(
         "/api/generation-batches",
@@ -2787,17 +3095,26 @@ def test_generation_batch_list_filters_and_enforces_project_scope(
     )
     admin = client.get("/api/generation-batches", headers=auth_headers("admin_1"))
     auditor = client.get("/api/generation-batches", headers=auth_headers("auditor_1"))
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute("UPDATE users SET role = 'customer' WHERE id = %s", ("employee_1",))
+        conn.commit()
+    customer = client.get("/api/generation-batches", headers=auth_headers("employee_1"))
+    missing_project = client.get(
+        "/api/generation-batches?project_id=project_missing",
+        headers=auth_headers("employee_1"),
+    )
 
     assert employee.status_code == 200
     assert {item["project_id"] for item in employee.json()["items"]} == {"project_owned"}
+    assert {item["project_id"] for item in customer.json()["items"]} == {"project_owned"}
     assert {item["id"] for item in employee.json()["items"]} == {
         "batch-owned-normal",
         "batch-owned-quality-status-only",
         "batch-owned-superseded-quality",
         "batch-owned-uncertain",
     }
-    assert forbidden_project.status_code == 403
-    assert forbidden_project.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert forbidden_project.status_code == 404
+    assert forbidden_project.content == missing_project.content
     assert [item["id"] for item in attention.json()["items"]] == [
         "batch-owned-uncertain",
         "batch-owned-quality-status-only",
@@ -2988,9 +3305,21 @@ def test_generation_requires_owner_and_configured_real_provider(client: TestClie
             "provider": "metaso",
         },
     )
+    missing_project = client.post(
+        "/api/projects/project_missing/generation-batches",
+        headers=auth_headers("employee_2"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "missing-project",
+        },
+    )
 
-    assert other_owner.status_code == 403
-    assert other_owner.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    assert other_owner.status_code == 404
+    assert other_owner.content == missing_project.content
     assert real_provider.status_code == 503
     assert real_provider.json()["detail"]["code"] == "METASO_SETTINGS_UNAVAILABLE"
 
@@ -3753,7 +4082,7 @@ def test_worker_archive_retry_recovers_after_initial_failure(
     # 归档成功后仍保留 Provider 直连链接：客户端优先在线播放该链接，
     # 过期后才回退到刚归档好的本地副本。
     assert row2["provider_result_url"] is not None
-    assert result.provider_result_url is None  # fake:// 链接不外露给客户端
+    assert not hasattr(result, "provider_result_url")
     assert row2["result_asset_id"] is not None
 
 
@@ -4590,7 +4919,14 @@ def test_idempotency_key_is_scoped_per_project(db_path: Path, client: TestClient
             """,
             (
                 json.dumps(
-                    {"candidates": [{"asset_id": "first_frame_other"}]},
+                    {
+                        "candidates": [
+                            {
+                                "asset_id": "first_frame_other",
+                                "quality": {"passed": True},
+                            }
+                        ]
+                    },
                     ensure_ascii=True,
                     sort_keys=True,
                 ),
@@ -4830,12 +5166,18 @@ def test_generation_batch_rename_by_creator_or_admin_only(
         headers=auth_headers("employee_1"),
         json={"display_name": "超" * 121},
     )
+    missing = client.patch(
+        "/api/generation-batches/batch-missing/name",
+        headers=auth_headers("employee_2"),
+        json={"display_name": "不应生效"},
+    )
 
     assert renamed.status_code == 200
     assert renamed.json()["display_name"] == "乡墅爆款第 2 期"
-    assert other_creator.status_code == 403
-    assert other_creator.json()["detail"]["code"] == "GENERATION_BATCH_FORBIDDEN"
-    assert auditor.status_code == 403
+    assert other_creator.status_code == 404
+    assert other_creator.content == missing.content
+    assert auditor.status_code == 404
+    assert auditor.content == missing.content
     assert admin.status_code == 200
     assert admin.json()["display_name"] == "管理员改名"
     assert blank.status_code == 422
@@ -4925,7 +5267,7 @@ def test_generation_batch_delete_blocked_while_tasks_active(
     assert response.json()["detail"]["code"] == "BATCH_DELETE_HAS_ACTIVE_TASKS"
 
 
-def test_generation_batch_delete_forbidden_for_non_creator_and_auditor(
+def test_generation_batch_delete_hides_foreign_batch_from_non_creator_and_auditor(
     client: TestClient,
     db_path: Path,
 ) -> None:
@@ -4941,13 +5283,18 @@ def test_generation_batch_delete_forbidden_for_non_creator_and_auditor(
     auditor = client.delete(
         "/api/generation-batches/batch-guard", headers=auth_headers("auditor_1")
     )
-    missing = client.delete("/api/generation-batches/not-exist", headers=auth_headers("employee_1"))
+    other_missing = client.delete(
+        "/api/generation-batches/not-exist", headers=auth_headers("employee_2")
+    )
+    auditor_missing = client.delete(
+        "/api/generation-batches/not-exist", headers=auth_headers("auditor_1")
+    )
     admin = client.delete("/api/generation-batches/batch-guard", headers=auth_headers("admin_1"))
 
-    assert other.status_code == 403
-    assert other.json()["detail"]["code"] == "GENERATION_BATCH_FORBIDDEN"
-    assert auditor.status_code == 403
-    assert missing.status_code == 404
+    assert other.status_code == 404
+    assert other.content == other_missing.content
+    assert auditor.status_code == 404
+    assert auditor.content == auditor_missing.content
     assert admin.status_code == 204
 
 

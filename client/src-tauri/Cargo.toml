@@ -1,6 +1,6 @@
 [package]
 name = "video-replica-desktop"
-version = "0.1.0"
+version = "0.1.11"
 description = "Internal video replica desktop app"
 authors = ["Internal AI Team"]
 edition = "2021"
@@ -36,4 +36,3 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
-

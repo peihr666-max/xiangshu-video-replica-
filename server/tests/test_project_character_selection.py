@@ -96,6 +96,7 @@ def test_available_versions_query_uses_postgres_compatible_casefold_order() -> N
     assert (
         project_character_selection.list_available_project_character_versions(
             conn,
+            actor=CurrentUser("employee_1", "employee_1", "Employee One", "employee"),
             project_id="project-owned",
         )
         == []
@@ -116,6 +117,7 @@ def seed_version(
     published_asset_count: int = 7,
     authorization_scope: tuple[str, ...] = ("internal-short-video",),
     usage_scope: tuple[str, ...] = ("internal-short-video",),
+    owner_user_id: str = "employee_1",
 ) -> SeededVersion:
     identity_id = f"identity-{key}"
     persona_id = f"persona-{key}"
@@ -197,7 +199,7 @@ def seed_version(
                     hashlib.sha256(authorization_asset_id.encode()).hexdigest(),
                     128,
                     "application/pdf",
-                    "admin_1",
+                    owner_user_id,
                 ),
                 (
                     source_asset_id,
@@ -206,7 +208,7 @@ def seed_version(
                     hashlib.sha256(source_asset_id.encode()).hexdigest(),
                     128,
                     "image/png",
-                    "admin_1",
+                    owner_user_id,
                 ),
             ],
         )
@@ -217,11 +219,12 @@ def seed_version(
                 authorization_asset_id, authorization_scope,
                 authorization_expires_at, source_asset_id,
                 source_quality_status, status, created_by
-            ) VALUES (?, 'employee_1', ?, ?, ?, ?,
+            ) VALUES (?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, 'admin_1')
             """,
             (
                 identity_id,
+                owner_user_id,
                 f"{key} 荣哥",
                 authorization_status,
                 authorization_asset_id,
@@ -333,6 +336,7 @@ def test_project_lists_only_current_published_versions_with_seven_assets(
     missing_authorization = seed_version(db_path, key="missing-authorization")
     missing_source = seed_version(db_path, key="missing-source")
     seed_version(db_path, key="incomplete", published_asset_count=6)
+    foreign = seed_version(db_path, key="zzz-foreign", owner_user_id="employee_2")
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         conn.execute(
             "UPDATE person_identities SET authorization_asset_id = NULL WHERE id = ?",
@@ -344,32 +348,49 @@ def test_project_lists_only_current_published_versions_with_seven_assets(
         )
         conn.commit()
 
-    for user_id in ("employee_1", "admin_1", "auditor_1"):
-        response = client.get(
+    employee = client.get(
+        "/api/projects/project-owned/character-versions/available",
+        headers=headers("employee_1"),
+    )
+    assert employee.status_code == 200
+    assert [item["character_version_id"] for item in employee.json()] == [
+        available.version_id,
+        localized.version_id,
+        project_scoped.version_id,
+    ]
+    option = employee.json()[0]
+    assert option["identity_name"] == "available 荣哥"
+    assert option["persona_snapshot_json"]["name"] == "available 项目经理"
+    assert option["version_number"] == 3
+    assert len(option["assets"]) == 7
+    assert {item["view_type"] for item in option["assets"]} == set(REQUIRED_CHARACTER_VIEW_TYPES)
+
+    for user_id in ("admin_1", "auditor_1"):
+        control_view = client.get(
             "/api/projects/project-owned/character-versions/available",
             headers=headers(user_id),
         )
-        assert response.status_code == 200
-        assert [item["character_version_id"] for item in response.json()] == [
-            available.version_id,
-            localized.version_id,
-            project_scoped.version_id,
-        ]
-        option = response.json()[0]
-        assert option["identity_name"] == "available 荣哥"
-        assert option["persona_snapshot_json"]["name"] == "available 项目经理"
-        assert option["version_number"] == 3
-        assert len(option["assets"]) == 7
-        assert {item["view_type"] for item in option["assets"]} == set(
-            REQUIRED_CHARACTER_VIEW_TYPES
-        )
+        assert control_view.status_code == 200
+        assert foreign.version_id in {item["character_version_id"] for item in control_view.json()}
+
+    foreign_selection = client.put(
+        "/api/projects/project-owned/main-character",
+        headers=headers("employee_1"),
+        json={"character_version_id": foreign.version_id},
+    )
+    assert foreign_selection.status_code == 422
+    assert foreign_selection.json()["detail"]["code"] == "CHARACTER_VERSION_NOT_AVAILABLE"
 
     forbidden = client.get(
         "/api/projects/project-other/character-versions/available",
         headers=headers("employee_1"),
     )
-    assert forbidden.status_code == 403
-    assert forbidden.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    missing_project = client.get(
+        "/api/projects/project-missing/character-versions/available",
+        headers=headers("employee_1"),
+    )
+    assert forbidden.status_code == 404
+    assert forbidden.content == missing_project.content
 
     for unavailable in (wrong_authorization_scope, wrong_persona_scope):
         denied = client.put(

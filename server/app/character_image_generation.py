@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.auth import CurrentUser
+from app.bootstrap import is_customer_production
 from app.character_asset_quality import inspect_fake_character_asset
 from app.character_contracts import (
     CharacterAsset,
@@ -237,8 +238,14 @@ def create_character_generation_tasks(
         require_matching_character_request(existing, request_hash=request_hash)
         return [character_task_from_row(row) for row in existing]
 
-    require_version_generatable(version)
     provider_name = str(version["provider"] or "")
+    if provider_name == FAKE_CHARACTER_PROVIDER and is_customer_production():
+        raise character_error(
+            503,
+            "FAKE_CHARACTER_PROVIDER_FORBIDDEN",
+            "客户生产环境禁止创建模拟角色图片生成任务。",
+        )
+    require_version_generatable(version)
     if provider_name != FAKE_CHARACTER_PROVIDER:
         raise character_error(
             503,
@@ -1136,6 +1143,12 @@ def get_character_generation_task(
 
 def character_provider_for_name(provider_name: str) -> CharacterImageProvider:
     if provider_name == FAKE_CHARACTER_PROVIDER:
+        if is_customer_production():
+            raise CharacterImageProviderFailed(
+                "FAKE_CHARACTER_PROVIDER_FORBIDDEN",
+                "fake character provider is forbidden in customer production",
+                retriable=False,
+            )
         return FakeCharacterImageProvider()
     raise CharacterImageProviderFailed(
         "CHARACTER_PROVIDER_NOT_CONFIGURED",

@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "049_async_generation_reconcile"
+    assert version == "052_character_scene_look_tasks"
     assert {
         "characters",
         "project_main_characters",
@@ -185,6 +185,16 @@ def test_admin_crud_preserves_reference_order_and_employee_reads_only_available(
 
     assert employee_list.status_code == 200
     assert [item["id"] for item in employee_list.json()] == [available["id"]]
+    foreign_detail = client.get(
+        f"/api/characters/{available['id']}?project_id=project_owned",
+        headers=headers("employee_2"),
+    )
+    missing_project_detail = client.get(
+        f"/api/characters/{available['id']}?project_id=project_missing",
+        headers=headers("employee_2"),
+    )
+    assert foreign_detail.status_code == 404
+    assert foreign_detail.content == missing_project_detail.content
     assert admin_list.status_code == 200
     assert {item["id"] for item in admin_list.json()} == {
         available["id"],
@@ -230,6 +240,24 @@ def test_employee_cannot_choose_disabled_expired_or_out_of_scope_character(
         )
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "CHARACTER_NOT_AVAILABLE"
+
+
+def test_employee_cannot_bind_unowned_global_legacy_character(client: TestClient) -> None:
+    character = create_character(client, name="Admin Global Character")
+
+    detail = client.get(
+        f"/api/characters/{character['id']}?project_id=project_owned",
+        headers=headers("employee_1"),
+    )
+    selection = client.put(
+        "/api/projects/project_owned/main-character",
+        headers=headers("employee_1"),
+        json={"character_id": character["id"]},
+    )
+
+    assert detail.status_code == 422
+    assert selection.status_code == 422
+    assert selection.json()["detail"]["code"] == "CHARACTER_NOT_AVAILABLE"
 
 
 def test_project_main_character_selection_records_immutable_version_snapshot(

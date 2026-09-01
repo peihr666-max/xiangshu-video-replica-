@@ -38,6 +38,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/script-rewrite-tasks/{task_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Script Rewrite Task */
+    get: operations["read_script_rewrite_task_api_script_rewrite_tasks__task_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/projects/{project_id}/script-rewrite-tasks/latest": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Latest Script Rewrite Task */
+    get: operations["read_latest_script_rewrite_task_api_projects__project_id__script_rewrite_tasks_latest_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/projects/{project_id}/scripts/latest": {
     parameters: {
       query?: never;
@@ -305,6 +339,40 @@ export interface paths {
     put?: never;
     /** Reconcile Uncertain Task */
     post: operations["reconcile_uncertain_task_api_generation_tasks__task_id__reconcile_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/generation-reconcile-operations/{operation_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Generation Reconcile Operation */
+    get: operations["read_generation_reconcile_operation_api_generation_reconcile_operations__operation_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/generation-tasks/{task_id}/reconcile/latest": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Latest Generation Reconcile Operation */
+    get: operations["read_latest_generation_reconcile_operation_api_generation_tasks__task_id__reconcile_latest_get"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1097,7 +1165,7 @@ export interface paths {
     put?: never;
     /**
      * Reset Customer Activation Code
-     * @description Rotate the main activation code while preserving bound devices/session.
+     * @description Rotate the main activation code from the live primary-device session.
      *
      *     The old digest is replaced atomically. The replacement plaintext is not
      *     persisted and is returned exactly once with a no-store cache directive.
@@ -1349,6 +1417,29 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/activation-codes/{code_id}/reveal": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Reveal Activation Code
+     * @description Reveal one retained code for an explicit, audited administrator copy.
+     *
+     *     The plaintext is decrypted in memory and returned with ``no-store``. The
+     *     idempotency snapshot contains identifiers only; it never stores the code.
+     */
+    post: operations["reveal_activation_code_api_control_activation_codes__code_id__reveal_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/activation-codes": {
     parameters: {
       query?: never;
@@ -1358,7 +1449,7 @@ export interface paths {
     };
     /**
      * List Activation Codes
-     * @description List codes; administrators may recover full values from sealed exports.
+     * @description List masked code metadata without bulk-recovering plaintext values.
      */
     get: operations["list_activation_codes_api_control_activation_codes_get"];
     put?: never;
@@ -2472,6 +2563,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/source-frame-tasks/{task_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Source Frame Task */
+    get: operations["read_source_frame_task_api_source_frame_tasks__task_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/projects/{project_id}/source-frame-tasks/latest": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Latest Source Frame Task */
+    get: operations["read_latest_source_frame_task_api_projects__project_id__source_frame_tasks_latest_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/projects/{project_id}/source-frames/latest": {
     parameters: {
       query?: never;
@@ -2534,6 +2659,60 @@ export interface paths {
     put?: never;
     /** Generate Project First Frames */
     post: operations["generate_project_first_frames_api_projects__project_id__first_frames_generate_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/projects/{project_id}/first-frame-tasks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Create Project First Frame Task
+     * @description Persist an image request without holding the customer session open.
+     */
+    post: operations["create_project_first_frame_task_api_projects__project_id__first_frame_tasks_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/first-frame-tasks/{task_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read First Frame Task */
+    get: operations["read_first_frame_task_api_first_frame_tasks__task_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/projects/{project_id}/first-frame-tasks/active-or-latest": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Latest First Frame Task */
+    get: operations["read_latest_first_frame_task_api_projects__project_id__first_frame_tasks_active_or_latest_get"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -2621,9 +2800,9 @@ export interface paths {
      * Create Simple Upload Intent
      * @description Describe how the client should upload a simple character source image.
      *
-     *     The simple flow uploads the image directly with the generate endpoint as
-     *     multipart form data, so the intent only echoes the target endpoint and
-     *     limits instead of issuing a presigned URL.
+     *     The simple flow uploads the image directly with the asynchronous task
+     *     endpoint as multipart form data, so the intent echoes the enqueue contract
+     *     and limits instead of issuing a presigned URL.
      */
     post: operations["create_simple_upload_intent_api_simple_characters_upload_intent_post"];
     delete?: never;
@@ -2643,6 +2822,40 @@ export interface paths {
     put?: never;
     /** Generate Global Simple Character */
     post: operations["generate_global_simple_character_api_simple_characters_generate_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/simple-characters/tasks/generate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Enqueue Global Simple Character */
+    post: operations["enqueue_global_simple_character_api_simple_characters_tasks_generate_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/simple-characters/tasks/{project_id}/generate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Enqueue Project Simple Character */
+    post: operations["enqueue_project_simple_character_api_simple_characters_tasks__project_id__generate_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2697,6 +2910,57 @@ export interface paths {
     put?: never;
     /** Regenerate Contact Sheet */
     post: operations["regenerate_contact_sheet_api_simple_characters_identities__identity_id__regenerate_contact_sheet_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/simple-characters/identities/{identity_id}/regenerate-contact-sheet-task": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Enqueue Regenerate Contact Sheet */
+    post: operations["enqueue_regenerate_contact_sheet_api_simple_characters_identities__identity_id__regenerate_contact_sheet_task_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/simple-characters/task-status/{task_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Character Sheet Task */
+    get: operations["read_character_sheet_task_api_simple_characters_task_status__task_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/simple-characters/tasks/active-or-latest": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Latest Character Sheet Task */
+    get: operations["read_latest_character_sheet_task_api_simple_characters_tasks_active_or_latest_get"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -3066,12 +3330,55 @@ export interface components {
     };
     /** BillingSettingsUpdate */
     BillingSettingsUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
       /** Internal Base Unit Price Fen */
       internal_base_unit_price_fen: number;
       /** Min Recharge Fen */
       min_recharge_fen: number;
       /** Recharge Step Fen */
       recharge_step_fen: number;
+    };
+    /** Body_enqueue_global_simple_character_api_simple_characters_tasks_generate_post */
+    Body_enqueue_global_simple_character_api_simple_characters_tasks_generate_post: {
+      /** File */
+      file: string;
+      /** Display Name */
+      display_name: string;
+      /** Idempotency Key */
+      idempotency_key: string;
+      /**
+       * Persona Name
+       * @default
+       */
+      persona_name: string;
+    };
+    /** Body_enqueue_project_simple_character_api_simple_characters_tasks__project_id__generate_post */
+    Body_enqueue_project_simple_character_api_simple_characters_tasks__project_id__generate_post: {
+      /** File */
+      file: string;
+      /** Display Name */
+      display_name: string;
+      /** Idempotency Key */
+      idempotency_key: string;
+      /**
+       * Persona Name
+       * @default
+       */
+      persona_name: string;
+    };
+    /** Body_enqueue_regenerate_contact_sheet_api_simple_characters_identities__identity_id__regenerate_contact_sheet_task_post */
+    Body_enqueue_regenerate_contact_sheet_api_simple_characters_identities__identity_id__regenerate_contact_sheet_task_post: {
+      /** Idempotency Key */
+      idempotency_key: string;
     };
     /** Body_generate_global_simple_character_api_simple_characters_generate_post */
     Body_generate_global_simple_character_api_simple_characters_generate_post: {
@@ -3440,6 +3747,45 @@ export interface components {
       /** Updated At */
       updated_at: string;
     };
+    /** CharacterSheetTaskResponse */
+    CharacterSheetTaskResponse: {
+      /** Id */
+      id: string;
+      /** Project Id */
+      project_id: string | null;
+      /** Identity Id */
+      identity_id: string | null;
+      /** Operation */
+      operation: string;
+      /** Display Name */
+      display_name: string;
+      /** Status */
+      status: string;
+      /** Attempt */
+      attempt: number;
+      /** Result Identity Id */
+      result_identity_id: string | null;
+      /** Result Version Id */
+      result_version_id: string | null;
+      /** Result */
+      result: {
+        [key: string]: unknown;
+      } | null;
+      /** Error Code */
+      error_code: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Retryable */
+      retryable: boolean;
+      /** Created At */
+      created_at: string;
+      /** Updated At */
+      updated_at: string;
+      /** Started At */
+      started_at: string | null;
+      /** Completed At */
+      completed_at: string | null;
+    };
     /** CharacterUpdateRequest */
     CharacterUpdateRequest: {
       /** Name */
@@ -3565,6 +3911,10 @@ export interface components {
       /** Content Type */
       content_type: string;
       metadata: components["schemas"]["VideoMetadata"];
+      /** Analysis Task Id */
+      analysis_task_id: string | null;
+      /** Analysis Task Status */
+      analysis_task_status: string | null;
     };
     /** CompletedSourceImage */
     CompletedSourceImage: {
@@ -3598,6 +3948,23 @@ export interface components {
       character_features?:
         | components["schemas"]["SourceFrameCharacterFeatures"]
         | null;
+    };
+    /** ControlProviderSettingsUpdate */
+    ControlProviderSettingsUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Config */
+      config?: {
+        [key: string]: string;
+      };
     };
     /** ControlRechargeOrder */
     ControlRechargeOrder: {
@@ -3993,6 +4360,28 @@ export interface components {
       /** Url */
       url: string;
     };
+    /** EnqueueFirstFramesRequest */
+    EnqueueFirstFramesRequest: {
+      /**
+       * Model
+       * @default gpt-image-2
+       * @enum {string}
+       */
+      model: "gpt-image-2" | "nano-banana-pro-2k";
+      /** Prompt */
+      prompt?: string | null;
+      /**
+       * Quantity
+       * @default 1
+       */
+      quantity: number;
+      /** Character Version Id */
+      character_version_id?: string | null;
+      /** Character Reference Selection Id */
+      character_reference_selection_id?: string | null;
+      /** Idempotency Key */
+      idempotency_key: string;
+    };
     /** ExchangeRequest */
     ExchangeRequest: {
       /** Credential */
@@ -4014,6 +4403,35 @@ export interface components {
       asset_id: string;
       /** Timestamps Seconds */
       timestamps_seconds?: number[] | null;
+      /** Idempotency Key */
+      idempotency_key?: string | null;
+    };
+    /** FirstFrameTaskResponse */
+    FirstFrameTaskResponse: {
+      /** Id */
+      id: string;
+      /** Project Id */
+      project_id: string;
+      /** Status */
+      status: string;
+      /** Attempt */
+      attempt: number;
+      /** Result Version Id */
+      result_version_id: string | null;
+      /** Error Code */
+      error_code: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Retryable */
+      retryable: boolean;
+      /** Created At */
+      created_at: string;
+      /** Updated At */
+      updated_at: string;
+      /** Started At */
+      started_at: string | null;
+      /** Completed At */
+      completed_at: string | null;
     };
     /** GenerateFirstFramesRequest */
     GenerateFirstFramesRequest: {
@@ -4139,6 +4557,31 @@ export interface components {
        * @enum {string}
        */
       fake_audio_quality: "ok" | "missing";
+    };
+    /** GenerationReconcileOperationResponse */
+    GenerationReconcileOperationResponse: {
+      /** Id */
+      id: string;
+      /** Task Id */
+      task_id: string;
+      /** Status */
+      status: string;
+      /** Attempt */
+      attempt: number;
+      /** Error Code */
+      error_code: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Retryable */
+      retryable: boolean;
+      /** Created At */
+      created_at: string;
+      /** Updated At */
+      updated_at: string;
+      /** Started At */
+      started_at: string | null;
+      /** Completed At */
+      completed_at: string | null;
     };
     /** GenerationRuntimeLimits */
     GenerationRuntimeLimits: {
@@ -4661,6 +5104,16 @@ export interface components {
        * @enum {string}
        */
       active_storage_provider: "cos" | "local";
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
     };
     /** ScriptRequest */
     ScriptRequest: {
@@ -4681,6 +5134,8 @@ export interface components {
     ScriptRewriteRequest: {
       /** Text */
       text: string;
+      /** Idempotency Key */
+      idempotency_key?: string | null;
     };
     /**
      * ScriptRewriteResult
@@ -4693,6 +5148,32 @@ export interface components {
       provider: string;
       /** Model */
       model: string;
+    };
+    /** ScriptRewriteTaskResponse */
+    ScriptRewriteTaskResponse: {
+      /** Id */
+      id: string;
+      /** Project Id */
+      project_id: string;
+      /** Status */
+      status: string;
+      /** Attempt */
+      attempt: number;
+      result: components["schemas"]["ScriptRewriteResult"] | null;
+      /** Error Code */
+      error_code: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Retryable */
+      retryable: boolean;
+      /** Created At */
+      created_at: string;
+      /** Updated At */
+      updated_at: string;
+      /** Started At */
+      started_at: string | null;
+      /** Completed At */
+      completed_at: string | null;
     };
     /** SelectCharacterReferencesRequest */
     SelectCharacterReferencesRequest: {
@@ -4735,6 +5216,8 @@ export interface components {
       publication_hash: string;
       /** Contact Sheet Asset Id */
       contact_sheet_asset_id: string;
+      /** Generation Source */
+      generation_source: string;
       /** Views */
       views: components["schemas"]["SimpleCharacterViewResponse"][];
     };
@@ -4750,6 +5233,8 @@ export interface components {
       publication_hash: string;
       /** Contact Sheet Asset Id */
       contact_sheet_asset_id: string;
+      /** Generation Source */
+      generation_source: string;
       /** Views */
       views: components["schemas"]["SimpleCharacterViewResponse"][];
     };
@@ -4782,6 +5267,8 @@ export interface components {
       status: string;
       /** Contact Sheet Asset Id */
       contact_sheet_asset_id: string | null;
+      /** Generation Source */
+      generation_source: string | null;
       /** Views */
       views: components["schemas"]["SimpleCharacterViewResponse"][];
     };
@@ -4795,6 +5282,10 @@ export interface components {
       max_size_bytes: number;
       /** Allowed Content Types */
       allowed_content_types: string[];
+      /** Required Form Fields */
+      required_form_fields: string[];
+      /** Task Status Url Template */
+      task_status_url_template: string;
     };
     /** SourceFrameCharacterFeatures */
     SourceFrameCharacterFeatures: {
@@ -4820,6 +5311,37 @@ export interface components {
        * @enum {string}
        */
       body_completeness: "FACE_ONLY" | "UPPER_BODY" | "FULL_BODY" | "PARTIAL";
+    };
+    /** SourceFrameTaskResponse */
+    SourceFrameTaskResponse: {
+      /** Id */
+      id: string;
+      /** Project Id */
+      project_id: string;
+      /** Asset Id */
+      asset_id: string;
+      /** Timestamps Seconds */
+      timestamps_seconds: number[];
+      /** Status */
+      status: string;
+      /** Attempt */
+      attempt: number;
+      /** Result Version Id */
+      result_version_id: string | null;
+      /** Error Code */
+      error_code: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Retryable */
+      retryable: boolean;
+      /** Created At */
+      created_at: string;
+      /** Updated At */
+      updated_at: string;
+      /** Started At */
+      started_at: string | null;
+      /** Completed At */
+      completed_at: string | null;
     };
     /** SourceImageQualityResult */
     SourceImageQualityResult: {
@@ -4913,8 +5435,6 @@ export interface components {
       prompt_snapshot: {
         [key: string]: unknown;
       } | null;
-      /** Provider Result Url */
-      provider_result_url?: string | null;
     };
     /** TaskSummary */
     TaskSummary: {
@@ -5151,6 +5671,16 @@ export interface components {
     };
     /** ZPaySettingsUpdate */
     ZPaySettingsUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
       /** Pid */
       pid: string;
       /** Key */
@@ -5218,12 +5748,82 @@ export interface operations {
     };
     responses: {
       /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ScriptRewriteTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_script_rewrite_task_api_script_rewrite_tasks__task_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ScriptRewriteResult"];
+          "application/json": components["schemas"]["ScriptRewriteTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_latest_script_rewrite_task_api_projects__project_id__script_rewrite_tasks_latest_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        project_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["ScriptRewriteTaskResponse"]
+            | null;
         };
       };
       /** @description Validation Error */
@@ -5825,12 +6425,82 @@ export interface operations {
     };
     responses: {
       /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GenerationReconcileOperationResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_generation_reconcile_operation_api_generation_reconcile_operations__operation_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        operation_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["TaskResult"];
+          "application/json": components["schemas"]["GenerationReconcileOperationResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_latest_generation_reconcile_operation_api_generation_tasks__task_id__reconcile_latest_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["GenerationReconcileOperationResponse"]
+            | null;
         };
       };
       /** @description Validation Error */
@@ -6458,7 +7128,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["ProviderSettingsRequest"];
+        "application/json": components["schemas"]["ControlProviderSettingsUpdate"];
       };
     };
     responses: {
@@ -7672,6 +8342,43 @@ export interface operations {
     };
   };
   revoke_activation_code_api_control_activation_codes__code_id__revoke_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        code_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AdminWriteContract"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  reveal_activation_code_api_control_activation_codes__code_id__reveal_post: {
     parameters: {
       query?: never;
       header?: never;
@@ -10273,12 +10980,84 @@ export interface operations {
     };
     responses: {
       /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SourceFrameTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_source_frame_task_api_source_frame_tasks__task_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["VersionResponse"];
+          "application/json": components["schemas"]["SourceFrameTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_latest_source_frame_task_api_projects__project_id__source_frame_tasks_latest_get: {
+    parameters: {
+      query: {
+        asset_id: string;
+      };
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        project_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["SourceFrameTaskResponse"]
+            | null;
         };
       };
       /** @description Validation Error */
@@ -10417,6 +11196,111 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["VersionResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_project_first_frame_task_api_projects__project_id__first_frame_tasks_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        project_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EnqueueFirstFramesRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FirstFrameTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_first_frame_task_api_first_frame_tasks__task_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FirstFrameTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_latest_first_frame_task_api_projects__project_id__first_frame_tasks_active_or_latest_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        project_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["FirstFrameTaskResponse"]
+            | null;
         };
       };
       /** @description Validation Error */
@@ -10632,6 +11516,74 @@ export interface operations {
       };
     };
   };
+  enqueue_global_simple_character_api_simple_characters_tasks_generate_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "multipart/form-data": components["schemas"]["Body_enqueue_global_simple_character_api_simple_characters_tasks_generate_post"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CharacterSheetTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  enqueue_project_simple_character_api_simple_characters_tasks__project_id__generate_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        project_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "multipart/form-data": components["schemas"]["Body_enqueue_project_simple_character_api_simple_characters_tasks__project_id__generate_post"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CharacterSheetTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_simple_library_api_simple_characters_library_get: {
     parameters: {
       query?: never;
@@ -10717,6 +11669,109 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SimpleCharacterRegenerationResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  enqueue_regenerate_contact_sheet_api_simple_characters_identities__identity_id__regenerate_contact_sheet_task_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        identity_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/x-www-form-urlencoded": components["schemas"]["Body_enqueue_regenerate_contact_sheet_api_simple_characters_identities__identity_id__regenerate_contact_sheet_task_post"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CharacterSheetTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_character_sheet_task_api_simple_characters_task_status__task_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CharacterSheetTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_latest_character_sheet_task_api_simple_characters_tasks_active_or_latest_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["CharacterSheetTaskResponse"]
+            | null;
         };
       };
       /** @description Validation Error */

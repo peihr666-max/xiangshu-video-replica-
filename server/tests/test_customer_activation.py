@@ -17,7 +17,7 @@ Locked behaviours:
   identical username / device token / session token and only one CHARGE
   (envelope recovery, §12.1);
 - two threads racing the same device fingerprint with different codes leave
-  one activation and one ``USER_ALREADY_ACTIVATED``;
+  one activation and one unified ``ACTIVATION_UNAVAILABLE`` response;
 - a business failure (suspended code) rolls the idempotency envelope back
   with the transaction, so the same key stays reusable;
 - a colliding server-generated username is regenerated inside the same
@@ -178,6 +178,9 @@ def _insert_code(
     batch_id: str,
     plaintext: str,
     status: str = "ISSUED",
+    face_value_fen: int = 1500,
+    unit_price_fen: int = 1000,
+    credits: int = 100,
 ) -> None:
     from datetime import UTC, datetime
 
@@ -185,8 +188,15 @@ def _insert_code(
         "INSERT INTO activation_code_batches "
         "(id, name, face_value_fen, unit_price_fen_snapshot, credits_snapshot, "
         "quantity, activation_expires_at, status, created_by_user_id) "
-        "VALUES (%s, %s, 1500, 1000, 100, 1, %s, 'OPEN', 'admin_u')",
-        (batch_id, f"批次 {batch_id}", FUTURE_EXPIRY),
+        "VALUES (%s, %s, %s, %s, %s, 1, %s, 'OPEN', 'admin_u')",
+        (
+            batch_id,
+            f"批次 {batch_id}",
+            face_value_fen,
+            unit_price_fen,
+            credits,
+            FUTURE_EXPIRY,
+        ),
     )
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
     status_columns = {
@@ -262,12 +272,51 @@ def test_activate_route_keeps_its_response_model_in_the_openapi_contract() -> No
     )
 
 
+def test_license_only_activation_starts_with_zero_credits_and_no_fake_charge(
+    client: TestClient, clean_state: str
+) -> None:
+    plaintext = generate_activation_code()
+    with psycopg.connect(clean_state) as conn:
+        _insert_code(
+            conn,
+            code_id="code-zero-credit-license",
+            batch_id="batch-zero-credit-license",
+            plaintext=plaintext,
+            face_value_fen=0,
+            unit_price_fen=0,
+            credits=0,
+        )
+
+    response = _post_activate(client, plaintext, "fp-zero-credit", "idem-zero-credit")
+    assert response.status_code == 201, response.text
+    user_id = response.json()["user_id"]
+
+    with psycopg.connect(clean_state) as conn:
+        wallet = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+            (user_id,),
+        ).fetchone()
+        activation = conn.execute(
+            "SELECT recharge_order_id FROM activation_code_activations WHERE user_id = %s",
+            (user_id,),
+        ).fetchone()
+        assert wallet == (0, 0)
+        assert activation == (None,)
+        assert (
+            _count(conn, "SELECT COUNT(*) FROM recharge_orders WHERE user_id = %s", (user_id,)) == 0
+        )
+        assert (
+            _count(conn, "SELECT COUNT(*) FROM wallet_transactions WHERE user_id = %s", (user_id,))
+            == 0
+        )
+
+
 # ---------------------------------------------------------------------------
 # ACT-06: 100 concurrent activations of one code
 # ---------------------------------------------------------------------------
 
 
-def test_hundred_concurrent_same_code_fills_two_slots_without_duplicate_activation(
+def test_hundred_concurrent_same_code_requires_pairing_after_first_activation(
     client: TestClient, clean_state: str
 ) -> None:
     plaintext = generate_activation_code()
@@ -293,24 +342,22 @@ def test_hundred_concurrent_same_code_fills_two_slots_without_duplicate_activati
         assert not thread.is_alive(), "a concurrent activation worker hung"
 
     successes = [body for status, body in results if status == 201]
-    slots_full = [body for status, body in results if status == 409]
+    pairing_required = [body for status, body in results if status == 409]
     assert len(results) == threads_count
-    assert len(successes) == 2, results
-    assert len(slots_full) == threads_count - 2
-    assert all("DEVICE_SLOTS_FULL" in body for body in slots_full)
+    assert len(successes) == 1, results
+    assert len(pairing_required) == threads_count - 1
+    assert all("PAIRING_APPROVAL_REQUIRED" in body for body in pairing_required)
     import json as _json
 
-    customers = [_json.loads(body) for body in successes]
-    assert customers[0]["username"].startswith("customer-")
-    assert customers[0]["user_id"] == customers[1]["user_id"]
-    assert customers[0]["device_id"] != customers[1]["device_id"]
+    customer = _json.loads(successes[0])
+    assert customer["username"].startswith("customer-")
 
     with psycopg.connect(clean_state) as conn:
         # All-or-nothing: exactly one of every fact in the activation chain.
         assert _count(conn, "SELECT COUNT(*) FROM users WHERE role = 'customer'") == 1
         assert _count(conn, "SELECT COUNT(*) FROM wallets") == 1
         assert _count(conn, "SELECT COUNT(*) FROM activation_code_activations") == 1
-        assert _count(conn, "SELECT COUNT(*) FROM customer_devices WHERE status = 'BOUND'") == 2
+        assert _count(conn, "SELECT COUNT(*) FROM customer_devices WHERE status = 'BOUND'") == 1
         assert (
             _count(conn, "SELECT COUNT(*) FROM recharge_orders WHERE provider = 'activation_code'")
             == 1
@@ -402,9 +449,10 @@ def test_active_code_same_fingerprint_recovers_credentials_without_duplicate_cha
     assert wrong_machine.status_code == 400
     assert wrong_machine.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
-    # A reinstalled desktop has the durable machine fingerprint but no local
-    # credential envelope and should not ask the user to type the code again.
-    recovery_body = _activate_body("", fingerprint)
+    # A reinstalled desktop has no local credential envelope. Recovery is
+    # direct (no administrator approval) but requires the complete code in
+    # addition to the stable machine fingerprint.
+    recovery_body = _activate_body(plaintext, fingerprint)
     recovery_body["device_name"] = "自动恢复占位名称"
     recovered_response = client.post(
         ACTIVATE_PATH,
@@ -446,7 +494,7 @@ def test_active_code_same_fingerprint_recovers_credentials_without_duplicate_cha
         )
     suspended = _post_activate(
         client,
-        "",
+        plaintext,
         fingerprint,
         "key-recovery-suspended-code",
     )
@@ -454,13 +502,10 @@ def test_active_code_same_fingerprint_recovers_credentials_without_duplicate_cha
     assert suspended.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
 
-def test_revoked_device_same_fingerprint_recovers_automatically(
+def test_revoked_device_same_fingerprint_stays_revoked(
     client: TestClient, clean_state: str
 ) -> None:
-    """Revoking a credential logs the device out but does not permanently
-    strand the owner while the activation code remains ACTIVE. The durable
-    fingerprint is enough to restore the historical device row and rotate
-    both credentials without creating a second customer or charge."""
+    """An administrator revocation is terminal even for code-authenticated recovery."""
 
     from datetime import UTC, datetime
 
@@ -495,30 +540,28 @@ def test_revoked_device_same_fingerprint_recovers_automatically(
             (first["device_id"],),
         ).fetchone() == ("REVOKED",)
 
-    recovered_response = _post_activate(client, "", fingerprint, "key-revoke-recover")
-    assert recovered_response.status_code == 201, recovered_response.text
-    recovered = recovered_response.json()
-    assert recovered["user_id"] == first["user_id"]
-    assert recovered["device_id"] == first["device_id"]
-    assert recovered["device_token"] != first["device_token"]
+    recovered_response = _post_activate(client, plaintext, fingerprint, "key-revoke-recover")
+    assert recovered_response.status_code == 400
+    assert recovered_response.json()["detail"]["code"] == "ACTIVATION_UNAVAILABLE"
 
     with psycopg.connect(clean_state) as conn:
-        assert conn.execute(
+        revoked = conn.execute(
             "SELECT status, revoked_at, unbound_at FROM customer_devices WHERE id = %s",
             (first["device_id"],),
-        ).fetchone() == ("BOUND", None, None)
+        ).fetchone()
+        assert revoked is not None
+        assert revoked[0] == "REVOKED"
+        assert revoked[1] is not None
         assert _count(conn, "SELECT COUNT(*) FROM users WHERE role = 'customer'") == 1
         assert _count(conn, "SELECT COUNT(*) FROM activation_code_activations") == 1
         assert _count(conn, "SELECT COUNT(*) FROM customer_devices") == 1
         assert _count(conn, "SELECT COUNT(*) FROM wallet_transactions WHERE type = 'CHARGE'") == 1
 
 
-def test_active_code_directly_binds_second_device_and_enters_without_approval(
+def test_active_code_requires_pairing_before_binding_an_unknown_device(
     client: TestClient, clean_state: str
 ) -> None:
-    """The only customer entry accepts the same ACTIVE activation code on a
-    new computer. It takes the free slot, joins the existing account and
-    atomically takes over the single-online session without a pairing request."""
+    """An ACTIVE code can restore known hardware but cannot authorize a new one."""
 
     plaintext = generate_activation_code()
     with psycopg.connect(clean_state) as conn:
@@ -539,34 +582,21 @@ def test_active_code_directly_binds_second_device_and_enters_without_approval(
         "fp-direct-second",
         "key-direct-second",
     )
-    assert second_response.status_code == 201, second_response.text
-    second = second_response.json()
-    assert second["user_id"] == first["user_id"]
-    assert second["username"] == first["username"]
-    assert second["device_id"] != first["device_id"]
-    assert second["session_epoch"] == first["session_epoch"] + 1
-
-    third_response = _post_activate(
-        client,
-        plaintext,
-        "fp-direct-third",
-        "key-direct-third",
-    )
-    assert third_response.status_code == 409, third_response.text
-    assert third_response.json()["detail"]["code"] == "DEVICE_SLOTS_FULL"
+    assert second_response.status_code == 409, second_response.text
+    assert second_response.json()["detail"]["code"] == "PAIRING_APPROVAL_REQUIRED"
 
     with psycopg.connect(clean_state) as conn:
         assert _count(conn, "SELECT COUNT(*) FROM users WHERE role = 'customer'") == 1
         assert _count(conn, "SELECT COUNT(*) FROM wallets") == 1
         assert _count(conn, "SELECT COUNT(*) FROM activation_code_activations") == 1
-        assert _count(conn, "SELECT COUNT(*) FROM customer_devices WHERE status = 'BOUND'") == 2
+        assert _count(conn, "SELECT COUNT(*) FROM customer_devices WHERE status = 'BOUND'") == 1
         assert _count(conn, "SELECT COUNT(*) FROM device_pairing_requests") == 0
         assert _count(conn, "SELECT COUNT(*) FROM wallet_transactions WHERE type = 'CHARGE'") == 1
         current_session = conn.execute(
             "SELECT device_id FROM customer_session_state WHERE user_id = %s",
             (first["user_id"],),
         ).fetchone()
-        assert current_session == (second["device_id"],)
+        assert current_session == (first["device_id"],)
 
 
 # ---------------------------------------------------------------------------
@@ -603,9 +633,9 @@ def test_concurrent_second_code_same_fingerprint_one_success(
         thread.join(timeout=60)
 
     statuses = sorted(status for status, _ in results)
-    assert statuses == [201, 409], results
-    conflict_body = [body for status, body in results if status == 409][0]
-    assert "USER_ALREADY_ACTIVATED" in conflict_body
+    assert statuses == [201, 400], results
+    conflict_body = [body for status, body in results if status == 400][0]
+    assert "ACTIVATION_UNAVAILABLE" in conflict_body
 
     with psycopg.connect(clean_state) as conn:
         assert _count(conn, "SELECT COUNT(*) FROM activation_code_activations") == 1
@@ -651,8 +681,8 @@ def test_rotation_window_cross_version_same_fingerprint_one_activation(
     # Instance A: still V1-only (the rollout has not reached it yet).
     monkeypatch.delenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY_V2", raising=False)
     second = _post_activate(client, second_code, "fp-rotation", "key-rot-b")
-    assert second.status_code == 409, second.text
-    assert "USER_ALREADY_ACTIVATED" in second.text
+    assert second.status_code == 400, second.text
+    assert "ACTIVATION_UNAVAILABLE" in second.text
 
     with psycopg.connect(clean_state) as conn:
         assert _count(conn, "SELECT COUNT(*) FROM activation_code_activations") == 1

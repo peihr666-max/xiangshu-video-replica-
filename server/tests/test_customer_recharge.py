@@ -260,6 +260,42 @@ def recharge_config_fixture(monkeypatch: pytest.MonkeyPatch, clean_state: str) -
 # ---------------------------------------------------------------------------
 
 
+def test_customer_session_cannot_use_internal_recharge_route(
+    client: TestClient, clean_state: str, recharge_config_fixture
+) -> None:
+    """A customer session must never select the INTERNAL pricing rail by URL."""
+    code = generate_activation_code()
+    with psycopg.connect(clean_state) as conn:
+        _insert_code(
+            conn,
+            code_id="code-t44-internal-route",
+            batch_id="batch-t44-internal-route",
+            plaintext=code,
+        )
+
+    activation = _activate_customer(client, code, "fp-t44-internal-route", "unused")
+    with psycopg.connect(clean_state) as conn:
+        before = conn.execute(
+            "SELECT count(*) FROM recharge_orders WHERE user_id = %s",
+            (activation["user_id"],),
+        ).fetchone()
+
+    response = client.post(
+        "/api/recharge-orders",
+        json={"amount_fen": 10000},
+        headers={"Authorization": f"Bearer {activation['session_token']}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "CUSTOMER_RECHARGE_ROUTE_REQUIRED"
+    with psycopg.connect(clean_state) as conn:
+        after = conn.execute(
+            "SELECT count(*) FROM recharge_orders WHERE user_id = %s",
+            (activation["user_id"],),
+        ).fetchone()
+    assert before == after
+
+
 def test_customer_session_recharge_preserves_all_state_with_wallet_credit(
     client: TestClient, clean_state: str, recharge_config_fixture
 ) -> None:

@@ -51,6 +51,7 @@ Contract under test:
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import uuid
@@ -645,6 +646,43 @@ def test_adjustment_internal_scope_for_user_without_activation(
     assert _order_row(payload["order_id"])[3] == "INTERNAL"
     # The audit trail names the internal account too.
     assert len(_adjustment_audit_rows(INTERNAL_USER_ID)) == 1
+
+
+def test_admin_cannot_adjust_or_reprice_their_own_account(client: TestClient) -> None:
+    admin = _admin_session(client)
+
+    adjustment = _create_adjustment(
+        client,
+        admin,
+        user_id="admin_u",
+        credits=1,
+        key="admin-self-adjustment",
+    )
+    price = client.put(
+        _unit_price_path("admin_u"),
+        headers={**admin, IDEMPOTENCY_KEY_HEADER: "admin-self-price"},
+        json={
+            "confirm": True,
+            "reason": "must be rejected by separation of duties",
+            "unit_price_fen": 500,
+        },
+    )
+
+    assert adjustment.status_code == 403
+    assert adjustment.json()["detail"]["code"] == "ADMIN_SELF_SERVICE_FORBIDDEN"
+    assert price.status_code == 403
+    assert price.json()["detail"]["code"] == "ADMIN_SELF_SERVICE_FORBIDDEN"
+    denials = _fetch_all(
+        "SELECT action, entity_id, metadata_json FROM audit_logs "
+        "WHERE actor_user_id = 'admin_u' "
+        "AND action = 'security.admin_self_service_denied' ORDER BY created_at"
+    )
+    assert len(denials) == 2
+    assert {str(row[1]) for row in denials} == {"admin_u"}
+    assert {json.loads(str(row[2]))["attempted_action"] for row in denials} == {
+        "customer_adjustment.create",
+        "customer_unit_price.update",
+    }
 
 
 def test_suspended_code_prices_as_customer_revoked_does_not(client: TestClient) -> None:

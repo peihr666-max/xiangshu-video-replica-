@@ -314,6 +314,8 @@ def list_person_identities(
     actor: CurrentUser,
 ) -> list[PersonIdentity]:
     rows = conn.execute("SELECT * FROM person_identities ORDER BY created_at, id").fetchall()
+    if actor.role not in {"admin", "auditor"}:
+        rows = [row for row in rows if identity_owned_by_actor(row, actor)]
     if actor.role == "employee":
         rows = [row for row in rows if identity_available_to_employee(conn, row)]
     return [identity_from_row(row, redact_assets=actor.role == "employee") for row in rows]
@@ -326,6 +328,8 @@ def get_person_identity(
     identity_id: str,
 ) -> PersonIdentity:
     row = read_identity_row(conn, identity_id)
+    if actor.role not in {"admin", "auditor"} and not identity_owned_by_actor(row, actor):
+        raise character_not_found("PERSON_IDENTITY_NOT_FOUND", "人物身份不存在或不可用。")
     if actor.role == "employee" and not identity_available_to_employee(conn, row):
         raise character_not_found("PERSON_IDENTITY_NOT_FOUND", "人物身份不存在或不可用。")
     return identity_from_row(row, redact_assets=actor.role == "employee")
@@ -820,6 +824,8 @@ def list_character_personas(
     identity_id: str,
 ) -> list[CharacterPersona]:
     identity = read_identity_row(conn, identity_id)
+    if actor.role not in {"admin", "auditor"} and not identity_owned_by_actor(identity, actor):
+        return []
     if actor.role == "employee" and not effective_identity_is_active(identity):
         return []
     rows = conn.execute(
@@ -839,6 +845,8 @@ def get_character_persona(
 ) -> CharacterPersona:
     row = read_persona_row(conn, persona_id)
     identity = read_identity_row(conn, str(row["identity_id"]))
+    if actor.role not in {"admin", "auditor"} and not identity_owned_by_actor(identity, actor):
+        raise character_not_found("CHARACTER_PERSONA_NOT_FOUND", "角色人设不存在或不可用。")
     if actor.role == "employee" and (
         not effective_identity_is_active(identity)
         or not persona_has_published_version(conn, persona_id)
@@ -1021,6 +1029,8 @@ def list_character_versions(
 ) -> list[CharacterVersion]:
     persona = read_persona_row(conn, persona_id)
     identity = read_identity_row(conn, str(persona["identity_id"]))
+    if actor.role not in {"admin", "auditor"} and not identity_owned_by_actor(identity, actor):
+        return []
     if actor.role == "employee" and not effective_identity_is_active(identity):
         return []
     if actor.role == "employee":
@@ -1053,6 +1063,8 @@ def get_character_version(
     row = read_version_row(conn, version_id)
     persona = read_persona_row(conn, str(row["persona_id"]))
     identity = read_identity_row(conn, str(persona["identity_id"]))
+    if actor.role not in {"admin", "auditor"} and not identity_owned_by_actor(identity, actor):
+        raise character_not_found("CHARACTER_VERSION_NOT_FOUND", "角色版本不存在或不可用。")
     if actor.role == "employee" and (
         str(row["status"]) != "PUBLISHED" or not effective_identity_is_active(identity)
     ):
@@ -1269,7 +1281,7 @@ def read_identity_row(conn: BusinessConnection, identity_id: str) -> sqlite3.Row
         (identity_id,),
     ).fetchone()
     if row is None:
-        raise character_not_found("PERSON_IDENTITY_NOT_FOUND", "人物身份不存在。")
+        raise character_not_found("PERSON_IDENTITY_NOT_FOUND", "人物身份不存在或不可用。")
     return cast(sqlite3.Row, row)
 
 
@@ -1279,7 +1291,7 @@ def read_persona_row(conn: BusinessConnection, persona_id: str) -> sqlite3.Row:
         (persona_id,),
     ).fetchone()
     if row is None:
-        raise character_not_found("CHARACTER_PERSONA_NOT_FOUND", "角色人设不存在。")
+        raise character_not_found("CHARACTER_PERSONA_NOT_FOUND", "角色人设不存在或不可用。")
     return cast(sqlite3.Row, row)
 
 
@@ -1289,7 +1301,7 @@ def read_version_row(conn: BusinessConnection, version_id: str) -> sqlite3.Row:
         (version_id,),
     ).fetchone()
     if row is None:
-        raise character_not_found("CHARACTER_VERSION_NOT_FOUND", "角色版本不存在。")
+        raise character_not_found("CHARACTER_VERSION_NOT_FOUND", "角色版本不存在或不可用。")
     return cast(sqlite3.Row, row)
 
 
@@ -1436,6 +1448,11 @@ def effective_identity_is_active(row: sqlite3.Row) -> bool:
 
 def identity_has_usable_source(row: sqlite3.Row) -> bool:
     return row["source_asset_id"] is not None and effective_identity_is_active(row)
+
+
+def identity_owned_by_actor(row: sqlite3.Row, actor: CurrentUser) -> bool:
+    owner_user_id = row["owner_user_id"]
+    return owner_user_id is not None and str(owner_user_id) == actor.id
 
 
 def identity_available_to_employee(conn: BusinessConnection, row: sqlite3.Row) -> bool:

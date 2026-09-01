@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from app import media_routes
 from app.auth import CurrentUser, get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
@@ -19,11 +21,12 @@ from app.media import (
     FFprobeVideoProbe,
     VideoMetadata,
     complete_upload,
+    storage_key_from_uri,
 )
 from app.media import (
     create_upload_intent as create_media_upload_intent,
 )
-from app.media_routes import api_base_url, get_media_storage, get_video_probe
+from app.media_routes import api_base_url, complete_asset_upload, get_media_storage, get_video_probe
 from app.settings import SettingsRepository
 from app.storage import FakeStorageAdapter, LocalStorageAdapter
 
@@ -36,6 +39,73 @@ class FakeVideoProbe:
         assert content
         assert filename
         return VideoMetadata(duration_seconds=self.duration_seconds)
+
+
+def test_upload_completion_probes_storage_between_short_database_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor = CurrentUser(
+        id="employee_1",
+        username="employee_1",
+        display_name="Employee One",
+        role="employee",
+    )
+
+    class TwoScopeDb:
+        def __init__(self) -> None:
+            self.active = 0
+            self.calls = 0
+
+        @contextmanager
+        def write(self):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            self.active += 1
+            try:
+                yield object(), actor
+            finally:
+                self.active -= 1
+
+    db = TwoScopeDb()
+    prepared = object()
+    probed = object()
+    completed = type(
+        "Completed",
+        (),
+        {
+            "asset_id": "asset-1",
+            "project_id": "project-1",
+            "status": "uploaded",
+            "storage_uri": "fake://bucket/key.mp4",
+            "sha256": "sha",
+            "size_bytes": 12,
+            "content_type": "video/mp4",
+            "metadata": VideoMetadata(duration_seconds=8),
+            "analysis_task_id": None,
+            "analysis_task_status": None,
+        },
+    )()
+    monkeypatch.setattr(media_routes, "prepare_upload_completion", lambda *_a, **_k: prepared)
+
+    def probe_between_scopes(*_args: object, **_kwargs: object) -> object:
+        assert db.active == 0
+        return probed
+
+    monkeypatch.setattr(media_routes, "probe_upload_completion", probe_between_scopes)
+    monkeypatch.setattr(
+        media_routes,
+        "persist_upload_completion",
+        lambda *_a, **_k: completed,
+    )
+
+    response = complete_asset_upload(
+        "asset-1",
+        db,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        FakeVideoProbe(duration_seconds=8),
+    )
+
+    assert db.calls == 2
+    assert response.asset_id == "asset-1"
 
 
 def test_public_api_origin_rejects_a_missing_hostname(
@@ -198,6 +268,50 @@ def test_owner_can_upload_complete_and_query_video_asset(
     assert project["status"] == "REFERENCE_READY"
     assert uploaded_asset is not None
     assert uploaded_asset["kind"] == "reference_video"
+
+
+def test_customer_upload_responses_hide_storage_topology(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+) -> None:
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute("UPDATE users SET role = 'customer' WHERE id = ?", ("employee_1",))
+        conn.commit()
+
+    intent_response = client.post(
+        "/api/assets/upload-intent",
+        headers=auth_headers("employee_1"),
+        json={
+            "project_id": "project_owned",
+            "filename": "customer-reference.mp4",
+            "content_type": "video/mp4",
+            "size_bytes": 1024,
+        },
+    )
+
+    assert intent_response.status_code == 200, intent_response.text
+    intent = intent_response.json()
+    assert "storage_key" not in intent
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT storage_uri FROM assets WHERE id = ?",
+            (intent["asset_id"],),
+        ).fetchone()
+    assert row is not None
+    storage.put_object(
+        storage_key_from_uri(str(row["storage_uri"])),
+        b"video-bytes",
+        content_type="video/mp4",
+    )
+
+    complete = client.post(
+        f"/api/assets/{intent['asset_id']}/complete",
+        headers=auth_headers("employee_1"),
+    )
+
+    assert complete.status_code == 200, complete.text
+    assert "storage_uri" not in complete.json()
 
 
 def test_upload_completion_enqueues_analysis_once_and_returns_the_durable_task(
@@ -639,6 +753,34 @@ def test_local_storage_intent_url_and_upload_endpoint(
         app.dependency_overrides.clear()
 
 
+def test_local_download_rejects_overlong_expiry_without_integer_conversion(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("VIDEO_REPLICA_STORAGE_ROOT", str(tmp_path / "local-storage"))
+    storage = LocalStorageAdapter(root=tmp_path / "local-storage")
+
+    def database_override() -> Iterator[BusinessConnection]:
+        conn = BusinessConnection.sqlite(connect_database(db_path))
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    app.dependency_overrides[get_database] = database_override
+    app.dependency_overrides[get_media_storage] = lambda: storage
+    try:
+        response = TestClient(app).get(
+            "/api/assets/local-objects/projects/project_owned/source.mp4",
+            params={"expires": "9" * 10000, "sig": "0" * 64},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_EXPIRES"
+
+
 def test_local_upload_endpoint_rejects_non_local_storage(client: TestClient) -> None:
     response = client.put(
         "/api/assets/local-objects/projects/x/uploads/a/v.mp4",
@@ -681,7 +823,13 @@ def test_local_upload_endpoint_enforces_role_and_project_gates(
             content=b"x",
             headers=auth_headers("employee_2"),
         )
-        assert denied_resp.status_code == 403
+        missing_resp = client.put(
+            "/api/assets/local-objects/projects/project_missing/uploads/asset/video.mp4",
+            content=b"denied",
+            headers=auth_headers("employee_2"),
+        )
+        assert denied_resp.status_code == 404
+        assert denied_resp.content == missing_resp.content
 
         ok_resp = client.put(
             f"/api/assets/local-objects/{key}",
@@ -713,8 +861,18 @@ def test_upload_intent_requires_project_owner(client: TestClient) -> None:
         },
     )
 
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "PROJECT_FORBIDDEN"
+    missing = client.post(
+        "/api/assets/upload-intent",
+        headers=auth_headers("employee_2"),
+        json={
+            "project_id": "project_missing",
+            "filename": "reference.mp4",
+            "content_type": "video/mp4",
+            "size_bytes": 1024,
+        },
+    )
+    assert response.status_code == 404
+    assert response.content == missing.content
 
 
 def test_complete_rejects_a_non_reference_video_asset(
@@ -899,6 +1057,7 @@ def test_local_download_url_and_proxy(
     monkeypatch.delenv("VIDEO_REPLICA_SETTINGS_KEY", raising=False)
     monkeypatch.delenv("VIDEO_REPLICA_DISABLE_LOCAL_KEYSTORE", raising=False)
     monkeypatch.setattr("app.settings.load_or_create_local_settings_key", lambda: key)
+    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(db_path))
     monkeypatch.setenv("VIDEO_REPLICA_STORAGE_ROOT", str(tmp_path / "local-storage"))
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://video.example.com")
     storage = LocalStorageAdapter(root=tmp_path / "local-storage")
@@ -946,7 +1105,7 @@ def test_local_download_url_and_proxy(
         )
         assert url_resp.status_code == 200
         url = url_resp.json()["url"]
-        assert url.startswith("https://video.example.com/api/assets/local-objects/")
+        assert url.startswith("https://video.example.com/api/assets/signed-objects/")
 
         from urllib.parse import urlsplit
 

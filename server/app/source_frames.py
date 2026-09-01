@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import sqlite3
 import subprocess
@@ -9,10 +10,11 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.analysis import insert_version
 from app.auth import CurrentUser, Role
@@ -33,10 +35,12 @@ from app.storage import (
 
 SOURCE_FRAME_CANDIDATES_KIND = "source_frame_candidates"
 SOURCE_FRAME_SELECTION_KIND = "source_frame_selection"
-SOURCE_FRAME_SCHEMA_VERSION = "b4.source-frame.v1"
+SOURCE_FRAME_SCHEMA_VERSION = "b4.source-frame.v2"
 SOURCE_FRAME_TIMESTAMPS_SECONDS = (0.5, 1.5, 2.5)
 FFMPEG_TIMEOUT_SECONDS = 15
 SOURCE_FRAME_TASK_LEASE_MINUTES = 5
+
+logger = logging.getLogger(__name__)
 
 
 def source_video_duration_seconds(asset: sqlite3.Row) -> float | None:
@@ -56,7 +60,7 @@ def adaptive_source_frame_timestamps(duration_seconds: float | None) -> tuple[fl
 
     if duration_seconds is None or duration_seconds <= 0:
         return SOURCE_FRAME_TIMESTAMPS_SECONDS
-    return tuple(round(duration_seconds * ratio, 3) for ratio in (0.2, 0.5, 0.8))
+    return tuple(round(duration_seconds * ratio, 3) for ratio in (0.1, 0.3, 0.5, 0.7, 0.9))
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,27 @@ class ExtractedSourceFrame:
     timestamp_seconds: float
     image: bytes
     technical_score: float | None = None
+
+
+class SourceFrameCandidateAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_index: int = Field(ge=0)
+    person_count: int = Field(ge=0)
+    person_visibility_score: float = Field(ge=0, le=1)
+    face_clarity_score: float = Field(ge=0, le=1)
+    unobstructed_score: float = Field(ge=0, le=1)
+    pose_suitability_score: float = Field(ge=0, le=1)
+    motion_blur_detected: bool
+    notes: list[str]
+
+
+class SourceFrameSemanticInspection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidates: list[SourceFrameCandidateAssessment]
+    provider: str
+    model: str
 
 
 @dataclass(frozen=True)
@@ -79,6 +104,7 @@ class SourceFrameExtractionPlan:
 class StoredSourceFrameCandidates:
     candidates: list[dict[str, object]]
     created_assets: list[tuple[str, str]]
+    semantic_quality_status: Literal["VERIFIED", "UNAVAILABLE", "NOT_REQUESTED"]
 
 
 @dataclass(frozen=True)
@@ -97,6 +123,13 @@ class SourceFrameExtractor(Protocol):
         filename: str,
         timestamps_seconds: tuple[float, ...],
     ) -> list[ExtractedSourceFrame]: ...
+
+
+class SourceFrameQualityInspector(Protocol):
+    def inspect_source_frame_candidates(
+        self,
+        frames: list[ExtractedSourceFrame],
+    ) -> SourceFrameSemanticInspection: ...
 
 
 class SourceFrameExtractorUnavailable(RuntimeError):
@@ -313,6 +346,7 @@ def perform_source_frame_extraction(
     *,
     storage: StorageAdapter,
     extractor: SourceFrameExtractor,
+    quality_inspector: SourceFrameQualityInspector | None = None,
 ) -> StoredSourceFrameCandidates:
     try:
         reference = storage_object_ref_from_uri(plan.source_storage_uri)
@@ -357,20 +391,59 @@ def perform_source_frame_extraction(
             "No usable source frame could be extracted from the reference video.",
         )
 
+    semantic_quality_status: Literal["VERIFIED", "UNAVAILABLE", "NOT_REQUESTED"] = "NOT_REQUESTED"
+    assessments_by_index: dict[int, SourceFrameCandidateAssessment] = {}
+    if quality_inspector is not None:
+        try:
+            semantic = quality_inspector.inspect_source_frame_candidates(frames)
+            assessments_by_index = {
+                assessment.candidate_index: assessment for assessment in semantic.candidates
+            }
+            if set(assessments_by_index) != set(range(len(frames))):
+                raise ValueError("source-frame semantic inspection does not match candidates")
+            semantic_quality_status = "VERIFIED"
+        except (RuntimeError, ValueError) as exc:
+            semantic_quality_status = "UNAVAILABLE"
+            logger.warning(
+                "source-frame semantic inspection unavailable",
+                extra={"project_id": plan.project_id, "error_type": type(exc).__name__},
+            )
+
     created_assets: list[tuple[str, str]] = []
     try:
         candidates: list[dict[str, object]] = []
-        for frame in frames:
+        for index, frame in enumerate(frames):
             frame_asset_id = str(uuid4())
             storage_key = f"projects/{plan.project_id}/source-frames/{frame_asset_id}.jpg"
             created_assets.append((frame_asset_id, storage_key))
             stored = storage.put_object(storage_key, frame.image, content_type="image/jpeg")
+            technical_score = (
+                float(frame.technical_score) if frame.technical_score is not None else 0.0
+            )
+            assessment = assessments_by_index.get(index)
+            semantic_score = (
+                source_frame_semantic_score(assessment) if assessment is not None else None
+            )
+            combined_score = (
+                round(0.4 * technical_score + 0.6 * semantic_score, 3)
+                if semantic_score is not None
+                else frame.technical_score
+            )
             candidates.append(
                 {
                     "asset_id": frame_asset_id,
                     "timestamp_seconds": frame.timestamp_seconds,
-                    "score": frame.technical_score,
-                    "selection_reason": "技术质量分数基于细节、对比度和曝光。",
+                    "score": combined_score,
+                    "technical_score": frame.technical_score,
+                    "semantic_score": semantic_score,
+                    "semantic_assessment": (
+                        assessment.model_dump(mode="json") if assessment is not None else None
+                    ),
+                    "selection_reason": (
+                        "综合评分包含人物完整度、面部清晰度、遮挡、姿态、运动模糊及技术画质。"
+                        if semantic_score is not None
+                        else "语义质检暂不可用，请查看候选画面后手动确认。"
+                    ),
                     "storage_uri": stored.uri,
                     "sha256": stored.sha256 or hashlib.sha256(frame.image).hexdigest(),
                     "size_bytes": stored.size,
@@ -380,6 +453,7 @@ def perform_source_frame_extraction(
         return StoredSourceFrameCandidates(
             candidates=candidates,
             created_assets=created_assets,
+            semantic_quality_status=semantic_quality_status,
         )
     except (OSError, StorageBackendUnavailable, ValueError) as exc:
         delete_created_source_frames(
@@ -432,6 +506,7 @@ def complete_source_frame_extraction(
                 "schema_version": SOURCE_FRAME_SCHEMA_VERSION,
                 "source_asset_id": plan.asset_id,
                 "requested_timestamps_seconds": list(plan.requested_timestamps),
+                "semantic_quality_status": stored.semantic_quality_status,
                 "candidates": stored.candidates,
             },
             commit=False,
@@ -789,6 +864,21 @@ def delete_created_source_frames(
 def technical_score_of_candidate(candidate: dict[str, object]) -> float:
     score = candidate["score"]
     return float(score) if isinstance(score, int | float) else -1.0
+
+
+def source_frame_semantic_score(assessment: SourceFrameCandidateAssessment) -> float:
+    if assessment.person_count != 1 or assessment.motion_blur_detected:
+        return 0.0
+    return round(
+        (
+            assessment.person_visibility_score
+            + assessment.face_clarity_score
+            + assessment.unobstructed_score
+            + assessment.pose_suitability_score
+        )
+        / 4,
+        3,
+    )
 
 
 def confirm_source_frame(

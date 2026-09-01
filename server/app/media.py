@@ -27,7 +27,7 @@ from app.permissions import (
     require_project_access,
     write_audit,
 )
-from app.storage import StorageAdapter, storage_object_ref_from_uri
+from app.storage import StorageAdapter, require_storage_match, storage_object_ref_from_uri
 
 ALLOWED_CONTENT_TYPES = {"video/mp4", "video/quicktime"}
 ALLOWED_SUFFIXES = {".mp4", ".mov"}
@@ -68,6 +68,25 @@ class CompletedUpload:
     metadata: VideoMetadata
     analysis_task_id: str | None
     analysis_task_status: str | None
+
+
+@dataclass(frozen=True)
+class PreparedUploadCompletion:
+    asset_id: str
+    project_id: str
+    storage_uri: str
+    storage_key: str
+    content_type: str | None
+
+
+@dataclass(frozen=True)
+class ProbedUploadCompletion:
+    prepared: PreparedUploadCompletion
+    storage_uri: str
+    sha256: str
+    size_bytes: int
+    content_type: str
+    metadata: VideoMetadata
 
 
 class VideoProbe(Protocol):
@@ -308,14 +327,12 @@ def reuse_owned_completed_upload(
     )
 
 
-def complete_upload(
+def prepare_upload_completion(
     conn: BusinessConnection,
     *,
     actor: CurrentUser,
-    storage: StorageAdapter,
-    probe: VideoProbe,
     asset_id: str,
-) -> CompletedUpload:
+) -> PreparedUploadCompletion:
     require_not_auditor(
         conn,
         actor=actor,
@@ -335,7 +352,25 @@ def complete_upload(
             "ASSET_NOT_REFERENCE_VIDEO",
             "Only reference video uploads can be completed here.",
         )
-    storage_key = storage_key_from_uri(str(row["storage_uri"]))
+    storage_uri = str(row["storage_uri"])
+    return PreparedUploadCompletion(
+        asset_id=asset_id,
+        project_id=str(row["project_id"]),
+        storage_uri=storage_uri,
+        storage_key=storage_key_from_uri(storage_uri),
+        content_type=None if row["content_type"] is None else str(row["content_type"]),
+    )
+
+
+def probe_upload_completion(
+    prepared: PreparedUploadCompletion,
+    *,
+    storage: StorageAdapter,
+    probe: VideoProbe,
+) -> ProbedUploadCompletion:
+    reference = storage_object_ref_from_uri(prepared.storage_uri)
+    require_storage_match(storage, reference)
+    storage_key = prepared.storage_key
     stored = storage.head_object(storage_key)
     if stored is None:
         raise media_error(
@@ -344,7 +379,7 @@ def complete_upload(
             "Uploaded object is not available yet. Retry completion after upload finishes.",
         )
 
-    content_type = str(row["content_type"] or stored.content_type)
+    content_type = prepared.content_type or stored.content_type
     validate_upload_request(
         filename=Path(storage_key).name,
         content_type=content_type,
@@ -354,6 +389,46 @@ def complete_upload(
     metadata = probe_video(probe, content, filename=Path(storage_key).name)
     validate_duration(metadata.duration_seconds)
     content_sha256 = hashlib.sha256(content).hexdigest()
+    return ProbedUploadCompletion(
+        prepared=prepared,
+        storage_uri=stored.uri,
+        sha256=content_sha256,
+        size_bytes=stored.size,
+        content_type=content_type,
+        metadata=metadata,
+    )
+
+
+def persist_upload_completion(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    probed: ProbedUploadCompletion,
+) -> CompletedUpload:
+    prepared = probed.prepared
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="asset.upload_complete",
+        entity_type="asset",
+        entity_id=prepared.asset_id,
+    )
+    row = require_asset_access(
+        conn,
+        actor=actor,
+        asset_id=prepared.asset_id,
+        action="asset.upload_complete",
+    )
+    if (
+        not is_reference_video_asset(row)
+        or str(row["project_id"]) != prepared.project_id
+        or str(row["storage_uri"]) != prepared.storage_uri
+    ):
+        raise media_error(
+            409,
+            "UPLOAD_STATE_CHANGED",
+            "Upload state changed while the object was being checked; restart completion.",
+        )
 
     analysis_task: sqlite3.Row | None = None
     with conn:
@@ -369,43 +444,43 @@ def complete_upload(
             WHERE id = %s
             """,
             (
-                stored.uri,
-                content_sha256,
-                stored.size,
-                content_type,
+                probed.storage_uri,
+                probed.sha256,
+                probed.size_bytes,
+                probed.content_type,
                 json.dumps(
-                    {"duration_seconds": metadata.duration_seconds},
+                    {"duration_seconds": probed.metadata.duration_seconds},
                     ensure_ascii=True,
                     sort_keys=True,
                 ),
-                asset_id,
+                prepared.asset_id,
             ),
         )
         conn.execute(
             "UPDATE projects SET status = %s WHERE id = %s",
-            ("REFERENCE_READY", str(row["project_id"])),
+            ("REFERENCE_READY", prepared.project_id),
         )
-        project_id = str(row["project_id"])
+        project_id = prepared.project_id
         analysis_task = find_latest_analysis_task(
             conn,
             project_id=project_id,
-            asset_id=asset_id,
+            asset_id=prepared.asset_id,
         )
         if (
             analysis_task is None
             and find_analysis_version_for_asset(
                 conn,
                 project_id=project_id,
-                asset_id=asset_id,
+                asset_id=prepared.asset_id,
             )
             is None
         ):
             analysis_task, created = enqueue_analysis_task(
                 conn,
                 project_id=project_id,
-                asset_id=asset_id,
+                asset_id=prepared.asset_id,
                 created_by_user_id=actor.id,
-                duration_seconds=metadata.duration_seconds,
+                duration_seconds=probed.metadata.duration_seconds,
             )
             if created:
                 write_audit(
@@ -416,36 +491,50 @@ def complete_upload(
                     entity_id=str(analysis_task["id"]),
                     metadata={
                         "project_id": project_id,
-                        "asset_id": asset_id,
-                        "asset_sha256": content_sha256,
+                        "asset_id": prepared.asset_id,
+                        "asset_sha256": probed.sha256,
                         "trigger": "asset.upload_complete",
                     },
                     commit=False,
                 )
-
-    write_audit(
-        conn,
-        actor=actor,
-        action="asset.upload_complete",
-        entity_type="asset",
-        entity_id=asset_id,
-        metadata={
-            "project_id": str(row["project_id"]),
-            "duration_seconds": metadata.duration_seconds,
-        },
-    )
+        write_audit(
+            conn,
+            actor=actor,
+            action="asset.upload_complete",
+            entity_type="asset",
+            entity_id=prepared.asset_id,
+            metadata={
+                "project_id": prepared.project_id,
+                "duration_seconds": probed.metadata.duration_seconds,
+            },
+            commit=False,
+        )
     return CompletedUpload(
-        asset_id=asset_id,
-        project_id=str(row["project_id"]),
+        asset_id=prepared.asset_id,
+        project_id=prepared.project_id,
         status="uploaded",
-        storage_uri=stored.uri,
-        sha256=content_sha256,
-        size_bytes=stored.size,
-        content_type=content_type,
-        metadata=metadata,
+        storage_uri=probed.storage_uri,
+        sha256=probed.sha256,
+        size_bytes=probed.size_bytes,
+        content_type=probed.content_type,
+        metadata=probed.metadata,
         analysis_task_id=(None if analysis_task is None else str(analysis_task["id"])),
         analysis_task_status=(None if analysis_task is None else str(analysis_task["status"])),
     )
+
+
+def complete_upload(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    storage: StorageAdapter,
+    probe: VideoProbe,
+    asset_id: str,
+) -> CompletedUpload:
+    """Compatibility wrapper for non-route callers; external I/O stays outside writes."""
+    prepared = prepare_upload_completion(conn, actor=actor, asset_id=asset_id)
+    probed = probe_upload_completion(prepared, storage=storage, probe=probe)
+    return persist_upload_completion(conn, actor=actor, probed=probed)
 
 
 def is_reference_video_asset(row: sqlite3.Row) -> bool:

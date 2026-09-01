@@ -30,7 +30,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.analysis import get_version, insert_version
 from app.auth import CurrentUser, Role
+from app.bootstrap import is_customer_production
 from app.db_portable import BusinessConnection
+from app.first_frames import (
+    FirstFrameQualityInspector,
+    GeneratedVideoQualityResult,
+    ImageInput,
+    evaluate_generated_video_quality,
+)
 from app.internal_billing import (
     BillingInvariantError,
     InsufficientCreditsError,
@@ -39,6 +46,7 @@ from app.internal_billing import (
 )
 from app.permissions import (
     insert_audit,
+    remap_security_denial,
     require_asset_access,
     require_not_auditor,
     require_project_access,
@@ -304,6 +312,10 @@ class H3ProviderSettingsUnavailable(RuntimeError):
     pass
 
 
+class GeneratedVideoValidationUnavailable(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class ReconcileReservation:
     id: str
@@ -331,13 +343,14 @@ class PreparedReconcileOperation:
     task_status: str
     provider_task_id: str | None
     provider: H3Provider | None
+    first_frame_uri: str
 
 
 @dataclass(frozen=True)
 class ReconcileOperationOutcome:
     status: Literal["ALREADY_TERMINAL", "SUCCEEDED", "FAILED", "CANCELLED"]
     stored: StoredObject | None = None
-    audio_quality_status: Literal["AUDIO_OK", "AUDIO_QUALITY_FAILED"] | None = None
+    audio_quality_status: str | None = None
     quality_issue_codes: list[str] | None = None
 
 
@@ -577,6 +590,10 @@ def metaso_h3_provider_from_settings(conn: BusinessConnection) -> MetasoH3Provid
 
 def h3_provider_for_task(conn: BusinessConnection, provider_name: str) -> H3Provider:
     if provider_name == "fake_h3":
+        if is_customer_production():
+            raise H3ProviderSettingsUnavailable(
+                "fake H3 provider is forbidden in customer production"
+            )
         outcome = os.environ.get(FAKE_H3_OUTCOME_ENV, "ok").strip()
         if outcome not in {"ok", "provider_failed", "submission_uncertain"}:
             raise H3ProviderSettingsUnavailable(f"{FAKE_H3_OUTCOME_ENV} has an unsupported value")
@@ -705,9 +722,6 @@ class TaskSummary(BaseModel):
 
 class TaskResult(TaskSummary):
     prompt_snapshot: dict[str, Any] | None
-    # Provider 返回的成片直连播放链接（临时签名 URL）。客户端优先用它
-    # 在线播放，链接过期后回退到本地归档副本；非 HTTPS（如 fake://）不外露。
-    provider_result_url: str | None = None
 
 
 class BatchProgress(BaseModel):
@@ -1609,6 +1623,13 @@ def create_generation_batch(
                 actor=actor,
             )
 
+        if request.provider == "fake_h3" and is_customer_production():
+            raise generation_error(
+                503,
+                "FAKE_H3_PROVIDER_FORBIDDEN",
+                "Customer production cannot create simulated H3 generation tasks.",
+            )
+
         runtime = read_runtime_limits(conn)
         max_quantity = runtime["max_generation_count_per_batch"]
         if request.quantity > max_quantity:
@@ -1819,7 +1840,7 @@ def regenerate_generation_batch(
     request: PaidRegenerationRequest,
 ) -> BatchResult:
     source_context = conn.execute(
-        "SELECT project_id FROM generation_batches WHERE id = %s",
+        "SELECT project_id, created_by_user_id FROM generation_batches WHERE id = %s",
         (batch_id,),
     ).fetchone()
     if source_context is None:
@@ -1844,7 +1865,7 @@ def regenerate_generation_batch(
         conn.execute("BEGIN IMMEDIATE")
         source_batch = conn.execute(
             """
-            SELECT id, project_id, request_snapshot_json
+            SELECT id, project_id, created_by_user_id, request_snapshot_json
             FROM generation_batches
             WHERE id = %s
             """,
@@ -1852,6 +1873,7 @@ def regenerate_generation_batch(
         ).fetchone()
         if source_batch is None:
             raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
+        billed_user_id = str(source_batch["created_by_user_id"])
         source_tasks = conn.execute(
             """
             SELECT id, generation_mode, provider, model, prompt_version_id,
@@ -1884,7 +1906,7 @@ def regenerate_generation_batch(
         )
         existing = _find_idempotent_batch(
             conn,
-            actor_id=actor.id,
+            actor_id=billed_user_id,
             project_id=project_id,
             key=request.idempotency_key,
         )
@@ -1917,7 +1939,7 @@ def regenerate_generation_batch(
             (
                 new_batch_id,
                 project_id,
-                actor.id,
+                billed_user_id,
                 request.idempotency_key,
                 request_hash,
                 request_snapshot,
@@ -1959,7 +1981,7 @@ def regenerate_generation_batch(
             )
             _reserve_generation_credit(
                 conn,
-                user_id=actor.id,
+                user_id=billed_user_id,
                 task_id=replacement_task_id,
             )
         insert_audit(
@@ -1976,11 +1998,13 @@ def regenerate_generation_batch(
                 "generation_reason": request.generation_reason,
                 "estimated_cost_snapshot": request.estimated_cost_snapshot,
                 "idempotency_key_hash": content_hash(request.idempotency_key),
+                "billed_user_id": billed_user_id,
+                "requested_by_user_id": actor.id,
             },
         )
         # Pattern D: regeneration also makes the user a queue participant
         # (same-transaction upsert; rotation serves them on the next round).
-        ensure_user_queue_cursor(conn, user_id=actor.id)
+        ensure_user_queue_cursor(conn, user_id=billed_user_id)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1997,7 +2021,7 @@ def regenerate_generation_task(
 ) -> BatchResult:
     source_context = conn.execute(
         """
-        SELECT generation_batches.project_id
+        SELECT generation_batches.project_id, generation_batches.created_by_user_id
         FROM generation_tasks
         JOIN generation_batches ON generation_batches.id = generation_tasks.batch_id
         WHERE generation_tasks.id = %s
@@ -2043,6 +2067,7 @@ def regenerate_generation_task(
                 task.prompt_snapshot_json,
                 task.superseded_by_task_id,
                 batch.project_id,
+                batch.created_by_user_id,
                 batch.request_snapshot_json
             FROM generation_tasks AS task
             JOIN generation_batches AS batch ON batch.id = task.batch_id
@@ -2052,6 +2077,7 @@ def regenerate_generation_task(
         ).fetchone()
         if source is None:
             raise generation_error(404, "TASK_NOT_FOUND", "Generation task does not exist.")
+        billed_user_id = str(source["created_by_user_id"])
 
         request_snapshot = required_snapshot_text(source["request_snapshot_json"])
         prompt_snapshot = required_snapshot_text(source["prompt_snapshot_json"])
@@ -2066,7 +2092,7 @@ def regenerate_generation_task(
         )
         existing = _find_idempotent_batch(
             conn,
-            actor_id=actor.id,
+            actor_id=billed_user_id,
             project_id=project_id,
             key=request.idempotency_key,
         )
@@ -2098,7 +2124,7 @@ def regenerate_generation_task(
             (
                 new_batch_id,
                 project_id,
-                actor.id,
+                billed_user_id,
                 request.idempotency_key,
                 request_hash,
                 request_snapshot,
@@ -2135,7 +2161,7 @@ def regenerate_generation_task(
         )
         _reserve_generation_credit(
             conn,
-            user_id=actor.id,
+            user_id=billed_user_id,
             task_id=replacement_task_id,
         )
         cursor = conn.execute(
@@ -2168,11 +2194,13 @@ def regenerate_generation_task(
                 "generation_reason": request.generation_reason,
                 "estimated_cost_snapshot": request.estimated_cost_snapshot,
                 "idempotency_key_hash": content_hash(request.idempotency_key),
+                "billed_user_id": billed_user_id,
+                "requested_by_user_id": actor.id,
             },
         )
         # Pattern D: the replacement makes the user a queue participant
         # (same-transaction upsert; rotation serves them on the next round).
-        ensure_user_queue_cursor(conn, user_id=actor.id)
+        ensure_user_queue_cursor(conn, user_id=billed_user_id)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -2269,10 +2297,7 @@ def require_task_paid_regeneration_state(row: sqlite3.Row) -> None:
             "An uncertain submission must be reconciled before any paid regeneration.",
         )
     quality_issue_codes = parse_json_list(row["quality_issue_codes"])
-    if (
-        str(row["quality_status"]) == "AUDIO_QUALITY_FAILED"
-        or "AUDIO_QUALITY_FAILED" in quality_issue_codes
-    ):
+    if generation_quality_failed(str(row["quality_status"]), quality_issue_codes):
         return
     if str(row["status"]) == "FAILED" and (
         row["provider_task_id"] is not None
@@ -2283,8 +2308,7 @@ def require_task_paid_regeneration_state(row: sqlite3.Row) -> None:
     raise generation_error(
         409,
         "PAID_REGENERATION_NOT_ALLOWED",
-        "Only audio-quality failures or failed submitted tasks can be regenerated "
-        "with a new paid call.",
+        "Only quality failures or failed submitted tasks can be regenerated with a new paid call.",
     )
 
 
@@ -2338,26 +2362,37 @@ def require_confirmed_first_frame(
     candidate_values = (
         candidate_payload.get("candidates") if isinstance(candidate_payload, dict) else None
     )
-    candidate_asset_ids = (
-        {
-            value.get("asset_id")
-            for value in candidate_values
-            if isinstance(value, dict) and isinstance(value.get("asset_id"), str)
-        }
+    selected_candidate = (
+        next(
+            (
+                value
+                for value in candidate_values
+                if isinstance(value, dict) and value.get("asset_id") == first_frame_asset_id
+            ),
+            None,
+        )
         if isinstance(candidate_values, list)
-        else set()
+        else None
     )
     is_current_confirmation = (
         isinstance(selection_payload, dict)
         and selection_payload.get("first_frame_candidates_version_id") == str(candidates["id"])
         and selection_payload.get("first_frame_asset_id") == first_frame_asset_id
-        and first_frame_asset_id in candidate_asset_ids
+        and selected_candidate is not None
     )
     if not is_current_confirmation:
         raise generation_error(
             409,
             "FIRST_FRAME_CONFIRMATION_REQUIRED",
             "Confirm a first-frame candidate from the latest candidate set before H3 generation.",
+        )
+    quality = selected_candidate.get("quality") if isinstance(selected_candidate, dict) else None
+    if not isinstance(quality, dict) or quality.get("passed") is not True:
+        raise generation_error(
+            409,
+            "FIRST_FRAME_QUALITY_NOT_VERIFIED",
+            "The confirmed first frame has no current quality evidence; "
+            "generate and confirm it again.",
         )
     if (
         isinstance(candidate_payload, dict)
@@ -2405,6 +2440,8 @@ def run_next_generation_task(
     provider: H3Provider | None,
     storage: StorageAdapter,
     first_frame_storage: StorageAdapter | None = None,
+    visual_quality_inspector: FirstFrameQualityInspector | None = None,
+    video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
     lease: dict[str, Any] | None = None,
 ) -> TaskResult | None:
     if lease is None:
@@ -2464,6 +2501,9 @@ def run_next_generation_task(
             batch_id=batch_id,
             storage=storage,
             provider=provider,
+            first_frame_storage=source_storage,
+            visual_quality_inspector=visual_quality_inspector,
+            video_frame_extractor=video_frame_extractor,
         )
     try:
         first_frame = storage_object_ref_from_uri(str(lease["first_frame_uri"]))
@@ -2506,6 +2546,26 @@ def run_next_generation_task(
             task_id=task_id,
             batch_id=str(lease["batch_id"]),
             provider_task_id=exc.provider_task_id,
+        )
+        return get_task_result(conn, task_id)
+
+    try:
+        quality_status, quality_issue_codes = final_generation_quality(
+            content=provider_result.result_content,
+            first_frame_uri=str(lease["first_frame_uri"]),
+            first_frame_storage=source_storage,
+            inspector=visual_quality_inspector,
+            audio_quality_status=provider_result.audio_quality_status,
+            quality_issue_codes=provider_result.quality_issue_codes,
+            frame_extractor=video_frame_extractor,
+        )
+    except GeneratedVideoValidationUnavailable:
+        mark_task_submission_uncertain(
+            conn,
+            task_id=task_id,
+            message="Generated video is awaiting visual validation.",
+            provider_task_id=provider_result.provider_task_id,
+            error_code="VISUAL_VALIDATION_UNAVAILABLE",
         )
         return get_task_result(conn, task_id)
 
@@ -2592,8 +2652,8 @@ def run_next_generation_task(
                 (
                     provider_result.provider_task_id,
                     archive_status,
-                    provider_result.audio_quality_status,
-                    json.dumps(provider_result.quality_issue_codes, ensure_ascii=True),
+                    quality_status,
+                    json.dumps(quality_issue_codes, ensure_ascii=True),
                     result_asset_id,
                     json.dumps(provider_request, ensure_ascii=True, sort_keys=True),
                     retained_result_url,
@@ -2669,6 +2729,8 @@ def _store_and_finalize_archive(
     content: bytes,
     storage: StorageAdapter,
     reconcile_reservation: ReconcileReservation | None = None,
+    quality_status: str | None = None,
+    quality_issue_codes: list[str] | None = None,
 ) -> TaskResult:
     """Archive already-downloaded H3 result bytes and mark the task terminal."""
     object_key = (
@@ -2677,6 +2739,8 @@ def _store_and_finalize_archive(
         else f"generation-results/{task_id}.mp4"
     )
     stored = storage.put_object(object_key, content, content_type="video/mp4")
+    if quality_status is None or quality_issue_codes is None:
+        quality_status, quality_issue_codes = h3_audio_quality(content)
     result_asset_id = str(uuid4())
     task_state_guard = (
         "AND status = 'SUBMISSION_UNCERTAIN' AND result_asset_id IS NULL"
@@ -2721,6 +2785,8 @@ def _store_and_finalize_archive(
                 SET
                     status = 'SUCCEEDED',
                     archive_status = 'ARCHIVED',
+                    quality_status = %s,
+                    quality_issue_codes = %s,
                     result_asset_id = %s,
                     error_code = NULL,
                     error_message_redacted = NULL,
@@ -2731,7 +2797,12 @@ def _store_and_finalize_archive(
                 WHERE id = %s
                 {task_state_guard}
                 """,
-                (result_asset_id, task_id),
+                (
+                    quality_status,
+                    json.dumps(quality_issue_codes, ensure_ascii=True),
+                    result_asset_id,
+                    task_id,
+                ),
             )
             if reconcile_reservation is not None and task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
@@ -2775,6 +2846,9 @@ def _retry_archive(
     batch_id: str,
     storage: StorageAdapter,
     provider: H3Provider,
+    first_frame_storage: StorageAdapter,
+    visual_quality_inspector: FirstFrameQualityInspector | None = None,
+    video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
 ) -> TaskResult:
     """Re-download a paid H3 result whose earlier archive attempt failed and
     archive it to enterprise storage. Keeps the task retryable on failure."""
@@ -2782,6 +2856,7 @@ def _retry_archive(
         """
         SELECT
             generation_tasks.provider_result_url,
+            generation_tasks.prompt_snapshot_json,
             generation_batches.project_id,
             generation_batches.created_by_user_id
         FROM generation_tasks
@@ -2793,11 +2868,33 @@ def _retry_archive(
     if row is None or not row["provider_result_url"]:
         return get_task_result(conn, task_id)
     result_url = str(row["provider_result_url"])
+    prompt_snapshot = json.loads(str(row["prompt_snapshot_json"]))
     try:
         content = provider.download_result(result_url)
     except Exception as exc:
         logger.warning("archive retry download failed for task %s: %s", task_id, type(exc).__name__)
         _release_archive_retry(conn, task_id=task_id, batch_id=batch_id)
+        return get_task_result(conn, task_id)
+    try:
+        audio_quality_status, quality_issue_codes = h3_audio_quality(content)
+        quality_status, quality_issue_codes = final_generation_quality(
+            content=content,
+            first_frame_uri=str(prompt_snapshot["first_frame_uri"]),
+            first_frame_storage=first_frame_storage,
+            inspector=visual_quality_inspector,
+            audio_quality_status=audio_quality_status,
+            quality_issue_codes=quality_issue_codes,
+            frame_extractor=video_frame_extractor,
+        )
+    except GeneratedVideoValidationUnavailable:
+        _release_archive_retry(
+            conn,
+            task_id=task_id,
+            batch_id=batch_id,
+            quality_status="VISUAL_VALIDATION_UNAVAILABLE",
+            error_code="VISUAL_VALIDATION_UNAVAILABLE",
+            error_message="Generated video is awaiting visual validation.",
+        )
         return get_task_result(conn, task_id)
     try:
         return _store_and_finalize_archive(
@@ -2808,6 +2905,8 @@ def _retry_archive(
             created_by_user_id=str(row["created_by_user_id"]),
             content=content,
             storage=storage,
+            quality_status=quality_status,
+            quality_issue_codes=quality_issue_codes,
         )
     except Exception as exc:
         logger.warning("archive retry put failed for task %s: %s", task_id, type(exc).__name__)
@@ -3120,11 +3219,11 @@ def retry_generation_task(
                 """,
                 (request.retry_reason, actor.id, task_id),
             )
-        elif quality_status == "AUDIO_QUALITY_FAILED":
+        elif quality_status in {"AUDIO_QUALITY_FAILED", "VISUAL_QUALITY_FAILED"}:
             raise generation_error(
                 409,
                 "REQUIRES_PAID_REGENERATION",
-                "Audio quality failures require an explicit paid video regeneration.",
+                "Quality failures require an explicit paid video regeneration.",
             )
         elif status == "SUBMISSION_UNCERTAIN":
             if provider_task_id is not None:
@@ -3213,6 +3312,8 @@ def retry_generation_task(
                 "retry_path": retry_path,
                 "retry_reason": request.retry_reason,
                 "idempotency_key_hash": content_hash(request.idempotency_key),
+                "billed_user_id": str(row["created_by_user_id"]),
+                "requested_by_user_id": actor.id,
             },
         )
         _refresh_batch_status_in_transaction(conn, batch_id=str(row["batch_id"]))
@@ -3555,6 +3656,7 @@ def prepare_generation_reconcile_operation(
             task.status,
             task.provider_task_id,
             task.provider,
+            task.prompt_snapshot_json,
             batch.id AS batch_id,
             batch.project_id,
             batch.created_by_user_id,
@@ -3571,6 +3673,7 @@ def prepare_generation_reconcile_operation(
     if row is None:
         raise RuntimeError("reconciliation task context is unavailable")
     task_status = str(row["status"])
+    prompt_snapshot = json.loads(str(row["prompt_snapshot_json"]))
     provider_task_id = optional_text(row["provider_task_id"])
     provider: H3Provider | None = None
     if task_status == "SUBMISSION_UNCERTAIN":
@@ -3595,6 +3698,7 @@ def prepare_generation_reconcile_operation(
         task_status=task_status,
         provider_task_id=provider_task_id,
         provider=provider,
+        first_frame_uri=str(prompt_snapshot["first_frame_uri"]),
     )
 
 
@@ -3602,6 +3706,9 @@ def perform_generation_reconcile_operation(
     work: PreparedReconcileOperation,
     *,
     storage: StorageAdapter,
+    first_frame_storage: StorageAdapter | None = None,
+    visual_quality_inspector: FirstFrameQualityInspector | None = None,
+    video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
 ) -> ReconcileOperationOutcome:
     if work.task_status != "SUBMISSION_UNCERTAIN":
         return ReconcileOperationOutcome(status="ALREADY_TERMINAL")
@@ -3638,6 +3745,22 @@ def perform_generation_reconcile_operation(
             "Result download failed; retry reconciliation.",
         ) from exc
     audio_quality_status, quality_issue_codes = h3_audio_quality(content)
+    try:
+        quality_status, quality_issue_codes = final_generation_quality(
+            content=content,
+            first_frame_uri=work.first_frame_uri,
+            first_frame_storage=first_frame_storage or storage,
+            inspector=visual_quality_inspector,
+            audio_quality_status=audio_quality_status,
+            quality_issue_codes=quality_issue_codes,
+            frame_extractor=video_frame_extractor,
+        )
+    except GeneratedVideoValidationUnavailable as exc:
+        raise generation_error(
+            503,
+            "VISUAL_VALIDATION_UNAVAILABLE",
+            "Generated video is awaiting visual validation; retry reconciliation.",
+        ) from exc
     stored = store_generation_result(
         storage,
         task_id=f"{work.lease.task_id}/{work.lease.id}/{work.lease.attempt}",
@@ -3646,7 +3769,7 @@ def perform_generation_reconcile_operation(
     return ReconcileOperationOutcome(
         status="SUCCEEDED",
         stored=stored,
-        audio_quality_status=audio_quality_status,
+        audio_quality_status=quality_status,
         quality_issue_codes=quality_issue_codes,
     )
 
@@ -4183,7 +4306,15 @@ def reconcile_submission_uncertain_task(
     )
 
 
-def _release_archive_retry(conn: BusinessConnection, *, task_id: str, batch_id: str) -> None:
+def _release_archive_retry(
+    conn: BusinessConnection,
+    *,
+    task_id: str,
+    batch_id: str,
+    quality_status: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
     """Release the lease and back off ~60s so a stuck provider/storage does not
     cause a hot retry loop. Once retries are exhausted, the task is failed so a
     permanently expired provider URL does not spin forever."""
@@ -4201,6 +4332,7 @@ def _release_archive_retry(conn: BusinessConnection, *, task_id: str, batch_id: 
                     archive_status = 'ARCHIVE_FAILED',
                     provider_result_url = NULL,
                     archive_retry_count = %s,
+                    quality_status = COALESCE(%s, quality_status),
                     error_code = 'ARCHIVE_RETRY_EXHAUSTED',
                     error_message_redacted =
                         'Archive retries exhausted; the provider URL may have expired.',
@@ -4210,7 +4342,7 @@ def _release_archive_retry(conn: BusinessConnection, *, task_id: str, batch_id: 
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                 """,
-                (next_count, task_id),
+                (next_count, quality_status, task_id),
             )
             finalize_internal_billing(conn, task_id=task_id, outcome="failed")
             _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
@@ -4223,13 +4355,16 @@ def _release_archive_retry(conn: BusinessConnection, *, task_id: str, batch_id: 
                 status = 'SUCCEEDED',
                 archive_status = 'ARCHIVE_FAILED',
                 archive_retry_count = %s,
+                quality_status = COALESCE(%s, quality_status),
+                error_code = COALESCE(%s, error_code),
+                error_message_redacted = COALESCE(%s, error_message_redacted),
                 locked_by = NULL,
                 locked_until = NULL,
                 next_poll_at = now() + interval '60 seconds',
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (next_count, task_id),
+            (next_count, quality_status, error_code, error_message, task_id),
         )
         # The retry is no longer running; the slot is free until a worker
         # picks the archive retry up again.
@@ -4860,7 +4995,7 @@ def finalize_generation_archive(
     *,
     lease: dict[str, Any],
     stored: StoredObject,
-    audio_quality_status: Literal["AUDIO_OK", "AUDIO_QUALITY_FAILED"],
+    quality_status: str,
     quality_issue_codes: list[str],
 ) -> None:
     """Commit the archived asset and billing in one short transaction."""
@@ -4904,7 +5039,7 @@ def finalize_generation_archive(
         WHERE id = %s AND status = 'ARCHIVING'
         """,
         (
-            audio_quality_status,
+            quality_status,
             json.dumps(quality_issue_codes, ensure_ascii=True),
             result_asset_id,
             task_id,
@@ -4929,12 +5064,28 @@ def release_generation_archive_retry(
     )
 
 
+def release_generation_visual_validation_retry(
+    conn: BusinessConnection,
+    *,
+    lease: dict[str, Any],
+) -> None:
+    _release_archive_retry(
+        conn,
+        task_id=str(lease["id"]),
+        batch_id=str(lease["batch_id"]),
+        quality_status="VISUAL_VALIDATION_UNAVAILABLE",
+        error_code="VISUAL_VALIDATION_UNAVAILABLE",
+        error_message="Generated video is awaiting visual validation.",
+    )
+
+
 def mark_task_submission_uncertain(
     conn: BusinessConnection,
     *,
     task_id: str,
     message: str,
     provider_task_id: str | None = None,
+    error_code: str = "SUBMISSION_UNCERTAIN",
 ) -> None:
     with conn:
         row = conn.execute(
@@ -4947,14 +5098,14 @@ def mark_task_submission_uncertain(
             SET
                 provider_task_id = COALESCE(%s, provider_task_id),
                 status = 'SUBMISSION_UNCERTAIN',
-                error_code = 'SUBMISSION_UNCERTAIN',
+                error_code = %s,
                 error_message_redacted = %s,
                 locked_by = NULL,
                 locked_until = NULL,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (provider_task_id, message, task_id),
+            (provider_task_id, error_code, message, task_id),
         )
         # The task leaves the runnable/running states here; its concurrency
         # slot must be released with the transition, or the user's cursor
@@ -5329,7 +5480,7 @@ def list_generation_batches(
     if project_id is not None:
         clauses.append("batch.project_id = %s")
         parameters.append(project_id)
-    elif actor.role == "employee":
+    elif actor.role in {"employee", "customer"}:
         clauses.append("project.owner_user_id = %s")
         parameters.append(actor.id)
     if created_by_user_id is not None:
@@ -5350,7 +5501,9 @@ def list_generation_batches(
                   AND (
                     attention_task.status = 'SUBMISSION_UNCERTAIN'
                     OR attention_task.archive_status = 'ARCHIVE_FAILED'
-                    OR attention_task.quality_status = 'AUDIO_QUALITY_FAILED'
+                    OR attention_task.quality_status IN (
+                        'AUDIO_QUALITY_FAILED', 'VISUAL_QUALITY_FAILED'
+                    )
                     OR instr(
                         COALESCE(attention_task.quality_issue_codes, ''),
                         '"AUDIO_QUALITY_FAILED"'
@@ -5558,12 +5711,24 @@ def get_generation_batch(
     ).fetchone()
     if batch is None:
         raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
-    require_project_access(
-        conn,
-        actor=actor,
-        project_id=str(batch["project_id"]),
-        action="generation_batch.read",
-    )
+    try:
+        require_project_access(
+            conn,
+            actor=actor,
+            project_id=str(batch["project_id"]),
+            action="generation_batch.read",
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise remap_security_denial(
+                exc,
+                status_code=404,
+                detail={
+                    "code": "BATCH_NOT_FOUND",
+                    "message": "Generation batch does not exist.",
+                },
+            ) from exc
+        raise
     rows = conn.execute(
         """
         SELECT
@@ -5661,9 +5826,9 @@ def rename_generation_batch(
         raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
     if actor.role != "admin" and str(batch["created_by_user_id"]) != actor.id:
         raise generation_error(
-            403,
-            "GENERATION_BATCH_FORBIDDEN",
-            "只有批次创建者或管理员可以修改批次名称。",
+            404,
+            "BATCH_NOT_FOUND",
+            "Generation batch does not exist.",
         )
     clean_name = display_name.strip()
     if not clean_name:
@@ -5812,6 +5977,135 @@ def _h3_request_has_https_first_frame(request: dict[str, Any]) -> bool:
     value = image_url.get("url") if isinstance(image_url, dict) else None
     parsed = urlparse(value) if isinstance(value, str) else None
     return bool(parsed and parsed.scheme == "https" and parsed.hostname)
+
+
+def inspect_generated_video_quality(
+    *,
+    content: bytes,
+    first_frame: ImageInput,
+    inspector: FirstFrameQualityInspector,
+    frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
+) -> GeneratedVideoQualityResult:
+    try:
+        sampled_frames = (frame_extractor or extract_generated_video_frames)(content)
+        inspection = inspector.inspect_generated_video(
+            first_frame=first_frame,
+            sampled_frames=sampled_frames,
+        )
+    except Exception as exc:
+        logger.warning("generated-video visual validation unavailable: %s", type(exc).__name__)
+        raise GeneratedVideoValidationUnavailable(
+            "generated-video visual validation is temporarily unavailable"
+        ) from exc
+    return evaluate_generated_video_quality(inspection)
+
+
+def final_generation_quality(
+    *,
+    content: bytes,
+    first_frame_uri: str,
+    first_frame_storage: StorageAdapter,
+    inspector: FirstFrameQualityInspector | None,
+    audio_quality_status: Literal["AUDIO_OK", "AUDIO_QUALITY_FAILED"],
+    quality_issue_codes: list[str],
+    frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
+) -> tuple[str, list[str]]:
+    if inspector is None:
+        return audio_quality_status, list(quality_issue_codes)
+    try:
+        reference = storage_object_ref_from_uri(first_frame_uri)
+        require_storage_match(first_frame_storage, reference)
+        metadata = first_frame_storage.head_object(reference.key)
+        first_frame = ImageInput(
+            content=first_frame_storage.get_object(reference.key),
+            content_type=metadata.content_type if metadata is not None else "image/png",
+            filename=Path(reference.key).name or "first-frame.png",
+        )
+    except Exception as exc:
+        logger.warning("generated-video first-frame loading failed: %s", type(exc).__name__)
+        raise GeneratedVideoValidationUnavailable(
+            "generated-video first-frame input is temporarily unavailable"
+        ) from exc
+    visual = inspect_generated_video_quality(
+        content=content,
+        first_frame=first_frame,
+        inspector=inspector,
+        frame_extractor=frame_extractor,
+    )
+    issues = list(dict.fromkeys([*quality_issue_codes, *visual.issue_codes]))
+    if not visual.passed:
+        return "VISUAL_QUALITY_FAILED", issues
+    return audio_quality_status, issues
+
+
+def extract_generated_video_frames(content: bytes) -> list[ImageInput]:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        raise GeneratedVideoValidationUnavailable("ffmpeg and ffprobe are required")
+    with tempfile.TemporaryDirectory() as directory:
+        video_path = Path(directory) / "generated.mp4"
+        video_path.write_bytes(content)
+        try:
+            duration_result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(video_path),
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=5,
+            )
+            duration = float(duration_result.stdout.strip())
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise GeneratedVideoValidationUnavailable("video duration is unavailable") from exc
+        if duration_result.returncode != 0 or duration <= 0:
+            raise GeneratedVideoValidationUnavailable("video duration is invalid")
+        frames: list[ImageInput] = []
+        for index, position in enumerate((0.05, 0.25, 0.5, 0.75, 0.95), start=1):
+            try:
+                result = subprocess.run(
+                    [
+                        ffmpeg,
+                        "-v",
+                        "error",
+                        "-ss",
+                        f"{duration * position:.3f}",
+                        "-i",
+                        str(video_path),
+                        "-frames:v",
+                        "1",
+                        "-f",
+                        "image2pipe",
+                        "-vcodec",
+                        "mjpeg",
+                        "pipe:1",
+                    ],
+                    capture_output=True,
+                    check=False,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise GeneratedVideoValidationUnavailable(
+                    "generated-video frame extraction failed"
+                ) from exc
+            if result.returncode != 0 or not result.stdout:
+                raise GeneratedVideoValidationUnavailable("generated-video frame extraction failed")
+            frames.append(
+                ImageInput(
+                    content=result.stdout,
+                    content_type="image/jpeg",
+                    filename=f"generated-{index}.jpg",
+                )
+            )
+    return frames
 
 
 def h3_audio_quality(
@@ -6150,10 +6444,7 @@ def calculate_progress(tasks: Sequence[TaskSummary]) -> BatchProgress:
             counts["pending"] += 1
         if status == "SUBMISSION_UNCERTAIN" or archive_status == "ARCHIVE_FAILED":
             needs_attention = True
-        if (
-            task.quality_status == "AUDIO_QUALITY_FAILED"
-            or "AUDIO_QUALITY_FAILED" in task.quality_issue_codes
-        ):
+        if generation_quality_failed(task.quality_status, task.quality_issue_codes):
             needs_attention = True
         if needs_attention and task.superseded_by_task_id is None:
             counts["needs_attention"] += 1
@@ -6195,15 +6486,9 @@ def task_result(row: sqlite3.Row) -> TaskResult:
         if row["prompt_snapshot_json"] is None
         else json.loads(str(row["prompt_snapshot_json"]))
     )
-    provider_result_url = optional_text(row["provider_result_url"])
     return TaskResult(
         **summary.model_dump(),
         prompt_snapshot=prompt_snapshot,
-        provider_result_url=(
-            provider_result_url
-            if provider_result_url is not None and provider_result_url.startswith("https://")
-            else None
-        ),
     )
 
 
@@ -6273,7 +6558,7 @@ def generation_task_available_actions(
         return []
     if status == "SUBMISSION_UNCERTAIN":
         return ["RECONCILE"] if provider_task_id is not None else ["CONFIRM_NOT_CHARGED"]
-    if quality_status == "AUDIO_QUALITY_FAILED":
+    if quality_status in {"AUDIO_QUALITY_FAILED", "VISUAL_QUALITY_FAILED"}:
         return ["REGENERATE"]
     if status == "FAILED":
         if (
@@ -6300,7 +6585,7 @@ def generation_task_stage(
         return "SUBMISSION_UNCERTAIN"
     if archive_status == "ARCHIVE_FAILED":
         return "ARCHIVE_FAILED"
-    if quality_status == "AUDIO_QUALITY_FAILED" or "AUDIO_QUALITY_FAILED" in quality_issue_codes:
+    if generation_quality_failed(quality_status, quality_issue_codes):
         return "QUALITY_FAILED"
     if status == "SUCCEEDED" and archive_status == "ARCHIVED":
         return "COMPLETED"
@@ -6355,6 +6640,12 @@ def parse_json_list(value: Any) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [str(item) for item in parsed]
+
+
+def generation_quality_failed(quality_status: str, issue_codes: Sequence[str]) -> bool:
+    return quality_status in {"AUDIO_QUALITY_FAILED", "VISUAL_QUALITY_FAILED"} or any(
+        code == "AUDIO_QUALITY_FAILED" or code.startswith("VIDEO_") for code in issue_codes
+    )
 
 
 def version_result(row: sqlite3.Row) -> VersionResult:

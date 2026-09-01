@@ -4,6 +4,72 @@
 >
 > **Evidence location (M0 review M8 unification, 2026-08-21)**: per-task evidence documents live under `docs/evidence/` (T02–T06 evidence files moved from the repository root; run-fix evidence under `docs/evidence/m0-review-fixes/`). Historical self-references inside those documents to their original root paths are preserved as record snapshots.
 
+## T45 — Security Defense-in-Depth Closure
+
+| Field | Value |
+| --- | --- |
+| **Task ID** | T45 |
+| **Owner / Reviewer** | Backend/Frontend/Security/QA/Release (Agent); repository self-review |
+| **Branch / Base SHA** | `feat/customer-v3-t45-defense-in-depth` / `92bace869c413d4403372e324530d7ff1052804b` |
+| **Verified Implementation SHA** | `cc563a54eadf9c746b1683fd15d89b2e530dbe7e`; local PG16 integration fixes `8cebc43` |
+| **Upstream Spec Sections** | T45 work order B-2 plus S/D/C/A/E defense-in-depth findings |
+| **Failure Test or Regression Lock** | Session replay state gates; account-scoped keyed idempotency; late CLOSED payment; enabled-channel callback; revocable local/COS grants; per-device/preauth/reset limits; fencing dedupe; slot conflict mapping; customer response redaction; byte-identical 404; internal write contract; admin idle/context checks and self-service audit; billing actor split; auditor/reveal audit; executable release preflight |
+| **Implementation Result** | All T45 findings are closed in code or an explicit release-policy artifact; simple character and same-machine full-code reinstall remain direct without administrator review |
+| **Verification Command and Pass Count** | Local PostgreSQL 16.15 on port 5433; `npm run check`: secret scan, client 592/592, E2E format, Cargo, Ruff/format, Mypy 74 modules all pass; Python 3.12.13 server full 1446 passed / 1 skipped / 0 failed; Playwright customer E2E 4/4 passed |
+| **Evidence Level** | `AUTOMATED_VERIFIED`; Docker runtime and staging/real external chains remain unverified |
+| **Security and Observability** | No plaintext secrets in audit/idempotency/log output; denial/reveal/auditor/self-service events are traceable; application grants are revocable; deploy preflight reports names and metadata only |
+| **Migration and Rollback** | No new migration; behavior is application/configuration level. Rollback must keep the upgraded client before restoring legacy recovery behavior |
+| **External Authorization Record** | None; no production DB/server/payment/COS/Provider/code issuance/gray/release action |
+| **Untested Items** | Docker runtime (Windows host lacks VirtualMachinePlatform), staging topology, real ZPay/COS/Provider, signed desktop installer and production deployment |
+
+Full evidence: `docs/evidence/T45-EVIDENCE.md`.
+
+---
+
+## T44 — T43 Security Follow-up Remediation
+
+| Field | Value |
+| --- | --- |
+| **Task ID** | T44 |
+| **Owner / Reviewer** | Backend/DB/Security/QA (Agent); repository self-review found no remaining Critical/High/Medium code issue |
+| **Branch / Base SHA** | `feat/customer-v3-t44-security-followup` / `3799789588fd0278b8e18691329d60c7e75dfe23` |
+| **Verified Implementation SHA** | `0b36c61` |
+| **Upstream Spec Sections** | T43 follow-up findings B-1, F-1–F-5, C-1 and P-1 |
+| **Failure Test or Regression Lock** | NULL identity-owner backfill/NOT NULL/conflict refusal; customer/auditor internal recharge denial; revoked-device recovery denial; unowned legacy binding denial; auditor cache denial; cross-user first-frame replay denial; traversal/ambiguous object-key refusal; system auto-publish audit policy |
+| **Implementation Result** | Revision 051 performs deterministic owner recovery and fails closed on ambiguity; all listed authorization and storage bypasses are closed; per product decision, simple character generation remains direct and records system auto-approval rather than impersonating a human reviewer |
+| **Verification Command and Pass Count** | Initial 6 regression locks failed on old behavior then passed after fixes; local PostgreSQL 16.15 migration suite 17/17 passed through revision 051 (including deterministic owner backfill and multi-owner refusal); server full 1446 passed / 1 skipped / 0 failed; client 592/592 and Playwright customer E2E 4/4 passed; Mypy 74 modules, full-server Ruff and format checks passed |
+| **Evidence Level** | `AUTOMATED_VERIFIED`; production-snapshot migration and staging remain open |
+| **Security and Observability** | No customer data or secrets recorded; authorization runs before idempotent replay/storage network I/O; ambiguous ownership blocks migration |
+| **Migration and Rollback** | 051 prefers unique project-derived ownership, falls back to an existing creator, refuses conflicts/unresolved rows, then enforces NOT NULL and RESTRICT; downgrade restores nullable SET NULL shape without undoing safe backfill values |
+| **External Authorization Record** | None; no production DB, server, payment, COS, Provider, code issuance or release action |
+| **Untested Items** | Staging production-snapshot data preflight, production backup/migration and desktop release |
+
+Full evidence: `docs/evidence/T44-EVIDENCE.md`.
+
+---
+
+## T43 — Tenant Isolation and Activation Security Remediation
+
+| Field | Value |
+| --- | --- |
+| **Task ID** | T43 |
+| **Owner / Reviewer** | Backend/Frontend/Security/QA (Agent); repository self-review |
+| **Branch / Base SHA** | `feat/customer-v3-t43-isolation-security` / `e084cf1` |
+| **Verified Implementation SHA** | `dddfa70` |
+| **Upstream Spec Sections** | Task list T43; activation-code dev doc §3/§5/§6/§11/§12; acceptance spec §2–§3 |
+| **Failure Test or Regression Lock** | Cross-account person/persona/version/assets/batches; project-detail IDOR; 100-device activation race; primary-session-only code reset; masked list + audited single reveal; zero-credit activation and DB shape constraints; Windows deep cache path; current first-frame E2E fixture |
+| **Implementation Result** | Owner isolation across customer content; explicit pairing for unknown hardware; known-device reinstall recovery retained; primary-device session reset; masked list and audited one-code copy; zero-credit normal issuance with legacy positive-credit compatibility; migration 050 |
+| **Verification Command and Pass Count** | Client 592/592; PG16 key suite 157/157; server full 1416 passed / 1 skipped (`ffmpeg` unavailable) / 0 failed; Ruff/format/Mypy/Tauri/secret scan passed |
+| **Evidence Level** | `AUTOMATED_VERIFIED`; no staging, real-chain, gray or production claim |
+| **Security and Observability** | Plaintext is neither listed, logged nor stored in audit/idempotency snapshots; reveal is AdminWriter-only and audited once; customer reads enforce owner/project access; unknown devices cannot self-bind |
+| **Migration and Rollback** | 050 allows zero-value license batches and nullable activation recharge reference; database shape CHECK; downgrade fails closed when incompatible rows exist |
+| **External Authorization Record** | None; no production deployment, real payment, COS, Provider or external code issuance |
+| **Untested Items** | One local source-frame case requires `ffmpeg`; staging topology, production migration, signed installer, real chain and gray release |
+
+Full evidence: `docs/evidence/T43-EVIDENCE.md`.
+
+---
+
 ## T38 — PostgreSQL PITR and Recovery Drill
 
 | Field | Value |

@@ -35,8 +35,9 @@ Contract under test (task list §3 T16 / T18; dev doc §3.2 / §6.1 / §6.2 /
   ``DEVICE_ALREADY_UNBOUND``;
 - the DELETE carries a mandatory ``Idempotency-Key`` (PR #47 Codex review
   P2): a client that lost the 204 retries with the same key + same target
-  and replays the sealed 204 — even though its own credential is by then no
-  longer resolvable — while the same key against a different target answers
+  and replays the sealed 204 after the released target credential is matched;
+  unauthenticated/cross-account probes never reach that envelope, while the
+  same key against a different target in the same account answers
   409 ``IDEMPOTENCY_CONFLICT`` (400 ``IDEMPOTENCY_KEY_REQUIRED`` otherwise);
 - T18 management lanes: ``GET /api/control/devices`` lists device metadata
   without keyed digests (§6.2), ``POST /api/control/device-pairings/{id}/approve``
@@ -898,8 +899,8 @@ def test_unbind_replays_sealed_204_after_response_loss(client: TestClient) -> No
     """The lost-204 recovery: same key + same target replays the sealed 204.
 
     The caller unbound its *own* session-riding device, so the credential it
-    retries with is by design no longer resolvable — the recovery probe must
-    run before authentication, and the replay must not re-execute the unbind
+    retries with is no longer live but still resolves to that historical row.
+    The account-scoped recovery must not re-execute the unbind
     (one row flip, one epoch bump, one LOGOUT event).
     """
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-dev-12", suffix="d12")
@@ -917,16 +918,16 @@ def test_unbind_replays_sealed_204_after_response_loss(client: TestClient) -> No
     assert first.status_code == 204, first.text
     assert REPLAY_HEADER not in first.headers
 
-    # The retry rides the same — now unresolvable — credential and the same
-    # key; the sealed envelope answers before authentication ever runs, and
-    # the echoed request id is the sealed one, not a freshly minted one.
+    # The retry rides the same released credential and the same key. Matching
+    # that historical row proves the account/target scope, but the replay must
+    # not expose the original request id.
     retry = client.delete(
         f"{DEVICES_PATH}/{device_id}",
         headers={**_bearer(token), IDEMPOTENCY_KEY_HEADER: key},
     )
     assert retry.status_code == 204, retry.text
     assert retry.headers.get(REPLAY_HEADER) == "true"
-    assert retry.headers.get(REQUEST_ID_HEADER) == "req-replay-d12"
+    assert retry.headers.get(REQUEST_ID_HEADER) is None
 
     # The replay re-executed nothing: exactly one row flip, one epoch bump
     # (1 -> 2, not 3) and one LOGOUT event.
@@ -948,8 +949,8 @@ def test_unbind_replays_sealed_204_after_response_loss(client: TestClient) -> No
     assert logouts is not None and int(logouts[0]) == 1
 
 
-def test_unbind_same_key_different_target_conflicts(client: TestClient) -> None:
-    """The key identifies one submission: a different target answers 409."""
+def test_unbind_same_key_different_target_isolated_by_scope(client: TestClient) -> None:
+    """T45 scopes an unbind key to its authenticated account and target."""
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-dev-13", suffix="d13")
     second_device_id = str(uuid.uuid4())
     _second_device_row(
@@ -963,19 +964,91 @@ def test_unbind_same_key_different_target_conflicts(client: TestClient) -> None:
     first = client.delete(f"{DEVICES_PATH}/{second_device_id}", headers=headers)
     assert first.status_code == 204, first.text
 
-    # Same key, but the target is now the caller's own device: the request
-    # hash differs, so the spent key answers a conflict instead of unbinding.
-    conflict = client.delete(f"{DEVICES_PATH}/{customer['device_id']}", headers=headers)
-    assert conflict.status_code == 409, conflict.text
-    assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
+    # The same client-generated key may safely be reused for a different
+    # authenticated target because the target is part of the envelope scope.
+    second = client.delete(f"{DEVICES_PATH}/{customer['device_id']}", headers=headers)
+    assert second.status_code == 204, second.text
+    assert second.headers.get(REPLAY_HEADER) is None
 
-    # The second target was never touched.
+    # Both independent submissions took effect.
     with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
-        status = conn.execute(
-            "SELECT status FROM customer_devices WHERE id = %s",
-            (customer["device_id"],),
-        ).fetchone()
-    assert status is not None and status[0] == "BOUND"
+        statuses = conn.execute(
+            "SELECT id, status FROM customer_devices WHERE id = ANY(%s) ORDER BY id",
+            ([second_device_id, customer["device_id"]],),
+        ).fetchall()
+    assert len(statuses) == 2
+    assert {str(row[1]) for row in statuses} == {"UNBOUND"}
+
+
+def test_unbind_idempotency_key_is_isolated_by_target_device(client: TestClient) -> None:
+    """T45 S-2: two accounts may safely reuse the same client key."""
+    first = _activated_customer(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-unbind-scope-a",
+        suffix="unbind-scope-a",
+    )
+    second = _activated_customer(
+        client,
+        code=SECOND_CODE,
+        fingerprint="fp-unbind-scope-b",
+        suffix="unbind-scope-b",
+    )
+    key = "shared-client-generated-key"
+
+    first_response = client.delete(
+        f"{DEVICES_PATH}/{first['device_id']}",
+        headers={**_bearer(first["device_token"]), IDEMPOTENCY_KEY_HEADER: key},
+    )
+    second_response = client.delete(
+        f"{DEVICES_PATH}/{second['device_id']}",
+        headers={**_bearer(second["device_token"]), IDEMPOTENCY_KEY_HEADER: key},
+    )
+
+    assert first_response.status_code == 204
+    assert second_response.status_code == 204
+
+
+def test_unbind_replay_cannot_be_probed_without_the_owning_credential(
+    client: TestClient,
+) -> None:
+    """T45 S-2: a foreign or missing credential cannot discover a sealed 204."""
+    owner = _activated_customer(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-unbind-owner",
+        suffix="unbind-owner",
+    )
+    other = _activated_customer(
+        client,
+        code=SECOND_CODE,
+        fingerprint="fp-unbind-other",
+        suffix="unbind-other",
+    )
+    key = "shared-replay-probe-key"
+    first = client.delete(
+        f"{DEVICES_PATH}/{owner['device_id']}",
+        headers={**_bearer(owner["device_token"]), IDEMPOTENCY_KEY_HEADER: key},
+    )
+    assert first.status_code == 204
+
+    unauthenticated = client.delete(
+        f"{DEVICES_PATH}/{owner['device_id']}",
+        headers={IDEMPOTENCY_KEY_HEADER: key},
+    )
+    foreign = client.delete(
+        f"{DEVICES_PATH}/{owner['device_id']}",
+        headers={**_bearer(other["device_token"]), IDEMPOTENCY_KEY_HEADER: key},
+    )
+
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json()["detail"]["code"] == "DEVICE_CREDENTIAL_REQUIRED"
+    assert foreign.status_code == 404
+    assert foreign.json()["detail"]["code"] == "DEVICE_NOT_FOUND"
+    assert REPLAY_HEADER not in unauthenticated.headers
+    assert REPLAY_HEADER not in foreign.headers
+    assert REQUEST_ID_HEADER not in unauthenticated.headers
+    assert REQUEST_ID_HEADER not in foreign.headers
 
 
 # ---------------------------------------------------------------------------
@@ -1110,8 +1183,8 @@ def test_enroll_rejects_already_bound_fingerprint(client: TestClient) -> None:
     """A fingerprint holding a current binding cannot enroll again."""
     _activated_customer(client, code=FIRST_CODE, fingerprint="fp-pair-5", suffix="p5")
     response = _enroll(client, code=FIRST_CODE, fingerprint="fp-pair-5", key="idem-p5")
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "USER_ALREADY_ACTIVATED"
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "PAIRING_UNAVAILABLE"
     assert _count_rows("SELECT COUNT(*) FROM device_pairing_requests") == 0
 
 
@@ -1425,9 +1498,56 @@ def test_activation_code_reset_rotates_code_without_unbinding_current_device(
         fingerprint="fp-code-reset",
         suffix="code-reset",
     )
+    missing_key = client.post(
+        "/api/customer/activation-code/reset",
+        headers=_bearer(customer["session_token"]),
+    )
+    assert missing_key.status_code == 400
+    assert missing_key.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+    device_credential_attempt = client.post(
+        "/api/customer/activation-code/reset",
+        headers={
+            **_bearer(customer["device_token"]),
+            IDEMPOTENCY_KEY_HEADER: "idem-code-reset-device-token",
+        },
+    )
+    assert device_credential_attempt.status_code == 401
+
+    secondary_id = "device-code-reset-secondary"
+    _second_device_row(
+        user_id=customer["user_id"],
+        activation_code_id="code-code-reset",
+        device_id=secondary_id,
+        slot_no=2,
+    )
+    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE customer_session_state SET device_id = %s WHERE user_id = %s",
+            (secondary_id, customer["user_id"]),
+        )
+    secondary_attempt = client.post(
+        "/api/customer/activation-code/reset",
+        headers={
+            **_bearer(customer["session_token"]),
+            IDEMPOTENCY_KEY_HEADER: "idem-code-reset-secondary",
+        },
+    )
+    assert secondary_attempt.status_code == 403
+    assert secondary_attempt.json()["detail"]["code"] == "PRIMARY_DEVICE_REQUIRED"
+    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE customer_session_state SET device_id = %s WHERE user_id = %s",
+            (customer["device_id"], customer["user_id"]),
+        )
+        conn.execute("DELETE FROM customer_devices WHERE id = %s", (secondary_id,))
+    reset_headers = {
+        **_bearer(customer["session_token"]),
+        IDEMPOTENCY_KEY_HEADER: "idem-code-reset-primary",
+    }
     response = client.post(
         "/api/customer/activation-code/reset",
-        headers=_bearer(customer["device_token"]),
+        headers=reset_headers,
     )
 
     assert response.status_code == 200, response.text
@@ -1436,6 +1556,21 @@ def test_activation_code_reset_rotates_code_without_unbinding_current_device(
     assert new_code != FIRST_CODE
     assert payload["masked_code"] == mask_activation_code(new_code)
     assert response.headers["cache-control"] == "no-store"
+
+    replay = client.post("/api/customer/activation-code/reset", headers=reset_headers)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == payload
+    assert replay.headers.get(REPLAY_HEADER) == "true"
+
+    other_key = client.post(
+        "/api/customer/activation-code/reset",
+        headers={
+            **_bearer(customer["session_token"]),
+            IDEMPOTENCY_KEY_HEADER: "idem-code-reset-different",
+        },
+    )
+    assert other_key.status_code == 409, other_key.text
+    assert other_key.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
 
     # The current device remains authorized, while only the newly issued
     # activation code can start a future pairing request.
@@ -2525,7 +2660,7 @@ def test_admin_device_events_downgrade_guard(route_state: str) -> None:
         command.downgrade(config, "037_device_pairing_requests")
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "049_async_generation_reconcile"
+    assert version == "052_character_scene_look_tasks"
 
 
 # ---------------------------------------------------------------------------
@@ -2567,7 +2702,7 @@ def test_pairing_downgrade_refuses_once_rows_exist(route_state: str) -> None:
     # the version stays at the current head.
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "049_async_generation_reconcile"
+    assert version == "052_character_scene_look_tasks"
 
     # An emptied table downgrades symmetrically, and upgrading back restores
     # the schema for any rerun of this module. Revision 038 added the

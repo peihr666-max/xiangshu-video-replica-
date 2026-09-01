@@ -36,9 +36,11 @@ SELECTION_SNAPSHOT_SCHEMA_VERSION = "project-character-selection.v1"
 def list_available_project_character_versions(
     conn: BusinessConnection,
     *,
+    actor: CurrentUser,
     project_id: str,
     character_version_id: str | None = None,
 ) -> list[ProjectCharacterVersionOption]:
+    can_read_all = actor.role in {"admin", "auditor"}
     version_rows = conn.execute(
         """
         SELECT
@@ -68,10 +70,11 @@ def list_available_project_character_versions(
         JOIN person_identities AS identity ON identity.id = persona.identity_id
         WHERE version.status = 'PUBLISHED'
           AND (%s::text IS NULL OR version.id = %s)
+          AND (%s OR identity.owner_user_id = %s)
         ORDER BY LOWER(identity.display_name), persona.id,
                  version.version_number DESC
         """,
-        (character_version_id, character_version_id),
+        (character_version_id, character_version_id, can_read_all, actor.id),
     ).fetchall()
     if not version_rows:
         return []
@@ -136,6 +139,7 @@ def choose_project_character_version(
         conn.execute("BEGIN IMMEDIATE")
         options = list_available_project_character_versions(
             conn,
+            actor=actor,
             project_id=project_id,
             character_version_id=character_version_id,
         )

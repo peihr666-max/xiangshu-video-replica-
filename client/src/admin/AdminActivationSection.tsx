@@ -3,29 +3,18 @@ import { useState } from "react";
 import type { AdminActorInfo } from "../api.admin";
 import { ActivationCodeBatchesPage } from "./ActivationCodeBatchesPage";
 import { ActivationCodesPage } from "./ActivationCodesPage";
-import { DeliveriesPage } from "./DeliveriesPage";
-
-type SubPage = "batches" | "codes" | "deliveries";
 
 type AdminActivationSectionProps = {
   actor: AdminActorInfo;
-  unitPriceFen: number | null;
   onSessionExpired: () => void;
 };
-
-const subPages: Array<{ id: SubPage; label: string }> = [
-  { id: "batches", label: "生成激活码" },
-  { id: "codes", label: "激活码列表" },
-  { id: "deliveries", label: "激活码发放" },
-];
 
 /** Activation-code pages inside the application-wide administrator session. */
 export function AdminActivationSection({
   actor,
-  unitPriceFen,
   onSessionExpired,
 }: AdminActivationSectionProps) {
-  const [activePage, setActivePage] = useState<SubPage>("batches");
+  const [refreshToken, setRefreshToken] = useState(0);
   const readOnly = actor.role === "auditor";
 
   return (
@@ -36,41 +25,16 @@ export function AdminActivationSection({
         </p>
       ) : null}
 
-      <nav className="admin-tabs" aria-label="激活码管理导航">
-        {subPages.map((page) => (
-          <button
-            aria-current={activePage === page.id ? "page" : undefined}
-            className={
-              activePage === page.id ? "admin-tab is-active" : "admin-tab"
-            }
-            key={page.id}
-            type="button"
-            onClick={() => setActivePage(page.id)}
-          >
-            {page.label}
-          </button>
-        ))}
-      </nav>
-
-      {activePage === "batches" ? (
-        <ActivationCodeBatchesPage
-          readOnly={readOnly}
-          unitPriceFen={unitPriceFen}
-          onSessionExpired={onSessionExpired}
-        />
-      ) : null}
-      {activePage === "codes" ? (
-        <ActivationCodesPage
-          readOnly={readOnly}
-          onSessionExpired={onSessionExpired}
-        />
-      ) : null}
-      {activePage === "deliveries" ? (
-        <DeliveriesPage
-          readOnly={readOnly}
-          onSessionExpired={onSessionExpired}
-        />
-      ) : null}
+      <ActivationCodeBatchesPage
+        readOnly={readOnly}
+        onGenerated={() => setRefreshToken((current) => current + 1)}
+        onSessionExpired={onSessionExpired}
+      />
+      <ActivationCodesPage
+        readOnly={readOnly}
+        refreshToken={refreshToken}
+        onSessionExpired={onSessionExpired}
+      />
     </section>
   );
 }
