@@ -43,9 +43,12 @@ function withAuth(handler: FetchMock, user = employeeUser) {
 
 async function enterWorkspace() {
   // 启动即自动验证身份并直接进入工作台首页，无需点击“进入”；
-  // 用 microtask 刷新而非 findBy*，以兼容 fake timers 用例。
+  // 用 microtask 刷新而非 findBy*，以兼容 fake timers 用例。身份请求和
+  // JSON 解析各跨一个 Promise 边界，不能假设单次刷新就完成渲染。
   await act(async () => {
-    await Promise.resolve();
+    for (let step = 0; step < 5; step += 1) {
+      await Promise.resolve();
+    }
   });
   expect(
     screen.getByRole("heading", { level: 1, name: "项目" }),

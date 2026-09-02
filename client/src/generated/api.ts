@@ -1434,6 +1434,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/activation-codes/{code_id}/archive": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Archive Activation Code
+     * @description Hide a revoked code from daily operations without deleting its history.
+     */
+    post: operations["archive_activation_code_api_control_activation_codes__code_id__archive_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/activation-codes/{code_id}/reveal": {
     parameters: {
       query?: never;
@@ -1538,6 +1558,26 @@ export interface paths {
      * @description Approve a PENDING pairing via the administrator fallback lane.
      */
     post: operations["admin_approve_device_pairing_api_control_device_pairings__pairing_id__approve_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/device-pairings/{pairing_id}/replace-device": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Admin Replace Device Pairing
+     * @description Replace one bound device with an approved pending pairing.
+     */
+    post: operations["admin_replace_device_pairing_api_control_device_pairings__pairing_id__replace_device_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -4574,7 +4614,10 @@ export interface components {
       project_id: string;
       /** Status */
       status: string;
-      /** Stage */
+      /**
+       * Stage
+       * @enum {string}
+       */
       stage:
         | "QUEUED"
         | "PREPARING"
@@ -5238,6 +5281,21 @@ export interface components {
     RenameProjectRequest: {
       /** Name */
       name: string;
+    };
+    /** ReplaceDeviceContract */
+    ReplaceDeviceContract: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Replace Device Id */
+      replace_device_id: string;
     };
     /** RuntimeSettingsRequest */
     RuntimeSettingsRequest: {
@@ -8615,6 +8673,43 @@ export interface operations {
       };
     };
   };
+  archive_activation_code_api_control_activation_codes__code_id__archive_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        code_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AdminWriteContract"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   reveal_activation_code_api_control_activation_codes__code_id__reveal_post: {
     parameters: {
       query?: never;
@@ -8770,6 +8865,43 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["AdminWriteContract"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  admin_replace_device_pairing_api_control_device_pairings__pairing_id__replace_device_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        pairing_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ReplaceDeviceContract"];
       };
     };
     responses: {
