@@ -1521,6 +1521,27 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
     )
     assert queued.status_code == 202, queued.text
 
+    active = client.get(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/active-or-latest",
+        headers=headers("employee_1"),
+    )
+    assert active.status_code == 200, active.text
+    assert active.json()["id"] == queued.json()["id"]
+    assert active.json()["status"] == "PENDING"
+
+    foreign_active = client.get(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/active-or-latest",
+        headers=headers("employee_2"),
+    )
+    assert foreign_active.status_code == 404
+
+    latest_base_task = client.get(
+        "/api/simple-characters/tasks/active-or-latest",
+        headers=headers("employee_1"),
+    )
+    assert latest_base_task.status_code == 200, latest_base_task.text
+    assert latest_base_task.json() is None
+
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert (
             run_worker_once(
@@ -1544,8 +1565,8 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
     assert result["identity_id"] == identity_id
     assert result["scene_name"] == "工地巡检"
     assert len(result["views"]) == len(REQUIRED_CHARACTER_VIEW_TYPES)
-    assert scene_quality.calls == 3
-    assert len(contact_sheet_provider.calls) - provider_calls_before_scene == 3
+    assert scene_quality.calls == 0
+    assert len(contact_sheet_provider.calls) - provider_calls_before_scene == 1
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         source_asset_id = str(
@@ -1569,8 +1590,7 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
         )
     assert reference_asset_ids == [result["contact_sheet_asset_id"], source_asset_id]
     assert reference_asset_roles == ["contact_sheet", "source_photo"]
-    assert publication["scene_quality"]["passed"] is True
-    assert publication["scene_quality"]["attempt"] == 3
+    assert "scene_quality" not in publication
 
     looks = client.get(
         f"/api/simple-characters/identities/{identity_id}/scene-looks",
