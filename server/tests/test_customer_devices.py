@@ -1166,6 +1166,80 @@ def test_enroll_pending_retry_returns_same_pairing(client: TestClient) -> None:
     )
 
 
+def test_enroll_pending_status_polls_do_not_spend_rate_limit_budget(
+    monkeypatch: pytest.MonkeyPatch, route_state: str
+) -> None:
+    """The 0.1.12 waiting screen auto-polls enroll for its pairing outcome.
+
+    A device that already holds an active (unexpired) pairing is polling,
+    not probing codes: those polls must not spend the shared ACT-08
+    activation budgets, or the default 5-per-window code budget 429s the
+    poll within seconds and breaks the auto-consume promise — while a
+    stranger's fresh attempts on the same code stay budgeted, so the free
+    lane is not an enumeration bypass.
+    """
+    from app.activation_code_routes import router as activation_code_router
+    from app.customer_device_routes import router as customer_device_router
+
+    app = FastAPI()
+    app.include_router(activation_code_router)
+    app.include_router(customer_device_router)
+    monkeypatch.setenv(DATABASE_URL_ENV, route_state)
+    monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    monkeypatch.setenv(ACTIVATION_CODE_HMAC_KEY_ENV, TEST_KEY)
+    monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY", TEST_FINGERPRINT_KEY_V1)
+    monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY_V2", TEST_FINGERPRINT_KEY_V2)
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_CUSTOMER_IDEMPOTENCY_AEAD_KEY",
+        base64.urlsafe_b64encode(TEST_ENVELOPE_AEAD_KEY).decode("ascii").rstrip("="),
+    )
+    # The deployment-default code budget (5 per window) with a roomy IP
+    # budget, so the assertion pins the code dimension exactly.
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_IP", "1000")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE", "5")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS", "300")
+    monkeypatch.setattr("app.activation_code_routes.apply_anti_enumeration_delay", lambda: None)
+
+    with TestClient(app) as tight_client:
+        _activated_customer(tight_client, code=FIRST_CODE, fingerprint="fp-poll-1", suffix="pl1")
+        first = _enroll(
+            tight_client, code=FIRST_CODE, fingerprint="fp-poll-1-second", key="idem-pl1"
+        )
+        assert first.status_code == 202, first.text
+
+        # Twelve polls with distinct keys (each a fresh budgeted attempt
+        # before the fix) must all stay 202 and answer the same pairing row.
+        for attempt in range(12):
+            poll = _enroll(
+                tight_client,
+                code=FIRST_CODE,
+                fingerprint="fp-poll-1-second",
+                key=f"poll-key-{attempt}",
+            )
+            assert poll.status_code == 202, poll.text
+            assert poll.json()["pairing_request_id"] == first.json()["pairing_request_id"]
+
+        # Fresh fingerprints keep consuming the shared budget: the customer
+        # activation plus the first enroll spent 2 of 5, so exactly 3 more
+        # succeed and the next is 429.
+        succeeded = 0
+        blocked = None
+        for attempt in range(8):
+            response = _enroll(
+                tight_client,
+                code=FIRST_CODE,
+                fingerprint=f"fp-poll-stranger-{attempt}",
+                key=f"stranger-key-{attempt}",
+            )
+            if response.status_code == 429:
+                blocked = response
+                break
+            succeeded += 1
+        assert blocked is not None, "the stranger lane must still be rate limited"
+        assert succeeded == 3, "polls must not have pre-spent the code budget"
+        assert blocked.json()["detail"]["code"] == "RATE_LIMITED"
+
+
 def test_enroll_rejects_unknown_code_unified(client: TestClient) -> None:
     """Anti-enumeration: unknown and unusable codes share one 400 answer."""
     response = _enroll(client, code=FIRST_CODE, fingerprint="fp-pair-3", key="idem-p3")

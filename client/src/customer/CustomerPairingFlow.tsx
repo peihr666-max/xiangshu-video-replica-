@@ -8,8 +8,11 @@ import type { CustomerCredentialStore } from "./useCustomerSession";
  *
  * Wires the M4-shipped DevicePairingPage into the customer lane:
  * - a 202 enroll (another device is already bound) parks the user on a
- *   waiting screen with the pairing expiry; the client periodically repeats
- *   the idempotent enroll request until an approved pairing returns 201;
+ *   waiting screen with the pairing expiry; the client repeats the enroll
+ *   with ONE stable idempotency key until an approved pairing returns 201 —
+ *   the server exempts those status polls from the shared activation rate
+ *   limit, a lost 201 replays the sealed credential under the same key,
+ *   polling stops at the pairing expiry, and transport failures back off;
  * - a 201 enroll (primary device approved meanwhile) stores the device
  *   credential — the same shape the vault holds after activation, but
  *   without a session token — then hands back to /customer, where the
@@ -27,6 +30,11 @@ export function CustomerPairingFlow({
   const [stage, setStage] = useState<"form" | "pending" | "consumed">("form");
   const [pendingExpiry, setPendingExpiry] = useState("");
   const [pendingPairingId, setPendingPairingId] = useState("");
+  // One stable idempotency key for the whole waiting stage: the approval
+  // consumption seals the one-time credential under this key, so a poll
+  // whose 201 response is lost replays the credential instead of losing
+  // the freshly consumed device slot forever.
+  const [pollKey, setPollKey] = useState("");
   const [error, setError] = useState("");
   const [deviceFingerprint, setDeviceFingerprint] = useState("");
   const [draft, setDraft] = useState({ activationCode: "", deviceName: "" });
@@ -67,6 +75,9 @@ export function CustomerPairingFlow({
         };
         setPendingExpiry(pending.expires_at);
         setPendingPairingId(pending.pairing_request_id);
+        // Minted once per waiting stage (a re-submitted form resets it via
+        // the form branch below); repeated 202s keep the current key.
+        setPollKey((current) => current || crypto.randomUUID());
         setStage("pending");
         return;
       }
@@ -87,6 +98,7 @@ export function CustomerPairingFlow({
   useEffect(() => {
     if (
       stage !== "pending" ||
+      !pollKey ||
       !draft.activationCode ||
       !draft.deviceName ||
       !deviceFingerprint
@@ -94,29 +106,47 @@ export function CustomerPairingFlow({
       return;
     }
     let cancelled = false;
-    let checking = false;
     let timer: number | undefined;
+    let consecutiveFailures = 0;
+    const expiryMs = pendingExpiry ? Date.parse(pendingExpiry) : Number.NaN;
+
+    const stop = () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(() => void check(), delay);
+    };
     const check = async () => {
-      if (checking) {
+      if (cancelled) {
         return;
       }
-      checking = true;
+      // The pairing window is over: stop instead of polling on — the next
+      // enroll would lazily mint a NEW pending request, which only the
+      // user should decide to submit.
+      if (!Number.isNaN(expiryMs) && Date.now() >= expiryMs) {
+        stop();
+        setError("配对请求已过期，请返回重新提交。");
+        return;
+      }
       try {
         const result = await customerEnrollDevice({
           activationCode: draft.activationCode,
           deviceFingerprint,
           deviceName: draft.deviceName,
           devicePlatform: store.devicePlatform(),
-          idempotencyKey: crypto.randomUUID(),
+          // The waiting-stage key: stable across polls so a lost 201 can
+          // replay the sealed one-time credential on the next poll.
+          idempotencyKey: pollKey,
         });
         if (cancelled) {
           return;
         }
+        consecutiveFailures = 0;
         if (result.status === 201) {
-          cancelled = true;
-          if (timer !== undefined) {
-            window.clearInterval(timer);
-          }
+          stop();
         }
         await handleEnrollSuccess(
           result.status === 202
@@ -124,26 +154,31 @@ export function CustomerPairingFlow({
             : { status: "consumed", data: result.credential },
           draft,
         );
-      } catch (cause) {
-        if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : "检查配对状态失败");
+        if (!cancelled && result.status === 202) {
+          schedule(pollIntervalMs);
         }
-      } finally {
-        checking = false;
+      } catch (cause) {
+        if (cancelled) {
+          return;
+        }
+        consecutiveFailures += 1;
+        setError(cause instanceof Error ? cause.message : "检查配对状态失败");
+        // Transport failures (backend restarting, network drop) back off
+        // instead of hammering the endpoint, capped so an approved
+        // pairing is still picked up promptly once the backend recovers.
+        const backoff = pollIntervalMs * 2 ** Math.min(consecutiveFailures, 4);
+        schedule(Math.min(backoff, 30_000));
       }
     };
-    timer = window.setInterval(() => void check(), pollIntervalMs);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) {
-        window.clearInterval(timer);
-      }
-    };
+    schedule(pollIntervalMs);
+    return stop;
   }, [
     deviceFingerprint,
     draft,
     handleEnrollSuccess,
+    pendingExpiry,
     pollIntervalMs,
+    pollKey,
     stage,
     store,
   ]);
@@ -176,7 +211,12 @@ export function CustomerPairingFlow({
             <button
               type="button"
               className="btn-secondary"
-              onClick={() => setStage("form")}
+              onClick={() => {
+                // A re-submitted form starts a fresh pairing attempt with a
+                // fresh waiting-stage key.
+                setPollKey("");
+                setStage("form");
+              }}
             >
               返回修改
             </button>
