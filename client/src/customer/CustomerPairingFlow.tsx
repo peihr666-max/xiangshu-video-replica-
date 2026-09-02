@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { customerEnrollDevice } from "../api";
 import { DevicePairingPage } from "./DevicePairingPage";
 import type { CustomerCredentialStore } from "./useCustomerSession";
 
@@ -7,9 +8,11 @@ import type { CustomerCredentialStore } from "./useCustomerSession";
  *
  * Wires the M4-shipped DevicePairingPage into the customer lane:
  * - a 202 enroll (another device is already bound) parks the user on a
- *   waiting screen with the pairing expiry; the next enroll attempt is
- *   idempotent server-side, so "我已审批,重新配对" is the polling-free
- *   re-check that eventually lands on 201;
+ *   waiting screen with the pairing expiry; the client repeats the enroll
+ *   with ONE stable idempotency key until an approved pairing returns 201 —
+ *   the server exempts those status polls from the shared activation rate
+ *   limit, a lost 201 replays the sealed credential under the same key,
+ *   polling stops at the pairing expiry, and transport failures back off;
  * - a 201 enroll (primary device approved meanwhile) stores the device
  *   credential — the same shape the vault holds after activation, but
  *   without a session token — then hands back to /customer, where the
@@ -18,12 +21,20 @@ import type { CustomerCredentialStore } from "./useCustomerSession";
 export function CustomerPairingFlow({
   store,
   onPaired,
+  pollIntervalMs = 3000,
 }: {
   store: CustomerCredentialStore;
   onPaired: () => void;
+  pollIntervalMs?: number;
 }) {
   const [stage, setStage] = useState<"form" | "pending" | "consumed">("form");
   const [pendingExpiry, setPendingExpiry] = useState("");
+  const [pendingPairingId, setPendingPairingId] = useState("");
+  // One stable idempotency key for the whole waiting stage: the approval
+  // consumption seals the one-time credential under this key, so a poll
+  // whose 201 response is lost replays the credential instead of losing
+  // the freshly consumed device slot forever.
+  const [pollKey, setPollKey] = useState("");
   const [error, setError] = useState("");
   const [deviceFingerprint, setDeviceFingerprint] = useState("");
   const [draft, setDraft] = useState({ activationCode: "", deviceName: "" });
@@ -47,32 +58,130 @@ export function CustomerPairingFlow({
     };
   }, [store]);
 
-  async function handleEnrollSuccess(
-    result: {
-      status: "pending" | "consumed";
-      data: unknown;
+  const handleEnrollSuccess = useCallback(
+    async (
+      result: {
+        status: "pending" | "consumed";
+        data: unknown;
+      },
+      input: { activationCode: string; deviceName: string },
+    ) => {
+      setDraft(input);
+      setError("");
+      if (result.status === "pending") {
+        const pending = result.data as {
+          pairing_request_id: string;
+          expires_at: string;
+        };
+        setPendingExpiry(pending.expires_at);
+        setPendingPairingId(pending.pairing_request_id);
+        // Minted once per waiting stage (a re-submitted form resets it via
+        // the form branch below); repeated 202s keep the current key.
+        setPollKey((current) => current || crypto.randomUUID());
+        setStage("pending");
+        return;
+      }
+      const consumed = result.data as { device_token: string };
+      try {
+        // The consumed branch carries only the device credential; the session
+        // token arrives on the first login, so the vault is primed without one.
+        await store.saveActivation(consumed.device_token, "");
+        setStage("consumed");
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "保存设备凭据失败");
+        setStage("form");
+      }
     },
-    input: { activationCode: string; deviceName: string },
-  ) {
-    setDraft(input);
-    setError("");
-    if (result.status === "pending") {
-      const pending = result.data as { expires_at: string };
-      setPendingExpiry(pending.expires_at);
-      setStage("pending");
+    [store],
+  );
+
+  useEffect(() => {
+    if (
+      stage !== "pending" ||
+      !pollKey ||
+      !draft.activationCode ||
+      !draft.deviceName ||
+      !deviceFingerprint
+    ) {
       return;
     }
-    const consumed = result.data as { device_token: string };
-    try {
-      // The consumed branch carries only the device credential; the session
-      // token arrives on the first login, so the vault is primed without one.
-      await store.saveActivation(consumed.device_token, "");
-      setStage("consumed");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存设备凭据失败");
-      setStage("form");
-    }
-  }
+    let cancelled = false;
+    let timer: number | undefined;
+    let consecutiveFailures = 0;
+    const expiryMs = pendingExpiry ? Date.parse(pendingExpiry) : Number.NaN;
+
+    const stop = () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(() => void check(), delay);
+    };
+    const check = async () => {
+      if (cancelled) {
+        return;
+      }
+      // The pairing window is over: stop instead of polling on — the next
+      // enroll would lazily mint a NEW pending request, which only the
+      // user should decide to submit.
+      if (!Number.isNaN(expiryMs) && Date.now() >= expiryMs) {
+        stop();
+        setError("配对请求已过期，请返回重新提交。");
+        return;
+      }
+      try {
+        const result = await customerEnrollDevice({
+          activationCode: draft.activationCode,
+          deviceFingerprint,
+          deviceName: draft.deviceName,
+          devicePlatform: store.devicePlatform(),
+          // The waiting-stage key: stable across polls so a lost 201 can
+          // replay the sealed one-time credential on the next poll.
+          idempotencyKey: pollKey,
+        });
+        if (cancelled) {
+          return;
+        }
+        consecutiveFailures = 0;
+        if (result.status === 201) {
+          stop();
+        }
+        await handleEnrollSuccess(
+          result.status === 202
+            ? { status: "pending", data: result.pending }
+            : { status: "consumed", data: result.credential },
+          draft,
+        );
+        if (!cancelled && result.status === 202) {
+          schedule(pollIntervalMs);
+        }
+      } catch (cause) {
+        if (cancelled) {
+          return;
+        }
+        consecutiveFailures += 1;
+        setError(cause instanceof Error ? cause.message : "检查配对状态失败");
+        // Transport failures (backend restarting, network drop) back off
+        // instead of hammering the endpoint, capped so an approved
+        // pairing is still picked up promptly once the backend recovers.
+        const backoff = pollIntervalMs * 2 ** Math.min(consecutiveFailures, 4);
+        schedule(Math.min(backoff, 30_000));
+      }
+    };
+    schedule(pollIntervalMs);
+    return stop;
+  }, [
+    deviceFingerprint,
+    draft,
+    handleEnrollSuccess,
+    pendingExpiry,
+    pollIntervalMs,
+    pollKey,
+    stage,
+    store,
+  ]);
 
   if (stage === "pending") {
     return (
@@ -92,21 +201,24 @@ export function CustomerPairingFlow({
               本请求将在 {new Date(pendingExpiry).toLocaleString()} 过期。
             </p>
           ) : null}
-          <p className="pending-status">等待主设备确认</p>
+          {pendingPairingId ? (
+            <p className="request-time">配对编号：{pendingPairingId}</p>
+          ) : null}
+          <p className="pending-status">等待主设备或管理员确认</p>
+          <p>系统会自动检查审批结果，批准后将直接完成设备绑定。</p>
+          {error ? <p role="alert">{error}</p> : null}
           <div className="form-actions">
             <button
               type="button"
               className="btn-secondary"
-              onClick={() => setStage("form")}
+              onClick={() => {
+                // A re-submitted form starts a fresh pairing attempt with a
+                // fresh waiting-stage key.
+                setPollKey("");
+                setStage("form");
+              }}
             >
               返回修改
-            </button>
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={() => setStage("form")}
-            >
-              返回重新提交
             </button>
           </div>
         </section>

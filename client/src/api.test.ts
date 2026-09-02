@@ -877,12 +877,17 @@ describe("character reference and first-frame binding", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("shares one first-frame task poller across concurrent recovery callers", async () => {
+  it("shares one first-frame task poller and broadcasts progress to recovery callers", async () => {
     vi.useFakeTimers();
-    const pending = { id: "first-frame-task-shared", status: "PENDING" };
+    const pending = {
+      id: "first-frame-task-shared",
+      status: "PENDING",
+      stage: "QUEUED",
+    };
     const succeeded = {
       id: "first-frame-task-shared",
       status: "SUCCEEDED",
+      stage: "SUCCEEDED",
       result_version_id: "version-shared",
     };
     const fetchMock = vi
@@ -891,8 +896,14 @@ describe("character reference and first-frame binding", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
     vi.stubGlobal("fetch", fetchMock);
 
-    const first = waitForFirstFrameTask("first-frame-task-shared");
-    const recovered = waitForFirstFrameTask("first-frame-task-shared");
+    const firstUpdates: string[] = [];
+    const recoveredUpdates: string[] = [];
+    const first = waitForFirstFrameTask("first-frame-task-shared", (task) =>
+      firstUpdates.push(task.stage),
+    );
+    const recovered = waitForFirstFrameTask("first-frame-task-shared", (task) =>
+      recoveredUpdates.push(task.stage),
+    );
     await vi.advanceTimersByTimeAsync(1_500);
 
     await expect(Promise.all([first, recovered])).resolves.toEqual([
@@ -900,6 +911,8 @@ describe("character reference and first-frame binding", () => {
       succeeded,
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(firstUpdates).toEqual(["QUEUED", "SUCCEEDED"]);
+    expect(recoveredUpdates).toEqual(["QUEUED", "SUCCEEDED"]);
   });
 });
 

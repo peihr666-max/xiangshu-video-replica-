@@ -1036,6 +1036,63 @@ def test_revoke_idempotent_replay(
     assert events == 1
 
 
+def test_archive_revoked_code_hides_it_without_deleting_history(
+    client: TestClient, admin_headers: dict[str, str], clean_state: str
+) -> None:
+    code_id = _generated_code_id(client, admin_headers)
+    _deliver(client, admin_headers, code_id)
+    revoked = _status_action(client, admin_headers, code_id, "revoke", reason="客户停用")
+    assert revoked.status_code == 200, revoked.text
+
+    archived = client.post(
+        f"/api/control/activation-codes/{code_id}/archive",
+        json={"confirm": True, "reason": "清理已撤销激活码"},
+        headers={**admin_headers, "Idempotency-Key": "key-archive-code"},
+    )
+
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["code_id"] == code_id
+    assert archived.json()["archived_at"]
+    listed = client.get("/api/control/activation-codes", headers=admin_headers)
+    assert listed.status_code == 200, listed.text
+    assert all(item["code_id"] != code_id for item in listed.json()["items"])
+    with psycopg.connect(clean_state) as conn:
+        code = _row(
+            conn,
+            "SELECT status, archived_at FROM activation_codes WHERE id = %s",
+            (code_id,),
+        )
+        audit = _row(
+            conn,
+            "SELECT actor_user_id, action, metadata_json FROM audit_logs "
+            "WHERE entity_type = 'activation_code' AND entity_id = %s "
+            "AND action = 'admin.activation_code.archived'",
+            (code_id,),
+        )
+        event_count = _row(
+            conn,
+            "SELECT count(*) FROM activation_code_events WHERE code_id = %s",
+            (code_id,),
+        )
+    assert code is not None and code[0] == "REVOKED" and code[1] is not None
+    assert audit is not None and audit[0] == "admin_u"
+    assert json.loads(audit[2])["reason"] == "清理已撤销激活码"
+    assert event_count is not None and int(event_count[0]) > 0
+
+
+def test_archive_rejects_non_revoked_code(
+    client: TestClient, admin_headers: dict[str, str]
+) -> None:
+    code_id = _generated_code_id(client, admin_headers)
+    archived = client.post(
+        f"/api/control/activation-codes/{code_id}/archive",
+        json={"confirm": True, "reason": "错误清理"},
+        headers={**admin_headers, "Idempotency-Key": "key-archive-active"},
+    )
+    assert archived.status_code == 409
+    assert archived.json()["detail"]["code"] == "CODE_NOT_REVOKED"
+
+
 def test_idempotency_same_key_different_resource_conflicts(
     client: TestClient, admin_headers: dict[str, str], clean_state: str
 ) -> None:

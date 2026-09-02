@@ -35,6 +35,7 @@ from app.image_tasks import (
     acquire_first_frame_task,
     complete_first_frame_task,
     prepare_first_frame_task,
+    record_image_task_provider,
     renew_image_task_lease,
     run_first_frame_task_outside_transaction,
 )
@@ -411,6 +412,7 @@ def test_first_frame_task_is_idempotent_and_worker_publishes_result(
     )
 
     assert first.status_code == 202
+    assert first.json()["stage"] == "QUEUED"
     assert replay.status_code == 202
     assert replay.json()["id"] == first.json()["id"]
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
@@ -432,6 +434,7 @@ def test_first_frame_task_is_idempotent_and_worker_publishes_result(
     )
     assert task.status_code == 200
     assert task.json()["status"] == "SUCCEEDED"
+    assert task.json()["stage"] == "SUCCEEDED"
     assert task.json()["result_version_id"]
     latest = client.get(
         "/api/projects/project_owned/first-frames/latest",
@@ -439,6 +442,70 @@ def test_first_frame_task_is_idempotent_and_worker_publishes_result(
     )
     assert latest.status_code == 200
     assert latest.json()["id"] == task.json()["result_version_id"]
+
+
+def test_first_frame_task_exposes_real_worker_stage(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    prepare_inputs(client)
+    created = client.post(
+        "/api/projects/project_owned/first-frame-tasks",
+        json={
+            "model": "gpt-image-2",
+            "quantity": 1,
+            "idempotency_key": "first-frame-stage-1",
+        },
+        headers=headers("employee_1"),
+    )
+    assert created.status_code == 202
+    task_id = created.json()["id"]
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = acquire_first_frame_task(conn, worker_id="image-worker-stage-test")
+        assert lease is not None
+
+    preparing = client.get(
+        f"/api/first-frame-tasks/{task_id}",
+        headers=headers("employee_1"),
+    )
+    assert preparing.json()["stage"] == "PREPARING"
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        record_image_task_provider(
+            conn,
+            table="first_frame_tasks",
+            lease=lease,
+            provider="fake",
+            model="gpt-image-2",
+        )
+
+    generating = client.get(
+        f"/api/first-frame-tasks/{task_id}",
+        headers=headers("employee_1"),
+    )
+    assert generating.json()["stage"] == "GENERATING"
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE first_frame_tasks SET result_json = %s WHERE id = %s",
+            (
+                json.dumps(
+                    {
+                        "execution": {"provider": "fake", "model": "gpt-image-2"},
+                        "checkpoint": {"schema_version": 1, "candidates": []},
+                    }
+                ),
+                task_id,
+            ),
+        )
+        conn.commit()
+
+    verifying = client.get(
+        f"/api/first-frame-tasks/{task_id}",
+        headers=headers("employee_1"),
+    )
+    assert verifying.json()["stage"] == "VERIFYING"
 
 
 def test_first_frame_idempotent_replay_requires_project_access(client: TestClient) -> None:
