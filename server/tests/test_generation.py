@@ -23,10 +23,12 @@ from app.first_frames import GeneratedVideoInspection, ImageInput
 from app.generation import (
     MAX_ARCHIVE_RETRIES,
     FakeH3Provider,
+    GenerationTaskSupersededError,
     H3CreateResult,
     H3ProviderFailed,
     MetasoH3Provider,
     SubmissionUncertain,
+    acquire_generation_task_lease,
     acquire_generation_reconcile_operation,
     build_h3_request,
     compile_prompt_text,
@@ -35,6 +37,7 @@ from app.generation import (
     inspect_generated_video_quality,
     map_script_to_shots,
     mark_expired_active_leases_needing_attention,
+    mark_task_provider_failed,
     mark_task_submission_uncertain,
     reconcile_submission_uncertain_task,
     run_next_generation_task,
@@ -2255,6 +2258,62 @@ def test_prompt_becomes_stale_when_the_compiler_template_changes(
     assert state.json()["stale_reasons"] == ["TEMPLATE_SUPERSEDED"]
     assert rejected_lock.status_code == 409
     assert rejected_lock.json()["detail"]["code"] == "PROMPT_STALE"
+
+
+def test_worker_terminal_writes_respect_supersession_guard(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    """L1 (M4M5 review): a worker's late terminal write must not flip a task
+    that already carries a paid replacement — the write, its billing
+    settlement and its slot release all belong to the replacement flow."""
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        insert_generation_history(
+            conn,
+            batch_id="batch-l1-guard",
+            batch_status="QUEUED",
+            task_status="PENDING",
+            error_code=None,
+        )
+        conn.commit()
+        lease = acquire_generation_task_lease(conn, worker_id="worker-l1")
+        assert lease is not None
+        task_id = str(lease["id"])
+        # The L1 race: while this worker is still mid-flight, the sweeper
+        # parks the task and a paid replacement supersedes it.
+        conn.execute(
+            "UPDATE generation_tasks SET superseded_by_task_id = ? WHERE id = ?",
+            ("replacement-l1", task_id),
+        )
+        conn.commit()
+
+        with pytest.raises(GenerationTaskSupersededError):
+            run_next_generation_task(
+                conn,
+                worker_id="worker-l1",
+                provider=FakeH3Provider(),
+                storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
+                lease=lease,
+            )
+        row = conn.execute(
+            "SELECT status, superseded_by_task_id FROM generation_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        assert row["status"] != "SUCCEEDED"
+        assert row["superseded_by_task_id"] == "replacement-l1"
+
+        with pytest.raises(GenerationTaskSupersededError):
+            mark_task_provider_failed(
+                conn,
+                task_id=task_id,
+                batch_id="batch-l1-guard",
+                provider_task_id="provider-l1",
+            )
+        row = conn.execute(
+            "SELECT status FROM generation_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        assert row["status"] != "FAILED"
 
 
 def test_prompt_compile_rejects_a_superseded_script(client: TestClient) -> None:
