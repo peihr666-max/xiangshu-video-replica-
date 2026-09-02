@@ -13,6 +13,7 @@ import {
   downloadCharacterAsset,
   getCachedCharacterAssetUrl,
   getLatestCharacterSheetTask,
+  getLatestSceneLookTask,
   listCharacterSceneLooks,
   listSimpleCharacterLibrary,
   regenerateContactSheet,
@@ -203,6 +204,9 @@ export function CharacterLibrary({
       try {
         const task = await getLatestCharacterSheetTask();
         if (!active || !task) {
+          return;
+        }
+        if (task.operation === "SCENE") {
           return;
         }
         if (task.status === "SUCCEEDED") {
@@ -750,6 +754,7 @@ function CharacterLightbox({
   const [sceneDescription, setSceneDescription] = useState("");
   const [costumeDescription, setCostumeDescription] = useState("");
   const [sceneGenerating, setSceneGenerating] = useState(false);
+  const [sceneTaskMessage, setSceneTaskMessage] = useState("");
   const [expandedSceneId, setExpandedSceneId] = useState("");
 
   useEffect(() => {
@@ -764,28 +769,58 @@ function CharacterLightbox({
 
   useEffect(() => {
     let active = true;
-    setSceneLoading(true);
-    void listCharacterSceneLooks(entry.identity_id)
-      .then((looks) => {
-        if (!active) {
+
+    async function loadLooks(): Promise<void> {
+      const looks = await listCharacterSceneLooks(entry.identity_id);
+      if (!active) {
+        return;
+      }
+      setSceneLooks(looks);
+      setSceneError("");
+      await onLoadPreviewUrls(looks.flatMap(sceneLookAssetIds));
+    }
+
+    void (async () => {
+      setSceneLoading(true);
+      try {
+        await loadLooks();
+        if (active) {
+          setSceneLoading(false);
+        }
+        const task = await getLatestSceneLookTask(entry.identity_id);
+        if (!active || !task) {
           return;
         }
-        setSceneLooks(looks);
-        setSceneError("");
-        void onLoadPreviewUrls(looks.flatMap(sceneLookAssetIds));
-      })
-      .catch((loadError) => {
+        setActiveTab("scenes");
+        if (
+          task.status === "FAILED" ||
+          task.status === "SUBMISSION_UNCERTAIN"
+        ) {
+          setSceneError(task.error_message ?? "场景造型生成失败，请重新提交。");
+          return;
+        }
+        if (task.status === "PENDING" || task.status === "RUNNING") {
+          setSceneGenerating(true);
+          setSceneTaskMessage("正在恢复场景造型生成任务…");
+          await waitForCharacterSheetTask(task.id);
+        }
+        if (active) {
+          await loadLooks();
+        }
+      } catch (loadError) {
         if (active) {
           setSceneError(
             errorMessage(loadError, "场景造型暂不可用，请稍后重试。"),
           );
         }
-      })
-      .finally(() => {
+      } finally {
         if (active) {
           setSceneLoading(false);
+          setSceneGenerating(false);
+          setSceneTaskMessage("");
         }
-      });
+      }
+    })();
     return () => {
       active = false;
     };
@@ -907,6 +942,9 @@ function CharacterLightbox({
                 </button>
               ) : null}
             </div>
+            {sceneTaskMessage ? (
+              <p className="status-note">{sceneTaskMessage}</p>
+            ) : null}
             {sceneFormOpen ? (
               <form className="character-scene-form" onSubmit={submitSceneLook}>
                 <label>
