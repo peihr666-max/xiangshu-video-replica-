@@ -41,6 +41,7 @@ const codesPage = {
       bound_username: null,
       issued_at: null,
       devices: [],
+      pending_pairings: [],
     },
     {
       code_id: "code-2",
@@ -63,6 +64,27 @@ const codesPage = {
           revoked_at: null,
         },
       ],
+      pending_pairings: [
+        {
+          pairing_request_id: "pairing-1",
+          display_name: "新办公室电脑",
+          platform: "windows",
+          status: "PENDING",
+          created_at: "2026-08-22T10:00:00+00:00",
+          expires_at: "2026-08-22T10:15:00+00:00",
+        },
+      ],
+    },
+    {
+      code_id: "code-3",
+      batch_id: "batch-1",
+      masked_code: "XS****03",
+      status: "REVOKED",
+      bound_user_id: "user-10",
+      bound_username: "customer_10",
+      issued_at: "2026-08-19T10:00:00+00:00",
+      devices: [],
+      pending_pairings: [],
     },
   ],
   limit: 50,
@@ -107,6 +129,27 @@ function installFetch(options?: { list?: "ok" | "unauthorized" }) {
         code_id: "code-2",
         status: "REVOKED",
         request_id: "req-revoke-1",
+      });
+    }
+    if (
+      url.endsWith("/activation-codes/code-3/archive") &&
+      init?.method === "POST"
+    ) {
+      return jsonResponse({
+        code_id: "code-3",
+        archived_at: "2026-08-23T10:00:00+00:00",
+        request_id: "req-archive-1",
+      });
+    }
+    if (
+      url.endsWith("/device-pairings/pairing-1/replace-device") &&
+      init?.method === "POST"
+    ) {
+      return jsonResponse({
+        pairing_id: "pairing-1",
+        status: "APPROVED",
+        replaced_device_id: "device-1",
+        request_id: "req-replace-1",
       });
     }
     if (url.endsWith("/devices/device-1/unbind") && init?.method === "POST") {
@@ -189,7 +232,7 @@ describe("ActivationCodesPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
 
     expect(await screen.findByText(/req-revoke-1/)).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "已撤销" })).toBeInTheDocument();
+    expect(screen.getAllByRole("cell", { name: "已撤销" })).toHaveLength(2);
     const revokeCall = fetchMock.mock.calls.find(([url]) =>
       String(url).endsWith("/activation-codes/code-2/revoke"),
     );
@@ -211,6 +254,54 @@ describe("ActivationCodesPage", () => {
     expect(await screen.findByText(/req-unbind-1/)).toBeInTheDocument();
     expect(screen.getByText("已解绑")).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "使用中" })).toBeInTheDocument();
+  });
+
+  it("archives a revoked activation code without deleting its audit history", async () => {
+    const fetchMock = installFetch();
+    render(<ActivationCodesPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "删除激活码" }));
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "清理已撤销测试码" },
+    });
+    fireEvent.click(screen.getByLabelText("我已确认操作"));
+    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+
+    expect(await screen.findByText(/req-archive-1/)).toBeInTheDocument();
+    expect(screen.queryByText("XS****03")).toBeNull();
+    const archiveCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/activation-codes/code-3/archive"),
+    );
+    expect(archiveCall?.[1]?.body).toBe(
+      JSON.stringify({ confirm: true, reason: "清理已撤销测试码" }),
+    );
+  });
+
+  it("replaces a bound device through the pending pairing request", async () => {
+    const fetchMock = installFetch();
+    render(<ActivationCodesPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "1 台设备" }));
+
+    expect(screen.getByText("新办公室电脑")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "替换为新办公室电脑" }));
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "客户重装系统更换设备" },
+    });
+    fireEvent.click(screen.getByLabelText("我已确认操作"));
+    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+
+    expect(await screen.findByText(/req-replace-1/)).toBeInTheDocument();
+    expect(screen.queryByText("新办公室电脑")).toBeNull();
+    const replaceCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/device-pairings/pairing-1/replace-device"),
+    );
+    expect(replaceCall?.[1]?.body).toBe(
+      JSON.stringify({
+        replace_device_id: "device-1",
+        confirm: true,
+        reason: "客户重装系统更换设备",
+      }),
+    );
   });
 
   it("filters locally by account and requests the selected status", async () => {

@@ -82,14 +82,53 @@ describe("CustomerPairingFlow (FE-03 / T30)", () => {
     ).toBeInTheDocument();
     // The waiting screen shows the pairing expiry in the local locale.
     expect(screen.getByText(/2026\/8\/26/)).toBeInTheDocument();
+    expect(screen.getByText(/pairing-1/)).toBeInTheDocument();
     // The waiting screen is honest about the pending state, not a success.
     expect(screen.queryByRole("heading", { name: "配对成功" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "返回重新提交" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回修改" }));
     expect(screen.getByLabelText("激活码")).toHaveValue(
       "XS04-TESTCODE-CODECODE-CODECODE",
     );
     expect(screen.getByLabelText("设备名称")).toHaveValue("My Second Device");
+  });
+
+  it("automatically consumes the pairing after an administrator approves it", async () => {
+    const saveActivation = vi.fn().mockResolvedValue(undefined);
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        mockResponse(202, {
+          pairing_request_id: "pairing-auto-1",
+          status: "PENDING",
+          expires_at: "2026-08-26T12:00:00Z",
+          request_id: "req-auto-1",
+        }),
+      )
+      .mockImplementationOnce(() =>
+        mockResponse(201, {
+          device_id: "device-auto-2",
+          slot_no: 2,
+          device_token: deviceTokenText,
+          request_id: "req-auto-2",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <CustomerPairingFlow
+        store={fakeStore({ saveActivation })}
+        onPaired={vi.fn()}
+        pollIntervalMs={10}
+      />,
+    );
+    await fillForm();
+
+    expect(
+      await screen.findByRole("heading", { name: "配对成功" }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(saveActivation).toHaveBeenCalledWith(deviceTokenText, "");
   });
 
   it("stores the device credential and reports success when approved meanwhile (201)", async () => {

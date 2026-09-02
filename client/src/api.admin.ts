@@ -276,6 +276,16 @@ export type ActivationCodeListItem = {
   bound_username: string | null;
   issued_at: string | null;
   devices: ActivationCodeDevice[];
+  pending_pairings: ActivationCodePendingPairing[];
+};
+
+export type ActivationCodePendingPairing = {
+  pairing_request_id: string;
+  display_name: string;
+  platform: string;
+  status: "PENDING" | "APPROVED";
+  created_at: string;
+  expires_at: string;
 };
 
 export type ActivationCodeDevice = {
@@ -335,6 +345,20 @@ export type ActivationDeliverResult = {
 export type ActivationCodeMutationResult = {
   code_id: string;
   status: string;
+  request_id: string;
+};
+
+export type ActivationCodeArchiveResult = {
+  code_id: string;
+  archived_at: string;
+  request_id: string;
+};
+
+export type PairingAdminResult = {
+  pairing_id: string;
+  status: string;
+  outcome?: string;
+  replaced_device_id?: string;
   request_id: string;
 };
 
@@ -506,6 +530,49 @@ export async function revokeActivationCode(
     {},
     reason,
     "作废激活码失败",
+    idempotencyKey,
+  );
+}
+
+export async function archiveActivationCode(
+  codeId: string,
+  reason: string,
+  idempotencyKey?: string,
+): Promise<ActivationCodeArchiveResult> {
+  return adminWrite<ActivationCodeArchiveResult>(
+    `/api/control/activation-codes/${encodeURIComponent(codeId)}/archive`,
+    {},
+    reason,
+    "删除激活码失败",
+    idempotencyKey,
+  );
+}
+
+export async function approveDevicePairing(
+  pairingId: string,
+  reason: string,
+  idempotencyKey?: string,
+): Promise<PairingAdminResult> {
+  return adminWrite<PairingAdminResult>(
+    `/api/control/device-pairings/${encodeURIComponent(pairingId)}/approve`,
+    {},
+    reason,
+    "批准设备配对失败",
+    idempotencyKey,
+  );
+}
+
+export async function replaceDeviceForPairing(
+  pairingId: string,
+  replaceDeviceId: string,
+  reason: string,
+  idempotencyKey?: string,
+): Promise<PairingAdminResult> {
+  return adminWrite<PairingAdminResult>(
+    `/api/control/device-pairings/${encodeURIComponent(pairingId)}/replace-device`,
+    { replace_device_id: replaceDeviceId },
+    reason,
+    "更换设备失败",
     idempotencyKey,
   );
 }

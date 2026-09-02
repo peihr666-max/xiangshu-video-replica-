@@ -28,7 +28,7 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
-_HEAD_REVISION = "052_character_scene_look_tasks"
+_HEAD_REVISION = "053_activation_code_archive"
 
 
 def _pg_dsn() -> str:
@@ -218,6 +218,7 @@ def test_catalog_tables_and_columns(catalog_dsn: str) -> None:
             "suspended_at",
             "revoked_at",
             "expired_at",
+            "archived_at",
         }
         assert columns(DELIVERIES_TABLE) == {
             "id",
@@ -266,6 +267,36 @@ def test_catalog_tables_and_columns(catalog_dsn: str) -> None:
             "request_id",
             "created_at",
         }
+
+
+# ---------------------------------------------------------------------------
+# Archive migration safety
+# ---------------------------------------------------------------------------
+
+
+def test_archive_migration_refuses_to_drop_archived_history(catalog_dsn: str) -> None:
+    from alembic import command
+
+    with psycopg.connect(catalog_dsn, autocommit=True) as conn:
+        _insert_batch(conn)
+        _insert_code(
+            conn,
+            status="REVOKED",
+            revoked_at="2026-08-22T01:00:00+00:00",
+            archived_at="2026-08-22T02:00:00+00:00",
+        )
+
+    config = _alembic_config(catalog_dsn.replace("postgresql://", "postgresql+psycopg://"))
+    with pytest.raises(RuntimeError, match="cannot downgrade activation-code archive support"):
+        command.downgrade(config, "052_character_scene_look_tasks")
+
+    with psycopg.connect(catalog_dsn) as conn:
+        version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        archived_at = conn.execute(
+            "SELECT archived_at FROM activation_codes WHERE id = 'code-1'"
+        ).fetchone()[0]
+    assert version == _HEAD_REVISION
+    assert archived_at == "2026-08-22T02:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------
