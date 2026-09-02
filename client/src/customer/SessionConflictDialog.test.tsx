@@ -32,10 +32,10 @@ describe("SessionConflictDialog (FE-03 / T30)", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows lease expiry time in human-readable format", async () => {
+  it("shows lease expiry time in human-readable Chinese", async () => {
     renderWithProps({});
     await waitFor(() => {
-      const text = screen.getByText(/lease expires at/i);
+      const text = screen.getByText(/租约到期时间/);
       expect(text).toBeInTheDocument();
     });
   });
@@ -49,16 +49,14 @@ describe("SessionConflictDialog (FE-03 / T30)", () => {
   it("has cancel button that calls onCancel callback", () => {
     const mockOnCancel = vi.fn();
     renderWithProps({ onCancel: mockOnCancel });
-    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(mockOnCancel).toHaveBeenCalledTimes(1);
   });
 
   it("has confirm switch button that calls onSwitch callback", () => {
     const mockOnSwitch = vi.fn();
     renderWithProps({ onSwitch: mockOnSwitch });
-    fireEvent.click(
-      screen.getByRole("button", { name: /switch to this device/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "切换到本设备" }));
     expect(mockOnSwitch).toHaveBeenCalledTimes(1);
   });
 
@@ -75,9 +73,39 @@ describe("SessionConflictDialog (FE-03 / T30)", () => {
     expect(mockOnCancel).not.toHaveBeenCalled();
 
     // Only after clicking does state change happen
-    fireEvent.click(
-      screen.getByRole("button", { name: /switch to this device/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "切换到本设备" }));
     expect(mockOnSwitch).toHaveBeenCalledTimes(1);
+  });
+
+  it("focuses the safe cancel button when opened", () => {
+    renderWithProps({});
+    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
+  });
+
+  it("cancels on Escape without touching the switch path", () => {
+    const mockOnCancel = vi.fn();
+    const mockOnSwitch = vi.fn();
+    renderWithProps({ onCancel: mockOnCancel, onSwitch: mockOnSwitch });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(mockOnCancel).toHaveBeenCalledTimes(1);
+    expect(mockOnSwitch).not.toHaveBeenCalled();
+  });
+
+  it("keeps Tab focus inside the dialog", () => {
+    renderWithProps({});
+    const cancel = screen.getByRole("button", { name: "取消" });
+    const confirm = screen.getByRole("button", { name: "切换到本设备" });
+    cancel.focus();
+
+    // Tab from the last focusable element wraps back to the first.
+    confirm.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(cancel).toHaveFocus();
+
+    // Shift+Tab from the first focusable element wraps to the last.
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(confirm).toHaveFocus();
   });
 });
