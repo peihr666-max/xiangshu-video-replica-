@@ -921,6 +921,44 @@ def _probe_enroll_replay(
     return None
 
 
+def _has_active_pairing_for_poll(
+    *,
+    code_digests: list[str],
+    fingerprint_digests: list[str],
+) -> bool:
+    """Whether this enroll maps to an existing active pairing (a status poll).
+
+    Reuses ``lookup_active_pairing`` so the free lane answers for exactly the
+    rows the state machine below would answer for: every configured code-key
+    and fingerprint-key version is probed, and a lapsed row is flipped to
+    EXPIRED here and reported absent — the follow-up enroll (a genuine new
+    attempt) stays on the budgeted path. An unknown or malformed code has no
+    row to find, so enumeration attempts are never exempted.
+    """
+    if not code_digests:
+        return False
+    with pg_transaction() as conn:
+        code_row = conn.execute(
+            "SELECT id FROM activation_codes WHERE code_digest = ANY(%s)",
+            (code_digests,),
+        ).fetchone()
+        if code_row is None:
+            return False
+        now_row = conn.execute("SELECT now()").fetchone()
+        if now_row is None or not isinstance(now_row[0], datetime):
+            # No trusted clock, no exemption — the budgeted path decides.
+            return False
+        return (
+            lookup_active_pairing(
+                conn,
+                activation_code_id=str(code_row[0]),
+                fingerprint_digests=fingerprint_digests,
+                server_now=now_row[0],
+            )
+            is not None
+        )
+
+
 def _pending_response(pairing: ActivePairing, *, request_id: str) -> Response:
     # The status mirrors the row's actual state: the normal PENDING branch
     # answers "waiting for approval", while the race-lost re-read may catch
@@ -1027,31 +1065,48 @@ def enroll_second_device(body: DeviceEnrollRequest, request: Request) -> Respons
     if replayed is not None:
         return replayed
 
+    # The 0.1.12 waiting screen auto-polls this endpoint every few seconds
+    # for an existing pairing's outcome. A device that already holds an
+    # unexpired PENDING/APPROVED pairing is polling, not probing codes, so
+    # those requests skip the shared budgets below — otherwise the default
+    # 5-per-window code budget 429s the poll within seconds and starves the
+    # code's next legitimate activation attempt. Unknown codes, malformed
+    # codes and expired pairings report no active row and stay budgeted, so
+    # the ACT-08 enumeration surface itself is unchanged.
+    pairing_status_poll = _has_active_pairing_for_poll(
+        code_digests=code_digests,
+        fingerprint_digests=fingerprint_digests,
+    )
+
     # The shared limiter — the enroll accepts a plaintext code exactly like
     # the activation route, so it draws from the same IP and code budgets
     # (ACT-08: one enumeration attack surface, one budget per dimension).
     client_ip = client_ip_from_request(request)
     _window_seconds = rate_limit_window_seconds()
-    with pg_transaction() as conn:
-        ip_decision = consume_rate_limit(
-            conn,
-            dimension=DIMENSION_ACTIVATE_IP,
-            identifier=client_ip,
-            limit=activation_ip_limit(),
-            window_seconds=_window_seconds,
-        )
-        code_decision: RateLimitDecision | None = None
-        # A blocked IP draws no code budget (the PR #46 review P1 rule:
-        # attacker-controlled identifiers must not mint unbounded rows).
-        if code_digests and ip_decision.allowed:
-            code_decision = consume_rate_limit(
+    ip_decision: RateLimitDecision | None = None
+    code_decision: RateLimitDecision | None = None
+    if not pairing_status_poll:
+        with pg_transaction() as conn:
+            ip_decision = consume_rate_limit(
                 conn,
-                dimension=DIMENSION_ACTIVATE_CODE,
-                identifier=code_digests[0],
-                limit=activation_code_limit(),
+                dimension=DIMENSION_ACTIVATE_IP,
+                identifier=client_ip,
+                limit=activation_ip_limit(),
                 window_seconds=_window_seconds,
             )
-    if not ip_decision.allowed or (code_decision is not None and not code_decision.allowed):
+            # A blocked IP draws no code budget (the PR #46 review P1 rule:
+            # attacker-controlled identifiers must not mint unbounded rows).
+            if code_digests and ip_decision.allowed:
+                code_decision = consume_rate_limit(
+                    conn,
+                    dimension=DIMENSION_ACTIVATE_CODE,
+                    identifier=code_digests[0],
+                    limit=activation_code_limit(),
+                    window_seconds=_window_seconds,
+                )
+    if ip_decision is not None and (
+        not ip_decision.allowed or (code_decision is not None and not code_decision.allowed)
+    ):
         retry_after = max(
             ip_decision.retry_after_seconds,
             code_decision.retry_after_seconds if code_decision is not None else 0,

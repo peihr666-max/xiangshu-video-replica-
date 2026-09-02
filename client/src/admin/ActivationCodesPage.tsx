@@ -10,10 +10,14 @@ import {
 import {
   type ActivationCodeDevice,
   type ActivationCodeListItem,
+  type ActivationCodePendingPairing,
   AdminActivationError,
   adminActivationErrorMessage,
+  approveDevicePairing,
+  archiveActivationCode,
   createIdempotencyKey,
   listActivationCodes,
+  replaceDeviceForPairing,
   revealActivationCode,
   revokeActivationCode,
   revokeDeviceCredential,
@@ -21,13 +25,21 @@ import {
 } from "../api.admin";
 
 type PendingAction =
-  | { kind: "code"; codeId: string }
+  | { kind: "code"; action: "revoke" | "archive"; codeId: string }
   | {
       kind: "device";
       action: "unbind" | "revoke";
       codeId: string;
       deviceId: string;
       deviceName: string;
+    }
+  | {
+      kind: "pairing";
+      codeId: string;
+      pairingId: string;
+      candidateName: string;
+      replaceDeviceId?: string;
+      replaceDeviceName?: string;
     };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -173,16 +185,34 @@ export function ActivationCodesPage({
       if (pending.kind === "code") {
         const key = actionKey ?? createIdempotencyKey();
         setActionKey(key);
-        const result = await revokeActivationCode(pending.codeId, reason, key);
-        setItems((current) =>
-          current.map((item) =>
-            item.code_id === result.code_id
-              ? { ...item, status: result.status }
-              : item,
-          ),
-        );
-        setNotice(`激活码已撤销（request id: ${result.request_id}）`);
-      } else {
+        if (pending.action === "archive") {
+          const result = await archiveActivationCode(
+            pending.codeId,
+            reason,
+            key,
+          );
+          setItems((current) =>
+            current.filter((item) => item.code_id !== result.code_id),
+          );
+          setNotice(
+            `激活码已删除并保留审计记录（request id: ${result.request_id}）`,
+          );
+        } else {
+          const result = await revokeActivationCode(
+            pending.codeId,
+            reason,
+            key,
+          );
+          setItems((current) =>
+            current.map((item) =>
+              item.code_id === result.code_id
+                ? { ...item, status: result.status }
+                : item,
+            ),
+          );
+          setNotice(`激活码已撤销（request id: ${result.request_id}）`);
+        }
+      } else if (pending.kind === "device") {
         const result =
           pending.action === "unbind"
             ? await unbindDevice(pending.deviceId, reason)
@@ -198,6 +228,38 @@ export function ActivationCodesPage({
         setNotice(
           `${pending.action === "unbind" ? "设备已解绑" : "设备已强制退出"}（request id: ${result.request_id}）`,
         );
+      } else {
+        const key = actionKey ?? createIdempotencyKey();
+        setActionKey(key);
+        const result = pending.replaceDeviceId
+          ? await replaceDeviceForPairing(
+              pending.pairingId,
+              pending.replaceDeviceId,
+              reason,
+              key,
+            )
+          : await approveDevicePairing(pending.pairingId, reason, key);
+        setItems((current) =>
+          current.map((item) =>
+            item.code_id !== pending.codeId
+              ? item
+              : {
+                  ...item,
+                  devices: pending.replaceDeviceId
+                    ? item.devices.map((device) =>
+                        device.device_id === pending.replaceDeviceId
+                          ? { ...device, status: "UNBOUND" }
+                          : device,
+                      )
+                    : item.devices,
+                  pending_pairings: item.pending_pairings.filter(
+                    (pairing) =>
+                      pairing.pairing_request_id !== pending.pairingId,
+                  ),
+                },
+          ),
+        );
+        setNotice(`设备申请已批准（request id: ${result.request_id}）`);
       }
       setPending(null);
       setActionReason("");
@@ -206,7 +268,13 @@ export function ActivationCodesPage({
     } catch (cause) {
       handleFailure(
         cause,
-        pending.kind === "code" ? "撤销激活码失败" : "设备操作失败",
+        pending.kind === "code"
+          ? pending.action === "archive"
+            ? "删除激活码失败"
+            : "撤销激活码失败"
+          : pending.kind === "pairing"
+            ? "处理设备申请失败"
+            : "设备操作失败",
       );
       if (cause instanceof AdminActivationError && cause.status !== undefined) {
         setActionKey(null);
@@ -319,13 +387,29 @@ export function ActivationCodesPage({
                     {readOnly ? null : (
                       <td>
                         {item.status === "REVOKED" ? (
-                          "无需操作"
+                          <button
+                            className="admin-action--danger"
+                            type="button"
+                            onClick={() =>
+                              openAction({
+                                kind: "code",
+                                action: "archive",
+                                codeId: item.code_id,
+                              })
+                            }
+                          >
+                            删除激活码
+                          </button>
                         ) : (
                           <button
                             className="admin-action--danger"
                             type="button"
                             onClick={() =>
-                              openAction({ kind: "code", codeId: item.code_id })
+                              openAction({
+                                kind: "code",
+                                action: "revoke",
+                                codeId: item.code_id,
+                              })
                             }
                           >
                             撤销激活码
@@ -340,6 +424,13 @@ export function ActivationCodesPage({
                         <DeviceList
                           codeId={item.code_id}
                           devices={item.devices}
+                          readOnly={readOnly}
+                          onAction={openAction}
+                        />
+                        <PairingList
+                          codeId={item.code_id}
+                          devices={item.devices}
+                          pairings={item.pending_pairings}
                           readOnly={readOnly}
                           onAction={openAction}
                         />
@@ -394,6 +485,79 @@ export function ActivationCodesPage({
           </div>
         </form>
       ) : null}
+    </section>
+  );
+}
+
+function PairingList({
+  codeId,
+  devices,
+  pairings,
+  readOnly,
+  onAction,
+}: {
+  codeId: string;
+  devices: ActivationCodeDevice[];
+  pairings: ActivationCodePendingPairing[];
+  readOnly: boolean;
+  onAction: (action: PendingAction) => void;
+}) {
+  if (pairings.length === 0) {
+    return null;
+  }
+  const boundDevices = devices.filter((device) => device.status === "BOUND");
+  return (
+    <section className="pairing-pending" aria-label="待处理设备申请">
+      <h3>待处理设备申请</h3>
+      {pairings.map((pairing) => (
+        <article key={pairing.pairing_request_id}>
+          <strong>{pairing.display_name}</strong>
+          <p>
+            {PLATFORM_LABELS[pairing.platform] ?? pairing.platform} · 申请于{" "}
+            {formatDate(pairing.created_at)}
+          </p>
+          <small>配对编号：{pairing.pairing_request_id}</small>
+          {pairing.status === "APPROVED" ? (
+            <p>已批准，等待新设备完成绑定。</p>
+          ) : readOnly ? null : boundDevices.length === 0 ? (
+            <button
+              type="button"
+              onClick={() =>
+                onAction({
+                  kind: "pairing",
+                  codeId,
+                  pairingId: pairing.pairing_request_id,
+                  candidateName: pairing.display_name,
+                })
+              }
+            >
+              批准设备
+            </button>
+          ) : (
+            boundDevices.map((device) => (
+              <button
+                type="button"
+                key={device.device_id}
+                onClick={() =>
+                  onAction({
+                    kind: "pairing",
+                    codeId,
+                    pairingId: pairing.pairing_request_id,
+                    candidateName: pairing.display_name,
+                    replaceDeviceId: device.device_id,
+                    replaceDeviceName:
+                      device.display_name || `设备 #${device.slot_no}`,
+                  })
+                }
+              >
+                {boundDevices.length === 1
+                  ? `替换为${pairing.display_name}`
+                  : `用${pairing.display_name}替换${device.display_name || `设备 #${device.slot_no}`}`}
+              </button>
+            ))
+          )}
+        </article>
+      ))}
     </section>
   );
 }
@@ -521,14 +685,26 @@ function statusLabel(status: string): string {
 
 function actionTitle(action: PendingAction): string {
   if (action.kind === "code") {
-    return `撤销激活码 ${action.codeId}`;
+    return `${action.action === "archive" ? "删除" : "撤销"}激活码 ${action.codeId}`;
+  }
+  if (action.kind === "pairing") {
+    return action.replaceDeviceId
+      ? `用${action.candidateName}替换${action.replaceDeviceName}`
+      : `批准设备 ${action.candidateName}`;
   }
   return `${action.action === "unbind" ? "解绑" : "强制退出"} ${action.deviceName}`;
 }
 
 function actionWarning(action: PendingAction): string {
   if (action.kind === "code") {
-    return "撤销后该激活码不可恢复，已绑定设备也不能再用它重新登录。";
+    return action.action === "archive"
+      ? "删除后将从日常列表隐藏，但设备、充值和审计记录会继续保留。"
+      : "撤销后该激活码不可恢复，已绑定设备也不能再用它重新登录。";
+  }
+  if (action.kind === "pairing") {
+    return action.replaceDeviceId
+      ? "旧设备将被解绑，新设备获批后会自动完成绑定。"
+      : "该申请获批后，新设备会自动完成绑定。";
   }
   return action.action === "unbind"
     ? "设备将解除当前绑定，但不会撤销激活码。"

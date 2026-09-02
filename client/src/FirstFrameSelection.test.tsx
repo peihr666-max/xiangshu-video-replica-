@@ -88,6 +88,7 @@ const pendingFirstFrameTask = {
   id: "first-frame-task-1",
   project_id: "project-1",
   status: "RUNNING" as const,
+  stage: "GENERATING" as const,
   attempt: 1,
   result_version_id: null,
   error_code: null,
@@ -224,13 +225,17 @@ describe("FirstFrameSelection", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新生成候选首帧" }));
 
     await waitFor(() =>
-      expect(generateFirstFrames).toHaveBeenCalledWith("project-1", {
-        model: "gpt-image-2",
-        prompt: "Use the selected character identity.",
-        quantity: 2,
-        character_version_id: "character-version-3",
-        character_reference_selection_id: "reference-selection-1",
-      }),
+      expect(generateFirstFrames).toHaveBeenCalledWith(
+        "project-1",
+        {
+          model: "gpt-image-2",
+          prompt: "Use the selected character identity.",
+          quantity: 2,
+          character_version_id: "character-version-3",
+          character_reference_selection_id: "reference-selection-1",
+        },
+        expect.any(Function),
+      ),
     );
   });
 
@@ -248,13 +253,17 @@ describe("FirstFrameSelection", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新生成候选首帧" }));
 
     await waitFor(() =>
-      expect(generateFirstFrames).toHaveBeenCalledWith("project-1", {
-        model: "gpt-image-2",
-        prompt: undefined,
-        quantity: 1,
-        character_version_id: "character-version-3",
-        character_reference_selection_id: "reference-selection-1",
-      }),
+      expect(generateFirstFrames).toHaveBeenCalledWith(
+        "project-1",
+        {
+          model: "gpt-image-2",
+          prompt: undefined,
+          quantity: 1,
+          character_version_id: "character-version-3",
+          character_reference_selection_id: "reference-selection-1",
+        },
+        expect.any(Function),
+      ),
     );
   });
 
@@ -267,7 +276,18 @@ describe("FirstFrameSelection", () => {
         resolveGeneration = resolve;
       },
     );
-    vi.mocked(generateFirstFrames).mockReturnValue(pendingGeneration);
+    vi.mocked(generateFirstFrames).mockImplementation(
+      (_projectId, _input, onTaskUpdate) => {
+        onTaskUpdate?.({
+          ...pendingFirstFrameTask,
+          status: "PENDING",
+          stage: "QUEUED",
+          attempt: 0,
+          started_at: null,
+        });
+        return pendingGeneration;
+      },
+    );
 
     const firstPage = render(
       <FirstFrameSelection
@@ -277,8 +297,9 @@ describe("FirstFrameSelection", () => {
         sourceFrameSelectionId="source-selection-1"
       />,
     );
-    await screen.findByText("人物置换首帧");
-    fireEvent.click(screen.getByRole("button", { name: "重新生成候选首帧" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "重新生成候选首帧" }),
+    );
 
     expect(
       await screen.findByRole("progressbar", {
@@ -286,8 +307,12 @@ describe("FirstFrameSelection", () => {
       }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/可以离开当前页面.*本地服务未关闭.*生成会继续/),
+      screen.getByText("任务已提交，正在等待云端工作节点"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/任务在云端继续执行.*可以关闭或离开当前页面/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/本地服务未关闭/)).toBeNull();
 
     firstPage.unmount();
     vi.mocked(getLatestFirstFrameTask).mockResolvedValue(pendingFirstFrameTask);
@@ -305,6 +330,10 @@ describe("FirstFrameSelection", () => {
       await screen.findByRole("progressbar", {
         name: "人物置换首帧生成进度",
       }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("正在调用图片模型生成首帧")).toBeInTheDocument();
+    expect(
+      screen.getByText(/任务 first-frame-task-1.*第 1 次执行/),
     ).toBeInTheDocument();
     expect(generateFirstFrames).toHaveBeenCalledOnce();
 
@@ -349,8 +378,9 @@ describe("FirstFrameSelection", () => {
         sourceFrameSelectionId="source-selection-1"
       />,
     );
-    await screen.findByText("人物置换首帧");
-    fireEvent.click(screen.getByRole("button", { name: "重新生成候选首帧" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "重新生成候选首帧" }),
+    );
     await screen.findByRole("progressbar", {
       name: "人物置换首帧生成进度",
     });
@@ -414,8 +444,9 @@ describe("FirstFrameSelection", () => {
         sourceFrameSelectionId="source-selection-1"
       />,
     );
-    await screen.findByText("人物置换首帧");
-    fireEvent.click(screen.getByRole("button", { name: "重新生成候选首帧" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "重新生成候选首帧" }),
+    );
     await screen.findByRole("progressbar", {
       name: "人物置换首帧生成进度",
     });
@@ -471,11 +502,15 @@ describe("FirstFrameSelection", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新生成候选首帧" }));
 
     await waitFor(() =>
-      expect(generateFirstFrames).toHaveBeenCalledWith("project-1", {
-        model: "nano-banana-pro-2k",
-        prompt: "Keep the legacy character identity.",
-        quantity: 1,
-      }),
+      expect(generateFirstFrames).toHaveBeenCalledWith(
+        "project-1",
+        {
+          model: "nano-banana-pro-2k",
+          prompt: "Keep the legacy character identity.",
+          quantity: 1,
+        },
+        expect.any(Function),
+      ),
     );
   });
 

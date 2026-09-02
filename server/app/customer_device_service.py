@@ -94,6 +94,7 @@ ADMIN_APPROVE_FIRST_DEVICE_AVAILABLE = "first_device_available"
 ADMIN_EVENT_PAIRING_APPROVED = "PAIRING_ADMIN_APPROVED"
 ADMIN_EVENT_DEVICE_UNBOUND = "DEVICE_ADMIN_UNBOUND"
 ADMIN_EVENT_CREDENTIAL_REVOKED = "DEVICE_CREDENTIAL_REVOKED"
+REPLACE_ALREADY_APPROVED = "already_approved"
 
 
 @dataclass(frozen=True)
@@ -675,10 +676,10 @@ def approve_pairing_request(
     if row is None or str(row[0]) != approver_device.activation_code_id:
         return APPROVE_NOT_FOUND
     # §12.2 step 3 (PR #49 GitHub Codex review P1): the approval is the
-    # *first* currently-bound device's lane. ``first_device_id`` is written
-    # once at activation and never rewritten, so the unlocked read is
-    # race-free; a missing or NULL fact row fails closed (the pairing is a
-    # post-activation artefact, so the fact row structurally exists).
+    # current primary device's lane. An explicit administrator replacement
+    # temporarily clears ``first_device_id`` and the replacement becomes the
+    # new primary only when it consumes the approved pairing. A missing or
+    # NULL fact row therefore fails closed here.
     activation_row = conn.execute(
         "SELECT first_device_id FROM activation_code_activations WHERE code_id = %s",
         (approver_device.activation_code_id,),
@@ -774,6 +775,11 @@ def consume_pairing_request(
         "SET status = 'CONSUMED', consumed_at = %s, consumed_device_id = %s "
         "WHERE id = %s",
         (now_iso, device_id, pairing.id),
+    )
+    conn.execute(
+        "UPDATE activation_code_activations SET first_device_id = %s "
+        "WHERE code_id = %s AND first_device_id IS NULL",
+        (device_id, pairing.activation_code_id),
     )
     return ConsumedPairing(
         device_id=device_id,
@@ -918,6 +924,97 @@ def admin_approve_pairing_request(
         event=ADMIN_EVENT_PAIRING_APPROVED,
         admin_user_id=admin_user_id,
         target_user_id=str(activation_row[0]),
+        device_id=None,
+        pairing_request_id=pairing_id,
+        activation_code_id=code_id,
+        reason=reason,
+        request_id=request_id,
+    )
+    return APPROVE_APPROVED
+
+
+def admin_replace_device_for_pairing(
+    conn: psycopg.Connection,
+    *,
+    pairing_id: str,
+    replace_device_id: str,
+    admin_user_id: str,
+    reason: str,
+    request_id: str,
+    server_now: datetime,
+) -> str:
+    """Release one bound device and approve its replacement atomically."""
+    header = conn.execute(
+        "SELECT activation_code_id FROM device_pairing_requests WHERE id = %s",
+        (pairing_id,),
+    ).fetchone()
+    if header is None:
+        return APPROVE_NOT_FOUND
+    code_id = str(header[0])
+    conn.execute(
+        "SELECT id FROM activation_codes WHERE id = %s FOR UPDATE",
+        (code_id,),
+    ).fetchone()
+    device = conn.execute(
+        "SELECT status, user_id, activation_code_id FROM customer_devices WHERE id = %s FOR UPDATE",
+        (replace_device_id,),
+    ).fetchone()
+    if device is None or str(device[2]) != code_id:
+        return OUTCOME_NOT_FOUND
+    pairing = conn.execute(
+        "SELECT status, expires_at FROM device_pairing_requests "
+        "WHERE id = %s AND activation_code_id = %s FOR UPDATE",
+        (pairing_id, code_id),
+    ).fetchone()
+    if pairing is None:
+        return APPROVE_NOT_FOUND
+    status = str(pairing[0])
+    if status == PAIRING_CONSUMED:
+        return APPROVE_ALREADY_CONSUMED
+    if status == PAIRING_EXPIRED or _pairing_expired(str(pairing[1]), server_now):
+        if status in (PAIRING_PENDING, PAIRING_APPROVED):
+            conn.execute(
+                "UPDATE device_pairing_requests SET status = 'EXPIRED' WHERE id = %s",
+                (pairing_id,),
+            )
+        return APPROVE_EXPIRED
+    if status == PAIRING_APPROVED:
+        return REPLACE_ALREADY_APPROVED
+    if str(device[0]) != BOUND:
+        return OUTCOME_NOT_BOUND
+
+    outcome = admin_unbind_device(
+        conn,
+        device_id=replace_device_id,
+        admin_user_id=admin_user_id,
+        reason=reason,
+        request_id=request_id,
+        server_now=server_now,
+    )
+    if outcome != OUTCOME_UNBOUND:
+        return outcome
+
+    activation = conn.execute(
+        "SELECT first_device_id FROM activation_code_activations WHERE code_id = %s FOR UPDATE",
+        (code_id,),
+    ).fetchone()
+    if activation is not None and str(activation[0]) == replace_device_id:
+        conn.execute(
+            "UPDATE activation_code_activations SET first_device_id = NULL WHERE code_id = %s",
+            (code_id,),
+        )
+
+    conn.execute(
+        "UPDATE device_pairing_requests "
+        "SET status = 'APPROVED', approved_at = %s, approved_by_admin_user_id = %s "
+        "WHERE id = %s",
+        (server_now.isoformat(), admin_user_id, pairing_id),
+    )
+    _insert_admin_device_event(
+        conn,
+        event=ADMIN_EVENT_PAIRING_APPROVED,
+        admin_user_id=admin_user_id,
+        target_user_id=str(device[1]),
         device_id=None,
         pairing_request_id=pairing_id,
         activation_code_id=code_id,

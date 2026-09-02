@@ -1013,6 +1013,60 @@ def revoke_activation_code(
     return _write_with_idempotency(request, response, actor, body, business, success_status=200)
 
 
+@router.post("/activation-codes/{code_id}/archive")
+def archive_activation_code(
+    code_id: str,
+    body: AdminWriteContract,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    """Hide a revoked code from daily operations without deleting its history."""
+
+    def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        code_row = _locked_code_status(conn, code_id, "status, archived_at")
+        if code_row is None:
+            raise _http(404, "CODE_NOT_FOUND", "Unknown activation code.")
+        if str(code_row[0]) != "REVOKED":
+            raise _http(409, "CODE_NOT_REVOKED", "Only revoked activation codes can be archived.")
+        if code_row[1] is not None:
+            raise _http(409, "CODE_ALREADY_ARCHIVED", "This activation code is already archived.")
+        archived_at = _transaction_now_iso(conn)
+        reason = body.reason.strip()
+        conn.execute(
+            "UPDATE activation_codes SET archived_at = %s WHERE id = %s",
+            (archived_at, code_id),
+        )
+        conn.execute(
+            "INSERT INTO audit_logs "
+            "(id, actor_user_id, action, entity_type, entity_id, metadata_json) "
+            "VALUES (%s, %s, 'admin.activation_code.archived', 'activation_code', %s, %s)",
+            (
+                str(uuid.uuid4()),
+                actor.user_id,
+                code_id,
+                json.dumps(
+                    {"request_id": request_id, "reason": reason},
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ),
+            ),
+        )
+        logger.info(
+            "activation code archived: code=%s actor=%s request=%s",
+            code_id,
+            actor.user_id,
+            request_id,
+        )
+        return {
+            "code_id": code_id,
+            "archived_at": archived_at,
+            "request_id": request_id,
+        }
+
+    return _write_with_idempotency(request, response, actor, body, business, success_status=200)
+
+
 # ---------------------------------------------------------------------------
 # Listing (read path)
 # ---------------------------------------------------------------------------
@@ -1213,7 +1267,7 @@ def list_activation_codes(
     response.headers["Cache-Control"] = "no-store"
     bounded_limit = max(0, min(limit, MAX_LIST_LIMIT))
     bounded_offset = max(0, offset)
-    clauses: list[str] = []
+    clauses: list[str] = ["code.archived_at IS NULL"]
     params: list[object] = []
     if batch_id:
         clauses.append("code.batch_id = %s")
@@ -1244,6 +1298,19 @@ def list_activation_codes(
                 if code_ids
                 else []
             )
+            pairing_rows = (
+                conn.execute(
+                    "SELECT activation_code_id, id, display_name, platform, status, "
+                    "created_at, expires_at FROM device_pairing_requests "
+                    "WHERE activation_code_id = ANY(%s) "
+                    "AND status IN ('PENDING', 'APPROVED') "
+                    "AND expires_at::timestamptz > now() "
+                    "ORDER BY activation_code_id, created_at, id",
+                    (code_ids,),
+                ).fetchall()
+                if code_ids
+                else []
+            )
     except RuntimeError as exc:
         raise _http(
             503,
@@ -1265,6 +1332,18 @@ def list_activation_codes(
                 "revoked_at": device[9],
             }
         )
+    pairings_by_code: dict[str, list[dict[str, object]]] = {}
+    for pairing in pairing_rows:
+        pairings_by_code.setdefault(str(pairing[0]), []).append(
+            {
+                "pairing_request_id": str(pairing[1]),
+                "display_name": str(pairing[2]),
+                "platform": str(pairing[3]),
+                "status": str(pairing[4]),
+                "created_at": pairing[5],
+                "expires_at": pairing[6],
+            }
+        )
     items = [
         {
             "code_id": str(row[0]),
@@ -1275,6 +1354,7 @@ def list_activation_codes(
             "issued_at": row[5],
             "bound_username": row[6],
             "devices": devices_by_code.get(str(row[0]), []),
+            "pending_pairings": pairings_by_code.get(str(row[0]), []),
         }
         for row in rows
     ]

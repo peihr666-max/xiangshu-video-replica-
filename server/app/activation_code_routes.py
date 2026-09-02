@@ -80,7 +80,7 @@ from app.customer_idempotency import (
 from app.customer_idempotency import (
     request_hash as compute_request_hash,
 )
-from app.customer_session_service import LOGIN_CONFLICT, login_session
+from app.customer_session_service import LOGIN_CONFLICT, SESSION_LEASE_SECONDS, login_session
 from app.db_pg import get_pg_pool, pg_transaction
 from app.ops_metrics import (
     get_or_create_request_id,
@@ -113,8 +113,10 @@ RETRY_AFTER_HEADER = "Retry-After"
 DEVICE_FINGERPRINT_HMAC_KEY_ENV = "VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY"
 
 # T19 / SES-01: heartbeat every 30 seconds, lease 90 seconds. The activation
-# transaction grants the first lease; renewals are the T19 application layer.
-SESSION_LEASE_SECONDS = 90
+# transaction grants the first lease with the SAME constant the T19 renewals
+# use — imported from customer_session_service so the two can never drift
+# apart (a mismatched pair would make the activation lease longer or shorter
+# than every heartbeat renewal).
 MIN_HMAC_KEY_BYTES = 32
 MAX_KEY_VERSION = 64
 USERNAME_MAX_ATTEMPTS = 5

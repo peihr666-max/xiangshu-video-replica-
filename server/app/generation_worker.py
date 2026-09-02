@@ -42,6 +42,7 @@ from app.first_frames import (
 )
 from app.generation import (
     GeneratedVideoValidationUnavailable,
+    GenerationTaskSupersededError,
     H3Provider,
     H3ProviderFailed,
     H3ProviderSettingsUnavailable,
@@ -293,18 +294,28 @@ def run_worker_once(
     processed = 0
     while True:
         processed_round = False
-        if (
-            run_next_generation_task(
-                conn,
-                worker_id=worker_id,
-                provider=None,
-                storage=generation_storage or storage,
-                first_frame_storage=first_frame_storage or storage,
-                visual_quality_inspector=first_frame_quality_inspector,
-                video_frame_extractor=video_frame_extractor,
+        generation_handled = False
+        try:
+            generation_handled = (
+                run_next_generation_task(
+                    conn,
+                    worker_id=worker_id,
+                    provider=None,
+                    storage=generation_storage or storage,
+                    first_frame_storage=first_frame_storage or storage,
+                    visual_quality_inspector=first_frame_quality_inspector,
+                    video_frame_extractor=video_frame_extractor,
+                )
+                is not None
             )
-            is not None
-        ):
+        except GenerationTaskSupersededError:
+            # L1 (M4M5 review): the task gained a paid replacement
+            # mid-flight and the late terminal write was discarded by
+            # design — the lease left with the write, so this counts as a
+            # processed task, not a worker fault.
+            logger.info("generation task superseded while running; late terminal write discarded")
+            generation_handled = True
+        if generation_handled:
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
@@ -889,14 +900,23 @@ def run_pg_worker_once(
             if lease is None:
                 lease = acquire_generation_task_lease(conn, worker_id=worker_id)
         if lease is not None:
-            _run_pg_generation_step(
-                lease=lease,
-                storage=generation_storage or storage,
-                first_frame_storage=first_frame_storage or storage,
-                provider_override=generation_provider,
-                visual_quality_inspector=first_frame_quality_inspector,
-                video_frame_extractor=video_frame_extractor,
-            )
+            try:
+                _run_pg_generation_step(
+                    lease=lease,
+                    storage=generation_storage or storage,
+                    first_frame_storage=first_frame_storage or storage,
+                    provider_override=generation_provider,
+                    visual_quality_inspector=first_frame_quality_inspector,
+                    video_frame_extractor=video_frame_extractor,
+                )
+            except GenerationTaskSupersededError:
+                # L1 (M4M5 review): the task gained a paid replacement
+                # mid-flight and the late terminal write was discarded by
+                # design — the lease left with the write, so this counts
+                # as a processed task, not a worker fault.
+                logger.info(
+                    "generation task superseded while running; late terminal write discarded"
+                )
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:

@@ -60,7 +60,7 @@ describe("CustomerPairingFlow (FE-03 / T30)", () => {
         mockResponse(202, {
           pairing_request_id: "pairing-1",
           status: "PENDING",
-          expires_at: "2026-08-26T12:00:00Z",
+          expires_at: "2099-01-01T00:00:00Z",
           request_id: "req-1",
         }),
       ),
@@ -82,14 +82,173 @@ describe("CustomerPairingFlow (FE-03 / T30)", () => {
     ).toBeInTheDocument();
     // The waiting screen shows the pairing expiry in the local locale.
     expect(screen.getByText(/2026\/8\/26/)).toBeInTheDocument();
+    expect(screen.getByText(/pairing-1/)).toBeInTheDocument();
     // The waiting screen is honest about the pending state, not a success.
     expect(screen.queryByRole("heading", { name: "配对成功" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "返回重新提交" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回修改" }));
     expect(screen.getByLabelText("激活码")).toHaveValue(
       "XS04-TESTCODE-CODECODE-CODECODE",
     );
     expect(screen.getByLabelText("设备名称")).toHaveValue("My Second Device");
+  });
+
+  it("automatically consumes the pairing after an administrator approves it", async () => {
+    const saveActivation = vi.fn().mockResolvedValue(undefined);
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        mockResponse(202, {
+          pairing_request_id: "pairing-auto-1",
+          status: "PENDING",
+          expires_at: "2099-01-01T00:00:00Z",
+          request_id: "req-auto-1",
+        }),
+      )
+      .mockImplementationOnce(() =>
+        mockResponse(201, {
+          device_id: "device-auto-2",
+          slot_no: 2,
+          device_token: deviceTokenText,
+          request_id: "req-auto-2",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <CustomerPairingFlow
+        store={fakeStore({ saveActivation })}
+        onPaired={vi.fn()}
+        pollIntervalMs={10}
+      />,
+    );
+    await fillForm();
+
+    expect(
+      await screen.findByRole("heading", { name: "配对成功" }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(saveActivation).toHaveBeenCalledWith(deviceTokenText, "");
+  });
+
+  it("keeps one idempotency key across polls so a lost 201 can replay", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        mockResponse(202, {
+          pairing_request_id: "pairing-key-1",
+          status: "PENDING",
+          expires_at: "2099-01-01T00:00:00Z",
+          request_id: "req-key-1",
+        }),
+      )
+      .mockImplementationOnce(() =>
+        mockResponse(202, {
+          pairing_request_id: "pairing-key-1",
+          status: "PENDING",
+          expires_at: "2099-01-01T00:00:00Z",
+          request_id: "req-key-2",
+        }),
+      )
+      .mockImplementationOnce(() =>
+        mockResponse(201, {
+          device_id: "device-key-2",
+          slot_no: 2,
+          device_token: deviceTokenText,
+          request_id: "req-key-3",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <CustomerPairingFlow
+        store={fakeStore()}
+        onPaired={vi.fn()}
+        pollIntervalMs={10}
+      />,
+    );
+    await fillForm();
+
+    expect(
+      await screen.findByRole("heading", { name: "配对成功" }),
+    ).toBeInTheDocument();
+    // Every waiting-stage poll carries the SAME Idempotency-Key: the
+    // consumption seals the one-time credential under that key, so a poll
+    // whose 201 response is lost replays it instead of burning the slot.
+    const keys = fetchMock.mock.calls.map(([, init]) =>
+      new Headers((init as RequestInit).headers).get("Idempotency-Key"),
+    );
+    expect(keys[1]).toBeTruthy();
+    expect(keys[2]).toBe(keys[1]);
+  });
+
+  it("stops polling once the pairing window has expired", async () => {
+    const fetchMock = vi.fn(() =>
+      mockResponse(202, {
+        pairing_request_id: "pairing-exp-1",
+        status: "PENDING",
+        expires_at: "2020-01-01T00:00:00Z",
+        request_id: "req-exp-1",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <CustomerPairingFlow
+        store={fakeStore()}
+        onPaired={vi.fn()}
+        pollIntervalMs={10}
+      />,
+    );
+    await fillForm();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "配对请求已过期",
+    );
+    // Ample time for a wrongly scheduled poll to fire: only the form's
+    // enroll ever happened — an expired request must not silently mint a
+    // new pending pairing.
+    await new Promise((resolve) => {
+      setTimeout(resolve, 80);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers from a transient poll failure and still consumes the approval", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        mockResponse(202, {
+          pairing_request_id: "pairing-flaky-1",
+          status: "PENDING",
+          expires_at: "2099-01-01T00:00:00Z",
+          request_id: "req-flaky-1",
+        }),
+      )
+      .mockImplementationOnce(() => Promise.reject(new Error("network down")))
+      .mockImplementationOnce(() =>
+        mockResponse(201, {
+          device_id: "device-flaky-2",
+          slot_no: 2,
+          device_token: deviceTokenText,
+          request_id: "req-flaky-2",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <CustomerPairingFlow
+        store={fakeStore()}
+        onPaired={vi.fn()}
+        pollIntervalMs={10}
+      />,
+    );
+    await fillForm();
+
+    expect(
+      await screen.findByRole("heading", { name: "配对成功" }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("stores the device credential and reports success when approved meanwhile (201)", async () => {

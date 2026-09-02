@@ -48,7 +48,9 @@ from app.customer_device_service import (
     APPROVE_NOT_FOUND,
     OUTCOME_NOT_BOUND,
     OUTCOME_NOT_FOUND,
+    REPLACE_ALREADY_APPROVED,
     admin_approve_pairing_request,
+    admin_replace_device_for_pairing,
     admin_unbind_device,
     revoke_device_credential,
     server_now_utc,
@@ -64,6 +66,10 @@ DEVICE_SERVICE_UNAVAILABLE = "DEVICE_SERVICE_UNAVAILABLE"
 DEVICE_SERVICE_UNAVAILABLE_MESSAGE = "Device management requires the PostgreSQL runtime."
 
 router = APIRouter(prefix="/api/control", tags=["admin-devices"])
+
+
+class ReplaceDeviceContract(AdminWriteContract):
+    replace_device_id: str
 
 
 def _http(status: int, code: str, message: str) -> HTTPException:
@@ -319,6 +325,68 @@ def admin_approve_device_pairing(
             "pairing_id": pairing_id,
             "status": "APPROVED",
             "outcome": outcome,
+            "request_id": request_id,
+        }
+
+    return _write_with_idempotency(
+        request,
+        response,
+        actor,
+        body,
+        business,
+        success_status=200,
+        unavailable_code=DEVICE_SERVICE_UNAVAILABLE,
+        unavailable_message=DEVICE_SERVICE_UNAVAILABLE_MESSAGE,
+    )
+
+
+@router.post("/device-pairings/{pairing_id}/replace-device")
+def admin_replace_device_pairing(
+    pairing_id: str,
+    body: ReplaceDeviceContract,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    """Replace one bound device with an approved pending pairing."""
+
+    def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        outcome = admin_replace_device_for_pairing(
+            conn,
+            pairing_id=pairing_id,
+            replace_device_id=body.replace_device_id,
+            admin_user_id=actor.user_id,
+            reason=body.reason.strip(),
+            request_id=request_id,
+            server_now=_transaction_now(conn),
+        )
+        if outcome == APPROVE_NOT_FOUND:
+            raise _http(404, "PAIRING_NOT_FOUND", "Unknown device pairing request.")
+        if outcome == OUTCOME_NOT_FOUND:
+            raise _http(404, "DEVICE_NOT_FOUND", "The replacement device was not found.")
+        if outcome == OUTCOME_NOT_BOUND:
+            raise _http(409, "DEVICE_ALREADY_RELEASED", "The replacement device is not bound.")
+        if outcome == APPROVE_ALREADY_CONSUMED:
+            raise _http(409, "PAIRING_ALREADY_CONSUMED", "This pairing was already consumed.")
+        if outcome == REPLACE_ALREADY_APPROVED:
+            raise _http(409, "PAIRING_ALREADY_APPROVED", "This pairing was already approved.")
+        if outcome == APPROVE_EXPIRED:
+            raise DeferredHTTPWriteError(
+                409,
+                "PAIRING_EXPIRED",
+                "This pairing request has expired; a new one must be created.",
+            )
+        logger.warning(
+            "device replaced by admin: pairing=%s old_device=%s actor=%s request=%s",
+            pairing_id,
+            body.replace_device_id,
+            actor.user_id,
+            request_id,
+        )
+        return {
+            "pairing_id": pairing_id,
+            "status": "APPROVED",
+            "replaced_device_id": body.replace_device_id,
             "request_id": request_id,
         }
 

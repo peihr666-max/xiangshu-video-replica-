@@ -263,6 +263,7 @@ def route_state(devices_dsn: str) -> Iterator[str]:
 @pytest.fixture()
 def customer_app(monkeypatch: pytest.MonkeyPatch, route_state: str) -> Iterator[FastAPI]:
     from app.activation_code_routes import router as activation_code_router
+    from app.admin_activation_routes import router as admin_activation_router
     from app.admin_auth_routes import router as admin_auth_router
     from app.admin_device_routes import router as admin_device_router
     from app.customer_device_routes import router as customer_device_router
@@ -271,6 +272,7 @@ def customer_app(monkeypatch: pytest.MonkeyPatch, route_state: str) -> Iterator[
     app.include_router(activation_code_router)
     app.include_router(customer_device_router)
     app.include_router(admin_auth_router)
+    app.include_router(admin_activation_router)
     app.include_router(admin_device_router)
     monkeypatch.setenv(DATABASE_URL_ENV, route_state)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
@@ -1162,6 +1164,80 @@ def test_enroll_pending_retry_returns_same_pairing(client: TestClient) -> None:
         )
         == 0
     )
+
+
+def test_enroll_pending_status_polls_do_not_spend_rate_limit_budget(
+    monkeypatch: pytest.MonkeyPatch, route_state: str
+) -> None:
+    """The 0.1.12 waiting screen auto-polls enroll for its pairing outcome.
+
+    A device that already holds an active (unexpired) pairing is polling,
+    not probing codes: those polls must not spend the shared ACT-08
+    activation budgets, or the default 5-per-window code budget 429s the
+    poll within seconds and breaks the auto-consume promise — while a
+    stranger's fresh attempts on the same code stay budgeted, so the free
+    lane is not an enumeration bypass.
+    """
+    from app.activation_code_routes import router as activation_code_router
+    from app.customer_device_routes import router as customer_device_router
+
+    app = FastAPI()
+    app.include_router(activation_code_router)
+    app.include_router(customer_device_router)
+    monkeypatch.setenv(DATABASE_URL_ENV, route_state)
+    monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    monkeypatch.setenv(ACTIVATION_CODE_HMAC_KEY_ENV, TEST_KEY)
+    monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY", TEST_FINGERPRINT_KEY_V1)
+    monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY_V2", TEST_FINGERPRINT_KEY_V2)
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_CUSTOMER_IDEMPOTENCY_AEAD_KEY",
+        base64.urlsafe_b64encode(TEST_ENVELOPE_AEAD_KEY).decode("ascii").rstrip("="),
+    )
+    # The deployment-default code budget (5 per window) with a roomy IP
+    # budget, so the assertion pins the code dimension exactly.
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_IP", "1000")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE", "5")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS", "300")
+    monkeypatch.setattr("app.activation_code_routes.apply_anti_enumeration_delay", lambda: None)
+
+    with TestClient(app) as tight_client:
+        _activated_customer(tight_client, code=FIRST_CODE, fingerprint="fp-poll-1", suffix="pl1")
+        first = _enroll(
+            tight_client, code=FIRST_CODE, fingerprint="fp-poll-1-second", key="idem-pl1"
+        )
+        assert first.status_code == 202, first.text
+
+        # Twelve polls with distinct keys (each a fresh budgeted attempt
+        # before the fix) must all stay 202 and answer the same pairing row.
+        for attempt in range(12):
+            poll = _enroll(
+                tight_client,
+                code=FIRST_CODE,
+                fingerprint="fp-poll-1-second",
+                key=f"poll-key-{attempt}",
+            )
+            assert poll.status_code == 202, poll.text
+            assert poll.json()["pairing_request_id"] == first.json()["pairing_request_id"]
+
+        # Fresh fingerprints keep consuming the shared budget: the customer
+        # activation plus the first enroll spent 2 of 5, so exactly 3 more
+        # succeed and the next is 429.
+        succeeded = 0
+        blocked = None
+        for attempt in range(8):
+            response = _enroll(
+                tight_client,
+                code=FIRST_CODE,
+                fingerprint=f"fp-poll-stranger-{attempt}",
+                key=f"stranger-key-{attempt}",
+            )
+            if response.status_code == 429:
+                blocked = response
+                break
+            succeeded += 1
+        assert blocked is not None, "the stranger lane must still be rate limited"
+        assert succeeded == 3, "polls must not have pre-spent the code budget"
+        assert blocked.json()["detail"]["code"] == "RATE_LIMITED"
 
 
 def test_enroll_rejects_unknown_code_unified(client: TestClient) -> None:
@@ -2232,6 +2308,120 @@ def test_admin_approve_rejects_live_first_device(client: TestClient) -> None:
     assert _admin_event_row("PAIRING_ADMIN_APPROVED") is None
 
 
+def test_admin_activation_list_includes_pending_pairings(client: TestClient) -> None:
+    customer = _activated_customer(
+        client, code=FIRST_CODE, fingerprint="fp-adm-list-pair", suffix="alistpair"
+    )
+    enroll = _enroll(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-adm-list-pair-new",
+        key="idem-adm-list-pair",
+        name="重装后的电脑",
+        platform="windows",
+    )
+    assert enroll.status_code == 202, enroll.text
+
+    listed = client.get("/api/control/activation-codes", headers=_admin_session(client))
+
+    assert listed.status_code == 200, listed.text
+    code_id = _code_id_of_user(customer["user_id"])
+    item = next(item for item in listed.json()["items"] if item["code_id"] == code_id)
+    assert item["pending_pairings"] == [
+        {
+            "pairing_request_id": enroll.json()["pairing_request_id"],
+            "display_name": "重装后的电脑",
+            "platform": "windows",
+            "status": "PENDING",
+            "created_at": item["pending_pairings"][0]["created_at"],
+            "expires_at": item["pending_pairings"][0]["expires_at"],
+        }
+    ]
+
+
+def test_admin_replaces_bound_device_and_candidate_finishes_automatically(
+    client: TestClient,
+) -> None:
+    customer = _activated_customer(
+        client, code=FIRST_CODE, fingerprint="fp-adm-replace-old", suffix="replace"
+    )
+    enroll = _enroll(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-adm-replace-new",
+        key="idem-adm-replace-new",
+        name="重装后的电脑",
+        platform="windows",
+    )
+    assert enroll.status_code == 202, enroll.text
+    pairing_id = enroll.json()["pairing_request_id"]
+    headers = {
+        **_admin_session(client),
+        IDEMPOTENCY_KEY_HEADER: "idem-admin-replace",
+    }
+    payload = {
+        "replace_device_id": customer["device_id"],
+        "confirm": True,
+        "reason": "客户重装系统，替换无法登录的旧设备",
+    }
+
+    replaced = client.post(
+        f"{ADMIN_PAIRINGS_PATH}/{pairing_id}/replace-device",
+        json=payload,
+        headers=headers,
+    )
+    replayed = client.post(
+        f"{ADMIN_PAIRINGS_PATH}/{pairing_id}/replace-device",
+        json=payload,
+        headers=headers,
+    )
+
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["status"] == "APPROVED"
+    assert replaced.json()["replaced_device_id"] == customer["device_id"]
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.headers.get(REPLAY_HEADER) == "true"
+
+    consumed = _enroll(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-adm-replace-new",
+        key="idem-adm-replace-consume",
+        name="重装后的电脑",
+        platform="windows",
+    )
+    assert consumed.status_code == 201, consumed.text
+    new_device_id = consumed.json()["device_id"]
+    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
+        old_device = conn.execute(
+            "SELECT status FROM customer_devices WHERE id = %s",
+            (customer["device_id"],),
+        ).fetchone()
+        first_device = conn.execute(
+            "SELECT first_device_id FROM activation_code_activations WHERE code_id = %s",
+            (_code_id_of_user(customer["user_id"]),),
+        ).fetchone()
+        events = conn.execute(
+            "SELECT event, count(*) FROM admin_device_events GROUP BY event ORDER BY event"
+        ).fetchall()
+    assert old_device is not None and old_device[0] == "UNBOUND"
+    assert first_device is not None and str(first_device[0]) == new_device_id
+    assert dict(events)["DEVICE_ADMIN_UNBOUND"] == 1
+    assert dict(events)["PAIRING_ADMIN_APPROVED"] == 1
+
+    future = _enroll(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-adm-replace-future",
+        key="idem-adm-replace-future",
+    )
+    assert future.status_code == 202, future.text
+    approved = _approve(
+        client, consumed.json()["device_token"], future.json()["pairing_request_id"]
+    )
+    assert approved.status_code == 200, approved.text
+
+
 def test_admin_approve_opens_after_first_device_release(client: TestClient) -> None:
     """The fallback lane: first device released → the admin approval lands
     with its lineage and one audit row (the T18 DoD: 真实 actor、原因、
@@ -2660,7 +2850,7 @@ def test_admin_device_events_downgrade_guard(route_state: str) -> None:
         command.downgrade(config, "037_device_pairing_requests")
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "052_character_scene_look_tasks"
+    assert version == "053_activation_code_archive"
 
 
 # ---------------------------------------------------------------------------
@@ -2702,7 +2892,7 @@ def test_pairing_downgrade_refuses_once_rows_exist(route_state: str) -> None:
     # the version stays at the current head.
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "052_character_scene_look_tasks"
+    assert version == "053_activation_code_archive"
 
     # An emptied table downgrades symmetrically, and upgrading back restores
     # the schema for any rerun of this module. Revision 038 added the

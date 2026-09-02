@@ -6,6 +6,7 @@ import {
   confirmFirstFrame,
   type FirstFrameCandidate,
   type FirstFrameModel,
+  type FirstFrameTask,
   generateFirstFrames,
   getAssetDownloadUrl,
   getLatestFirstFrameTask,
@@ -62,6 +63,9 @@ export function FirstFrameSelection({
     null,
   );
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [generationTask, setGenerationTask] = useState<FirstFrameTask | null>(
+    null,
+  );
   const loadRequestId = useRef(0);
   const previewRetryCounts = useRef(new Map<string, number>());
   const generationWatchId = useRef(0);
@@ -287,8 +291,13 @@ export function FirstFrameSelection({
             task.status === "RUNNING" ||
             task.status === "SUCCEEDED")
         ) {
+          setGenerationTask(task);
           void followGeneration({
-            promise: resumeFirstFrameGeneration(projectId, task.id),
+            promise: resumeFirstFrameGeneration(
+              projectId,
+              task.id,
+              setGenerationTask,
+            ),
             startedAt: Date.parse(task.started_at ?? task.created_at),
           });
         } else if (
@@ -378,15 +387,19 @@ export function FirstFrameSelection({
       : {};
     const pending: PendingFirstFrameGeneration = {
       startedAt: Date.now(),
-      promise: generateFirstFrames(projectId, {
-        model: simplified ? "gpt-image-2" : model,
-        // In simplified mode the server owns the stable business template.
-        // Sending the UI placeholder here previously bypassed the stronger
-        // contact-sheet/reference-role prompt assembly on the server.
-        prompt: simplified ? undefined : prompt,
-        quantity,
-        ...binding,
-      }),
+      promise: generateFirstFrames(
+        projectId,
+        {
+          model: simplified ? "gpt-image-2" : model,
+          // In simplified mode the server owns the stable business template.
+          // Sending the UI placeholder here previously bypassed the stronger
+          // contact-sheet/reference-role prompt assembly on the server.
+          prompt: simplified ? undefined : prompt,
+          quantity,
+          ...binding,
+        },
+        setGenerationTask,
+      ),
     };
     await followGeneration(pending);
   }
@@ -521,13 +534,20 @@ export function FirstFrameSelection({
       {generationStartedAt !== null ? (
         <div className="first-frame-generation-progress" role="status">
           <div className="first-frame-generation-progress__heading">
-            <strong>正在云端生成人物置换首帧</strong>
+            <strong>{firstFrameTaskStageLabel(generationTask)}</strong>
             <span>已等待 {elapsedSeconds} 秒</span>
           </div>
           <progress aria-label="人物置换首帧生成进度" />
-          <p>通常需要 1–3 分钟，复杂画面可能稍久，请耐心等待。</p>
+          {generationTask ? (
+            <p>
+              任务 {generationTask.id} · 第{" "}
+              {Math.max(1, generationTask.attempt)} 次执行
+            </p>
+          ) : (
+            <p>正在创建可恢复的云端任务…</p>
+          )}
           <p>
-            可以离开当前页面；只要本地服务未关闭，生成会继续，返回后会自动显示结果。请勿重复提交。
+            任务在云端继续执行，可以关闭或离开当前页面；返回后会自动恢复进度并显示结果。请勿重复提交。
           </p>
         </div>
       ) : null}
@@ -625,6 +645,27 @@ export function FirstFrameSelection({
       </section>
     </section>
   );
+}
+
+function firstFrameTaskStageLabel(task: FirstFrameTask | null): string {
+  switch (task?.stage) {
+    case "QUEUED":
+      return "任务已提交，正在等待云端工作节点";
+    case "PREPARING":
+      return "正在读取源画面与人物五视图";
+    case "GENERATING":
+      return "正在调用图片模型生成首帧";
+    case "VERIFYING":
+      return "图片已生成，正在进行 AI 质量检测";
+    case "SUCCEEDED":
+      return "首帧已生成，正在加载结果";
+    case "FAILED":
+      return "首帧生成失败";
+    case "NEEDS_REVIEW":
+      return "生成结果需要人工核对";
+    default:
+      return "正在提交人物置换首帧任务";
+  }
 }
 
 function FirstFrameOption({

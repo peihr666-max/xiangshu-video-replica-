@@ -295,6 +295,21 @@ class SubmissionUncertain(RuntimeError):
     pass
 
 
+class GenerationTaskSupersededError(RuntimeError):
+    """A worker's late terminal write hit a task that already has a paid
+    replacement (the M4M5 review's L1 defense).
+
+    Pathology: the provider call outlives its lease -> the sweeper parks the
+    task in SUBMISSION_UNCERTAIN and frees the user's slot -> a paid
+    replacement is created and ``superseded_by_task_id`` is set -> the
+    original worker's late terminal write would otherwise flip the
+    superseded task to SUCCEEDED/FAILED and settle billing a second time.
+    The terminal write, its billing settlement and its slot release all
+    belong to the replacement flow and are skipped; the worker loop treats
+    this as an expected race outcome, not a fault.
+    """
+
+
 class H3ProviderFailed(RuntimeError):
     def __init__(
         self,
@@ -2628,7 +2643,7 @@ def run_next_generation_task(
                         str(lease["created_by_user_id"]),
                     ),
                 )
-            conn.execute(
+            task_terminal_update = conn.execute(
                 """
                 UPDATE generation_tasks
                 SET
@@ -2647,7 +2662,7 @@ def run_next_generation_task(
                     locked_by = NULL,
                     locked_until = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
+                WHERE id = %s AND superseded_by_task_id IS NULL
                 """,
                 (
                     provider_result.provider_task_id,
@@ -2662,6 +2677,12 @@ def run_next_generation_task(
                     task_id,
                 ),
             )
+            if task_terminal_update.rowcount != 1:
+                # L1 (M4M5 review): a paid replacement superseded this task
+                # while the worker was mid-flight. The rollback discards the
+                # asset row above with the terminal write; the billing
+                # settlement and slot release below belong to the replacement.
+                raise GenerationTaskSupersededError(task_id)
             conn.execute(
                 """
                 INSERT INTO external_call_logs (
@@ -5151,7 +5172,7 @@ def mark_task_provider_failed(
     provider_task_id: str | None,
 ) -> None:
     with conn:
-        conn.execute(
+        provider_failed_update = conn.execute(
             """
             UPDATE generation_tasks
             SET
@@ -5163,10 +5184,14 @@ def mark_task_provider_failed(
                 locked_until = NULL,
                 completed_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
+            WHERE id = %s AND superseded_by_task_id IS NULL
             """,
             (provider_task_id, task_id),
         )
+        if provider_failed_update.rowcount != 1:
+            # L1 (M4M5 review): the replacement flow owns the terminal
+            # state, the billing settlement and the slot release now.
+            raise GenerationTaskSupersededError(task_id)
         finalize_internal_billing(conn, task_id=task_id, outcome="failed")
         _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
         release_user_queue_slot_for_task(conn, task_id=task_id)
@@ -5180,7 +5205,7 @@ def mark_task_first_frame_url_sign_failed(
 ) -> None:
     """A provider call never started, so this is safe to mark as a normal failure."""
     with conn:
-        conn.execute(
+        url_sign_failed_update = conn.execute(
             """
             UPDATE generation_tasks
             SET
@@ -5191,10 +5216,14 @@ def mark_task_first_frame_url_sign_failed(
                 locked_by = NULL,
                 locked_until = NULL,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
+            WHERE id = %s AND superseded_by_task_id IS NULL
             """,
             (task_id,),
         )
+        if url_sign_failed_update.rowcount != 1:
+            # L1 (M4M5 review): the replacement flow owns the terminal
+            # state, the billing settlement and the slot release now.
+            raise GenerationTaskSupersededError(task_id)
         finalize_internal_billing(conn, task_id=task_id, outcome="failed")
         _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
         # Terminal failure: the per-user concurrency slot is free again.
