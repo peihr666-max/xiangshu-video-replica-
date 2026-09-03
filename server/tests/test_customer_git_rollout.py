@@ -1,0 +1,29 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_customer_git_rollout_requires_an_exact_revision_before_any_mutation() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert '[[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]' in script
+    assert 'git -C "$SOURCE" fetch --depth=1 origin "$RELEASE_SHA"' in script
+    assert '[[ "$(git -C "$SOURCE" rev-parse HEAD)" == "$RELEASE_SHA" ]]' in script
+    assert 'git -C "$SOURCE" diff --quiet' in script
+    assert "mark PREFLIGHT" in script
+    runtime = script[script.index('cd "$ROOT"') :]
+    assert runtime.index("mark PREFLIGHT") < runtime.index('docker compose -f "$COMPOSE" up')
+
+
+def test_customer_git_rollout_builds_web_and_preserves_database_rollback_evidence() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert "npm ci --ignore-scripts" in script
+    assert "npm run build --workspace client" in script
+    assert "pg_dump -Fc" in script
+    assert "DATABASE_HEAD_LEFT_FORWARD_COMPATIBLE" in script
+    assert 'trap \'rollback "$?" "$LINENO" "$BASH_COMMAND"\' ERR' in script
+    assert "VIDEO_REPLICA_DATABASE_URL" not in script
+    assert "VIDEO_REPLICA_SETTINGS_KEY" not in script
