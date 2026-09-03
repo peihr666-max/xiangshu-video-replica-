@@ -17,9 +17,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 import psycopg
 import pytest
+from fastapi import HTTPException, Request
 from psycopg_pool import ConnectionPool
 
 from app.db_pg import (
@@ -94,6 +96,188 @@ def test_resolve_sqlite_fallback_keeps_internal_mode() -> None:
         config = resolve_database_config()
     assert config.mode is DatabaseMode.SQLITE
     assert config.sqlite_path == "/tmp/app.db"
+
+
+@pytest.mark.parametrize("database_url", ["", "sqlite:///internal.db"])
+def test_customer_snapshot_ignores_cached_pg_pool_on_internal_lane(
+    monkeypatch: pytest.MonkeyPatch, database_url: str
+) -> None:
+    from app import customer_fence
+
+    monkeypatch.setenv(DATABASE_URL_ENV, database_url)
+    cached_pool = Mock(return_value=object())
+    monkeypatch.setattr(customer_fence, "get_pg_pool", cached_pool)
+    request = Request({"type": "http", "headers": []})
+
+    assert customer_fence.customer_session_snapshot(request) is None
+    cached_pool.assert_not_called()
+
+
+@pytest.mark.parametrize("database_url", ["", "sqlite://", "sqlite:///"])
+def test_business_read_ignores_cached_pg_pool_on_internal_lane(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    from app import customer_fence
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        DATABASE_URL_ENV,
+        f"{database_url}url.db" if database_url else "",
+    )
+    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "internal.db"))
+    monkeypatch.setattr(customer_fence, "get_pg_pool", Mock(return_value=object()))
+    pg_read = Mock(side_effect=AssertionError("Internal reads must not open PostgreSQL"))
+    monkeypatch.setattr(customer_fence, "pg_transaction", pg_read)
+
+    with contextmanager(customer_fence.get_business_read_conn)() as conn:
+        assert not conn.is_postgres
+        assert conn.execute("SELECT 42").fetchone()[0] == 42
+    pg_read.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+@pytest.mark.parametrize(
+    ("url_prefix", "has_legacy_path"),
+    [
+        ("sqlite://", False),
+        ("sqlite://", True),
+        ("sqlite:///", False),
+        ("sqlite:///", True),
+        ("", True),
+    ],
+)
+def test_business_sqlite_connections_follow_resolved_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+    url_prefix: str,
+    has_legacy_path: bool,
+) -> None:
+    from app import customer_fence
+
+    target = tmp_path / "selected.db"
+    legacy = tmp_path / "legacy.db"
+    monkeypatch.chdir(tmp_path)
+    for path, marker in ((target, "selected"), (legacy, "legacy")):
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE users (id TEXT, username TEXT, display_name TEXT, "
+                "role TEXT, is_active INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO users VALUES ('internal_u', ?, ?, 'employee', 1)",
+                (marker, marker),
+            )
+            conn.execute("CREATE TABLE markers (value TEXT)")
+            conn.execute("INSERT INTO markers VALUES (?)", (marker,))
+    monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    monkeypatch.setenv("VIDEO_REPLICA_AUTH_MODE", "desktop")
+    monkeypatch.setenv("VIDEO_REPLICA_DESKTOP_USER_ID", "internal_u")
+    url_path = target.as_posix() if url_prefix == "sqlite:///" else target.name
+    monkeypatch.setenv(DATABASE_URL_ENV, f"{url_prefix}{url_path}" if url_prefix else "")
+    if has_legacy_path:
+        monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(legacy if url_prefix else target))
+    else:
+        monkeypatch.delenv("VIDEO_REPLICA_DB_PATH", raising=False)
+
+    if operation == "read":
+        with contextmanager(customer_fence.get_business_read_conn)() as conn:
+            assert conn.execute("SELECT value FROM markers").fetchone()[0] == "selected"
+    else:
+        request = Request({"type": "http", "headers": []})
+        with customer_fence.get_business_db(request).write() as (conn, actor):
+            assert actor.username == "selected"
+            conn.execute("INSERT INTO markers VALUES ('written')")
+            conn.commit()
+        with sqlite3.connect(target) as conn:
+            assert conn.execute("SELECT value FROM markers").fetchall() == [
+                ("selected",),
+                ("written",),
+            ]
+    with sqlite3.connect(legacy) as conn:
+        assert conn.execute("SELECT value FROM markers").fetchall() == [("legacy",)]
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+@pytest.mark.parametrize("production", [False, True])
+def test_business_sqlite_rejects_missing_or_production_configuration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, operation: str, production: bool
+) -> None:
+    from app import customer_fence
+
+    monkeypatch.delenv("VIDEO_REPLICA_DB_PATH", raising=False)
+    if production:
+        monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "legacy.db"))
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true" if production else "")
+    monkeypatch.setenv(
+        DATABASE_URL_ENV,
+        f"sqlite:///{(tmp_path / 'forbidden.db').as_posix()}" if production else "",
+    )
+    connect_sqlite = Mock()
+    monkeypatch.setattr(customer_fence, "connect_database", connect_sqlite)
+
+    with pytest.raises(HTTPException) as error:
+        if operation == "read":
+            next(customer_fence.get_business_read_conn())
+        else:
+            with customer_fence.BusinessDb(None, None, None).write():
+                pytest.fail("Invalid configuration must not open a business connection")
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "DATABASE_NOT_CONFIGURED"
+    connect_sqlite.assert_not_called()
+
+
+def test_business_write_without_snapshot_never_falls_back_from_pg(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app import customer_fence
+
+    monkeypatch.setenv(DATABASE_URL_ENV, PG_DSN)
+    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "legacy.db"))
+    connect_sqlite = Mock()
+    monkeypatch.setattr(customer_fence, "connect_database", connect_sqlite)
+
+    with pytest.raises(HTTPException) as error:
+        with customer_fence.BusinessDb(None, None, None).write():
+            pytest.fail("A PG writer requires a customer session snapshot")
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "DATABASE_NOT_CONFIGURED"
+    connect_sqlite.assert_not_called()
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_customer_snapshot_pg_pool_failure_is_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    from app import customer_fence
+
+    monkeypatch.setenv(DATABASE_URL_ENV, PG_DSN)
+    monkeypatch.setattr(customer_fence, "get_pg_pool", Mock(side_effect=error_type("PG failed")))
+    request = Request({"type": "http", "headers": []})
+
+    with pytest.raises(HTTPException) as error:
+        customer_fence.get_business_db(request)
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "SESSION_SERVICE_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_business_read_pg_failure_does_not_fall_back_to_sqlite(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error_type: type[Exception]
+) -> None:
+    from app import customer_fence, db_pg
+
+    monkeypatch.setenv(DATABASE_URL_ENV, PG_DSN)
+    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "internal.db"))
+    unavailable_pool = Mock(side_effect=error_type("PG failed"))
+    monkeypatch.setattr(customer_fence, "get_pg_pool", unavailable_pool)
+    monkeypatch.setattr(db_pg, "get_pg_pool", unavailable_pool)
+    sqlite_connect = Mock()
+    monkeypatch.setattr(customer_fence, "connect_database", sqlite_connect)
+
+    with pytest.raises(error_type, match="PG failed"):
+        next(customer_fence.get_business_read_conn())
+    sqlite_connect.assert_not_called()
 
 
 def test_resolve_rejects_unsupported_scheme() -> None:

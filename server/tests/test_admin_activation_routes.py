@@ -1055,7 +1055,33 @@ def test_archive_revoked_code_hides_it_without_deleting_history(
     assert archived.json()["archived_at"]
     listed = client.get("/api/control/activation-codes", headers=admin_headers)
     assert listed.status_code == 200, listed.text
+    assert listed.json()["total"] == 0
     assert all(item["code_id"] != code_id for item in listed.json()["items"])
+    included = client.get(
+        "/api/control/activation-codes",
+        params={"include_archived": True},
+        headers=admin_headers,
+    )
+    assert included.status_code == 200, included.text
+    assert included.json()["total"] == 1
+    assert [item["code_id"] for item in included.json()["items"]] == [code_id]
+    assert included.json()["items"][0]["archived_at"]
+    filtered = client.get(
+        "/api/control/activation-codes",
+        params={"include_archived": True, "status": "REVOKED"},
+        headers=admin_headers,
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["total"] == 1
+    assert [item["code_id"] for item in filtered.json()["items"]] == [code_id]
+    other_status = client.get(
+        "/api/control/activation-codes",
+        params={"include_archived": True, "status": "GENERATED"},
+        headers=admin_headers,
+    )
+    assert other_status.status_code == 200, other_status.text
+    assert other_status.json()["total"] == 0
+    assert other_status.json()["items"] == []
     with psycopg.connect(clean_state) as conn:
         code = _row(
             conn,

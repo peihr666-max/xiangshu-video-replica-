@@ -124,8 +124,8 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert "windows-nsis:" in workflow
     assert "name: Windows Tauri and NSIS" in workflow
     assert workflow.count(f"if: {fork_pr_guard}") == 3
-    assert workflow.count("runs-on: [self-hosted, Linux, X64, ci-linux]") == 2
-    assert workflow.count("runs-on: [self-hosted, Windows, X64, ci-windows]") == 1
+    assert workflow.count("runs-on: ubuntu-24.04") == 2
+    assert workflow.count("runs-on: windows-2025") == 1
     assert "npm run check:security" in workflow
     assert "run: npm run check\n" in workflow
     assert "npm run build" in workflow
@@ -136,9 +136,22 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert "npm run tauri:build -- --bundles nsis --no-sign --ci" in workflow
     assert "npm run tauri:build:customer" in workflow
     assert "VITE_API_BASE_URL: https://staging.example.invalid" in workflow
-    assert "Archive unsigned internal NSIS installer locally" in workflow
-    assert "Archive unsigned customer cloud NSIS installer locally" in workflow
-    assert workflow.count("LOCAL_ARTIFACT_ROOT") == 6
+    windows_job = workflow.split("\n  windows-nsis:\n", 1)[1]
+    job_config, windows_steps = windows_job.split("\n    steps:\n", 1)
+    assert "runner.temp" not in job_config
+    assert "LOCAL_ARTIFACT_ROOT" not in job_config
+    for step_name in (
+        "Archive unsigned internal NSIS installer locally",
+        "Archive unsigned customer cloud NSIS installer locally",
+    ):
+        step = windows_steps.split(f"      - name: {step_name}\n", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        assert (
+            "\n        env:\n"
+            "          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts\n"
+        ) in step
+    assert workflow.count("LOCAL_ARTIFACT_ROOT") == 8
     assert workflow.count("SHA256SUMS.txt") == 2
     assert "Verify customer installer excludes local launchers" in workflow
     assert "7-Zip\\7z.exe" in workflow

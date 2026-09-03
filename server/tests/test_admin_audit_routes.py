@@ -444,6 +444,38 @@ def test_list_audit_log_unions_all_audited_surfaces(client: TestClient, route_st
 
 
 @pytest.mark.pg
+@pytest.mark.parametrize("action", ["customer_unit_price.update", "customer_unit_price.reset"])
+def test_customer_price_audit_events_are_filterable_by_customer(
+    client: TestClient, route_state: str, action: str
+) -> None:
+    _admin_session(client)
+    event_id = str(uuid.uuid4())
+    with psycopg.connect(route_state, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO audit_logs "
+            "(id, actor_user_id, action, entity_type, entity_id, metadata_json) "
+            "VALUES (%s, 'admin_u', %s, 'customer_unit_price', 'customer_u', '{}')",
+            (event_id, action),
+        )
+
+    listed = client.get(AUDIT_PATH)
+    assert listed.status_code == 200, listed.text
+    event = next(item for item in listed.json()["items"] if item["event_id"] == event_id)
+    assert event["target_user_id"] == "customer_u"
+    assert event["event_type"] == action
+
+    filtered = client.get(AUDIT_PATH, params={"target_user_id": "customer_u"})
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["total"] == 1
+    assert [item["event_id"] for item in filtered.json()["items"]] == [event_id]
+
+    other_customer = client.get(AUDIT_PATH, params={"target_user_id": "nobody_u"})
+    assert other_customer.status_code == 200, other_customer.text
+    assert other_customer.json()["total"] == 0
+    assert other_customer.json()["items"] == []
+
+
+@pytest.mark.pg
 def test_list_audit_log_filters_by_target_and_time(client: TestClient, route_state: str):
     """target_user_id 与时间范围筛选（A10）。"""
     _admin_session(client, "admin_u")

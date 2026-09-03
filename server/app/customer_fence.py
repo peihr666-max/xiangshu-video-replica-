@@ -48,7 +48,15 @@ from app.customer_auth import (
 )
 from app.customer_device_service import _token_digests
 from app.db import connect_database
-from app.db_pg import DATABASE_URL_ENV, IsolationLevel, get_pg_pool, pg_transaction
+from app.db_pg import (
+    DATABASE_URL_ENV,
+    SQLITE_URL_SCHEMES,
+    IsolationLevel,
+    get_pg_pool,
+    pg_transaction,
+    resolve_database_config,
+    validate_customer_production,
+)
 from app.db_portable import BusinessConnection
 from app.permissions import AuditedSecurityDenial, persist_security_denial
 from app.security_rate_limit import rate_limit_window_seconds, record_auth_failure
@@ -72,7 +80,8 @@ def _bearer_token(request: Request) -> str | None:
 
 def _customer_database_configured() -> bool:
     """Choose the lane from current configuration, never from a cached pool."""
-    return bool(os.environ.get(DATABASE_URL_ENV, "").strip())
+    url = os.environ.get(DATABASE_URL_ENV, "").strip()
+    return bool(url) and not url.startswith(SQLITE_URL_SCHEMES)
 
 
 @dataclass(frozen=True)
@@ -374,13 +383,21 @@ class BusinessDb:
                 )
                 yield bc, actor
             return
-        db_path = os.environ.get("VIDEO_REPLICA_DB_PATH")
+        try:
+            config = resolve_database_config()
+            validate_customer_production(config)
+            db_path = config.sqlite_path
+        except (RuntimeError, ValueError) as exc:
+            logger.warning(
+                "Business write database configuration rejected (%s)", type(exc).__name__
+            )
+            db_path = None
         if not db_path:
             raise HTTPException(
                 503,
                 detail={
                     "code": "DATABASE_NOT_CONFIGURED",
-                    "message": "VIDEO_REPLICA_DB_PATH is required for API requests.",
+                    "message": "Internal API requests require valid SQLite configuration.",
                 },
             )
         raw = connect_database(Path(db_path))
@@ -421,13 +438,19 @@ def get_business_read_conn() -> Iterator[BusinessConnection]:
     must never resolve the legacy ``get_database`` independently — that opens
     only the SQLite path and 503s on a PG-only production (PR #56 P1)."""
     if not _customer_database_configured():
-        db_path = os.environ.get("VIDEO_REPLICA_DB_PATH")
+        try:
+            config = resolve_database_config()
+            validate_customer_production(config)
+            db_path = config.sqlite_path
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("Business read database configuration rejected (%s)", type(exc).__name__)
+            db_path = None
         if not db_path:
             raise HTTPException(
                 503,
                 detail={
                     "code": "DATABASE_NOT_CONFIGURED",
-                    "message": "VIDEO_REPLICA_DB_PATH is required for API requests.",
+                    "message": "Internal API requests require valid SQLite configuration.",
                 },
             )
         raw = connect_database(Path(db_path))

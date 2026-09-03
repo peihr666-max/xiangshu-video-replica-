@@ -8,6 +8,7 @@ function jsonResponse(payload: unknown, status = 200) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers(),
     json: async () => payload,
   });
 }
@@ -128,7 +129,8 @@ describe("RootApp", () => {
   });
 
   it("routes the pairing URL to the explicit existing-account device flow", async () => {
-    vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
+    const fetchMock = stubCustomerWorkspaceFetch();
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<RootApp path="/customer/pairing" />);
 
@@ -140,7 +142,96 @@ describe("RootApp", () => {
     expect(
       screen.getByRole("button", { name: "返回首次激活" }),
     ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回首次激活" }));
+    expect(
+      await screen.findByRole("heading", { name: "激活短视频复刻工作台" }),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) => url.endsWith("/sessions/login")),
+    ).toBe(false);
   });
+
+  it.each([false, true])(
+    "boots the saved paired credential into login (other device online: %s)",
+    async (otherDeviceOnline) => {
+      const workspaceFetch = stubCustomerWorkspaceFetch();
+      const loginBody = {
+        user_id: "user-1",
+        device_id: "device-2",
+        session_id: "session-2",
+        session_token: sessionTokenText,
+        session_epoch: 2,
+        session_lease_expires_at: "2026-08-24T12:02:00Z",
+        request_id: "req-paired-login",
+      };
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url.endsWith("/api/customer/devices/enroll")) {
+          return jsonResponse({ device_token: deviceTokenText }, 201);
+        }
+        if (url.endsWith("/api/customer/sessions/login")) {
+          expect(new Headers(init?.headers).get("Authorization")).toBe(
+            `Bearer ${deviceTokenText}`,
+          );
+          return otherDeviceOnline
+            ? jsonResponse(
+                {
+                  detail: {
+                    code: "OTHER_DEVICE_ONLINE",
+                    message: "另一台设备在线",
+                    online_device_name_masked: "主设备",
+                    online_slot_no: 1,
+                    lease_expires_at: "2026-08-24T12:05:00Z",
+                  },
+                },
+                409,
+              )
+            : jsonResponse(loginBody, 201);
+        }
+        if (url.endsWith("/api/customer/sessions/switch")) {
+          return jsonResponse(loginBody, 201);
+        }
+        return workspaceFetch(url);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<RootApp path="/customer/pairing" />);
+      await screen.findByRole("heading", { name: "添加已有账号设备" });
+      fireEvent.change(screen.getByLabelText("激活码"), {
+        target: { value: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD" },
+      });
+      fireEvent.change(screen.getByLabelText("设备名称"), {
+        target: { value: "第二台电脑" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "提交配对申请" }));
+      await screen.findByRole("heading", { name: "配对成功" });
+      expect(
+        fetchMock.mock.calls.some(([url]) => url.endsWith("/sessions/login")),
+      ).toBe(false);
+      fireEvent.click(screen.getByRole("button", { name: "进入客户工作区" }));
+
+      if (otherDeviceOnline) {
+        await screen.findByRole("dialog", { name: "检测到会话冲突" });
+        expect(
+          fetchMock.mock.calls.some(([url]) =>
+            url.endsWith("/sessions/switch"),
+          ),
+        ).toBe(false);
+        fireEvent.click(screen.getByRole("button", { name: "切换到本设备" }));
+      }
+      expect(
+        await screen.findByRole("button", { name: "打开个人中心" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByLabelText("激活码")).toBeNull();
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url.endsWith("/sessions/login")),
+      ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          url.endsWith("/sessions/switch"),
+        ),
+      ).toHaveLength(otherDeviceOnline ? 1 : 0);
+    },
+  );
 
   it("routes /customer to the activation screen without any internal-token field", async () => {
     vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());

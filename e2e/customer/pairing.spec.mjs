@@ -3,7 +3,7 @@ import { chromium, expect, test } from "@playwright/test";
 const CODE_C = "XS04-XYZ2345-6789ABC-DEFGHJK-MNPQRST";
 const DEVICE_B_NAME = "E2E Device B";
 
-test("second-device pairing: enroll parks on waiting, primary approves, re-enroll lands on 201", async () => {
+test("second-device pairing: enroll waits, primary approves, polling completes binding", async () => {
   const browser = await chromium.launch();
   const deviceA = await browser.newContext();
   const deviceB = await browser.newContext();
@@ -43,15 +43,29 @@ test("second-device pairing: enroll parks on waiting, primary approves, re-enrol
     timeout: 20_000,
   });
 
-  // Device B re-checks: the button returns to the (reset) form, and the
-  // approved request is idempotent server-side → 201 on re-submit.
-  await pageB.getByRole("button", { name: "返回重新提交" }).click();
-  await pageB.getByLabel("激活码").fill(CODE_C);
-  await pageB.getByLabel("设备名称").fill(DEVICE_B_NAME);
-  await pageB.getByRole("button", { name: "提交配对申请" }).click();
+  // Device B automatically consumes the approved request via its waiting
+  // poll, then saves the 201 device credential without another form submit.
   await expect(pageB.getByRole("heading", { name: "配对成功" })).toBeVisible({
     timeout: 20_000,
   });
+  // The saved device credential must be usable. Device A is still online,
+  // so device B explicitly confirms the session switch before entering.
+  await pageB.getByRole("button", { name: "进入客户工作区" }).click();
+  const conflict = pageB.getByRole("dialog", { name: "检测到会话冲突" });
+  await expect(conflict).toBeVisible();
+  await conflict.getByRole("button", { name: "切换到本设备" }).click();
+  await expect(pageB.getByRole("button", { name: "打开个人中心" })).toBeVisible(
+    {
+      timeout: 20_000,
+    },
+  );
+  await pageB.getByRole("button", { name: "打开个人中心" }).click();
+  await pageB.getByRole("button", { name: "设备管理" }).click();
+  await expect(
+    pageB
+      .getByRole("region", { name: "设备管理" })
+      .getByText(DEVICE_B_NAME, { exact: true }),
+  ).toBeVisible();
 
   await browser.close();
 });

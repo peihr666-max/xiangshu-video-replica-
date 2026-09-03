@@ -413,10 +413,10 @@ def create_admin_adjustment(
                 reason=body.reason.strip(),
                 request_id=request_id,
             )
-        # Validate credits (positive; the amount-overflow guard runs after the
-        # unit price snapshot is loaded, because int4 overflow depends on it)
-        if body.credits <= 0:
-            raise _http(400, "ADJUSTMENT_VALIDATION_FAILED", "Credits must be positive.")
+        if not 1 <= body.credits <= 2147483647:
+            raise _http(
+                400, "ADJUSTMENT_VALIDATION_FAILED", "Credits must be between 1 and 2147483647."
+            )
 
         # Validate the source document (来源单): frozen enum + non-blank ref —
         # the revision 039 CHECK constraints are the defense in depth, the
@@ -480,24 +480,20 @@ def create_admin_adjustment(
         min_recharge_fen = billing["min_recharge_fen"]
         recharge_step_fen = billing["recharge_step_fen"]
 
-        # Calculate amount from credits × unit price (frozen snapshot).
-        # FREE_GRANT（054）是未收款的免费发放：账面金额必须如实记 0，
-        # 按面值计金额会在账务里虚构收入；价格快照照存，审计行留痕。
         credits = body.credits
-        if source_document_type == "FREE_GRANT":
-            amount_fen = 0
-        else:
-            amount_fen = credits * unit_price_fen
-
-        # int4 ledger overflow guard: recharge_orders.amount_fen is integer,
-        # so a credits count whose derived amount overflows 2^31-1 must be
-        # refused before the INSERT (PostgreSQL would answer a raw 500).
+        amount_fen = credits * unit_price_fen
+        # The published 054 CHECK still multiplies two int4 columns, even for
+        # zero-amount grants. Validate that expression before any ledger write.
         if amount_fen > 2147483647:
             raise _http(
                 400,
                 "ADJUSTMENT_VALIDATION_FAILED",
-                "The credits amount would overflow the ledger integer range.",
+                "The credits calculation would overflow the ledger integer range.",
             )
+
+        # FREE_GRANT records no payment; the price snapshot remains auditable.
+        if source_document_type == "FREE_GRANT":
+            amount_fen = 0
 
         # Note: the min/step recharge ladder only governs zpay orders
         # (revision 026 constraints); audited adjustment amounts are defined
@@ -555,9 +551,6 @@ def create_admin_adjustment(
         # The WHERE bound keeps the post-increment balance inside the int4
         # column range: PostgreSQL would otherwise raise NumericValueOutOfRange
         # (a raw 500 on a financial endpoint — the PR #54 connector review P2).
-        # credits is a validated positive int, so 2147483647 - credits never
-        # underflows in Python; a huge credits simply makes the bound negative
-        # and every non-negative balance fails it, refusing the write.
         updated = conn.execute(
             "UPDATE wallets SET available_credits = available_credits + %s "
             "WHERE user_id = %s AND available_credits <= 2147483647 - %s "
