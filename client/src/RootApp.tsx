@@ -8,6 +8,7 @@ import { CustomerWorkspace } from "./customer/CustomerWorkspace";
 import { LoginPage } from "./customer/LoginPage";
 import { SessionConflictDialog } from "./customer/SessionConflictDialog";
 import {
+  type CustomerCredentialStore,
   type CustomerWorkspaceUser,
   customerCredentialStore,
   isTauriRuntime,
@@ -48,20 +49,29 @@ function CustomerShell({
   // keeps its credentials in closures, so a per-render store would lose them
   // (and every lifecycle listener would re-mount on each render).
   const store = useMemo(customerCredentialStore, []);
-  const session = useCustomerSession(store);
   const [pairing, setPairing] = useState(startInPairing);
 
   if (pairing) {
     return (
-      <CustomerPairingFlow
-        store={store}
-        onPaired={() => {
-          setPairing(false);
-          void session.retryLogin();
-        }}
-      />
+      <CustomerPairingFlow store={store} onPaired={() => setPairing(false)} />
     );
   }
+
+  // Mount the normal boot flow after pairing so it reads the saved device
+  // credential. Returning without pairing still boots into activation.
+  return (
+    <CustomerSessionShell store={store} onPairDevice={() => setPairing(true)} />
+  );
+}
+
+function CustomerSessionShell({
+  store,
+  onPairDevice,
+}: {
+  store: CustomerCredentialStore;
+  onPairDevice(): void;
+}) {
+  const session = useCustomerSession(store);
 
   switch (session.screen) {
     case "checking":
@@ -79,7 +89,7 @@ function CustomerShell({
           onActivate={(input) => void session.activate(input)}
           isBusy={session.isBusy}
           error={session.error}
-          onPairDevice={() => setPairing(true)}
+          onPairDevice={onPairDevice}
         />
       );
     case "login":
