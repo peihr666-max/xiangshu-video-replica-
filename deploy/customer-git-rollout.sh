@@ -92,6 +92,34 @@ require_command() {
   }
 }
 
+dependency_manifest_hash() {
+  python3 -c '
+import hashlib
+import json
+import sys
+import tomllib
+
+path = sys.argv[1]
+stream = sys.stdin.buffer if path == "-" else open(path, "rb")
+with stream:
+    document = tomllib.load(stream)
+if path.endswith("pyproject.toml"):
+    project = document["project"]
+    manifest = {
+        "requires-python": project["requires-python"],
+        "dependencies": project.get("dependencies", []),
+        "optional-dependencies": project.get("optional-dependencies", {}),
+    }
+else:
+    manifest = {key: value for key, value in document.items() if key != "package"}
+    manifest["package"] = [
+        package for package in document.get("package", [])
+        if package["name"] != "video-replica-api"
+    ]
+print(hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+' "$1"
+}
+
 cd "$ROOT"
 mark PREFLIGHT
 for command in git docker curl python3; do
@@ -139,8 +167,8 @@ OLD_IMAGE_DB_HEAD=$(docker image inspect -f '{{index .Config.Labels "video-repli
 [[ -n "$OLD_IMAGE_DB_HEAD" ]]
 [[ -z "$OLD_IMAGE_USER" || "$OLD_IMAGE_USER" =~ ^[A-Za-z0-9_.:-]+$ ]]
 for dependency_file in server/pyproject.toml server/uv.lock; do
-  source_hash=$(sha256sum "$SOURCE/$dependency_file" | awk '{print $1}')
-  image_hash=$(docker run --rm --entrypoint sha256sum "$OLD_IMAGE" "/opt/video-replica/$dependency_file" | awk '{print $1}')
+  source_hash=$(dependency_manifest_hash "$SOURCE/$dependency_file")
+  image_hash=$(docker run --rm --entrypoint sh "$OLD_IMAGE" -c 'cat "$1"' sh "/opt/video-replica/$dependency_file" | dependency_manifest_hash -)
   [[ "$source_hash" == "$image_hash" ]] || {
     echo "PRECHECK_FAILED: Python dependency change requires a base-image release: $dependency_file" >&2
     exit 1

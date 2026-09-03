@@ -93,7 +93,7 @@ chmod 0755 /tmp/customer-git-rollout.sh
 bash /tmp/customer-git-rollout.sh --commit <COMMIT_SHA>
 ```
 
-私有仓库不能匿名下载 Raw 脚本：先通过只读 Deploy Key 拉取该提交中的脚本，再在运行前导出 `VIDEO_REPLICA_GIT_REPO_URL`。这条路径要求服务器能访问 GitHub、已安装 Git、Docker、Python 3；前端构建复用 Docker 的 Node.js 24 镜像，宿主机不需要安装 Node.js 或 npm。首次运行会下载该构建镜像，之后复用 Docker 缓存。任一前置条件缺失时会在发布前退出，不会切换服务。含 Python 依赖锁文件改动的版本仍必须走基础镜像发布流程，避免服务器在生产切换时临时安装依赖。
+私有仓库不能匿名下载 Raw 脚本：先通过只读 Deploy Key 拉取该提交中的脚本，再在运行前导出 `VIDEO_REPLICA_GIT_REPO_URL`。这条路径要求服务器能访问 GitHub、已安装 Git、Docker、Python 3；前端构建复用 Docker 的 Node.js 24 镜像，宿主机不需要安装 Node.js 或 npm。首次运行会下载该构建镜像，之后复用 Docker 缓存。任一前置条件缺失时会在发布前退出，不会切换服务。实际 Python 依赖或锁定包变更仍必须走基础镜像发布流程；应用自身的版本元数据变更不会触发该门禁。
 
 ### 内部钱包与按条计费
 

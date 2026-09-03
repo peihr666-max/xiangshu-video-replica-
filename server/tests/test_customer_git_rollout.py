@@ -33,3 +33,11 @@ def test_customer_git_rollout_builds_web_and_preserves_database_rollback_evidenc
     assert 'trap \'rollback "$?" "$LINENO" "$BASH_COMMAND"\' ERR' in script
     assert "VIDEO_REPLICA_DATABASE_URL" not in script
     assert "VIDEO_REPLICA_SETTINGS_KEY" not in script
+
+
+def test_customer_git_rollout_ignores_only_root_package_version_metadata() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert "dependency_manifest_hash" in script
+    assert 'package["name"] != "video-replica-api"' in script
+    assert "Python dependency change requires a base-image release" in script
