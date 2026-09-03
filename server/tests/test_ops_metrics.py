@@ -374,10 +374,14 @@ def test_request_middleware_rejects_an_invalid_persisted_replay_id(
 
 def test_customer_and_admin_routes_use_the_shared_request_id_source() -> None:
     app_dir = Path(__file__).resolve().parents[1] / "app"
+    # Customer adjustments delegate their write envelope to this helper, so
+    # request IDs must remain centralized there after the admin refactor.
+    customer_routes = (app_dir / "admin_customer_routes.py").read_text(encoding="utf-8")
+    assert "from app.admin_write_contract import" in customer_routes
     for filename in (
         "activation_code_routes.py",
         "admin_activation_routes.py",
-        "admin_customer_routes.py",
+        "admin_write_contract.py",
         "customer_device_routes.py",
         "customer_session_routes.py",
     ):

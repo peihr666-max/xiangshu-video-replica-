@@ -48,7 +48,7 @@ from app.customer_auth import (
 )
 from app.customer_device_service import _token_digests
 from app.db import connect_database
-from app.db_pg import IsolationLevel, get_pg_pool, pg_transaction
+from app.db_pg import DATABASE_URL_ENV, IsolationLevel, get_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
 from app.permissions import AuditedSecurityDenial, persist_security_denial
 from app.security_rate_limit import rate_limit_window_seconds, record_auth_failure
@@ -68,6 +68,11 @@ def _bearer_token(request: Request) -> str | None:
         return None
     token = parts[1].strip()
     return token or None
+
+
+def _customer_database_configured() -> bool:
+    """Choose the lane from current configuration, never from a cached pool."""
+    return bool(os.environ.get(DATABASE_URL_ENV, "").strip())
 
 
 @dataclass(frozen=True)
@@ -98,12 +103,20 @@ def customer_session_snapshot(request: Request) -> CustomerSessionSnapshot | Non
     503 fail-closed when the device-domain keys are misconfigured (a server
     outage must never masquerade as a client credential problem).
     """
-    try:
-        get_pg_pool()
-    except (RuntimeError, ValueError):
+    if not _customer_database_configured():
         # No PostgreSQL runtime — the internal/desktop lane has no customer
         # sessions; the caller uses the internal identity instead.
         return None
+    try:
+        get_pg_pool()
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            503,
+            detail={
+                "code": "SESSION_SERVICE_UNAVAILABLE",
+                "message": "The customer session service is unavailable.",
+            },
+        ) from exc
     token = _bearer_token(request)
     if token is None:
         # PostgreSQL is configured: this is the customer lane, where the
@@ -407,9 +420,7 @@ def get_business_read_conn() -> Iterator[BusinessConnection]:
     a SQLite connection from the env path. The storage/provider dependencies
     must never resolve the legacy ``get_database`` independently — that opens
     only the SQLite path and 503s on a PG-only production (PR #56 P1)."""
-    try:
-        get_pg_pool()
-    except (RuntimeError, ValueError):
+    if not _customer_database_configured():
         db_path = os.environ.get("VIDEO_REPLICA_DB_PATH")
         if not db_path:
             raise HTTPException(
