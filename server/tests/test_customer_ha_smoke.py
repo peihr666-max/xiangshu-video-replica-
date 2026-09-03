@@ -508,6 +508,7 @@ def test_t37_metrics_and_cluster_alert_jobs_are_private_single_owner_contracts()
         "server/migrations/versions/051_identity_owner_backfill.py",
         "server/migrations/versions/053_activation_code_archive.py",
         "server/migrations/versions/054_admin_free_grant_adjustments.py",
+        "server/migrations/versions/055_customer_batch_visibility.py",
         "deploy/systemd/video-replica-ops-alerts.service",
         "deploy/systemd/video-replica-ops-alerts.timer",
     ):
@@ -622,17 +623,17 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     assert "url.port" in origin_guard
     assert "--config src-tauri/tauri.customer.conf.json" in package
     assert customer_config["productName"] == "短视频复刻客户云工作台"
-    assert customer_config["version"] == "0.1.15"
+    assert customer_config["version"] == "0.1.16"
     assert root_package["version"] == customer_config["version"]
     assert client_package["version"] == customer_config["version"]
     assert package_lock["version"] == customer_config["version"]
     assert package_lock["packages"][""]["version"] == customer_config["version"]
     assert package_lock["packages"]["client"]["version"] == customer_config["version"]
     assert internal_config["version"] == customer_config["version"]
-    assert 'name = "video-replica-desktop"\nversion = "0.1.15"' in cargo_lock
-    assert 'version = "0.1.15"' in cargo_toml.split("[lib]", maxsplit=1)[0]
-    assert 'version = "0.1.15"' in server_package.split("[project]", maxsplit=1)[1]
-    assert 'version="0.1.15"' in server_main
+    assert 'name = "video-replica-desktop"\nversion = "0.1.16"' in cargo_lock
+    assert 'version = "0.1.16"' in cargo_toml.split("[lib]", maxsplit=1)[0]
+    assert 'version = "0.1.16"' in server_package.split("[project]", maxsplit=1)[1]
+    assert 'version="0.1.16"' in server_main
     assert customer_config["identifier"] == "com.xiangshu.video-replica.customer"
     assert customer_config["app"]["windows"][0]["url"] == "customer"
     assert customer_config["bundle"]["resources"] == []

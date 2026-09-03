@@ -1,6 +1,6 @@
 # 短视频复刻工作台（xiangshu-video-replica）
 
-AI 短视频复刻生产工作台：参考视频上传 → AI 拆解分镜 → 人物库与首帧 → Prompt/批次编排 → H3 视频生成 → 云存储归档质检 → 按条计费。业务后端 FastAPI，桌面端 Tauri 2，客户生产数据真源 PostgreSQL 16。当前版本 0.1.15（2026-09-03）。
+AI 短视频复刻生产工作台：参考视频上传 → AI 拆解分镜 → 人物库与首帧 → Prompt/批次编排 → H3 视频生成 → 成片直链交付 → 按条计费。业务后端 FastAPI，桌面端 Tauri 2，客户生产数据真源 PostgreSQL 16。当前版本 0.1.16（2026-09-04）。
 
 ## 两条产品线
 
@@ -19,7 +19,7 @@ AI 短视频复刻生产工作台：参考视频上传 → AI 拆解分镜 → �
 - **`server/`** — Python 3.12 · FastAPI · Alembic · psycopg3（同步驱动，`%s` 占位符）· pytest · Ruff · mypy strict。
 - **`client/`** — React 19 · TypeScript 5.9 · Vite 8 · Biome · Vitest；API 类型由 FastAPI OpenAPI 生成（`npm run generate:api`，产物不手工修改）。业务工作台、客户端与管理端共用同一 React 构建。
 - **`client/src-tauri/`** — Tauri 2 / Rust 桌面端，内部版与客户云版双构建目标（`tauri.conf.json` / `tauri.customer.conf.json`）。
-- **存储** — 生产使用腾讯云 COS 私有桶（启动即校验，缺/错配置 fail-closed）；开发机可回退本地文件系统存储。
+- **存储** — 人物、首帧等业务图片在生产使用腾讯云 COS 私有桶（启动即校验，缺/错配置 fail-closed）；新视频成片只保存供应商结果链接，不再下载或转存。开发机可回退本地文件系统存储。
 - **外部 Provider** — 视频拆解（Gemini）、人物图片（GPT Image 2 / Nano Banana）、视频生成（Metaso H3）。开发联调可切 `fake_h3` 模拟链路，不触达付费接口。
 
 ### 核心能力（客户版 V3）
@@ -50,7 +50,7 @@ uv sync --project server --locked
 $env:VIDEO_REPLICA_ALLOW_DEV_IDENTITY_HEADER = "1"
 $env:VIDEO_REPLICA_AUTH_MODE = "development"
 npm run dev:server   # 终端 1：FastAPI（127.0.0.1:8000，启动时自动执行 Alembic 迁移）
-npm run dev:worker   # 终端 2：生成 Worker（拆解/人物/首帧/H3 任务领取、Provider 调用与归档）
+npm run dev:worker   # 终端 2：生成 Worker（拆解/人物/首帧/H3 任务领取、Provider 调用与结果交付）
 
 $env:VITE_DEV_USER_ID = "employee_1"   # 必须对应 users 表中已启用的用户
 npm run tauri:dev    # 终端 3：桌面端
@@ -58,9 +58,21 @@ npm run tauri:dev    # 终端 3：桌面端
 
 - 开发身份 Header 只在 Vite 开发构建中发送；生产构建即使误设 `VITE_DEV_USER_ID` 也会忽略。
 - 切换 PostgreSQL 模式时设置 `VIDEO_REPLICA_DATABASE_URL=postgresql://…`；客户生产（`VIDEO_REPLICA_CUSTOMER_PRODUCTION=true`）下使用 SQLite 或缺少 DSN 会直接拒绝启动。
-- 没有 COS 凭据时，设置 `VIDEO_REPLICA_STORAGE_ROOT` 并在管理设置中把 `active_storage_provider` 设为 `local`，即可走完整上传/归档流程（仅限开发/内测，生产只使用 COS）。
+- 没有 COS 凭据时，设置 `VIDEO_REPLICA_STORAGE_ROOT` 并在管理设置中把 `active_storage_provider` 设为 `local`，即可完成图片等资产的开发联调（仅限开发/内测，生产图片资产只使用 COS）。
 - Provider API Key 与云存储凭据经 Fernet 加密写入数据库（Windows 下主密钥由当前用户 DPAPI 保护，macOS 使用钥匙串），启动时校验可解密；主密钥缺失不会覆盖已有配置。任何真实密钥不得进入代码、日志或 PR。
 - 只调试浏览器界面时运行 `npm run dev:client`；环境变量样例见 `.env.example`。
+
+## 成片直链、下载与客户记录
+
+`GET /api/generation-tasks/{task_id}/preview-url` 先校验任务所属项目，再返回 `{"url":"..."}`。真实供应商任务直接返回原结果链接，不重新生成、不上传云存储；链接仍受供应商有效期及跨域策略约束。
+
+视频生成成功后只持久化供应商结果链接并完成既有任务/账务结算，API 与 Worker 不再下载成片、执行音频/画面质检或转存云存储。新直链结果为 `archive_status=DIRECT`、`quality_status=NOT_REQUIRED`（未执行质检，不等于质检通过）；历史质检字段保留用于记录，但不再把已成功交付的视频标记为需要处理。真实生成失败、提交结果未知及计费待确认仍保留处理入口。人物图片与置换首帧处理不属于此变更。
+
+Windows 桌面端下载视频前显示保存对话框，取消时不发起下载；实际 WebView 下载完成后才显示文件路径和“打开文件夹”。原生层仅允许本地主窗口为当前下载选择的目标位置，同一时间只允许一份视频保存，防止 Windows 路径别名并发覆盖。网页端只能确认下载已发起，应在浏览器下载列表查看结果。新增下载能力需重新打包桌面端才能生效。
+
+`DELETE /api/generation-batches/{batch_id}` 只写入当前账号的 `customer_batch_visibility` 隐藏标记，即使已计费或仍在生成也可移除；它不取消生成、不退款，不删除任务、结果链接、钱包流水或管理端记录。列表查询在分页前排除当前账号隐藏项，换设备或重新登录仍生效，其他账号不受影响。上线前需执行迁移 `055_customer_batch_visibility`；显式降级只恢复客户列表可见性，不删除生成或费用事实。
+
+仅在非客户生产环境，`fake_h3` 的 `fake://` 测试结果可转换为 `data:video/mp4;base64,...`，便于浏览器播放和下载。API 与 Worker 应使用相同的 `VIDEO_REPLICA_FAKE_H3_RESULT_PATH`；该模式不用于生产成片存储。
 
 ## 验证命令（分层，避免双跑全量）
 
@@ -80,10 +92,10 @@ npm run check                 # secret 扫描 → 前端 Biome/tsc/vitest → Ta
 scripts/pg-fixture.sh stop
 ```
 
-- 服务端全量 pytest（约 1450 用例，21–30 分钟）每任务只跑一次，由 `npm run check` 统一承载，不要单独重复执行。
+- 服务端全量 pytest（约 1550 用例，21–30 分钟）每任务只跑一次，由 `npm run check` 统一承载，不要单独重复执行。
 - 严禁两个全量 pytest 实例同时打同一个 PG fixture（共享 `customer_v3_test` 库会互踩造成假性失败）。
 - `cargo test`、`npm audit`、客户浏览器 E2E 与 `npm run build` 只在 CI 三门禁执行，本地 `npm run check` 不含；涉及 Rust/构建/依赖变更以 CI 为准。
-- 当前测试规模（截至 2026-09）：服务端 1446 passed / 1 skipped、客户端 vitest 592、客户浏览器 E2E 4、Rust 4。
+- 当前本地验证规模（2026-09-04）：服务端 1555 passed / 1 skipped（本机无 ffmpeg）、客户端 vitest 715、直链播放与列表隐藏 Playwright 1、Tauri 模块测试两种配置各 16。
 
 ## 构建与发布
 
@@ -109,7 +121,7 @@ npm run test:gate1             # 内部 FakeProvider 桌面纵向验收（隔离
 ## 红线（摘要）
 
 - 禁止引入 ORM、Redis、消息队列框架；禁止 SQLite/PG 双真源与双写。
-- Alembic 迁移文件名冻结（`025_postgres_runtime_compatibility` … `030_user_fair_queue`）；已发布 revision 只可追加修复，不得篡改。
+- 已发布 Alembic revision 只可追加修复，不得篡改；当前迁移链 head 为 `055_customer_batch_visibility`。
 - 任何真实 API key、激活码明文、设备/session token 不得进入代码、日志、测试夹具或 PR。
 - 证据层级逐级推进：`CODE_PRESENT → AUTOMATED_VERIFIED → STAGING_VERIFIED → REAL_CHAIN_VERIFIED → PRODUCTION_GO`；未过真实链路不得标 `PRODUCTION_GO`。
 - 真实 ZPay、付费 Provider、生产 COS 变更、对外发码、灰度扩大、公网发布必须先取得用户明确授权。
@@ -133,10 +145,10 @@ npm run test:gate1             # 内部 FakeProvider 桌面纵向验收（隔离
 
 ## 仓库结构
 
-```
+```text
 server/           FastAPI 业务后端
   app/            路由与服务（客户 lane / 内部 lane）、生成 Worker、运维探针
-  migrations/     Alembic 迁移链（001 → 054）
+  migrations/     Alembic 迁移链（001 → 055）
   tests/          服务端测试（含 PG 专项，pytest 标记 pg）
 client/           React 19 + Vite 工作台（业务工作台 / 客户端 / 管理端）
   src-tauri/      Tauri 2 桌面端（内部版 / 客户云版双配置）
