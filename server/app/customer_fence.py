@@ -54,6 +54,8 @@ from app.db_pg import (
     IsolationLevel,
     get_pg_pool,
     pg_transaction,
+    resolve_database_config,
+    validate_customer_production,
 )
 from app.db_portable import BusinessConnection
 from app.permissions import AuditedSecurityDenial, persist_security_denial
@@ -381,13 +383,21 @@ class BusinessDb:
                 )
                 yield bc, actor
             return
-        db_path = os.environ.get("VIDEO_REPLICA_DB_PATH")
+        try:
+            config = resolve_database_config()
+            validate_customer_production(config)
+            db_path = config.sqlite_path
+        except (RuntimeError, ValueError) as exc:
+            logger.warning(
+                "Business write database configuration rejected (%s)", type(exc).__name__
+            )
+            db_path = None
         if not db_path:
             raise HTTPException(
                 503,
                 detail={
                     "code": "DATABASE_NOT_CONFIGURED",
-                    "message": "VIDEO_REPLICA_DB_PATH is required for API requests.",
+                    "message": "Internal API requests require valid SQLite configuration.",
                 },
             )
         raw = connect_database(Path(db_path))
@@ -428,13 +438,19 @@ def get_business_read_conn() -> Iterator[BusinessConnection]:
     must never resolve the legacy ``get_database`` independently — that opens
     only the SQLite path and 503s on a PG-only production (PR #56 P1)."""
     if not _customer_database_configured():
-        db_path = os.environ.get("VIDEO_REPLICA_DB_PATH")
+        try:
+            config = resolve_database_config()
+            validate_customer_production(config)
+            db_path = config.sqlite_path
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("Business read database configuration rejected (%s)", type(exc).__name__)
+            db_path = None
         if not db_path:
             raise HTTPException(
                 503,
                 detail={
                     "code": "DATABASE_NOT_CONFIGURED",
-                    "message": "VIDEO_REPLICA_DB_PATH is required for API requests.",
+                    "message": "Internal API requests require valid SQLite configuration.",
                 },
             )
         raw = connect_database(Path(db_path))
