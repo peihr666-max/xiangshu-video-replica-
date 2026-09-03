@@ -1209,6 +1209,23 @@ export async function createGenerationResultPreviewUrl(
   return url;
 }
 
+// 直链交付不复制成片到云存储。URL 仅通过任务所属权限接口按需签发，
+// 不进入批次详情，避免被列表、日志或跨用户缓存意外暴露。
+export async function createGenerationTaskPreviewUrl(
+  taskId: string,
+): Promise<string> {
+  const { url } = await requestGenerationJson<
+    components["schemas"]["GenerationTaskPreviewUrlResponse"]
+  >(
+    `/api/generation-tasks/${encodeURIComponent(taskId)}/preview-url`,
+    "获取生成结果播放地址失败",
+  );
+  if (!url) {
+    throw new Error("预览链接获取失败，请重试。");
+  }
+  return url;
+}
+
 export async function downloadGenerationResult(
   assetId: string,
   filename: string,

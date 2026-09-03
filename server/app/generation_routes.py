@@ -100,6 +100,10 @@ class GenerationReconcileOperationResponse(BaseModel):
     completed_at: str | None
 
 
+class GenerationTaskPreviewUrlResponse(BaseModel):
+    url: str
+
+
 def get_h3_provider() -> H3Provider:
     return FakeH3Provider()
 
@@ -540,6 +544,39 @@ def _generation_task_context(conn: Database, task_id: str) -> sqlite3.Row:
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "TASK_NOT_FOUND"})
     return cast(sqlite3.Row, row)
+
+
+@router.get(
+    "/generation-tasks/{task_id}/preview-url",
+    response_model=GenerationTaskPreviewUrlResponse,
+)
+def read_generation_task_preview_url(
+    task_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> GenerationTaskPreviewUrlResponse:
+    task = conn.execute(
+        """
+        SELECT batch.project_id, task.provider_result_url
+        FROM generation_tasks AS task
+        JOIN generation_batches AS batch ON batch.id = task.batch_id
+        WHERE task.id = %s
+          AND task.archive_status IN ('ARCHIVING', 'DIRECT', 'ARCHIVE_FAILED')
+        """,
+        (task_id,),
+    ).fetchone()
+    if task is None:
+        raise HTTPException(status_code=404, detail={"code": "TASK_NOT_FOUND"})
+    require_project_access(
+        conn,
+        actor=actor,
+        project_id=str(task["project_id"]),
+        action="generation_task.preview",
+    )
+    result_url = task["provider_result_url"]
+    if not isinstance(result_url, str) or not result_url.strip():
+        raise HTTPException(status_code=409, detail={"code": "RESULT_URL_NOT_READY"})
+    return GenerationTaskPreviewUrlResponse(url=result_url)
 
 
 @router.post("/generation-tasks/{task_id}/retry", response_model=TaskResult)

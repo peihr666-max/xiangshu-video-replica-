@@ -6,10 +6,8 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import pytest
-from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from test_generation import auth_headers, create_locked_prompt, seed_data
 
@@ -24,7 +22,7 @@ from app.generation import (
 )
 from app.generation_routes import get_h3_provider
 from app.main import app
-from app.storage import DownloadIntent, FakeStorageAdapter, LocalStorageAdapter
+from app.storage import DownloadIntent, FakeStorageAdapter
 
 
 class RecordingFakeProvider(FakeH3Provider):
@@ -198,8 +196,9 @@ def test_fake_provider_e2e_from_locked_prompt_to_worker_progress(
     assert payload["progress"]["terminal_count"] == 2
     assert payload["progress"]["progress_percent"] == 100
     assert {task["status"] for task in payload["tasks"]} == {"SUCCEEDED"}
-    assert {task["archive_status"] for task in payload["tasks"]} == {"ARCHIVED"}
-    assert all(task["result_asset_id"] for task in payload["tasks"])
+    assert {task["archive_status"] for task in payload["tasks"]} == {"DIRECT"}
+    assert all(task["result_asset_id"] is None for task in payload["tasks"])
+    assert all(task["direct_result_available"] for task in payload["tasks"])
     assert all("result_url" not in task for task in payload["tasks"])
 
 
@@ -263,15 +262,10 @@ def test_generation_flow_never_creates_independent_audio_tasks(
     assert all("audio" not in str(row["prompt_snapshot_json"]).lower() for row in rows)
 
 
-def test_three_task_mixed_batch_surfaces_partial_failure_and_downloads_successful_mp4(
+def test_three_task_mixed_batch_surfaces_partial_failure_and_exposes_successful_video(
     client: TestClient,
     db_path: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    storage_root = tmp_path / "local-storage"
-    monkeypatch.setenv("VIDEO_REPLICA_STORAGE_ROOT", str(storage_root))
-    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode())
     prompt_id = create_locked_prompt(client)
     batch = create_batch(
         client,
@@ -284,7 +278,7 @@ def test_three_task_mixed_batch_surfaces_partial_failure_and_downloads_successfu
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         conn.execute("UPDATE runtime_settings SET active_storage_provider = 'local' WHERE id = 1")
         conn.commit()
-        output_storage = LocalStorageAdapter(root=storage_root)
+        output_storage = FakeStorageAdapter(provider="fake", bucket="generation-results")
         first_frame_storage = FakeStorageAdapter(
             provider="fake",
             bucket="generation-results",
@@ -358,16 +352,15 @@ def test_three_task_mixed_batch_surfaces_partial_failure_and_downloads_successfu
         for task in payload["tasks"]
         if task["status"] == "SUCCEEDED" and task["quality_status"] == "AUDIO_OK"
     )
-    download_url = client.post(
-        f"/api/assets/{successful_task['result_asset_id']}/download-url",
+    assert successful_task["archive_status"] == "DIRECT"
+    assert successful_task["result_asset_id"] is None
+    assert successful_task["direct_result_available"] is True
+    preview_url = client.get(
+        f"/api/generation-tasks/{successful_task['id']}/preview-url",
         headers=auth_headers("employee_1"),
     )
-    assert download_url.status_code == 200
-    parsed = urlsplit(download_url.json()["url"])
-    downloaded = client.get(f"{parsed.path}?{parsed.query}")
-    assert downloaded.status_code == 200, downloaded.text
-    assert downloaded.headers["content-type"] == "video/mp4"
-    assert downloaded.content.startswith(b"fake mp4 content for fake-h3-")
+    assert preview_url.status_code == 200
+    assert preview_url.json()["url"].startswith("fake://h3-results/fake-h3-")
 
 
 def create_batch(

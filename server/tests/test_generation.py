@@ -1036,7 +1036,7 @@ def test_task_paid_regeneration_supersedes_audio_failure_once_and_keeps_history(
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         source_row = conn.execute(
             """
-            SELECT status, quality_status, result_asset_id, superseded_by_task_id,
+            SELECT status, archive_status, quality_status, result_asset_id, superseded_by_task_id,
                    superseded_at
             FROM generation_tasks WHERE id = ?
             """,
@@ -1059,8 +1059,9 @@ def test_task_paid_regeneration_supersedes_audio_failure_once_and_keeps_history(
         ).fetchone()[0]
 
     assert source_row["status"] == "SUCCEEDED"
+    assert source_row["archive_status"] == "DIRECT"
     assert source_row["quality_status"] == "AUDIO_QUALITY_FAILED"
-    assert source_row["result_asset_id"] is not None
+    assert source_row["result_asset_id"] is None
     assert source_row["superseded_by_task_id"] == replacement_task_id
     assert source_row["superseded_at"] is not None
     assert replacement_row["retry_of_task_id"] == source_task_id
@@ -1146,7 +1147,7 @@ def test_visual_quality_failure_is_archived_and_allows_explicit_paid_regeneratio
 
     assert result is not None
     assert result.status == "SUCCEEDED"
-    assert result.archive_status == "ARCHIVED"
+    assert result.archive_status == "DIRECT"
     assert result.quality_status == "VISUAL_QUALITY_FAILED"
     assert result.quality_issue_codes == ["VIDEO_IDENTITY_DRIFT", "VIDEO_OUTFIT_DRIFT"]
     regenerated = client.post(
@@ -1494,7 +1495,7 @@ def test_retry_archive_failed_is_idempotent_and_never_creates_provider_task(
     assert provider.create_calls == 0
     assert provider.download_calls == 1
     assert result is not None
-    assert result.archive_status == "ARCHIVED"
+    assert result.archive_status == "DIRECT"
 
 
 def test_retry_pre_provider_failure_requeues_once_and_records_lineage(
@@ -2925,7 +2926,7 @@ def test_generation_batch_quantity_limits_idempotency_and_fake_archive(
     ).json()
     assert after_worker["progress"]["terminal_count"] == 3
     assert after_worker["progress"]["progress_percent"] == 100
-    assert {task["archive_status"] for task in after_worker["tasks"]} == {"ARCHIVED"}
+    assert {task["archive_status"] for task in after_worker["tasks"]} == {"DIRECT"}
 
 
 def test_generation_batch_replay_ignores_a_later_lower_quantity_limit(
@@ -3089,22 +3090,21 @@ def test_generation_batch_list_paginates_and_returns_safe_task_summaries(
     assert invalid_cursor.json()["detail"]["code"] == "INVALID_CURSOR"
 
 
-def test_batch_detail_never_exposes_provider_result_urls(
+def test_batch_detail_exposes_direct_result_availability_but_not_provider_url(
     client: TestClient,
     db_path: Path,
 ) -> None:
-    """客户详情只能返回归档资产 id，不能泄露 Provider 临时 URL。"""
+    """列表不泄露直链；拥有任务的用户按需取得供应商结果 URL。"""
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         insert_generation_history(
             conn,
             batch_id="batch-direct-play-01",
             batch_status="SUCCEEDED",
             task_status="SUCCEEDED",
-            archive_status="ARCHIVED",
+            archive_status="DIRECT",
             quality_status="AUDIO_OK",
             error_code=None,
             provider_result_url="https://provider.example/signed-result.mp4",
-            result_asset_id="first_frame_owned",
             submitted_at="2026-08-16 10:00:00",
             started_at="2026-08-16 10:00:00",
             completed_at="2026-08-16 10:04:00",
@@ -3129,7 +3129,15 @@ def test_batch_detail_never_exposes_provider_result_urls(
     assert detail.status_code == 200
     task = detail.json()["tasks"][0]
     assert "provider_result_url" not in task
-    assert task["result_asset_id"] == "first_frame_owned"
+    assert task["result_asset_id"] is None
+    assert task["direct_result_available"] is True
+
+    preview = client.get(
+        f"/api/generation-tasks/{task['id']}/preview-url",
+        headers=auth_headers("employee_1"),
+    )
+    assert preview.status_code == 200
+    assert preview.json() == {"url": "https://provider.example/signed-result.mp4"}
 
     fake_detail = client.get(
         "/api/generation-batches/batch-direct-play-02",
@@ -4109,7 +4117,7 @@ def test_fake_h3_provider_uses_explicit_gate1_result_fixture(
     assert provider.download_result(result.result_url) == fixture_content
 
 
-def test_worker_archives_result_with_cloud_like_storage(
+def test_worker_delivers_provider_result_without_uploading_to_storage(
     db_path: Path,
     client: TestClient,
 ) -> None:
@@ -4127,12 +4135,16 @@ def test_worker_archives_result_with_cloud_like_storage(
         },
     )
 
+    class StorageMustNotBeUsed(FakeStorageAdapter):
+        def put_object(self, key: str, content: bytes, *, content_type: str):  # type: ignore[override]
+            raise AssertionError("generated video must not be uploaded to storage")
+
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         result = run_next_generation_task(
             conn,
             worker_id="worker_a",
             provider=FakeH3Provider(),
-            storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
+            storage=StorageMustNotBeUsed(provider="cos", bucket="generation-results"),
             first_frame_storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
         )
         row = conn.execute(
@@ -4144,12 +4156,12 @@ def test_worker_archives_result_with_cloud_like_storage(
 
     assert result is not None
     assert row["status"] == "SUCCEEDED"
-    assert row["archive_status"] == "ARCHIVED"
-    assert row["result_asset_id"] is not None
+    assert row["archive_status"] == "DIRECT"
+    assert row["result_asset_id"] is None
     assert row["error_code"] is None
 
 
-def test_worker_archive_retry_recovers_after_initial_failure(
+def test_worker_delivers_result_when_storage_is_unavailable(
     db_path: Path, client: TestClient
 ) -> None:
     prompt_id = create_locked_prompt(client)
@@ -4185,32 +4197,9 @@ def test_worker_archive_retry_recovers_after_initial_failure(
             """
         ).fetchone()
         assert row["status"] == "SUCCEEDED"
-        assert row["archive_status"] == "ARCHIVE_FAILED"
+        assert row["archive_status"] == "DIRECT"
         assert row["provider_result_url"] is not None
         assert row["result_asset_id"] is None
-
-        result = run_next_generation_task(
-            conn,
-            worker_id="worker_a",
-            provider=FakeH3Provider(),
-            storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
-            first_frame_storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
-        )
-        row2 = conn.execute(
-            """
-            SELECT status, archive_status, provider_result_url, result_asset_id
-            FROM generation_tasks
-            """
-        ).fetchone()
-
-    assert result is not None
-    assert row2["status"] == "SUCCEEDED"
-    assert row2["archive_status"] == "ARCHIVED"
-    # 归档成功后仍保留 Provider 直连链接：客户端优先在线播放该链接，
-    # 过期后才回退到刚归档好的本地副本。
-    assert row2["provider_result_url"] is not None
-    assert not hasattr(result, "provider_result_url")
-    assert row2["result_asset_id"] is not None
 
 
 def test_archive_retry_download_failure_keeps_task_retryable(
@@ -4230,10 +4219,6 @@ def test_archive_retry_download_failure_keeps_task_retryable(
         },
     )
 
-    class FailingArchiveStorage(FakeStorageAdapter):
-        def put_object(self, key: str, content: bytes, *, content_type: str):  # type: ignore[override]
-            raise StorageBackendUnavailable("simulated archive outage")
-
     class FailingDownloadProvider(FakeH3Provider):
         def download_result(self, url: str) -> bytes:
             raise H3ProviderFailed("download failed")
@@ -4243,9 +4228,19 @@ def test_archive_retry_download_failure_keeps_task_retryable(
             conn,
             worker_id="worker_a",
             provider=FakeH3Provider(),
-            storage=FailingArchiveStorage(provider="cos", bucket="generation-results"),
+            storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
             first_frame_storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
         )
+        # Old releases may still have provider-hosted results left in this
+        # retryable state. Preserve recovery coverage without making new work
+        # depend on object storage.
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET archive_status = 'ARCHIVE_FAILED', next_poll_at = datetime('now', '-1 second')
+            """
+        )
+        conn.commit()
         run_next_generation_task(
             conn,
             worker_id="worker_a",
@@ -4283,18 +4278,21 @@ def test_archive_retry_with_missing_provider_settings_backs_off_not_fails(
         },
     )
 
-    class FailingArchiveStorage(FakeStorageAdapter):
-        def put_object(self, key: str, content: bytes, *, content_type: str):  # type: ignore[override]
-            raise StorageBackendUnavailable("simulated archive outage")
-
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         run_next_generation_task(
             conn,
             worker_id="worker_a",
             provider=FakeH3Provider(),
-            storage=FailingArchiveStorage(provider="cos", bucket="generation-results"),
+            storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
             first_frame_storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
         )
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET archive_status = 'ARCHIVE_FAILED', next_poll_at = datetime('now', '-1 second')
+            """
+        )
+        conn.commit()
         # Simulate a paid METASO task whose provider settings vanished.
         conn.execute("UPDATE generation_tasks SET provider = 'metaso'")
         run_next_generation_task(
@@ -4334,18 +4332,16 @@ def test_expired_archive_retry_lease_resets_to_retryable_not_uncertain(
         },
     )
 
-    class FailingArchiveStorage(FakeStorageAdapter):
-        def put_object(self, key: str, content: bytes, *, content_type: str):  # type: ignore[override]
-            raise StorageBackendUnavailable("simulated archive outage")
-
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         run_next_generation_task(
             conn,
             worker_id="worker_a",
             provider=FakeH3Provider(),
-            storage=FailingArchiveStorage(provider="cos", bucket="generation-results"),
+            storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
             first_frame_storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
         )
+        conn.execute("UPDATE generation_tasks SET archive_status = 'ARCHIVE_FAILED'")
+        conn.commit()
         # Simulate a worker crash mid-retry with an expired lease.
         conn.execute(
             """
@@ -4439,8 +4435,8 @@ def test_reconcile_submission_uncertain_recovers_succeeded_result(
 
     assert result is not None
     assert row["status"] == "SUCCEEDED"
-    assert row["archive_status"] == "ARCHIVED"
-    assert row["result_asset_id"] is not None
+    assert row["archive_status"] == "DIRECT"
+    assert row["result_asset_id"] is None
     assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
     assert billing_rows == [("RESERVE", 1), ("SETTLE", 1)]
 
@@ -4508,14 +4504,10 @@ def test_reconcile_route_is_idempotent_and_audited(
     assert replay.json()["id"] == first.json()["id"]
     assert replay.json()["status"] == "SUCCEEDED"
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-        result_asset_id = conn.execute(
-            "SELECT result_asset_id FROM generation_tasks WHERE id = ?",
+        task_row = conn.execute(
+            "SELECT archive_status, result_asset_id FROM generation_tasks WHERE id = ?",
             (task_id,),
-        ).fetchone()[0]
-        result_asset_count = conn.execute(
-            "SELECT COUNT(*) FROM assets WHERE kind = 'video' AND id = ?",
-            (result_asset_id,),
-        ).fetchone()[0]
+        ).fetchone()
         operation_count = conn.execute(
             "SELECT COUNT(*) FROM generation_task_operations WHERE task_id = ? AND action = ?",
             (task_id, "RECONCILE"),
@@ -4526,10 +4518,10 @@ def test_reconcile_route_is_idempotent_and_audited(
         ).fetchone()[0]
         completed_audits = conn.execute(
             "SELECT COUNT(*) FROM audit_logs WHERE action = ? AND entity_id = ?",
-            ("generation_task.reconcile_archived", task_id),
+            ("generation_task.reconcile_direct", task_id),
         ).fetchone()[0]
 
-    assert result_asset_count == 1
+    assert dict(task_row) == {"archive_status": "DIRECT", "result_asset_id": None}
     assert operation_count == 1
     assert requested_audits == 1
     assert completed_audits == 1
@@ -4761,18 +4753,15 @@ def test_reconcile_provider_failure_does_not_require_storage_settings(
     assert storage_calls == 0
 
 
-def test_reconcile_lost_reservation_cannot_finalize_an_archived_result(
+def test_reconcile_lost_reservation_cannot_finalize_a_direct_result(
     db_path: Path,
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    uploaded_keys: list[str] = []
     replaced_reservation_ids: list[str] = []
 
-    class TakeoverDuringArchiveStorage(FakeStorageAdapter):
-        def put_object(self, key: str, content: bytes, *, content_type: str):  # type: ignore[override]
-            stored = super().put_object(key, content, content_type=content_type)
-            uploaded_keys.append(key)
+    class TakeoverDuringDownloadProvider(ReconcileSucceededProvider):
+        def download_result(self, url: str) -> bytes:
             with connect_database(db_path) as takeover_conn:
                 replaced = takeover_conn.execute(
                     """
@@ -4812,12 +4801,8 @@ def test_reconcile_lost_reservation_cannot_finalize_an_archived_result(
                     ),
                 )
                 takeover_conn.commit()
-            return stored
+            return super().download_result(url)
 
-    storage = TakeoverDuringArchiveStorage(
-        provider="cos",
-        bucket="generation-results",
-    )
     monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
     prompt_id = create_locked_prompt(client)
     created = client.post(
@@ -4857,15 +4842,13 @@ def test_reconcile_lost_reservation_cannot_finalize_an_archived_result(
             run_worker_once(
                 conn,
                 worker_id="reconcile-takeover-worker",
-                storage=storage,
-                reconcile_provider=ReconcileSucceededProvider(api_key="test-key"),
+                storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
+                reconcile_provider=TakeoverDuringDownloadProvider(api_key="test-key"),
                 max_tasks=1,
             )
             == 1
         )
-    assert len(uploaded_keys) == 1
-    assert uploaded_keys[0] == (f"generation-results/{task_id}/{replaced_reservation_ids[0]}/1.mp4")
-    assert storage.head_object(uploaded_keys[0]) is None
+    assert len(replaced_reservation_ids) == 1
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         task_row = conn.execute(
             "SELECT status, archive_status, result_asset_id FROM generation_tasks WHERE id = ?",
@@ -4877,7 +4860,7 @@ def test_reconcile_lost_reservation_cannot_finalize_an_archived_result(
         completed_audits = conn.execute(
             """
             SELECT COUNT(*) FROM audit_logs
-            WHERE action = 'generation_task.reconcile_archived' AND entity_id = ?
+            WHERE action = 'generation_task.reconcile_direct' AND entity_id = ?
             """,
             (task_id,),
         ).fetchone()[0]
@@ -5154,10 +5137,6 @@ def test_archive_retry_exhausts_to_terminal_failure(db_path: Path, client: TestC
         },
     )
 
-    class FailingArchiveStorage(FakeStorageAdapter):
-        def put_object(self, key: str, content: bytes, *, content_type: str):  # type: ignore[override]
-            raise StorageBackendUnavailable("simulated archive outage")
-
     class FailingDownloadProvider(FakeH3Provider):
         def download_result(self, url: str) -> bytes:
             raise H3ProviderFailed("download failed")
@@ -5167,9 +5146,16 @@ def test_archive_retry_exhausts_to_terminal_failure(db_path: Path, client: TestC
             conn,
             worker_id="worker_a",
             provider=FakeH3Provider(),
-            storage=FailingArchiveStorage(provider="cos", bucket="generation-results"),
+            storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
             first_frame_storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
         )
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET archive_status = 'ARCHIVE_FAILED', next_poll_at = datetime('now', '-1 second')
+            """
+        )
+        conn.commit()
         for _ in range(MAX_ARCHIVE_RETRIES):
             # Each failed attempt backs off 60s via next_poll_at; fast-forward so
             # the next acquire picks the task up again.
@@ -5667,7 +5653,7 @@ def test_generation_batch_missing_wallet_returns_structured_invariant_error(
     assert batch_count == 0
 
 
-def test_archived_generation_settles_once_but_archive_failure_stays_reserved(
+def test_direct_generation_settles_once_even_when_storage_is_unavailable(
     client: TestClient,
     db_path: Path,
 ) -> None:
@@ -5710,7 +5696,7 @@ def test_archived_generation_settles_once_but_archive_failure_stays_reserved(
         rows = _task_billing_rows(conn, task_id)
 
     assert first is not None
-    assert first.archive_status == "ARCHIVED"
+    assert first.archive_status == "DIRECT"
     assert second is None
     assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
@@ -5751,12 +5737,12 @@ def test_archived_generation_settles_once_but_archive_failure_stays_reserved(
         rows = _task_billing_rows(conn, failed_task_id)
 
     assert result is not None
-    assert result.archive_status == "ARCHIVE_FAILED"
-    assert dict(wallet) == {"available_credits": 998, "reserved_credits": 1}
-    assert rows == [("RESERVE", 1)]
+    assert result.archive_status == "DIRECT"
+    assert dict(wallet) == {"available_credits": 998, "reserved_credits": 0}
+    assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 
 
-def test_undownloadable_archived_result_does_not_settle(
+def test_direct_generation_does_not_depend_on_storage_download_urls(
     client: TestClient,
     db_path: Path,
 ) -> None:
@@ -5804,9 +5790,9 @@ def test_undownloadable_archived_result_does_not_settle(
         rows = _task_billing_rows(conn, task_id)
 
     assert result is not None
-    assert dict(task) == {"archive_status": "ARCHIVE_FAILED", "result_asset_id": None}
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 1}
-    assert rows == [("RESERVE", 1)]
+    assert dict(task) == {"archive_status": "DIRECT", "result_asset_id": None}
+    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
+    assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 
 
 def test_terminal_provider_failure_releases_reserved_credit(

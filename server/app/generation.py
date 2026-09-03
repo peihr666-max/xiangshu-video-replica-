@@ -58,7 +58,6 @@ from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
     StoragePermissionError,
-    StoredObject,
     cloud_storage_config_from_settings,
     require_storage_match,
     storage_object_ref_from_uri,
@@ -164,7 +163,6 @@ FAKE_H3_RESULT_PATH_ENV = "VIDEO_REPLICA_FAKE_H3_RESULT_PATH"
 ACCEPTANCE_GENERATION_USER_ID_ENV = "VIDEO_REPLICA_ACCEPTANCE_GENERATION_USER_ID"
 ACCEPTANCE_PAID_GENERATION_LIMIT_ENV = "VIDEO_REPLICA_ACCEPTANCE_PAID_GENERATION_LIMIT"
 FIRST_FRAME_URL_EXPIRES_IN = timedelta(minutes=15)
-RESULT_DOWNLOAD_CHECK_EXPIRES_IN = timedelta(minutes=5)
 # Cap archive retries so a permanently expired provider URL does not keep the
 # paid task spinning in ARCHIVE_FAILED forever.
 MAX_ARCHIVE_RETRIES = 5
@@ -365,7 +363,7 @@ class PreparedReconcileOperation:
 @dataclass(frozen=True)
 class ReconcileOperationOutcome:
     status: Literal["ALREADY_TERMINAL", "SUCCEEDED", "FAILED", "CANCELLED"]
-    stored: StoredObject | None = None
+    result_url: str | None = None
     audio_quality_status: str | None = None
     quality_issue_codes: list[str] | None = None
 
@@ -714,6 +712,7 @@ class TaskSummary(BaseModel):
     quality_status: str
     quality_issue_codes: list[str]
     result_asset_id: str | None
+    direct_result_available: bool
     stage: str
     provider: str
     model: str
@@ -2569,6 +2568,18 @@ def run_next_generation_task(
         )
         return get_task_result(conn, task_id)
 
+    # Persist the provider URL before quality work so a page refresh can start
+    # playback immediately instead of waiting for the remaining checks.
+    with conn:
+        mark_generation_task_running(
+            conn,
+            lease=lease,
+            provider_task_id=provider_result.provider_task_id,
+            provider_request=provider_request,
+            request_hash=request_hash,
+        )
+        mark_generation_task_archiving(conn, lease=lease, result_url=provider_result.result_url)
+
     try:
         quality_status, quality_issue_codes = final_generation_quality(
             content=provider_result.result_content,
@@ -2589,280 +2600,13 @@ def run_next_generation_task(
         )
         return get_task_result(conn, task_id)
 
-    result_asset_id: str | None = None
-    stored: StoredObject | None = None
-    archive_status = "ARCHIVED"
-    error_code = None
-    error_message = None
-    # 成功路径也保留 Provider 直连链接：客户端优先用它在线播放（零下载
-    # 等待）；归档失败时它同时是后续 Worker 补救重下的唯一来源（会过期）。
-    retained_result_url = provider_result.result_url
-    try:
-        stored = storage.put_object(
-            f"generation-results/{task_id}.mp4",
-            provider_result.result_content,
-            content_type="video/mp4",
+    with conn:
+        return finalize_generation_direct_result(
+            conn,
+            lease=lease,
+            quality_status=quality_status,
+            quality_issue_codes=quality_issue_codes,
         )
-        _verify_archived_result(storage, stored)
-    except (StorageBackendUnavailable, StoragePermissionError, ValueError):
-        if stored is not None:
-            try:
-                storage.delete_object(stored.key, actor_id=None)
-            except Exception as cleanup_exc:
-                logger.warning(
-                    "archive verification cleanup failed for task %s: %s",
-                    task_id,
-                    type(cleanup_exc).__name__,
-                )
-            stored = None
-        archive_status = "ARCHIVE_FAILED"
-        error_code = "ARCHIVE_STORAGE_UNAVAILABLE"
-        error_message = "Generation result could not be archived to configured storage."
-    else:
-        result_asset_id = str(uuid4())
-    try:
-        with conn:
-            if stored is not None and result_asset_id is not None:
-                conn.execute(
-                    """
-                    INSERT INTO assets (
-                        id,
-                        project_id,
-                        kind,
-                        storage_uri,
-                        sha256,
-                        size_bytes,
-                        content_type,
-                        created_by_user_id
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        result_asset_id,
-                        str(lease["project_id"]),
-                        "video",
-                        stored.uri,
-                        stored.sha256,
-                        stored.size,
-                        stored.content_type,
-                        str(lease["created_by_user_id"]),
-                    ),
-                )
-            task_terminal_update = conn.execute(
-                """
-                UPDATE generation_tasks
-                SET
-                    provider_task_id = %s,
-                    status = 'SUCCEEDED',
-                    archive_status = %s,
-                    quality_status = %s,
-                    quality_issue_codes = %s,
-                    result_asset_id = %s,
-                    provider_request_json = %s,
-                    provider_result_url = %s,
-                    error_code = %s,
-                    error_message_redacted = %s,
-                    submitted_at = COALESCE(submitted_at::timestamptz, CURRENT_TIMESTAMP),
-                    completed_at = CURRENT_TIMESTAMP,
-                    locked_by = NULL,
-                    locked_until = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND superseded_by_task_id IS NULL
-                """,
-                (
-                    provider_result.provider_task_id,
-                    archive_status,
-                    quality_status,
-                    json.dumps(quality_issue_codes, ensure_ascii=True),
-                    result_asset_id,
-                    json.dumps(provider_request, ensure_ascii=True, sort_keys=True),
-                    retained_result_url,
-                    error_code,
-                    error_message,
-                    task_id,
-                ),
-            )
-            if task_terminal_update.rowcount != 1:
-                # L1 (M4M5 review): a paid replacement superseded this task
-                # while the worker was mid-flight. The rollback discards the
-                # asset row above with the terminal write; the billing
-                # settlement and slot release below belong to the replacement.
-                raise GenerationTaskSupersededError(task_id)
-            conn.execute(
-                """
-                INSERT INTO external_call_logs (
-                    id,
-                    generation_task_id,
-                    provider,
-                    model,
-                    endpoint_name,
-                    provider_request_id,
-                    http_status,
-                    request_hash
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    str(uuid4()),
-                    task_id,
-                    str(lease["provider"]),
-                    H3_MODEL,
-                    "createImageToVideo",
-                    provider_result.provider_task_id,
-                    200,
-                    request_hash,
-                ),
-            )
-            if archive_status == "ARCHIVED":
-                finalize_internal_billing(conn, task_id=task_id, outcome="success")
-            _refresh_batch_status_in_transaction(conn, batch_id=str(lease["batch_id"]))
-            # Pattern B: the task left the running set; release the owner's
-            # concurrency slot (also for ARCHIVE_FAILED — the retry re-acquires
-            # one when a worker picks it up).
-            release_user_queue_slot_for_task(conn, task_id=task_id)
-    except Exception:
-        if stored is not None:
-            try:
-                storage.delete_object(stored.key, actor_id=None)
-            except Exception as cleanup_exc:
-                logger.warning(
-                    "archive rollback cleanup failed for task %s: %s",
-                    task_id,
-                    type(cleanup_exc).__name__,
-                )
-        raise
-    return get_task_result(conn, task_id)
-
-
-def _verify_archived_result(storage: StorageAdapter, stored: StoredObject) -> None:
-    archived = storage.head_object(stored.key)
-    if archived is None or archived.size != stored.size:
-        raise StorageBackendUnavailable("archived result metadata is unavailable")
-    storage.create_download_intent(
-        stored.key,
-        expires_in=RESULT_DOWNLOAD_CHECK_EXPIRES_IN,
-        can_read=True,
-    )
-
-
-def _store_and_finalize_archive(
-    conn: BusinessConnection,
-    *,
-    task_id: str,
-    batch_id: str,
-    project_id: str,
-    created_by_user_id: str,
-    content: bytes,
-    storage: StorageAdapter,
-    reconcile_reservation: ReconcileReservation | None = None,
-    quality_status: str | None = None,
-    quality_issue_codes: list[str] | None = None,
-) -> TaskResult:
-    """Archive already-downloaded H3 result bytes and mark the task terminal."""
-    object_key = (
-        f"generation-results/{task_id}/{reconcile_reservation.id}.mp4"
-        if reconcile_reservation is not None
-        else f"generation-results/{task_id}.mp4"
-    )
-    stored = storage.put_object(object_key, content, content_type="video/mp4")
-    if quality_status is None or quality_issue_codes is None:
-        quality_status, quality_issue_codes = h3_audio_quality(content)
-    result_asset_id = str(uuid4())
-    task_state_guard = (
-        "AND status = 'SUBMISSION_UNCERTAIN' AND result_asset_id IS NULL"
-        if reconcile_reservation is not None
-        else ""
-    )
-    try:
-        _verify_archived_result(storage, stored)
-        with conn:
-            if reconcile_reservation is not None:
-                _renew_reconcile_reservation_in_transaction(
-                    conn,
-                    reservation_id=reconcile_reservation.id,
-                )
-            conn.execute(
-                """
-                INSERT INTO assets (
-                    id,
-                    project_id,
-                    kind,
-                    storage_uri,
-                    sha256,
-                    size_bytes,
-                    content_type,
-                    created_by_user_id
-                )
-                VALUES (%s, %s, 'video', %s, %s, %s, %s, %s)
-                """,
-                (
-                    result_asset_id,
-                    project_id,
-                    stored.uri,
-                    stored.sha256,
-                    stored.size,
-                    stored.content_type,
-                    created_by_user_id,
-                ),
-            )
-            task_update = conn.execute(
-                f"""
-                UPDATE generation_tasks
-                SET
-                    status = 'SUCCEEDED',
-                    archive_status = 'ARCHIVED',
-                    quality_status = %s,
-                    quality_issue_codes = %s,
-                    result_asset_id = %s,
-                    error_code = NULL,
-                    error_message_redacted = NULL,
-                    locked_by = NULL,
-                    locked_until = NULL,
-                    completed_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-                {task_state_guard}
-                """,
-                (
-                    quality_status,
-                    json.dumps(quality_issue_codes, ensure_ascii=True),
-                    result_asset_id,
-                    task_id,
-                ),
-            )
-            if reconcile_reservation is not None and task_update.rowcount != 1:
-                raise _reconcile_reservation_lost()
-            finalize_internal_billing(conn, task_id=task_id, outcome="success")
-            _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
-            if reconcile_reservation is None:
-                # Archive-retry path: the task holds its lease, so the slot is
-                # released here. Reconciliation must NOT release: the expired
-                # lease takeover already released the slot, which the user's
-                # replacement task now holds — releasing again would zero the
-                # replacement's slot and let a third task run concurrently
-                # (M5 review P1-5).
-                release_user_queue_slot_for_task(conn, task_id=task_id)
-            result = get_task_result(conn, task_id)
-            if reconcile_reservation is not None:
-                _complete_reconcile_operation_in_transaction(
-                    conn,
-                    reservation=reconcile_reservation,
-                    task_id=task_id,
-                    batch_id=batch_id,
-                    project_id=project_id,
-                    result=result,
-                )
-    except Exception:
-        # The object was written outside the DB transaction; remove it if the
-        # asset/task rows could not be committed, so no orphan object is left.
-        try:
-            storage.delete_object(object_key, actor_id=None)
-        except Exception as cleanup_exc:
-            logger.warning(
-                "archive cleanup failed for task %s: %s", task_id, type(cleanup_exc).__name__
-            )
-        raise
-    return result
 
 
 def _retry_archive(
@@ -2876,8 +2620,11 @@ def _retry_archive(
     visual_quality_inspector: FirstFrameQualityInspector | None = None,
     video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
 ) -> TaskResult:
-    """Re-download a paid H3 result whose earlier archive attempt failed and
-    archive it to enterprise storage. Keeps the task retryable on failure."""
+    """Re-check a paid H3 result whose earlier delivery attempt failed.
+
+    The result stays at the provider.  Downloading is only for the existing
+    quality checks; it must never turn into a second storage upload.
+    """
     row = conn.execute(
         """
         SELECT
@@ -2898,7 +2645,9 @@ def _retry_archive(
     try:
         content = provider.download_result(result_url)
     except Exception as exc:
-        logger.warning("archive retry download failed for task %s: %s", task_id, type(exc).__name__)
+        logger.warning(
+            "direct result retry download failed for task %s: %s", task_id, type(exc).__name__
+        )
         _release_archive_retry(conn, task_id=task_id, batch_id=batch_id)
         return get_task_result(conn, task_id)
     try:
@@ -2923,19 +2672,20 @@ def _retry_archive(
         )
         return get_task_result(conn, task_id)
     try:
-        return _store_and_finalize_archive(
-            conn,
-            task_id=task_id,
-            batch_id=batch_id,
-            project_id=str(row["project_id"]),
-            created_by_user_id=str(row["created_by_user_id"]),
-            content=content,
-            storage=storage,
-            quality_status=quality_status,
-            quality_issue_codes=quality_issue_codes,
-        )
+        with conn:
+            mark_generation_task_archiving(
+                conn, lease={"id": task_id, "batch_id": batch_id}, result_url=result_url
+            )
+            return finalize_generation_direct_result(
+                conn,
+                lease={"id": task_id, "batch_id": batch_id},
+                quality_status=quality_status,
+                quality_issue_codes=quality_issue_codes,
+            )
     except Exception as exc:
-        logger.warning("archive retry put failed for task %s: %s", task_id, type(exc).__name__)
+        logger.warning(
+            "direct result retry finalization failed for task %s: %s", task_id, type(exc).__name__
+        )
         _release_archive_retry(conn, task_id=task_id, batch_id=batch_id)
         return get_task_result(conn, task_id)
 
@@ -3136,7 +2886,9 @@ def _complete_reconcile_operation_in_transaction(
         conn,
         actor=reservation.actor,
         action=(
-            "generation_task.reconcile_archived"
+            "generation_task.reconcile_direct"
+            if result.archive_status == "DIRECT"
+            else "generation_task.reconcile_archived"
             if result.archive_status == "ARCHIVED"
             else "generation_task.reconcile_terminal_failed"
         ),
@@ -3787,14 +3539,9 @@ def perform_generation_reconcile_operation(
             "VISUAL_VALIDATION_UNAVAILABLE",
             "Generated video is awaiting visual validation; retry reconciliation.",
         ) from exc
-    stored = store_generation_result(
-        storage,
-        task_id=f"{work.lease.task_id}/{work.lease.id}/{work.lease.attempt}",
-        content=content,
-    )
     return ReconcileOperationOutcome(
         status="SUCCEEDED",
-        stored=stored,
+        result_url=query.result_url,
         audio_quality_status=quality_status,
         quality_issue_codes=quality_issue_codes,
     )
@@ -3836,32 +3583,14 @@ def complete_generation_reconcile_operation(
             _refresh_batch_status_in_transaction(conn, batch_id=work.batch_id)
             result = get_task_result(conn, lease.task_id)
         else:
-            if outcome.stored is None or outcome.audio_quality_status is None:
-                raise RuntimeError("reconciled archive result is unavailable")
-            result_asset_id = str(uuid4())
-            conn.execute(
-                """
-                INSERT INTO assets (
-                    id, project_id, kind, storage_uri, sha256, size_bytes,
-                    content_type, created_by_user_id
-                ) VALUES (%s, %s, 'video', %s, %s, %s, %s, %s)
-                """,
-                (
-                    result_asset_id,
-                    work.project_id,
-                    outcome.stored.uri,
-                    outcome.stored.sha256,
-                    outcome.stored.size,
-                    outcome.stored.content_type,
-                    work.created_by_user_id,
-                ),
-            )
+            if outcome.result_url is None or outcome.audio_quality_status is None:
+                raise RuntimeError("reconciled direct result is unavailable")
             task_update = conn.execute(
                 """
                 UPDATE generation_tasks
-                SET status = 'SUCCEEDED', archive_status = 'ARCHIVED',
+                SET status = 'SUCCEEDED', archive_status = 'DIRECT',
                     quality_status = %s, quality_issue_codes = %s,
-                    result_asset_id = %s, error_code = NULL,
+                    provider_result_url = %s, result_asset_id = NULL, error_code = NULL,
                     error_message_redacted = NULL, locked_by = NULL,
                     locked_until = NULL, completed_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
@@ -3871,7 +3600,7 @@ def complete_generation_reconcile_operation(
                 (
                     outcome.audio_quality_status,
                     json.dumps(outcome.quality_issue_codes or [], ensure_ascii=True),
-                    result_asset_id,
+                    outcome.result_url,
                     lease.task_id,
                 ),
             )
@@ -3909,8 +3638,8 @@ def complete_generation_reconcile_operation(
             conn,
             actor=work.actor,
             action=(
-                "generation_task.reconcile_archived"
-                if result.archive_status == "ARCHIVED"
+                "generation_task.reconcile_direct"
+                if result.archive_status == "DIRECT"
                 else "generation_task.reconcile_terminal_failed"
             ),
             entity_type="generation_task",
@@ -4115,7 +3844,9 @@ def reconcile_generation_task(
                     conn,
                     actor=actor,
                     action=(
-                        "generation_task.reconcile_archived"
+                        "generation_task.reconcile_direct"
+                        if str(row["archive_status"]) == "DIRECT"
+                        else "generation_task.reconcile_archived"
                         if str(row["archive_status"]) == "ARCHIVED"
                         else "generation_task.reconcile_terminal_failed"
                     ),
@@ -4275,17 +4006,61 @@ def reconcile_submission_uncertain_task(
                 503, "RESULT_DOWNLOAD_FAILED", "Result download failed; retry reconciliation."
             ) from exc
         _renew_reconcile_reservation(conn, reservation=reconcile_reservation)
-        storage = storage_factory()
-        return _store_and_finalize_archive(
-            conn,
-            task_id=task_id,
-            batch_id=batch_id,
-            project_id=project_id,
-            created_by_user_id=created_by_user_id,
-            content=content,
-            storage=storage,
-            reconcile_reservation=reconcile_reservation,
+        quality_status, quality_issue_codes = h3_audio_quality(content)
+        task_state_guard = (
+            "AND status = 'SUBMISSION_UNCERTAIN' AND result_asset_id IS NULL"
+            if reconcile_reservation is not None
+            else ""
         )
+        with conn:
+            if reconcile_reservation is not None:
+                _renew_reconcile_reservation_in_transaction(
+                    conn,
+                    reservation_id=reconcile_reservation.id,
+                )
+            task_update = conn.execute(
+                f"""
+                UPDATE generation_tasks
+                SET
+                    status = 'SUCCEEDED',
+                    archive_status = 'DIRECT',
+                    provider_result_url = %s,
+                    quality_status = %s,
+                    quality_issue_codes = %s,
+                    result_asset_id = NULL,
+                    error_code = NULL,
+                    error_message_redacted = NULL,
+                    locked_by = NULL,
+                    locked_until = NULL,
+                    completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                {task_state_guard}
+                """,
+                (
+                    result_url,
+                    quality_status,
+                    json.dumps(quality_issue_codes, ensure_ascii=True),
+                    task_id,
+                ),
+            )
+            if reconcile_reservation is not None and task_update.rowcount != 1:
+                raise _reconcile_reservation_lost()
+            finalize_internal_billing(conn, task_id=task_id, outcome="success")
+            _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
+            if reconcile_reservation is None:
+                release_user_queue_slot_for_task(conn, task_id=task_id)
+            result = get_task_result(conn, task_id)
+            if reconcile_reservation is not None:
+                _complete_reconcile_operation_in_transaction(
+                    conn,
+                    reservation=reconcile_reservation,
+                    task_id=task_id,
+                    batch_id=batch_id,
+                    project_id=project_id,
+                    result=result,
+                )
+        return result
     if status in {"failed", "cancelled"}:
         with conn:
             if reconcile_reservation is not None:
@@ -4866,7 +4641,7 @@ def mark_generation_task_running(
             locked_by = NULL,
             locked_until = NULL,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s AND status = 'SUBMITTING'
+        WHERE id = %s AND status = 'SUBMITTING' AND superseded_by_task_id IS NULL
         """,
         (
             provider_task_id,
@@ -4875,6 +4650,11 @@ def mark_generation_task_running(
         ),
     )
     if update.rowcount != 1:
+        row = conn.execute(
+            "SELECT superseded_by_task_id FROM generation_tasks WHERE id = %s", (task_id,)
+        ).fetchone()
+        if row is not None and row["superseded_by_task_id"] is not None:
+            raise GenerationTaskSupersededError(task_id)
         raise RuntimeError("generation submission lease was lost before task id persistence")
     conn.execute(
         """
@@ -4988,84 +4768,42 @@ def mark_generation_task_archiving(
             locked_by = NULL,
             locked_until = NULL,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s AND status IN ('RUNNING', 'SUBMITTING')
+        WHERE id = %s
+          AND status IN ('RUNNING', 'SUBMITTING')
+          AND superseded_by_task_id IS NULL
         """,
         (result_url, str(lease["id"])),
     )
     if update.rowcount != 1:
+        row = conn.execute(
+            "SELECT superseded_by_task_id FROM generation_tasks WHERE id = %s",
+            (str(lease["id"]),),
+        ).fetchone()
+        if row is not None and row["superseded_by_task_id"] is not None:
+            raise GenerationTaskSupersededError(str(lease["id"]))
         raise RuntimeError("generation polling lease was lost before archiving")
     _refresh_batch_status_in_transaction(conn, batch_id=str(lease["batch_id"]))
 
 
-def store_generation_result(
-    storage: StorageAdapter,
-    *,
-    task_id: str,
-    content: bytes,
-) -> StoredObject:
-    """Write and verify result bytes without any database transaction."""
-
-    stored: StoredObject | None = None
-    try:
-        stored = storage.put_object(
-            f"generation-results/{task_id}.mp4",
-            content,
-            content_type="video/mp4",
-        )
-        _verify_archived_result(storage, stored)
-        return stored
-    except Exception:
-        if stored is not None:
-            try:
-                storage.delete_object(stored.key, actor_id=None)
-            except Exception as cleanup_exc:
-                logger.warning(
-                    "generation archive cleanup failed for task %s: %s",
-                    task_id,
-                    type(cleanup_exc).__name__,
-                )
-        raise
-
-
-def finalize_generation_archive(
+def finalize_generation_direct_result(
     conn: BusinessConnection,
     *,
     lease: dict[str, Any],
-    stored: StoredObject,
     quality_status: str,
     quality_issue_codes: list[str],
-) -> None:
-    """Commit the archived asset and billing in one short transaction."""
+) -> TaskResult:
+    """Settle a provider-hosted result without copying video bytes to storage."""
 
-    result_asset_id = str(uuid4())
     task_id = str(lease["id"])
-    conn.execute(
-        """
-        INSERT INTO assets (
-            id, project_id, kind, storage_uri, sha256, size_bytes,
-            content_type, created_by_user_id
-        )
-        VALUES (%s, %s, 'video', %s, %s, %s, %s, %s)
-        """,
-        (
-            result_asset_id,
-            str(lease["project_id"]),
-            stored.uri,
-            stored.sha256,
-            stored.size,
-            stored.content_type,
-            str(lease["created_by_user_id"]),
-        ),
-    )
     update = conn.execute(
         """
         UPDATE generation_tasks
         SET
             status = 'SUCCEEDED',
-            archive_status = 'ARCHIVED',
+            archive_status = 'DIRECT',
             quality_status = %s,
             quality_issue_codes = %s,
-            result_asset_id = %s,
+            result_asset_id = NULL,
             error_code = NULL,
             error_message_redacted = NULL,
             next_poll_at = NULL,
@@ -5074,19 +4812,22 @@ def finalize_generation_archive(
             completed_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s AND status = 'ARCHIVING'
+          AND provider_result_url IS NOT NULL
+          AND superseded_by_task_id IS NULL
         """,
-        (
-            quality_status,
-            json.dumps(quality_issue_codes, ensure_ascii=True),
-            result_asset_id,
-            task_id,
-        ),
+        (quality_status, json.dumps(quality_issue_codes, ensure_ascii=True), task_id),
     )
     if update.rowcount != 1:
-        raise RuntimeError("generation archive lease was lost before finalization")
+        row = conn.execute(
+            "SELECT superseded_by_task_id FROM generation_tasks WHERE id = %s", (task_id,)
+        ).fetchone()
+        if row is not None and row["superseded_by_task_id"] is not None:
+            raise GenerationTaskSupersededError(task_id)
+        raise RuntimeError("generation result lease was lost before direct delivery")
     finalize_internal_billing(conn, task_id=task_id, outcome="success")
     _refresh_batch_status_in_transaction(conn, batch_id=str(lease["batch_id"]))
     release_user_queue_slot_for_task(conn, task_id=task_id)
+    return get_task_result(conn, task_id)
 
 
 def release_generation_archive_retry(
@@ -6463,7 +6204,7 @@ def calculate_progress(tasks: Sequence[TaskSummary]) -> BatchProgress:
         if task.superseded_by_task_id is not None:
             historical_counts["superseded"] += 1
         if status == "SUCCEEDED":
-            if archive_status == "ARCHIVED":
+            if archive_status in {"ARCHIVED", "DIRECT"}:
                 counts["succeeded"] += 1
                 terminal_count += 1
             # SUCCEEDED + ARCHIVE_FAILED: the paid result is not deliverable yet,
@@ -6550,6 +6291,10 @@ def task_summary(row: sqlite3.Row) -> TaskSummary:
         quality_status=str(row["quality_status"]),
         quality_issue_codes=quality_issue_codes,
         result_asset_id=optional_text(row["result_asset_id"]),
+        direct_result_available=(
+            optional_text(row["provider_result_url"]) is not None
+            and str(row["archive_status"]) in {"ARCHIVING", "DIRECT", "ARCHIVE_FAILED"}
+        ),
         stage=generation_task_stage(
             status=str(row["status"]),
             archive_status=str(row["archive_status"]),
@@ -6632,7 +6377,7 @@ def generation_task_stage(
         return "ARCHIVE_FAILED"
     if generation_quality_failed(quality_status, quality_issue_codes):
         return "QUALITY_FAILED"
-    if status == "SUCCEEDED" and archive_status == "ARCHIVED":
+    if status == "SUCCEEDED" and archive_status in {"ARCHIVED", "DIRECT"}:
         return "COMPLETED"
     return status
 

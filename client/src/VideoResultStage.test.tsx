@@ -12,6 +12,7 @@ function task(overrides: Partial<GenerationTask> = {}): GenerationTask {
     quality_status: "AUDIO_OK",
     quality_issue_codes: [],
     result_asset_id: "asset-ok",
+    direct_result_available: false,
     stage: "COMPLETED",
     provider: "fake_h3",
     model: "MiniMax-H3",
@@ -209,6 +210,29 @@ describe("VideoResultStage", () => {
     ).toBeInTheDocument();
     // 已有播放地址时不重复签发。
     expect(onRequestPreview).not.toHaveBeenCalled();
+  });
+
+  it("shows a provider result while the task is still preparing playback", () => {
+    renderStage({
+      batch: batch({
+        tasks: [
+          task({
+            status: "ARCHIVING",
+            stage: "ARCHIVING",
+            archive_status: "PENDING",
+            quality_status: "PENDING",
+            result_asset_id: null,
+            direct_result_available: true,
+          }),
+        ],
+      }),
+      previewUrls: { "task-ok": "https://provider.example/result.mp4" },
+    });
+
+    expect(screen.getByLabelText("结果预览 task-ok")).toHaveAttribute(
+      "src",
+      "https://provider.example/result.mp4",
+    );
   });
 
   it("waits for a click with sound on: no autoplay, custom controls", () => {

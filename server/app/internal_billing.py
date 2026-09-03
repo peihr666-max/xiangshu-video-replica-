@@ -79,7 +79,7 @@ def find_dangling_billing_reservations(
                 AND terminal.type IN ('SETTLE', 'RELEASE')
           )
           AND (
-              (task.status = 'SUCCEEDED' AND task.archive_status = 'ARCHIVED')
+              (task.status = 'SUCCEEDED' AND task.archive_status IN ('ARCHIVED', 'DIRECT'))
               OR task.status IN ('FAILED', 'CANCELLED')
           )
         ORDER BY wt.created_at
@@ -238,6 +238,7 @@ def finalize_internal_billing(
             task.status,
             task.archive_status,
             task.result_asset_id,
+            task.provider_result_url,
             task.provider,
             batch.created_by_user_id,
             asset.storage_uri
@@ -289,15 +290,20 @@ def finalize_internal_billing(
 
     if outcome == "success":
         storage_uri = task["storage_uri"]
-        if (
-            str(task["status"]) != "SUCCEEDED"
-            or str(task["archive_status"]) != "ARCHIVED"
-            or task["result_asset_id"] is None
-            or storage_uri is None
-            or not str(storage_uri).strip()
-            or (str(task["provider"]) == "metaso" and not str(storage_uri).startswith("cos://"))
-        ):
-            raise BillingInvariantError("successful billing requires an archived result asset")
+        archived_result = (
+            str(task["archive_status"]) == "ARCHIVED"
+            and task["result_asset_id"] is not None
+            and storage_uri is not None
+            and str(storage_uri).strip()
+            and (str(task["provider"]) != "metaso" or str(storage_uri).startswith("cos://"))
+        )
+        direct_result = (
+            str(task["archive_status"]) == "DIRECT"
+            and isinstance(task["provider_result_url"], str)
+            and bool(str(task["provider_result_url"]).strip())
+        )
+        if str(task["status"]) != "SUCCEEDED" or not (archived_result or direct_result):
+            raise BillingInvariantError("successful billing requires a deliverable result")
         transaction_type: TerminalTransactionType = "SETTLE"
         available_delta = 0
     else:

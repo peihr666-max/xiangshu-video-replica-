@@ -7,13 +7,13 @@ smokes are not acceptable evidence.
 
 Two independent tests each own their whole chain (fresh TRUNCATE state):
 
-1. ``test_customer_chain_activation_to_archived_task`` — activate (201),
+1. ``test_customer_chain_activation_to_direct_task`` — activate (201),
    business-login, create the project through the fenced write route,
    script → compile → lock the prompt over the API, submit a batch
    (provider=fake_h3), drain the queue with a real worker
    (``run_next_generation_task`` inside fenced ``pg_transaction`` rounds —
    the ``run_pg_worker_once`` shape) and prove the task lands SUCCEEDED /
-   ARCHIVED with the fair-queue cursor slot released;
+   DIRECT with the fair-queue cursor slot released;
 2. ``test_customer_chain_second_device_conflict_switch_recharge`` —
    activate, enroll a second device (202 → first-device approve → same-key
    consume 201), the second device's login answers 409
@@ -482,14 +482,14 @@ def _signed_notify_params(
 
 
 # ---------------------------------------------------------------------------
-# Chain 1: 激活 → 任务 → 归档
+# Chain 1: 激活 → 任务 → 直链交付
 # ---------------------------------------------------------------------------
 
 
-def test_customer_chain_activation_to_archived_task(client: TestClient, chain_dsn: str) -> None:
+def test_customer_chain_activation_to_direct_task(client: TestClient, chain_dsn: str) -> None:
     """Activate, create the project, lock the prompt and submit the batch
     through the customer API, then drain the queue with the real worker:
-    the task lands SUCCEEDED/ARCHIVED, the batch closes, and the fair-queue
+    the task lands SUCCEEDED/DIRECT, the batch closes, and the fair-queue
     cursor slot is released for the next round."""
     code = generate_activation_code()
     customer = _activated_customer(client, code=code, fingerprint="fp-chain-a", suffix="chain-a")
@@ -584,8 +584,8 @@ def test_customer_chain_activation_to_archived_task(client: TestClient, chain_ds
             (batch_id,),
         ).fetchone()
         assert task is not None
-        assert task[0] == "SUCCEEDED" and task[1] == "ARCHIVED", task
-        assert task[2] is not None, "archived success must own a result asset"
+        assert task[0] == "SUCCEEDED" and task[1] == "DIRECT", task
+        assert task[2] is None, "direct success must not copy the result into an asset"
         assert task[3] is None, "lease must be cleared after completion"
         batch_row = conn.execute(
             "SELECT status FROM generation_batches WHERE id = %s", (batch_id,)

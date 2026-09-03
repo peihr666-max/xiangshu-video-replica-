@@ -54,7 +54,7 @@ from app.generation import (
     complete_generation_reconcile_operation,
     fail_generation_reconcile_operation,
     final_generation_quality,
-    finalize_generation_archive,
+    finalize_generation_direct_result,
     h3_audio_quality,
     h3_provider_for_task,
     mark_generation_task_archiving,
@@ -70,7 +70,6 @@ from app.generation import (
     release_generation_visual_validation_retry,
     reschedule_generation_poll,
     run_next_generation_task,
-    store_generation_result,
 )
 from app.image_tasks import (
     acquire_character_sheet_task,
@@ -408,11 +407,6 @@ def run_worker_once(
                     outcome=reconcile_outcome,
                 )
             except Exception as exc:
-                if reconcile_outcome is not None and reconcile_outcome.stored is not None:
-                    (generation_storage or storage).delete_object(
-                        reconcile_outcome.stored.key,
-                        actor_id=None,
-                    )
                 fail_generation_reconcile_operation(
                     conn,
                     lease=reconcile_lease,
@@ -734,28 +728,13 @@ def _run_pg_generation_step(
                     BusinessConnection.postgres(raw_conn), lease=lease
                 )
             return
-        try:
-            stored = store_generation_result(
-                storage,
-                task_id=task_id,
-                content=result.result_content,
+        with pg_transaction() as raw_conn:
+            finalize_generation_direct_result(
+                BusinessConnection.postgres(raw_conn),
+                lease=lease,
+                quality_status=quality_status,
+                quality_issue_codes=quality_issue_codes,
             )
-        except (StorageBackendUnavailable, StoragePermissionError, ValueError):
-            with pg_transaction() as raw_conn:
-                release_generation_archive_retry(BusinessConnection.postgres(raw_conn), lease=lease)
-            return
-        try:
-            with pg_transaction() as raw_conn:
-                finalize_generation_archive(
-                    BusinessConnection.postgres(raw_conn),
-                    lease=lease,
-                    stored=stored,
-                    quality_status=quality_status,
-                    quality_issue_codes=quality_issue_codes,
-                )
-        except Exception:
-            storage.delete_object(stored.key, actor_id=None)
-            raise
         return
 
     if status == "RUNNING":
@@ -837,29 +816,23 @@ def _run_pg_generation_step(
                 quality_issue_codes=quality_issue_codes,
                 frame_extractor=video_frame_extractor,
             )
-            stored = store_generation_result(storage, task_id=task_id, content=content)
         except GeneratedVideoValidationUnavailable:
             with pg_transaction() as raw_conn:
                 release_generation_visual_validation_retry(
                     BusinessConnection.postgres(raw_conn), lease=lease
                 )
             return
-        except (H3ProviderFailed, StorageBackendUnavailable, StoragePermissionError, ValueError):
+        except (H3ProviderFailed, ValueError):
             with pg_transaction() as raw_conn:
                 release_generation_archive_retry(BusinessConnection.postgres(raw_conn), lease=lease)
             return
-        try:
-            with pg_transaction() as raw_conn:
-                finalize_generation_archive(
-                    BusinessConnection.postgres(raw_conn),
-                    lease=lease,
-                    stored=stored,
-                    quality_status=quality_status,
-                    quality_issue_codes=quality_issue_codes,
-                )
-        except Exception:
-            storage.delete_object(stored.key, actor_id=None)
-            raise
+        with pg_transaction() as raw_conn:
+            finalize_generation_direct_result(
+                BusinessConnection.postgres(raw_conn),
+                lease=lease,
+                quality_status=quality_status,
+                quality_issue_codes=quality_issue_codes,
+            )
 
 
 def run_pg_worker_once(
@@ -882,7 +855,7 @@ def run_pg_worker_once(
 
     PostgreSQL generation is a durable multi-step state machine.  Claim and
     state writes use short fenced transactions; paid submit, one status poll,
-    result download and archive each run with no database transaction open.
+    result download and quality verification each run with no database transaction open.
     Existing RUNNING/ARCHIVING work is always resumed before a new task, so a
     worker crash cannot turn a known provider task into a second paid POST.
     """
@@ -1039,11 +1012,6 @@ def run_pg_worker_once(
                         outcome=reconcile_outcome,
                     )
             except Exception as exc:
-                if reconcile_outcome is not None and reconcile_outcome.stored is not None:
-                    (generation_storage or storage).delete_object(
-                        reconcile_outcome.stored.key,
-                        actor_id=None,
-                    )
                 with pg_transaction() as raw_conn:
                     fail_generation_reconcile_operation(
                         BusinessConnection.postgres(raw_conn),

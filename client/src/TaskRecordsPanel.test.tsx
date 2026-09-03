@@ -15,6 +15,7 @@ vi.mock("./api", async () => {
   return {
     ...actual,
     createGenerationResultPreviewUrl: vi.fn(),
+    createGenerationTaskPreviewUrl: vi.fn(),
     downloadGenerationResult: vi.fn(),
     getGenerationBatch: vi.fn(),
     getLatestGenerationReconcileOperation: vi.fn(),
@@ -38,6 +39,7 @@ function task(overrides: Partial<api.GenerationTask> = {}): api.GenerationTask {
     quality_status: "AUDIO_OK",
     quality_issue_codes: [],
     result_asset_id: "asset-ok",
+    direct_result_available: false,
     stage: "COMPLETED",
     provider: "fake_h3",
     model: "MiniMax-H3",
@@ -165,6 +167,9 @@ describe("TaskRecordsPanel", () => {
     // 预签名 URL 直连播放：无限模式避免舞台自动签发耗尽 mock 后循环。
     vi.mocked(api.createGenerationResultPreviewUrl).mockImplementation(
       async (assetId) => `https://stage-preview/${assetId}`,
+    );
+    vi.mocked(api.createGenerationTaskPreviewUrl).mockImplementation(
+      async (taskId) => `https://provider-preview/${taskId}`,
     );
     vi.mocked(api.downloadGenerationResult).mockResolvedValue();
     vi.mocked(api.retryGenerationTask).mockImplementation(async (_taskId) =>
@@ -373,6 +378,35 @@ describe("TaskRecordsPanel", () => {
     expect(api.createGenerationResultPreviewUrl).toHaveBeenCalledWith(
       "asset-ok",
     );
+  });
+
+  it("shows a provider result while the task is preparing playback", async () => {
+    vi.mocked(api.getGenerationBatch).mockResolvedValue(
+      batch({
+        tasks: [
+          task({
+            status: "ARCHIVING",
+            archive_status: "ARCHIVING",
+            stage: "ARCHIVING",
+            result_asset_id: null,
+            direct_result_available: true,
+          }),
+        ],
+      }),
+    );
+
+    render(
+      <TaskRecordsPanel
+        handoffBatch={null}
+        onHandoffConsumed={vi.fn()}
+        userRole="employee"
+      />,
+    );
+
+    const video = await screen.findByLabelText("结果预览 task-ok");
+    expect(video).toHaveAttribute("src", "https://provider-preview/task-ok");
+    expect(api.createGenerationTaskPreviewUrl).toHaveBeenCalledWith("task-ok");
+    expect(api.createGenerationResultPreviewUrl).not.toHaveBeenCalled();
   });
 
   it("lets the user renew an expired archive preview", async () => {

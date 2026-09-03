@@ -9,6 +9,7 @@ import {
 import {
   confirmGenerationTaskNotCharged,
   createGenerationResultPreviewUrl,
+  createGenerationTaskPreviewUrl,
   customerVisibleErrorMessage,
   deleteGenerationBatch,
   downloadGenerationResult,
@@ -643,14 +644,13 @@ export function TaskRecordsPanel({
     }
   }
 
-  // 在线播放只签发已归档资产的短期 URL；Provider 临时地址不跨越
-  // 服务端边界，所有客户播放都经过同一权限与审计路径。
+  // 直连结果和归档资产都先经过服务端的项目归属校验，再将播放地址交给客户端。
   const handlePreview = useCallback(
     async (task: GenerationTask) => {
       if (!canOperate) {
         return;
       }
-      if (!task.result_asset_id) {
+      if (!task.result_asset_id && !task.direct_result_available) {
         return;
       }
       const batchIdAtStart = activeBatchIdRef.current;
@@ -658,9 +658,16 @@ export function TaskRecordsPanel({
       setActiveResultAction(actionKey);
       setResultErrors((current) => ({ ...current, [task.id]: "" }));
       try {
-        const previewUrl = await createGenerationResultPreviewUrl(
-          task.result_asset_id,
-        );
+        let previewUrl: string;
+        if (task.direct_result_available) {
+          previewUrl = await createGenerationTaskPreviewUrl(task.id);
+        } else if (task.result_asset_id) {
+          previewUrl = await createGenerationResultPreviewUrl(
+            task.result_asset_id,
+          );
+        } else {
+          return;
+        }
         if (
           !isMountedRef.current ||
           activeBatchIdRef.current !== batchIdAtStart
@@ -1329,9 +1336,11 @@ function TaskItem({
             </p>
           ) : null}
 
-          {task.result_asset_id ? (
+          {task.result_asset_id || task.direct_result_available ? (
             <div className="task-result-actions">
-              <span className="muted">结果已归档</span>
+              <span className="muted">
+                {task.direct_result_available ? "结果可在线播放" : "结果已归档"}
+              </span>
               {canOperate ? (
                 <>
                   <button
@@ -1341,22 +1350,25 @@ function TaskItem({
                   >
                     {previewUrl ? `刷新预览 ${task.id}` : `加载预览 ${task.id}`}
                   </button>
-                  <button
-                    disabled={activeResultAction === downloadAction}
-                    onClick={() => void onDownload(task)}
-                    type="button"
-                  >
-                    下载 MP4 {task.id}
-                  </button>
+                  {task.result_asset_id ? (
+                    <button
+                      disabled={activeResultAction === downloadAction}
+                      onClick={() => void onDownload(task)}
+                      type="button"
+                    >
+                      下载 MP4 {task.id}
+                    </button>
+                  ) : null}
                 </>
               ) : (
                 <span className="muted">审计只读，不可预览或下载结果</span>
               )}
             </div>
           ) : (
-            <span className="muted">等待结果归档</span>
+            <span className="muted">等待成片返回</span>
           )}
-          {task.result_asset_id && canOperate ? (
+          {(task.result_asset_id || task.direct_result_available) &&
+          canOperate ? (
             <section
               aria-label={`结果播放器 ${task.id}`}
               className="task-result-preview"
@@ -1643,6 +1655,9 @@ function taskNeedsAttention(task: GenerationTask) {
 }
 
 function taskStage(task: GenerationTask) {
+  if (task.status === "SUCCEEDED" && task.archive_status === "DIRECT") {
+    return "已交付";
+  }
   if (task.stage) {
     return formatStatus(task.stage);
   }

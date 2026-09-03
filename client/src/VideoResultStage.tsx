@@ -27,7 +27,7 @@ const PHASE_MESSAGES: Record<string, string> = {
   SUBMITTING: "正在把首帧与 Prompt 提交给渲染引擎…",
   QUEUED: "已进入渲染队列，即将开始生成…",
   RUNNING: "AI 正在基于你的首帧渲染画面、动作与口型…",
-  ARCHIVING: "渲染完成，正在把成片保存到素材库…",
+  ARCHIVING: "成片已生成，正在准备在线播放…",
   SUCCEEDED: "已生成，正在自动进行音频质检…",
 };
 
@@ -100,11 +100,10 @@ export function VideoResultStage({
     ? activeResultAction === `${activeTask.id}:preview`
     : false;
   const hasPreviewSource = activeTask
-    ? Boolean(activeTask.result_asset_id)
+    ? Boolean(activeTask.result_asset_id || activeTask.direct_result_available)
     : false;
 
-  // 完成态自动签发归档资产的短期预览地址。Provider 临时 URL 永不
-  // 进入客户 API，避免绕过归档权限、审计和统一过期策略。
+  // 归档资产和直连结果都按任务归属取播放地址；直连 URL 不进入批次详情。
   const activePreviewError = activeTask ? resultErrors[activeTask.id] : "";
   useEffect(() => {
     if (!activeTask || !canOperate) {
@@ -235,12 +234,18 @@ export function VideoResultStage({
               测试模式
             </p>
           ) : null}
-          {outcome === "quality_failed" && activeTask.result_asset_id ? (
+          {outcome === "quality_failed" && hasPreviewSource ? (
             <p className="video-stage-quality-banner" role="status">
               音频质检未通过：该结果仅供对比查看，建议再次生成。
             </p>
           ) : null}
-          {outcome === "in_progress" ? (
+          {previewUrl ? (
+            <StageVideoPlayer
+              onSourceError={() => onPreviewSourceError(activeTask)}
+              src={previewUrl}
+              taskLabel={`结果预览 ${activeTask.id}`}
+            />
+          ) : outcome === "in_progress" ? (
             <StageProgressView
               elapsed={elapsed}
               onOpenOpsDetail={onOpenOpsDetail}
@@ -254,12 +259,6 @@ export function VideoResultStage({
               remaining={remaining}
               showSlowWarning={showSlowWarning}
               stepIndex={stepIndex}
-            />
-          ) : previewUrl ? (
-            <StageVideoPlayer
-              onSourceError={() => onPreviewSourceError(activeTask)}
-              src={previewUrl}
-              taskLabel={`结果预览 ${activeTask.id}`}
             />
           ) : showPlaybackRecovery ? (
             <StagePlaybackRecovery

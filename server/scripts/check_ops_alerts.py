@@ -20,7 +20,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, SupportsInt, cast
 
 import psycopg
 
@@ -266,7 +266,7 @@ ALERT_QUERIES: dict[str, str] = {
                   LIMIT 1
               )
               AND (
-                  (task.status = 'SUCCEEDED' AND task.archive_status = 'ARCHIVED')
+                  (task.status = 'SUCCEEDED' AND task.archive_status IN ('ARCHIVED', 'DIRECT'))
                   OR task.status IN ('FAILED', 'CANCELLED')
               )
             ORDER BY reserve.created_at, reserve.id
@@ -276,7 +276,7 @@ ALERT_QUERIES: dict[str, str] = {
 }
 
 
-def _server_now(conn: psycopg.Connection[object]) -> datetime:
+def _server_now(conn: psycopg.Connection[tuple[object, ...]]) -> datetime:
     row = conn.execute("SELECT clock_timestamp()").fetchone()
     if row is None:
         raise RuntimeError("PostgreSQL server clock is unavailable")
@@ -288,7 +288,7 @@ def _server_now(conn: psycopg.Connection[object]) -> datetime:
 
 
 def _count_query(
-    conn: psycopg.Connection[object],
+    conn: psycopg.Connection[tuple[object, ...]],
     name: str,
     query: str,
     parameters: tuple[object, ...],
@@ -297,7 +297,7 @@ def _count_query(
     row = conn.execute(query, parameters).fetchone()
     if row is None:
         raise RuntimeError("anomaly query returned no count")
-    count = int(row[0])
+    count = int(cast(SupportsInt, row[0]))
     if count < 0:
         raise RuntimeError("anomaly query returned an invalid count")
     return count
@@ -315,7 +315,7 @@ def _security_cutoff(current: datetime, seconds: int) -> str:
 
 
 def collect_observations(
-    conn: psycopg.Connection[object],
+    conn: psycopg.Connection[tuple[object, ...]],
     config: ProbeConfig | None = None,
 ) -> tuple[AlertObservation, ...]:
     config = config or ProbeConfig()
@@ -381,14 +381,14 @@ def transition_alerts(
     return tuple(transitions), current
 
 
-def load_state(conn: psycopg.Connection[object]) -> dict[str, bool]:
+def load_state(conn: psycopg.Connection[tuple[object, ...]]) -> dict[str, bool]:
     rows = conn.execute(
         "SELECT alert_name, active FROM ops_alert_state ORDER BY alert_name"
     ).fetchall()
     return {str(row[0]): bool(row[1]) for row in rows}
 
 
-def save_state(conn: psycopg.Connection[object], state: dict[str, bool]) -> None:
+def save_state(conn: psycopg.Connection[tuple[object, ...]], state: dict[str, bool]) -> None:
     for name, active in sorted(state.items()):
         if name not in ALERT_QUERIES:
             raise RuntimeError("ops alert state contains an unknown alert")
@@ -414,7 +414,7 @@ def render_transition(transition: AlertTransition, *, checked_at: datetime) -> s
 
 
 def publish_probe_result(
-    conn: psycopg.Connection[object],
+    conn: psycopg.Connection[tuple[object, ...]],
     result: ProbeResult,
     *,
     emit: Callable[[str], None],
@@ -433,7 +433,7 @@ def publish_probe_result(
 
 
 def run_probe(
-    conn: psycopg.Connection[object],
+    conn: psycopg.Connection[tuple[object, ...]],
     *,
     config: ProbeConfig | None = None,
 ) -> ProbeResult:
@@ -453,7 +453,7 @@ def run_probe(
 
 
 def run_owned_probe(
-    conn: psycopg.Connection[object],
+    conn: psycopg.Connection[tuple[object, ...]],
     *,
     emit: Callable[[str], None],
     config: ProbeConfig | None = None,

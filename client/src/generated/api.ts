@@ -277,6 +277,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/generation-tasks/{task_id}/preview-url": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Generation Task Preview Url */
+    get: operations["read_generation_task_preview_url_api_generation_tasks__task_id__preview_url_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/generation-tasks/{task_id}/retry": {
     parameters: {
       query?: never;
@@ -4891,6 +4908,11 @@ export interface components {
       /** Estimated Cost Per Task */
       estimated_cost_per_task?: number | null;
     };
+    /** GenerationTaskPreviewUrlResponse */
+    GenerationTaskPreviewUrlResponse: {
+      /** Url */
+      url: string;
+    };
     /** GenerationTaskRetryRequest */
     GenerationTaskRetryRequest: {
       /** Idempotency Key */
@@ -5747,6 +5769,8 @@ export interface components {
       quality_issue_codes: string[];
       /** Result Asset Id */
       result_asset_id: string | null;
+      /** Direct Result Available */
+      direct_result_available: boolean;
       /** Stage */
       stage: string;
       /** Provider */
@@ -5811,6 +5835,8 @@ export interface components {
       quality_issue_codes: string[];
       /** Result Asset Id */
       result_asset_id: string | null;
+      /** Direct Result Available */
+      direct_result_available: boolean;
       /** Stage */
       stage: string;
       /** Provider */
@@ -6644,6 +6670,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["GenerationRuntimeLimits"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_generation_task_preview_url_api_generation_tasks__task_id__preview_url_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GenerationTaskPreviewUrlResponse"];
         };
       };
       /** @description Validation Error */
