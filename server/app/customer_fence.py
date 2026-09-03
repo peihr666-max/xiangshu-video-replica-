@@ -48,7 +48,13 @@ from app.customer_auth import (
 )
 from app.customer_device_service import _token_digests
 from app.db import connect_database
-from app.db_pg import DATABASE_URL_ENV, IsolationLevel, get_pg_pool, pg_transaction
+from app.db_pg import (
+    DATABASE_URL_ENV,
+    SQLITE_URL_SCHEMES,
+    IsolationLevel,
+    get_pg_pool,
+    pg_transaction,
+)
 from app.db_portable import BusinessConnection
 from app.permissions import AuditedSecurityDenial, persist_security_denial
 from app.security_rate_limit import rate_limit_window_seconds, record_auth_failure
@@ -72,7 +78,8 @@ def _bearer_token(request: Request) -> str | None:
 
 def _customer_database_configured() -> bool:
     """Choose the lane from current configuration, never from a cached pool."""
-    return bool(os.environ.get(DATABASE_URL_ENV, "").strip())
+    url = os.environ.get(DATABASE_URL_ENV, "").strip()
+    return bool(url) and not url.startswith(SQLITE_URL_SCHEMES)
 
 
 @dataclass(frozen=True)

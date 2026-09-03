@@ -17,9 +17,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 import psycopg
 import pytest
+from fastapi import HTTPException, Request
 from psycopg_pool import ConnectionPool
 
 from app.db_pg import (
@@ -94,6 +96,74 @@ def test_resolve_sqlite_fallback_keeps_internal_mode() -> None:
         config = resolve_database_config()
     assert config.mode is DatabaseMode.SQLITE
     assert config.sqlite_path == "/tmp/app.db"
+
+
+@pytest.mark.parametrize("database_url", ["", "sqlite:///internal.db"])
+def test_customer_snapshot_ignores_cached_pg_pool_on_internal_lane(
+    monkeypatch: pytest.MonkeyPatch, database_url: str
+) -> None:
+    from app import customer_fence
+
+    monkeypatch.setenv(DATABASE_URL_ENV, database_url)
+    cached_pool = Mock(return_value=object())
+    monkeypatch.setattr(customer_fence, "get_pg_pool", cached_pool)
+    request = Request({"type": "http", "headers": []})
+
+    assert customer_fence.customer_session_snapshot(request) is None
+    cached_pool.assert_not_called()
+
+
+@pytest.mark.parametrize("database_url", ["", "sqlite:///internal.db"])
+def test_business_read_ignores_cached_pg_pool_on_internal_lane(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    from app import customer_fence
+
+    monkeypatch.setenv(DATABASE_URL_ENV, database_url)
+    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "internal.db"))
+    monkeypatch.setattr(customer_fence, "get_pg_pool", Mock(return_value=object()))
+    pg_read = Mock(side_effect=AssertionError("Internal reads must not open PostgreSQL"))
+    monkeypatch.setattr(customer_fence, "pg_transaction", pg_read)
+
+    with contextmanager(customer_fence.get_business_read_conn)() as conn:
+        assert not conn.is_postgres
+        assert conn.execute("SELECT 42").fetchone()[0] == 42
+    pg_read.assert_not_called()
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_customer_snapshot_pg_pool_failure_is_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    from app import customer_fence
+
+    monkeypatch.setenv(DATABASE_URL_ENV, PG_DSN)
+    monkeypatch.setattr(customer_fence, "get_pg_pool", Mock(side_effect=error_type("PG failed")))
+    request = Request({"type": "http", "headers": []})
+
+    with pytest.raises(HTTPException) as error:
+        customer_fence.get_business_db(request)
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "SESSION_SERVICE_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_business_read_pg_failure_does_not_fall_back_to_sqlite(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error_type: type[Exception]
+) -> None:
+    from app import customer_fence, db_pg
+
+    monkeypatch.setenv(DATABASE_URL_ENV, PG_DSN)
+    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "internal.db"))
+    unavailable_pool = Mock(side_effect=error_type("PG failed"))
+    monkeypatch.setattr(customer_fence, "get_pg_pool", unavailable_pool)
+    monkeypatch.setattr(db_pg, "get_pg_pool", unavailable_pool)
+    sqlite_connect = Mock()
+    monkeypatch.setattr(customer_fence, "connect_database", sqlite_connect)
+
+    with pytest.raises(error_type, match="PG failed"):
+        next(customer_fence.get_business_read_conn())
+    sqlite_connect.assert_not_called()
 
 
 def test_resolve_rejects_unsupported_scheme() -> None:
