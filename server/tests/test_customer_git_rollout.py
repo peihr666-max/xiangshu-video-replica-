@@ -22,6 +22,11 @@ def test_customer_git_rollout_builds_web_and_preserves_database_rollback_evidenc
 
     assert "npm ci --ignore-scripts" in script
     assert "npm run build --workspace client" in script
+    assert 'NODE_BUILD_IMAGE="node:24-bookworm-slim"' in script
+    assert 'docker image inspect "$NODE_BUILD_IMAGE"' in script
+    assert 'docker run --rm -v "$SOURCE:/workspace"' in script
+    assert 'require_command "node"' not in script
+    assert 'require_command "npm"' not in script
     assert "pg_dump -Fc" in script
     assert "DATABASE_HEAD_LEFT_FORWARD_COMPATIBLE" in script
     assert 'trap \'rollback "$?" "$LINENO" "$BASH_COMMAND"\' ERR' in script

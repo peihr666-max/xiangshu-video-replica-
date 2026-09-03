@@ -27,6 +27,7 @@ COMPOSE="$ROOT/compose.yaml"
 CUSTOMER_ENV="/etc/video-replica/customer.env"
 SERVICE_USER="video-replica"
 PUBLIC_ORIGIN="https://video.zszhj.cn"
+NODE_BUILD_IMAGE="node:24-bookworm-slim"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 SHORT_SHA="${RELEASE_SHA:0:7}"
 BACKUP="$ROOT/backups/git-$SHORT_SHA-$STAMP"
@@ -93,17 +94,18 @@ require_command() {
 
 cd "$ROOT"
 mark PREFLIGHT
-for command in git node npm docker curl python3; do
+for command in git docker curl python3; do
   require_command "$command"
 done
-node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)' \
-  || { echo 'PRECHECK_FAILED: Node.js 24 or newer is required' >&2; exit 1; }
 [[ -f "$COMPOSE" && -d "$SITE" && -r "$CUSTOMER_ENV" ]]
 [[ ! -e "$BUILD_CTX" && ! -e "$STAGE_SITE" && ! -e "$BACKUP" ]]
 [[ "$(df -Pk "$ROOT" | awk 'NR == 2 {print $4}')" -gt 4194304 ]]
 docker compose -f "$COMPOSE" config --quiet
 curl -fsS --max-time 20 "$PUBLIC_ORIGIN/health?preflight=$STAMP" >/dev/null
 id "$SERVICE_USER" >/dev/null
+docker image inspect "$NODE_BUILD_IMAGE" >/dev/null 2>&1 || docker pull "$NODE_BUILD_IMAGE"
+docker run --rm --entrypoint node "$NODE_BUILD_IMAGE" -e \
+  'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)'
 
 if [[ ! -d "$SOURCE/.git" ]]; then
   mkdir -p "$SOURCE"
@@ -121,8 +123,9 @@ RELEASE_TREE=$(git -C "$SOURCE" rev-parse 'HEAD^{tree}')
 python3 "$SOURCE/scripts/customer_release_preflight.py" \
   --env-file "$CUSTOMER_ENV" \
   --service-user "$SERVICE_USER"
-(cd "$SOURCE" && npm ci --ignore-scripts)
-(cd "$SOURCE" && VITE_API_BASE_URL="$PUBLIC_ORIGIN" npm run build --workspace client)
+docker run --rm -v "$SOURCE:/workspace" -w /workspace \
+  -e "VITE_API_BASE_URL=$PUBLIC_ORIGIN" "$NODE_BUILD_IMAGE" sh -lc \
+  'npm ci --ignore-scripts && npm run build --workspace client'
 [[ -s "$SOURCE/client/dist/index.html" && -d "$SOURCE/client/dist/assets" ]]
 EXPECTED_ASSET=$(grep -oE 'assets/[^" ]+\.js' "$SOURCE/client/dist/index.html" | head -n 1)
 [[ -n "$EXPECTED_ASSET" ]]
