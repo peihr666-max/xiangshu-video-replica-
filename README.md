@@ -81,6 +81,20 @@ Set-Location server
 
 Linux 单机部署的环境模板、systemd 单元、SQLite 检查/备份/恢复和验收命令统一见 `docs/内部运营P0单机部署与验收记录.md`。部署文件只覆盖一个 API、一个 Worker、一个本机 SQLite 文件和同机静态页；它们不代表真实 ZPay、COS 或 Provider 已验收。
 
+### 客户生产一键更新
+
+客户生产环境可用 `deploy/customer-git-rollout.sh` 从公开 GitHub 仓库拉取一个明确的 40 位提交，再在服务器本机编译前端并滚动更新 API 与 Worker。脚本不会读取或写入任何密钥；生产配置继续保留在 `/etc/video-replica/customer.env`。它会在改动 Compose、站点或数据库前检查 Git、Node.js 24、Docker、生产配置、磁盘、现网健康和当前镜像依赖是否兼容；然后备份 PostgreSQL 与静态站点。若运行中失败，脚本恢复旧镜像与静态站点，并保留数据库备份（迁移后的数据库不会自动降级）。
+
+首次在宝塔终端执行时，用待发布的合并提交替换 `<COMMIT_SHA>`，并从同一提交下载脚本：
+
+```bash
+curl -fsSLo /tmp/customer-git-rollout.sh "https://raw.githubusercontent.com/phlong026/xiangshu-video-replica/<COMMIT_SHA>/deploy/customer-git-rollout.sh"
+chmod 0755 /tmp/customer-git-rollout.sh
+bash /tmp/customer-git-rollout.sh --commit <COMMIT_SHA>
+```
+
+这条路径要求服务器能访问 GitHub、已安装 Git、Docker、Python 3；前端构建复用 Docker 的 Node.js 24 镜像，宿主机不需要安装 Node.js 或 npm。首次运行会下载该构建镜像，之后复用 Docker 缓存。任一前置条件缺失时会在发布前退出，不会切换服务。含 Python 依赖锁文件改动的版本仍必须走基础镜像发布流程，避免服务器在生产切换时临时安装依赖。
+
 ### 内部钱包与按条计费
 
 `GET /api/wallet` 返回当前内部用户的可用条数和冻结条数；`GET /api/wallet/transactions` 用 `limit`、`offset` 分页返回当前用户自己的追加式流水。创建一条生成任务会在同一个 SQLite 事务内写入 `RESERVE`，并把 1 条从可用余额移到冻结余额；余额不足返回 `402 INSUFFICIENT_CREDITS`，批次、任务、Prompt 状态和钱包不会部分提交。
