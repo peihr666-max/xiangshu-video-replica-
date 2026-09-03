@@ -756,6 +756,66 @@ def test_free_grant_still_requires_valid_source_document(client: TestClient) -> 
     assert zero_credits.json()["detail"]["code"] == "ADJUSTMENT_VALIDATION_FAILED"
 
 
+@pytest.mark.parametrize("credits", [2_147_484, 2_147_483_648, 2**63])
+def test_free_grant_overflow_is_rejected_without_ledger_writes(
+    client: TestClient, credits: int
+) -> None:
+    admin = _admin_session(client)
+    before_wallet = _wallet_balance(CUSTOMER_USER_ID)
+    before_counts = _fetch_one(
+        "SELECT (SELECT COUNT(*) FROM recharge_orders), "
+        "(SELECT COUNT(*) FROM wallet_transactions), "
+        "(SELECT COUNT(*) FROM admin_adjustments)"
+    )
+
+    response = _create_adjustment(
+        client,
+        admin,
+        credits=credits,
+        source_document_type="FREE_GRANT",
+        key="adj-free-grant-overflow",
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "ADJUSTMENT_VALIDATION_FAILED"
+    assert _wallet_balance(CUSTOMER_USER_ID) == before_wallet
+    assert (
+        _fetch_one(
+            "SELECT (SELECT COUNT(*) FROM recharge_orders), "
+            "(SELECT COUNT(*) FROM wallet_transactions), "
+            "(SELECT COUNT(*) FROM admin_adjustments)"
+        )
+        == before_counts
+    )
+
+
+@pytest.mark.parametrize("unit_price_fen, credits", [(1000, 2_147_483), (1, 2_147_483_647)])
+def test_free_grant_at_ledger_calculation_limit_keeps_zero_amount(
+    client: TestClient, unit_price_fen: int, credits: int
+) -> None:
+    admin = _admin_session(client)
+    update = client.put(
+        _unit_price_path(),
+        headers={**admin, IDEMPOTENCY_KEY_HEADER: "price-grant-limit"},
+        json={"confirm": True, "reason": "额度边界测试", "unit_price_fen": unit_price_fen},
+    )
+    assert update.status_code == 200, update.text
+    with psycopg.connect(_t23_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE wallets SET available_credits = 0 WHERE user_id = %s", (CUSTOMER_USER_ID,)
+        )
+    before_available, before_reserved = _wallet_balance(CUSTOMER_USER_ID)
+
+    response = _create_adjustment(client, admin, credits=credits, source_document_type="FREE_GRANT")
+
+    assert response.status_code == 201, response.text
+    order = _order_row(response.json()["order_id"])
+    assert order[8:10] == (0, credits)
+    assert _charge_rows(response.json()["order_id"])[0][1] == credits
+    assert _wallet_balance(CUSTOMER_USER_ID) == (before_available + credits, before_reserved)
+    assert _adjustment_audit_rows(CUSTOMER_USER_ID)[0][4] == "FREE_GRANT"
+
+
 def test_zero_amount_stays_forbidden_for_non_admin_providers(
     adjustments_dsn: str,
 ) -> None:
@@ -920,7 +980,10 @@ def test_response_balance_is_the_post_update_row(client: TestClient) -> None:
     assert _wallet_balance(CUSTOMER_USER_ID) == (82, 0)
 
 
-def test_wallet_balance_overflow_is_rejected_not_500(client: TestClient) -> None:
+@pytest.mark.parametrize("source_document_type", ["CS_TICKET", "FREE_GRANT"])
+def test_wallet_balance_overflow_is_rejected_not_500(
+    client: TestClient, source_document_type: str
+) -> None:
     """A balance already at the int4 ceiling plus one more credit must answer
     a stable 400 — never a NumericValueOutOfRange-turned-500 (PR #54 review
     P2: the amount_fen guard alone cannot see the wallet-side overflow)."""
@@ -933,7 +996,13 @@ def test_wallet_balance_overflow_is_rejected_not_500(client: TestClient) -> None
             "UPDATE wallets SET available_credits = 2147483647 WHERE user_id = %s",
             (CUSTOMER_USER_ID,),
         )
-    response = _create_adjustment(client, admin, credits=1, key="adj-walloverflow-1")
+    response = _create_adjustment(
+        client,
+        admin,
+        credits=1,
+        source_document_type=source_document_type,
+        key="adj-walloverflow-1",
+    )
     assert response.status_code == 400, response.text
     assert response.json()["detail"]["code"] == "ADJUSTMENT_VALIDATION_FAILED"
     # The refused write left nothing behind: the balance is untouched and the

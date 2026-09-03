@@ -583,6 +583,70 @@ def _insert_t08_order(conn: psycopg.Connection, seq: int, **overrides: object) -
     )
 
 
+@pytest.mark.parametrize(
+    "amount_fen, refusal",
+    [(0, "zero-amount FREE_GRANT adjustment orders"), (1000, "FREE_GRANT audit rows")],
+)
+def test_pg_free_grant_downgrade_preserves_ledger(
+    monkeypatch: pytest.MonkeyPatch, amount_fen: int, refusal: str
+) -> None:
+    from alembic import command
+
+    monkeypatch.delenv("VIDEO_REPLICA_DATABASE_URL", raising=False)
+    database_name = "t54_free_grant_downgrade_guard"
+    tables = ("recharge_orders", "wallet_transactions", "wallets", "admin_adjustments")
+    try:
+        dsn = _t08_database(database_name)
+        config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name, role) "
+                "VALUES ('t54_admin', 't54_admin', 'Admin', 'admin')"
+            )
+            _insert_t08_order(
+                conn,
+                54,
+                provider="admin_adjustment",
+                status="PAID",
+                channel=None,
+                amount_fen=amount_fen,
+                credits=1,
+                paid_at="2026-09-03T00:00:00+00:00",
+            )
+            conn.execute(
+                "INSERT INTO wallets (user_id, available_credits, reserved_credits) "
+                "VALUES ('u-t08', 1, 0)"
+            )
+            conn.execute(
+                "INSERT INTO wallet_transactions "
+                "(id, user_id, type, available_delta, reserved_delta, "
+                "recharge_order_id, idempotency_key) "
+                "VALUES ('t54_charge', 'u-t08', 'CHARGE', 1, 0, 'o-t08-54', 't54_charge')"
+            )
+            # A positive amount is synthetic data for the second schema guard;
+            # the API always records FREE_GRANT with a zero payment amount.
+            conn.execute(
+                "INSERT INTO admin_adjustments "
+                "(id, recharge_order_id, target_user_id, admin_user_id, "
+                "source_document_type, source_document_ref, reason, request_id) "
+                "VALUES ('t54_audit', 'o-t08-54', 'u-t08', 't54_admin', "
+                "'FREE_GRANT', 'GRANT-54', 'rollback rehearsal', 't54_request')"
+            )
+            before = {table: conn.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
+
+        with pytest.raises(RuntimeError, match=f"cannot downgrade 054.*{refusal}"):
+            command.downgrade(config, "053_activation_code_archive")
+
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
+                "054_admin_free_grant_adjustments",
+            )
+            for table in tables:
+                assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]
+    finally:
+        _drop_database(database_name)
+
+
 def test_pg_billing_provider_shapes_accepted_and_rejected() -> None:
     """DB-07 exit gate: zpay / activation_code / admin_adjustment legal shapes
     pass, illegal shapes are rejected by PostgreSQL check constraints — not by
