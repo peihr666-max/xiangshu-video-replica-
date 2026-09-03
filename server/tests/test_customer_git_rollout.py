@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_customer_git_rollout_requires_an_exact_revision_before_any_mutation() -> None:
     script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
 
+    assert 'REPO_URL="${VIDEO_REPLICA_GIT_REPO_URL:-https://github.com/phlong026/xiangshu-video-replica.git}"' in script
     assert '[[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]' in script
     assert 'git -C "$SOURCE" fetch --depth=1 origin "$RELEASE_SHA"' in script
     assert '[[ "$(git -C "$SOURCE" rev-parse HEAD)" == "$RELEASE_SHA" ]]' in script

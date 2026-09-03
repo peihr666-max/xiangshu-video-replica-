@@ -83,7 +83,7 @@ Linux 单机部署的环境模板、systemd 单元、SQLite 检查/备份/恢复
 
 ### 客户生产一键更新
 
-客户生产环境可用 `deploy/customer-git-rollout.sh` 从公开 GitHub 仓库拉取一个明确的 40 位提交，再在服务器本机编译前端并滚动更新 API 与 Worker。脚本不会读取或写入任何密钥；生产配置继续保留在 `/etc/video-replica/customer.env`。它会在改动 Compose、站点或数据库前检查 Git、Node.js 24、Docker、生产配置、磁盘、现网健康和当前镜像依赖是否兼容；然后备份 PostgreSQL 与静态站点。若运行中失败，脚本恢复旧镜像与静态站点，并保留数据库备份（迁移后的数据库不会自动降级）。
+客户生产环境可用 `deploy/customer-git-rollout.sh` 从明确的 40 位提交拉取代码，再在服务器本机编译前端并滚动更新 API 与 Worker。默认使用公开 GitHub HTTPS 地址；私有仓库可设置只读 SSH 地址 `VIDEO_REPLICA_GIT_REPO_URL=git@github.com:phlong026/xiangshu-video-replica.git`，并由服务器上的只读 Deploy Key 提供访问。脚本不会读取或写入业务密钥；生产配置继续保留在 `/etc/video-replica/customer.env`。它会在改动 Compose、站点或数据库前检查 Git、Node.js 24、Docker、生产配置、磁盘、现网健康和当前镜像依赖是否兼容；然后备份 PostgreSQL 与静态站点。若运行中失败，脚本恢复旧镜像与静态站点，并保留数据库备份（迁移后的数据库不会自动降级）。
 
 首次在宝塔终端执行时，用待发布的合并提交替换 `<COMMIT_SHA>`，并从同一提交下载脚本：
 
@@ -93,7 +93,7 @@ chmod 0755 /tmp/customer-git-rollout.sh
 bash /tmp/customer-git-rollout.sh --commit <COMMIT_SHA>
 ```
 
-这条路径要求服务器能访问 GitHub、已安装 Git、Docker、Python 3；前端构建复用 Docker 的 Node.js 24 镜像，宿主机不需要安装 Node.js 或 npm。首次运行会下载该构建镜像，之后复用 Docker 缓存。任一前置条件缺失时会在发布前退出，不会切换服务。含 Python 依赖锁文件改动的版本仍必须走基础镜像发布流程，避免服务器在生产切换时临时安装依赖。
+私有仓库不能匿名下载 Raw 脚本：先通过只读 Deploy Key 拉取该提交中的脚本，再在运行前导出 `VIDEO_REPLICA_GIT_REPO_URL`。这条路径要求服务器能访问 GitHub、已安装 Git、Docker、Python 3；前端构建复用 Docker 的 Node.js 24 镜像，宿主机不需要安装 Node.js 或 npm。首次运行会下载该构建镜像，之后复用 Docker 缓存。任一前置条件缺失时会在发布前退出，不会切换服务。含 Python 依赖锁文件改动的版本仍必须走基础镜像发布流程，避免服务器在生产切换时临时安装依赖。
 
 ### 内部钱包与按条计费
 

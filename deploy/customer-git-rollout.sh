@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy one audited public-GitHub commit to the existing customer stack.
+# Deploy one audited Git commit to the existing customer stack.
 set -Eeuo pipefail
 
 usage() {
@@ -20,7 +20,7 @@ done
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || usage
 
 ROOT="/opt/video-replica-candidate"
-REPO_URL="https://github.com/phlong026/xiangshu-video-replica.git"
+REPO_URL="${VIDEO_REPLICA_GIT_REPO_URL:-https://github.com/phlong026/xiangshu-video-replica.git}"
 SOURCE="$ROOT/releases/$RELEASE_SHA"
 SITE="/www/wwwroot/video.zszhj.cn"
 COMPOSE="$ROOT/compose.yaml"
