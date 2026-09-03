@@ -100,10 +100,11 @@ import sys
 import tomllib
 
 path = sys.argv[1]
+format_path = sys.argv[2]
 stream = sys.stdin.buffer if path == "-" else open(path, "rb")
 with stream:
     document = tomllib.load(stream)
-if path.endswith("pyproject.toml"):
+if format_path.endswith("pyproject.toml"):
     project = document["project"]
     manifest = {
         "requires-python": project["requires-python"],
@@ -117,7 +118,7 @@ else:
         if package["name"] != "video-replica-api"
     ]
 print(hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
-' "$1"
+' "$1" "$2"
 }
 
 cd "$ROOT"
@@ -167,8 +168,8 @@ OLD_IMAGE_DB_HEAD=$(docker image inspect -f '{{index .Config.Labels "video-repli
 [[ -n "$OLD_IMAGE_DB_HEAD" ]]
 [[ -z "$OLD_IMAGE_USER" || "$OLD_IMAGE_USER" =~ ^[A-Za-z0-9_.:-]+$ ]]
 for dependency_file in server/pyproject.toml server/uv.lock; do
-  source_hash=$(dependency_manifest_hash "$SOURCE/$dependency_file")
-  image_hash=$(docker run --rm --entrypoint sh "$OLD_IMAGE" -c 'cat "$1"' sh "/opt/video-replica/$dependency_file" | dependency_manifest_hash -)
+  source_hash=$(dependency_manifest_hash "$SOURCE/$dependency_file" "$dependency_file")
+  image_hash=$(docker run --rm --entrypoint sh "$OLD_IMAGE" -c 'cat "$1"' sh "/opt/video-replica/$dependency_file" | dependency_manifest_hash - "$dependency_file")
   [[ "$source_hash" == "$image_hash" ]] || {
     echo "PRECHECK_FAILED: Python dependency change requires a base-image release: $dependency_file" >&2
     exit 1

@@ -39,5 +39,9 @@ def test_customer_git_rollout_ignores_only_root_package_version_metadata() -> No
     script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
 
     assert "dependency_manifest_hash" in script
+    assert 'format_path = sys.argv[2]' in script
+    assert 'if format_path.endswith("pyproject.toml"):' in script
     assert 'package["name"] != "video-replica-api"' in script
+    assert 'dependency_manifest_hash "$SOURCE/$dependency_file" "$dependency_file"' in script
+    assert 'dependency_manifest_hash - "$dependency_file"' in script
     assert "Python dependency change requires a base-image release" in script
