@@ -113,7 +113,9 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     ).toEqual([
       "customer-1",
       "ABC-123",
-      "2026/8/24 18:00:00",
+      new Date(mockCustomers[0].created_at).toLocaleString("zh-CN", {
+        hour12: false,
+      }),
       "活跃",
       "5 / 8",
       "1 / 1 / 1",
