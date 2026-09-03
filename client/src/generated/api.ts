@@ -577,7 +577,16 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Sync Recharge Order With Zpay */
+    /**
+     * Sync Recharge Order With Zpay
+     * @description Manual single-order query with the admin write contract (A4, A2).
+     *
+     *     The operator must send confirm + reason + an Idempotency-Key like every
+     *     other control-plane write, and the attempt lands an ``audit_logs`` row:
+     *     a manual sync can credit a wallet, so it must name who asked for it.
+     *     The query itself stays naturally idempotent (PAID orders replay, the
+     *     confirmed credit is unique-constrained), so no snapshot layer is needed.
+     */
     post: operations["sync_recharge_order_with_zpay_api_control_recharge_orders__order_no__sync_post"];
     delete?: never;
     options?: never;
@@ -935,8 +944,60 @@ export interface paths {
      *     display metadata only — masked code, username, activation time and the
      *     code status. The identity fields live on users / activation_codes; the
      *     data model has no customer email, so the T33 contract uses username.
+     *
+     *     A5（2026-09-02 评估）: the page/page_size + ``{customers,…}`` shape is
+     *     retired for the management-wide ``limit/offset`` + ``{items,total,…}``
+     *     envelope, so every admin list paginates the same way.
      */
     get: operations["list_customers_api_control_customers_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/customers.csv": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Export Customers Csv
+     * @description Export the customer list as CSV (C6) — audited + rate limited (A2).
+     *
+     *     Replaces the console's client-side "current page only" export: the whole
+     *     (filtered) list leaves through one audited dump with the same columns the
+     *     operator saw in the table.
+     */
+    get: operations["export_customers_csv_api_control_customers_csv_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/customer-sessions/live": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Live Sessions
+     * @description Overview of every currently live customer session (A11, 2026-09-02).
+     *
+     *     Same liveness semantics as the per-customer view (DB-clock lease check),
+     *     across all users instead of one — the console "今日概览/会话" entry point
+     *     so operators no longer need to know a customer id upfront.
+     */
+    get: operations["list_live_sessions_api_control_customer_sessions_live_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -995,7 +1056,8 @@ export interface paths {
     head?: never;
     /**
      * Update Queue Mode
-     * @description Flip the fair-queue rollout switch as an audited admin write.
+     * @description Flip the fair-queue rollout switch as an audited, idempotent admin
+     *     write behind the shared write contract (PR #85 review P2).
      *
      *     Uses the runtime_settings row's queue-mode column directly (not the
      *     internal ``save_runtime_settings`` limits upsert): the switch-only write
@@ -1016,12 +1078,7 @@ export interface paths {
     };
     /**
      * List Audit Log
-     * @description List all audit events with pagination.
-     *
-     *     Currently aggregates:
-     *     - ADMIN_ADJUSTMENT: admin adjustments from admin_adjustments table
-     *
-     *     Future event types can be added (device unbind, session revoke, etc.)
+     * @description List the unified audit trail with pagination and combined filters.
      *
      *     Both admin and auditor roles can access this endpoint (read-only).
      */
@@ -1487,6 +1544,11 @@ export interface paths {
     /**
      * List Activation Codes
      * @description List masked code metadata without bulk-recovering plaintext values.
+     *
+     *     A5/A9（2026-09-02 评估）: the response carries ``total`` so the console
+     *     paginates honestly, and ``search`` matches the masked code or bound
+     *     username server-side (LIKE wildcards escaped) instead of the client
+     *     filtering a fixed first page.
      */
     get: operations["list_activation_codes_api_control_activation_codes_get"];
     put?: never;
@@ -3311,7 +3373,7 @@ export interface components {
     };
     /**
      * AdminWriteContract
-     * @description Shared write-contract fields for every admin activation mutation.
+     * @description Shared write-contract fields for every admin mutation.
      */
     AdminWriteContract: {
       /**
@@ -4079,6 +4141,11 @@ export interface components {
     ConfirmFirstFrameRequest: {
       /** First Frame Asset Id */
       first_frame_asset_id: string;
+      /**
+       * Allow Unverified
+       * @default false
+       */
+      allow_unverified: boolean;
     };
     /** ConfirmNotChargedRequest */
     ConfirmNotChargedRequest: {
@@ -5215,8 +5282,24 @@ export interface components {
       /** Fair Queue Enabled */
       fair_queue_enabled: boolean;
     };
-    /** QueueModeUpdateRequest */
+    /**
+     * QueueModeUpdateRequest
+     * @description The production switch follows the shared admin write contract (PR #85
+     *     review P2): idempotency key header, ``confirm: true`` and a non-blank
+     *     operator reason, so audit rows name the operator's reason and ambiguous
+     *     retries replay the snapshotted outcome instead of duplicating audits.
+     */
     QueueModeUpdateRequest: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
       /** Fair Queue Enabled */
       fair_queue_enabled: boolean;
     };
@@ -7203,7 +7286,11 @@ export interface operations {
       };
       cookie?: never;
     };
-    requestBody?: never;
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AdminWriteContract"];
+      };
+    };
     responses: {
       /** @description Successful Response */
       200: {
@@ -7949,9 +8036,76 @@ export interface operations {
   list_customers_api_control_customers_get: {
     parameters: {
       query?: {
-        page?: number;
-        page_size?: number;
+        limit?: number;
+        offset?: number;
         username?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  export_customers_csv_api_control_customers_csv_get: {
+    parameters: {
+      query?: {
+        status?: string | null;
+        username?: string;
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  list_live_sessions_api_control_customer_sessions_live_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
       };
       header?: never;
       path?: never;
@@ -8076,6 +8230,9 @@ export interface operations {
       query?: {
         event_type?: string | null;
         actor_user_id?: string | null;
+        target_user_id?: string | null;
+        created_from?: string | null;
+        created_to?: string | null;
         limit?: number;
         offset?: number;
       };
@@ -8769,6 +8926,8 @@ export interface operations {
       query?: {
         batch_id?: string | null;
         status?: string | null;
+        search?: string;
+        include_archived?: boolean;
         limit?: number;
         offset?: number;
       };

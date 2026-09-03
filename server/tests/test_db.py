@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -14,7 +15,7 @@ from cryptography.fernet import Fernet
 from app.backup import backup_database, check_database, restore_database, run_daily_backup
 from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
-from app.repositories import GenerationTaskRepository
+from app.generation import acquire_generation_task_lease
 
 
 def _create_minimal_task(
@@ -40,17 +41,36 @@ def _create_minimal_task(
             INSERT INTO generation_batches (
                 id, project_id, created_by_user_id, idempotency_key,
                 request_hash, request_snapshot_json
-            ) VALUES (%s, %s, %s, %s, %s, '{}')
+            ) VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (batch_id, project_id, user_id, f"{batch_id}:key", f"{batch_id}:hash"),
+            (
+                batch_id,
+                project_id,
+                user_id,
+                f"{batch_id}:key",
+                f"{batch_id}:hash",
+                json.dumps(
+                    {
+                        "prompt_version_id": f"prompt-{batch_id}",
+                        "output_duration_seconds": 10,
+                        "resolution": "768P",
+                    }
+                ),
+            ),
         )
         conn.execute(
             """
             INSERT INTO generation_tasks (
-                id, batch_id, generation_mode, provider, model, status, next_poll_at
-            ) VALUES (%s, %s, 'I2V', 'metaso', 'MiniMax-H3', 'PENDING', CURRENT_TIMESTAMP)
+                id, batch_id, generation_mode, provider, model, status,
+                next_poll_at, prompt_snapshot_json
+            ) VALUES (%s, %s, 'I2V', 'metaso', 'MiniMax-H3', 'PENDING',
+                      CURRENT_TIMESTAMP, %s)
             """,
-            (task_id, batch_id),
+            (
+                task_id,
+                batch_id,
+                json.dumps({"prompt_text": "test prompt", "first_frame_uri": "fake://first.png"}),
+            ),
         )
     return task_id
 
@@ -76,7 +96,7 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
     assert journal_mode == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5000
-    assert alembic_versions == ["053_activation_code_archive"]
+    assert alembic_versions == ["054_admin_free_grant_adjustments"]
     assert "schema_migrations" not in tables
     assert {
         "users",
@@ -145,7 +165,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             for row in conn.execute("PRAGMA index_list(generation_task_operations)").fetchall()
         }
 
-    assert version == "053_activation_code_archive"
+    assert version == "054_admin_free_grant_adjustments"
     assert {
         "locked_by",
         "locked_until",
@@ -257,7 +277,7 @@ def test_retry_lineage_revision_is_reversible(tmp_path: Path) -> None:
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "053_activation_code_archive"
+            "054_admin_free_grant_adjustments"
         )
 
 
@@ -313,7 +333,7 @@ def test_remove_oss_migration_purges_settings_and_selects_safe_fallback(
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE runtime_settings SET active_storage_provider = 'oss' WHERE id = 1")
 
-    assert version == "053_activation_code_archive"
+    assert version == "054_admin_free_grant_adjustments"
     assert "oss" not in providers
     assert active_provider == expected_provider
 
@@ -417,7 +437,7 @@ def test_runtime_bootstrap_upgrades_an_existing_database_before_startup(
     assert result.returncode == 0, result.stderr
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "053_activation_code_archive"
+            "054_admin_free_grant_adjustments"
         )
         assert (
             conn.execute(
@@ -519,6 +539,11 @@ def test_wal_reader_is_not_blocked_by_uncommitted_writer(tmp_path: Path) -> None
 def test_atomic_task_lease_allows_only_one_worker_with_independent_connections(
     tmp_path: Path,
 ) -> None:
+    """Two workers with independent connections compete for one PENDING task:
+    exactly one lease wins. Ported onto the production acquire path when the
+    stale GenerationTaskRepository was removed — the invariant it checked
+    (single winner under the SQLite lane's BEGIN IMMEDIATE gate) belongs to
+    acquire_generation_task_lease, not to a dead twin."""
     db_path = tmp_path / "app.db"
     with initialize_database(db_path) as raw:
         with BusinessConnection.sqlite(raw) as conn:
@@ -537,10 +562,7 @@ def test_atomic_task_lease_allows_only_one_worker_with_independent_connections(
     def compete(worker_id: str) -> None:
         with BusinessConnection.sqlite(connect_database(db_path)) as conn:
             barrier.wait()
-            lease = GenerationTaskRepository(conn).acquire_next_lease(
-                worker_id=worker_id,
-                lease_seconds=30,
-            )
+            lease = acquire_generation_task_lease(conn, worker_id=worker_id)
         with leases_lock:
             leases.append(lease)
 
@@ -555,30 +577,17 @@ def test_atomic_task_lease_allows_only_one_worker_with_independent_connections(
 
     winners = [lease for lease in leases if lease is not None]
     assert len(winners) == 1
-    assert winners[0].id == task_id
-    assert winners[0].locked_by in {"worker_a", "worker_b"}
-    assert winners[0].attempt == 1
-
-
-def test_expired_lease_can_be_recovered_by_another_worker(tmp_path: Path) -> None:
-    db_path = tmp_path / "app.db"
-    with initialize_database(db_path) as raw:
-        with BusinessConnection.sqlite(raw) as conn:
-            repo = GenerationTaskRepository(conn)
-            _create_minimal_task(
-                conn,
-                user_id="user_1",
-                project_id="project_1",
-                batch_id="batch_1",
-                task_id="task_1",
-            )
-            first = repo.acquire_next_lease(worker_id="worker_a", lease_seconds=-1)
-            recovered = repo.acquire_next_lease(worker_id="worker_b", lease_seconds=30)
-
-    assert first is not None
-    assert recovered is not None
-    assert recovered.locked_by == "worker_b"
-    assert recovered.attempt == 2
+    assert str(winners[0]["id"]) == task_id
+    assert winners[0]["status"] == "SUBMITTING"
+    # The lock columns live on the row, not in the worker payload dict.
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        locked = conn.execute(
+            "SELECT locked_by, attempt, status FROM generation_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+    assert locked is not None
+    assert locked["locked_by"] in {"worker_a", "worker_b"}
+    assert int(locked["attempt"]) == 1
 
 
 def test_backup_restore_preserves_tasks_versions_and_audit_counts(tmp_path: Path) -> None:
