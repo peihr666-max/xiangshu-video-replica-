@@ -94,7 +94,8 @@ _UNION_SQL = """
     UNION ALL
     SELECT al.id, al.action, COALESCE(al.actor_user_id, ''),
            COALESCE(u4.username, ''),
-           CASE WHEN al.entity_type = 'user' THEN al.entity_id ELSE '' END,
+           CASE WHEN al.entity_type IN ('user', 'customer_unit_price')
+                THEN al.entity_id ELSE '' END,
            al.entity_type, al.entity_id,
            COALESCE(al.metadata_json::json ->> 'reason', ''),
            COALESCE(al.metadata_json::json ->> 'request_id', ''),
