@@ -123,6 +123,8 @@ npm run tauri:build
 
 `npm run check` 会依次运行前端格式检查、类型检查和测试，Tauri/Rust 格式与编译检查，以及服务端 Ruff、Mypy 和 Pytest。
 
+公共仓库的 CI 使用 GitHub 托管的 `ubuntu-24.04` 和 `windows-2025` runner，执行密钥扫描、Linux 质量门及 Windows NSIS 门禁。Windows job 将两个未签名安装包暂存到 `${{ runner.temp }}/video-replica-artifacts` 并记录 SHA256；该目录随 job 清理，不是持久产物归档。客户 CI 包使用 `https://staging.example.invalid`，仅用于构建与打包契约核验；正式发布包须按发布流程使用批准的 API 地址另行构建、验收和归档。
+
 ### Gate 1 桌面 FakeProvider 纵向验收
 
 ```powershell

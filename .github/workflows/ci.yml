@@ -17,7 +17,7 @@ jobs:
   secret-scan:
     name: Secret scan
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, ci-linux]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout repository
@@ -34,7 +34,7 @@ jobs:
   quality-linux:
     name: Linux quality gate
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, ci-linux]
+    runs-on: ubuntu-24.04
     # 2026-08-26: raised 30 -> 60 — the full pytest suite (~1450 tests, PG
     # service + 10k queue load) measures 9-27 minutes depending on the hosted
     # runner's performance; a slow runner previously hit the 30-minute cap at
@@ -125,7 +125,7 @@ jobs:
   windows-nsis:
     name: Windows Tauri and NSIS
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Windows, X64, ci-windows]
+    runs-on: windows-2025
     timeout-minutes: 45
     steps:
       - name: Checkout repository
@@ -153,9 +153,11 @@ jobs:
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
       - name: Archive unsigned internal NSIS installer locally
         shell: pwsh
+        env:
+          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts
         run: |
           if (-not $env:LOCAL_ARTIFACT_ROOT) {
-            throw 'LOCAL_ARTIFACT_ROOT must be configured on the self-hosted runner'
+            throw 'LOCAL_ARTIFACT_ROOT must be configured for the Windows job'
           }
           $installers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
           if (-not $installers) {
@@ -212,9 +214,11 @@ jobs:
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
       - name: Archive unsigned customer cloud NSIS installer locally
         shell: pwsh
+        env:
+          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts
         run: |
           if (-not $env:LOCAL_ARTIFACT_ROOT) {
-            throw 'LOCAL_ARTIFACT_ROOT must be configured on the self-hosted runner'
+            throw 'LOCAL_ARTIFACT_ROOT must be configured for the Windows job'
           }
           $installers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
           if (-not $installers) {
