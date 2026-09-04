@@ -1,16 +1,18 @@
 //! Customer credential vault (T29 / DESK-01).
 //!
 //! Dev doc §14: the desktop build persists the device credential and the
-//! session token through the OS-protected store — Windows DPAPI here — and
-//! the JS side only ever receives the short-lived values it needs for a
-//! request. Writing a plaintext secret to a plain file, LocalStorage, or
-//! sessionStorage is forbidden (§10.2); the only on-disk copy is the DPAPI
-//! envelope bound to the current Windows user.
+//! session token through the OS-protected store — Windows DPAPI here, the
+//! login Keychain on macOS — and the JS side only ever receives the
+//! short-lived values it needs for a request. Writing a plaintext secret to
+//! a plain file, LocalStorage, or sessionStorage is forbidden (§10.2); the
+//! only on-disk copy is the DPAPI envelope bound to the current Windows
+//! user, or a Keychain item locked to the current macOS device.
 //!
 //! Dependency posture (§10.2 "安全存储方案单独依赖审查"): this module adds
 //! zero new external crates — the DPAPI calls are a hand-written FFI surface
-//! over `crypt32.dll` (two stable functions plus `LocalFree`), and
-//! serde/serde_json/uuid are already in the locked dependency tree that
+//! over `crypt32.dll` (two stable functions plus `LocalFree`), the macOS
+//! Keychain calls are the same posture over Security.framework/CoreFoundation,
+//! and serde/serde_json/uuid are already in the locked dependency tree that
 //! Tauri itself resolves. No keyring plugin or unscreened secret-store
 //! dependency is introduced.
 
@@ -98,23 +100,44 @@ impl CustomerCredentialVault {
         }
     }
 
-    /// Persist the credentials as a DPAPI-protected JSON envelope.
+    /// Persist the credentials: a DPAPI-protected file envelope on Windows,
+    /// a login-Keychain generic password item on macOS.
     pub fn save(&self, credentials: &CustomerCredentials) -> Result<(), VaultError> {
         let json = serde_json::to_vec(credentials).map_err(|e| vault_err(e.to_string()))?;
-        let envelope = protect(&json, DPAPI_ENTROPY)?;
-        write_file_atomically(&self.dir.join(CREDENTIALS_FILE), &envelope)
+        #[cfg(target_os = "macos")]
+        {
+            return keychain::save_credentials(&self.dir, &json);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let envelope = protect(&json, DPAPI_ENTROPY)?;
+            write_file_atomically(&self.dir.join(CREDENTIALS_FILE), &envelope)
+        }
     }
 
     /// Load and decrypt the credentials; `Ok(None)` when nothing is stored.
     pub fn load(&self) -> Result<Option<CustomerCredentials>, VaultError> {
-        let path = self.dir.join(CREDENTIALS_FILE);
-        if !path.exists() {
-            return Ok(None);
+        #[cfg(target_os = "macos")]
+        {
+            let Some(envelope) = keychain::load_credentials(&self.dir)? else {
+                return Ok(None);
+            };
+            let credentials =
+                serde_json::from_slice(&envelope).map_err(|e| vault_err(e.to_string()))?;
+            return Ok(Some(credentials));
         }
-        let envelope = fs::read(&path).map_err(|e| vault_err(e.to_string()))?;
-        let json = unprotect(&envelope, DPAPI_ENTROPY)?;
-        let credentials = serde_json::from_slice(&json).map_err(|e| vault_err(e.to_string()))?;
-        Ok(Some(credentials))
+        #[cfg(not(target_os = "macos"))]
+        {
+            let path = self.dir.join(CREDENTIALS_FILE);
+            if !path.exists() {
+                return Ok(None);
+            }
+            let envelope = fs::read(&path).map_err(|e| vault_err(e.to_string()))?;
+            let json = unprotect(&envelope, DPAPI_ENTROPY)?;
+            let credentials =
+                serde_json::from_slice(&json).map_err(|e| vault_err(e.to_string()))?;
+            Ok(Some(credentials))
+        }
     }
 
     /// Drop the session token but keep the device credential (§13.2: an
@@ -134,11 +157,18 @@ impl CustomerCredentialVault {
     /// Remove every stored credential (§13.2 DEVICE_REVOKED: the recovery
     /// flow starts from a clean slate).
     pub fn clear_all(&self) -> Result<(), VaultError> {
-        let path = self.dir.join(CREDENTIALS_FILE);
-        if path.exists() {
-            fs::remove_file(&path).map_err(|e| vault_err(e.to_string()))?;
+        #[cfg(target_os = "macos")]
+        {
+            return keychain::delete_credentials(&self.dir);
         }
-        Ok(())
+        #[cfg(not(target_os = "macos"))]
+        {
+            let path = self.dir.join(CREDENTIALS_FILE);
+            if path.exists() {
+                fs::remove_file(&path).map_err(|e| vault_err(e.to_string()))?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -506,18 +536,238 @@ fn unprotect(encrypted: &[u8], entropy: &[u8]) -> Result<Vec<u8>, VaultError> {
     dpapi::unprotect(encrypted, entropy).map_err(vault_err)
 }
 
-#[cfg(not(windows))]
+// macOS persists through the login Keychain below; these DPAPI stubs stay
+// fail-closed only for platforms with no implemented vault (Linux CI).
+#[cfg(not(any(windows, target_os = "macos")))]
 fn protect(_plaintext: &[u8], _entropy: &[u8]) -> Result<Vec<u8>, VaultError> {
     Err(vault_err(
         "customer credential persistence requires Windows DPAPI on this platform",
     ))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn unprotect(_encrypted: &[u8], _entropy: &[u8]) -> Result<Vec<u8>, VaultError> {
     Err(vault_err(
         "customer credential persistence requires Windows DPAPI on this platform",
     ))
+}
+
+/// Login-Keychain persistence for customer credentials (macOS).
+///
+/// Same dependency posture as the Windows DPAPI surface: hand-written C FFI
+/// over two system frameworks, zero new external crates. Credentials live in
+/// one generic-password item per vault (`kSecAttrAccessibleWhenUnlockedThis
+/// DeviceOnly`), so the secret is system-encrypted, bound to this device and
+/// never present as a plaintext file. The vault directory's file-name tail
+/// namespaces the account attribute: stable for the production app-data dir,
+/// unique per temp dir in tests.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use std::ffi::{c_char, c_void};
+    use std::path::Path;
+
+    use super::{vault_err, VaultError};
+
+    type OsStatus = i32;
+    type CfTypeRef = *const c_void;
+    type CfStringRef = *const c_void;
+    type CfDataRef = *const c_void;
+    type CfAllocatorRef = *const c_void;
+    type CfMutableDictionaryRef = *mut c_void;
+
+    const ERR_SEC_SUCCESS: OsStatus = 0;
+    const ERR_SEC_ITEM_NOT_FOUND: OsStatus = -25300;
+    const ERR_SEC_DUPLICATE_ITEM: OsStatus = -25299;
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+
+    const SERVICE: &str = "video-replica-customer-credentials";
+
+    // Layout-only: the callbacks are never invoked from Rust, the framework
+    // retains its own function pointers. Field order and sizes must match
+    // CFDictionaryKeyCallBacks/CFDictionaryValueCallBacks on arm64/x86_64.
+    #[repr(C)]
+    struct CfDictionaryCallbacks {
+        version: isize,
+        retain: *const c_void,
+        release: *const c_void,
+        copy_description: *const c_void,
+        equal: *const c_void,
+        hash: *const c_void,
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFCopyStringDictionaryKeyCallBacks: CfDictionaryCallbacks;
+        static kCFTypeDictionaryValueCallBacks: CfDictionaryCallbacks;
+        static kCFBooleanTrue: CfTypeRef;
+
+        fn CFStringCreateWithCString(
+            alloc: CfAllocatorRef,
+            c_str: *const c_char,
+            encoding: u32,
+        ) -> CfStringRef;
+        fn CFDataCreate(alloc: CfAllocatorRef, bytes: *const u8, length: isize) -> CfDataRef;
+        fn CFDataGetBytePtr(data: CfDataRef) -> *const u8;
+        fn CFDataGetLength(data: CfDataRef) -> isize;
+        fn CFDictionaryCreateMutable(
+            alloc: CfAllocatorRef,
+            capacity: isize,
+            key_callbacks: *const CfDictionaryCallbacks,
+            value_callbacks: *const CfDictionaryCallbacks,
+        ) -> CfMutableDictionaryRef;
+        fn CFDictionarySetValue(dict: CfMutableDictionaryRef, key: CfTypeRef, value: CfTypeRef);
+        fn CFRelease(cf: CfTypeRef);
+    }
+
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        static kSecClass: CfStringRef;
+        static kSecClassGenericPassword: CfStringRef;
+        static kSecAttrService: CfStringRef;
+        static kSecAttrAccount: CfStringRef;
+        static kSecAttrAccessible: CfStringRef;
+        static kSecAttrAccessibleWhenUnlockedThisDeviceOnly: CfStringRef;
+        static kSecValueData: CfStringRef;
+        static kSecReturnData: CfStringRef;
+
+        fn SecItemAdd(query: CfMutableDictionaryRef, result: *mut CfTypeRef) -> OsStatus;
+        fn SecItemCopyMatching(query: CfMutableDictionaryRef, result: *mut CfTypeRef) -> OsStatus;
+        fn SecItemUpdate(query: CfMutableDictionaryRef, update: CfMutableDictionaryRef)
+            -> OsStatus;
+        fn SecItemDelete(query: CfMutableDictionaryRef) -> OsStatus;
+    }
+
+    /// A CFMutableDictionary that releases itself on drop. Created CF values
+    /// are retained by the dictionary (kCFType callbacks), so the temporaries
+    /// can be released right after each set.
+    struct Query(CfMutableDictionaryRef);
+
+    impl Query {
+        fn new() -> Result<Self, VaultError> {
+            let dict = unsafe {
+                CFDictionaryCreateMutable(
+                    std::ptr::null(),
+                    0,
+                    &kCFCopyStringDictionaryKeyCallBacks,
+                    &kCFTypeDictionaryValueCallBacks,
+                )
+            };
+            if dict.is_null() {
+                return Err(vault_err("Keychain: CFDictionaryCreateMutable failed"));
+            }
+            let mut query = Query(dict);
+            query.set_const(unsafe { kSecClass }, unsafe { kSecClassGenericPassword });
+            query.set_str(unsafe { kSecAttrService }, SERVICE)?;
+            Ok(query)
+        }
+
+        fn set_str(&mut self, key: CfStringRef, value: &str) -> Result<(), VaultError> {
+            let c = std::ffi::CString::new(value)
+                .map_err(|_| vault_err("Keychain: value contains a NUL byte"))?;
+            let cf_string = unsafe {
+                CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), K_CF_STRING_ENCODING_UTF8)
+            };
+            if cf_string.is_null() {
+                return Err(vault_err("Keychain: CFStringCreateWithCString failed"));
+            }
+            unsafe { CFDictionarySetValue(self.0, key, cf_string) };
+            unsafe { CFRelease(cf_string) };
+            Ok(())
+        }
+
+        fn set_data(&mut self, key: CfStringRef, value: &[u8]) -> Result<(), VaultError> {
+            let cf_data =
+                unsafe { CFDataCreate(std::ptr::null(), value.as_ptr(), value.len() as isize) };
+            if cf_data.is_null() {
+                return Err(vault_err("Keychain: CFDataCreate failed"));
+            }
+            unsafe { CFDictionarySetValue(self.0, key, cf_data) };
+            unsafe { CFRelease(cf_data) };
+            Ok(())
+        }
+
+        fn set_const(&mut self, key: CfStringRef, value: CfTypeRef) {
+            unsafe { CFDictionarySetValue(self.0, key, value) };
+        }
+    }
+
+    impl Drop for Query {
+        fn drop(&mut self) {
+            unsafe { CFRelease(self.0) };
+        }
+    }
+
+    fn account_for(dir: &Path) -> String {
+        dir.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "default".to_string())
+    }
+
+    pub fn save_credentials(dir: &Path, json: &[u8]) -> Result<(), VaultError> {
+        let mut query = Query::new()?;
+        query.set_str(unsafe { kSecAttrAccount }, &account_for(dir))?;
+        // Device-bound and unreadable while the Mac is locked; the item never
+        // migrates through backups — the same trust envelope DPAPI gives the
+        // Windows user account.
+        query.set_const(unsafe { kSecAttrAccessible }, unsafe {
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        });
+        query.set_data(unsafe { kSecValueData }, json)?;
+
+        let status = unsafe { SecItemAdd(query.0, std::ptr::null_mut()) };
+        match status {
+            ERR_SEC_SUCCESS => Ok(()),
+            ERR_SEC_DUPLICATE_ITEM => {
+                // SecItemUpdate's second argument carries only the changed
+                // attribute — the new value data.
+                let mut attrs = Query::new()?;
+                attrs.set_data(unsafe { kSecValueData }, json)?;
+                let status = unsafe { SecItemUpdate(query.0, attrs.0) };
+                if status == ERR_SEC_SUCCESS {
+                    Ok(())
+                } else {
+                    Err(vault_err(format!("Keychain update failed: {status}")))
+                }
+            }
+            other => Err(vault_err(format!("Keychain add failed: {other}"))),
+        }
+    }
+
+    pub fn load_credentials(dir: &Path) -> Result<Option<Vec<u8>>, VaultError> {
+        let mut query = Query::new()?;
+        query.set_str(unsafe { kSecAttrAccount }, &account_for(dir))?;
+        query.set_const(unsafe { kSecReturnData }, unsafe { kCFBooleanTrue });
+
+        let mut result: CfTypeRef = std::ptr::null();
+        let status = unsafe { SecItemCopyMatching(query.0, &mut result) };
+        match status {
+            ERR_SEC_SUCCESS => {
+                if result.is_null() {
+                    return Err(vault_err("Keychain returned no data"));
+                }
+                let length = unsafe { CFDataGetLength(result) };
+                let bytes = unsafe { CFDataGetBytePtr(result) };
+                let data = (!bytes.is_null()).then(|| {
+                    unsafe { std::slice::from_raw_parts(bytes, length as usize) }.to_vec()
+                });
+                unsafe { CFRelease(result) };
+                data.ok_or_else(|| vault_err("Keychain item has no readable data"))
+                    .map(Some)
+            }
+            ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+            other => Err(vault_err(format!("Keychain read failed: {other}"))),
+        }
+    }
+
+    pub fn delete_credentials(dir: &Path) -> Result<(), VaultError> {
+        let mut query = Query::new()?;
+        query.set_str(unsafe { kSecAttrAccount }, &account_for(dir))?;
+        let status = unsafe { SecItemDelete(query.0) };
+        match status {
+            ERR_SEC_SUCCESS | ERR_SEC_ITEM_NOT_FOUND => Ok(()),
+            other => Err(vault_err(format!("Keychain delete failed: {other}"))),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -643,9 +893,83 @@ mod tests {
         assert_eq!(vault.load().expect("load"), None);
     }
 
-    #[cfg(not(windows))]
+    // macOS stores in the login Keychain (system-encrypted), not in a file
+    // under `dir`; the directory tail still isolates test items from the
+    // production account name.
+    #[cfg(target_os = "macos")]
     #[test]
-    fn save_fails_closed_off_windows_instead_of_plaintext() {
+    fn credentials_roundtrip_through_the_keychain_item() {
+        let vault = temp_vault();
+        vault
+            .save(&CustomerCredentials {
+                device_token: DEVICE_TOKEN_TEXT.into(),
+                session_token: Some("session-token-1".into()),
+            })
+            .expect("save");
+
+        // Restart: a fresh vault over the same directory must read back what
+        // was persisted, from a different Keychain handle.
+        let restarted = CustomerCredentialVault::new(&vault.dir);
+        let loaded = restarted.load().expect("load").expect("some credentials");
+        assert_eq!(loaded.device_token, "device-token-1");
+        assert_eq!(loaded.session_token.as_deref(), Some("session-token-1"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_vault_never_writes_a_credential_file() {
+        let vault = temp_vault();
+        vault
+            .save(&CustomerCredentials {
+                device_token: DEVICE_TOKEN_TEXT.into(),
+                session_token: Some("session-token-1".into()),
+            })
+            .expect("save");
+        assert!(
+            !vault.dir.join(CREDENTIALS_FILE).exists(),
+            "macOS persists in the Keychain; no credential file may appear on disk"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_clear_session_keeps_the_device_credential() {
+        let vault = temp_vault();
+        vault
+            .save(&CustomerCredentials {
+                device_token: DEVICE_TOKEN_TEXT.into(),
+                session_token: Some("session-token-1".into()),
+            })
+            .expect("save");
+
+        vault.clear_session().expect("clear session");
+
+        let loaded = vault.load().expect("load").expect("some credentials");
+        assert_eq!(loaded.device_token, "device-token-1");
+        assert_eq!(loaded.session_token, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_clear_all_removes_the_item_entirely() {
+        let vault = temp_vault();
+        vault
+            .save(&CustomerCredentials {
+                device_token: DEVICE_TOKEN_TEXT.into(),
+                session_token: Some("session-token-1".into()),
+            })
+            .expect("save");
+
+        vault.clear_all().expect("clear all");
+
+        assert_eq!(vault.load().expect("load"), None);
+        // A distinct vault must not be touched by another test's item.
+        assert_eq!(temp_vault().load().expect("load"), None);
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn save_fails_closed_off_windows_and_macos_instead_of_plaintext() {
         let vault = temp_vault();
         let result = vault.save(&CustomerCredentials {
             device_token: DEVICE_TOKEN_TEXT.into(),
@@ -653,7 +977,7 @@ mod tests {
         });
         assert!(
             result.is_err(),
-            "a non-Windows build must refuse to persist"
+            "a non-Windows/non-macOS build must refuse to persist"
         );
         assert!(!vault.dir.join(CREDENTIALS_FILE).exists());
     }
