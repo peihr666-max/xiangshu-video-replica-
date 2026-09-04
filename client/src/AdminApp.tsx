@@ -23,7 +23,7 @@ import {
   loginAdminWithPassword,
   recoverAdminPassword,
 } from "./api.admin";
-import jingxuLogoMark from "./assets/brand/jingxu-logo-mark.png";
+import zhongshuLogoMark from "./assets/brand/zhongshu-logo-mark.svg";
 import { SettingsPanel } from "./SettingsPanel";
 
 type AuthPhase =
@@ -455,10 +455,10 @@ export function AdminApp() {
         >
           <div className="admin-sidebar__top">
             <div className="admin-brand">
-              <img alt="" aria-hidden="true" src={jingxuLogoMark} />
+              <img alt="" aria-hidden="true" src={zhongshuLogoMark} />
               <div>
-                <strong>镜序 Studio</strong>
-                <span>OPERATIONS</span>
+                <strong>众墅之家</strong>
+                <span>AI 即创 · AI 视频创作平台</span>
               </div>
             </div>
             <div className="admin-sidebar__context">

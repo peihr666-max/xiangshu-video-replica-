@@ -97,9 +97,9 @@ export function App() {
     return (
       <main className="centered-shell">
         <section className="login-card" aria-labelledby="app-title">
-          <span className="eyebrow">JINGXU STUDIO</span>
-          <h1 id="app-title">镜序 Studio</h1>
-          <p>短视频复刻工作台</p>
+          <span className="eyebrow">众墅之家 · AI 即创</span>
+          <h1 id="app-title">众墅之家</h1>
+          <p>AI 视频创作平台</p>
           {sessionMessage ? (
             <p className="settings-error" role="alert">
               {sessionMessage}
@@ -576,8 +576,8 @@ function AppSidebar({
           </svg>
         </span>
         <span>
-          <strong>镜序 Studio</strong>
-          <small className="app-brand__subtitle">AI 视频复刻</small>
+          <strong>众墅之家</strong>
+          <small className="app-brand__subtitle">AI 即创</small>
         </span>
       </div>
       <nav className="sidebar-nav" aria-label="主导航">

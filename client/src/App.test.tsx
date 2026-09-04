@@ -601,7 +601,7 @@ describe("App", () => {
       await screen.findByText("登录已失效，请重新进入工作台。"),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "镜序 Studio" }),
+      screen.getByRole("heading", { name: "众墅之家" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("林夏")).toBeNull();
   });
