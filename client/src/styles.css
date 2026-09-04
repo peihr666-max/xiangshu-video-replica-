@@ -8476,3 +8476,64 @@ button.activation-generator__submit {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/* v4 导航合并：合并式页面的页签行 */
+.admin-page-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--admin-line, #2e2c29);
+  margin-bottom: 18px;
+}
+
+.admin-page-tabs__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.admin-page-tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--admin-muted, #a49e95);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 14px;
+}
+
+.admin-page-tab:hover {
+  color: var(--admin-text, #ece8df);
+}
+
+.admin-page-tab.is-active {
+  border-bottom-color: var(--admin-gold, #c6a45f);
+  color: var(--admin-gold-bright, #e0c17c);
+}
+
+.admin-page-tabs__actions {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.admin-devices-sessions-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.admin-placeholder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+}
+
+@media (max-width: 1280px) {
+  .admin-devices-sessions-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

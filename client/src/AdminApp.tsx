@@ -1,14 +1,11 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { AccountsPage } from "./admin/AccountsPage";
-import { AdminActivationSection } from "./admin/AdminActivationSection";
-import { AuditEventsPage } from "./admin/AuditEventsPage";
-import { CustomersPage } from "./admin/CustomersPage";
-import { DevicesPage } from "./admin/DevicesPage";
+import { AnalyticsPage } from "./admin/AnalyticsPage";
+import { AuditCenterPage } from "./admin/AuditCenterPage";
+import { CustomersManagementPage } from "./admin/CustomersManagementPage";
+import { FundsPage } from "./admin/FundsPage";
 import { GenerationRecordsPage } from "./admin/GenerationRecordsPage";
-import { OrdersPage } from "./admin/OrdersPage";
-import { PaymentSettingsSection } from "./admin/PaymentSettingsSection";
-import { QueueModeSection } from "./admin/QueueModeSection";
-import { SessionsPage } from "./admin/SessionsPage";
+import { OverviewPage } from "./admin/OverviewPage";
+import { SystemSettingsPage } from "./admin/SystemSettingsPage";
 import { PageBanner } from "./admin/ui/PageBanner";
 import { roleLabel } from "./admin/ui/vocabulary";
 import { SESSION_EXPIRED_EVENT } from "./api";
@@ -34,16 +31,13 @@ type AuthPhase =
   | "ready";
 
 type AdminTab =
-  | "accounts"
-  | "orders"
-  | "settings"
-  | "services"
-  | "activation"
-  | "devices"
-  | "customers"
+  | "overview"
+  | "analytics"
+  | "funds"
+  | "customersMgmt"
   | "generationRecords"
-  | "sessions"
-  | "audit";
+  | "auditCenter"
+  | "systemSettings";
 
 const tabGroups: Array<{
   id: string;
@@ -54,8 +48,9 @@ const tabGroups: Array<{
     id: "overview",
     label: "运营概览",
     tabs: [
-      { id: "accounts", label: "账号与钱包", helper: "钱包、条数与流水" },
-      { id: "orders", label: "充值订单", helper: "支付、查单、对账与导出" },
+      { id: "overview", label: "总览仪表盘", helper: "核心指标与经营总览" },
+      { id: "analytics", label: "经营分析", helper: "利润、成本与趋势" },
+      { id: "funds", label: "资金流水", helper: "充值订单与额度流水" },
     ],
   },
   {
@@ -63,46 +58,38 @@ const tabGroups: Array<{
     label: "客户运营",
     tabs: [
       {
-        id: "activation",
-        label: "激活码与发放",
-        helper: "生成、发放、暂停恢复与撤销",
-      },
-      { id: "devices", label: "设备", helper: "绑定状态与强制下线" },
-      {
-        id: "customers",
-        label: "客户",
-        helper: "客户账户、售价、免费条数与调账",
+        id: "customersMgmt",
+        label: "客户管理",
+        helper: "客户、激活码、设备与会话",
       },
       {
         id: "generationRecords",
         label: "生成记录",
         helper: "视频、图片与 AI 评分费用追溯",
       },
-      { id: "sessions", label: "会话", helper: "在线态与单在线约束" },
     ],
   },
   {
     id: "governance",
     label: "系统治理",
     tabs: [
-      { id: "settings", label: "支付与价格", helper: "定价与渠道设置" },
-      { id: "services", label: "服务配置", helper: "上游服务与运行参数" },
-      { id: "audit", label: "审计", helper: "操作留痕与事件检索" },
+      { id: "auditCenter", label: "审计中心", helper: "审计日志与调账记录" },
+      {
+        id: "systemSettings",
+        label: "系统设置",
+        helper: "支付、费率与服务配置",
+      },
     ],
   },
 ];
-
 const tabPageTitles: Record<AdminTab, string> = {
-  accounts: "账号与钱包",
-  orders: "充值订单",
-  settings: "支付与价格",
-  services: "服务配置",
-  activation: "激活码与发放",
-  devices: "设备管理",
-  customers: "客户管理",
+  overview: "总览仪表盘",
+  analytics: "经营分析",
+  funds: "资金流水",
+  customersMgmt: "客户管理",
   generationRecords: "用户生成记录",
-  sessions: "会话管理",
-  audit: "审计日志",
+  auditCenter: "审计中心",
+  systemSettings: "系统设置",
 };
 
 const compactNavigationBreakpoint = 1024;
@@ -115,10 +102,7 @@ export function AdminApp() {
   const [recoveryCredential, setRecoveryCredential] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [activeTab, setActiveTab] = useState<AdminTab>("accounts");
-  const [sessionUserId, setSessionUserId] = useState<string | undefined>(
-    undefined,
-  );
+  const [activeTab, setActiveTab] = useState<AdminTab>("overview");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isCompactNavigation, setIsCompactNavigation] = useState(() =>
@@ -137,7 +121,7 @@ export function AdminApp() {
       clearAdminActivationSession();
       setActor(null);
       setAuthPhase("anonymous");
-      setActiveTab("accounts");
+      setActiveTab("overview");
       setLoginPassword("");
       setRecoveryCredential("");
       setNewPassword("");
@@ -218,7 +202,7 @@ export function AdminApp() {
       setActor(result.actor);
       setLoginPassword("");
       setAuthPhase("ready");
-      setActiveTab("accounts");
+      setActiveTab("overview");
     } catch (cause) {
       setError(adminActivationErrorMessage(cause, "后台登录失败"));
     }
@@ -526,42 +510,21 @@ export function AdminApp() {
             <p>{activeTabMeta?.helper ?? "运营核心视图"}</p>
           </header>
 
-          {activeTab === "accounts" ? <AccountsPage /> : null}
-          {activeTab === "orders" ? <OrdersPage readOnly={readOnly} /> : null}
-          {activeTab === "settings" ? (
-            <PaymentSettingsSection readOnly={readOnly} />
-          ) : null}
-          {activeTab === "services" ? (
-            <>
-              <QueueModeSection readOnly={readOnly} />
-              <section className="admin-panel" aria-label="服务配置">
-                <SettingsPanel readOnly={readOnly} source="control" />
-              </section>
-            </>
-          ) : null}
-          {activeTab === "activation" ? (
-            <AdminActivationSection
+          {activeTab === "overview" ? <OverviewPage /> : null}
+          {activeTab === "analytics" ? <AnalyticsPage /> : null}
+          {activeTab === "funds" ? <FundsPage readOnly={readOnly} /> : null}
+          {activeTab === "customersMgmt" ? (
+            <CustomersManagementPage
               actor={actor}
+              readOnly={readOnly}
               onSessionExpired={handleSessionExpired}
             />
           ) : null}
-          {activeTab === "devices" ? <DevicesPage readOnly={readOnly} /> : null}
-          {activeTab === "customers" ? (
-            <CustomersPage
-              embedded
-              readOnly={readOnly}
-              onOpenDevices={() => setActiveTab("devices")}
-              onOpenSessions={(userId) => {
-                setSessionUserId(userId);
-                setActiveTab("sessions");
-              }}
-            />
-          ) : null}
           {activeTab === "generationRecords" ? <GenerationRecordsPage /> : null}
-          {activeTab === "sessions" ? (
-            <SessionsPage readOnly={readOnly} userId={sessionUserId} />
+          {activeTab === "auditCenter" ? <AuditCenterPage /> : null}
+          {activeTab === "systemSettings" ? (
+            <SystemSettingsPage readOnly={readOnly} />
           ) : null}
-          {activeTab === "audit" ? <AuditEventsPage /> : null}
         </div>
       </section>
     </main>
