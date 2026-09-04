@@ -505,7 +505,7 @@ describe("AdminApp", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "激活码" }));
 
     expect(
-      await screen.findByRole("heading", { name: "直接生成激活码" }),
+      await screen.findByRole("heading", { name: "生成激活码" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { level: 1, name: "客户管理" }),
