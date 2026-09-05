@@ -1,0 +1,137 @@
+
+> video-replica-desktop@0.1.16 check
+> bash scripts/verify_no_secrets.sh && npm run check --workspace client && npm run check:e2e && npm run check:tauri && uv --cache-dir .uv-cache run --project server --locked ruff check server && uv --cache-dir .uv-cache run --project server --locked ruff format --check server && uv --cache-dir .uv-cache run --project server --locked python -m mypy --config-file server/pyproject.toml server/app && uv --cache-dir .uv-cache run --project server --locked python -m pytest --rootdir server server/tests
+
+No hardcoded secrets detected in runtime contract surface.
+
+> @video-replica/client@0.1.16 check
+> biome check . && tsc -b && vitest run
+
+Checked 157 files in 190ms. No fixes applied.
+
+ RUN  v4.1.10 D:/xiangshu-video-replica/client
+
+
+ Test Files  63 passed (63)
+      Tests  746 passed (746)
+   Start at  19:58:52
+   Duration  14.30s (transform 7.87s, setup 13.29s, import 12.36s, tests 72.02s, environment 84.66s)
+
+
+> video-replica-desktop@0.1.16 check:e2e
+> biome check e2e
+
+Checked 15 files in 18ms. No fixes applied.
+
+> video-replica-desktop@0.1.16 check:tauri
+> cargo fmt --manifest-path client/src-tauri/Cargo.toml --check && cargo check --manifest-path client/src-tauri/Cargo.toml --locked
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s
+All checks passed!
+222 files already formatted
+Success: no issues found in 78 source files
+============================= test session starts =============================
+platform win32 -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
+cachedir: D:\xiangshu-video-replica\.pytest-root-final-cache
+rootdir: D:\xiangshu-video-replica\server
+configfile: pyproject.toml
+plugins: anyio-4.14.2, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1634 items
+
+server\tests\test_activation_code_routes.py ........................     [  1%]
+server\tests\test_activation_code_schema.py ..............               [  2%]
+server\tests\test_activation_code_service.py .........................   [  3%]
+server\tests\test_admin_activation_routes.py ........................... [  5%]
+............................                                             [  7%]
+server\tests\test_admin_audit_routes.py ..............                   [  8%]
+server\tests\test_admin_auth.py ........................................ [ 10%]
+.................................................                        [ 13%]
+server\tests\test_admin_customer_routes.py ............................. [ 15%]
+...............................                                          [ 17%]
+server\tests\test_admin_dashboard_routes.py ....                         [ 17%]
+server\tests\test_admin_profit_routes.py ...........                     [ 18%]
+server\tests\test_admin_rate_routes.py .......                           [ 18%]
+server\tests\test_admin_session_routes.py ...............                [ 19%]
+server\tests\test_analysis.py .......................................... [ 22%]
+                                                                         [ 22%]
+server\tests\test_apilio_image_provider.py .......                       [ 22%]
+server\tests\test_async_compat.py ......                                 [ 22%]
+server\tests\test_build_contracts.py ........                            [ 23%]
+server\tests\test_character_asset_review.py .......                      [ 23%]
+server\tests\test_character_domain.py ..............                     [ 24%]
+server\tests\test_character_identity_api.py .................            [ 25%]
+server\tests\test_character_image_generation.py .....................    [ 26%]
+server\tests\test_character_reference_matching.py ...............        [ 27%]
+server\tests\test_characters.py ........                                 [ 28%]
+server\tests\test_customer_activation.py ............                    [ 29%]
+server\tests\test_customer_chain_e2e.py ..                               [ 29%]
+server\tests\test_customer_devices.py .................................. [ 31%]
+.........................................                                [ 33%]
+server\tests\test_customer_fencing.py .................................. [ 35%]
+...........................                                              [ 37%]
+server\tests\test_customer_git_rollout.py ...                            [ 37%]
+server\tests\test_customer_ha_smoke.py ................................. [ 39%]
+.....                                                                    [ 40%]
+server\tests\test_customer_idempotency.py ..................             [ 41%]
+server\tests\test_customer_pitr.py ...........                           [ 41%]
+server\tests\test_customer_queue_fairness.py ............                [ 42%]
+server\tests\test_customer_recharge.py ........................          [ 44%]
+server\tests\test_customer_release_preflight.py ...                      [ 44%]
+server\tests\test_customer_security.py ................................. [ 46%]
+....                                                                     [ 46%]
+server\tests\test_customer_sessions.py ................................. [ 48%]
+.............................                                            [ 50%]
+server\tests\test_db.py ......................                           [ 51%]
+server\tests\test_db_pg.py ............................................. [ 54%]
+............                                                             [ 55%]
+server\tests\test_db_portable.py ...................                     [ 56%]
+server\tests\test_e2e_fake_provider.py ....                              [ 56%]
+server\tests\test_first_frames.py .....................................  [ 58%]
+server\tests\test_gate1_bootstrap.py .                                   [ 58%]
+server\tests\test_gate1_e2e.py ..................                        [ 59%]
+server\tests\test_generation.py ........................................ [ 62%]
+........................................................................ [ 66%]
+.......................                                                  [ 68%]
+server\tests\test_health.py ......                                       [ 68%]
+server\tests\test_internal_access_tokens.py .......                      [ 68%]
+server\tests\test_internal_admin.py ......................               [ 70%]
+server\tests\test_internal_billing.py ............                       [ 71%]
+server\tests\test_internal_deployment.py ...........                     [ 71%]
+server\tests\test_local_settings_key.py ......                           [ 72%]
+server\tests\test_media.py ...........................                   [ 73%]
+server\tests\test_migration_dialect_contract.py ..                       [ 73%]
+server\tests\test_operation_costs.py .............                       [ 74%]
+server\tests\test_ops_alerts.py ..............                           [ 75%]
+server\tests\test_ops_metrics.py ......................                  [ 76%]
+server\tests\test_optional_project_state_api.py ...                      [ 77%]
+server\tests\test_payments.py ..........................                 [ 78%]
+server\tests\test_postgres_migrations.py ......................          [ 79%]
+server\tests\test_project_character_selection.py ........                [ 80%]
+server\tests\test_queue_load_10k.py ...                                  [ 80%]
+server\tests\test_rbac.py .............................................  [ 83%]
+server\tests\test_recharge_orders.py .........................           [ 84%]
+server\tests\test_script_rewrite.py ......                               [ 85%]
+server\tests\test_security_contracts.py ...                              [ 85%]
+server\tests\test_settings.py .......................................... [ 88%]
+................                                                         [ 89%]
+server\tests\test_simple_character.py .................................. [ 91%]
+..................                                                       [ 92%]
+server\tests\test_source_frames.py ....................s..               [ 93%]
+server\tests\test_sqlite_to_postgres.py ................................ [ 95%]
+......                                                                   [ 95%]
+server\tests\test_storage.py ..............                              [ 96%]
+server\tests\test_wallet_billing_service.py ................             [ 97%]
+server\tests\test_wallet_routes.py ....                                  [ 98%]
+server\tests\test_worker_crash_recovery.py ..................            [ 99%]
+server\tests\test_zpay.py ..............                                 [100%]
+
+============================== warnings summary ===============================
+server\.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\xiangshu-video-replica\server\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] server\tests\test_source_frames.py:726: ffmpeg is required
+=========== 1633 passed, 1 skipped, 1 warning in 919.85s (0:15:19) ============
