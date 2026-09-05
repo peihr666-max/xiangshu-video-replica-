@@ -7,6 +7,7 @@ import { GenerationRecordsPage } from "./admin/GenerationRecordsPage";
 import { OverviewPage } from "./admin/OverviewPage";
 import { SystemSettingsPage } from "./admin/SystemSettingsPage";
 import { PageBanner } from "./admin/ui/PageBanner";
+import { TabBar } from "./admin/ui/TabBar";
 import { roleLabel } from "./admin/ui/vocabulary";
 import { SESSION_EXPIRED_EVENT } from "./api";
 import {
@@ -21,7 +22,13 @@ import {
   recoverAdminPassword,
 } from "./api.admin";
 import zhongshuLogoMark from "./assets/brand/zhongshu-logo-mark.svg";
-import { SettingsPanel } from "./SettingsPanel";
+import chartIcon from "./assets/icons/chart-no-axes-combined.svg";
+import clapperboardIcon from "./assets/icons/clapperboard.svg";
+import gaugeIcon from "./assets/icons/gauge.svg";
+import settingsIcon from "./assets/icons/settings.svg";
+import shieldIcon from "./assets/icons/shield-check.svg";
+import usersIcon from "./assets/icons/users-round.svg";
+import walletIcon from "./assets/icons/wallet.svg";
 
 type AuthPhase =
   | "checking"
@@ -93,6 +100,15 @@ const tabPageTitles: Record<AdminTab, string> = {
 };
 
 const compactNavigationBreakpoint = 1024;
+const navigationIcons: Record<AdminTab, string> = {
+  overview: gaugeIcon,
+  analytics: chartIcon,
+  funds: walletIcon,
+  customersMgmt: usersIcon,
+  generationRecords: clapperboardIcon,
+  auditCenter: shieldIcon,
+  systemSettings: settingsIcon,
+};
 
 export function AdminApp() {
   const [authPhase, setAuthPhase] = useState<AuthPhase>("checking");
@@ -103,6 +119,7 @@ export function AdminApp() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [activeTab, setActiveTab] = useState<AdminTab>("overview");
+  const [navigationIntent, setNavigationIntent] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isCompactNavigation, setIsCompactNavigation] = useState(() =>
@@ -477,6 +494,7 @@ export function AdminApp() {
                         type="button"
                         onClick={() => {
                           setActiveTab(tab.id);
+                          setNavigationIntent("");
                           // C3：切标签清掉上一页残留的全局提示。
                           setError("");
                           setNotice("");
@@ -485,8 +503,16 @@ export function AdminApp() {
                           }
                         }}
                       >
-                        <span>{tab.label}</span>
-                        <small>{tab.helper}</small>
+                        <img
+                          alt=""
+                          aria-hidden="true"
+                          className="admin-navigation-icon"
+                          src={navigationIcons[tab.id]}
+                        />
+                        <span className="admin-navigation-copy">
+                          <span>{tab.label}</span>
+                          <small>{tab.helper}</small>
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -511,24 +537,61 @@ export function AdminApp() {
           </header>
 
           {activeTab === "overview" ? (
-            <OverviewPage
+            <>
+              <TabBar
+                ariaLabel="运营概览快捷导航"
+                items={tabGroups[0].tabs}
+                active={activeTab}
+                onChange={(tab) => setActiveTab(tab as AdminTab)}
+              />
+              <OverviewPage
+                readOnly={readOnly}
+                onNavigate={(destination) => {
+                  setNavigationIntent(destination);
+                  const routes: Record<string, AdminTab> = {
+                    issueCodes: "customersMgmt",
+                    codes: "customersMgmt",
+                    customerAdjustments: "customersMgmt",
+                    costDetails: "analytics",
+                    rates: "systemSettings",
+                  };
+                  setActiveTab(
+                    routes[destination] ?? (destination as AdminTab),
+                  );
+                }}
+              />
+            </>
+          ) : null}
+          {activeTab === "analytics" ? (
+            <AnalyticsPage
               readOnly={readOnly}
-              onNavigate={(tab) => setActiveTab(tab as AdminTab)}
+              initialTab={
+                navigationIntent === "costDetails" ? "cost" : "profit"
+              }
             />
           ) : null}
-          {activeTab === "analytics" ? <AnalyticsPage /> : null}
           {activeTab === "funds" ? <FundsPage readOnly={readOnly} /> : null}
           {activeTab === "customersMgmt" ? (
             <CustomersManagementPage
               actor={actor}
               readOnly={readOnly}
               onSessionExpired={handleSessionExpired}
+              initialTab={
+                navigationIntent === "issueCodes" ||
+                navigationIntent === "codes"
+                  ? "codes"
+                  : "customers"
+              }
+              initiallyShowGenerator={navigationIntent === "issueCodes"}
             />
           ) : null}
           {activeTab === "generationRecords" ? <GenerationRecordsPage /> : null}
           {activeTab === "auditCenter" ? <AuditCenterPage /> : null}
           {activeTab === "systemSettings" ? (
-            <SystemSettingsPage readOnly={readOnly} />
+            <SystemSettingsPage
+              readOnly={readOnly}
+              initialTab={navigationIntent === "rates" ? "rates" : "payment"}
+            />
           ) : null}
         </div>
       </section>

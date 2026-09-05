@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setAdminCsrfToken } from "../api";
 import { SessionsPage } from "./SessionsPage";
@@ -14,194 +14,177 @@ function jsonResponse(payload: unknown, status = 200) {
 }
 
 const CUSTOMER_ID = "customer-1";
-
 const sessionItem = {
   session_id: "sess-1",
   user_id: CUSTOMER_ID,
   username: "customer_one",
   device_id: "device-1",
   session_epoch: 3,
-  lease_until: "2026-09-01T12:00:00+00:00",
-  last_heartbeat_at: "2026-09-01T11:55:00+00:00",
+  lease_until: "2026-09-01T12:01:00+00:00",
+  last_heartbeat_at: "2026-09-01T11:59:30+00:00",
   created_at: "2026-08-30T08:00:00+00:00",
-  updated_at: "2026-09-01T11:55:00+00:00",
+  updated_at: "2026-09-01T11:59:30+00:00",
   device_name: "办公室电脑",
   platform: "windows",
   slot_no: 1,
   device_status: "ACTIVE",
 };
 
-function installFetch(options?: {
-  sessionsStatus?: number;
-  adjustmentStatus?: number;
-}) {
-  const fetchMock = vi.fn((url: string) => {
-    if (
-      String(url).includes(`/api/control/customers/${CUSTOMER_ID}/sessions`)
-    ) {
-      if (options?.sessionsStatus) {
-        return jsonResponse({}, options.sessionsStatus);
-      }
-      return jsonResponse({
-        items: [sessionItem],
-        total: 3,
-        limit: 50,
-        offset: 0,
-      });
-    }
-    if (
-      String(url).includes(`/api/control/customers/${CUSTOMER_ID}/adjustments`)
-    ) {
-      return jsonResponse(
-        {
-          adjustment_id: "adj-1",
-          order_id: "order-1",
-          credits: "10",
-          amount_fen: "10000",
-          pricing_scope: "CUSTOMER_STANDARD",
-          wallet_balance_after: 60,
-          source_document_type: "CS_TICKET",
-          source_document_ref: "manual-20260902-001",
-          request_id: "req-adj-1",
-        },
-        options?.adjustmentStatus ?? 201,
-      );
-    }
-    throw new Error(`unexpected request: ${url}`);
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
-
-async function queryCustomerSessions() {
-  fireEvent.change(screen.getByLabelText("客户 ID"), {
-    target: { value: CUSTOMER_ID },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "查询会话" }));
-  await screen.findByText("会话 sess-1");
+function sessionList() {
+  return { items: [sessionItem], total: 1, limit: 50, offset: 0 };
 }
 
 describe("SessionsPage", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-09-01T12:00:00+00:00"));
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  it("renders the empty state before any query without issuing a request", () => {
-    const fetchMock = installFetch();
+  it("loads all live sessions on mount and renders the lease card", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      jsonResponse(sessionList()),
+    );
+    vi.stubGlobal("fetch", fetchMock);
     render(<SessionsPage />);
 
-    expect(screen.getByText("该客户当前没有活动会话。")).toBeInTheDocument();
-    expect(screen.getByLabelText("客户 ID")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "查询会话" }),
-    ).toBeInTheDocument();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await screen.findByText("customer_one")).toBeInTheDocument();
+    expect(screen.getByText("办公室电脑 · Windows")).toBeInTheDocument();
+    expect(screen.getByText("租约剩余 60 秒")).toBeInTheDocument();
+    expect(screen.getByText("心跳 30 秒前")).toBeInTheDocument();
+    expect(screen.getByText("Epoch 3")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "67",
+    );
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      "/api/control/customer-sessions/live?limit=50&offset=0",
+    );
   });
 
-  it("loads and displays the sessions of the queried customer", async () => {
-    const fetchMock = installFetch();
-    render(<SessionsPage />);
+  it("loads the requested customer automatically", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      jsonResponse(sessionList()),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionsPage userId={CUSTOMER_ID} />);
 
-    await queryCustomerSessions();
-
-    expect(screen.getByText("会话 sess-1")).toBeInTheDocument();
-    expect(screen.getByText("客户 customer_one")).toBeInTheDocument();
-    expect(screen.getByText("设备 办公室电脑")).toBeInTheDocument();
-    expect(screen.getByText("槽位 #1")).toBeInTheDocument();
-    expect(screen.getByText("状态 ACTIVE")).toBeInTheDocument();
-    expect(screen.getByText("共 3 条，当前显示 1 条。")).toBeInTheDocument();
-
-    // A successful query targets the customer for the T23 background write.
-    expect(screen.getByText("目标客户：customer-1")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "执行后台加款" }),
-    ).toBeInTheDocument();
-
-    expect(
-      fetchMock.mock.calls.some(([url]) =>
-        String(url).endsWith(
-          `/api/control/customers/${CUSTOMER_ID}/sessions?limit=50`,
-        ),
-      ),
-    ).toBe(true);
+    await screen.findByText("customer_one");
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      `/api/control/customers/${CUSTOMER_ID}/sessions?limit=50`,
+    );
+    expect(screen.queryByLabelText("客户 ID")).not.toBeInTheDocument();
   });
 
-  it("shows the load failure as an alert", async () => {
-    installFetch({ sessionsStatus: 500 });
-    render(<SessionsPage />);
-
-    fireEvent.change(screen.getByLabelText("客户 ID"), {
-      target: { value: CUSTOMER_ID },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "查询会话" }));
-
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("加载失败：读取客户会话失败（500）");
-  });
-
-  it("validates the adjustment write before sending anything", async () => {
-    const fetchMock = installFetch();
-    render(<SessionsPage />);
-
-    await queryCustomerSessions();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "执行后台加款" }));
-
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("请输入大于 0 的加款条数");
-    // Validation must reject the submission before any write request.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("routes the adjustment through the high-risk confirmation dialog", async () => {
+  it("revokes a session with a reason and refreshes the live list", async () => {
     setAdminCsrfToken("csrf-token-1");
-    const fetchMock = installFetch({ adjustmentStatus: 201 });
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) =>
+      String(url).includes("/revoke")
+        ? jsonResponse({ request_id: "revoke-1" })
+        : jsonResponse(sessionList()),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
     render(<SessionsPage />);
-
-    await queryCustomerSessions();
-
-    fireEvent.change(screen.getByLabelText("加款条数"), {
-      target: { value: "10" },
-    });
-    fireEvent.change(screen.getByLabelText("来源单号"), {
-      target: { value: "manual-20260902-001" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "执行后台加款" }));
-
-    // 表单通过校验后打开高危确认对话框：原因必填 + 我已知晓勾选。
-    const dialog = await screen.findByRole("dialog", { name: "确认后台加款" });
-    expect(dialog).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "确认加款" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "请填写操作原因",
+    await screen.findByText("customer_one");
+    fireEvent.click(
+      screen.getByRole("button", { name: "强制下线 customer_one" }),
     );
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
     fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "客服工单补发" },
+      target: { value: "客服确认账号异常" },
     });
-    fireEvent.click(screen.getByLabelText("我已知晓该操作的影响"));
-    fireEvent.click(screen.getByRole("button", { name: "确认加款" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认强制下线" }));
 
-    expect(await screen.findByText(/调账成功/)).toBeInTheDocument();
-    // 会话查询 + 调账写入 + 加款成功后的会话刷新。
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const writeCall = fetchMock.mock.calls.find(([url]) =>
-      String(url).includes("/adjustments"),
+    expect(
+      await screen.findByText(/已强制下线 customer_one/),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const revokeCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/revoke"),
     );
-    expect(writeCall).toBeDefined();
+    expect(revokeCall?.[1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String(revokeCall?.[1]?.body))).toMatchObject({
+      confirm: true,
+      reason: "客服确认账号异常",
+      session_epoch: 3,
+    });
   });
 
-  it("stays read-only for auditors when mounted with a fixed user", () => {
-    const fetchMock = installFetch();
+  it("keeps the revoke idempotency key after an ambiguous failure", async () => {
+    setAdminCsrfToken("csrf-token-1");
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    let revokeAttempts = 0;
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+      if (String(url).includes("/revoke")) {
+        revokeAttempts += 1;
+        return revokeAttempts === 1
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : jsonResponse({ request_id: "revoke-1" });
+      }
+      return jsonResponse(sessionList());
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionsPage />);
+    await screen.findByText("customer_one");
+    fireEvent.click(
+      screen.getByRole("button", { name: "强制下线 customer_one" }),
+    );
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "网络失败后重试" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认强制下线" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to fetch",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认强制下线" }));
+    expect(
+      await screen.findByText(/已强制下线 customer_one/),
+    ).toBeInTheDocument();
+
+    const keys = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/revoke"))
+      .map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(keys).toEqual([
+      "11111111-1111-4111-8111-111111111111",
+      "11111111-1111-4111-8111-111111111111",
+    ]);
+  });
+
+  it("keeps the adjustment form secondary and uses seconds", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      jsonResponse(sessionList()),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionsPage userId={CUSTOMER_ID} />);
+
+    await screen.findByText("customer_one");
+    expect(screen.queryByLabelText("加款秒数")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "展开后台加秒" }));
+    expect(screen.getByLabelText("加款秒数")).toBeInTheDocument();
+    expect(screen.queryByText(/加款条数/)).not.toBeInTheDocument();
+  });
+
+  it("hides all write actions for read-only operators", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      jsonResponse(sessionList()),
+    );
+    vi.stubGlobal("fetch", fetchMock);
     render(<SessionsPage userId={CUSTOMER_ID} readOnly />);
 
-    expect(screen.getByText("该客户当前没有活动会话。")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "查询会话" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "执行后台加款" })).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    await screen.findByText("customer_one");
+    expect(
+      screen.queryByRole("button", { name: /强制下线/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /后台加秒/ }),
+    ).not.toBeInTheDocument();
   });
 });

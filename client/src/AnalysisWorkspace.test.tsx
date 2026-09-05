@@ -284,10 +284,10 @@ vi.mock("./GenerationComposer", () => ({
       <span>恢复记录：{drafts?.recoveryRecord ? "存在" : "无"}</span>
       <button
         disabled={readOnly}
-        onClick={() => drafts?.setQuantityInput("3")}
+        onClick={() => drafts?.setQuantityInput("4")}
         type="button"
       >
-        设置数量 3
+        设置数量 4
       </button>
       <button
         disabled={readOnly}
@@ -1910,7 +1910,7 @@ describe("AnalysisWorkspace workflow gates", () => {
           first_frame_selection_version_id: "first-frame-selection-1",
           character_version_id: "character-version-1",
           character_reference_selection_id: "reference-selection-1",
-          output_duration_seconds: 8,
+          output_duration_seconds: 4,
           resolution: "768P",
         },
         created_by_user_id: "employee_1",
@@ -1967,7 +1967,7 @@ describe("AnalysisWorkspace workflow gates", () => {
         quantity: 1,
         prompt_version_id: "prompt-locked-1",
         first_frame_asset_id: "first-frame-1",
-        output_duration_seconds: 8,
+        output_duration_seconds: 4,
         resolution: "768P",
       }),
     );
@@ -2027,8 +2027,9 @@ describe("AnalysisWorkspace workflow gates", () => {
         first_frame_selection_version_id: "first-frame-selection-1",
         character_version_id: "character-version-1",
         character_reference_selection_id: "reference-selection-1",
-        output_duration_seconds: 8,
+        output_duration_seconds: 4,
         resolution: "768P",
+        ratio: "adaptive",
       },
       created_by_user_id: "employee_1",
       created_at: "2030-01-01T00:00:00Z",
@@ -2047,7 +2048,7 @@ describe("AnalysisWorkspace workflow gates", () => {
         first_frame_selection_version_id: "first-frame-selection-1",
         character_version_id: "character-version-1",
         character_reference_selection_id: "reference-selection-1",
-        output_duration_seconds: 8,
+        output_duration_seconds: 4,
         resolution: "768P",
       },
       created_by_user_id: "employee_1",
@@ -2136,8 +2137,9 @@ describe("AnalysisWorkspace workflow gates", () => {
         script_version_id: "script-3",
         shot_card_version_id: "shot-card-2",
         first_frame_asset_id: "first-frame-1",
-        output_duration_seconds: 8,
+        output_duration_seconds: 4,
         resolution: "768P",
+        ratio: "adaptive",
       },
     );
     expect(vi.mocked(api.lockGenerationPrompt)).toHaveBeenCalledWith(
@@ -2150,7 +2152,7 @@ describe("AnalysisWorkspace workflow gates", () => {
         quantity: 1,
         prompt_version_id: "prompt-locked-2",
         first_frame_asset_id: "first-frame-1",
-        output_duration_seconds: 8,
+        output_duration_seconds: 4,
         resolution: "768P",
       }),
     );
@@ -2205,7 +2207,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       payload: {
         status: "SAVED",
         prompt_text: "编译出的 Prompt",
-        output_duration_seconds: 8,
+        output_duration_seconds: 4,
         resolution: "768P",
       },
       created_by_user_id: "employee_1",
@@ -2303,7 +2305,7 @@ describe("AnalysisWorkspace workflow gates", () => {
           first_frame_selection_version_id: "first-frame-selection-1",
           character_version_id: "character-version-1",
           character_reference_selection_id: "reference-selection-1",
-          output_duration_seconds: 8,
+          output_duration_seconds: 4,
           resolution: "768P",
         },
         created_by_user_id: "employee_1",
@@ -2321,7 +2323,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       payload: {
         status: "SAVED",
         prompt_text: "重编译的 Prompt",
-        output_duration_seconds: 8,
+        output_duration_seconds: 4,
         resolution: "768P",
       },
       created_by_user_id: "employee_1",
@@ -2336,7 +2338,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       payload: {
         status: "LOCKED",
         prompt_text: "重编译的 Prompt",
-        output_duration_seconds: 8,
+        output_duration_seconds: 4,
         resolution: "768P",
       },
       created_by_user_id: "employee_1",
@@ -2447,7 +2449,7 @@ describe("AnalysisWorkspace workflow gates", () => {
           first_frame_selection_version_id: "first-frame-selection-1",
           character_version_id: "character-version-1",
           character_reference_selection_id: "reference-selection-1",
-          output_duration_seconds: 8,
+          output_duration_seconds: 4,
           resolution: "768P",
         },
         created_by_user_id: "employee_1",
@@ -2569,7 +2571,7 @@ describe("AnalysisWorkspace workflow gates", () => {
           first_frame_selection_version_id: "first-frame-selection-1",
           character_version_id: "character-version-1",
           character_reference_selection_id: "reference-selection-1",
-          output_duration_seconds: 8,
+          output_duration_seconds: 4,
           resolution: "768P",
         },
         created_by_user_id: "employee_1",
@@ -2620,7 +2622,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       project_id: "project-1",
       prompt_version_id: "prompt-locked-1",
       status: "QUEUED",
-      quantity: 3,
+      quantity: 4,
       stale: false,
       progress: {
         total_count: 3,
@@ -2637,18 +2639,18 @@ describe("AnalysisWorkspace workflow gates", () => {
     // N=1（默认）不展示付费提醒。
     expect(screen.queryByText(/将创建 \d+ 个付费生成任务/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "设置数量 3" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置数量 4" }));
     // 提醒文案与 GenerationLauncher 逐条一致，在主按钮确认前可见。
     expect(
-      await screen.findByText("将创建 3 个付费生成任务"),
+      await screen.findByText("将创建 4 个付费生成任务"),
     ).toBeInTheDocument();
-    expect(screen.getByText("预计费用：¥7.50")).toBeInTheDocument();
+    expect(screen.getByText("预计费用：¥10.00")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
     await waitFor(() => expect(onBatchCreated).toHaveBeenCalledTimes(1));
     expect(api.createGenerationBatch).toHaveBeenCalledWith(
       "project-1",
-      expect.objectContaining({ quantity: 3 }),
+      expect.objectContaining({ quantity: 4 }),
     );
   });
 

@@ -7,6 +7,13 @@ import { ProfitOverview } from "./ProfitOverview";
 const overviewPayload = {
   prices: [
     {
+      price_date: "2099-01-01",
+      price_768p_fen: 99,
+      price_2k_fen: 199,
+      note: "未来价格",
+      created_by_username: "admin",
+    },
+    {
       price_date: "2026-09-04",
       price_768p_fen: 10,
       price_2k_fen: 20,
@@ -23,6 +30,7 @@ const overviewPayload = {
       cost_fen: 90,
       gross_fen: 10,
       margin_pct: 10.0,
+      cost_unknown_count: 2,
     },
     {
       day: "2026-09-03",
@@ -87,8 +95,42 @@ describe("ProfitOverview", () => {
       screen.getByRole("heading", { name: "日利润表" }),
     ).toBeInTheDocument();
     expect(screen.getByText("2026-09-04")).toBeInTheDocument();
+    expect(screen.getByText("收入")).toBeInTheDocument();
+    expect(screen.getByText("已确认成本")).toBeInTheDocument();
     // 成本口径前的日子：成本/毛利/利润率显示占位。
     expect(screen.getAllByText("口径前").length).toBeGreaterThan(0);
+    expect(screen.getByText(/当前生效：768P 0.10 元\/秒/)).toBeInTheDocument();
+    expect(screen.queryByText(/当前生效：768P 0.99 元\/秒/)).toBeNull();
+  });
+
+  it("opens the selected day details with its complete accounting basis", async () => {
+    installFetch();
+    render(<ProfitOverview />);
+
+    await screen.findByRole("heading", { name: "日利润表" });
+    fireEvent.click(screen.getAllByRole("button", { name: "查看明细" })[0]);
+
+    const dialog = screen.getByRole("dialog", { name: "2026-09-04 利润明细" });
+    expect(dialog).toHaveTextContent("结算秒数 10 秒");
+    expect(dialog).toHaveTextContent("视频数 1");
+    expect(dialog).toHaveTextContent("收入 1.00 元");
+    expect(dialog).toHaveTextContent("成本 0.90 元");
+    expect(dialog).toHaveTextContent("毛利 0.10 元");
+    expect(dialog).toHaveTextContent("2 项真实用量未知");
+  });
+
+  it("draws smooth income and confirmed-cost paths", async () => {
+    installFetch();
+    render(<ProfitOverview />);
+
+    await screen.findByRole("heading", { name: "日利润表" });
+    const chart = screen.getByRole("img", {
+      name: "收入与已确认成本趋势",
+    });
+    const paths = chart.querySelectorAll("path");
+    expect(paths).toHaveLength(2);
+    expect(paths[0]?.getAttribute("d")).toContain("C");
+    expect(screen.getByText("已确认成本")).toBeInTheDocument();
   });
 
   it("saves the daily price with the write contract", async () => {
@@ -109,6 +151,18 @@ describe("ProfitOverview", () => {
       target: { value: "客户续费定价" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存售价" }));
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, options]) =>
+          String(url).endsWith("/api/control/profit/daily-price") &&
+          options?.method === "PUT",
+      ),
+    ).toBe(false);
+    expect(
+      screen.getByRole("dialog", { name: "确认保存每日售价" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
 
     await waitFor(() => {
       expect(
@@ -132,6 +186,60 @@ describe("ProfitOverview", () => {
       confirm: true,
       reason: "客户续费定价",
     });
+    expect(
+      new Headers(putCall?.[1]?.headers).get("Idempotency-Key"),
+    ).toBeTruthy();
+  });
+
+  it("reuses the price-save idempotency key after an ambiguous failure", async () => {
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "22222222-2222-4222-8222-222222222222",
+    );
+    let writeAttempts = 0;
+    const fetchMock = vi.fn((url: string, options?: RequestInit) => {
+      if (url.includes("/api/control/profit/overview") && !options?.method) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => overviewPayload,
+        });
+      }
+      if (options?.method === "PUT") {
+        writeAttempts += 1;
+        return writeAttempts === 1
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : Promise.resolve({
+              ok: true,
+              status: 200,
+              json: async () => overviewPayload.prices,
+            });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ProfitOverview />);
+
+    await screen.findByRole("heading", { name: "每日对外售价录入" });
+    fireEvent.change(screen.getByLabelText(/操作原因/), {
+      target: { value: "网络失败后重试" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存售价" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to fetch",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("已保存");
+
+    const keys = fetchMock.mock.calls
+      .filter(([, options]) => options?.method === "PUT")
+      .map(([, options]) =>
+        new Headers(options?.headers).get("Idempotency-Key"),
+      );
+    expect(keys).toEqual([
+      "22222222-2222-4222-8222-222222222222",
+      "22222222-2222-4222-8222-222222222222",
+    ]);
   });
 
   it("rejects a save without the mandatory reason", async () => {

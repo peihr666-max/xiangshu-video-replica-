@@ -1,20 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  type ControlAccount,
-  type ControlWalletTransaction,
-  getControlAccounts,
-  getControlWalletTransactions,
-} from "../api";
+  type AdminWalletTransaction,
+  listAdminWalletTransactions,
+} from "../api.admin";
 import { DataTable } from "./ui/DataTable";
 import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
+import { StatusBadge } from "./ui/StatusBadge";
 import { useAutoRefresh } from "./ui/useAutoRefresh";
-import {
-  formatCredits,
-  roleLabel,
-  transactionTypeLabel,
-} from "./ui/vocabulary";
+import { formatDateTime, transactionTypeLabel } from "./ui/vocabulary";
 
 const PAGE_SIZE = 20;
 
@@ -23,16 +18,17 @@ const PAGE_SIZE = 20;
  * 补上此前被忽略的分页——服务端一直返回 total 并支持 limit/offset。
  */
 export function AccountsPage() {
-  const [accounts, setAccounts] = useState<ControlAccount[]>([]);
-  const [accountTotal, setAccountTotal] = useState(0);
-  const [accountOffset, setAccountOffset] = useState(0);
-  const [transactions, setTransactions] = useState<ControlWalletTransaction[]>(
+  const [transactions, setTransactions] = useState<AdminWalletTransaction[]>(
     [],
   );
   const [transactionTotal, setTransactionTotal] = useState(0);
   const [transactionOffset, setTransactionOffset] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [username, setUsername] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [createdFrom, setCreatedFrom] = useState("");
+  const [createdTo, setCreatedTo] = useState("");
   const { autoRefresh, toggleAutoRefresh } = useAutoRefresh(() => {
     void loadRef.current?.();
   });
@@ -41,15 +37,14 @@ export function AccountsPage() {
     setLoading(true);
     setError("");
     try {
-      const [accountPage, transactionPage] = await Promise.all([
-        getControlAccounts({ limit: PAGE_SIZE, offset: accountOffset }),
-        getControlWalletTransactions({
-          limit: PAGE_SIZE,
-          offset: transactionOffset,
-        }),
-      ]);
-      setAccounts(accountPage.items);
-      setAccountTotal(accountPage.total);
+      const transactionPage = await listAdminWalletTransactions({
+        limit: PAGE_SIZE,
+        offset: transactionOffset,
+        username: username || undefined,
+        type: typeFilter || undefined,
+        createdFrom: createdFrom || undefined,
+        createdTo: createdTo || undefined,
+      });
       setTransactions(transactionPage.items);
       setTransactionTotal(transactionPage.total);
     } catch (cause) {
@@ -61,7 +56,7 @@ export function AccountsPage() {
     } finally {
       setLoading(false);
     }
-  }, [accountOffset, transactionOffset]);
+  }, [createdFrom, createdTo, transactionOffset, typeFilter, username]);
 
   const loadRef = useRef<(() => void) | null>(null);
   loadRef.current = () => void loadAccounts();
@@ -81,68 +76,118 @@ export function AccountsPage() {
           {autoRefresh ? "自动刷新：开（30 秒）" : "自动刷新：关"}
         </button>
       </div>
-      <h2>账号钱包</h2>
       {error ? <PageBanner tone="error">{error}</PageBanner> : null}
       {loading ? <div className="loading">加载中...</div> : null}
-      {!loading && accounts.length === 0 && !error ? (
-        <PageBanner tone="notice">暂无内部账号。</PageBanner>
-      ) : null}
-
-      {!loading && accounts.length > 0 ? (
-        <DataTable
-          ariaLabel="账号钱包列表"
-          headers={
-            <>
-              <th>账号</th>
-              <th>姓名</th>
-              <th>角色</th>
-              <th>可用（条）</th>
-              <th>冻结（条）</th>
-              <th>令牌</th>
-            </>
-          }
-        >
-          {accounts.map((account) => (
-            <tr key={account.id}>
-              <td>{account.username}</td>
-              <td>{account.display_name}</td>
-              <td>{roleLabel(account.role)}</td>
-              <td>{account.available_credits}</td>
-              <td>{account.reserved_credits}</td>
-              <td>{account.active_token_count}</td>
-            </tr>
-          ))}
-        </DataTable>
-      ) : null}
-      <Pagination
-        disabled={loading}
-        limit={PAGE_SIZE}
-        offset={accountOffset}
-        total={accountTotal}
-        onPageChange={setAccountOffset}
-      />
-
-      <h2>账务流水</h2>
+      <form
+        className="admin-toolbar"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setTransactionOffset(0);
+          void loadAccounts();
+        }}
+      >
+        <label>
+          账号
+          <input
+            aria-label="流水账号"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+          />
+        </label>
+        <label>
+          类型
+          <select
+            aria-label="流水类型"
+            value={typeFilter}
+            onChange={(event) => setTypeFilter(event.target.value)}
+          >
+            <option value="">全部类型</option>
+            <option value="CHARGE">充值</option>
+            <option value="RESERVE">预留</option>
+            <option value="SETTLE">结算</option>
+            <option value="RELEASE">释放</option>
+          </select>
+        </label>
+        <label>
+          起始时间
+          <input
+            aria-label="流水起始时间"
+            type="date"
+            value={createdFrom}
+            onChange={(event) => setCreatedFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          截止时间
+          <input
+            aria-label="流水截止时间"
+            type="date"
+            value={createdTo}
+            onChange={(event) => setCreatedTo(event.target.value)}
+          />
+        </label>
+        <button type="submit">查询</button>
+      </form>
       {!loading && transactions.length > 0 ? (
         <DataTable
           ariaLabel="账务流水列表"
           headers={
             <>
-              <th>ID</th>
+              <th>时间</th>
               <th>账号</th>
               <th>类型</th>
               <th>可用变动</th>
               <th>冻结变动</th>
+              <th>变动后余额</th>
+              <th>关联订单 / 任务</th>
             </>
           }
         >
           {transactions.map((tx) => (
             <tr key={tx.id}>
-              <td>{tx.id}</td>
+              <td>{formatDateTime(tx.created_at)}</td>
               <td>{tx.username}</td>
-              <td>{transactionTypeLabel(tx.type)}</td>
-              <td>{tx.available_delta}</td>
-              <td>{tx.reserved_delta}</td>
+              <td>
+                <StatusBadge
+                  tone={
+                    tx.type === "CHARGE"
+                      ? "good"
+                      : tx.type === "RESERVE"
+                        ? "warn"
+                        : "info"
+                  }
+                >
+                  {transactionTypeLabel(tx.type)}
+                </StatusBadge>
+              </td>
+              <td
+                className={
+                  tx.available_delta < 0
+                    ? "ledger-delta-negative"
+                    : "ledger-delta-positive"
+                }
+              >
+                {tx.available_delta > 0 ? "+" : ""}
+                {tx.available_delta} 秒
+              </td>
+              <td>
+                {tx.reserved_delta > 0 ? "+" : ""}
+                {tx.reserved_delta} 秒
+              </td>
+              <td>
+                {tx.available_balance_after === null ||
+                tx.reserved_balance_after === null ? (
+                  "历史未记录"
+                ) : (
+                  <>
+                    <strong>{tx.available_balance_after} 秒</strong> / 冻结{" "}
+                    {tx.reserved_balance_after} 秒
+                  </>
+                )}
+              </td>
+              <td>
+                <code>{tx.recharge_order_id ?? tx.task_id ?? "—"}</code>
+              </td>
             </tr>
           ))}
         </DataTable>
@@ -158,7 +203,7 @@ export function AccountsPage() {
         onPageChange={setTransactionOffset}
       />
       <p className="admin-hint">
-        余额单位为条：{formatCredits(1)}视频 = 1 条，充值与调账都按条入账。
+        余额与变动单位均为秒；新流水按实际记账顺序计算余额，历史缺少可靠顺序的记录不推算余额。
       </p>
     </section>
   );

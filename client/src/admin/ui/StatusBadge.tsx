@@ -29,6 +29,8 @@ const ACTIVATION_CODE_TONES: Record<string, BadgeTone> = {
 };
 
 const DEVICE_TONES: Record<string, BadgeTone> = {
+  ONLINE: "good",
+  OFFLINE: "neutral",
   BOUND: "good",
   UNBOUND: "neutral",
   REVOKED: "danger",

@@ -22,13 +22,21 @@ export function CustomersManagementPage({
   actor,
   readOnly = false,
   onSessionExpired,
+  initialTab = "customers",
+  initiallyShowGenerator = false,
 }: {
   actor: AdminActorInfo;
   readOnly?: boolean;
   onSessionExpired: () => void;
+  initialTab?: "customers" | "codes" | "devices";
+  initiallyShowGenerator?: boolean;
 }) {
-  const [tab, setTab] = useState("customers");
+  const [tab, setTab] = useState<string>(initialTab);
+  const [showGenerator, setShowGenerator] = useState(initiallyShowGenerator);
   const [sessionUserId, setSessionUserId] = useState<string | undefined>(
+    undefined,
+  );
+  const [deviceUserId, setDeviceUserId] = useState<string | undefined>(
     undefined,
   );
   return (
@@ -38,12 +46,26 @@ export function CustomersManagementPage({
         ariaLabel="客户管理页签"
         items={tabs}
         onChange={setTab}
+        actions={
+          tab === "codes" && !readOnly ? (
+            <button
+              type="button"
+              onClick={() => setShowGenerator((open) => !open)}
+            >
+              {showGenerator ? "收起生成表单" : "生成激活码"}
+            </button>
+          ) : undefined
+        }
       />
       {tab === "customers" ? (
         <CustomersPage
           embedded
           readOnly={readOnly}
-          onOpenDevices={() => setTab("devices")}
+          onOpenDevices={(userId) => {
+            setDeviceUserId(userId);
+            setSessionUserId(userId);
+            setTab("devices");
+          }}
           onOpenSessions={(userId) => {
             setSessionUserId(userId);
             setTab("devices");
@@ -54,11 +76,12 @@ export function CustomersManagementPage({
         <AdminActivationSection
           actor={actor}
           onSessionExpired={onSessionExpired}
+          showGenerator={showGenerator}
         />
       ) : null}
       {tab === "devices" ? (
         <div className="admin-devices-sessions-layout">
-          <DevicesPage readOnly={readOnly} />
+          <DevicesPage readOnly={readOnly} userId={deviceUserId} />
           <SessionsPage readOnly={readOnly} userId={sessionUserId} />
         </div>
       ) : null}

@@ -36,14 +36,14 @@ function expiryToIso(dateText: string): string {
 }
 
 function phaseLabel(phase: GenerationPhase, quantity: number): string {
-  if (phase === "creating") return "正在创建激活码批次…";
+  if (phase === "creating") return "正在准备激活码…";
   if (phase === "generating") return `正在生成 ${quantity} 个激活码…`;
   if (phase === "retrieving") return "正在取回激活码明文（仅此一次）…";
   return "生成激活码";
 }
 
 function phaseErrorFallback(phase: GenerationPhase): string {
-  if (phase === "creating") return "创建激活码批次失败";
+  if (phase === "creating") return "准备激活码失败";
   if (phase === "generating") return "生成激活码失败";
   if (phase === "retrieving") return "取回激活码明文失败";
   return "生成激活码失败";
@@ -69,6 +69,7 @@ function CodeGeneratorForm({
   const [quantity, setQuantity] = useState("1");
   const [expiresDate, setExpiresDate] = useState(defaultExpiryDate());
   const [credits, setCredits] = useState("0");
+  const [confirmGrant, setConfirmGrant] = useState(false);
   const [reason, setReason] = useState("");
   const [phase, setPhase] = useState<GenerationPhase>("idle");
   const [error, setError] = useState("");
@@ -116,14 +117,15 @@ function CodeGeneratorForm({
     if (new Date(`${expiresDate}T23:59:59`).getTime() <= Date.now()) {
       return "有效期必须晚于今天";
     }
-    if (!Number.isInteger(parsedCredits) || parsedCredits < 0) {
+    if (
+      !Number.isInteger(parsedCredits) ||
+      parsedCredits < 0 ||
+      parsedCredits > 2147483647
+    ) {
       return "初始秒数需为不小于 0 的整数";
     }
-    if (parsedCredits > 0) {
-      // 审计红线（迁移 054 同源）：面值与初始额度必须同为 0 或同为正，
-      // 正额度码会在激活时按面值虚构收入。赠送秒数走「调账-免费发放」；
-      // 预付秒数卡待按秒计费（W11）开放。
-      return "初始秒数暂仅支持 0：赠送秒数请使用调账的免费条数发放";
+    if (parsedCredits > 0 && !confirmGrant) {
+      return "请确认初始秒数为免费赠送，不产生收款收入";
     }
     if (!reason.trim()) {
       return "请填写操作原因";
@@ -163,6 +165,7 @@ function CodeGeneratorForm({
             quantity: parsedQuantity,
             activation_expires_at: expiryToIso(expiresDate),
             reason: trimmedReason,
+            confirm_grant: parsedCredits > 0 && confirmGrant,
           },
           key,
         );
@@ -204,6 +207,7 @@ function CodeGeneratorForm({
       setGenerateKey(null);
       setDownloadKey(null);
       setReason("");
+      setConfirmGrant(false);
       onGenerated();
     } catch (cause) {
       handleFailure(cause, phaseErrorFallback(currentPhase));
@@ -276,7 +280,10 @@ function CodeGeneratorForm({
               min={0}
               type="number"
               value={credits}
-              onChange={(event) => setCredits(event.target.value)}
+              onChange={(event) => {
+                setCredits(event.target.value);
+                setConfirmGrant(false);
+              }}
             />
           </label>
           <label>
@@ -289,6 +296,17 @@ function CodeGeneratorForm({
               onChange={(event) => setReason(event.target.value)}
             />
           </label>
+          {parsedCredits > 0 ? (
+            <label className="admin-checkbox-label">
+              <input
+                type="checkbox"
+                checked={confirmGrant}
+                disabled={locked}
+                onChange={(event) => setConfirmGrant(event.target.checked)}
+              />
+              确认免费赠送 {parsedCredits} 秒/码，未收款，不产生收款收入
+            </label>
+          ) : null}
           <button disabled={locked} type="submit">
             {locked ? actionLabel : "生成激活码"}
           </button>
@@ -315,6 +333,7 @@ function CodeGeneratorForm({
 type AdminActivationSectionProps = {
   actor: AdminActorInfo;
   onSessionExpired: () => void;
+  showGenerator?: boolean;
 };
 
 /**
@@ -324,23 +343,29 @@ type AdminActivationSectionProps = {
 export function AdminActivationSection({
   actor,
   onSessionExpired,
+  showGenerator = true,
 }: AdminActivationSectionProps) {
   const [refreshToken, setRefreshToken] = useState(0);
   const readOnly = actor.role === "auditor";
 
   return (
-    <section className="admin-panel" aria-label="激活码管理">
+    <section
+      className="admin-panel activation-management"
+      aria-label="激活码管理"
+    >
       {readOnly ? (
         <PageBanner tone="notice">
           审计员只读：仅可查看，不能执行写操作。
         </PageBanner>
       ) : null}
 
-      <CodeGeneratorForm
-        readOnly={readOnly}
-        onGenerated={() => setRefreshToken((current) => current + 1)}
-        onSessionExpired={onSessionExpired}
-      />
+      {showGenerator ? (
+        <CodeGeneratorForm
+          readOnly={readOnly}
+          onGenerated={() => setRefreshToken((current) => current + 1)}
+          onSessionExpired={onSessionExpired}
+        />
+      ) : null}
       <ActivationCodesPage
         readOnly={readOnly}
         refreshToken={refreshToken}

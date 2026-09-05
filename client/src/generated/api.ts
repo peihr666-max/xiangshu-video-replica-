@@ -140,6 +140,41 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/projects/{project_id}/saved-prompts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Saved Prompts */
+    get: operations["read_saved_prompts_api_projects__project_id__saved_prompts_get"];
+    put?: never;
+    /** Create Saved Prompt */
+    post: operations["create_saved_prompt_api_projects__project_id__saved_prompts_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/projects/{project_id}/saved-prompts/{saved_prompt_id}/apply": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Apply Project Saved Prompt */
+    post: operations["apply_project_saved_prompt_api_projects__project_id__saved_prompts__saved_prompt_id__apply_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/projects/{project_id}/prompts/latest": {
     parameters: {
       query?: never;
@@ -269,6 +304,23 @@ export interface paths {
     };
     /** Read Generation Runtime Limits */
     get: operations["read_generation_runtime_limits_api_generation_runtime_limits_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/generation/price-quote": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Generation Price Quote */
+    get: operations["read_generation_price_quote_api_generation_price_quote_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -901,6 +953,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/dashboard/summary": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Dashboard Summary */
+    get: operations["dashboard_summary_api_control_dashboard_summary_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/customers/{user_id}/unit-price": {
     parameters: {
       query?: never;
@@ -940,6 +1009,26 @@ export interface paths {
      * @description Create an admin adjustment: PAID order + CHARGE + wallet + audit row.
      */
     post: operations["create_admin_adjustment_api_control_customers__user_id__adjustments_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/adjustments": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List All Admin Adjustments
+     * @description List adjustment records across customers with deterministic ledger balances.
+     */
+    get: operations["list_all_admin_adjustments_api_control_adjustments_get"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -999,6 +1088,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/customer-sessions/{session_id}/revoke": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Revoke Customer Session */
+    post: operations["revoke_customer_session_api_control_customer_sessions__session_id__revoke_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/customer-sessions/live": {
     parameters: {
       query?: never;
@@ -1047,6 +1153,141 @@ export interface paths {
      */
     get: operations["list_customer_sessions_api_control_customers__user_id__sessions_get"];
     put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/settings/rates/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Daily Prices
+     * @description 已录入的每日对外售价（按日期倒序）。
+     */
+    get: operations["list_daily_prices_api_control_settings_rates_history_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/profit/daily-price": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Upsert Daily Price
+     * @description 录入/更新某日的对外售价（写契约 + 审计 + 返回最新价格列表）。
+     */
+    put: operations["upsert_daily_price_api_control_profit_daily_price_put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/profit/overview": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Profit Overview
+     * @description 日维度收入/成本/毛利/利润率（标准收入口径，Asia/Shanghai 日界）。
+     */
+    get: operations["profit_overview_api_control_profit_overview_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/profit/overview.csv": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Export Profit Csv */
+    get: operations["export_profit_csv_api_control_profit_overview_csv_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/profit/costs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Cost Overview */
+    get: operations["cost_overview_api_control_profit_costs_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/profit/costs.csv": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Export Costs Csv */
+    get: operations["export_costs_csv_api_control_profit_costs_csv_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/settings/rates": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Rates
+     * @description 费率表与最近变更（审计员与管理员均可读）。
+     */
+    get: operations["read_rates_api_control_settings_rates_get"];
+    /**
+     * Update Rates
+     * @description 批量调整科目单价：逐科目记 audit（old/new），同事务提交。
+     */
+    put: operations["update_rates_api_control_settings_rates_put"];
     post?: never;
     delete?: never;
     options?: never;
@@ -3435,6 +3676,11 @@ export interface components {
       /** Completed At */
       completed_at: string | null;
     };
+    /** ApplySavedPromptRequest */
+    ApplySavedPromptRequest: {
+      /** Base Prompt Version Id */
+      base_prompt_version_id: string;
+    };
     /** AssetResponse */
     AssetResponse: {
       /** Id */
@@ -3489,6 +3735,11 @@ export interface components {
       quantity: number;
       /** Activation Expires At */
       activation_expires_at: string;
+      /**
+       * Confirm Grant
+       * @default false
+       */
+      confirm_grant: boolean;
     };
     /** BatchProgress */
     BatchProgress: {
@@ -4344,6 +4595,10 @@ export interface components {
       billing_round: number | null;
       /** Created At */
       created_at: string;
+      /** Available Balance After */
+      available_balance_after: number | null;
+      /** Reserved Balance After */
+      reserved_balance_after: number | null;
     };
     /** ControlWalletTransactionPage */
     ControlWalletTransactionPage: {
@@ -4355,6 +4610,73 @@ export interface components {
       limit: number;
       /** Offset */
       offset: number;
+    };
+    /** CostDayRow */
+    CostDayRow: {
+      /** Day */
+      day: string;
+      /** Video Count */
+      video_count: number;
+      /** Output Seconds */
+      output_seconds: number;
+      /** Video 768P Fen */
+      video_768p_fen: number;
+      /** Video 2K Fen */
+      video_2k_fen: number;
+      /** Analysis Fen */
+      analysis_fen: number;
+      /** Image Fen */
+      image_fen: number;
+      /** Context Ir Fen */
+      context_ir_fen: number;
+      /** Total Cost Fen */
+      total_cost_fen: number;
+      /** Unknown Count */
+      unknown_count: number;
+    };
+    /** CostOverviewResponse */
+    CostOverviewResponse: {
+      /** Days */
+      days: components["schemas"]["CostDayRow"][];
+      /** Records */
+      records: components["schemas"]["CostRecordRow"][];
+      /** Record Total */
+      record_total: number;
+      /** Records Truncated */
+      records_truncated: boolean;
+      /** Total Cost Fen */
+      total_cost_fen: number;
+      /** Total Output Seconds */
+      total_output_seconds: number;
+      /** Average Video Cost Per Second Fen */
+      average_video_cost_per_second_fen: number | null;
+      /** Unknown Count */
+      unknown_count: number;
+    };
+    /** CostRecordRow */
+    CostRecordRow: {
+      /** Id */
+      id: string;
+      /** Occurred At */
+      occurred_at: string;
+      /** Source Type */
+      source_type: string;
+      /** Source Id */
+      source_id: string;
+      /** Subject */
+      subject: string;
+      /** Resolution */
+      resolution: string | null;
+      /** Unit */
+      unit: string;
+      /** Usage Amount */
+      usage_amount: number | null;
+      /** Unit Price Fen */
+      unit_price_fen: number;
+      /** Cost Fen */
+      cost_fen: number | null;
+      /** Status */
+      status: string;
     };
     /** CreateAnalysisRequest */
     CreateAnalysisRequest: {
@@ -4497,6 +4819,49 @@ export interface components {
       reason: string;
       /** Unit Price Fen */
       unit_price_fen: number | null;
+    };
+    /** DailyPriceRow */
+    DailyPriceRow: {
+      /** Price Date */
+      price_date: string;
+      /** Price 768P Fen */
+      price_768p_fen: number;
+      /** Price 2K Fen */
+      price_2k_fen: number;
+      /** Note */
+      note: string | null;
+      /** Created By Username */
+      created_by_username: string | null;
+    };
+    /**
+     * DailyPriceUpsertRequest
+     * @description 每日对外售价：upsert（同日重复录入即改价），契约 + 审计。
+     */
+    DailyPriceUpsertRequest: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /**
+       * Price Date
+       * @description 生效日期 YYYY-MM-DD（Asia/Shanghai）
+       */
+      price_date: string;
+      /** Price 768P Fen */
+      price_768p_fen: number;
+      /** Price 2K Fen */
+      price_2k_fen: number;
+      /**
+       * Note
+       * @default
+       */
+      note: string;
     };
     /** DeliverRequest */
     DeliverRequest: {
@@ -4856,6 +5221,12 @@ export interface components {
        * @enum {string}
        */
       resolution: "768P" | "2K";
+      /**
+       * Ratio
+       * @default adaptive
+       * @enum {string}
+       */
+      ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
       /** Idempotency Key */
       idempotency_key: string;
       /**
@@ -4870,6 +5241,30 @@ export interface components {
        * @enum {string}
        */
       fake_audio_quality: "ok" | "missing";
+    };
+    /** GenerationPriceQuote */
+    GenerationPriceQuote: {
+      /**
+       * Resolution
+       * @enum {string}
+       */
+      resolution: "768P" | "2K";
+      /**
+       * Duration Seconds
+       * @enum {integer}
+       */
+      duration_seconds: 4 | 15;
+      /**
+       * Quantity
+       * @enum {integer}
+       */
+      quantity: 1 | 2 | 4;
+      /** Unit Price Fen Per Second */
+      unit_price_fen_per_second: number;
+      /** Estimated Seconds */
+      estimated_seconds: number;
+      /** Estimated Price Fen */
+      estimated_price_fen: number;
     };
     /** GenerationReconcileOperationResponse */
     GenerationReconcileOperationResponse: {
@@ -5124,6 +5519,37 @@ export interface components {
       /** Status */
       status?: "ARCHIVED" | null;
     };
+    /** ProfitDayRow */
+    ProfitDayRow: {
+      /** Day */
+      day: string;
+      /** Video Count */
+      video_count: number;
+      /** Settled Seconds */
+      settled_seconds: number;
+      /** Revenue Fen */
+      revenue_fen: number;
+      /** Cost Fen */
+      cost_fen: number | null;
+      /** Gross Fen */
+      gross_fen: number | null;
+      /** Margin Pct */
+      margin_pct: number | null;
+      /**
+       * Cost Unknown Count
+       * @default 0
+       */
+      cost_unknown_count: number;
+    };
+    /** ProfitOverviewResponse */
+    ProfitOverviewResponse: {
+      /** Prices */
+      prices: components["schemas"]["DailyPriceRow"][];
+      /** Days */
+      days: components["schemas"]["ProfitDayRow"][];
+      /** Cost Coverage Note */
+      cost_coverage_note: string;
+    };
     /** ProjectCharacterAssetOption */
     ProjectCharacterAssetOption: {
       /** Character Asset Id */
@@ -5245,6 +5671,12 @@ export interface components {
        * @enum {string}
        */
       resolution: "768P" | "2K";
+      /**
+       * Ratio
+       * @default adaptive
+       * @enum {string}
+       */
+      ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
     };
     /** PromptPreviewRequest */
     PromptPreviewRequest: {
@@ -5256,6 +5688,12 @@ export interface components {
        * @enum {string}
        */
       resolution: "768P" | "2K";
+      /**
+       * Ratio
+       * @default adaptive
+       * @enum {string}
+       */
+      ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
     };
     /** PromptPreviewResult */
     PromptPreviewResult: {
@@ -5268,6 +5706,11 @@ export interface components {
        * @enum {string}
        */
       resolution: "768P" | "2K";
+      /**
+       * Ratio
+       * @enum {string}
+       */
+      ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
       /**
        * Script Source
        * @enum {string}
@@ -5324,6 +5767,76 @@ export interface components {
       reason: string;
       /** Fair Queue Enabled */
       fair_queue_enabled: boolean;
+    };
+    /** RateEntry */
+    RateEntry: {
+      /** Subject */
+      subject: string;
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: "upstream_cost" | "external_price";
+      /**
+       * Unit
+       * @enum {string}
+       */
+      unit: "second" | "image" | "call";
+      /** Resolution */
+      resolution: string | null;
+      /** Unit Price Fen */
+      unit_price_fen: number;
+      /** Updated At */
+      updated_at: string;
+      /** Updated By Username */
+      updated_by_username: string | null;
+    };
+    /** RateHistoryEntry */
+    RateHistoryEntry: {
+      /** Subject */
+      subject: string;
+      /** Old Unit Price Fen */
+      old_unit_price_fen: number | null;
+      /** New Unit Price Fen */
+      new_unit_price_fen: number;
+      /** Reason */
+      reason: string;
+      /** Actor Username */
+      actor_username: string | null;
+      /** Created At */
+      created_at: string;
+    };
+    /** RateUpdate */
+    RateUpdate: {
+      /** Subject */
+      subject: string;
+      /** Unit Price Fen */
+      unit_price_fen: number;
+    };
+    /** RatesResponse */
+    RatesResponse: {
+      /** Rates */
+      rates: components["schemas"]["RateEntry"][];
+      /** History */
+      history: components["schemas"]["RateHistoryEntry"][];
+    };
+    /**
+     * RatesUpdateRequest
+     * @description 费率调整走共享管理写契约（T12 precedent）：幂等键、confirm、原因。
+     */
+    RatesUpdateRequest: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Updates */
+      updates: components["schemas"]["RateUpdate"][];
     };
     /** RechargeOrderPage */
     RechargeOrderPage: {
@@ -5464,6 +5977,15 @@ export interface components {
        */
       reason: string;
     };
+    /** SavedPromptRequest */
+    SavedPromptRequest: {
+      /** Name */
+      name: string;
+      /** Prompt Text */
+      prompt_text: string;
+      /** Base Prompt Version Id */
+      base_prompt_version_id?: string | null;
+    };
     /** ScriptRequest */
     ScriptRequest: {
       /**
@@ -5532,6 +6054,21 @@ export interface components {
       character_version_id: string;
       /** Selected Asset Ids */
       selected_asset_ids?: string[] | null;
+    };
+    /** SessionRevokeRequest */
+    SessionRevokeRequest: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Session Epoch */
+      session_epoch: number;
     };
     /** SettingsDiagnosticReport */
     SettingsDiagnosticReport: {
@@ -6366,6 +6903,111 @@ export interface operations {
       };
     };
   };
+  read_saved_prompts_api_projects__project_id__saved_prompts_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        project_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VersionResult"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_saved_prompt_api_projects__project_id__saved_prompts_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        project_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SavedPromptRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VersionResult"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  apply_project_saved_prompt_api_projects__project_id__saved_prompts__saved_prompt_id__apply_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        project_id: string;
+        saved_prompt_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ApplySavedPromptRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VersionResult"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_latest_project_prompt_api_projects__project_id__prompts_latest_get: {
     parameters: {
       query?: never;
@@ -6670,6 +7312,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["GenerationRuntimeLimits"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_generation_price_quote_api_generation_price_quote_get: {
+    parameters: {
+      query?: {
+        resolution?: "768P" | "2K";
+        duration_seconds?: 4 | 15;
+        quantity?: 1 | 2 | 4;
+      };
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GenerationPriceQuote"];
         };
       };
       /** @description Validation Error */
@@ -7411,6 +8089,10 @@ export interface operations {
       query?: {
         status?: ("PENDING" | "PAID" | "FAILED" | "CLOSED") | null;
         user_id?: string | null;
+        username?: string | null;
+        channel?: string | null;
+        created_from?: string | null;
+        created_to?: string | null;
         limit?: number;
         offset?: number;
       };
@@ -7447,6 +8129,9 @@ export interface operations {
       query?: {
         user_id?: string | null;
         type?: ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE") | null;
+        username?: string | null;
+        created_from?: string | null;
+        created_to?: string | null;
         limit?: number;
         offset?: number;
       };
@@ -7481,6 +8166,20 @@ export interface operations {
   list_generation_records_api_control_generation_records_get: {
     parameters: {
       query?: {
+        username?: string | null;
+        status?: string | null;
+        record_type?:
+          | (
+              | "VIDEO"
+              | "FIRST_FRAME_IMAGE"
+              | "CHARACTER_SHEET_IMAGE"
+              | "CHARACTER_VIEW_IMAGE"
+              | "SOURCE_FRAME_AI_SCORE"
+              | "SOURCE_FRAME_PROCESS"
+            )
+          | null;
+        created_from?: string | null;
+        created_to?: string | null;
         limit?: number;
         offset?: number;
       };
@@ -7954,6 +8653,28 @@ export interface operations {
       };
     };
   };
+  dashboard_summary_api_control_dashboard_summary_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+    };
+  };
   read_customer_unit_price_api_control_customers__user_id__unit_price_get: {
     parameters: {
       query?: never;
@@ -8025,6 +8746,7 @@ export interface operations {
       query?: {
         limit?: number;
         offset?: number;
+        sort?: "asc" | "desc";
       };
       header?: never;
       path: {
@@ -8093,12 +8815,56 @@ export interface operations {
       };
     };
   };
+  list_all_admin_adjustments_api_control_adjustments_get: {
+    parameters: {
+      query?: {
+        actor_username?: string;
+        target_username?: string;
+        source_document_type?: string;
+        created_from?: string;
+        created_to?: string;
+        limit?: number;
+        offset?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   list_customers_api_control_customers_get: {
     parameters: {
       query?: {
         limit?: number;
         offset?: number;
         username?: string;
+        status?: string;
+        created_from?: string;
+        created_to?: string;
+        balance_min?: number | null;
+        balance_max?: number | null;
       };
       header?: never;
       path?: never;
@@ -8133,6 +8899,10 @@ export interface operations {
       query?: {
         status?: string | null;
         username?: string;
+        created_from?: string;
+        created_to?: string;
+        balance_min?: number | null;
+        balance_max?: number | null;
         limit?: number;
       };
       header?: never;
@@ -8148,6 +8918,43 @@ export interface operations {
         };
         content: {
           "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  revoke_customer_session_api_control_customer_sessions__session_id__revoke_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        session_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SessionRevokeRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
         };
       };
       /** @description Validation Error */
@@ -8232,6 +9039,251 @@ export interface operations {
       };
     };
   };
+  list_daily_prices_api_control_settings_rates_history_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DailyPriceRow"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  upsert_daily_price_api_control_profit_daily_price_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DailyPriceUpsertRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DailyPriceRow"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  profit_overview_api_control_profit_overview_get: {
+    parameters: {
+      query?: {
+        lookback_days?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProfitOverviewResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  export_profit_csv_api_control_profit_overview_csv_get: {
+    parameters: {
+      query?: {
+        lookback_days?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  cost_overview_api_control_profit_costs_get: {
+    parameters: {
+      query?: {
+        lookback_days?: number;
+        subject?: string | null;
+        resolution?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CostOverviewResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  export_costs_csv_api_control_profit_costs_csv_get: {
+    parameters: {
+      query?: {
+        lookback_days?: number;
+        subject?: string | null;
+        resolution?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_rates_api_control_settings_rates_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RatesResponse"];
+        };
+      };
+    };
+  };
+  update_rates_api_control_settings_rates_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RatesUpdateRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RatesResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_queue_mode_api_control_settings_queue_mode_get: {
     parameters: {
       query?: never;
@@ -8291,6 +9343,8 @@ export interface operations {
         event_type?: string | null;
         actor_user_id?: string | null;
         target_user_id?: string | null;
+        actor_username?: string | null;
+        target_username?: string | null;
         created_from?: string | null;
         created_to?: string | null;
         limit?: number;
@@ -9025,6 +10079,7 @@ export interface operations {
         status?: string | null;
         activation_code_id?: string | null;
         user_id?: string | null;
+        platform?: string | null;
         limit?: number;
         offset?: number;
       };

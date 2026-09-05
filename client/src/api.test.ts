@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  applySavedGenerationPrompt,
   attachCustomerSessionToken,
   CUSTOMER_SESSION_REPLACED_EVENT,
   CUSTOMER_SESSION_REVOKED_EVENT,
@@ -24,6 +25,7 @@ import {
   getCharacterReferenceRecommendation,
   getCurrentUser,
   getGenerationBatch,
+  getGenerationPriceQuote,
   getGenerationResultDownloadUrl,
   getGenerationRuntimeLimits,
   getHealth,
@@ -34,6 +36,7 @@ import {
   listGenerationBatches,
   listProjectCharacterVersions,
   listProjects,
+  listSavedGenerationPrompts,
   lockGenerationPrompt,
   readAnalysisPayload,
   readFirstFrameCandidates,
@@ -45,6 +48,7 @@ import {
   reviseGenerationPrompt,
   rewriteProjectScript,
   SESSION_EXPIRED_EVENT,
+  saveGenerationPrompt,
   selectCharacterReferences,
   setCustomerSessionToken,
   setInternalAccessToken,
@@ -59,6 +63,54 @@ import {
 } from "./api";
 
 describe("generation payload readers", () => {
+  it("uses owner-scoped saved prompt and external quote endpoints", async () => {
+    const version = { id: "saved-1" };
+    const quote = {
+      resolution: "2K",
+      duration_seconds: 15,
+      quantity: 4,
+      unit_price_fen_per_second: 25,
+      estimated_seconds: 60,
+      estimated_price_fen: 1500,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => version })
+      .mockResolvedValueOnce({ ok: true, json: async () => [version] })
+      .mockResolvedValueOnce({ ok: true, json: async () => version })
+      .mockResolvedValueOnce({ ok: true, json: async () => quote });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await saveGenerationPrompt("project 1", {
+      name: "庭院推镜",
+      prompt_text: "庭院日景，镜头缓慢推进。",
+      base_prompt_version_id: "prompt-1",
+    });
+    await listSavedGenerationPrompts("project 1");
+    await applySavedGenerationPrompt("project 1", "saved 1", "prompt-1");
+    await expect(
+      getGenerationPriceQuote({
+        resolution: "2K",
+        duration_seconds: 15,
+        quantity: 4,
+      }),
+    ).resolves.toEqual(quote);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://127.0.0.1:8000/api/projects/project%201/saved-prompts/saved%201/apply",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ base_prompt_version_id: "prompt-1" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "http://127.0.0.1:8000/api/generation/price-quote?resolution=2K&duration_seconds=15&quantity=4",
+      expect.any(Object),
+    );
+  });
+
   it("reads project appearance and reconstruction metadata compatibly", () => {
     const parsed = readFirstFrameCandidates({
       id: "first-frame-v1",
@@ -683,6 +735,7 @@ describe("generation workflow API", () => {
       first_frame_asset_id: "frame-1",
       output_duration_seconds: 10,
       resolution: "768P",
+      ratio: "adaptive",
     });
     await reviseGenerationPrompt("project 1", {
       base_prompt_version_id: "prompt-1",
@@ -697,6 +750,7 @@ describe("generation workflow API", () => {
       first_frame_asset_id: "frame-1",
       output_duration_seconds: 10,
       resolution: "768P",
+      ratio: "adaptive",
       idempotency_key: "key-1",
       provider: "fake_h3",
       fake_audio_quality: "ok",
@@ -852,6 +906,7 @@ describe("generation workflow API", () => {
       first_frame_asset_id: "frame-1",
       output_duration_seconds: 10,
       resolution: "768P",
+      ratio: "adaptive",
       idempotency_key: "key-1",
       provider: "fake_h3",
       fake_audio_quality: "ok",

@@ -43,6 +43,30 @@ describe("CustomerWalletPanel", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows a quote failure without presenting the recharge conversion as a generation price", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/api/generation/price-quote")) {
+          return Promise.reject(new Error("生成单价暂不可用，请稍后重试。"));
+        }
+        if (url.endsWith("/api/customer/wallet")) return jsonResponse(wallet);
+        return jsonResponse({ items: [], total: 0, limit: 20, offset: 0 });
+      }),
+    );
+    render(
+      <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "生成单价暂不可用",
+    );
+    expect(screen.queryByText(/768P 10元/)).not.toBeInTheDocument();
+    expect(screen.getByText(/充值换算价.*10元/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "充值100元" })).toHaveTextContent(
+      "10 秒",
+    );
+  });
+
   it("shows the balance and creates a preset recharge under the customer session", async () => {
     const submit = vi
       .spyOn(HTMLFormElement.prototype, "submit")
@@ -114,10 +138,10 @@ describe("CustomerWalletPanel", () => {
       <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
     );
 
-    expect(await screen.findByText("10元 / 条")).toBeInTheDocument();
-    expect(screen.getByText("12")).toBeInTheDocument();
-    expect(screen.getByText("冻结 2 条")).toBeInTheDocument();
-    expect(screen.getByText("充值到账")).toBeInTheDocument();
+    expect(await screen.findByText(/10元.*\/ 秒/)).toBeInTheDocument();
+    expect(screen.getByText("12 秒")).toBeInTheDocument();
+    expect(screen.getByText("冻结中 2 秒")).toBeInTheDocument();
+    expect(screen.getAllByText("充值到账")).toHaveLength(2);
 
     fireEvent.click(screen.getByRole("button", { name: "充值200元" }));
 
@@ -201,7 +225,7 @@ describe("CustomerWalletPanel", () => {
     render(
       <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
     );
-    await screen.findByText("10元 / 条");
+    await screen.findByText(/10元.*\/ 秒/);
     fireEvent.change(screen.getByLabelText("自定义充值金额（元）"), {
       target: { value: "101" },
     });

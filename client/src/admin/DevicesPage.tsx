@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   type DeviceListItem,
+  type DeviceSummary,
   listDevices,
   revokeDeviceCredential,
   unbindDevice,
@@ -20,13 +21,27 @@ import { formatDateTime } from "./ui/vocabulary";
  * last seen timestamps, and current status. Mutations retain the server's
  * reason, confirmation, CSRF and idempotency contract.
  */
-export function DevicesPage({ readOnly = false }: { readOnly?: boolean }) {
+export function DevicesPage({
+  readOnly = false,
+  userId,
+}: {
+  readOnly?: boolean;
+  userId?: string;
+}) {
   const [devices, setDevices] = useState<DeviceListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [offset, setOffset] = useState(0);
   const [pageSize] = useState(20);
+  const [summary, setSummary] = useState<DeviceSummary>({
+    bound: 0,
+    online: 0,
+    revoked_today: 0,
+    unbound: 0,
+  });
+  const [statusFilter, setStatusFilter] = useState("");
+  const [platformFilter, setPlatformFilter] = useState("");
   const [pendingAction, setPendingAction] = useState<{
     device: DeviceListItem;
     kind: "unbind" | "revoke";
@@ -42,9 +57,20 @@ export function DevicesPage({ readOnly = false }: { readOnly?: boolean }) {
       const response = await listDevices({
         limit: pageSize,
         offset,
+        status: statusFilter || undefined,
+        platform: platformFilter || undefined,
+        userId,
       });
       setDevices(response.items);
       setTotal(response.total);
+      setSummary(
+        response.summary ?? {
+          bound: response.total,
+          online: 0,
+          revoked_today: 0,
+          unbound: 0,
+        },
+      );
     } catch (err) {
       setError(
         err instanceof Error && err.message
@@ -54,7 +80,7 @@ export function DevicesPage({ readOnly = false }: { readOnly?: boolean }) {
     } finally {
       setLoading(false);
     }
-  }, [offset, pageSize]);
+  }, [offset, pageSize, platformFilter, statusFilter, userId]);
 
   useEffect(() => {
     loadDevices();
@@ -101,16 +127,6 @@ export function DevicesPage({ readOnly = false }: { readOnly?: boolean }) {
     }
   }
 
-  const activeCount = devices.filter(
-    (device) => device.status === "BOUND",
-  ).length;
-  const revokedCount = devices.filter(
-    (device) => device.status === "REVOKED",
-  ).length;
-  const unboundCount = devices.filter(
-    (device) => device.status === "UNBOUND",
-  ).length;
-
   return (
     <div className="devices-page">
       <header className="admin-page-header">
@@ -118,28 +134,69 @@ export function DevicesPage({ readOnly = false }: { readOnly?: boolean }) {
         <p>集中处理设备绑定状态、最近活跃情况与强制下线操作。</p>
       </header>
 
-      <section aria-label="设备概览" className="admin-summary-grid">
-        <article className="admin-summary-card">
-          <span>当前页设备</span>
-          <strong>{devices.length}</strong>
-          <small>本页加载结果</small>
-        </article>
-        <article className="admin-summary-card">
-          <span>在线设备</span>
-          <strong>{activeCount}</strong>
-          <small>可执行下线或强退</small>
-        </article>
-        <article className="admin-summary-card">
-          <span>已强制退出</span>
-          <strong>{revokedCount}</strong>
-          <small>凭激活码可重新进入</small>
-        </article>
-        <article className="admin-summary-card">
-          <span>已解绑</span>
-          <strong>{unboundCount}</strong>
-          <small>等待重新绑定</small>
-        </article>
-      </section>
+      {userId ? <p className="admin-hint">当前客户：{userId}</p> : null}
+      {!userId ? (
+        <section aria-label="设备概览" className="admin-summary-grid">
+          <article className="admin-summary-card">
+            <span>绑定设备</span>
+            <strong>{summary.bound}</strong>
+            <small>全量口径</small>
+          </article>
+          <article className="admin-summary-card">
+            <span>在线设备</span>
+            <strong>{summary.online}</strong>
+            <small>租约有效</small>
+          </article>
+          <article className="admin-summary-card">
+            <span>已强制退出</span>
+            <strong>{summary.revoked_today}</strong>
+            <small>今日全量</small>
+          </article>
+          <article className="admin-summary-card">
+            <span>已解绑</span>
+            <strong>{summary.unbound}</strong>
+            <small>累计全量</small>
+          </article>
+        </section>
+      ) : null}
+      {!userId ? (
+        <form
+          className="admin-toolbar"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setOffset(0);
+            void loadDevices();
+          }}
+        >
+          <label className="admin-toolbar__field admin-toolbar__field--select">
+            <span>设备状态</span>
+            <select
+              aria-label="设备状态"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="">全部状态</option>
+              <option value="BOUND">已绑定</option>
+              <option value="UNBOUND">已解绑</option>
+              <option value="REVOKED">已强制退出</option>
+            </select>
+          </label>
+          <label className="admin-toolbar__field admin-toolbar__field--select">
+            <span>平台</span>
+            <select
+              aria-label="设备平台"
+              value={platformFilter}
+              onChange={(event) => setPlatformFilter(event.target.value)}
+            >
+              <option value="">全部平台</option>
+              <option value="windows">Windows</option>
+              <option value="macos">macOS</option>
+              <option value="linux">Linux</option>
+            </select>
+          </label>
+          <button type="submit">查询</button>
+        </form>
+      ) : null}
 
       {loading && <div className="loading">加载中...</div>}
 
@@ -157,8 +214,12 @@ export function DevicesPage({ readOnly = false }: { readOnly?: boolean }) {
             headers={
               <>
                 <th>设备名称</th>
+                <th>所属客户</th>
+                <th>绑定激活码</th>
+                <th>槽位</th>
                 <th>平台</th>
                 <th>绑定时间</th>
+                <th>最近心跳</th>
                 <th>状态</th>
                 <th>操作</th>
               </>
@@ -169,12 +230,34 @@ export function DevicesPage({ readOnly = false }: { readOnly?: boolean }) {
                 <td data-label="设备名称">
                   {device.display_name || `设备 #${device.slot_no}`}
                 </td>
+                <td data-label="所属客户" title={device.username}>
+                  {device.username}
+                </td>
+                <td
+                  data-label="绑定激活码"
+                  title={device.activation_code ?? undefined}
+                >
+                  <code>{device.activation_code}</code>
+                </td>
+                <td data-label="槽位">{device.slot_no}/2</td>
                 <td data-label="平台">
                   <PlatformBadge platform={device.platform} />
                 </td>
                 <td data-label="绑定时间">{formatDateTime(device.bound_at)}</td>
+                <td data-label="最近心跳">
+                  {device.online ? "● " : "○ "}
+                  {formatDateTime(device.last_heartbeat_at)}
+                </td>
                 <td data-label="状态">
-                  <DeviceStatusBadge status={device.status} />
+                  <DeviceStatusBadge
+                    status={
+                      device.status === "BOUND"
+                        ? device.online
+                          ? "ONLINE"
+                          : "OFFLINE"
+                        : device.status
+                    }
+                  />
                 </td>
                 <td data-label="操作">
                   {readOnly ? (

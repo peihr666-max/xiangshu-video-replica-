@@ -1,7 +1,6 @@
 import { useState } from "react";
-
+import { AdjustmentsPage } from "./AdjustmentsPage";
 import { AuditEventsPage } from "./AuditEventsPage";
-import { PageBanner } from "./ui/PageBanner";
 import { TabBar } from "./ui/TabBar";
 
 const tabs = [
@@ -25,15 +24,7 @@ export function AuditCenterPage() {
         onChange={setTab}
       />
       {tab === "audit" ? <AuditEventsPage /> : null}
-      {tab === "adjustments" ? (
-        <section className="admin-panel" aria-label="调账记录">
-          <h2>调账记录</h2>
-          <PageBanner tone="notice">
-            调账记录按客户归档：请从「客户列表 → 查看详情 → 调账历史」查看指定
-            客户的调账历史；支持操作人与来源单筛选的全局调账检索即将上线。
-          </PageBanner>
-        </section>
-      ) : null}
+      {tab === "adjustments" ? <AdjustmentsPage /> : null}
     </div>
   );
 }

@@ -174,13 +174,39 @@ export type GenerationVersionState = Omit<
   "version"
 > & { version: GenerationVersion | null };
 export type ScriptVersionInput = components["schemas"]["ScriptRequest"];
-export type PromptCompileInput = components["schemas"]["PromptCompileRequest"];
+export type PromptCompileInput =
+  components["schemas"]["PromptCompileRequest"] & {
+    ratio?: GenerationRatio;
+  };
 export type PromptRevisionInput =
   components["schemas"]["PromptRevisionRequest"];
 export type GenerationBatchInput =
-  components["schemas"]["GenerationBatchRequest"];
+  components["schemas"]["GenerationBatchRequest"] & {
+    ratio?: GenerationRatio;
+  };
 export type GenerationRuntimeLimits =
   components["schemas"]["GenerationRuntimeLimits"];
+export type GenerationRatio =
+  | "adaptive"
+  | "21:9"
+  | "16:9"
+  | "4:3"
+  | "1:1"
+  | "3:4"
+  | "9:16";
+export type GenerationPriceQuote = {
+  resolution: "768P" | "2K";
+  duration_seconds: 4 | 15;
+  quantity: 1 | 2 | 4;
+  unit_price_fen_per_second: number;
+  estimated_seconds: number;
+  estimated_price_fen: number;
+};
+export type SavedPromptInput = {
+  name: string;
+  prompt_text: string;
+  base_prompt_version_id?: string;
+};
 export type GenerationTask = Omit<
   components["schemas"]["TaskResult"],
   "prompt_snapshot"
@@ -923,11 +949,24 @@ export async function syncControlRechargeOrder(
 }
 
 export async function downloadCustomersCsv(
-  options: { status?: string; username?: string } = {},
+  options: {
+    status?: string;
+    username?: string;
+    createdFrom?: string;
+    createdTo?: string;
+    balanceMin?: number;
+    balanceMax?: number;
+  } = {},
 ): Promise<void> {
   const query = new URLSearchParams();
   if (options.status) query.set("status", options.status);
   if (options.username) query.set("username", options.username);
+  if (options.createdFrom) query.set("created_from", options.createdFrom);
+  if (options.createdTo) query.set("created_to", options.createdTo);
+  if (options.balanceMin !== undefined)
+    query.set("balance_min", String(options.balanceMin));
+  if (options.balanceMax !== undefined)
+    query.set("balance_max", String(options.balanceMax));
   const suffix = query.toString() ? `?${query.toString()}` : "";
   await downloadControlCsv(
     `/api/control/customers.csv${suffix}`,
@@ -991,15 +1030,52 @@ export async function reviseGenerationPrompt(
   );
 }
 
+export async function saveGenerationPrompt(
+  projectId: string,
+  input: SavedPromptInput,
+): Promise<GenerationVersion> {
+  return requestGenerationJson<GenerationVersion>(
+    `/api/projects/${encodeURIComponent(projectId)}/saved-prompts`,
+    "另存提示词失败",
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+export async function listSavedGenerationPrompts(
+  projectId: string,
+): Promise<GenerationVersion[]> {
+  return requestGenerationJson<GenerationVersion[]>(
+    `/api/projects/${encodeURIComponent(projectId)}/saved-prompts`,
+    "读取我的提示词失败",
+  );
+}
+
+export async function applySavedGenerationPrompt(
+  projectId: string,
+  savedPromptId: string,
+  basePromptVersionId: string,
+): Promise<GenerationVersion> {
+  return requestGenerationJson<GenerationVersion>(
+    `/api/projects/${encodeURIComponent(projectId)}/saved-prompts/${encodeURIComponent(savedPromptId)}/apply`,
+    "应用我的提示词失败",
+    {
+      method: "POST",
+      body: JSON.stringify({ base_prompt_version_id: basePromptVersionId }),
+    },
+  );
+}
+
 export type PromptPreviewInput = {
   output_duration_seconds?: number;
   resolution?: "768P" | "2K";
+  ratio?: GenerationRatio;
 };
 
 export type PromptPreviewResult = {
   prompt_text: string;
   output_duration_seconds: number;
   resolution: "768P" | "2K";
+  ratio: GenerationRatio;
   script_source: "script_version" | "analysis_original";
   shot_card_version_id: string | null;
 };
@@ -1061,6 +1137,22 @@ export async function getGenerationRuntimeLimits(): Promise<GenerationRuntimeLim
   return requestGenerationJson<GenerationRuntimeLimits>(
     "/api/generation/runtime-limits",
     "读取生成数量上限失败",
+  );
+}
+
+export async function getGenerationPriceQuote(input: {
+  resolution: "768P" | "2K";
+  duration_seconds: 4 | 15;
+  quantity: 1 | 2 | 4;
+}): Promise<GenerationPriceQuote> {
+  const query = new URLSearchParams({
+    resolution: input.resolution,
+    duration_seconds: String(input.duration_seconds),
+    quantity: String(input.quantity),
+  });
+  return requestGenerationJson<GenerationPriceQuote>(
+    `/api/generation/price-quote?${query.toString()}`,
+    "读取生成费用失败",
   );
 }
 

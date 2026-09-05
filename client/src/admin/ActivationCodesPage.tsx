@@ -1,4 +1,10 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 
 import {
   type ActivationCodeDevice,
@@ -31,12 +37,14 @@ import {
   formatDateTime,
   platformLabel,
 } from "./ui/vocabulary";
+import "./admin-activation.css";
 
 type CodeAction = "revoke" | "archive" | "suspend" | "resume";
 
 const PAGE_SIZE = 50;
 
 type PendingAction =
+  | { kind: "copy"; codeId: string }
   | { kind: "code"; action: CodeAction; codeId: string; status: string }
   | {
       kind: "device";
@@ -77,7 +85,6 @@ export function ActivationCodesPage({
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
-  const [copyingCodeId, setCopyingCodeId] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
 
   const handleFailure = useCallback(
@@ -135,25 +142,6 @@ export function ActivationCodesPage({
   // 搜索（A9）已下沉到服务端：掩码码或绑定用户名匹配，跨全部页生效。
   const visibleItems = items;
 
-  async function copyActivationCode(codeId: string) {
-    setError("");
-    setNotice("");
-    setCopyingCodeId(codeId);
-    try {
-      const result = await revealActivationCode(
-        codeId,
-        "后台复制激活码",
-        createIdempotencyKey(),
-      );
-      await navigator.clipboard.writeText(result.activation_code);
-      setNotice(`激活码已复制（request id: ${result.request_id}）`);
-    } catch (cause) {
-      handleFailure(cause, "复制激活码失败");
-    } finally {
-      setCopyingCodeId(null);
-    }
-  }
-
   function openAction(action: PendingAction) {
     setPending(action);
     setActionKey(null);
@@ -170,7 +158,13 @@ export function ActivationCodesPage({
     setBusy(true);
     setActionError("");
     try {
-      if (pending.kind === "code") {
+      if (pending.kind === "copy") {
+        const key = actionKey ?? createIdempotencyKey();
+        setActionKey(key);
+        const result = await revealActivationCode(pending.codeId, reason, key);
+        await navigator.clipboard.writeText(result.activation_code);
+        setNotice(`激活码已复制（request id: ${result.request_id}）`);
+      } else if (pending.kind === "code") {
         const key = actionKey ?? createIdempotencyKey();
         setActionKey(key);
         if (pending.action === "archive") {
@@ -257,11 +251,13 @@ export function ActivationCodesPage({
       setActionKey(null);
     } catch (cause) {
       const fallback =
-        pending.kind === "code"
-          ? CODE_ACTION_FALLBACK[pending.action]
-          : pending.kind === "pairing"
-            ? "处理设备申请失败"
-            : "设备操作失败";
+        pending.kind === "copy"
+          ? "复制激活码失败"
+          : pending.kind === "code"
+            ? CODE_ACTION_FALLBACK[pending.action]
+            : pending.kind === "pairing"
+              ? "处理设备申请失败"
+              : "设备操作失败";
       if (cause instanceof AdminActivationError && cause.status === 401) {
         setError("会话已失效，请重新登录");
         onSessionExpired?.();
@@ -280,19 +276,7 @@ export function ActivationCodesPage({
   }
 
   return (
-    <section
-      className="admin-panel activation-device-page"
-      aria-label="激活码与设备"
-    >
-      <header className="admin-page-header">
-        <div>
-          <h2>激活码与设备</h2>
-          <p>
-            在同一处查看激活码的使用账号、关联设备，并执行复制、暂停恢复、撤销或设备解绑。
-          </p>
-        </div>
-      </header>
-
+    <section className="activation-device-page" aria-label="激活码管理">
       {readOnly ? (
         <PageBanner tone="notice">当前为只读模式，写操作不可用。</PageBanner>
       ) : null}
@@ -300,215 +284,273 @@ export function ActivationCodesPage({
       {error ? <PageBanner tone="error">{error}</PageBanner> : null}
       {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
 
-      <form
-        className="admin-filters activation-device-filters"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setOffset(0);
-          setSearch(searchDraft.trim());
-        }}
-      >
-        <label>
-          搜索
-          <input
-            placeholder="激活码或绑定账号（服务端检索）"
-            value={searchDraft}
-            onChange={(event) => setSearchDraft(event.target.value)}
-          />
-        </label>
-        <label>
-          状态
-          <select
-            value={filterStatus}
-            onChange={(event) => {
+      <section className="activation-code-list-card">
+        <header className="activation-code-list-header">
+          <h2>激活码列表</h2>
+          <form
+            className="activation-device-filters"
+            onSubmit={(event) => {
+              event.preventDefault();
               setOffset(0);
-              setFilterStatus(event.target.value);
+              setSearch(searchDraft.trim());
             }}
           >
-            <option value="">全部</option>
-            <option value="GENERATED">待启用</option>
-            <option value="ISSUED">可使用</option>
-            <option value="ACTIVE">使用中</option>
-            <option value="SUSPENDED">已暂停</option>
-            <option value="REVOKED">已撤销</option>
-          </select>
-        </label>
-        <label>
-          <input
-            checked={includeArchived}
-            type="checkbox"
-            onChange={(event) => {
-              setOffset(0);
-              setIncludeArchived(event.target.checked);
-            }}
-          />
-          显示已归档
-        </label>
-        <button type="submit">搜索</button>
-      </form>
+            <label className="activation-filter-search">
+              <span className="sr-only">搜索</span>
+              <input
+                aria-label="搜索"
+                placeholder="请输入激活码或绑定账号"
+                value={searchDraft}
+                onChange={(event) => setSearchDraft(event.target.value)}
+              />
+            </label>
+            <label>
+              <span className="sr-only">状态</span>
+              <select
+                aria-label="状态"
+                value={filterStatus}
+                onChange={(event) => {
+                  setOffset(0);
+                  setFilterStatus(event.target.value);
+                }}
+              >
+                <option value="">全部状态</option>
+                <option value="GENERATED">待启用</option>
+                <option value="ISSUED">可使用</option>
+                <option value="ACTIVE">使用中</option>
+                <option value="SUSPENDED">已暂停</option>
+                <option value="REVOKED">已撤销</option>
+                <option value="EXPIRED">已过期</option>
+              </select>
+            </label>
+            <label className="activation-filter-archived">
+              <input
+                checked={includeArchived}
+                type="checkbox"
+                onChange={(event) => {
+                  setOffset(0);
+                  setIncludeArchived(event.target.checked);
+                }}
+              />
+              显示已归档
+            </label>
+            <button type="submit">搜索</button>
+          </form>
+        </header>
 
-      <div className="table-scroll admin-table-card">
-        <table
-          aria-label="激活码列表"
-          className="internal-table admin-data-table"
-        >
-          <thead>
-            <tr>
-              <th>激活码</th>
-              <th>状态</th>
-              <th>绑定账号</th>
-              <th>关联设备</th>
-              <th>最近活跃</th>
-              {readOnly ? null : <th>操作</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {visibleItems.map((item) => {
-              const expanded = expandedCodeId === item.code_id;
-              return (
-                <Fragment key={item.code_id}>
-                  <tr>
-                    <td>
-                      <code>{item.masked_code}</code>
-                      {readOnly ? null : (
-                        <button
-                          type="button"
-                          disabled={copyingCodeId !== null}
-                          onClick={() => void copyActivationCode(item.code_id)}
-                        >
-                          {copyingCodeId === item.code_id ? "复制中…" : "复制"}
-                        </button>
-                      )}
-                    </td>
-                    <td>
-                      <ActivationCodeStatusBadge status={item.status} />
-                      {item.archived_at ? (
-                        <span className="status-badge status-badge--neutral">
-                          已归档
-                        </span>
-                      ) : null}
-                    </td>
-                    <td>{item.bound_username ?? "未绑定"}</td>
-                    <td>
-                      <button
-                        className="activation-device-toggle"
-                        type="button"
-                        aria-expanded={expanded}
-                        onClick={() =>
-                          setExpandedCodeId(expanded ? null : item.code_id)
+        <div className="table-scroll admin-table-card">
+          <table
+            aria-label="激活码列表"
+            className="internal-table admin-data-table"
+          >
+            <thead>
+              <tr>
+                <th>激活码</th>
+                <th>状态</th>
+                <th>绑定账号</th>
+                <th>有效期至</th>
+                <th>创建时间</th>
+                <th>关联设备</th>
+                <th>最近活跃</th>
+                {readOnly ? null : <th>操作</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {visibleItems.map((item) => {
+                const expanded = expandedCodeId === item.code_id;
+                return (
+                  <Fragment key={item.code_id}>
+                    <tr>
+                      <td>
+                        <code>{item.masked_code}</code>
+                        {readOnly ? null : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openAction({ kind: "copy", codeId: item.code_id })
+                            }
+                          >
+                            复制
+                          </button>
+                        )}
+                      </td>
+                      <td>
+                        <ActivationCodeStatusBadge status={item.status} />
+                        {item.archived_at ? (
+                          <span className="status-badge status-badge--neutral">
+                            已归档
+                          </span>
+                        ) : null}
+                      </td>
+                      <td>{item.bound_username ?? "未绑定"}</td>
+                      <td
+                        className={
+                          item.status === "EXPIRED" ? "is-expired" : undefined
                         }
                       >
-                        {item.devices.length} 台设备
-                      </button>
-                    </td>
-                    <td>{formatDateTime(latestActivity(item.devices))}</td>
-                    {readOnly ? null : (
+                        {formatDateTime(item.expires_at ?? null)}
+                      </td>
+                      <td>{formatDateTime(item.created_at ?? null)}</td>
                       <td>
-                        <div className="admin-actions admin-actions--table">
-                          {item.status === "ACTIVE" ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                openAction({
-                                  kind: "code",
-                                  action: "suspend",
-                                  codeId: item.code_id,
-                                  status: item.status,
-                                })
-                              }
-                            >
-                              暂停
-                            </button>
-                          ) : null}
-                          {item.status === "SUSPENDED" ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                openAction({
-                                  kind: "code",
-                                  action: "resume",
-                                  codeId: item.code_id,
-                                  status: item.status,
-                                })
-                              }
-                            >
-                              恢复
-                            </button>
-                          ) : null}
-                          {item.status === "REVOKED" ? (
-                            <button
-                              className="admin-action--danger"
-                              type="button"
-                              onClick={() =>
-                                openAction({
-                                  kind: "code",
-                                  action: "archive",
-                                  codeId: item.code_id,
-                                  status: item.status,
-                                })
-                              }
-                            >
-                              删除激活码
-                            </button>
-                          ) : (
-                            <button
-                              className="admin-action--danger"
-                              type="button"
-                              onClick={() =>
-                                openAction({
-                                  kind: "code",
-                                  action: "revoke",
-                                  codeId: item.code_id,
-                                  status: item.status,
-                                })
-                              }
-                            >
-                              撤销激活码
-                            </button>
-                          )}
-                        </div>
+                        <button
+                          className="activation-device-toggle"
+                          type="button"
+                          aria-expanded={expanded}
+                          onClick={() =>
+                            setExpandedCodeId(expanded ? null : item.code_id)
+                          }
+                        >
+                          {item.devices.length} 台设备
+                        </button>
                       </td>
-                    )}
-                  </tr>
-                  {expanded ? (
-                    <tr className="admin-detail-row activation-device-detail-row">
-                      <td colSpan={readOnly ? 5 : 6}>
-                        <DeviceList
-                          codeId={item.code_id}
-                          devices={item.devices}
-                          readOnly={readOnly}
-                          onAction={openAction}
-                        />
-                        <PairingList
-                          codeId={item.code_id}
-                          devices={item.devices}
-                          pairings={item.pending_pairings}
-                          readOnly={readOnly}
-                          onAction={openAction}
-                        />
-                      </td>
+                      <td>{formatDateTime(latestActivity(item.devices))}</td>
+                      {readOnly ? null : (
+                        <td>
+                          <div className="admin-actions admin-actions--table">
+                            {item.status === "ACTIVE" ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openAction({
+                                    kind: "code",
+                                    action: "suspend",
+                                    codeId: item.code_id,
+                                    status: item.status,
+                                  })
+                                }
+                              >
+                                暂停
+                              </button>
+                            ) : null}
+                            {item.status === "SUSPENDED" ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openAction({
+                                    kind: "code",
+                                    action: "resume",
+                                    codeId: item.code_id,
+                                    status: item.status,
+                                  })
+                                }
+                              >
+                                恢复
+                              </button>
+                            ) : null}
+                            {item.status === "REVOKED" ? (
+                              <button
+                                className="admin-action--danger"
+                                type="button"
+                                onClick={() =>
+                                  openAction({
+                                    kind: "code",
+                                    action: "archive",
+                                    codeId: item.code_id,
+                                    status: item.status,
+                                  })
+                                }
+                              >
+                                删除激活码
+                              </button>
+                            ) : item.status === "EXPIRED" ? (
+                              <span className="admin-hint">无需操作</span>
+                            ) : (
+                              <button
+                                className="admin-action--danger"
+                                type="button"
+                                onClick={() =>
+                                  openAction({
+                                    kind: "code",
+                                    action: "revoke",
+                                    codeId: item.code_id,
+                                    status: item.status,
+                                  })
+                                }
+                              >
+                                撤销激活码
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      )}
                     </tr>
-                  ) : null}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {visibleItems.length === 0 ? (
-        <p className="activation-device-empty">没有符合条件的激活码。</p>
-      ) : null}
+                    {expanded ? (
+                      <tr className="admin-detail-row activation-device-detail-row">
+                        <td colSpan={readOnly ? 7 : 8}>
+                          <DeviceList
+                            codeId={item.code_id}
+                            devices={item.devices}
+                            readOnly={readOnly}
+                            onAction={openAction}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {visibleItems.length === 0 ? (
+          <p className="activation-device-empty">没有符合条件的激活码。</p>
+        ) : null}
 
-      <Pagination
-        limit={PAGE_SIZE}
-        offset={offset}
-        total={total}
-        onPageChange={setOffset}
-      />
+        <footer className="activation-list-footer">
+          <span>共 {total} 条</span>
+          <Pagination
+            limit={PAGE_SIZE}
+            offset={offset}
+            total={total}
+            onPageChange={setOffset}
+          />
+        </footer>
+      </section>
+
+      <section className="activation-pairings-summary" aria-label="待批准配对">
+        <header className="activation-pairings-header">
+          <h2>
+            待批准配对（
+            {items.reduce(
+              (count, item) => count + item.pending_pairings.length,
+              0,
+            )}
+            ）
+          </h2>
+          <p className="admin-hint">当前列表内，前设备不可用时转管理员审批。</p>
+        </header>
+        <div className="table-scroll">
+          <table
+            aria-label="待批准配对列表"
+            className="activation-pairing-table"
+          >
+            <thead>
+              <tr>
+                <th>设备名</th>
+                <th>平台</th>
+                <th>申请时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.flatMap((item) =>
+                PairingRows({
+                  codeId: item.code_id,
+                  customer: item.bound_username ?? item.masked_code,
+                  devices: item.devices,
+                  pairings: item.pending_pairings,
+                  readOnly,
+                  onAction: openAction,
+                }),
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <ConfirmDialog
         busy={busy}
-        confirmLabel="确认执行"
+        confirmLabel={pending?.kind === "copy" ? "确认复制" : "确认执行"}
         description={pending ? actionWarning(pending) : null}
         error={actionError}
         level={confirmLevel(pending)}
@@ -533,7 +575,7 @@ const CODE_ACTION_FALLBACK: Record<CodeAction, string> = {
 
 /** 吊销/删除/吊销凭据是不可逆终态：要求原因 + 勾选；其余要求原因。 */
 function confirmLevel(pending: PendingAction | null): ConfirmLevel {
-  if (pending === null) {
+  if (pending === null || pending.kind === "copy") {
     return "reason";
   }
   if (pending.kind === "code") {
@@ -547,22 +589,21 @@ function confirmLevel(pending: PendingAction | null): ConfirmLevel {
   return pending.replaceDeviceId ? "reasonAndAck" : "reason";
 }
 
-function PairingList({
+function PairingRows({
   codeId,
+  customer,
   devices,
   pairings,
   readOnly,
   onAction,
 }: {
   codeId: string;
+  customer: string;
   devices: ActivationCodeDevice[];
   pairings: ActivationCodePendingPairing[];
   readOnly: boolean;
   onAction: (action: PendingAction) => void;
-}) {
-  if (pairings.length === 0) {
-    return null;
-  }
+}): ReactNode[] {
   const boundDevices = devices.filter((device) => device.status === "BOUND");
   // PR #85 评审 P2：普通批准通道的开关是"首个设备（槽位 1）是否仍 BOUND"
   // （服务端 §12.2 step 3 语义），不是"是否还有任何绑定设备"——槽位 1 已
@@ -570,37 +611,48 @@ function PairingList({
   const firstDeviceBound = devices.some(
     (device) => device.slot_no === 1 && device.status === "BOUND",
   );
-  return (
-    <section aria-label="待处理设备申请" className="pairing-pending">
-      <h3>待处理设备申请</h3>
-      {pairings.map((pairing) => (
-        <article key={pairing.pairing_request_id}>
-          <strong>{pairing.display_name}</strong>
-          <p>
-            {platformLabel(pairing.platform)} · 申请于{" "}
-            {formatDateTime(pairing.created_at)}
-          </p>
-          <small>配对编号：{pairing.pairing_request_id}</small>
+  return pairings.map((pairing) => (
+    <tr key={pairing.pairing_request_id}>
+      <td>
+        <strong>{pairing.display_name}</strong>
+        <small>{customer}</small>
+      </td>
+      <td>{platformLabel(pairing.platform)}</td>
+      <td>
+        {formatDateTime(pairing.created_at)}
+        <small>配对编号：{pairing.pairing_request_id}</small>
+      </td>
+      <td>
+        <div className="admin-actions admin-actions--table">
           {pairing.status === "APPROVED" ? (
-            <p>已批准，等待新设备完成绑定。</p>
-          ) : readOnly ? null : !firstDeviceBound ? (
-            <button
-              type="button"
-              onClick={() =>
-                onAction({
-                  kind: "pairing",
-                  codeId,
-                  pairingId: pairing.pairing_request_id,
-                  candidateName: pairing.display_name,
-                })
-              }
-            >
-              批准设备
-            </button>
-          ) : null}
-          {pairing.status !== "APPROVED" && !readOnly && boundDevices.length > 0
-            ? boundDevices.map((device) => (
+            <span>已批准，等待绑定</span>
+          ) : readOnly ? (
+            <span>仅查看</span>
+          ) : (
+            <>
+              {!firstDeviceBound ? (
                 <button
+                  aria-label="批准设备"
+                  type="button"
+                  onClick={() =>
+                    onAction({
+                      kind: "pairing",
+                      codeId,
+                      pairingId: pairing.pairing_request_id,
+                      candidateName: pairing.display_name,
+                    })
+                  }
+                >
+                  批准
+                </button>
+              ) : null}
+              {boundDevices.map((device) => (
+                <button
+                  aria-label={
+                    boundDevices.length === 1
+                      ? `替换为${pairing.display_name}`
+                      : `用${pairing.display_name}替换${device.display_name || `设备 #${device.slot_no}`}`
+                  }
                   type="button"
                   key={device.device_id}
                   onClick={() =>
@@ -615,16 +667,15 @@ function PairingList({
                     })
                   }
                 >
-                  {boundDevices.length === 1
-                    ? `替换为${pairing.display_name}`
-                    : `用${pairing.display_name}替换${device.display_name || `设备 #${device.slot_no}`}`}
+                  替换
                 </button>
-              ))
-            : null}
-        </article>
-      ))}
-    </section>
-  );
+              ))}
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
+  ));
 }
 
 function DeviceList({
@@ -745,6 +796,9 @@ function latestActivity(devices: ActivationCodeDevice[]): string | null {
 }
 
 function actionTitle(action: PendingAction): string {
+  if (action.kind === "copy") {
+    return `复制激活码 ${action.codeId}`;
+  }
   if (action.kind === "code") {
     if (action.action === "archive") {
       return `删除激活码 ${action.codeId}`;
@@ -763,6 +817,9 @@ function actionTitle(action: PendingAction): string {
 }
 
 function actionWarning(action: PendingAction): string {
+  if (action.kind === "copy") {
+    return "请输入本次查看明文的真实业务原因。复制操作会写入审计记录。";
+  }
   if (action.kind === "code") {
     if (action.action === "archive") {
       return "删除后将从日常列表隐藏，但设备、充值和审计记录会继续保留。";

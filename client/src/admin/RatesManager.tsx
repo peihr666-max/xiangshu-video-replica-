@@ -6,6 +6,7 @@ import {
   type OperationRateHistory,
   updateOperationRates,
 } from "../api.admin";
+import { formatDateTime } from "./ui/vocabulary";
 
 const RATE_LABELS: Record<string, string> = {
   video_generation_768p: "视频生成 · 768P",
@@ -143,10 +144,23 @@ export function RatesManager({ readOnly = false }: { readOnly?: boolean }) {
     title: string,
     ariaLabel: string,
   ) {
-    const rows = rates.filter((rate) => rate.kind === kind);
+    const subjectOrder = Object.keys(RATE_LABELS);
+    const rows = rates
+      .filter((rate) => rate.kind === kind)
+      .sort(
+        (a, b) =>
+          subjectOrder.indexOf(a.subject) - subjectOrder.indexOf(b.subject),
+      );
     return (
       <section className="admin-panel" aria-label={ariaLabel}>
-        <h2>{title}</h2>
+        <div className="panel-title-row">
+          <h2>{title}</h2>
+          <small>
+            {kind === "upstream_cost"
+              ? "来源：秘塔 H3 价目 2026-09"
+              : "客户按提交秒数固定结算"}
+          </small>
+        </div>
         <table className="admin-data-table">
           <thead>
             <tr>
@@ -169,7 +183,6 @@ export function RatesManager({ readOnly = false }: { readOnly?: boolean }) {
                       新单价（元）
                       <input
                         aria-label={`新单价（元）：${rateLabel(rate.subject)}`}
-                        autoFocus
                         type="number"
                         min={0}
                         step="0.01"
@@ -234,8 +247,10 @@ export function RatesManager({ readOnly = false }: { readOnly?: boolean }) {
                 <tr key={rate.subject}>
                   <td>{rateLabel(rate.subject)}</td>
                   <td>{unitLabel(rate.unit)}</td>
-                  <td>{fenToYuan(rate.unit_price_fen)}</td>
-                  <td>{rate.updated_at.slice(0, 19).replace("T", " ")}</td>
+                  <td className="rate-current-price">
+                    {fenToYuan(rate.unit_price_fen)}
+                  </td>
+                  <td>{formatDateTime(rate.updated_at)}</td>
                   <td>{rate.updated_by_username ?? "—"}</td>
                   <td>
                     {readOnly ? (
@@ -265,7 +280,7 @@ export function RatesManager({ readOnly = false }: { readOnly?: boolean }) {
 
   return (
     <div className="rates-manager">
-      <div className="admin-panel">
+      <div className="admin-panel rates-manager__notice">
         <p className="admin-hint">
           费率变更需填写原因并二次确认；单价变动超过 50%
           触发额外告警；每个任务按提交时的费率快照核算，改价不影响在途任务。
@@ -284,15 +299,19 @@ export function RatesManager({ readOnly = false }: { readOnly?: boolean }) {
             <thead>
               <tr>
                 <th>科目</th>
+                <th>时间</th>
                 <th>旧值 → 新值</th>
                 <th>原因</th>
                 <th>操作人</th>
               </tr>
             </thead>
             <tbody>
-              {history.map((entry, index) => (
-                <tr key={`${entry.subject}-${entry.created_at}-${index}`}>
+              {history.map((entry) => (
+                <tr
+                  key={`${entry.subject}-${entry.created_at}-${entry.old_unit_price_fen}-${entry.new_unit_price_fen}-${entry.actor_username ?? "system"}`}
+                >
                   <td>{rateLabel(entry.subject)}</td>
+                  <td>{formatDateTime(entry.created_at)}</td>
                   <td>
                     {entry.old_unit_price_fen === null
                       ? "—"

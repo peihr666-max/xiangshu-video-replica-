@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { type AdjustmentListItem, listAdminAdjustments } from "../api.admin";
+import {
+  type AdjustmentListItem,
+  listAdminAdjustments,
+  listAllAdminAdjustments,
+} from "../api.admin";
 import { DataTable } from "./ui/DataTable";
 import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
@@ -22,22 +26,30 @@ import {
  * This page is typically accessed from the customer detail view; the userId
  * prop is passed by the parent component.
  */
-export function AdjustmentsPage({ userId }: { userId: string }) {
+export function AdjustmentsPage({ userId }: { userId?: string }) {
   const [adjustments, setAdjustments] = useState<AdjustmentListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [offset, setOffset] = useState(0);
   const [pageSize] = useState(20);
   const [total, setTotal] = useState(0);
+  const [actorUsername, setActorUsername] = useState("");
+  const [targetUsername, setTargetUsername] = useState("");
+  const [sourceType, setSourceType] = useState("");
 
   const loadAdjustments = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
-      const response = await listAdminAdjustments(userId, {
-        limit: pageSize,
-        offset,
-      });
+      const response = userId
+        ? await listAdminAdjustments(userId, { limit: pageSize, offset })
+        : await listAllAdminAdjustments({
+            actorUsername: actorUsername || undefined,
+            targetUsername: targetUsername || undefined,
+            sourceDocumentType: sourceType || undefined,
+            limit: pageSize,
+            offset,
+          });
       setAdjustments(response.items);
       setTotal(response.total);
     } catch (err) {
@@ -49,7 +61,7 @@ export function AdjustmentsPage({ userId }: { userId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [userId, offset, pageSize]);
+  }, [actorUsername, offset, pageSize, sourceType, targetUsername, userId]);
 
   useEffect(() => {
     loadAdjustments();
@@ -59,8 +71,51 @@ export function AdjustmentsPage({ userId }: { userId: string }) {
     <div className="adjustments-page">
       <header>
         <h1>调账历史</h1>
-        <p className="user-info">用户 ID: {userId}</p>
+        {userId ? <p className="user-info">用户 ID: {userId}</p> : null}
       </header>
+      {!userId ? (
+        <form
+          className="admin-toolbar"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setOffset(0);
+            void loadAdjustments();
+          }}
+        >
+          <label>
+            操作人
+            <input
+              aria-label="调账操作人"
+              value={actorUsername}
+              onChange={(event) => setActorUsername(event.target.value)}
+            />
+          </label>
+          <label>
+            目标客户
+            <input
+              aria-label="调账目标客户"
+              value={targetUsername}
+              onChange={(event) => setTargetUsername(event.target.value)}
+            />
+          </label>
+          <label>
+            来源类型
+            <select
+              aria-label="调账来源类型"
+              value={sourceType}
+              onChange={(event) => setSourceType(event.target.value)}
+            >
+              <option value="">全部来源</option>
+              <option value="CS_TICKET">客服工单</option>
+              <option value="REFUND_APPROVAL">退款审批</option>
+              <option value="COMPENSATION_APPROVAL">补偿审批</option>
+              <option value="LEDGER_CORRECTION">账本修正</option>
+              <option value="FREE_GRANT">免费发放</option>
+            </select>
+          </label>
+          <button type="submit">查询</button>
+        </form>
+      ) : null}
 
       {loading && <div className="loading">加载中...</div>}
 
@@ -77,10 +132,12 @@ export function AdjustmentsPage({ userId }: { userId: string }) {
             headers={
               <>
                 <th>来源单类型</th>
+                {!userId ? <th>操作人 / 客户</th> : null}
                 <th>来源单编号</th>
                 <th>原因</th>
                 <th>金额</th>
-                <th>条数</th>
+                <th>秒数</th>
+                <th>调整前后余额</th>
                 <th>时间</th>
               </>
             }
@@ -95,12 +152,25 @@ export function AdjustmentsPage({ userId }: { userId: string }) {
                     )}
                   </StatusBadge>
                 </td>
+                {!userId ? (
+                  <td>
+                    {adj.admin_username} → {adj.target_username}
+                  </td>
+                ) : null}
                 <td>
                   <code>{adj.source_document_ref}</code>
                 </td>
                 <td>{adj.reason}</td>
                 <td className="amount">{formatFen(adj.amount_fen)}</td>
-                <td>{adj.credits}</td>
+                <td>+{adj.credits} 秒</td>
+                <td>
+                  {adj.balance_before === null ||
+                  adj.balance_before === undefined ||
+                  adj.balance_after === null ||
+                  adj.balance_after === undefined
+                    ? "历史未记录"
+                    : `${adj.balance_before} → ${adj.balance_after} 秒`}
+                </td>
                 <td>{formatDateTime(adj.created_at)}</td>
               </tr>
             ))}

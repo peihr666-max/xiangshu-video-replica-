@@ -6,6 +6,7 @@ import {
   within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as api from "../api";
 import * as adminApi from "../api.admin";
 import { CustomersPage } from "./CustomersPage";
 
@@ -15,6 +16,10 @@ vi.mock("../api.admin", () => ({
   fetchCustomerUnitPrice: vi.fn(),
   updateCustomerUnitPrice: vi.fn(),
   createCustomerAdjustment: vi.fn(),
+  listAdminRechargeOrders: vi.fn(),
+  listAdminWalletTransactions: vi.fn(),
+  listDevices: vi.fn(),
+  listCustomerSessions: vi.fn(),
   listAdminAdjustments: vi.fn().mockResolvedValue({
     items: [],
     total: 0,
@@ -43,6 +48,10 @@ vi.mock("../api.admin", () => ({
   },
 }));
 
+vi.mock("../api", () => ({
+  downloadCustomersCsv: vi.fn(),
+}));
+
 describe("CustomersPage (ADM-02 / T33)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -55,6 +64,30 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       recharge_step_fen: 1000,
       updated_at: null,
       request_id: "request-price-read",
+    });
+    vi.mocked(adminApi.listAdminRechargeOrders).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 3,
+      offset: 0,
+    });
+    vi.mocked(adminApi.listAdminWalletTransactions).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 3,
+      offset: 0,
+    });
+    vi.mocked(adminApi.listDevices).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 3,
+      offset: 0,
+    });
+    vi.mocked(adminApi.listCustomerSessions).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 3,
+      offset: 0,
     });
   });
 
@@ -98,7 +131,9 @@ describe("CustomersPage (ADM-02 / T33)", () => {
 
     expect(screen.getByText(/共 2 位客户/)).toBeInTheDocument();
     expect(screen.getByText("5 / 8")).toBeInTheDocument();
-    expect(screen.getByText("1 / 1 / 1")).toBeInTheDocument();
+    expect(
+      screen.getByText("1", { selector: "td[data-label='待关注']" }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText("customer-1 已结算消耗")).toHaveTextContent(
       "5",
     );
@@ -112,14 +147,19 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         .map((cell) => cell.textContent?.replace(/\s+/g, " ").trim()),
     ).toEqual([
       "customer-1",
+      "—",
+      "user-1",
       "ABC-123",
       new Date(mockCustomers[0].created_at).toLocaleString("zh-CN", {
         hour12: false,
       }),
       "活跃",
-      "5 / 8",
-      "1 / 1 / 1",
-      "5",
+      "0/2",
+      "0 秒",
+      "0 秒",
+      "5 秒",
+      "5 / 8 · 1 失败 · 1 进行中",
+      "1",
       "展开详情",
     ]);
   });
@@ -198,6 +238,46 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     });
   });
 
+  it("exports the same date, status and balance filters as the list", async () => {
+    vi.mocked(adminApi.listCustomers).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+    });
+    render(<CustomersPage />);
+
+    fireEvent.change(screen.getByLabelText("注册起始"), {
+      target: { value: "2026-09-01" },
+    });
+    fireEvent.change(screen.getByLabelText("注册截止"), {
+      target: { value: "2026-09-05" },
+    });
+    fireEvent.change(screen.getByLabelText("最低余额"), {
+      target: { value: "10" },
+    });
+    fireEvent.change(screen.getByLabelText("最高余额"), {
+      target: { value: "500" },
+    });
+    fireEvent.change(screen.getByLabelText("客户状态"), {
+      target: { value: "active" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("按用户名筛选"), {
+      target: { value: "customer-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+    fireEvent.click(screen.getByRole("button", { name: "导出列表 CSV" }));
+
+    expect(api.downloadCustomersCsv).toHaveBeenCalledWith({
+      status: "active",
+      username: "customer-1",
+      createdFrom: "2026-09-01",
+      createdTo: "2026-09-05",
+      balanceMin: 10,
+      balanceMax: 500,
+    });
+  });
+
   it("opens the adjustment history for the selected customer", async () => {
     vi.mocked(adminApi.listCustomers).mockResolvedValue({
       items: [
@@ -228,7 +308,8 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     });
   });
 
-  it("expands a customer row to reveal operational details and collapse again", async () => {
+  it("opens a focused customer detail and returns to the filtered list", async () => {
+    const onOpenDevices = vi.fn();
     vi.mocked(adminApi.listCustomers).mockResolvedValue({
       items: [
         {
@@ -250,45 +331,76 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       offset: 0,
     });
 
-    render(<CustomersPage />);
+    render(<CustomersPage onOpenDevices={onOpenDevices} />);
 
+    fireEvent.change(await screen.findByPlaceholderText("按用户名筛选"), {
+      target: { value: "customer-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+    await waitFor(() => {
+      expect(adminApi.listCustomers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ username_filter: "customer-1" }),
+      );
+    });
     const toggle = await screen.findByRole("button", { name: "展开详情" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(toggle);
 
+    expect(screen.queryByRole("table", { name: "客户列表" })).toBeNull();
     const detailPanel = screen
-      .getByRole("heading", {
-        name: "customer-1 运营详情",
-      })
-      .closest("section");
+      .getByRole("heading", { name: "customer-1" })
+      .closest("div");
     expect(detailPanel).not.toBeNull();
     expect(
-      within(detailPanel as HTMLElement).getByText("累计生成"),
+      screen.getByRole("region", { name: "客户核心指标" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("累计消耗")).toBeInTheDocument();
     expect(
-      within(detailPanel as HTMLElement).getByText("8 条"),
-    ).toBeInTheDocument();
-    expect(
-      within(detailPanel as HTMLElement).getByRole("button", {
+      screen.getByRole("button", {
         name: "调账历史",
       }),
     ).toBeInTheDocument();
     expect(
-      within(detailPanel as HTMLElement).getByRole("button", {
-        name: "收起详情",
-      }),
-    ).toHaveAttribute("aria-expanded", "true");
+      screen.getByRole("button", { name: "← 返回客户列表" }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(adminApi.listAdminRechargeOrders).toHaveBeenCalledWith({
+        userId: "user-1",
+        limit: 3,
+        offset: 0,
+      });
+      expect(adminApi.listAdminWalletTransactions).toHaveBeenCalledWith({
+        userId: "user-1",
+        limit: 3,
+        offset: 0,
+      });
+      expect(adminApi.listDevices).toHaveBeenCalledWith({
+        userId: "user-1",
+        limit: 3,
+        offset: 0,
+      });
+      expect(adminApi.listCustomerSessions).toHaveBeenCalledWith("user-1", {
+        limit: 3,
+        offset: 0,
+      });
+      expect(adminApi.listAdminAdjustments).toHaveBeenCalledWith("user-1", {
+        limit: 3,
+        offset: 0,
+        sort: "desc",
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "查看设备" }));
+    expect(onOpenDevices).toHaveBeenCalledWith("user-1");
 
-    fireEvent.click(
-      within(detailPanel as HTMLElement).getByRole("button", {
-        name: "收起详情",
-      }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "← 返回客户列表" }));
 
     expect(
-      screen.queryByRole("heading", { name: "customer-1 运营详情" }),
-    ).toBeNull();
+      await screen.findByRole("table", { name: "客户列表" }),
+    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("按用户名筛选")).toHaveValue(
+      "customer-1",
+    );
   });
 
   it("loads and updates the customer's effective recharge price", async () => {
@@ -320,8 +432,8 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     render(<CustomersPage />);
     fireEvent.click(await screen.findByRole("button", { name: "展开详情" }));
 
-    expect(await screen.findByText(/当前 ¥10.00 \/ 条/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("售价（元/条）"), {
+    expect(await screen.findByText(/当前 ¥10.00 \/ 秒/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("售价（元/秒）"), {
       target: { value: "8.8" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存客户售价" }));
@@ -344,7 +456,7 @@ describe("CustomersPage (ADM-02 / T33)", () => {
   });
 
   it("grants free credits through the audited FREE_GRANT adjustment", async () => {
-    // 免费条数发放（FREE_GRANT / 054）：来源单号必填，高危对话框确认，
+    // 免费秒数发放（FREE_GRANT / 054）：来源单号必填，高危对话框确认，
     // 服务端调用走 T23 调账闭环且 source_document_type 固定为 FREE_GRANT。
     vi.mocked(adminApi.listCustomers).mockResolvedValue({
       items: [
@@ -375,16 +487,16 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     render(<CustomersPage />);
     fireEvent.click(await screen.findByRole("button", { name: "展开详情" }));
 
-    fireEvent.change(await screen.findByLabelText("发放条数"), {
+    fireEvent.change(await screen.findByLabelText("发放秒数"), {
       target: { value: "10" },
     });
     fireEvent.change(screen.getByLabelText("来源单号"), {
       target: { value: "PROMO-2026-09-001" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "发放免费条数" }));
+    fireEvent.click(screen.getByRole("button", { name: "发放免费秒数" }));
 
     // 高危对话框：原因必填 + 我已知晓勾选。
-    await screen.findByRole("dialog", { name: "发放免费条数" });
+    await screen.findByRole("dialog", { name: "发放免费秒数" });
     fireEvent.click(screen.getByRole("button", { name: "确认发放" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "请填写操作原因",
@@ -409,7 +521,7 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         expect.any(String),
       );
     });
-    expect(await screen.findByText(/已发放 10 条免费条数/)).toBeInTheDocument();
+    expect(await screen.findByText(/已发放 10 秒免费时长/)).toBeInTheDocument();
   });
 
   it("keeps customer pricing read-only for auditors", async () => {

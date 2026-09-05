@@ -69,7 +69,7 @@ describe("AdminActivationSection（创建即激活）", () => {
       screen.getByText(/创建即可激活并交付客户，无发放动作/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "激活码与设备" }),
+      screen.getByRole("heading", { name: "激活码列表" }),
     ).toBeInTheDocument();
     // 发放与批次概念不再出现在界面上。
     expect(screen.queryByText(/发放激活码/)).toBeNull();
@@ -92,7 +92,7 @@ describe("AdminActivationSection（创建即激活）", () => {
     ).toBe(false);
   });
 
-  it("rejects positive initial credits (gift seconds must use the audited free-grant adjustment)", async () => {
+  it("requires confirmation before issuing codes with initial free seconds", async () => {
     const fetchMock = installFetch();
     render(
       <AdminActivationSection actor={adminActor} onSessionExpired={vi.fn()} />,
@@ -106,12 +106,27 @@ describe("AdminActivationSection（创建即激活）", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "生成激活码" }));
 
-    expect(await screen.findByText(/初始秒数暂仅支持 0/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("请确认初始秒数为免费赠送，不产生收款收入"),
+    ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([url]) =>
         String(url).includes("/activation-code-batches"),
       ),
     ).toBe(false);
+    fireEvent.click(screen.getByRole("checkbox", { name: /确认免费赠送/ }));
+    fireEvent.click(screen.getByRole("button", { name: "生成激活码" }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) =>
+        String(url).endsWith("/activation-code-batches"),
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+        face_value_fen: 0,
+        credits: 600,
+        confirm_grant: true,
+      });
+    });
   });
 
   it("generates codes with auto-issue, configurable expiry, credits and the operator reason", async () => {

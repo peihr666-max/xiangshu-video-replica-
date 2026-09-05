@@ -12,26 +12,6 @@ function jsonResponse(payload: unknown, status = 200) {
   });
 }
 
-function accountPage(offset: number, total: number) {
-  return {
-    items: [
-      {
-        id: `user-${offset}`,
-        username: `operator-${offset}`,
-        display_name: `运营 ${offset}`,
-        role: "employee",
-        is_active: true,
-        available_credits: 18,
-        reserved_credits: 2,
-        active_token_count: 1,
-      },
-    ],
-    total,
-    limit: 20,
-    offset,
-  };
-}
-
 function transactionPage(offset: number, total: number) {
   return {
     items: [
@@ -42,6 +22,8 @@ function transactionPage(offset: number, total: number) {
         type: "CHARGE",
         available_delta: 10,
         reserved_delta: 0,
+        available_balance_after: 18 as number | null,
+        reserved_balance_after: 2 as number | null,
         recharge_order_id: "order-1",
         task_id: null,
         billing_round: null,
@@ -58,9 +40,6 @@ function installFetch() {
   const fetchMock = vi.fn((url: string) => {
     const { searchParams, pathname } = new URL(String(url));
     const offset = Number(searchParams.get("offset") ?? "0");
-    if (pathname.endsWith("/api/control/accounts")) {
-      return jsonResponse(accountPage(offset, 41));
-    }
     if (pathname.endsWith("/api/control/wallet-transactions")) {
       return jsonResponse(transactionPage(offset, 41));
     }
@@ -75,31 +54,55 @@ describe("AccountsPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders accounts and transactions with the unified labels", async () => {
+  it("renders wallet transactions with deterministic balances", async () => {
     installFetch();
     render(<AccountsPage />);
 
-    expect(await screen.findByText("operator-0")).toBeInTheDocument();
+    expect(await screen.findByText("operator-1")).toBeInTheDocument();
     expect(screen.getByText("充值到账")).toBeInTheDocument();
-    expect(screen.getByText("员工")).toBeInTheDocument();
+    expect(screen.getByText("+10 秒")).toBeInTheDocument();
+    expect(screen.getByText(/18 秒/)).toBeInTheDocument();
+    expect(screen.getByText(/冻结 2 秒/)).toBeInTheDocument();
   });
 
-  it("pages accounts and transactions with the server total", async () => {
+  it("does not invent balances for unsequenced history", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const page = transactionPage(0, 1);
+      page.items[0].available_balance_after = null;
+      page.items[0].reserved_balance_after = null;
+      if (
+        new URL(String(url)).pathname.endsWith(
+          "/api/control/wallet-transactions",
+        )
+      ) {
+        return jsonResponse(page);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AccountsPage />);
+
+    expect(await screen.findByText("历史未记录")).toBeInTheDocument();
+  });
+
+  it("pages wallet transactions with the server total", async () => {
     const fetchMock = installFetch();
     render(<AccountsPage />);
 
-    // 账号与流水各自独立分页；total=41、页大小 20 → 共 3 页（两条分页条）。
-    expect(await screen.findAllByText("第 1 / 3 页（共 41 条）")).toHaveLength(
-      2,
-    );
-    expect(screen.getAllByRole("button", { name: "下一页" })).toHaveLength(2);
+    expect(
+      await screen.findByText("第 1 / 3 页（共 41 条）"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "下一页" })).toBeEnabled();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "下一页" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
 
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([url]) =>
-          String(url).includes("/api/control/accounts?limit=20&offset=20"),
+          String(url).includes(
+            "/api/control/wallet-transactions?limit=20&offset=20",
+          ),
         ),
       ).toBe(true),
     );

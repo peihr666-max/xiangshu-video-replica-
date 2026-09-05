@@ -214,6 +214,7 @@ describe("admin activation API adapter", () => {
           credits: 100,
           quantity: 50,
           activation_expires_at: "2026-09-01T00:00:00Z",
+          confirm_grant: false,
           confirm: true,
           reason: "首批投放",
         }),

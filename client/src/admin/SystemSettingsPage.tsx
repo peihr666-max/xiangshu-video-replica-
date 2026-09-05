@@ -17,10 +17,12 @@ const tabs = [
  */
 export function SystemSettingsPage({
   readOnly = false,
+  initialTab = "payment",
 }: {
   readOnly?: boolean;
+  initialTab?: "payment" | "rates" | "services";
 }) {
-  const [tab, setTab] = useState("payment");
+  const [tab, setTab] = useState<string>(initialTab);
   return (
     <div>
       <TabBar

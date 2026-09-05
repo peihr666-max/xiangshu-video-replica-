@@ -198,6 +198,26 @@ function installFetch(options?: { session?: "valid" | "missing" }) {
     if (url.includes("/api/control/accounts?")) {
       return jsonResponse(accountsPage);
     }
+    if (url.endsWith("/api/control/dashboard/summary")) {
+      return jsonResponse({
+        today: {
+          generated: 0,
+          succeeded: 0,
+          failed: 0,
+          online_devices: 0,
+          active_customers: 0,
+          recharge_fen: 0,
+        },
+        trend: [],
+        todos: {
+          pending_pairings: 0,
+          failed_tasks_7d: 0,
+          reconciliation_problems: 0,
+          expiring_codes_7d: 0,
+        },
+        device_slots: { bound: 0, total: 0 },
+      });
+    }
     if (url.includes("/api/control/recharge-orders?")) {
       return jsonResponse(ordersPage);
     }
@@ -362,8 +382,16 @@ describe("AdminApp", () => {
         (_, element) => element?.textContent === "待支付订单 1",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("已支付未入账 2")).toBeInTheDocument();
-    expect(screen.getByText("入账但订单未支付 1")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, element) => element?.textContent === "已支付未入账 2",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, element) => element?.textContent === "入账但订单未支付 1",
+      ),
+    ).toBeInTheDocument();
 
     // 查单同步先经"原因必填"确认（A4 写契约），再发请求。
     fireEvent.click(await screen.findByRole("button", { name: "查单同步" }));
@@ -411,7 +439,7 @@ describe("AdminApp", () => {
       target: { value: "" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存 ZPay 设置" }));
-    fireEvent.change(screen.getByLabelText("内部单价（分/条）"), {
+    fireEvent.change(screen.getByLabelText("内部单价（分/秒）"), {
       target: { value: "500" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存内部价格" }));
@@ -503,6 +531,7 @@ describe("AdminApp", () => {
     await signInWithPassword();
     fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
     fireEvent.click(await screen.findByRole("tab", { name: "激活码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成激活码" }));
 
     expect(
       await screen.findByRole("heading", { name: "生成激活码" }),
@@ -535,6 +564,35 @@ describe("AdminApp", () => {
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("管理员密码")).toBeNull();
     expect(screen.getAllByText("管理员一号").length).toBeGreaterThan(0);
+  });
+
+  it("opens economics from the overview group tabs while retaining navigation context", async () => {
+    installFetch({ session: "valid" });
+    render(<AdminApp />);
+    await screen.findByRole("navigation", { name: "管理端导航" });
+    const groupTabs = screen.getByRole("tablist", { name: "运营概览快捷导航" });
+    expect(groupTabs).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "总览仪表盘" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "经营分析" }));
+    expect(screen.getByRole("tab", { name: "成本明细" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "经营分析" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  it("opens the actual issuance form from the overview shortcut", async () => {
+    installFetch({ session: "valid" });
+    render(<AdminApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "快速发码" }));
+    expect(screen.getByRole("tab", { name: "激活码" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText(/初始秒数/)).toBeInTheDocument();
   });
 
   it("renders the merged seven-item navigation with per-page tabs", async () => {

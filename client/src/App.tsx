@@ -797,7 +797,7 @@ function pageSubtitle(page: WorkspacePage): string {
     projects: "上传参考视频，拆解提示词，配首帧生成新视频。",
     settings: "管理各服务连接凭据与运行参数。",
     tasks: "查看生成批次，播放结果并处理异常任务。",
-    wallet: "查看内部计费条数、充值记录与支付状态。",
+    wallet: "查看秒数额度、充值记录与支付状态。",
   }[page];
 }
 
