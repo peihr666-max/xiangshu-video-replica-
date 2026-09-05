@@ -66,3 +66,10 @@ artifacts/
 design-qa.md
 /*.tar.gz
 e2e/customer/run/
+
+# 前端审核包交付 zip（内容已解压入库，以同名目录为准，避免二进制重复膨胀）
+/前端页面V*.zip
+# 前端审查工作区产物（仅保留逐页审查清单 md/xlsx 正本）
+/outputs/frontend-audit-2026-09-05/*
+!/outputs/frontend-audit-2026-09-05/前端逐页功能审查清单.md
+!/outputs/frontend-audit-2026-09-05/前端逐页功能审查清单.xlsx
