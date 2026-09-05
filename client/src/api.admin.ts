@@ -1318,3 +1318,39 @@ export async function upsertDailyPrice(
     "PUT",
   );
 }
+
+// ---------------------------------------------------------------------------
+// Dashboard summary (W15 — 总览仪表盘)
+// ---------------------------------------------------------------------------
+
+export type DashboardTrendPoint = {
+  day: string;
+  succeeded: number;
+  failed: number;
+};
+
+export type DashboardSummary = {
+  today: {
+    generation_count: number;
+    succeeded: number;
+    online_devices: number;
+    active_customers: number;
+    recharge_fen: number;
+  };
+  trend: DashboardTrendPoint[];
+  todos: {
+    pending_pairings: number;
+    failed_tasks_7d: number;
+    reconciliation_problems: number;
+    expiring_codes_7d: number;
+  };
+  device_slots: { bound: number; total: number };
+};
+
+export async function getDashboardSummary(): Promise<DashboardSummary> {
+  const response = await requestControl("/api/control/dashboard/summary", {});
+  if (!response.ok) {
+    throw await parseActivationError(response, "读取仪表盘失败");
+  }
+  return (await response.json()) as DashboardSummary;
+}

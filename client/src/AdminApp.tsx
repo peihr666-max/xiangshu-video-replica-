@@ -510,7 +510,12 @@ export function AdminApp() {
             <p>{activeTabMeta?.helper ?? "运营核心视图"}</p>
           </header>
 
-          {activeTab === "overview" ? <OverviewPage /> : null}
+          {activeTab === "overview" ? (
+            <OverviewPage
+              readOnly={readOnly}
+              onNavigate={(tab) => setActiveTab(tab as AdminTab)}
+            />
+          ) : null}
           {activeTab === "analytics" ? <AnalyticsPage /> : null}
           {activeTab === "funds" ? <FundsPage readOnly={readOnly} /> : null}
           {activeTab === "customersMgmt" ? (

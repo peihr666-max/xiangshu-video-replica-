@@ -8537,3 +8537,104 @@ button.activation-generator__submit {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* W15 — 总览仪表盘 */
+.dashboard-page {
+  display: grid;
+  gap: 18px;
+}
+
+.dashboard-trend {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  min-height: 160px;
+}
+
+.dashboard-trend__col {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  align-items: end;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.dashboard-trend__bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  height: 120px;
+}
+
+.dashboard-trend__bar {
+  width: 12px;
+  border-radius: 4px 4px 0 0;
+  min-height: 2px;
+}
+
+.dashboard-trend__bar--ok {
+  background: linear-gradient(180deg, #91deb4, #4e8a68);
+}
+
+.dashboard-trend__bar--bad {
+  background: linear-gradient(180deg, #e0a0a0, #8a4e4e);
+}
+
+.dashboard-trend__col > span {
+  color: var(--admin-muted, #a49e95);
+  font-size: 11px;
+  text-align: center;
+}
+
+.dashboard-todos {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-todos li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--admin-line-soft, #242321);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 14px;
+}
+
+.dashboard-todos li > span:first-child {
+  flex: 1;
+}
+
+.dashboard-todos li button {
+  border: 1px solid var(--admin-line, #2e2c29);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--admin-gold-bright, #e0c17c);
+  cursor: pointer;
+  padding: 4px 10px;
+}
+
+.dashboard-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.dashboard-quick-actions button {
+  border: 1px solid var(--admin-line, #2e2c29);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--admin-text, #ece8df);
+  cursor: pointer;
+  padding: 16px;
+}
+
+.dashboard-quick-actions button:hover {
+  border-color: var(--admin-gold, #c6a45f);
+  color: var(--admin-gold-bright, #e0c17c);
+}
