@@ -960,8 +960,8 @@ def test_admin_regeneration_bills_source_creator_and_audits_requester(
         ).fetchone()
     assert batch is not None and batch["created_by_user_id"] == "employee_1"
     assert after["employee_1"] == (
-        before["employee_1"][0] - 1,
-        before["employee_1"][1] + 1,
+        before["employee_1"][0] - 10,
+        before["employee_1"][1] + 10,
     )
     assert after["admin_1"] == before["admin_1"]
     assert audit is not None
@@ -4573,7 +4573,7 @@ def test_reconcile_submission_uncertain_recovers_succeeded_result(
     assert row["status"] == "SUCCEEDED"
     assert row["archive_status"] == "DIRECT"
     assert row["result_asset_id"] is None
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
+    assert dict(wallet) == {"available_credits": 990, "reserved_credits": 0}
     assert billing_rows == [("RESERVE", 1), ("SETTLE", 1)]
 
 
@@ -5722,7 +5722,7 @@ def _task_billing_rows(conn: sqlite3.Connection, task_id: str) -> list[tuple[str
     ]
 
 
-def test_generation_batch_reserves_one_credit_per_task_and_replay_is_free(
+def test_generation_batch_reserves_seconds_per_task_and_replay_is_free(
     client: TestClient,
     db_path: Path,
 ) -> None:
@@ -5766,7 +5766,7 @@ def test_generation_batch_reserves_one_credit_per_task_and_replay_is_free(
         ).fetchone()[0]
         task_rows = {task_id: _task_billing_rows(conn, task_id) for task_id in task_ids}
 
-    assert dict(wallet) == {"available_credits": 998, "reserved_credits": 2}
+    assert dict(wallet) == {"available_credits": 980, "reserved_credits": 20}
     assert reserve_count == 2
     assert all(rows == [("RESERVE", 1)] for rows in task_rows.values())
 
@@ -5906,7 +5906,7 @@ def test_direct_generation_settles_once_even_when_storage_is_unavailable(
     assert first is not None
     assert first.archive_status == "DIRECT"
     assert second is None
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
+    assert dict(wallet) == {"available_credits": 990, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 
     second_prompt_id = create_locked_prompt(client, script_text="另一个归档失败任务。")
@@ -5946,7 +5946,7 @@ def test_direct_generation_settles_once_even_when_storage_is_unavailable(
 
     assert result is not None
     assert result.archive_status == "DIRECT"
-    assert dict(wallet) == {"available_credits": 998, "reserved_credits": 0}
+    assert dict(wallet) == {"available_credits": 980, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 
 
@@ -5999,7 +5999,7 @@ def test_direct_generation_does_not_depend_on_storage_download_urls(
 
     assert result is not None
     assert dict(task) == {"archive_status": "DIRECT", "result_asset_id": None}
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
+    assert dict(wallet) == {"available_credits": 990, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 
 
@@ -6203,7 +6203,7 @@ def test_pre_provider_retry_reserves_a_new_round_after_release(
         ).fetchone()
         rows = _task_billing_rows(conn, task_id)
 
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 1}
+    assert dict(wallet) == {"available_credits": 990, "reserved_credits": 10}
     assert rows == [("RELEASE", 1), ("RESERVE", 1), ("RESERVE", 2)]
 
 

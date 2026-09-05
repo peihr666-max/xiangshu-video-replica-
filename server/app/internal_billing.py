@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal, cast
 from uuid import uuid4
+
+import psycopg
 
 from app.db_portable import BusinessConnection
 
@@ -27,6 +30,8 @@ class BillingFinalization:
     task_id: str
     billing_round: int | None
     transaction_type: TerminalTransactionType | None
+    # W11 按秒计费：本轮流水的秒数（旧数据/历史任务为 1）。
+    seconds: int = 1
 
 
 @dataclass(frozen=True)
@@ -111,8 +116,14 @@ def reserve_internal_billing(
     user_id: str,
     task_id: str,
     billing_round: int | None = None,
+    seconds: int = 1,
 ) -> int:
-    """Reserve one credit inside the caller's existing database transaction."""
+    """Reserve the requested seconds inside the caller's transaction.
+
+    W11 按秒计费：seconds 来自任务提交档位快照（billed_seconds）；
+    默认 1 保持旧调用与历史任务语义（每轮 1 条 = 1 秒）。"""
+    if seconds < 1:
+        raise BillingInvariantError("reserved seconds must be positive")
     task = conn.execute(
         """
         SELECT batch.created_by_user_id
@@ -191,12 +202,12 @@ def reserve_internal_billing(
         """
         UPDATE wallets
         SET
-            available_credits = available_credits - 1,
-            reserved_credits = reserved_credits + 1,
+            available_credits = available_credits - %s,
+            reserved_credits = reserved_credits + %s,
             updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = %s AND available_credits >= 1
+        WHERE user_id = %s AND available_credits >= %s
         """,
-        (user_id,),
+        (seconds, seconds, user_id, seconds),
     )
     if cursor.rowcount != 1:
         wallet = conn.execute(
@@ -205,18 +216,22 @@ def reserve_internal_billing(
         ).fetchone()
         if wallet is None:
             raise BillingInvariantError("wallet does not exist")
-        raise InsufficientCreditsError("available credits are insufficient")
+        raise InsufficientCreditsError(
+            f"available credits are insufficient: need {seconds} seconds"
+        )
 
     conn.execute(
         """
         INSERT INTO wallet_transactions (
             id, user_id, type, available_delta, reserved_delta,
             task_id, billing_round, idempotency_key
-        ) VALUES (%s, %s, 'RESERVE', -1, 1, %s, %s, %s)
+        ) VALUES (%s, %s, 'RESERVE', %s, %s, %s, %s, %s)
         """,
         (
             str(uuid4()),
             user_id,
+            -seconds,
+            seconds,
             task_id,
             billing_round,
             f"reserve:{task_id}:{billing_round}",
@@ -240,6 +255,7 @@ def finalize_internal_billing(
             task.result_asset_id,
             task.provider_result_url,
             task.provider,
+            task.prompt_snapshot_json,
             batch.created_by_user_id,
             asset.storage_uri
         FROM generation_tasks AS task
@@ -254,7 +270,7 @@ def finalize_internal_billing(
 
     reservation = conn.execute(
         """
-        SELECT user_id, billing_round
+        SELECT user_id, billing_round, reserved_delta
         FROM wallet_transactions
         WHERE task_id = %s AND type = 'RESERVE'
         ORDER BY billing_round DESC
@@ -269,6 +285,8 @@ def finalize_internal_billing(
 
     user_id = str(reservation["user_id"])
     billing_round = int(reservation["billing_round"])
+    # W11：本轮预留的秒数（旧行固定 1）。
+    seconds = max(1, int(reservation["reserved_delta"]))
     if user_id != str(task["created_by_user_id"]):
         raise BillingInvariantError("reservation owner does not match generation task owner")
 
@@ -306,22 +324,41 @@ def finalize_internal_billing(
             raise BillingInvariantError("successful billing requires a deliverable result")
         transaction_type: TerminalTransactionType = "SETTLE"
         available_delta = 0
+        # W9 — 上游成本落库：actual_cost = 计费秒数 × 当前上游成本费率
+        # （按提交分辨率取科目；费率来自 operation_cost_rates，W10）。
+        # SQLite 内部通道无该表（056 为 PG-only），直接跳过成本核算。
+        if getattr(conn, "is_postgres", False):
+            try:
+                snapshot = json.loads(str(task["prompt_snapshot_json"] or "{}"))
+                resolution = str(snapshot.get("resolution") or "768P").lower()
+                rate_row = conn.execute(
+                    "SELECT unit_price_fen FROM operation_cost_rates WHERE subject = %s",
+                    (f"video_generation_{resolution}",),
+                ).fetchone()
+                if rate_row is not None:
+                    cost_yuan = seconds * int(rate_row[0]) / 100.0
+                    conn.execute(
+                        "UPDATE generation_tasks SET actual_cost = %s WHERE id = %s",
+                        (cost_yuan, task_id),
+                    )
+            except (psycopg.errors.UndefinedTable, ValueError, TypeError):
+                pass
     else:
         if str(task["status"]) not in {"FAILED", "CANCELLED"}:
             raise BillingInvariantError("released billing requires a failed or cancelled task")
         transaction_type = "RELEASE"
-        available_delta = 1
+        available_delta = seconds
 
     cursor = conn.execute(
         """
         UPDATE wallets
         SET
             available_credits = available_credits + %s,
-            reserved_credits = reserved_credits - 1,
+            reserved_credits = reserved_credits - %s,
             updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = %s AND reserved_credits >= 1
+        WHERE user_id = %s AND reserved_credits >= %s
         """,
-        (available_delta, user_id),
+        (available_delta, seconds, user_id, seconds),
     )
     if cursor.rowcount != 1:
         raise BillingInvariantError("reserved wallet credit is missing")
@@ -331,13 +368,14 @@ def finalize_internal_billing(
         INSERT INTO wallet_transactions (
             id, user_id, type, available_delta, reserved_delta,
             task_id, billing_round, idempotency_key
-        ) VALUES (%s, %s, %s, %s, -1, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid4()),
             user_id,
             transaction_type,
             available_delta,
+            -seconds,
             task_id,
             billing_round,
             f"{transaction_type.lower()}:{task_id}:{billing_round}",
@@ -347,6 +385,7 @@ def finalize_internal_billing(
         task_id=task_id,
         billing_round=billing_round,
         transaction_type=transaction_type,
+        seconds=seconds,
     )
 
 
