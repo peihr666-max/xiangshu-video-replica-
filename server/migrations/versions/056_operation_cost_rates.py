@@ -39,6 +39,10 @@ _RATE_SEEDS = [
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        # SQLite: internal P0 runtime — 费率管理是客户生产域（027+ 同）。
+        return
     table = op.create_table(
         "operation_cost_rates",
         sa.Column("subject", sa.String(), nullable=False),
@@ -87,9 +91,10 @@ def upgrade() -> None:
                 price=price,
             )
         )
-    assert table is not None
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name != "postgresql":
+        return
     op.drop_index("idx_operation_cost_rates_kind", table_name="operation_cost_rates")
     op.drop_table("operation_cost_rates")
