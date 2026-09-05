@@ -159,7 +159,7 @@ async function adminWrite<T>(
   reason: string,
   fallback: string,
   idempotencyKey?: string,
-  method: "POST" | "PATCH" = "POST",
+  method: "POST" | "PATCH" | "PUT" = "POST",
 ): Promise<T> {
   const csrf = requireCsrfToken();
   const response = await requestControl(path, {
@@ -1200,4 +1200,55 @@ export async function updateQueueMode(
     "PATCH",
   );
   return payload.fair_queue_enabled;
+}
+
+// ---------------------------------------------------------------------------
+// Operation rates (W10 — 费率管理：上游成本费率与对外售价)
+// ---------------------------------------------------------------------------
+
+export type OperationRate = {
+  subject: string;
+  kind: "upstream_cost" | "external_price";
+  unit: "second" | "image" | "call";
+  resolution: string | null;
+  unit_price_fen: number;
+  updated_at: string;
+  updated_by_username: string | null;
+};
+
+export type OperationRateHistory = {
+  subject: string;
+  old_unit_price_fen: number | null;
+  new_unit_price_fen: number;
+  reason: string;
+  actor_username: string | null;
+  created_at: string;
+};
+
+export type OperationRatesResponse = {
+  rates: OperationRate[];
+  history: OperationRateHistory[];
+};
+
+export async function listOperationRates(): Promise<OperationRatesResponse> {
+  const response = await requestControl("/api/control/settings/rates", {});
+  if (!response.ok) {
+    throw await parseActivationError(response, "读取费率失败");
+  }
+  return (await response.json()) as OperationRatesResponse;
+}
+
+export async function updateOperationRates(
+  updates: Array<{ subject: string; unit_price_fen: number }>,
+  reason: string,
+  idempotencyKey?: string,
+): Promise<OperationRatesResponse> {
+  return adminWrite<OperationRatesResponse>(
+    "/api/control/settings/rates",
+    { updates },
+    reason,
+    "费率调整失败",
+    idempotencyKey,
+    "PUT",
+  );
 }
