@@ -1,0 +1,373 @@
+{
+  "version": "V1.4-精简整合终审",
+  "date": "2026-09-05",
+  "scope": "design-only",
+  "plannedPages": 20,
+  "independentPages": 16,
+  "supplementaryTabViews": 4,
+  "candidateEntries": 21,
+  "excludedFromStandaloneReview": ["05"],
+  "countStatus": "业务梳理后的建议规模；非已生成数量，05仅保留为同页空态映射",
+  "designBasis": "00-业务联动与唯一职责.md",
+  "productionCodeChanged": false,
+  "sidebarOrder": [
+    "工作台",
+    "任务中心",
+    "爆款视频",
+    "文案工坊",
+    "视频创作",
+    "人物库",
+    "素材库",
+    "发布管理",
+    "数据看板"
+  ],
+  "creationTabs": [
+    "视频复刻",
+    "人物置换",
+    "视频生成",
+    "数字人口播"
+  ],
+  "generationTabs": [
+    "文/图生视频",
+    "参考生视频"
+  ],
+  "personTabs": [
+    "IP定位",
+    "形象资料",
+    "数字人形象",
+    "声音档案"
+  ],
+  "reviewChains": {
+    "copy-to-oral": [
+      "04",
+      "10",
+      "12",
+      "19"
+    ],
+    "person-to-replace": [
+      "13",
+      "15",
+      "07",
+      "06"
+    ],
+    "asset-to-oral": [
+      "13",
+      "16",
+      "10"
+    ]
+  },
+  "pages": [
+    {
+      "id": "01",
+      "name": "工作台",
+      "nav": "工作台",
+      "pageKey": "workbench",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/01-工作台.png",
+      "oldIds": [
+        "01"
+      ],
+      "file": "01-工作台.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "02",
+      "name": "爆款视频",
+      "nav": "爆款视频",
+      "pageKey": "viral-list",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/17A-爆款视频-抖音列表.png",
+      "oldIds": [
+        "17A",
+        "17B"
+      ],
+      "file": "02-爆款视频.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "03",
+      "name": "爆款视频详情",
+      "nav": "爆款视频",
+      "pageKey": "viral-detail",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/17C-爆款视频-视频详情.png",
+      "oldIds": [
+        "17C"
+      ],
+      "file": "03-爆款视频详情.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "04",
+      "name": "文案工坊",
+      "nav": "文案工坊",
+      "pageKey": "copy-workshop",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/08-文案工坊.png",
+      "oldIds": [
+        "08",
+        "20A的提取与二创职责"
+      ],
+      "file": "04-文案工坊.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "05",
+      "name": "视频复刻-导入空态（合入06）",
+      "nav": "视频创作",
+      "pageKey": "replica",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/02-视频复刻-导入.png",
+      "oldIds": [
+        "02"
+      ],
+      "file": "05-视频复刻-导入.png",
+      "viewKind": "同页空态，不单独出图",
+      "status": "合并至06复刻工作区，不是独立页面",
+      "userReview": "待审核"
+    },
+    {
+      "id": "06",
+      "name": "视频复刻工作区",
+      "nav": "视频创作",
+      "pageKey": "replica",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/03-视频复刻-编辑.png",
+      "oldIds": [
+        "03"
+      ],
+      "file": "06-视频复刻-编辑.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "07",
+      "name": "人物置换",
+      "nav": "视频创作",
+      "pageKey": "person-replace",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/04-人物置换.png",
+      "oldIds": [
+        "04",
+        "04A"
+      ],
+      "file": "07-人物置换.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "08",
+      "name": "视频生成-文图生视频",
+      "file": "08-视频生成-文图生视频.png",
+      "nav": "视频创作",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/06-视频生成-图生视频.png",
+      "pageKey": "video-generate",
+      "oldIds": [
+        "05",
+        "06"
+      ],
+      "viewKind": "主视图",
+      "status": "早期草图，未纳入终审",
+      "userReview": "待审核",
+      "draftFile": "草图-未纳入终审/08-视频生成-文图生视频.png"
+    },
+    {
+      "id": "09",
+      "name": "视频生成-参考生视频",
+      "nav": "视频创作",
+      "pageKey": "video-generate",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/07-视频生成-参考生视频.png",
+      "oldIds": [
+        "07"
+      ],
+      "file": "09-视频生成-参考生视频.png",
+      "viewKind": "页签补充视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "10",
+      "name": "数字人口播",
+      "file": "10-数字人口播-飞影对照版.png",
+      "nav": "视频创作",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/20E-数字人口播-文案终稿带入.png",
+      "pageKey": "oral-generator",
+      "oldIds": [
+        "20A",
+        "20B",
+        "20C",
+        "20E",
+        "20F"
+      ],
+      "viewKind": "主视图",
+      "status": "飞影API专项效果图已生成并内部复核，待用户审核",
+      "userReview": "待审核",
+      "draftFile": "草图-未纳入终审/10-数字人口播.png",
+      "latestRevision": "飞影API专项目标设计",
+      "designBasis": "00-飞影数字人口播-API与页面设计.md",
+      "scopeNote": "文案驱动为默认视图；音频直传和模板是待接入目标，不代表业务已实现"
+    },
+    {
+      "id": "11",
+      "name": "任务中心",
+      "nav": "任务中心",
+      "pageKey": "tasks",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/09-任务中心.png",
+      "oldIds": [
+        "09"
+      ],
+      "file": "11-任务中心.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "12",
+      "name": "任务详情与结果",
+      "nav": "任务中心",
+      "pageKey": "task-detail",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/20D-数字人口播-成片结果.png",
+      "oldIds": [
+        "09A",
+        "20D",
+        "V1.2-16"
+      ],
+      "file": "12-任务详情与结果.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "13",
+      "name": "人物库",
+      "nav": "人物库",
+      "pageKey": "people",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/10-人物库.png",
+      "oldIds": [
+        "10"
+      ],
+      "file": "13-人物库.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "14",
+      "name": "人物详情-IP定位",
+      "nav": "人物库",
+      "pageKey": "person-detail",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/15A-人物详情-IP定位.png",
+      "oldIds": [
+        "15A"
+      ],
+      "file": "14-人物详情-IP定位.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "15",
+      "name": "人物详情-形象资料",
+      "nav": "人物库",
+      "pageKey": "person-detail",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/15B-人物详情-形象资料.png",
+      "oldIds": [
+        "15B"
+      ],
+      "file": "15-人物详情-形象资料.png",
+      "viewKind": "页签补充视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "16",
+      "name": "人物详情-数字人形象",
+      "nav": "人物库",
+      "pageKey": "person-detail",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/15C-人物详情-口播形象.png",
+      "oldIds": [
+        "15C"
+      ],
+      "file": "16-人物详情-数字人形象.png",
+      "viewKind": "页签补充视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "17",
+      "name": "人物详情-声音档案",
+      "nav": "人物库",
+      "pageKey": "person-detail",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/15D-人物详情-声音档案.png",
+      "oldIds": [
+        "15D"
+      ],
+      "file": "17-人物详情-声音档案.png",
+      "viewKind": "页签补充视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "18",
+      "name": "素材库",
+      "nav": "素材库",
+      "pageKey": "assets",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/11-素材库.png",
+      "oldIds": [
+        "11"
+      ],
+      "file": "18-素材库.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "19",
+      "name": "发布管理",
+      "nav": "发布管理",
+      "pageKey": "publishing",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.3-数字人口播整合-2026-09-05/12-发布管理.png",
+      "oldIds": [
+        "12"
+      ],
+      "file": "19-发布管理.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "20",
+      "name": "数据看板",
+      "nav": "数据看板",
+      "pageKey": "analytics",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.2-审核包-2026-09-05/13-数据看板.png",
+      "oldIds": [
+        "V1.2-13"
+      ],
+      "file": "20-数据看板.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    },
+    {
+      "id": "21",
+      "name": "用户档案",
+      "nav": "用户档案",
+      "pageKey": "profile",
+      "reference": "/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/前端页面V1.2-审核包-2026-09-05/14-用户档案.png",
+      "oldIds": [
+        "V1.2-14"
+      ],
+      "file": "21-用户档案.png",
+      "viewKind": "主视图",
+      "status": "待业务联动梳理后出图",
+      "userReview": "待审核"
+    }
+  ],
+  "status": "数字人口播单页已按飞影API重新出图，待用户审核；其余页面未完成，不是完整V1.4包",
+  "latestSpecialReview": "00-数字人口播专项审核.html",
+  "generatedDrafts": 2
+}
