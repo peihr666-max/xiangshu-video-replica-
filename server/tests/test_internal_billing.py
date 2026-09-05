@@ -11,7 +11,7 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository
 
-HEAD_REVISION = "057_second_based_billing"
+HEAD_REVISION = "063_wallet_ledger_sequence"
 
 
 def seed_subjects(conn: sqlite3.Connection) -> None:

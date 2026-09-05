@@ -400,8 +400,7 @@ def test_failed_task_releases_slot(fair_state: str) -> None:
         conn = BusinessConnection.postgres(raw)
         mark_task_provider_failed(
             conn,
-            task_id=str(lease["id"]),
-            batch_id=str(lease["batch_id"]),
+            lease=lease,
             provider_task_id="pt-1",
         )
     assert _cursor_count(fair_state, "u1") == 0

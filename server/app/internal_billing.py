@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Literal, cast
 from uuid import uuid4
-
-import psycopg
 
 from app.db_portable import BusinessConnection
 
@@ -255,7 +252,6 @@ def finalize_internal_billing(
             task.result_asset_id,
             task.provider_result_url,
             task.provider,
-            task.prompt_snapshot_json,
             batch.created_by_user_id,
             asset.storage_uri
         FROM generation_tasks AS task
@@ -324,25 +320,6 @@ def finalize_internal_billing(
             raise BillingInvariantError("successful billing requires a deliverable result")
         transaction_type: TerminalTransactionType = "SETTLE"
         available_delta = 0
-        # W9 — 上游成本落库：actual_cost = 计费秒数 × 当前上游成本费率
-        # （按提交分辨率取科目；费率来自 operation_cost_rates，W10）。
-        # SQLite 内部通道无该表（056 为 PG-only），直接跳过成本核算。
-        if getattr(conn, "is_postgres", False):
-            try:
-                snapshot = json.loads(str(task["prompt_snapshot_json"] or "{}"))
-                resolution = str(snapshot.get("resolution") or "768P").lower()
-                rate_row = conn.execute(
-                    "SELECT unit_price_fen FROM operation_cost_rates WHERE subject = %s",
-                    (f"video_generation_{resolution}",),
-                ).fetchone()
-                if rate_row is not None:
-                    cost_yuan = seconds * int(rate_row[0]) / 100.0
-                    conn.execute(
-                        "UPDATE generation_tasks SET actual_cost = %s WHERE id = %s",
-                        (cost_yuan, task_id),
-                    )
-            except (psycopg.errors.UndefinedTable, ValueError, TypeError):
-                pass
     else:
         if str(task["status"]) not in {"FAILED", "CANCELLED"}:
             raise BillingInvariantError("released billing requires a failed or cancelled task")

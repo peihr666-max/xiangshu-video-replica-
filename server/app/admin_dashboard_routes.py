@@ -36,7 +36,11 @@ def _one(conn: Any, sql: str) -> Any:
 
 
 def _day_expr(column: str) -> str:
-    return _SHANGHAI_DATE % f"{column} AT TIME ZONE 'UTC'"
+    return _SHANGHAI_DATE % f"{column}::timestamp AT TIME ZONE 'UTC'"
+
+
+def _timestamptz_day_expr(column: str) -> str:
+    return _SHANGHAI_DATE % column
 
 
 @router.get("/dashboard/summary")
@@ -50,23 +54,51 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                          AND archive_status IN ('ARCHIVED', 'DIRECT')
                    ) AS succeeded
             FROM generation_tasks
-            WHERE {_day_expr("created_at_utc")} = {_day_expr("now()")}
+            WHERE {_day_expr("created_at_utc")} = {_timestamptz_day_expr("now()")}
             """
         ).fetchone()
         assert today_generation is not None
 
         trend_rows = conn.execute(
             f"""
-            SELECT {_day_expr("created_at_utc")} AS day,
-                   count(*) FILTER (
-                       WHERE status = 'SUCCEEDED'
-                         AND archive_status IN ('ARCHIVED', 'DIRECT')
-                   ) AS succeeded,
-                   count(*) FILTER (WHERE status = 'FAILED') AS failed
-            FROM generation_tasks
-            WHERE created_at_utc >= (now() - make_interval(days => 6))
+            WITH days AS (
+                SELECT generate_series(
+                    (now() AT TIME ZONE 'Asia/Shanghai')::date - 6,
+                    (now() AT TIME ZONE 'Asia/Shanghai')::date,
+                    interval '1 day'
+                )::date AS day
+            ), generation_by_day AS (
+                SELECT {_day_expr("created_at_utc")} AS day,
+                       count(*) FILTER (
+                           WHERE status = 'SUCCEEDED'
+                             AND archive_status IN ('ARCHIVED', 'DIRECT')
+                       ) AS succeeded,
+                       count(*) FILTER (WHERE status = 'FAILED') AS failed
+                FROM generation_tasks
+                WHERE created_at_utc >= (
+                    ((now() AT TIME ZONE 'Asia/Shanghai')::date - 6)::timestamp
+                    AT TIME ZONE 'Asia/Shanghai'
+                )
+                GROUP BY 1
+            )
+            SELECT days.day,
+                   COALESCE(generation_by_day.succeeded, 0),
+                   COALESCE(generation_by_day.failed, 0)
+            FROM days
+            LEFT JOIN generation_by_day USING (day)
+            ORDER BY days.day
+            """
+        ).fetchall()
+        cost_trend_rows = conn.execute(
+            """
+            SELECT (occurred_at AT TIME ZONE 'Asia/Shanghai')::date AS day,
+                   COALESCE(SUM(cost_fen) FILTER (WHERE status = 'ACTUAL'), 0)
+            FROM operation_cost_records
+            WHERE occurred_at >= (
+                ((now() AT TIME ZONE 'Asia/Shanghai')::date - 6)::timestamp
+                AT TIME ZONE 'Asia/Shanghai'
+            )
             GROUP BY 1
-            ORDER BY 1
             """
         ).fetchall()
 
@@ -95,7 +127,60 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                 SELECT COALESCE(SUM(amount_fen), 0) FROM recharge_orders
                 WHERE status = 'PAID'
                   AND paid_at IS NOT NULL
-                  AND {_SHANGHAI_DATE % "paid_at::timestamp"} = {_day_expr("now()")}
+                  AND {_day_expr("paid_at")} = {_timestamptz_day_expr("now()")}
+                """,
+            )
+        )
+        today_recharge_orders = int(
+            _one(
+                conn,
+                f"""
+                SELECT count(*) FROM recharge_orders
+                WHERE status = 'PAID' AND paid_at IS NOT NULL
+                  AND {_day_expr("paid_at")} = {_timestamptz_day_expr("now()")}
+                """,
+            )
+        )
+        today_cost = conn.execute(
+            """
+            SELECT COALESCE(SUM(cost_fen), 0),
+                   COALESCE(SUM(usage_amount) FILTER (
+                       WHERE subject IN ('video_generation_768p', 'video_generation_2k')
+                         AND status = 'ACTUAL'
+                   ), 0),
+                   count(*) FILTER (WHERE status = 'UNKNOWN')
+            FROM operation_cost_records
+            WHERE (occurred_at AT TIME ZONE 'Asia/Shanghai')::date =
+                  (now() AT TIME ZONE 'Asia/Shanghai')::date
+            """
+        ).fetchone()
+        assert today_cost is not None
+        today_revenue_fen = int(
+            _one(
+                conn,
+                """
+                WITH effective_price AS (
+                    SELECT price_768p_fen, price_2k_fen
+                    FROM daily_external_prices
+                    WHERE price_date <= (now() AT TIME ZONE 'Asia/Shanghai')::date
+                    ORDER BY price_date DESC
+                    LIMIT 1
+                )
+                SELECT COALESCE(SUM(
+                    (-wt.reserved_delta) * CASE
+                        WHEN COALESCE(t.cost_rate_subject_snapshot, '') =
+                             'video_generation_2k'
+                        THEN p.price_2k_fen
+                        ELSE p.price_768p_fen
+                    END
+                ), 0)
+                FROM wallet_transactions wt
+                JOIN generation_tasks t ON t.id = wt.task_id
+                CROSS JOIN effective_price p
+                WHERE wt.type = 'SETTLE'
+                  AND ((wt.created_at::timestamp AT TIME ZONE 'UTC')
+                       AT TIME ZONE 'Asia/Shanghai')::date =
+                      (now() AT TIME ZONE 'Asia/Shanghai')::date
                 """,
             )
         )
@@ -115,7 +200,10 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                 """
                 SELECT count(*) FROM generation_tasks
                 WHERE status = 'FAILED'
-                  AND created_at_utc >= (now() - make_interval(days => 7))
+                  AND created_at_utc >= (
+                      ((now() AT TIME ZONE 'Asia/Shanghai')::date - 6)::timestamp
+                      AT TIME ZONE 'Asia/Shanghai'
+                  )
                 """,
             )
         )
@@ -157,17 +245,59 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                 "SELECT count(*) FROM customer_devices WHERE status = 'BOUND'",
             )
         )
+        unconfigured_rates = int(
+            _one(
+                conn,
+                """
+                SELECT count(*) FROM (VALUES
+                    ('video_generation_768p'), ('video_generation_2k'),
+                    ('video_analysis_768p'), ('video_analysis_2k'),
+                    ('first_frame_image'), ('character_sheet_image'), ('context_ir'),
+                    ('external_price_768p'), ('external_price_2k')
+                ) required(subject)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM operation_cost_rates rate
+                    WHERE rate.subject = required.subject
+                )
+                """,
+            )
+        )
 
+    cost_by_day = {str(row[0]): float(row[1]) for row in cost_trend_rows}
     trend = [
-        {"day": str(row[0]), "succeeded": int(row[1]), "failed": int(row[2])} for row in trend_rows
+        {
+            "day": str(row[0]),
+            "succeeded": int(row[1]),
+            "failed": int(row[2]),
+            "cost_fen": cost_by_day.get(str(row[0]), 0.0),
+        }
+        for row in trend_rows
     ]
+    generation_count = int(today_generation[0])
+    succeeded = int(today_generation[1])
+    cost_fen = float(today_cost[0])
+    unknown_cost_records = int(today_cost[2])
+    gross_fen = None if unknown_cost_records > 0 else today_revenue_fen - cost_fen
     return {
         "today": {
-            "generation_count": int(today_generation[0]),
-            "succeeded": int(today_generation[1]),
+            "generation_count": generation_count,
+            "succeeded": succeeded,
+            "success_rate_pct": (
+                None if generation_count == 0 else round(succeeded / generation_count * 100, 1)
+            ),
+            "output_seconds": float(today_cost[1]),
+            "cost_fen": cost_fen,
+            "revenue_fen": today_revenue_fen,
+            "gross_fen": gross_fen,
+            "margin_pct": (
+                None
+                if today_revenue_fen == 0 or gross_fen is None
+                else round(gross_fen / today_revenue_fen * 100, 1)
+            ),
             "online_devices": online_devices,
             "active_customers": active_customers,
             "recharge_fen": today_recharge_fen,
+            "recharge_orders": today_recharge_orders,
         },
         "trend": trend,
         "todos": {
@@ -175,6 +305,8 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
             "failed_tasks_7d": failed_tasks_7d,
             "reconciliation_problems": reconciliation_problems,
             "expiring_codes_7d": expiring_codes,
+            "unconfigured_rates": unconfigured_rates,
+            "unknown_cost_records": unknown_cost_records,
         },
         "device_slots": {
             "bound": bound_devices,

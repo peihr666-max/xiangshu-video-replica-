@@ -135,6 +135,7 @@ class BatchCreateRequest(AdminWriteContract):
     credits: int
     quantity: int
     activation_expires_at: str
+    confirm_grant: bool = False
 
 
 def _validate_batch_payload(body: BatchCreateRequest) -> None:
@@ -143,10 +144,12 @@ def _validate_batch_payload(body: BatchCreateRequest) -> None:
         problems.append("name must not be blank")
     if body.face_value_fen < 0:
         problems.append("face_value_fen must not be negative")
-    if body.credits < 0:
-        problems.append("credits must not be negative")
-    if (body.face_value_fen == 0) != (body.credits == 0):
-        problems.append("face_value_fen and credits must both be zero or both be positive")
+    if body.credits < 0 or body.credits > 2147483647:
+        problems.append("credits must be within the nonnegative ledger integer range")
+    if body.face_value_fen > 0 and body.credits == 0:
+        problems.append("paid batches require positive credits")
+    if body.face_value_fen == 0 and body.credits > 0 and not body.confirm_grant:
+        problems.append("initial free seconds require confirm_grant")
     if body.quantity <= 0:
         problems.append("quantity must be positive")
     try:
@@ -193,6 +196,20 @@ def create_activation_code_batch(
         _validate_batch_payload(body)
         batch_id = str(uuid.uuid4())
         name = body.name.strip()
+        unit_price = body.face_value_fen
+        if body.face_value_fen == 0 and body.credits > 0:
+            snapshot = conn.execute(
+                "SELECT internal_base_unit_price_fen FROM runtime_settings WHERE id=1"
+            ).fetchone()
+            if snapshot is None:
+                raise _http(503, "BILLING_SNAPSHOT_UNAVAILABLE", "Billing snapshot not configured.")
+            unit_price = int(snapshot[0])
+        if body.credits * unit_price > 2147483647:
+            raise _http(
+                400,
+                "BATCH_VALIDATION_FAILED",
+                "The credit calculation exceeds the ledger integer range.",
+            )
         conn.execute(
             "INSERT INTO activation_code_batches "
             "(id, name, face_value_fen, unit_price_fen_snapshot, credits_snapshot, "
@@ -203,9 +220,8 @@ def create_activation_code_batch(
                 batch_id,
                 name,
                 body.face_value_fen,
-                # The unit price is the face value at creation time — the
-                # frozen snapshot later price changes can never rewrite.
-                body.face_value_fen,
+                # 免费赠送保留基础价作审计快照，收款金额仍由面值 0 决定。
+                unit_price,
                 body.credits,
                 body.quantity,
                 body.activation_expires_at,
@@ -228,7 +244,7 @@ def create_activation_code_batch(
             "batch_id": batch_id,
             "name": name,
             "face_value_fen": body.face_value_fen,
-            "unit_price_fen_snapshot": body.face_value_fen,
+            "unit_price_fen_snapshot": unit_price,
             "credits_snapshot": body.credits,
             "quantity": body.quantity,
             "activation_expires_at": body.activation_expires_at,
@@ -1036,6 +1052,11 @@ def list_activation_codes(
     bounded_offset = max(0, offset)
     clauses: list[str] = []
     params: list[object] = []
+    display_status = (
+        "CASE WHEN code.status IN ('GENERATED', 'ISSUED') "
+        "AND batch.activation_expires_at::timestamptz <= now() "
+        "THEN 'EXPIRED' ELSE code.status END"
+    )
     # C7：默认隐藏已归档码；显式 opt-in 后可回看（归档只隐藏，不删史）。
     if not include_archived:
         clauses.append("code.archived_at IS NULL")
@@ -1043,10 +1064,10 @@ def list_activation_codes(
         clauses.append("code.batch_id = %s")
         params.append(batch_id)
     if status:
-        clauses.append("code.status = %s")
+        clauses.append(f"({display_status}) = %s")
         params.append(status)
     if search.strip():
-        literal = search.strip().replace("\\", "\\\\").replace("%", "\%").replace("_", "\_")
+        literal = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         clauses.append("(code.masked_code ILIKE %s OR customer.username ILIKE %s)")
         params.extend((f"%{literal}%", f"%{literal}%"))
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -1054,16 +1075,20 @@ def list_activation_codes(
         with pg_transaction() as conn:
             total_row = conn.execute(
                 f"SELECT COUNT(*) FROM activation_codes AS code "
+                f"JOIN activation_code_batches AS batch ON batch.id = code.batch_id "
                 f"LEFT JOIN users AS customer ON customer.id = code.bound_user_id "
                 f"{where}",
                 params,
             ).fetchone()
             total = int(total_row[0]) if total_row is not None else 0
             rows = conn.execute(
-                f"SELECT code.id, code.batch_id, code.masked_code, code.status, "
+                f"SELECT code.id, code.batch_id, code.masked_code, ({display_status}), "
                 f"code.bound_user_id, code.issued_at, customer.username, "
-                f"code.archived_at "
+                f"code.archived_at, batch.activation_expires_at, "
+                f"(SELECT MIN(event.created_at) FROM activation_code_events event "
+                f"WHERE event.code_id = code.id AND event.event = 'GENERATED') "
                 f"FROM activation_codes AS code "
+                f"JOIN activation_code_batches AS batch ON batch.id = code.batch_id "
                 f"LEFT JOIN users AS customer ON customer.id = code.bound_user_id "
                 f"{where} ORDER BY code.id LIMIT %s OFFSET %s",
                 (*params, bounded_limit, bounded_offset),
@@ -1136,6 +1161,8 @@ def list_activation_codes(
             "issued_at": row[5],
             "bound_username": row[6],
             "archived_at": row[7],
+            "expires_at": row[8],
+            "created_at": row[9],
             "devices": devices_by_code.get(str(row[0]), []),
             "pending_pairings": pairings_by_code.get(str(row[0]), []),
         }

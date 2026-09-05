@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import sqlite3
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
 from app.generation import (
+    ApplySavedPromptRequest,
     BatchResult,
     BatchStatusFilter,
     ConfirmNotChargedRequest,
@@ -19,6 +20,7 @@ from app.generation import (
     GenerationBatchListPage,
     GenerationBatchRenameRequest,
     GenerationBatchRequest,
+    GenerationPriceQuote,
     GenerationRuntimeLimits,
     GenerationTaskRetryRequest,
     H3Provider,
@@ -29,20 +31,24 @@ from app.generation import (
     PromptPreviewResult,
     PromptRevisionRequest,
     ReconcileGenerationTaskRequest,
+    SavedPromptRequest,
     ScriptRequest,
     TaskResult,
     VersionResult,
     VersionState,
+    apply_saved_prompt,
     compile_prompt_version,
     confirm_generation_task_not_charged,
     create_generation_batch,
     create_script_version,
     enqueue_generation_reconcile_operation,
+    generation_price_quote,
     generation_runtime_limits,
     get_generation_batch,
     h3_provider_for_task,
     latest_generation_reconcile_operation,
     list_generation_batches,
+    list_saved_prompts,
     load_generation_reconcile_operation,
     lock_prompt_version,
     preview_prompt_text,
@@ -51,6 +57,7 @@ from app.generation import (
     rename_generation_batch,
     retry_generation_task,
     revise_prompt_version,
+    save_prompt_to_library,
     version_result,
     version_state,
 )
@@ -249,6 +256,54 @@ def revise_project_prompt(
         row = revise_prompt_version(
             conn,
             project_id=project_id,
+            actor=actor,
+            request=request,
+        )
+    return version_result(row)
+
+
+@router.post("/projects/{project_id}/saved-prompts", response_model=VersionResult)
+def create_saved_prompt(
+    project_id: str,
+    request: SavedPromptRequest,
+    db: BusinessDbDep,
+) -> VersionResult:
+    with db.write() as (conn, actor):
+        row = save_prompt_to_library(
+            conn,
+            project_id=project_id,
+            actor=actor,
+            request=request,
+        )
+    return version_result(row)
+
+
+@router.get("/projects/{project_id}/saved-prompts", response_model=list[VersionResult])
+def read_saved_prompts(
+    project_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> list[VersionResult]:
+    return [
+        version_result(row) for row in list_saved_prompts(conn, project_id=project_id, actor=actor)
+    ]
+
+
+@router.post(
+    "/projects/{project_id}/saved-prompts/{saved_prompt_id}/apply",
+    response_model=VersionResult,
+)
+def apply_project_saved_prompt(
+    project_id: str,
+    saved_prompt_id: str,
+    request: ApplySavedPromptRequest,
+    db: BusinessDbDep,
+) -> VersionResult:
+    with db.write() as (conn, actor):
+        row = apply_saved_prompt(
+            conn,
+            project_id=project_id,
+            saved_prompt_id=saved_prompt_id,
             actor=actor,
             request=request,
         )
@@ -464,6 +519,23 @@ def read_generation_runtime_limits(
     _actor: AuthenticatedUser,
 ) -> GenerationRuntimeLimits:
     return generation_runtime_limits(conn)
+
+
+@router.get("/generation/price-quote", response_model=GenerationPriceQuote)
+def read_generation_price_quote(
+    conn: Database,
+    actor: AuthenticatedUser,
+    resolution: Literal["768P", "2K"] = Query(default="768P"),
+    duration_seconds: Literal[4, 15] = Query(default=4),
+    quantity: Literal[1, 2, 4] = Query(default=1),
+) -> GenerationPriceQuote:
+    del actor
+    return generation_price_quote(
+        conn,
+        resolution=resolution,
+        duration_seconds=duration_seconds,
+        quantity=quantity,
+    )
 
 
 def _generation_task_context(conn: Database, task_id: str) -> sqlite3.Row:

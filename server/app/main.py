@@ -14,8 +14,8 @@ from app.activation_code_routes import router as customer_activation_router
 from app.admin_activation_routes import router as admin_activation_router
 from app.admin_audit_routes import router as admin_audit_router
 from app.admin_auth_routes import router as admin_auth_router
-from app.admin_dashboard_routes import router as admin_dashboard_router
 from app.admin_customer_routes import router as admin_customer_router
+from app.admin_dashboard_routes import router as admin_dashboard_router
 from app.admin_device_routes import router as admin_device_router
 from app.admin_profit_routes import router as admin_profit_router
 from app.admin_rate_routes import router as admin_rate_router

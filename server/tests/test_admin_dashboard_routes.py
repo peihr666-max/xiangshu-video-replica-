@@ -166,19 +166,21 @@ def dashboard_pg_dsn() -> Iterator[str]:
 
 
 @pytest.fixture()
-def dash_app(
-    monkeypatch: pytest.MonkeyPatch, dashboard_pg_dsn: str
-) -> Iterator[FastAPI]:
+def dash_app(monkeypatch: pytest.MonkeyPatch, dashboard_pg_dsn: str) -> Iterator[FastAPI]:
     from app.admin_auth_routes import router as admin_auth_router
     from app.admin_dashboard_routes import router as admin_dashboard_router
 
-    app = FastAPI()
-    app.include_router(admin_auth_router)
-    app.include_router(admin_dashboard_router)
+    close_pg_pool()
     monkeypatch.setenv(DATABASE_URL_ENV, dashboard_pg_dsn)
     monkeypatch.setenv(ADMIN_SESSION_HMAC_KEY_ENV, TEST_KEY)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
-    yield app
+    app = FastAPI()
+    app.include_router(admin_auth_router)
+    app.include_router(admin_dashboard_router)
+    try:
+        yield app
+    finally:
+        close_pg_pool()
 
 
 @pytest.fixture()
@@ -205,29 +207,99 @@ def test_dashboard_requires_admin_session(client: TestClient) -> None:
     assert client.get("/api/control/dashboard/summary").status_code == 401
 
 
-def test_dashboard_summary_counts(
-    admin_headers: dict[str, str], client: TestClient
-) -> None:
+def test_dashboard_summary_counts(admin_headers: dict[str, str], client: TestClient) -> None:
     response = client.get("/api/control/dashboard/summary", headers=admin_headers)
     assert response.status_code == 200, response.text
     payload = response.json()
 
     assert payload["today"]["generation_count"] == 2
     assert payload["today"]["succeeded"] == 1
+    assert payload["today"]["success_rate_pct"] == 50.0
+    assert payload["today"]["output_seconds"] == 0
+    assert payload["today"]["cost_fen"] == 0
+    assert payload["today"]["gross_fen"] == 0
     assert payload["today"]["active_customers"] == 1
     assert payload["today"]["recharge_fen"] == 10000
+    assert payload["today"]["recharge_orders"] == 1
 
     todos = payload["todos"]
     assert todos["pending_pairings"] == 1
     assert todos["failed_tasks_7d"] == 1
     assert todos["expiring_codes_7d"] == 1
     assert todos["reconciliation_problems"] == 0
+    assert todos["unconfigured_rates"] == 0
+    assert todos["unknown_cost_records"] == 0
 
     assert payload["device_slots"]["total"] == 2
     # 无会话租约 → 在线 0
     assert payload["today"]["online_devices"] == 0
 
     # 近 7 日趋势包含今日（一成一败）
+    assert len(payload["trend"]) == 7
     today_trend = [t for t in payload["trend"] if t["succeeded"] == 1]
     assert len(today_trend) == 1
     assert today_trend[0]["failed"] == 1
+    assert today_trend[0]["cost_fen"] == 0
+
+
+def test_dashboard_day_expressions_ignore_database_session_timezone(
+    dashboard_pg_dsn: str,
+) -> None:
+    from app.admin_dashboard_routes import _day_expr, _timestamptz_day_expr
+
+    utc_text = _day_expr("'2026-09-04 18:00:00'")
+    instant = _timestamptz_day_expr("TIMESTAMPTZ '2026-09-04 18:00:00+00'")
+    with psycopg.connect(dashboard_pg_dsn, autocommit=True) as conn:
+        conn.execute("SET TIME ZONE 'America/Los_Angeles'")
+        row = conn.execute(f"SELECT {utc_text}, {instant}").fetchone()
+
+    assert row[0].isoformat() == "2026-09-05"
+    assert row[1].isoformat() == "2026-09-05"
+
+
+def test_cost_trend_includes_the_complete_first_shanghai_day(
+    admin_headers: dict[str, str], client: TestClient, dashboard_pg_dsn: str
+) -> None:
+    with psycopg.connect(dashboard_pg_dsn, autocommit=True) as conn:
+        conn.execute(
+            """
+            INSERT INTO generation_tasks (
+                id, batch_id, generation_mode, provider, model, status,
+                archive_status, created_at_utc
+            ) VALUES (
+                'task_first_shanghai_day', 'b1', 'I2V', 'metaso', 'MiniMax-H3',
+                'SUCCEEDED', 'DIRECT',
+                (((now() AT TIME ZONE 'Asia/Shanghai')::date - 6 + time '00:10')
+                    AT TIME ZONE 'Asia/Shanghai')
+            ), (
+                'failed_first_shanghai_day', 'b1', 'I2V', 'metaso', 'MiniMax-H3',
+                'FAILED', 'PENDING',
+                (((now() AT TIME ZONE 'Asia/Shanghai')::date - 6 + time '00:10')
+                    AT TIME ZONE 'Asia/Shanghai')
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO operation_cost_records (
+                id, source_type, source_id, subject, user_id,
+                resolution, unit, usage_amount, unit_price_fen, cost_fen,
+                status, occurred_at, completed_at
+            ) VALUES (
+                'cost_first_shanghai_day', 'test', 'first-day',
+                'video_generation_768p', 'cust_1', '768P', 'second',
+                1, 77, 77, 'ACTUAL',
+                (((now() AT TIME ZONE 'Asia/Shanghai')::date - 6 + time '00:10')
+                    AT TIME ZONE 'Asia/Shanghai'),
+                now()
+            )
+            """
+        )
+
+    response = client.get("/api/control/dashboard/summary", headers=admin_headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["trend"][0]["cost_fen"] == 77
+    assert response.json()["trend"][0]["succeeded"] == 1
+    assert response.json()["trend"][0]["failed"] == 1
+    assert response.json()["todos"]["failed_tasks_7d"] == 2

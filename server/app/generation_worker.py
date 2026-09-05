@@ -81,6 +81,7 @@ from app.image_tasks import (
     save_first_frame_task_checkpoint,
 )
 from app.media_routes import get_media_storage
+from app.operation_costs import begin_operation_cost, complete_operation_cost
 from app.script_rewrite import (
     acquire_script_rewrite_task,
     complete_script_rewrite_task,
@@ -562,7 +563,6 @@ def _run_pg_generation_step(
     """
 
     task_id = str(lease["id"])
-    batch_id = str(lease["batch_id"])
     status = str(lease["status"])
 
     # Legacy archive-retry rows are claimed as SUBMITTING by the shared queue
@@ -574,12 +574,19 @@ def _run_pg_generation_step(
         and lease.get("provider_result_url")
     ):
         with pg_transaction() as raw_conn:
+            conn = BusinessConnection.postgres(raw_conn)
             mark_generation_task_archiving(
-                BusinessConnection.postgres(raw_conn),
+                conn,
                 lease=lease,
                 result_url=str(lease["provider_result_url"]),
             )
-        status = "ARCHIVING"
+            finalize_generation_direct_result(
+                conn,
+                lease=lease,
+                quality_status="NOT_REQUIRED",
+                quality_issue_codes=[],
+            )
+        return
     elif status == "SUBMITTING":
         try:
             with pg_transaction() as raw_conn:
@@ -594,16 +601,14 @@ def _run_pg_generation_step(
             with pg_transaction() as raw_conn:
                 mark_task_provider_settings_unavailable(
                     BusinessConnection.postgres(raw_conn),
-                    task_id=task_id,
-                    batch_id=batch_id,
+                    lease=lease,
                 )
             return
         except (StorageBackendUnavailable, StoragePermissionError, ValueError):
             with pg_transaction() as raw_conn:
                 mark_task_first_frame_url_sign_failed(
                     BusinessConnection.postgres(raw_conn),
-                    task_id=task_id,
-                    batch_id=batch_id,
+                    lease=lease,
                 )
             return
 
@@ -645,8 +650,7 @@ def _run_pg_generation_step(
                     else:
                         mark_task_provider_failed(
                             conn,
-                            task_id=task_id,
-                            batch_id=batch_id,
+                            lease=lease,
                             provider_task_id=exc.provider_task_id,
                         )
             except Exception:
@@ -679,10 +683,10 @@ def _run_pg_generation_step(
             return
         except H3ProviderFailed as exc:
             with pg_transaction() as raw_conn:
+                conn = BusinessConnection.postgres(raw_conn)
                 mark_task_provider_failed(
-                    BusinessConnection.postgres(raw_conn),
-                    task_id=task_id,
-                    batch_id=batch_id,
+                    conn,
+                    lease=lease,
                     provider_task_id=exc.provider_task_id,
                 )
             return
@@ -694,18 +698,19 @@ def _run_pg_generation_step(
                 provider_task_id=result.provider_task_id,
                 provider_request=work.provider_request,
                 request_hash=work.request_hash,
+                release_lease=False,
             )
             mark_generation_task_archiving(
                 conn,
                 lease=lease,
                 result_url=result.result_url,
             )
-        with pg_transaction() as raw_conn:
             finalize_generation_direct_result(
-                BusinessConnection.postgres(raw_conn),
+                conn,
                 lease=lease,
                 quality_status="NOT_REQUIRED",
                 quality_issue_codes=[],
+                output_seconds=result.output_seconds,
             )
         return
 
@@ -731,8 +736,7 @@ def _run_pg_generation_step(
                 if exc.terminal:
                     mark_task_provider_failed(
                         conn,
-                        task_id=task_id,
-                        batch_id=batch_id,
+                        lease=lease,
                         provider_task_id=provider_task_id,
                     )
                 else:
@@ -744,10 +748,10 @@ def _run_pg_generation_step(
             return
         if query.status in {"FAILED", "CANCELLED"}:
             with pg_transaction() as raw_conn:
+                conn = BusinessConnection.postgres(raw_conn)
                 mark_task_provider_failed(
-                    BusinessConnection.postgres(raw_conn),
-                    task_id=task_id,
-                    batch_id=batch_id,
+                    conn,
+                    lease=lease,
                     provider_task_id=provider_task_id,
                 )
             return
@@ -767,7 +771,11 @@ def _run_pg_generation_step(
                 result_url=query.result_url,
             )
             finalize_generation_direct_result(
-                conn, lease=lease, quality_status="NOT_REQUIRED", quality_issue_codes=[]
+                conn,
+                lease=lease,
+                quality_status="NOT_REQUIRED",
+                quality_issue_codes=[],
+                output_seconds=query.output_seconds,
             )
         return
 
@@ -861,6 +869,8 @@ def run_pg_worker_once(
             conn = BusinessConnection.postgres(raw_conn)
             analysis_lease = acquire_analysis_task(conn, worker_id=worker_id)
         if analysis_lease is not None:
+            analysis_cost_id = ""
+            analysis_cost_usage: float | None = None
             try:
                 # Preparation only reads settings/asset state and creates the
                 # short-lived signed URL.  The paid provider call below runs
@@ -873,9 +883,24 @@ def run_pg_worker_once(
                         storage=storage,
                         provider=analysis_provider,
                     )
+                    analysis_cost_id = begin_operation_cost(
+                        conn,
+                        source_type="analysis_task",
+                        source_id=analysis_lease.id,
+                        subject="video_analysis_768p",
+                        user_id=analysis_lease.created_by_user_id,
+                        resolution="768P",
+                        metadata={"resolution_basis": "default_generation_tier"},
+                    )
                 analysis_result = perform_analysis_task(analysis_work)
+                analysis_cost_usage = analysis_lease.duration_seconds
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
+                    complete_operation_cost(
+                        conn,
+                        record_id=analysis_cost_id,
+                        usage_amount=analysis_lease.duration_seconds,
+                    )
                     complete_analysis_task(
                         conn,
                         work=analysis_work,
@@ -884,6 +909,9 @@ def run_pg_worker_once(
             except Exception as exc:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
+                    complete_operation_cost(
+                        conn, record_id=analysis_cost_id, usage_amount=analysis_cost_usage
+                    )
                     fail_analysis_task(conn, lease=analysis_lease, cause=exc)
             processed += 1
             processed_round = True
@@ -987,13 +1015,39 @@ def run_pg_worker_once(
             submission_started = False
             stored = None
             work = None
+            first_frame_cost_id = ""
+            first_frame_call_number = 0
 
             def mark_pg_submission_started() -> None:
-                nonlocal submission_started
+                nonlocal submission_started, first_frame_cost_id, first_frame_call_number
+                with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
+                    # A retried transport response has no proven output count.
+                    if first_frame_cost_id:
+                        complete_operation_cost(
+                            conn, record_id=first_frame_cost_id, usage_amount=None
+                        )
+                    first_frame_call_number += 1
+                    first_frame_cost_id = begin_operation_cost(
+                        conn,
+                        source_type="first_frame_task",
+                        source_id=f"{first_frame_lease.id}:{first_frame_lease.attempt}:{first_frame_call_number}",
+                        subject="first_frame_image",
+                        user_id=first_frame_lease.created_by_user_id,
+                    )
                 submission_started = True
 
-            def mark_pg_submission_completed() -> None:
-                return
+            def record_pg_generated_images(count: int) -> None:
+                nonlocal first_frame_cost_id
+                # Record paid output before storage/QC, which can fail or resume
+                # entirely from checkpoints without another provider call.
+                with pg_transaction() as raw_conn:
+                    complete_operation_cost(
+                        BusinessConnection.postgres(raw_conn),
+                        record_id=first_frame_cost_id,
+                        usage_amount=count,
+                    )
+                first_frame_cost_id = ""
 
             def renew_pg_first_frame_lease() -> None:
                 with pg_transaction() as raw_conn:
@@ -1033,13 +1087,14 @@ def run_pg_worker_once(
                     prepared,
                     storage=first_frame_storage or storage,
                     before_provider_call=mark_pg_submission_started,
-                    after_provider_call=mark_pg_submission_completed,
+                    on_generated_images=record_pg_generated_images,
                     heartbeat=renew_pg_first_frame_lease,
                     checkpoint_candidates=persist_pg_first_frame_checkpoint,
                 )
                 with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
                     complete_first_frame_task(
-                        BusinessConnection.postgres(raw_conn),
+                        conn,
                         prepared=prepared,
                         work=work,
                         stored=stored,
@@ -1054,8 +1109,10 @@ def run_pg_worker_once(
                         actor_id=work.actor.id,
                     )
                 with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
+                    complete_operation_cost(conn, record_id=first_frame_cost_id, usage_amount=None)
                     fail_image_task(
-                        BusinessConnection.postgres(raw_conn),
+                        conn,
                         table="first_frame_tasks",
                         lease=first_frame_lease,
                         cause=exc,
@@ -1071,6 +1128,8 @@ def run_pg_worker_once(
             )
         if character_sheet_lease is not None:
             submission_started = False
+            character_sheet_cost_id = ""
+            character_sheet_cost_usage: int | None = None
             try:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
@@ -1087,19 +1146,35 @@ def run_pg_worker_once(
                         provider=prepared_sheet.provider.provider_name,
                         model=SIMPLE_CONTACT_SHEET_MODEL,
                     )
+                    character_sheet_cost_id = begin_operation_cost(
+                        conn,
+                        source_type="character_sheet_task",
+                        source_id=character_sheet_lease.id,
+                        subject="character_sheet_image",
+                        user_id=character_sheet_lease.created_by_user_id,
+                    )
                 submission_started = True
                 sheet_generation = perform_character_sheet_task(prepared_sheet)
+                character_sheet_cost_usage = 1
                 with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
+                    complete_operation_cost(conn, record_id=character_sheet_cost_id, usage_amount=1)
                     complete_character_sheet_task(
-                        BusinessConnection.postgres(raw_conn),
+                        conn,
                         prepared=prepared_sheet,
                         generation=sheet_generation,
                         storage=storage,
                     )
             except Exception as exc:
                 with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
+                    complete_operation_cost(
+                        conn,
+                        record_id=character_sheet_cost_id,
+                        usage_amount=character_sheet_cost_usage,
+                    )
                     fail_image_task(
-                        BusinessConnection.postgres(raw_conn),
+                        conn,
                         table="character_sheet_tasks",
                         lease=character_sheet_lease,
                         cause=exc,

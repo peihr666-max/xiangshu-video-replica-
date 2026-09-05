@@ -2,17 +2,19 @@
 
 收入口径（2026-09-05 裁决）：标准收入 = 当日对外售价 × 当日结算秒数。
 - 结算秒数来自 wallet_transactions（SETTLE，按任务提交分辨率分档）；
-- 成本来自 generation_tasks.actual_cost（W9：秒 × 提交时费率快照）；
+- 成本来自 operation_cost_records（W9：真实用量 × 提交时费率快照）；
 - 日界为 Asia/Shanghai（created_at/completed_at 存 UTC 文本，先解释为
   UTC 再转东八区取日期）。
 
 写路径（每日售价 upsert）走共享管理写契约（T12 precedent）：真实操作人、
-原因、幂等键；auditor 只读。历史无 actual_cost 的区间在报表里以
+原因、幂等键；auditor 只读。历史无成本记录的区间在报表里以
 cost = NULL 呈现（口径起点标注），不回填虚构。
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import uuid
 from datetime import date
@@ -68,6 +70,7 @@ class ProfitDayRow(BaseModel):
     cost_fen: int | None
     gross_fen: int | None
     margin_pct: float | None
+    cost_unknown_count: int = 0
 
 
 class ProfitOverviewResponse(BaseModel):
@@ -78,9 +81,53 @@ class ProfitOverviewResponse(BaseModel):
     cost_coverage_note: str
 
 
+class CostDayRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    day: str
+    video_count: int
+    output_seconds: float
+    video_768p_fen: float
+    video_2k_fen: float
+    analysis_fen: float
+    image_fen: float
+    context_ir_fen: float
+    total_cost_fen: float
+    unknown_count: int
+
+
+class CostRecordRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    occurred_at: str
+    source_type: str
+    source_id: str
+    subject: str
+    resolution: str | None
+    unit: str
+    usage_amount: float | None
+    unit_price_fen: int
+    cost_fen: float | None
+    status: str
+
+
+class CostOverviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    days: list[CostDayRow]
+    records: list[CostRecordRow]
+    record_total: int
+    records_truncated: bool
+    total_cost_fen: float
+    total_output_seconds: float
+    average_video_cost_per_second_fen: float | None
+    unknown_count: int
+
+
 def _shanghai_day_utc_expression(column_sql: str) -> str:
     """UTC 文本时间戳 → Asia/Shanghai 日（可再 ::date 取日界）。"""
-    return f"(to_timestamp({column_sql}, 'YYYY-MM-DD HH24:MI:SS') AT TIME ZONE 'Asia/Shanghai')"
+    return f"((({column_sql})::timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai')"
 
 
 def _validate_price_date(price_date: str) -> date:
@@ -255,7 +302,9 @@ def profit_overview(
             JOIN generation_tasks t ON t.id = wt.task_id
             WHERE wt.type = 'SETTLE'
               AND wt.created_at >= to_char(
-                  (now() - make_interval(days => %s)) AT TIME ZONE 'UTC',
+                  (((
+                      (now() AT TIME ZONE 'Asia/Shanghai')::date - (%s - 1)
+                  )::timestamp AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC'),
                   'YYYY-MM-DD HH24:MI:SS'
               )
             GROUP BY 1, 2
@@ -265,17 +314,16 @@ def profit_overview(
         ).fetchall()
 
         cost_rows = conn.execute(
-            f"""
-            SELECT {_shanghai_day_utc_expression("t.completed_at")}::date AS day,
-                   SUM(t.actual_cost) AS cost_yuan,
-                   COUNT(*) AS video_count
-            FROM generation_tasks t
-            WHERE t.actual_cost IS NOT NULL
-              AND t.status = 'SUCCEEDED'
-              AND t.completed_at >= to_char(
-                  (now() - make_interval(days => %s)) AT TIME ZONE 'UTC',
-                  'YYYY-MM-DD HH24:MI:SS'
-              )
+            """
+            SELECT (r.occurred_at AT TIME ZONE 'Asia/Shanghai')::date AS day,
+                   SUM(r.cost_fen) AS cost_fen,
+                   COUNT(*) FILTER (WHERE r.source_type = 'generation_task') AS video_count,
+                   COUNT(*) FILTER (WHERE r.status = 'UNKNOWN') AS unknown_count
+            FROM operation_cost_records r
+            WHERE r.occurred_at >= (
+                ((now() AT TIME ZONE 'Asia/Shanghai')::date - (%s - 1))::timestamp
+                AT TIME ZONE 'Asia/Shanghai'
+            )
             GROUP BY 1
             ORDER BY 1
             """,
@@ -304,8 +352,6 @@ def profit_overview(
         return int(getattr(price_by_day[candidates[-1]], field))
 
     revenue_by_day: dict[str, int] = {}
-    print("DEBUG seconds_rows:", [tuple(r) for r in seconds_rows])
-    print("DEBUG cost_rows:", [tuple(r) for r in cost_rows])
     seconds_by_day: dict[str, int] = {}
     videos_by_day: dict[str, int] = {}
     for row in seconds_rows:
@@ -322,19 +368,20 @@ def profit_overview(
             continue
         revenue_by_day[day] = revenue_by_day.get(day, 0) + seconds * price
 
-    cost_by_day: dict[str, tuple[int | None, int]] = {}
+    cost_by_day: dict[str, tuple[int | None, int, int]] = {}
     for row in cost_rows:
         day = str(row[0])
-        cost_yuan = float(row[1]) if row[1] is not None else 0.0
-        cost_by_day[day] = (round(cost_yuan * 100), int(row[2]))
+        cost_fen = None if row[1] is None else round(float(row[1]))
+        cost_by_day[day] = (cost_fen, int(row[2]), int(row[3]))
 
-    all_days = sorted(set(revenue_by_day) | set(cost_by_day))
+    all_days = sorted(set(seconds_by_day) | set(cost_by_day))
     days: list[ProfitDayRow] = []
     for day in all_days:
         revenue = revenue_by_day.get(day, 0)
         cost_entry = cost_by_day.get(day)
         cost_fen = cost_entry[0] if cost_entry else None
-        gross = None if cost_fen is None else revenue - cost_fen
+        unknown_costs = cost_entry[2] if cost_entry else 0
+        gross = None if cost_fen is None or unknown_costs > 0 else revenue - cost_fen
         margin = None if gross is None or revenue == 0 else round(gross / revenue * 100, 1)
         days.append(
             ProfitDayRow(
@@ -345,6 +392,7 @@ def profit_overview(
                 cost_fen=cost_fen,
                 gross_fen=gross,
                 margin_pct=margin,
+                cost_unknown_count=unknown_costs,
             )
         )
     days.reverse()
@@ -354,3 +402,214 @@ def profit_overview(
         days=days,
         cost_coverage_note="成本自 2026-09 费率快照启用起核算；更早区间无成本数据，不回填。",
     ).model_dump()
+
+
+@router.get("/profit/overview.csv")
+def export_profit_csv(
+    actor: AdminReader,
+    lookback_days: int = Query(default=DEFAULT_LOOKBACK_DAYS, ge=1, le=MAX_LOOKBACK_DAYS),
+) -> Response:
+    payload = ProfitOverviewResponse.model_validate(
+        profit_overview(actor, lookback_days=lookback_days)
+    )
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(
+        ["日期", "结算秒数", "收入(分)", "成本(分)", "毛利(分)", "利润率", "视频数", "未知成本数"]
+    )
+    for row in payload.days:
+        writer.writerow(
+            [
+                row.day,
+                row.settled_seconds,
+                row.revenue_fen,
+                "" if row.cost_fen is None else row.cost_fen,
+                "" if row.gross_fen is None else row.gross_fen,
+                "" if row.margin_pct is None else row.margin_pct,
+                row.video_count,
+                row.cost_unknown_count,
+            ]
+        )
+    return Response(
+        content="\ufeff" + output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=profit-overview.csv"},
+    )
+
+
+def _cost_where(
+    *, lookback_days: int, subject: str | None, resolution: str | None
+) -> tuple[str, list[object]]:
+    clauses = [
+        "occurred_at >= ("
+        "((now() AT TIME ZONE 'Asia/Shanghai')::date - (%s - 1))::timestamp "
+        "AT TIME ZONE 'Asia/Shanghai'"
+        ")"
+    ]
+    params: list[object] = [lookback_days]
+    if subject:
+        clauses.append("subject = %s")
+        params.append(subject)
+    if resolution:
+        clauses.append("resolution = %s")
+        params.append(resolution.upper())
+    return " AND ".join(clauses), params
+
+
+def _read_cost_overview(
+    *, lookback_days: int, subject: str | None, resolution: str | None
+) -> CostOverviewResponse:
+    where_sql, params = _cost_where(
+        lookback_days=lookback_days, subject=subject, resolution=resolution
+    )
+    with pg_transaction() as conn:
+        record_total_row = conn.execute(
+            f"SELECT count(*) FROM operation_cost_records WHERE {where_sql}",
+            tuple(params),
+        ).fetchone()
+        assert record_total_row is not None
+        record_total = int(record_total_row[0])
+        rows = conn.execute(
+            f"""
+            SELECT id, occurred_at, source_type, source_id, subject, resolution,
+                   unit, usage_amount, unit_price_fen, cost_fen, status
+            FROM operation_cost_records
+            WHERE {where_sql}
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT 1000
+            """,
+            tuple(params),
+        ).fetchall()
+        day_rows = conn.execute(
+            f"""
+            SELECT (occurred_at AT TIME ZONE 'Asia/Shanghai')::date AS day,
+                   COUNT(*) FILTER (
+                       WHERE subject IN ('video_generation_768p', 'video_generation_2k')
+                         AND status = 'ACTUAL'
+                   ),
+                   COALESCE(SUM(usage_amount) FILTER (
+                       WHERE subject IN ('video_generation_768p', 'video_generation_2k')
+                         AND status = 'ACTUAL'
+                   ), 0),
+                   COALESCE(SUM(cost_fen) FILTER (WHERE subject = 'video_generation_768p'), 0),
+                   COALESCE(SUM(cost_fen) FILTER (WHERE subject = 'video_generation_2k'), 0),
+                   COALESCE(SUM(cost_fen) FILTER (WHERE subject LIKE 'video_analysis_%%'), 0),
+                   COALESCE(SUM(cost_fen) FILTER (
+                       WHERE subject IN ('first_frame_image', 'character_sheet_image')
+                   ), 0),
+                   COALESCE(SUM(cost_fen) FILTER (WHERE subject = 'context_ir'), 0),
+                   COALESCE(SUM(cost_fen), 0),
+                   COUNT(*) FILTER (WHERE status = 'UNKNOWN')
+            FROM operation_cost_records
+            WHERE {where_sql}
+            GROUP BY 1
+            ORDER BY 1 DESC
+            """,
+            tuple(params),
+        ).fetchall()
+    records = [
+        CostRecordRow(
+            id=str(row[0]),
+            occurred_at=row[1].isoformat(),
+            source_type=str(row[2]),
+            source_id=str(row[3]),
+            subject=str(row[4]),
+            resolution=None if row[5] is None else str(row[5]),
+            unit=str(row[6]),
+            usage_amount=None if row[7] is None else float(row[7]),
+            unit_price_fen=int(row[8]),
+            cost_fen=None if row[9] is None else float(row[9]),
+            status=str(row[10]),
+        )
+        for row in rows
+    ]
+    days = [
+        CostDayRow(
+            day=row[0].isoformat(),
+            video_count=int(row[1]),
+            output_seconds=float(row[2]),
+            video_768p_fen=float(row[3]),
+            video_2k_fen=float(row[4]),
+            analysis_fen=float(row[5]),
+            image_fen=float(row[6]),
+            context_ir_fen=float(row[7]),
+            total_cost_fen=float(row[8]),
+            unknown_count=int(row[9]),
+        )
+        for row in day_rows
+    ]
+    total_cost = sum(day.total_cost_fen for day in days)
+    total_video_cost = sum(day.video_768p_fen + day.video_2k_fen for day in days)
+    total_seconds = sum(day.output_seconds for day in days)
+    return CostOverviewResponse(
+        days=days,
+        records=records,
+        record_total=record_total,
+        records_truncated=record_total > len(records),
+        total_cost_fen=total_cost,
+        total_output_seconds=total_seconds,
+        average_video_cost_per_second_fen=(
+            None if total_seconds == 0 else round(total_video_cost / total_seconds, 4)
+        ),
+        unknown_count=sum(day.unknown_count for day in days),
+    )
+
+
+@router.get("/profit/costs", response_model=CostOverviewResponse)
+def cost_overview(
+    _actor: AdminReader,
+    lookback_days: int = Query(default=DEFAULT_LOOKBACK_DAYS, ge=1, le=MAX_LOOKBACK_DAYS),
+    subject: str | None = Query(default=None),
+    resolution: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _read_cost_overview(
+        lookback_days=lookback_days, subject=subject, resolution=resolution
+    ).model_dump()
+
+
+@router.get("/profit/costs.csv")
+def export_costs_csv(
+    _actor: AdminReader,
+    lookback_days: int = Query(default=DEFAULT_LOOKBACK_DAYS, ge=1, le=MAX_LOOKBACK_DAYS),
+    subject: str | None = Query(default=None),
+    resolution: str | None = Query(default=None),
+) -> Response:
+    payload = _read_cost_overview(
+        lookback_days=lookback_days, subject=subject, resolution=resolution
+    )
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(
+        [
+            "日期",
+            "视频数",
+            "输出秒数",
+            "768P生成成本(分)",
+            "2K生成成本(分)",
+            "解析成本(分)",
+            "图片成本(分)",
+            "Context IR成本(分)",
+            "合计成本(分)",
+            "未知用量数",
+        ]
+    )
+    for row in payload.days:
+        writer.writerow(
+            [
+                row.day,
+                row.video_count,
+                row.output_seconds,
+                row.video_768p_fen,
+                row.video_2k_fen,
+                row.analysis_fen,
+                row.image_fen,
+                row.context_ir_fen,
+                row.total_cost_fen,
+                row.unknown_count,
+            ]
+        )
+    return Response(
+        content="\ufeff" + output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=operation-costs.csv"},
+    )
