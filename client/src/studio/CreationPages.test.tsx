@@ -1,0 +1,474 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { StudioContextValue } from "./types";
+
+const { useStudio } = vi.hoisted(() => ({
+  useStudio: vi.fn<() => StudioContextValue>(),
+}));
+
+vi.mock("./context", () => ({ useStudio }));
+
+import {
+  CopyPage,
+  OralPage,
+  ReplacementPage,
+  ReplicaPage,
+  VideoPage,
+} from "./CreationPages";
+
+function studio(
+  overrides: Partial<StudioContextValue> = {},
+): StudioContextValue {
+  return {
+    state: {
+      page: "copy",
+      draft: {
+        id: "draft-1",
+        ipId: "person-1",
+        sourceId: "source-1",
+        projectId: "project-1",
+        selectedShotId: "shot-2",
+        originalImageId: "original-1",
+        imageId: "target-1",
+        firstFrameId: "frame-1",
+        avatarId: "avatar-1",
+        voiceId: "voice-1",
+        audioId: "audio-1",
+        script: {
+          id: "script-1",
+          title: "建房预算",
+          original: "原始文案",
+          text: "已确认的乡墅口播终稿",
+          version: 3,
+          confirmed: true,
+        },
+        prompt: "庭院镜头缓慢推进",
+        referenceIds: ["reference-1"],
+        resolution: "768P",
+        ratio: "16:9",
+        duration: 8,
+        count: 1,
+        frameConfirmed: true,
+        style: "standard",
+        subtitles: false,
+        quoteRevision: 1,
+      },
+      savedScripts: [],
+      favorites: [],
+    },
+    data: {
+      people: [
+        {
+          id: "person-1",
+          name: "张工",
+          role: "乡墅设计师",
+          version: 1,
+          scope: "乡墅设计",
+          audience: "自建房家庭",
+          expression: "专业通俗",
+          photoIds: [],
+          avatars: [
+            {
+              id: "avatar-1",
+              name: "设计室讲解",
+              imageId: "target-1",
+              ready: true,
+              origin: "照片制作",
+              duration: "00:42",
+            },
+          ],
+          voices: [
+            {
+              id: "voice-1",
+              name: "张工本人音色 V1",
+              confirmed: true,
+              isDefault: true,
+            },
+          ],
+        },
+      ],
+      assets: [
+        {
+          id: "original-1",
+          name: "原始画面",
+          kind: "image",
+          group: "项目",
+          source: "视频复刻",
+          saved: true,
+        },
+        {
+          id: "target-1",
+          name: "张工庭院讲解",
+          kind: "image",
+          group: "人物照片",
+          personId: "person-1",
+          source: "人物库",
+          saved: true,
+        },
+        {
+          id: "frame-1",
+          name: "乡墅首帧",
+          kind: "image",
+          group: "项目",
+          source: "人物置换",
+          saved: true,
+        },
+        {
+          id: "reference-1",
+          name: "乡墅外观.jpg",
+          kind: "image",
+          group: "参考素材",
+          source: "素材库",
+          saved: true,
+        },
+        {
+          id: "audio-1",
+          name: "建房预算-录音.wav",
+          kind: "audio",
+          duration: "00:42",
+          group: "完整口播音频",
+          source: "素材库",
+          saved: true,
+        },
+      ],
+      videos: [],
+      tasks: [],
+      projects: [],
+      errors: [],
+      loading: false,
+    },
+    review: true,
+    user: {} as StudioContextValue["user"],
+    navigate: vi.fn(),
+    patchDraft: vi.fn(),
+    patchState: vi.fn(),
+    updateData: vi.fn(),
+    notify: vi.fn(),
+    openPicker: vi.fn(),
+    openLive: vi.fn(),
+    requestGeneration: vi.fn(),
+    saveDraft: vi.fn(),
+    refresh: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe("V1.4 创作页面", () => {
+  beforeEach(() => useStudio.mockReset());
+
+  it("文案终稿可带入数字人口播并保留同一草稿", () => {
+    const value = studio();
+    useStudio.mockReturnValue(value);
+    render(<CopyPage />);
+    fireEvent.click(screen.getByRole("button", { name: "用于数字人口播" }));
+    expect(value.navigate).toHaveBeenCalledWith("oral", { returnTo: "copy" });
+  });
+
+  it("视频复刻入口复用已有成熟工作区", () => {
+    const value = studio();
+    value.state = { ...value.state, page: "replica" };
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+    fireEvent.click(screen.getByRole("button", { name: "进入分镜工作区" }));
+    expect(value.openLive).toHaveBeenCalledWith("analysis");
+    expect(screen.getByRole("tab", { name: "视频复刻" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("视频复刻优先显示草稿来源，不被历史列表选择覆盖", () => {
+    const value = studio();
+    value.data.assets.push({
+      id: "source-1",
+      name: "当前草稿来源",
+      kind: "video",
+      group: "项目",
+      source: "用户上传",
+      saved: true,
+    });
+    value.data.videos.push({
+      id: "history-video",
+      title: "历史浏览视频",
+      author: "作者",
+      platform: "抖音",
+      category: "建房预算",
+      poster: "",
+      duration: "00:30",
+      likes: 1,
+      collections: 0,
+      shares: 0,
+      description: "历史内容",
+    });
+    value.state = { ...value.state, selectedVideoId: "history-video" };
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+    expect(screen.getByText(/当前草稿来源/)).toBeInTheDocument();
+    expect(screen.queryByText(/历史浏览视频/)).not.toBeInTheDocument();
+  });
+
+  it("审核模式展示完整三镜头并用当前IP人物图作为目标首帧", () => {
+    const value = studio();
+    value.data.assets.push({
+      id: "source-1",
+      name: "来源视频",
+      kind: "video",
+      group: "项目",
+      source: "上传",
+      saved: true,
+    });
+    const target = value.data.assets.find((asset) => asset.id === "target-1");
+    const frame = value.data.assets.find((asset) => asset.id === "frame-1");
+    if (target) target.url = "/target-person.png";
+    if (frame) frame.url = "/unrelated-frame.png";
+    useStudio.mockReturnValue(value);
+
+    const { container } = render(<ReplicaPage />);
+
+    expect(container.querySelectorAll(".creation-shot")).toHaveLength(3);
+    expect(
+      container.querySelector<HTMLImageElement>(
+        '.creation-frame-target img[src="/target-person.png"]',
+      ),
+    ).not.toBeNull();
+  });
+
+  it("文案工坊可直接更换参与二创的人物IP", () => {
+    const value = studio();
+    useStudio.mockReturnValue(value);
+    render(<CopyPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "更换人物" }));
+
+    expect(value.openPicker).toHaveBeenCalledWith("person");
+  });
+
+  it("人物置换只选择目标人物照片，不改原始画面", () => {
+    const value = studio();
+    useStudio.mockReturnValue(value);
+    render(<ReplacementPage />);
+    fireEvent.click(screen.getByRole("button", { name: "从人物库选择" }));
+    expect(value.openPicker).toHaveBeenCalledWith("image");
+    expect(value.patchDraft).not.toHaveBeenCalledWith(
+      expect.objectContaining({ originalImageId: expect.anything() }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "更换原始画面" }));
+    expect(value.openPicker).toHaveBeenCalledWith("original-frame");
+  });
+
+  it("历史素材选择不会持续覆盖人物置换草稿目标", () => {
+    const value = studio();
+    value.data.assets.push({
+      id: "target-2",
+      name: "张工设计室形象照",
+      kind: "image",
+      group: "人物照片",
+      personId: "person-1",
+      source: "人物库",
+      saved: true,
+    });
+    value.state = { ...value.state, selectedAssetId: "target-2" };
+    useStudio.mockReturnValue(value);
+    render(<ReplacementPage />);
+    expect(value.patchDraft).not.toHaveBeenCalled();
+  });
+
+  it("视频生成在文图和多参考两种模式之间切换", () => {
+    const value = studio({
+      state: { ...studio().state, page: "video" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "参考生视频" }));
+    expect(value.navigate).toHaveBeenCalledWith("reference");
+  });
+
+  it("文图与参考模式都将素材、参数和预览分为三栏", () => {
+    const value = studio({
+      state: { ...studio().state, page: "video" },
+    });
+    useStudio.mockReturnValue(value);
+    const view = render(<VideoPage />);
+
+    let grid = view.container.querySelector(".creation-video-grid");
+    expect(grid?.children).toHaveLength(3);
+    expect(grid?.querySelector(":scope > .creation-video-form")).not.toBeNull();
+    const controls = grid?.querySelector(":scope > .creation-video-controls");
+    expect(controls).not.toBeNull();
+    expect(
+      within(controls as HTMLElement).getByRole("button", {
+        name: "生成视频",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      grid?.querySelector(":scope > .creation-video-preview"),
+    ).not.toBeNull();
+
+    value.state = { ...value.state, page: "reference" };
+    view.rerender(<VideoPage />);
+    grid = view.container.querySelector(".creation-video-grid");
+    expect(grid?.children).toHaveLength(3);
+    expect(
+      grid?.querySelector(":scope > .creation-video-controls"),
+    ).not.toBeNull();
+  });
+
+  it("参考素材使用中文类型并可从草稿中移除", () => {
+    const value = studio();
+    value.state = {
+      ...value.state,
+      page: "reference",
+      draft: {
+        ...value.state.draft,
+        referenceIds: ["reference-1", "reference-video", "reference-audio"],
+      },
+    };
+    value.data.assets.push(
+      {
+        id: "reference-video",
+        name: "庭院运镜.mp4",
+        kind: "video",
+        group: "参考素材",
+        source: "素材库",
+        saved: true,
+      },
+      {
+        id: "reference-audio",
+        name: "环境声.wav",
+        kind: "audio",
+        group: "参考素材",
+        source: "素材库",
+        saved: true,
+      },
+    );
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    expect(screen.getByText("图片 · 素材库")).toBeInTheDocument();
+    expect(screen.getByText("视频 · 素材库")).toBeInTheDocument();
+    expect(screen.getByText("音频 · 素材库")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "移除 乡墅外观.jpg" }));
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      referenceIds: ["reference-video", "reference-audio"],
+    });
+  });
+
+  it("音频驱动不显示终稿、声音、TTS和模板字段", () => {
+    const value = studio({
+      state: { ...studio().state, page: "oral-audio" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<OralPage />);
+    expect(screen.getByText("口播音频")).toBeInTheDocument();
+    expect(screen.queryByText("口播文案")).not.toBeInTheDocument();
+    expect(screen.queryByText("声音档案")).not.toBeInTheDocument();
+    expect(screen.queryByText("网感模板")).not.toBeInTheDocument();
+    expect(screen.queryByText("文字转语音")).not.toBeInTheDocument();
+  });
+
+  it("口播模式切换只占左侧输入栏，不下推右侧人物预览", () => {
+    useStudio.mockReturnValue(studio());
+
+    const { container } = render(<OralPage />);
+
+    expect(
+      container.querySelector(
+        ".creation-oral-grid > .creation-oral-left > .studio-tabs",
+      ),
+    ).not.toBeNull();
+  });
+
+  it("音频驱动只接受audio资产，上传入口不伪装成素材选择", () => {
+    const value = studio({
+      state: {
+        ...studio().state,
+        page: "oral-audio",
+        draft: { ...studio().state.draft, audioId: "target-1" },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<OralPage />);
+    expect(screen.getByRole("button", { name: "生成口播视频" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "上传音频" }));
+    expect(value.notify).toHaveBeenCalledWith(
+      "音频上传服务尚未接通，请先从素材库选择",
+    );
+    expect(value.openPicker).not.toHaveBeenCalled();
+  });
+
+  it("更换口播IP只打开人物选择器，由统一草稿层执行防串人清理", () => {
+    const value = studio({
+      state: { ...studio().state, page: "oral" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<OralPage />);
+    fireEvent.click(screen.getByRole("button", { name: "更换 IP" }));
+    expect(value.openPicker).toHaveBeenCalledWith("person");
+  });
+
+  it("文案口播正文只读，修改时返回唯一文案工坊", () => {
+    const value = studio({
+      state: { ...studio().state, page: "oral" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<OralPage />);
+    expect(
+      screen.queryByRole("textbox", { name: "口播文案" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "去文案工坊修改" }));
+    expect(value.navigate).toHaveBeenCalledWith("copy", { returnTo: "oral" });
+  });
+
+  it("口播分身名称已含人物名时不重复拼接", () => {
+    const value = studio();
+    value.data.people[0] = {
+      ...value.data.people[0],
+      avatars: [
+        {
+          ...value.data.people[0].avatars[0],
+          name: "张工 · 设计室讲解",
+        },
+      ],
+    };
+    useStudio.mockReturnValue(value);
+
+    render(<OralPage />);
+
+    expect(screen.getAllByText("张工 · 设计室讲解")).toHaveLength(2);
+    expect(screen.queryByText("张工 · 张工 · 设计室讲解")).toBeNull();
+  });
+
+  it("补充声音与分身时带入当前IP和当前口播模式", () => {
+    const missingVoice = studio();
+    missingVoice.state = {
+      ...missingVoice.state,
+      page: "oral",
+      draft: { ...missingVoice.state.draft, voiceId: undefined },
+    };
+    useStudio.mockReturnValue(missingVoice);
+    const view = render(<OralPage />);
+    fireEvent.click(screen.getByRole("button", { name: "管理声音" }));
+    expect(missingVoice.navigate).toHaveBeenCalledWith("person-voices", {
+      returnTo: "oral",
+      selectedPersonId: "person-1",
+    });
+
+    view.unmount();
+    const missingAvatar = studio();
+    missingAvatar.state = {
+      ...missingAvatar.state,
+      page: "oral-audio",
+      draft: { ...missingAvatar.state.draft, avatarId: undefined },
+    };
+    useStudio.mockReturnValue(missingAvatar);
+    render(<OralPage />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "去人物库制作口播分身" }),
+    );
+    expect(missingAvatar.navigate).toHaveBeenCalledWith("person-avatars", {
+      returnTo: "oral-audio",
+      selectedPersonId: "person-1",
+    });
+  });
+});

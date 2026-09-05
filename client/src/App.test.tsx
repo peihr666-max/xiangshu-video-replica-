@@ -6,9 +6,19 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App, WorkspaceShell } from "./App";
 import { setInternalAccessToken } from "./api";
+
+// Keep the mature upload/analysis/generation regression suite on the legacy
+// surface it exercises. RootApp and StudioWorkspace integration tests exercise
+// the real new default shell and customer session boundaries independently.
+vi.mock("./studio/StudioWorkspace", () => ({
+  StudioWorkspace: (props: ComponentProps<typeof WorkspaceShell>) => (
+    <WorkspaceShell {...props} />
+  ),
+}));
 
 const healthResponse = { status: "ok", service: "video-replica-api" };
 const employeeUser = {

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { WorkspaceShell } from "../App";
 import {
   attachCustomerSessionToken,
   type CustomerActivationCodeReset,
@@ -15,6 +14,7 @@ import {
   customerUpdateProfile,
 } from "../api";
 import { customerToCurrentUser } from "../RootApp";
+import { StudioWorkspace } from "../studio/StudioWorkspace";
 import type {
   CustomerCredentialStore,
   CustomerWorkspaceUser,
@@ -223,7 +223,7 @@ export function CustomerWorkspace({
   return (
     <div className="customer-workspace">
       {workspaceCredentialReady ? (
-        <WorkspaceShell
+        <StudioWorkspace
           currentUser={customerToCurrentUser(user, profile)}
           customerAccount={{
             devices,

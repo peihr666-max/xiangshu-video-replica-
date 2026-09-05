@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { AdminApp } from "./AdminApp";
 import { App } from "./App";
 import type { CurrentUser, CustomerProfile } from "./api";
@@ -15,11 +15,21 @@ import {
   useCustomerSession,
 } from "./customer/useCustomerSession";
 
+const ReviewWorkspace = import.meta.env.DEV
+  ? lazy(() => import("./studio/ReviewWorkspace"))
+  : null;
+
 export function RootApp({
   path = window.location.pathname,
 }: {
   path?: string;
 }) {
+  if (ReviewWorkspace && path === "/review/v1.4")
+    return (
+      <Suspense fallback={<p>正在加载 V1.4 审核工作区…</p>}>
+        <ReviewWorkspace />
+      </Suspense>
+    );
   if (
     isTauriRuntime() ||
     path === "/customer" ||

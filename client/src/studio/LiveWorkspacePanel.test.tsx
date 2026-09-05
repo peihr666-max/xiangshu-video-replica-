@@ -1,0 +1,38 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { expect, it, vi } from "vitest";
+import type { GenerationBatch } from "../api";
+import { reviewUser } from "./fixtures";
+
+vi.mock("../TaskRecordsPanel", () => ({
+  TaskRecordsPanel: ({
+    onHandoffConsumed,
+  }: {
+    onHandoffConsumed: () => void;
+  }) => (
+    <button type="button" onClick={onHandoffConsumed}>
+      消费交接
+    </button>
+  ),
+}));
+
+import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
+
+it("任务面板消费交接后回传给工作区控制器清除暂存批次", () => {
+  const onHandoffConsumed = vi.fn();
+  render(
+    <LiveWorkspacePanel
+      currentUser={reviewUser}
+      handoffBatch={{ id: "batch-1" } as GenerationBatch}
+      onBatchCreated={vi.fn()}
+      onBusyChange={vi.fn()}
+      onClose={vi.fn()}
+      onHandoffConsumed={onHandoffConsumed}
+      onProjectSelected={vi.fn()}
+      onRefresh={vi.fn()}
+      panel="tasks"
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "消费交接" }));
+  expect(onHandoffConsumed).toHaveBeenCalledTimes(1);
+});

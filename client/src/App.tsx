@@ -20,6 +20,7 @@ import type { CustomerCredentialStore } from "./customer/useCustomerSession";
 import { ProjectDetailFlow } from "./ProjectDetailFlow";
 import { ProjectsPage } from "./ProjectsPage";
 import { SettingsPanel } from "./SettingsPanel";
+import { StudioWorkspace } from "./studio/StudioWorkspace";
 import { TaskRecordsPanel } from "./TaskRecordsPanel";
 import { WalletPanel } from "./WalletPanel";
 import "./styles.css";
@@ -55,7 +56,6 @@ export function App() {
     setInternalAccessToken(accessToken.trim() || null);
     try {
       const user = await getCurrentUser();
-      ensureWorkspaceHash(workspacePageFromHash(user));
       setCurrentUser(user);
     } catch (error) {
       setCurrentUser(null);
@@ -128,7 +128,7 @@ export function App() {
     );
   }
 
-  return <WorkspaceShell currentUser={currentUser} />;
+  return <StudioWorkspace currentUser={currentUser} />;
 }
 
 /** The shared workspace shell (§10.1): the sidebar, the stage, and the page
