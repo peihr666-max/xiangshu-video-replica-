@@ -1252,3 +1252,69 @@ export async function updateOperationRates(
     "PUT",
   );
 }
+
+// ---------------------------------------------------------------------------
+// Profit overview (W8 — 经营分析：每日对外售价与日利润)
+// ---------------------------------------------------------------------------
+
+export type DailyPriceRow = {
+  price_date: string;
+  price_768p_fen: number;
+  price_2k_fen: number;
+  note: string | null;
+  created_by_username: string | null;
+};
+
+export type ProfitDayRow = {
+  day: string;
+  video_count: number;
+  settled_seconds: number;
+  revenue_fen: number;
+  cost_fen: number | null;
+  gross_fen: number | null;
+  margin_pct: number | null;
+};
+
+export type ProfitOverviewResponse = {
+  prices: DailyPriceRow[];
+  days: ProfitDayRow[];
+  cost_coverage_note: string;
+};
+
+export async function listProfitOverview(
+  lookbackDays = 30,
+): Promise<ProfitOverviewResponse> {
+  const response = await requestControl(
+    `/api/control/profit/overview?lookback_days=${lookbackDays}`,
+    {},
+  );
+  if (!response.ok) {
+    throw await parseActivationError(response, "读取经营分析失败");
+  }
+  return (await response.json()) as ProfitOverviewResponse;
+}
+
+export async function upsertDailyPrice(
+  input: {
+    price_date: string;
+    price_768p_fen: number;
+    price_2k_fen: number;
+    note?: string;
+  },
+  reason: string,
+  idempotencyKey?: string,
+): Promise<DailyPriceRow[]> {
+  return adminWrite<DailyPriceRow[]>(
+    "/api/control/profit/daily-price",
+    {
+      price_date: input.price_date,
+      price_768p_fen: input.price_768p_fen,
+      price_2k_fen: input.price_2k_fen,
+      note: input.note ?? "",
+    },
+    reason,
+    "保存每日售价失败",
+    idempotencyKey,
+    "PUT",
+  );
+}
