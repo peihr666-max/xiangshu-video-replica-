@@ -37,9 +37,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["created_by_user_id"], ["users.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["created_by_user_id"], ["users.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("price_date"),
         sa.CheckConstraint("price_768p_fen >= 0", name="ck_daily_price_768p"),
         sa.CheckConstraint("price_2k_fen >= 0", name="ck_daily_price_2k"),

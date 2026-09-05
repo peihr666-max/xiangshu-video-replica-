@@ -67,3 +67,10 @@ def test_every_sqlite_where_index_also_declares_postgresql_where() -> None:
         "create_index with sqlite_where but no postgresql_where "
         "(predicate silently dropped on PG): " + "; ".join(violations)
     )
+
+
+def test_saved_prompt_author_foreign_key_restricts_deletion() -> None:
+    migration = (MIGRATIONS_DIR / "061_saved_prompt_metadata.py").read_text(encoding="utf-8")
+
+    assert 'ondelete="RESTRICT"' in migration
+    assert 'ondelete="SET NULL"' not in migration

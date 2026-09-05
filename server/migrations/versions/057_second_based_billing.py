@@ -120,6 +120,7 @@ def _create_rate_indexes() -> None:
         ["task_id", "billing_round"],
         unique=True,
         sqlite_where=sa.text("type IN ('SETTLE', 'RELEASE')"),
+        postgresql_where=sa.text("type IN ('SETTLE', 'RELEASE')"),
     )
 
 

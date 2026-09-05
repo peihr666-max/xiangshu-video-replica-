@@ -43,7 +43,7 @@ def upgrade() -> None:
     if bind.dialect.name != "postgresql":
         # SQLite: internal P0 runtime — 费率管理是客户生产域（027+ 同）。
         return
-    table = op.create_table(
+    op.create_table(
         "operation_cost_rates",
         sa.Column("subject", sa.String(), nullable=False),
         sa.Column(

@@ -206,6 +206,137 @@ def _drop_database(db_name: str) -> None:
         conn.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
 
 
+def test_wallet_ledger_sequence_migration_is_reversible_on_postgres() -> None:
+    from alembic import command
+
+    database_name = "wallet_ledger_sequence_migration_test"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{database_name}"
+    sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+    _drop_database(database_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{database_name}"')
+
+    try:
+        config = _alembic_config(sqlalchemy_dsn)
+        command.upgrade(config, "062_activation_initial_free_seconds")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name) "
+                "VALUES ('ledger-user', 'ledger-user', 'Ledger User')"
+            )
+            conn.execute("INSERT INTO wallets (user_id) VALUES ('ledger-user')")
+            conn.execute(
+                "INSERT INTO recharge_orders "
+                "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, status, "
+                "pricing_scope, "
+                "base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+                "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits, "
+                "paid_at) "
+                "VALUES ('ledger-order-historical', 'ledger-user', 'ledger-merchant-historical', "
+                "'zpay', 'ledger-trade-historical', 'alipay', 'PAID', 'INTERNAL', "
+                "1000, 1000, 10000, 1000, 10000, 10, "
+                "'2026-09-05T00:00:00+00:00')"
+            )
+            conn.execute(
+                "INSERT INTO wallet_transactions "
+                "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+                "idempotency_key) VALUES ('ledger-tx-historical', 'ledger-user', 'CHARGE', 10, 0, "
+                "'ledger-order-historical', 'ledger-key-historical')"
+            )
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'wallet_transactions' AND column_name = 'ledger_sequence'"
+            ).fetchone()
+            assert conn.execute(
+                "SELECT 1 FROM pg_trigger WHERE tgname = "
+                "'trg_wallet_transactions_assign_ledger_sequence' AND NOT tgisinternal"
+            ).fetchone()
+            assert conn.execute(
+                "SELECT 1 FROM pg_indexes WHERE tablename='wallet_transactions' "
+                "AND indexname='idx_wallet_transactions_user_ledger_sequence'"
+            ).fetchone()
+            assert conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE id='ledger-tx-historical'"
+            ).fetchone() == (None,)
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for suffix in ("one", "two"):
+                conn.execute(
+                    "INSERT INTO recharge_orders "
+                    "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, "
+                    "status, pricing_scope, "
+                    "base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+                    "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits, "
+                    "paid_at) "
+                    "VALUES (%s, 'ledger-user', %s, 'zpay', %s, 'alipay', 'PAID', 'INTERNAL', "
+                    "1000, 1000, 10000, 1000, 10000, 10, '2026-09-05T00:00:00+00:00')",
+                    (
+                        f"ledger-order-{suffix}",
+                        f"ledger-merchant-{suffix}",
+                        f"ledger-trade-{suffix}",
+                    ),
+                )
+            conn.execute(
+                "INSERT INTO wallet_transactions "
+                "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+                "idempotency_key) VALUES ('ledger-tx-one', 'ledger-user', 'CHARGE', 10, 0, "
+                "'ledger-order-one', 'ledger-key-one')"
+            )
+            sequence = conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE id='ledger-tx-one'"
+            ).fetchone()[0]
+            assert sequence is not None
+            with pytest.raises(psycopg.Error, match="database assigned"):
+                conn.execute(
+                    "INSERT INTO wallet_transactions "
+                    "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+                    "idempotency_key, ledger_sequence) VALUES "
+                    "('ledger-tx-two', 'ledger-user', 'CHARGE', 10, 0, "
+                    "'ledger-order-two', 'ledger-key-two', 999999)"
+                )
+            with pytest.raises(psycopg.Error, match="immutable"):
+                conn.execute(
+                    "UPDATE wallet_transactions SET ledger_sequence=%s WHERE id='ledger-tx-one'",
+                    (sequence + 1,),
+                )
+
+        command.downgrade(config, "062_activation_initial_free_seconds")
+        with psycopg.connect(dsn) as conn:
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'wallet_transactions' "
+                    "AND column_name = 'ledger_sequence'"
+                ).fetchone()
+                is None
+            )
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM pg_indexes WHERE tablename='wallet_transactions' "
+                    "AND indexname='idx_wallet_transactions_user_ledger_sequence'"
+                ).fetchone()
+                is None
+            )
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM pg_trigger WHERE tgname = "
+                    "'trg_wallet_transactions_assign_ledger_sequence' AND NOT tgisinternal"
+                ).fetchone()
+                is None
+            )
+
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'wallet_transactions' AND column_name = 'ledger_sequence'"
+            ).fetchone()
+    finally:
+        _drop_database(database_name)
+
+
 def test_empty_customer_bootstrap_runs_on_a_fresh_migrated_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -337,7 +468,7 @@ def test_pg_upgrade_from_published_040_head_applies_fair_queue() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "057_second_based_billing"
+            assert version == "063_wallet_ledger_sequence"
             fair_queue_column = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.columns "
                 "WHERE table_name = 'runtime_settings' AND column_name = 'fair_queue_enabled'"
@@ -371,9 +502,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
 
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "057_second_based_billing", (
-                f"unexpected head revision: {version}"
-            )
+            assert version == "063_wallet_ledger_sequence", f"unexpected head revision: {version}"
 
             tables = {
                 row[0]
@@ -488,7 +617,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "057_second_based_billing"
+            assert version == "063_wallet_ledger_sequence"
     finally:
         _drop_database("t06_migrate_test")
 
@@ -610,7 +739,7 @@ def test_pg_wallet_downgrade_blocked_when_ledger_has_settled_rounds() -> None:
         # The database must be left exactly at head (no partial rollback).
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "057_second_based_billing"
+        assert version == "063_wallet_ledger_sequence"
     finally:
         _drop_database(db_name)
 
@@ -724,7 +853,7 @@ def test_pg_free_grant_downgrade_preserves_ledger(
 
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "057_second_based_billing",
+                "063_wallet_ledger_sequence",
             )
             for table in tables:
                 assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]
@@ -1001,7 +1130,7 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             command.downgrade(_alembic_config(sqlalchemy_dsn), "025_postgres_runtime_compatibility")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "057_second_based_billing"
+        assert version == "063_wallet_ledger_sequence"
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
@@ -1103,7 +1232,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "057_second_based_billing"
+            assert version == "063_wallet_ledger_sequence"
 
             indexes = {
                 row[0]
@@ -1284,7 +1413,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
         # indexes intact when the append-only evidence guard refuses rollback.
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "057_second_based_billing"
+            assert version == "063_wallet_ledger_sequence"
             index_count = conn.execute(
                 "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
                 "AND indexname = 'idx_wallets_updated_at_user'"
@@ -1456,7 +1585,7 @@ def test_t46_scene_task_constraint_and_downgrade_guard() -> None:
 
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "057_second_based_billing"
+            assert version == "063_wallet_ledger_sequence"
             conn.execute("DELETE FROM character_sheet_tasks WHERE id = 'scene-task-t46'")
 
         command.downgrade(
