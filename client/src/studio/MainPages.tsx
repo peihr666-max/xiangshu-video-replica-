@@ -24,6 +24,23 @@ const statusNames: Record<StudioTask["status"], string> = {
   cancelled: "已取消",
 };
 
+/** 任务中心状态列的图标与子文案（与效果图一致：排队中"等待开始"、
+ * 待处理"生成失败"），状态待确认保持独立提示避免误导重试。 */
+const statusHints: Partial<Record<StudioTask["status"], string>> = {
+  queued: "等待开始",
+  failed: "生成失败",
+  uncertain: "状态待确认",
+};
+
+const statusIcons: Record<StudioTask["status"], string> = {
+  running: "clock",
+  queued: "clock",
+  failed: "warning",
+  uncertain: "warning",
+  completed: "check",
+  cancelled: "close",
+};
+
 function Status({ task }: { task: StudioTask }) {
   return (
     <span className={`studio-status studio-status--${task.status}`}>
@@ -32,6 +49,22 @@ function Status({ task }: { task: StudioTask }) {
         ? ` ${task.progress}%`
         : ""}
     </span>
+  );
+}
+
+function StatusCell({ task }: { task: StudioTask }) {
+  const hint = statusHints[task.status];
+  return (
+    <div className="studio-status-cell">
+      <span className={`studio-status studio-status--${task.status}`}>
+        <Icon name={statusIcons[task.status]} size={16} />
+        {statusNames[task.status]}
+        {task.progress !== undefined && task.status === "running"
+          ? ` ${task.progress}%`
+          : ""}
+      </span>
+      {hint && <small>{hint}</small>}
+    </div>
   );
 }
 
@@ -429,6 +462,12 @@ export function TasksPage() {
             ? ["failed", "uncertain"].includes(task.status)
             : task.status === "completed")),
   );
+  const activeCount = data.tasks.filter((task) =>
+    ["running", "queued"].includes(task.status),
+  ).length;
+  const attentionCount = data.tasks.filter((task) =>
+    ["failed", "uncertain"].includes(task.status),
+  ).length;
   return (
     <section className="studio-tasks-page">
       <h1>任务中心</h1>
@@ -446,8 +485,8 @@ export function TasksPage() {
         onChange={setStatus}
         items={[
           { id: "all", label: "全部" },
-          { id: "active", label: "进行中" },
-          { id: "attention", label: "待处理" },
+          { id: "active", label: `进行中 ${activeCount}` },
+          { id: "attention", label: `待处理 ${attentionCount}` },
           { id: "completed", label: "已完成" },
         ]}
       />
@@ -484,9 +523,9 @@ export function TasksPage() {
                 </td>
                 <td>{task.type}</td>
                 <td>
-                  <Status task={task} />
+                  <StatusCell task={task} />
                 </td>
-                <td>{task.submitted}</td>
+                <td>{formatTaskTime(task.submitted)}</td>
                 <td>
                   <Button
                     variant="quiet"

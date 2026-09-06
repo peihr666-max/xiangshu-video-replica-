@@ -862,6 +862,23 @@
 .studio-status--cancelled {
   color: #858e7c;
 }
+.studio-status-cell {
+  display: grid;
+  gap: 4px;
+}
+.studio-status-cell .studio-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+}
+.studio-status-cell .studio-status svg {
+  flex: none;
+}
+.studio-status-cell small {
+  color: #858c7d;
+  font-size: 12px;
+}
 .studio-home-people {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

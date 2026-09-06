@@ -19,7 +19,7 @@ const { useStudio, loadTaskPreview, uploadWorkbenchSourceVideo } = vi.hoisted(
 vi.mock("./context", () => ({ useStudio }));
 vi.mock("./live", () => ({ loadTaskPreview, uploadWorkbenchSourceVideo }));
 
-import { TaskDetailPage, WorkbenchPage } from "./MainPages";
+import { TaskDetailPage, TasksPage, WorkbenchPage } from "./MainPages";
 import { formatTaskTime } from "./ui";
 
 const taskA: StudioTask = {
@@ -427,5 +427,74 @@ describe("V1.4 工作台上传与创作入口", () => {
       "音频文案提取链路接入前，请先在项目面板完成拆解。",
     );
     expect(value.openLive).not.toHaveBeenCalled();
+  });
+});
+
+describe("V1.4 任务中心列表", () => {
+  const clock = new Date("2026-09-06T10:00:00");
+  const queuedTask: StudioTask = {
+    id: "t-queued",
+    batchId: "b-queued",
+    title: "三层新中式乡墅",
+    type: "视频复刻",
+    status: "queued",
+    submitted: "2026-09-06T09:32:00",
+  };
+  const failedTask: StudioTask = {
+    id: "t-failed",
+    batchId: "b-failed",
+    title: "张工 · 庭院讲解首帧",
+    type: "人物置换",
+    status: "failed",
+    submitted: "2026-09-06T09:28:00",
+  };
+  const doneTask: StudioTask = {
+    id: "t-done",
+    batchId: "b-done",
+    title: "张工 · 建房预算-已确认版",
+    type: "数字人口播",
+    status: "completed",
+    submitted: "2026-09-06T09:25:00",
+  };
+
+  beforeEach(() => {
+    useStudio.mockReset();
+    vi.useFakeTimers({ now: clock, toFake: ["Date"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function tasksPage(): StudioContextValue {
+    return studio(undefined, {
+      state: { ...createState("tasks") },
+      data: data([runningTask, queuedTask, failedTask, doneTask]),
+    });
+  }
+
+  it("状态页签展示进行中/待处理计数", () => {
+    useStudio.mockReturnValue(tasksPage());
+    render(<TasksPage />);
+
+    expect(screen.getByRole("tab", { name: "进行中 2" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "待处理 1" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "已完成" })).toBeInTheDocument();
+  });
+
+  it("状态列带子文案：排队中→等待开始、待处理→生成失败", () => {
+    useStudio.mockReturnValue(tasksPage());
+    render(<TasksPage />);
+
+    expect(screen.getByText("等待开始")).toBeInTheDocument();
+    expect(screen.getByText("生成失败")).toBeInTheDocument();
+  });
+
+  it("提交时间本地化，不显示原始 ISO 串", () => {
+    useStudio.mockReturnValue(tasksPage());
+    render(<TasksPage />);
+
+    expect(screen.getByText("今天 09:32")).toBeInTheDocument();
+    expect(screen.queryByText("2026-09-06T09:32:00")).not.toBeInTheDocument();
   });
 });
