@@ -326,9 +326,12 @@ describe("V1.4 workspace integration", () => {
       render(<StudioWorkspace currentUser={reviewUser} />);
 
       await openCopyPage();
-      expect(
-        (screen.getByLabelText("二创文案") as HTMLTextAreaElement).value,
-      ).toBe("云端恢复的文案内容");
+      // 恢复是异步 setState：等值到位，而不是等 textarea 出现。
+      await waitFor(() =>
+        expect(
+          (screen.getByLabelText("二创文案") as HTMLTextAreaElement).value,
+        ).toBe("云端恢复的文案内容"),
+      );
       expect(screen.getByText("终稿 V1")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("tab", { name: "我的文案" }));
       expect(screen.getByText("已保存文案")).toBeInTheDocument();
