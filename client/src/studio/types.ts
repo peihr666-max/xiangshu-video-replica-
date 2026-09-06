@@ -141,6 +141,8 @@ export type StudioStats = {
 export type StudioData = {
   people: StudioPerson[];
   assets: StudioAsset[];
+  /** 素材库图片（视频生成页首帧/尾帧/参考素材的素材库选择来源）。 */
+  materials: StudioAsset[];
   videos: StudioVideo[];
   tasks: StudioTask[];
   projects: Project[];
@@ -183,6 +185,8 @@ export type StudioDraft = {
   style: "standard" | "template";
   subtitles: boolean;
   quoteRevision: number;
+  /** 最近一次独立创作提交的批次 id：预览区就地展示生成进度。 */
+  videoBatchId?: string;
 };
 export type PickerKind =
   | "person"

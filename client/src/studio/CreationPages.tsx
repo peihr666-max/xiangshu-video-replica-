@@ -1,7 +1,14 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { listUserSavedPrompts, type SavedPromptItem } from "../api";
 import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
-import type { StudioAsset, StudioPerson, StudioVideo } from "./types";
+import { uploadVideoMaterial } from "./live";
+import type {
+  StudioAsset,
+  StudioPerson,
+  StudioTask,
+  StudioVideo,
+} from "./types";
 import {
   Button,
   Empty,
@@ -596,6 +603,218 @@ function ParameterControls() {
   );
 }
 
+// 生成等待期的安抚文案：按阶段轮换，降低等待焦虑（不伪造进度）。
+const REASSURANCE_COPY = [
+  "AI 正在理解你的提示词与画面结构…",
+  "视频生成通常需要 1–3 分钟，可以先去处理其他创作。",
+  "任务已进入公平队列，关掉页面也不会丢失进度。",
+  "生成完成后可以直接在下方预览成片。",
+];
+
+const VIDEO_STAGE_LABELS = ["已提交", "排队中", "生成中", "完成"] as const;
+
+function videoStageIndex(status: StudioTask["status"]): number {
+  if (status === "queued") return 1;
+  if (status === "running") return 2;
+  if (status === "completed") return 3;
+  return 0;
+}
+
+function formatElapsed(from: string): string {
+  const started = new Date(from.replace(" ", "T")).getTime();
+  if (Number.isNaN(started)) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
+}
+
+/** 生成等待视图：阶段时间线 + 进度百分比 + 轮换安抚文案。 */
+function VideoProgressView({ task }: { task: StudioTask }) {
+  const [copyIndex, setCopyIndex] = useState(0);
+  const [, setTick] = useState(0);
+  const failed = task.status === "failed" || task.status === "uncertain";
+
+  useEffect(() => {
+    if (failed) return;
+    const timer = window.setInterval(() => {
+      setCopyIndex((value) => (value + 1) % REASSURANCE_COPY.length);
+      setTick((value) => value + 1);
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [failed]);
+
+  if (failed) {
+    return (
+      <div className="creation-progress failed" role="alert">
+        <div className="creation-progress-headline">
+          生成未完成{task.status === "uncertain" ? "（状态待确认）" : ""}
+        </div>
+        <p className="creation-progress-copy">
+          积分未结算的失败不会扣费；可在任务中心重试或对账。
+        </p>
+        <Empty
+          title="这条视频没有生成成功"
+          description="可回到上方调整提示词或素材后重新生成。"
+        />
+      </div>
+    );
+  }
+
+  const stageIndex = videoStageIndex(task.status);
+  const progress = task.progress ?? 0;
+
+  return (
+    <div className="creation-progress" aria-live="polite">
+      <ol className="creation-progress-stages">
+        {VIDEO_STAGE_LABELS.map((label, index) => (
+          <li
+            key={label}
+            className={
+              index === stageIndex
+                ? "is-active"
+                : index < stageIndex
+                  ? "is-done"
+                  : ""
+            }
+          >
+            {label}
+          </li>
+        ))}
+      </ol>
+      <progress
+        aria-label="生成进度"
+        className="creation-progress-bar"
+        max={100}
+        value={task.status === "completed" ? 100 : progress}
+      />
+      <div className="creation-progress-meta">
+        <span>{task.status === "completed" ? "生成完成" : `${progress}%`}</span>
+        <span>已等待 {formatElapsed(task.submitted)}</span>
+      </div>
+      <p className="creation-progress-copy">{REASSURANCE_COPY[copyIndex]}</p>
+    </div>
+  );
+}
+
+function SavedPromptImporter({
+  onImport,
+}: {
+  onImport: (promptText: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [prompts, setPrompts] = useState<SavedPromptItem[]>();
+  const [error, setError] = useState<string>();
+  const { review, notify } = useStudio();
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && prompts === undefined && !error && !review) {
+      void listUserSavedPrompts()
+        .then(setPrompts)
+        .catch(() => setError("我的提示词暂时读取失败，请稍后重试。"));
+    }
+  };
+
+  return (
+    <div className="creation-prompt-import">
+      <Button variant="quiet" onClick={toggle}>
+        <Icon name="arrow" size={16} /> 导入提示词
+      </Button>
+      {open && (
+        <div
+          className="creation-prompt-list"
+          role="listbox"
+          aria-label="我的提示词"
+        >
+          {review ? (
+            <p>审核示例不提供提示词库。</p>
+          ) : error ? (
+            <p>{error}</p>
+          ) : prompts === undefined ? (
+            <p>正在读取我的提示词…</p>
+          ) : prompts.length === 0 ? (
+            <p>
+              还没有保存过提示词。在项目拆解中修订反推提示词并保存后会出现在这里。
+            </p>
+          ) : (
+            prompts.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  onImport(item.prompt_text);
+                  notify(`已导入「${item.name}」，可继续修改。`);
+                  setOpen(false);
+                }}
+              >
+                <strong>{item.name}</strong>
+                <small>{item.prompt_text.slice(0, 60)}</small>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VideoMaterialUpload({
+  group,
+  label,
+  onUploaded,
+}: {
+  group: string;
+  label: string;
+  onUploaded: (asset: StudioAsset) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [progress, setProgress] = useState<number>();
+  const { review, notify } = useStudio();
+
+  const upload = async (file: File) => {
+    if (review) {
+      notify("审核示例不上传素材。");
+      return;
+    }
+    setProgress(0);
+    try {
+      const asset = await uploadVideoMaterial(file, group, setProgress);
+      onUploaded(asset);
+      notify(`${label}「${file.name}」已上传到素材库。`);
+    } catch {
+      notify("素材上传失败，请稍后重试。");
+    } finally {
+      setProgress(undefined);
+    }
+  };
+
+  return (
+    <>
+      <button
+        className="creation-upload-mini"
+        disabled={progress !== undefined}
+        onClick={() => inputRef.current?.click()}
+        type="button"
+      >
+        {progress !== undefined ? `上传中 ${progress}%` : "本机上传"}
+      </button>
+      <input
+        accept="image/png,image/jpeg"
+        aria-label={`上传${label}`}
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) void upload(file);
+          event.target.value = "";
+        }}
+        ref={inputRef}
+        type="file"
+      />
+    </>
+  );
+}
+
 export function VideoPage() {
   const {
     state,
@@ -605,16 +824,34 @@ export function VideoPage() {
     openPicker,
     saveDraft,
     requestGeneration,
+    updateData,
   } = useStudio();
   const referenceMode = state.page === "reference";
-  const firstFrame = findAsset(data.assets, state.draft.firstFrameId);
-  const tailFrame = findAsset(data.assets, state.draft.tailFrameId);
+  const firstFrame =
+    findAsset(data.assets, state.draft.firstFrameId) ??
+    findAsset(data.materials, state.draft.firstFrameId);
+  const tailFrame =
+    findAsset(data.assets, state.draft.tailFrameId) ??
+    findAsset(data.materials, state.draft.tailFrameId);
   const references = state.draft.referenceIds
-    .map((id) => findAsset(data.assets, id))
+    .map((id) => findAsset(data.assets, id) ?? findAsset(data.materials, id))
     .filter((asset): asset is StudioAsset => Boolean(asset));
   const ready =
     Boolean(state.draft.prompt.trim()) &&
     (referenceMode ? references.length > 0 : true);
+  const videoTask = state.draft.videoBatchId
+    ? data.tasks.find((task) => task.id === state.draft.videoBatchId)
+    : undefined;
+
+  const appendMaterial = (asset: StudioAsset) => {
+    updateData((previous) => ({
+      ...previous,
+      materials: [
+        asset,
+        ...previous.materials.filter((item) => item.id !== asset.id),
+      ],
+    }));
+  };
 
   return (
     <section className="creation-page">
@@ -644,18 +881,33 @@ export function VideoPage() {
               placeholder="描述镜头、场景、运动与光线"
               value={state.draft.prompt}
             />
+            <SavedPromptImporter
+              onImport={(promptText) => patchDraft({ prompt: promptText })}
+            />
           </Field>
           {referenceMode ? (
             <ControlGroup label="参考素材">
-              <button
-                className="creation-upload"
-                onClick={() => openPicker("reference")}
-                type="button"
-              >
-                <Icon name="upload" />
-                <span>点击上传，或从素材库选择</span>
-                <small>支持图片、视频、音频</small>
-              </button>
+              <div className="creation-upload-row">
+                <button
+                  className="creation-upload"
+                  onClick={() => openPicker("reference")}
+                  type="button"
+                >
+                  <Icon name="upload" />
+                  <span>从素材库选择</span>
+                  <small>本批生成最多 4 张参考图</small>
+                </button>
+                <VideoMaterialUpload
+                  group="参考素材"
+                  label="参考图"
+                  onUploaded={(asset) => {
+                    appendMaterial(asset);
+                    patchDraft({
+                      referenceIds: [...state.draft.referenceIds, asset.id],
+                    });
+                  }}
+                />
+              </div>
               <div className="creation-reference-list">
                 {references.map((asset, index) => (
                   <div className="creation-reference-row" key={asset.id}>
@@ -690,15 +942,41 @@ export function VideoPage() {
             <ControlGroup label="首尾帧">
               <Hint>无首帧时文生视频；添加首帧后图生视频。</Hint>
               <div className="creation-frame-row">
-                <button onClick={() => openPicker("first-frame")} type="button">
-                  <Media asset={firstFrame} alt="首帧" />
-                  <span>首帧（选填）</span>
-                </button>
+                <div className="creation-frame-slot">
+                  <button
+                    onClick={() => openPicker("first-frame")}
+                    type="button"
+                  >
+                    <Media asset={firstFrame} alt="首帧" />
+                    <span>首帧（选填）</span>
+                  </button>
+                  <VideoMaterialUpload
+                    group="首帧素材"
+                    label="首帧"
+                    onUploaded={(asset) => {
+                      appendMaterial(asset);
+                      patchDraft({ firstFrameId: asset.id });
+                    }}
+                  />
+                </div>
                 <Icon name="arrow" />
-                <button onClick={() => openPicker("tail-frame")} type="button">
-                  <Media asset={tailFrame} alt="尾帧" />
-                  <span>尾帧（可选）</span>
-                </button>
+                <div className="creation-frame-slot">
+                  <button
+                    onClick={() => openPicker("tail-frame")}
+                    type="button"
+                  >
+                    <Media asset={tailFrame} alt="尾帧" />
+                    <span>尾帧（可选）</span>
+                  </button>
+                  <VideoMaterialUpload
+                    group="尾帧素材"
+                    label="尾帧"
+                    onUploaded={(asset) => {
+                      appendMaterial(asset);
+                      patchDraft({ tailFrameId: asset.id });
+                    }}
+                  />
+                </div>
               </div>
             </ControlGroup>
           )}
@@ -724,7 +1002,9 @@ export function VideoPage() {
           <div className="creation-panel-title">
             预览（{referenceMode ? "参考画布" : "首帧预览"}）
           </div>
-          {referenceMode ? (
+          {videoTask ? (
+            <VideoProgressView task={videoTask} />
+          ) : referenceMode ? (
             references.length ? (
               <Media
                 asset={references[0]}
@@ -748,6 +1028,9 @@ export function VideoPage() {
               title="当前为文生视频"
               description="添加首帧后会在这里显示图生预览。"
             />
+          )}
+          {videoTask && (
+            <Hint>成片与历史进度可在任务中心查看，任务记录不会丢失。</Hint>
           )}
         </Panel>
       </div>

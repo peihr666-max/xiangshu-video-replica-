@@ -1604,6 +1604,73 @@ export function defaultBatchProvider(): GenerationBatchInput["provider"] {
     : "metaso";
 }
 
+// ---------------------------------------------------------------------------
+// C2 独立创作（视频生成页）
+// ---------------------------------------------------------------------------
+
+export type IndependentCapabilities = {
+  extended_modes_enabled: boolean;
+  t2v_enabled: boolean;
+  i2v_enabled: boolean;
+  r2v_enabled: boolean;
+  last_frame_enabled: boolean;
+  max_reference_images: number;
+  max_quantity: number;
+};
+
+export async function getIndependentCapabilities(): Promise<IndependentCapabilities> {
+  return requestApiJson<IndependentCapabilities>(
+    "/api/independent/capabilities",
+    "读取视频生成能力失败",
+  );
+}
+
+export type IndependentVideoTaskInput = {
+  mode: "t2v" | "i2v" | "r2v";
+  prompt_text: string;
+  first_frame_asset_id?: string | null;
+  last_frame_asset_id?: string | null;
+  reference_asset_ids?: string[];
+  output_duration_seconds: number;
+  resolution: "768P" | "2K";
+  ratio: GenerationRatio;
+  quantity: number;
+  idempotency_key: string;
+  provider?: "fake_h3" | "metaso";
+};
+
+/** 幂等创建独立创作批次：成功后任务中心/进度轮询走既有批次通道。 */
+export async function createIndependentVideoTask(
+  input: IndependentVideoTaskInput,
+): Promise<GenerationBatch> {
+  return requestGenerationJson<GenerationBatch>(
+    "/api/independent/video-tasks",
+    "视频生成任务提交失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export type SavedPromptItem = {
+  id: string;
+  project_id: string;
+  name: string;
+  prompt_text: string;
+  created_at: string;
+};
+
+/** 跨项目「我的提示词」：独立创作页导入提示词的数据源。 */
+export async function listUserSavedPrompts(): Promise<SavedPromptItem[]> {
+  const page = await requestApiJson<{ items: SavedPromptItem[] }>(
+    "/api/studio/saved-prompts",
+    "读取我的提示词失败",
+  );
+  return page.items;
+}
+
 export async function createGenerationBatch(
   projectId: string,
   input: GenerationBatchInput,

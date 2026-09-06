@@ -165,3 +165,24 @@ export function buildOralInput(draft: StudioDraft, mode: "text" | "audio") {
     subtitles: draft.style === "standard" && draft.subtitles,
   };
 }
+
+// ---- C2 独立创作（视频生成页）----
+
+export const SUPPORTED_VIDEO_RATIOS = [
+  "adaptive",
+  "21:9",
+  "16:9",
+  "4:3",
+  "1:1",
+  "3:4",
+  "9:16",
+] as const;
+
+/** 文图生页签有首帧即 I2V（可选尾帧），无首帧为 T2V；参考生页签为 R2V。 */
+export function resolveVideoMode(
+  page: StudioPage,
+  hasFirstFrame = false,
+): "t2v" | "i2v" | "r2v" {
+  if (page === "reference") return "r2v";
+  return hasFirstFrame ? "i2v" : "t2v";
+}

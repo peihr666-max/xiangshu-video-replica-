@@ -42,6 +42,53 @@ const live = vi.hoisted(() => ({
 }));
 vi.mock("./live", () => live);
 
+// 视频生成（C2）：只覆盖新引入的四个 api 出口，其余保持原模块行为，
+// 避免既有用例（不触发这些函数）受 mock 影响。
+const api = vi.hoisted(() => ({
+  getIndependentCapabilities: vi.fn(
+    async (): Promise<{
+      extended_modes_enabled: boolean;
+      t2v_enabled: boolean;
+      i2v_enabled: boolean;
+      r2v_enabled: boolean;
+      last_frame_enabled: boolean;
+      max_reference_images: number;
+      max_quantity: number;
+    }> => ({
+      extended_modes_enabled: true,
+      t2v_enabled: true,
+      i2v_enabled: true,
+      r2v_enabled: true,
+      last_frame_enabled: true,
+      max_reference_images: 4,
+      max_quantity: 4,
+    }),
+  ),
+  getGenerationPriceQuote: vi.fn(
+    async (): Promise<{
+      resolution: string;
+      duration_seconds: number;
+      quantity: number;
+      unit_price_fen_per_second: number;
+      estimated_seconds: number;
+      estimated_price_fen: number;
+    }> => ({
+      resolution: "768P",
+      duration_seconds: 8,
+      quantity: 1,
+      unit_price_fen_per_second: 120,
+      estimated_seconds: 8,
+      estimated_price_fen: 960,
+    }),
+  ),
+  createIndependentVideoTask: vi.fn(),
+  listUserSavedPrompts: vi.fn(async (): Promise<unknown[]> => []),
+}));
+vi.mock("../api", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ...api,
+}));
+
 const livePanel = vi.hoisted(() => ({
   project: {
     id: "project-1",
@@ -561,5 +608,151 @@ describe("V1.4 workspace integration", () => {
       expect(live.persistCloudDraft).not.toHaveBeenCalled();
       expect(live.loadSavedScriptList).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("视频生成（C2 独立创作）", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  const emptyStudioData = {
+    people: [],
+    assets: [],
+    materials: [],
+    videos: [],
+    projects: [],
+    tasks: [],
+    errors: [],
+    loading: false,
+    stats: null,
+  };
+
+  function draftWith(prompt: string) {
+    const state = createState("video");
+    state.draft.prompt = prompt;
+    state.draft.duration = 8;
+    state.draft.count = 1;
+    state.draft.resolution = "768P";
+    return state;
+  }
+
+  async function openVideoPage() {
+    // 侧边栏「视频创作」进入复刻页签组，再切到「视频生成」。
+    fireEvent.click(screen.getByRole("button", { name: "视频创作" }));
+    fireEvent.click(screen.getByRole("tab", { name: "视频生成" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("提示词")).toBeInTheDocument(),
+    );
+  }
+
+  it("T2V 扩展模式被门禁时不打开确认弹窗并提示等待供应商核对", async () => {
+    api.getIndependentCapabilities.mockResolvedValue({
+      extended_modes_enabled: false,
+      t2v_enabled: false,
+      i2v_enabled: true,
+      r2v_enabled: false,
+      last_frame_enabled: false,
+      max_reference_images: 4,
+      max_quantity: 4,
+    });
+    live.loadStudioData.mockResolvedValue(emptyStudioData);
+    render(<StudioWorkspace currentUser={reviewUser} />);
+    await openVideoPage();
+
+    fireEvent.change(screen.getByLabelText("提示词"), {
+      target: { value: "山间别墅延时" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成视频" }));
+
+    expect(
+      await screen.findByText("该模式需要完成供应商核对后开放，敬请期待。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("生成确认 · 视频生成")).toBeNull();
+    expect(api.createIndependentVideoTask).not.toHaveBeenCalled();
+  });
+
+  it("确认弹窗展示按秒报价并可提交任务、预览区进入进度视图", async () => {
+    api.getIndependentCapabilities.mockResolvedValue({
+      extended_modes_enabled: true,
+      t2v_enabled: true,
+      i2v_enabled: true,
+      r2v_enabled: true,
+      last_frame_enabled: true,
+      max_reference_images: 4,
+      max_quantity: 4,
+    });
+    const submittedBatch = {
+      id: "batch-video-1",
+      project_id: null,
+      creation_kind: "independent",
+      stale: false,
+      progress: { total_count: 1, terminal_count: 0, progress_percent: 0 },
+      tasks: [],
+    };
+    api.createIndependentVideoTask.mockResolvedValue(submittedBatch);
+    const runningTask = {
+      id: "batch-video-1",
+      type: "视频生成",
+      title: "视频生成",
+      status: "running",
+      progress: 40,
+      submitted: "2026-09-06 12:00:00",
+    };
+    live.loadStudioData
+      .mockResolvedValueOnce(emptyStudioData)
+      .mockResolvedValue({
+        ...emptyStudioData,
+        tasks: [runningTask],
+      });
+    render(<StudioWorkspace currentUser={reviewUser} />);
+    await openVideoPage();
+
+    fireEvent.change(screen.getByLabelText("提示词"), {
+      target: { value: "航拍乡墅庭院" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成视频" }));
+
+    // 报价按秒折算：120 分/秒 × 8 秒 = 9.60 元。
+    expect(await screen.findByText(/9\.60 元/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认费用并提交" }));
+    await waitFor(() =>
+      expect(api.createIndependentVideoTask).toHaveBeenCalledTimes(1),
+    );
+    const input = api.createIndependentVideoTask.mock.calls[0][0] as {
+      mode: string;
+      prompt_text: string;
+      idempotency_key: string;
+    };
+    expect(input.mode).toBe("t2v");
+    expect(input.prompt_text).toBe("航拍乡墅庭院");
+    expect(input.idempotency_key).toBeTruthy();
+
+    // 提交后留在本页：预览区出现阶段进度（数据来自任务轮询）。
+    expect(await screen.findByText("生成中")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "生成进度" })).toBeInTheDocument();
+  });
+
+  it("提示词导入：从我的提示词一键回填", async () => {
+    api.listUserSavedPrompts.mockResolvedValue([
+      {
+        id: "sp-1",
+        project_id: "project-a",
+        name: "庭院黄昏",
+        prompt_text: "黄昏光线下的庭院推进镜头",
+        created_at: "2026-09-06 12:00:00",
+      },
+    ]);
+    live.loadStudioData.mockResolvedValue(emptyStudioData);
+    render(<StudioWorkspace currentUser={reviewUser} />);
+    await openVideoPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "导入提示词" }));
+    fireEvent.click(await screen.findByText("庭院黄昏"));
+
+    expect(
+      (screen.getByLabelText("提示词") as HTMLTextAreaElement).value,
+    ).toBe("黄昏光线下的庭院推进镜头");
   });
 });

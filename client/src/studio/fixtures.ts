@@ -350,6 +350,7 @@ export function createReviewData(): StudioData {
   return {
     people,
     assets,
+    materials: [],
     videos,
     tasks,
     projects: [],

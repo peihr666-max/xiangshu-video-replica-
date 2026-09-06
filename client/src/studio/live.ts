@@ -2,9 +2,11 @@ import {
   type CurrentUser,
   cancelGenerationBatch,
   cancelOralTask,
+  completeMaterialUpload,
   completeVideoUpload,
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
+  createMaterialUploadIntent,
   createProject,
   createScriptFromAudioTask,
   createScriptVersion,
@@ -22,6 +24,7 @@ import {
   getStudioStats,
   listCharacterSceneLooks,
   listGenerationBatches,
+  listMaterials,
   listOralAvatars,
   listOralTasks,
   listOralVoices,
@@ -42,6 +45,7 @@ import {
   type StudioSavedScriptInput,
   saveStudioDraft,
   saveStudioSavedScript,
+  uploadMaterial,
   uploadReferenceVideo,
   type ViralVideoItem,
 } from "../api";
@@ -743,6 +747,7 @@ export async function loadStudioData(
     statsResult,
     oralResult,
     viralResult,
+    materialsResult,
   ] = await Promise.allSettled([
     loadProjects(),
     loadPeople(),
@@ -750,6 +755,7 @@ export async function loadStudioData(
     getStudioStats(),
     loadOralTasks(),
     loadViralVideos(),
+    loadVideoMaterials(),
   ]);
   const errors: string[] = [];
   const projectData =
@@ -786,10 +792,14 @@ export async function loadStudioData(
   } else {
     errors.push(...viralResult.value.errors);
   }
+  // 素材库加载失败不打断工作区：视频生成页的选择器退化为仅已加载资产。
+  const materials =
+    materialsResult.status === "fulfilled" ? materialsResult.value : [];
 
   return {
     people: peopleData.people,
     assets: [...projectData.assets, ...peopleData.assets],
+    materials,
     videos: viralResult.status === "fulfilled" ? viralResult.value.videos : [],
     tasks,
     projects: projectData.projects,
@@ -797,6 +807,47 @@ export async function loadStudioData(
     loading: false,
     stats,
   };
+}
+
+/** 素材库图片（视频生成页的首帧/尾帧/参考素材选择来源），签名后返回。 */
+export async function loadVideoMaterials(): Promise<StudioAsset[]> {
+  const page = await listMaterials({ mediaType: "image", pageSize: 60 });
+  const assets = page.items.map(studioAssetFromMaterial);
+  const previewResults = await Promise.allSettled(
+    assets.map((asset) =>
+      asset.assetId
+        ? getAssetDownloadUrl(asset.assetId).then((result) => result.url)
+        : Promise.resolve(undefined),
+    ),
+  );
+  return assets.map((asset, index) => ({
+    ...asset,
+    url:
+      previewResults[index]?.status === "fulfilled"
+        ? previewResults[index].value
+        : undefined,
+  }));
+}
+
+/** 视频生成页本机上传图片：素材三步通道，返回可直接引用的签名资产。 */
+export async function uploadVideoMaterial(
+  file: File,
+  group: string,
+  onProgress: (progress: number) => void,
+): Promise<StudioAsset> {
+  const intent = await createMaterialUploadIntent(file, {
+    title: file.name,
+    group,
+  });
+  await uploadMaterial(intent, file, onProgress);
+  const material = await completeMaterialUpload(intent.asset_id);
+  const asset = studioAssetFromMaterial(material);
+  const url = material.asset_id
+    ? await getAssetDownloadUrl(material.asset_id)
+        .then((result) => result.url)
+        .catch(() => undefined)
+    : undefined;
+  return { ...asset, url };
 }
 
 /** 静默轮询用的统计刷新：失败返回 null，由调用方保留旧值。 */
