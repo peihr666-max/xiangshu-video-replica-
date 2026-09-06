@@ -73,3 +73,6 @@ e2e/customer/run/
 /outputs/frontend-audit-2026-09-05/*
 !/outputs/frontend-audit-2026-09-05/前端逐页功能审查清单.md
 !/outputs/frontend-audit-2026-09-05/前端逐页功能审查清单.xlsx
+
+# Playwright MCP 受控浏览器会话产物（截图/快照日志）
+.playwright-mcp/
