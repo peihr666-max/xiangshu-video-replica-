@@ -22,6 +22,7 @@ import {
   listProjects,
   listSimpleCharacterLibrary,
   listStudioSavedScripts,
+  listViralVideos,
   type OralTaskRecord,
   type Project,
   readAnalysisPayload,
@@ -31,6 +32,7 @@ import {
   saveStudioDraft,
   saveStudioSavedScript,
   uploadReferenceVideo,
+  type ViralVideoItem,
 } from "../api";
 import { createDraft } from "./state";
 import type {
@@ -41,6 +43,7 @@ import type {
   StudioScript,
   StudioStats,
   StudioTask,
+  StudioVideo,
 } from "./types";
 
 const projectLimit = 24;
@@ -386,17 +389,67 @@ async function loadOralTasks(): Promise<StudioTask[]> {
   return rows.map(oralTask);
 }
 
+function formatViralDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function viralVideo(item: ViralVideoItem): StudioVideo {
+  return {
+    id: `${item.platform}-${item.videoId}`,
+    title: item.title,
+    author: item.author,
+    platform: item.platform === "douyin" ? "抖音" : "视频号",
+    category: item.category,
+    poster: item.coverUrl ?? "",
+    duration: formatViralDuration(item.durationMs),
+    likes: item.likes,
+    collections: item.collects ?? 0,
+    shares: item.shares ?? 0,
+    description: item.title,
+    platformKey: item.platform,
+    nativeId: item.videoId,
+    authorAvatar: item.authorAvatar,
+    verified: item.verified,
+    comments: item.comments,
+    publishedAt: item.publishedAt,
+    publishedDisplay: item.publishedDisplay,
+    likeDisplay: item.likeDisplay,
+    tags: item.tags,
+    hasPlayableAudio: item.hasPlayableAudio,
+  };
+}
+
+/** 爆款视频（C4 重启）：两个平台各自聚合；数据源未配置或失败时保持
+ * 空态，不打断工作台其余数据的加载（与统计指标同一容错口径）。 */
+async function loadViralVideos(): Promise<StudioVideo[]> {
+  const [douyin, wechat] = await Promise.all([
+    listViralVideos("douyin"),
+    listViralVideos("wechat_channels"),
+  ]);
+  return [...douyin.items, ...wechat.items].map(viralVideo);
+}
+
 export async function loadStudioData(
   currentUser: CurrentUser,
 ): Promise<StudioData> {
-  const [projectsResult, peopleResult, tasksResult, statsResult, oralResult] =
-    await Promise.allSettled([
-      loadProjects(),
-      loadPeople(),
-      loadTasks(currentUser),
-      getStudioStats(),
-      loadOralTasks(),
-    ]);
+  const [
+    projectsResult,
+    peopleResult,
+    tasksResult,
+    statsResult,
+    oralResult,
+    viralResult,
+  ] = await Promise.allSettled([
+    loadProjects(),
+    loadPeople(),
+    loadTasks(currentUser),
+    getStudioStats(),
+    loadOralTasks(),
+    loadViralVideos(),
+  ]);
   const errors: string[] = [];
   const projectData =
     projectsResult.status === "fulfilled"
@@ -431,7 +484,7 @@ export async function loadStudioData(
   return {
     people: peopleData.people,
     assets: [...projectData.assets, ...peopleData.assets],
-    videos: [],
+    videos: viralResult.status === "fulfilled" ? viralResult.value : [],
     tasks,
     projects: projectData.projects,
     errors,

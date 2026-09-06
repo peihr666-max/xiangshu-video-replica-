@@ -1,9 +1,23 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StudioContextValue, StudioState } from "./types";
 
-const { useStudio } = vi.hoisted(() => ({ useStudio: vi.fn() }));
+const { useStudio, fetchViralVideoMedia } = vi.hoisted(() => ({
+  useStudio: vi.fn(),
+  fetchViralVideoMedia: vi.fn(),
+}));
 vi.mock("./context", () => ({ useStudio }));
+vi.mock("../api", () => ({ fetchViralVideoMedia }));
+
+class IntersectionObserverStub {
+  observe() {}
+  disconnect() {}
+  unobserve() {}
+  takeRecords() {
+    return [];
+  }
+}
+vi.stubGlobal("IntersectionObserver", IntersectionObserverStub);
 
 import {
   MaterialsPage,
@@ -69,6 +83,11 @@ function studio(
           collections: 842,
           shares: 326,
           description: "主体之外，门窗、水电、防水和庭院也要列进预算清单。",
+          platformKey: "douyin",
+          nativeId: "native-dy-1",
+          verified: true,
+          tags: ["农村自建房", "建房预算"],
+          hasPlayableAudio: true,
         },
         {
           id: "wx-1",
@@ -82,6 +101,12 @@ function studio(
           collections: 430,
           shares: 92,
           description: "从动线、植物和夜景灯光说庭院。",
+          platformKey: "wechat_channels",
+          nativeId: "native-wx-1",
+          publishedDisplay: "3天前",
+          likeDisplay: "1.2万",
+          tags: ["庭院案例", "别墅设计"],
+          hasPlayableAudio: false,
         },
       ],
       tasks: [],
@@ -115,7 +140,7 @@ describe("V1.4 内容与运营页面", () => {
     render(<ViralPage />);
     fireEvent.click(screen.getByRole("tab", { name: "视频号 30" }));
     expect(screen.getByText("新中式庭院的三个细节")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "抖音 30" }));
+    fireEvent.click(screen.getByRole("tab", { name: "抖音 20" }));
     fireEvent.click(
       screen.getByRole("button", { name: "收藏 农村建房预算，别只盯着主体" }),
     );
@@ -130,7 +155,13 @@ describe("V1.4 内容与运营页面", () => {
     });
   });
 
-  it("爆款详情可交给文案或复刻，且不假称采集接通", () => {
+  it("爆款详情展示平台字段，文案先备料再跳转", async () => {
+    fetchViralVideoMedia.mockResolvedValue({
+      kind: "audio",
+      url: "https://storage.test/viral/douyin/native-dy-1.mp3",
+      contentType: "audio/mpeg",
+      cacheHit: false,
+    });
     const value = studio({
       state: {
         ...studio().state,
@@ -143,19 +174,41 @@ describe("V1.4 内容与运营页面", () => {
     expect(
       screen.getByRole("heading", { name: "爆款视频 / 视频详情" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("来源平台")).toBeInTheDocument();
-    expect(screen.getByText("作者")).toBeInTheDocument();
+    expect(screen.getByText("乡墅建房笔记")).toBeInTheDocument();
+    expect(screen.getByText("抖音 · 建房预算 · 有原声")).toBeInTheDocument();
     expect(
-      screen.getByText("带入视频创作，参考镜头与画面结构"),
+      screen.getByText("取低清视频作参考，带入视频创作"),
     ).toBeInTheDocument();
     expect(view.container.querySelector("main")).toBeNull();
     expect(screen.queryByText("内容浏览示例审核")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
-    expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "dy-1" });
+    expect(fetchViralVideoMedia).toHaveBeenCalledWith("douyin", "native-dy-1");
+    await waitFor(() => {
+      expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "dy-1" });
+    });
     expect(value.navigate).toHaveBeenCalledWith("copy", {
       selectedVideoId: "dy-1",
       returnTo: "viral-detail",
     });
+    expect(screen.getByText("原声音频已就绪")).toBeInTheDocument();
+  });
+
+  it("爆款备料失败时保持详情页并展示错误", async () => {
+    fetchViralVideoMedia.mockRejectedValue(new Error("素材暂时无法获取"));
+    const value = studio({
+      state: {
+        ...studio().state,
+        page: "viral-detail",
+        selectedVideoId: "dy-1",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
+    await waitFor(() => {
+      expect(screen.getByText(/素材准备失败/)).toBeInTheDocument();
+    });
+    expect(value.navigate).not.toHaveBeenCalled();
   });
 
   it("过期的视频选择显示空态，不回退到任意视频", () => {
@@ -185,7 +238,7 @@ describe("V1.4 内容与运营页面", () => {
     expect(screen.queryByText("内容浏览示例审核")).toBeNull();
   });
 
-  it("爆款视频每页六条，翻页仍保留平台筛选", () => {
+  it("爆款列表默认渲染前十二条并保留平台筛选", () => {
     const base = studio();
     const videos = Array.from({ length: 7 }, (_, index) => ({
       ...base.data.videos[0],
@@ -194,31 +247,46 @@ describe("V1.4 内容与运营页面", () => {
     }));
     useStudio.mockReturnValue(studio({ data: { ...base.data, videos } }));
     render(<ViralPage />);
-    expect(screen.getByText("乡墅参考 6")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "2" }));
     expect(screen.getByText("乡墅参考 7")).toBeInTheDocument();
-    expect(screen.queryByText("乡墅参考 1")).not.toBeInTheDocument();
+    expect(screen.getByText("乡墅参考 1")).toBeInTheDocument();
+    expect(screen.queryByText("上拉加载更多…")).toBeNull();
   });
 
-  it("爆款视频按热度或稳定编号排序，并提供前后翻页", () => {
+  it("爆款超出十二条时先渲染十二条并提供滚动加载占位", () => {
+    const base = studio();
+    const videos = Array.from({ length: 15 }, (_, index) => ({
+      ...base.data.videos[0],
+      id: `dy-${index + 1}`,
+      title: `乡墅参考 ${index + 1}`,
+    }));
+    useStudio.mockReturnValue(studio({ data: { ...base.data, videos } }));
+    render(<ViralPage />);
+    expect(screen.getByText("乡墅参考 12")).toBeInTheDocument();
+    expect(screen.queryByText("乡墅参考 13")).toBeNull();
+    expect(screen.getByText("上拉加载更多…")).toBeInTheDocument();
+  });
+
+  it("爆款视频按热度或发布时间排序", () => {
     const base = studio();
     const videos = Array.from({ length: 7 }, (_, index) => ({
       ...base.data.videos[0],
       id: `dy-${index + 1}`,
       title: `排序参考 ${index + 1}`,
       likes: (index + 1) * 100,
+      publishedAt: 1788600000 - index,
     }));
     useStudio.mockReturnValue(studio({ data: { ...base.data, videos } }));
-    render(<ViralPage />);
+    const view = render(<ViralPage />);
 
-    expect(screen.getByText("排序参考 7")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-    expect(screen.getByText("排序参考 1")).toBeInTheDocument();
+    const titles = () =>
+      [...view.container.querySelectorAll(".viral-card-body h3")].map(
+        (node) => node.textContent,
+      );
+    expect(titles()[0]).toBe("排序参考 7");
     fireEvent.change(screen.getByLabelText("排序方式"), {
       target: { value: "最新" },
     });
-    expect(screen.getByText("排序参考 7")).toBeInTheDocument();
+    expect(titles()[0]).toBe("排序参考 1");
   });
 
   it("非审核工作区不把示例三十条当作真实采集数据", () => {
@@ -227,7 +295,10 @@ describe("V1.4 内容与运营页面", () => {
     );
     render(<ViralPage />);
     expect(screen.getByRole("tab", { name: "抖音 0" })).toBeInTheDocument();
-    expect(screen.getByText("没有匹配的视频")).toBeInTheDocument();
+    expect(screen.getByText("暂无爆款视频")).toBeInTheDocument();
+    expect(
+      screen.getByText("数据源尚未配置或最近 7 天暂无内容，配置后自动展示。"),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText("采集参数仅在管理后台配置。"),
     ).not.toBeInTheDocument();

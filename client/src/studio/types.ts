@@ -78,6 +78,17 @@ export type StudioVideo = {
   collections: number;
   shares: number;
   description: string;
+  /** C4 重启：爆款数据源规范化字段（列表/详情按平台展示，审核样例可缺省）。 */
+  platformKey?: "douyin" | "wechat_channels";
+  nativeId?: string;
+  authorAvatar?: string | null;
+  verified?: boolean;
+  comments?: number | null;
+  publishedAt?: number | null;
+  publishedDisplay?: string | null;
+  likeDisplay?: string | null;
+  tags?: string[];
+  hasPlayableAudio?: boolean;
 };
 export type StudioTask = {
   draftSnapshot?: StudioDraft;

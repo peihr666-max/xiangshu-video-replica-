@@ -237,9 +237,25 @@ export function createReviewData(): StudioData {
     "王经理说施工",
     "乡墅设计研究所",
   ];
-  const videos: StudioVideo[] = (["抖音", "视频号"] as const).flatMap(
-    (platform) =>
-      Array.from({ length: 30 }, (_, i) => ({
+  // C4 审核样例：抖音约 20 条、视频号 30 条，对齐真实数据源口径。
+  const tagPool = [
+    "农村自建房",
+    "别墅设计",
+    "建房预算",
+    "施工避坑",
+    "庭院案例",
+    "乡墅",
+    "宅基地建房",
+  ];
+  const videos: StudioVideo[] = (
+    [
+      ["抖音", 20],
+      ["视频号", 30],
+    ] as const
+  ).flatMap(([platform, count]) =>
+    Array.from({ length: count }, (_, i) => {
+      const isWechat = platform === "视频号";
+      return {
         id: `${platform}-${i + 1}`,
         title: titles[i % 6] + (i >= 6 ? ` · 案例${i + 1}` : ""),
         author: authors[i % 6],
@@ -267,7 +283,18 @@ export function createReviewData(): StudioData {
         collections: 842,
         shares: 326,
         description: "主体之外，门窗、水电、防水和庭院，也要列进预算清单。",
-      })),
+        platformKey: isWechat ? "wechat_channels" : "douyin",
+        nativeId: `${platform}-native-${i + 1}`,
+        authorAvatar: null,
+        verified: !isWechat && i % 3 === 0,
+        comments: isWechat ? null : 210 + i * 7,
+        publishedAt: 1788602461 - i * 86400,
+        publishedDisplay: isWechat ? `${i + 1}天前` : null,
+        likeDisplay: isWechat ? (i % 4 === 0 ? "10万+" : "1.2万") : null,
+        tags: [tagPool[i % 7], tagPool[(i + 2) % 7], tagPool[(i + 4) % 7]],
+        hasPlayableAudio: !isWechat,
+      } satisfies StudioVideo;
+    }),
   );
   const tasks: StudioTask[] = [
     {

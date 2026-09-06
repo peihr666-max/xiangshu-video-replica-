@@ -668,6 +668,40 @@ export async function getStudioStats(): Promise<StudioStats> {
   return requestApiJson<StudioStats>("/api/studio/stats", "读取工作台统计失败");
 }
 
+export type StudioDraftKind = "copy" | "oral" | "replica";
+
+export type StudioDraftCloudRecord = {
+  draft_kind: StudioDraftKind;
+  payload: Record<string, unknown>;
+  script_confirmed: boolean;
+  revision: number;
+  updated_at: string;
+};
+
+export type StudioSavedScriptRecord = {
+  script_id: string;
+  title: string;
+  text: string;
+  original: string | null;
+  version: number;
+  ip_id: string | null;
+  source_project_id: string | null;
+  source_kind: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StudioSavedScriptInput = {
+  script_id: string;
+  title: string;
+  text: string;
+  original?: string | null;
+  version: number;
+  ip_id?: string | null;
+  source_project_id?: string | null;
+  source_kind?: string | null;
+};
+
 /** 云端工作草稿（C7）：GET /api/studio/drafts/{kind}，404 表示尚无草稿。 */
 export async function getStudioDraft(
   kind: StudioDraftKind,
@@ -733,7 +767,6 @@ export async function deleteStudioSavedScript(scriptId: string): Promise<void> {
     { method: "DELETE" },
   );
 }
-
 
 export type OralPrice = { unit_price_fen: number };
 
@@ -4594,5 +4627,76 @@ export async function customerCloseRechargeOrder(
   await customerJson<undefined>(
     `/api/customer/recharge-orders/${encodeURIComponent(orderNo)}`,
     { method: "DELETE", credential },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 爆款视频（C4 重启）：抖音 / 视频号最近 7 天爆款参考库
+// ---------------------------------------------------------------------------
+
+export type ViralPlatform = "douyin" | "wechat_channels";
+export type ViralSort = "hot" | "latest";
+
+export type ViralVideoItem = {
+  platform: ViralPlatform;
+  videoId: string;
+  category: string;
+  title: string;
+  author: string;
+  authorAvatar: string | null;
+  verified: boolean;
+  coverUrl: string | null;
+  durationMs: number;
+  likes: number;
+  comments: number | null;
+  shares: number | null;
+  collects: number | null;
+  publishedAt: number | null;
+  publishedDisplay: string | null;
+  likeDisplay: string | null;
+  tags: string[];
+  hasPlayableAudio: boolean;
+};
+
+export type ViralListResponse = {
+  platform: ViralPlatform;
+  sort: ViralSort;
+  categories: string[];
+  items: ViralVideoItem[];
+  fetchedAt: string;
+};
+
+export type ViralMediaResponse = {
+  kind: "audio" | "video";
+  url: string;
+  contentType: string;
+  cacheHit: boolean;
+};
+
+/** 最近 7 天爆款列表（服务端按分类关键词聚合，带计费护栏缓存）。 */
+export function listViralVideos(
+  platform: ViralPlatform,
+  sort: ViralSort = "hot",
+): Promise<ViralListResponse> {
+  const query = new URLSearchParams({ platform, sort });
+  return requestApiJson<ViralListResponse>(
+    `/api/viral/videos?${query}`,
+    "爆款视频列表暂不可用",
+  );
+}
+
+/** 按需取媒体：抖音音频优先/低清兜底；视频号解密后直传主存储。 */
+export function fetchViralVideoMedia(
+  platform: ViralPlatform,
+  videoId: string,
+): Promise<ViralMediaResponse> {
+  return requestApiJson<ViralMediaResponse>(
+    "/api/viral/videos/media",
+    "视频素材准备失败",
+    {
+      method: "POST",
+      body: JSON.stringify({ platform, videoId }),
+    },
+    CLOUD_OP_TIMEOUT_MS,
   );
 }

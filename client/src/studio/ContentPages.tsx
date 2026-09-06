@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { fetchViralVideoMedia } from "../api";
 import { useStudio } from "./context";
 import type { StudioAsset, StudioPublishDraft, StudioVideo } from "./types";
 import {
@@ -27,7 +28,14 @@ function assetKindLabel(kind: StudioAsset["kind"]) {
   return kind === "image" ? "图片" : kind === "video" ? "视频" : "音频";
 }
 
-function VideoCard({ video }: { video: StudioVideo }) {
+const viralInitialCount = 12;
+const viralRevealStep = 8;
+
+function viralLikesLabel(video: StudioVideo) {
+  return video.likeDisplay ?? formatCount(video.likes);
+}
+
+function ViralCard({ video }: { video: StudioVideo }) {
   const { state, navigate, patchDraft, patchState } = useStudio();
   const saved = state.favorites.includes(video.id);
   const toggleFavorite = () =>
@@ -36,70 +44,73 @@ function VideoCard({ video }: { video: StudioVideo }) {
         ? state.favorites.filter((id) => id !== video.id)
         : [...state.favorites, video.id],
     });
+  const openDetail = () =>
+    navigate("viral-detail", {
+      selectedVideoId: video.id,
+      returnTo: "viral",
+    });
   return (
-    <article className="content-video-card">
+    <article className="viral-card">
       <button
         type="button"
-        className="content-video-preview"
-        onClick={() =>
-          navigate("viral-detail", {
-            selectedVideoId: video.id,
-            returnTo: "viral",
-          })
-        }
+        className="viral-card-cover"
+        onClick={openDetail}
         aria-label={`查看详情 ${video.title}`}
       >
-        <Media
-          asset={{
-            id: video.id,
-            name: video.title,
-            kind: "image",
-            url: video.poster,
-            source: video.platform,
-            group: video.category,
-            saved: true,
-          }}
-          alt={video.title}
-        />
-        <span>{video.duration}</span>
+        {video.poster ? (
+          <img alt="" loading="lazy" src={video.poster} />
+        ) : (
+          <span className="viral-card-cover-empty">
+            <Icon name="video" />
+          </span>
+        )}
+        <span className="viral-card-duration">{video.duration}</span>
+        <span className="viral-card-platform">{video.platform}</span>
       </button>
-      <h3>{video.title}</h3>
-      <p>
-        {video.author}
-        <em>♡ {formatCount(video.likes)}</em>
-      </p>
-      <div className="content-card-actions">
-        <Button
-          variant="quiet"
-          onClick={() =>
-            navigate("viral-detail", {
-              selectedVideoId: video.id,
-              returnTo: "viral",
-            })
-          }
-        >
-          查看详情
-        </Button>
-        <Button
-          variant="outline"
-          aria-label={`收藏 ${video.title}`}
-          onClick={toggleFavorite}
-        >
-          {saved ? "已收藏" : "收藏"}
-        </Button>
-        <Button
-          variant="outline"
-          aria-label={`复刻 ${video.title}`}
-          onClick={() => {
-            patchDraft({ sourceId: video.id });
-            navigate("replica", {
-              selectedVideoId: video.id,
-              returnTo: "viral",
-            });
-          }}
-        >
-          复刻
-        </Button>
+      <div className="viral-card-body">
+        <h3>{video.title}</h3>
+        <div className="viral-card-author">
+          {video.authorAvatar ? (
+            <img alt="" loading="lazy" src={video.authorAvatar} />
+          ) : (
+            <i>{(video.author || "无").slice(0, 1)}</i>
+          )}
+          <span>{video.author}</span>
+          {video.verified && <em title="认证作者">✓</em>}
+          <b>♥ {viralLikesLabel(video)}</b>
+        </div>
+        {video.tags && video.tags.length > 0 && (
+          <div className="viral-card-tags">
+            {video.tags.slice(0, 6).map((tag) => (
+              <span key={tag}>#{tag}</span>
+            ))}
+          </div>
+        )}
+        <div className="content-card-actions">
+          <Button variant="quiet" onClick={openDetail}>
+            查看详情
+          </Button>
+          <Button
+            variant="outline"
+            aria-label={`收藏 ${video.title}`}
+            onClick={toggleFavorite}
+          >
+            {saved ? "已收藏" : "收藏"}
+          </Button>
+          <Button
+            variant="outline"
+            aria-label={`复刻 ${video.title}`}
+            onClick={() => {
+              patchDraft({ sourceId: video.id });
+              navigate("replica", {
+                selectedVideoId: video.id,
+                returnTo: "viral",
+              });
+            }}
+          >
+            复刻
+          </Button>
+        </div>
       </div>
     </article>
   );
@@ -107,39 +118,74 @@ function VideoCard({ video }: { video: StudioVideo }) {
 
 export function ViralPage() {
   const { data, review } = useStudio();
-  const [platform, setPlatform] = useState("抖音");
+  const [platform, setPlatform] = useState<"抖音" | "视频号">("抖音");
   const [category, setCategory] = useState("全部");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"热门优先" | "最新">("热门优先");
-  const [page, setPage] = useState(1);
+  const [visibleCount, setVisibleCount] = useState(viralInitialCount);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
   const shown = useMemo(
     () =>
-      [
-        ...data.videos.filter(
+      data.videos
+        .filter(
           (item) =>
             item.platform === platform &&
             (category === "全部" || item.category === category) &&
             `${item.title}${item.author}`.includes(query),
-        ),
-      ].sort((left, right) =>
-        sort === "热门优先"
-          ? right.likes - left.likes || left.id.localeCompare(right.id)
-          : right.id.localeCompare(left.id),
-      ),
+        )
+        .sort((left, right) => {
+          if (sort === "热门优先") {
+            return (
+              right.likes - left.likes ||
+              left.id.localeCompare(right.id, undefined, { numeric: true })
+            );
+          }
+          return (right.publishedAt ?? 0) - (left.publishedAt ?? 0);
+        }),
     [category, data.videos, platform, query, sort],
   );
-  const current = shown.slice((page - 1) * pageSize, page * pageSize);
-  const pages = Math.max(1, Math.ceil(shown.length / pageSize));
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 平台/分类/搜索词/排序变化时重置滚动加载计数。
+  useEffect(() => {
+    setVisibleCount(viralInitialCount);
+  }, [platform, category, query, sort]);
+
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisibleCount((count) =>
+            Math.min(count + viralRevealStep, shown.length),
+          );
+        }
+      },
+      { rootMargin: "240px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [shown.length]);
+
+  const current = shown.slice(0, visibleCount);
   const platformTabs = (["抖音", "视频号"] as const).map((item) => ({
     id: item,
-    label: `${item} ${review ? 30 : data.videos.filter((video) => video.platform === item).length}`,
+    label: `${item} ${
+      review
+        ? item === "抖音"
+          ? 20
+          : 30
+        : data.videos.filter((video) => video.platform === item).length
+    }`,
   }));
+
   return (
     <section className="content-page content-viral">
       <header className="content-title">
         <div>
           <h1>爆款视频</h1>
-          <p>乡墅灵感，持续发现</p>
+          <p>乡墅灵感，持续发现 · 最近 7 天爆款</p>
         </div>
         <div className="content-search">
           <Icon name="search" />
@@ -148,9 +194,8 @@ export function ViralPage() {
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
-              setPage(1);
             }}
-            placeholder="搜索视频标题"
+            placeholder="在已加载的爆款中搜索"
           />
         </div>
       </header>
@@ -165,10 +210,7 @@ export function ViralPage() {
               aria-selected={item.id === platform}
               className={item.id === platform ? "is-active" : ""}
               key={item.id}
-              onClick={() => {
-                setPlatform(item.id);
-                setPage(1);
-              }}
+              onClick={() => setPlatform(item.id)}
               role="tab"
               type="button"
             >
@@ -181,10 +223,9 @@ export function ViralPage() {
           <select
             aria-label="排序方式"
             value={sort}
-            onChange={(event) => {
-              setSort(event.target.value as "热门优先" | "最新");
-              setPage(1);
-            }}
+            onChange={(event) =>
+              setSort(event.target.value as "热门优先" | "最新")
+            }
           >
             <option value="热门优先">热门优先</option>
             <option value="最新">最新</option>
@@ -196,10 +237,7 @@ export function ViralPage() {
           <Button
             key={item}
             variant={item === category ? "primary" : "outline"}
-            onClick={() => {
-              setCategory(item);
-              setPage(1);
-            }}
+            onClick={() => setCategory(item)}
           >
             {item}
           </Button>
@@ -207,53 +245,69 @@ export function ViralPage() {
       </nav>
       {current.length ? (
         <>
-          <section className="content-video-grid">
+          <section className="content-video-grid content-video-grid-viral">
             {current.map((video) => (
-              <VideoCard key={video.id} video={video} />
+              <ViralCard key={video.id} video={video} />
             ))}
           </section>
-          <nav className="content-pagination" aria-label="爆款视频分页">
-            <span>
-              共 {shown.length} 条 · 每页 {pageSize} 条
-            </span>
-            <Button
-              aria-label="上一页"
-              disabled={page === 1}
-              variant="outline"
-              onClick={() => setPage((currentPage) => currentPage - 1)}
-            >
-              ‹
-            </Button>
-            {Array.from({ length: pages }, (_, index) => index + 1).map(
-              (pageNumber) => (
-                <Button
-                  key={pageNumber}
-                  variant={page === pageNumber ? "primary" : "quiet"}
-                  onClick={() => setPage(pageNumber)}
-                >
-                  {pageNumber}
-                </Button>
-              ),
-            )}
-            <Button
-              aria-label="下一页"
-              disabled={page === pages}
-              variant="outline"
-              onClick={() => setPage((currentPage) => currentPage + 1)}
-            >
-              ›
-            </Button>
-          </nav>
+          {visibleCount < shown.length && (
+            <div className="viral-reveal-sentinel" aria-hidden="true">
+              <span>上拉加载更多…</span>
+            </div>
+          )}
         </>
       ) : (
-        <Empty title="没有匹配的视频" description="调整搜索词或分类后再试。" />
+        <Empty
+          title="暂无爆款视频"
+          description="数据源尚未配置或最近 7 天暂无内容，配置后自动展示。"
+        />
       )}
     </section>
   );
 }
 
+type ViralMediaState = {
+  status: "idle" | "loading" | "ready" | "error";
+  message?: string;
+};
+
+function useViralMedia() {
+  const [media, setMedia] = useState<ViralMediaState>({ status: "idle" });
+  return {
+    media,
+    prepare: async (
+      video: StudioVideo,
+      onReady: (kind: "audio" | "video") => void,
+    ) => {
+      if (!video.platformKey || !video.nativeId) {
+        onReady("video");
+        return;
+      }
+      setMedia({ status: "loading" });
+      try {
+        const result = await fetchViralVideoMedia(
+          video.platformKey,
+          video.nativeId,
+        );
+        setMedia({
+          status: "ready",
+          message:
+            result.kind === "audio" ? "原声音频已就绪" : "低清视频已就绪",
+        });
+        onReady(result.kind);
+      } catch (error) {
+        setMedia({
+          status: "error",
+          message: error instanceof Error ? error.message : "素材准备失败",
+        });
+      }
+    },
+  };
+}
+
 export function ViralDetailPage() {
   const { data, state, navigate, patchDraft, patchState } = useStudio();
+  const { media, prepare } = useViralMedia();
   const video = state.selectedVideoId
     ? data.videos.find((item) => item.id === state.selectedVideoId)
     : undefined;
@@ -272,6 +326,38 @@ export function ViralDetailPage() {
       </section>
     );
   const saved = state.favorites.includes(video.id);
+  const isWechat = video.platform === "视频号";
+  const published =
+    video.publishedDisplay ??
+    (video.publishedAt
+      ? new Date(video.publishedAt * 1000).toLocaleDateString("zh-CN")
+      : "—");
+  const stats: Array<[string, string]> = [
+    ["点赞", viralLikesLabel(video)],
+    ...(isWechat
+      ? []
+      : ([
+          ["评论", formatCount(video.comments ?? 0)],
+          ["收藏", formatCount(video.collections)],
+          ["转发", formatCount(video.shares)],
+        ] as Array<[string, string]>)),
+    ["发布", published],
+    ["时长", video.duration],
+  ];
+  const goExtract = () => {
+    patchDraft({ sourceId: video.id });
+    navigate("copy", {
+      selectedVideoId: video.id,
+      returnTo: "viral-detail",
+    });
+  };
+  const goReplica = () => {
+    patchDraft({ sourceId: video.id });
+    navigate("replica", {
+      selectedVideoId: video.id,
+      returnTo: "viral-detail",
+    });
+  };
   return (
     <section className="content-page content-detail">
       <header className="content-detail-heading">
@@ -284,72 +370,91 @@ export function ViralDetailPage() {
         </Button>
       </header>
       <section className="content-detail-grid">
-        <div className="content-player">
-          <Media
-            asset={{
-              id: video.id,
-              name: video.title,
-              kind: "image",
-              url: video.poster,
-              source: video.platform,
-              group: video.category,
-              saved: true,
-            }}
-            alt={video.title}
-          />
+        <div className="content-player content-player-viral">
+          {video.poster ? (
+            <img alt={video.title} src={video.poster} />
+          ) : (
+            <span className="viral-card-cover-empty">
+              <Icon name="video" />
+            </span>
+          )}
           <span>▶ {video.duration}</span>
         </div>
         <Panel className="content-detail-info">
-          <p className="content-detail-kicker">用于创作</p>
-          <div className="content-detail-fields">
-            <p>
-              <span>来源平台</span>
-              <strong>{video.platform}</strong>
-            </p>
-            <p>
-              <span>作者</span>
-              <strong>{video.author}</strong>
-            </p>
+          <div className="content-detail-author">
+            {video.authorAvatar ? (
+              <img alt="" src={video.authorAvatar} />
+            ) : (
+              <i>{(video.author || "无").slice(0, 1)}</i>
+            )}
+            <div>
+              <strong>
+                {video.author}
+                {video.verified && <em title="认证作者">✓</em>}
+              </strong>
+              <span>
+                {video.platform} · {video.category || "推荐"}
+                {video.hasPlayableAudio ? " · 有原声" : ""}
+              </span>
+            </div>
           </div>
           <h2>{video.title}</h2>
-          <p className="content-detail-meta">
-            时长 {video.duration} · 点赞 {formatCount(video.likes)} · 收藏{" "}
-            {formatCount(video.collections)} · 转发 {formatCount(video.shares)}
-          </p>
+          {video.tags && video.tags.length > 0 && (
+            <div className="viral-card-tags viral-detail-tags">
+              {video.tags.slice(0, 6).map((tag) => (
+                <span key={tag}>#{tag}</span>
+              ))}
+            </div>
+          )}
+          <dl className="content-detail-stats">
+            {stats.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
           <Field label="视频摘要（来源作品原文）">
             <p className="content-source-copy">{video.description}</p>
           </Field>
-          <Hint>来源内容仅供创作参考。</Hint>
+          <Hint>
+            来源内容仅供创作参考；素材按需获取（音频优先，其次低清视频）。
+          </Hint>
+          {media.status !== "idle" && (
+            <p
+              className={`viral-media-status is-${media.status}`}
+              role="status"
+            >
+              {media.status === "loading" && "素材准备中，可能需要几十秒…"}
+              {media.status === "ready" && media.message}
+              {media.status === "error" &&
+                `素材准备失败：${media.message ?? ""}`}
+            </p>
+          )}
           <div className="content-detail-actions">
             <div className="content-detail-action">
               <Button
+                disabled={media.status === "loading"}
                 variant="outline"
-                onClick={() => {
-                  patchDraft({ sourceId: video.id });
-                  navigate("copy", {
-                    selectedVideoId: video.id,
-                    returnTo: "viral-detail",
-                  });
-                }}
+                onClick={() => prepare(video, goExtract)}
               >
                 提取文案
               </Button>
-              <small>带入文案工坊，编辑成乡墅口播脚本</small>
+              <small>
+                {video.hasPlayableAudio
+                  ? "优先取原声音频，带入文案工坊"
+                  : "取低清视频后抽音频，带入文案工坊"}
+              </small>
             </div>
             <div className="content-detail-action">
               <Button
+                disabled={media.status === "loading"}
                 variant="outline"
-                onClick={() => {
-                  patchDraft({ sourceId: video.id });
-                  navigate("replica", {
-                    selectedVideoId: video.id,
-                    returnTo: "viral-detail",
-                  });
-                }}
+                onClick={() => prepare(video, goReplica)}
               >
                 视频复刻
               </Button>
-              <small>带入视频创作，参考镜头与画面结构</small>
+              <small>取低清视频作参考，带入视频创作</small>
             </div>
             <div className="content-detail-action">
               <Button

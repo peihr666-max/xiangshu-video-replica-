@@ -1,0 +1,382 @@
+"""爆款数据源客户端测试：字段规范化、翻页聚合、红线与错误映射.
+
+夹具形状取自 2026-09-06 真实接口抓包（脱敏），不包含任何凭据。
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pytest
+
+from app.viral_tikhub import (
+    DOUYIN_GENERAL_SEARCH_PATH,
+    MAX_TAGS,
+    WECHAT_SEARCH_VIDEOS_PATH,
+    ViralSourceClient,
+    ViralSourceError,
+    ViralSourceUnavailable,
+    extract_wechat_tags,
+    normalize_douyin_aweme,
+    normalize_wechat_item,
+    parse_compact_count,
+    parse_wechat_duration_ms,
+    pick_douyin_play_url,
+    strip_highlight,
+    viral_source_client_from_config,
+)
+
+
+class FakeTransport:
+    """可编程传输层：按队列返回响应并记录请求体."""
+
+    def __init__(self, payloads: list[dict[str, Any]]) -> None:
+        self.payloads = payloads
+        self.requests: list[dict[str, Any]] = []
+
+    def request(self, method: str, url: str, *, headers, body=None) -> bytes:
+        assert method == "POST"
+        self.requests.append({"url": url, "body": json.loads(body or b"{}")})
+        payload = self.payloads.pop(0)
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _client(
+    payloads: list[dict[str, Any]],
+) -> tuple[ViralSourceClient, list[FakeTransport]]:
+    transports = [FakeTransport(list(payloads)), FakeTransport([])]
+    client = ViralSourceClient(
+        api_key="test-key",
+        transport=transports[0],
+        detail_transport=transports[1],
+    )
+    return client, transports
+
+
+# ---------------------------------------------------------------------------
+# 纯函数
+# ---------------------------------------------------------------------------
+
+
+def test_strip_highlight_removes_em_tags_and_unescapes() -> None:
+    raw = '效果图<em class="highlight">别墅</em>&#39;设计#宅基地建房'
+    assert strip_highlight(raw) == "效果图别墅&#39;设计#宅基地建房".replace("&#39;", "'")
+
+
+def test_extract_wechat_tags_caps_at_six() -> None:
+    title = "主体#农村自建房#别墅设计#效果图#图纸#装修#同城#第七个"
+    assert extract_wechat_tags(title) == [
+        "农村自建房",
+        "别墅设计",
+        "效果图",
+        "图纸",
+        "装修",
+        "同城",
+    ]
+    assert len(extract_wechat_tags(title)) == MAX_TAGS
+
+
+def test_parse_wechat_duration_ms() -> None:
+    assert parse_wechat_duration_ms("00:11") == 11_000
+    assert parse_wechat_duration_ms("01:02:03") == 3_723_000
+    assert parse_wechat_duration_ms("") is None
+    assert parse_wechat_duration_ms("abc") is None
+
+
+def test_parse_compact_count() -> None:
+    assert parse_compact_count("6391") == 6391
+    assert parse_compact_count("10万+") == 100_000
+    assert parse_compact_count("1.2万") == 12_000
+    assert parse_compact_count("") is None
+    assert parse_compact_count(None) is None
+
+
+def test_pick_douyin_play_url_prefers_lowest_resolution() -> None:
+    video_block = {
+        "bit_rate": [
+            {"play_addr": {"height": 1280, "url_list": ["https://cdn/720.mp4"]}},
+            {"play_addr": {"height": 1024, "url_list": ["https://cdn/540.mp4"]}},
+            {"play_addr": {"height": 1280, "url_list": ["https://cdn/720b.mp4"]}},
+        ],
+        "play_addr": {"url_list": ["https://cdn/fallback.mp4"]},
+    }
+    assert pick_douyin_play_url(video_block) == "https://cdn/540.mp4"
+
+
+def test_pick_douyin_play_url_falls_back_to_play_addr() -> None:
+    video_block = {"play_addr": {"url_list": ["https://cdn/fallback.mp4"]}}
+    assert pick_douyin_play_url(video_block) == "https://cdn/fallback.mp4"
+    assert pick_douyin_play_url({}) is None
+
+
+def test_normalize_douyin_aweme_caps_tags_and_maps_stats() -> None:
+    aweme = {
+        "aweme_id": "7680753914849346171",
+        "desc": "迈巴赫锦鲤池 鱼池届天花板 #锦鲤体型 #鱼池养锦鲤",
+        "create_time": 1788314878,
+        "duration": 15700,
+        "statistics": {
+            "digg_count": 55569,
+            "comment_count": 2757,
+            "share_count": 38839,
+            "collect_count": 3316,
+            "play_count": 0,
+        },
+        "author": {
+            "uid": "2491907694661319",
+            "nickname": "张百万（乡墅版）",
+            "is_verified": True,
+            "avatar_thumb": {"url_list": ["https://cdn/avatar.jpeg"]},
+        },
+        "text_extra": [
+            {"hashtag_name": "锦鲤体型"},
+            {"hashtag_name": "鱼池养锦鲤"},
+            {"hashtag_name": "第三个"},
+            {"hashtag_name": "第四个"},
+            {"hashtag_name": "第五个"},
+            {"hashtag_name": "第六个"},
+            {"hashtag_name": "第七个"},
+        ],
+        "video": {
+            "duration": 15700,
+            "width": 576,
+            "height": 1024,
+            "cover": {"url_list": ["https://cdn/cover.webp"]},
+            "bit_rate": [
+                {"play_addr": {"height": 1280, "url_list": ["https://cdn/p720.mp4"]}},
+                {"play_addr": {"height": 1024, "url_list": ["https://cdn/p540.mp4"]}},
+            ],
+        },
+        "music": {"title": "@余音创作的原声", "play_url": {"url_list": ["https://cdn/origin.mp3"]}},
+    }
+    video = normalize_douyin_aweme(aweme, "庭院案例")
+    assert video is not None
+    assert video.video_id == "7680753914849346171"
+    assert video.platform == "douyin"
+    assert video.likes == 55569
+    assert video.verified is True
+    assert video.cover_url == "https://cdn/cover.webp"
+    assert video.play_url == "https://cdn/p540.mp4"
+    assert video.audio_url == "https://cdn/origin.mp3"
+    assert video.tags == ["锦鲤体型", "鱼池养锦鲤", "第三个", "第四个", "第五个", "第六个"]
+    client_dict = video.to_client_dict()
+    assert client_dict["hasPlayableAudio"] is True
+    assert client_dict["native"] == {"aweme_id": "7680753914849346171"}
+
+
+def test_normalize_douyin_aweme_without_music_play_url() -> None:
+    aweme = {
+        "aweme_id": "1",
+        "desc": "测试",
+        "video": {"cover": {"url_list": ["https://cdn/c.jpg"]}},
+        "music": {"title": "Sacrifice（奉献）", "play_url": {"url_list": []}},
+    }
+    video = normalize_douyin_aweme(aweme, "")
+    assert video is not None
+    assert video.audio_url is None
+    assert video.to_client_dict()["hasPlayableAudio"] is False
+
+
+def test_normalize_wechat_item_cleans_highlight_and_parses_like() -> None:
+    item = {
+        "docID": "finderobjv076vYLdkzrmBGLh00RsZnsArVVxC",
+        "exportId": "export/UzFfAgtgekIEAQAAAAAA",
+        "duration": "00:11",
+        "width": 1080,
+        "height": 1920,
+        "image": "https://wxcdn/cover.jpg",
+        "likeNum": "10万+",
+        "pubTime": 1650331621,
+        "dateTime": "4年前",
+        "title": ('农村建房<em class="highlight">平屋顶</em>别墅#微信创作者#二层别墅#低成本'),
+        "source": {"iconUrl": "https://wxcdn/head.png", "title": "乡墅建房徐工2"},
+        "jumpInfo": {"extInfo": '{"behavior":[],"feedNonceId":"4488625110168773069"}'},
+    }
+    video = normalize_wechat_item(item, "建房预算")
+    assert video is not None
+    assert video.video_id == "finderobjv076vYLdkzrmBGLh00RsZnsArVVxC"
+    # title 保留完整清洗后文本（与抖音 desc 行为一致），标签另行以 chips 展示。
+    assert video.title == "农村建房平屋顶别墅#微信创作者#二层别墅#低成本"
+    assert video.likes == 100_000
+    assert video.like_display == "10万+"
+    assert video.duration_ms == 11_000
+    assert video.published_display == "4年前"
+    assert video.author == "乡墅建房徐工2"
+    assert video.tags == ["微信创作者", "二层别墅", "低成本"]
+    assert video.native["object_nonce_id"] == "4488625110168773069"
+
+
+def test_normalize_wechat_item_accepts_object_ext_info() -> None:
+    item = {
+        "docID": "d1",
+        "exportId": "export/e1",
+        "duration": "01:00",
+        "image": "https://wxcdn/c.jpg",
+        "likeNum": "6391",
+        "pubTime": 1788602461,
+        "title": "标题#标签",
+        "source": {"title": "作者"},
+        "jumpInfo": {"extInfo": {"feedNonceId": "123"}},
+    }
+    video = normalize_wechat_item(item, "")
+    assert video is not None
+    assert video.native["object_nonce_id"] == "123"
+    assert video.duration_ms == 60_000
+
+
+def test_normalize_wechat_item_requires_core_fields() -> None:
+    assert normalize_wechat_item({"docID": "", "exportId": "e", "title": "t"}, "") is None
+    assert normalize_wechat_item({"docID": "d", "exportId": "", "title": "t"}, "") is None
+
+
+# ---------------------------------------------------------------------------
+# 客户端
+# ---------------------------------------------------------------------------
+
+
+def test_douyin_search_filters_related_word_cards() -> None:
+    payload = {
+        "code": 200,
+        "data": {
+            "business_data": [
+                {"type": 6, "data": {"related_word_list": []}},
+                {
+                    "type": 1,
+                    "data": {
+                        "aweme_info": {
+                            "aweme_id": "777",
+                            "desc": "视频",
+                            "video": {"cover": {"url_list": ["https://cdn/c.webp"]}},
+                        }
+                    },
+                },
+            ]
+        },
+    }
+    client, transports = _client([payload])
+    videos = client.douyin_search(keyword="乡墅", category="庭院案例")
+    assert len(videos) == 1
+    assert videos[0].video_id == "777"
+    assert videos[0].category == "庭院案例"
+    request = transports[0].requests[0]
+    assert request["url"].endswith(DOUYIN_GENERAL_SEARCH_PATH)
+    assert request["body"]["keyword"] == "乡墅"
+    assert request["body"]["sort_type"] == "1"
+    assert request["body"]["publish_time"] == "7"
+    assert request["body"]["content_type"] == "1"
+
+
+def test_wechat_search_aggregates_three_pages() -> None:
+    def page_payload(cursor: str, continue_flag: int) -> dict[str, Any]:
+        items = [
+            {
+                "docID": f"doc-{cursor}-{index}",
+                "exportId": f"export/{cursor}-{index}",
+                "duration": "00:10",
+                "image": "https://wxcdn/c.jpg",
+                "likeNum": "100",
+                "pubTime": 1788602461,
+                "title": f"标题{index}#标签",
+                "source": {"title": "作者"},
+            }
+            for index in range(10)
+        ]
+        return {
+            "code": 200,
+            "data": {
+                "cursor": cursor,
+                "continue_flag": continue_flag,
+                "results": {"data": [{"subBoxes": [{"items": items}]}]},
+            },
+        }
+
+    payloads = [
+        page_payload("c1", 1),
+        page_payload("c2", 1),
+        page_payload("c3", 0),
+    ]
+    client, transports = _client(payloads)
+    videos = client.wechat_search(keyword="乡墅")
+    assert len(videos) == 30
+    assert videos[0].video_id == "doc-c1-0"
+    assert videos[-1].video_id == "doc-c3-9"
+    bodies = [entry["body"] for entry in transports[0].requests]
+    assert len(bodies) == 3
+    assert "cursor" not in bodies[0]
+    assert bodies[1]["cursor"] == "c1"
+    assert bodies[2]["cursor"] == "c2"
+    assert all(body["publish_time"] == "week" for body in bodies)
+    assert all(body["sort"] == "hot" for body in bodies)
+    assert transports[0].requests[0]["url"].endswith(WECHAT_SEARCH_VIDEOS_PATH)
+
+
+def test_wechat_video_detail_parses_media_block() -> None:
+    payload = {
+        "code": 200,
+        "data": {
+            "id": 15003884913433053492,
+            "object_nonce_id": "13031274272234543781_0",
+            "nickname": "扬州福墅合家美宅-大帅建别墅",
+            "title": "今天当着所有扬州业主的面发誓#乡墅#别墅",
+            "create_time": 1788602461,
+            "like_count": 6392,
+            "fav_count": 3266,
+            "forward_count": 417,
+            "comment_count": 189,
+            "location": {"city": "扬州市"},
+            "media": {
+                "full_url": "http://wxapp.tc.qq.com/download",
+                "decode_key": "1789473271",
+                "cover_url": "https://wxcdn/detail-cover.jpg",
+                "duration": 11,
+                "width": 1080,
+                "height": 1920,
+            },
+        },
+    }
+    client, transports = _client([])
+    client._detail_transport.payloads = [payload]  # noqa: SLF001
+    detail = client.wechat_video_detail(export_id="export/e1")
+    assert detail.object_id == "15003884913433053492"
+    assert detail.decode_key == "1789473271"
+    assert detail.full_url == "http://wxapp.tc.qq.com/download"
+    assert detail.duration_ms == 11_000
+    assert detail.city == "扬州市"
+    assert detail.like_count == 6392
+    assert transports[0].requests == []
+    assert transports[1].requests[0]["body"]["export_id"] == "export/e1"
+    assert transports[1].requests[0]["body"]["raw"] is False
+
+
+def test_wechat_video_detail_error_shape_raises() -> None:
+    client, _ = _client([])
+    client._detail_transport.payloads = [  # noqa: SLF001
+        {"code": 200, "data": {"ret": -2026, "error": "未返回视频对象"}}
+    ]
+    with pytest.raises(ViralSourceError):
+        client.wechat_video_detail(export_id="export/expired")
+
+
+def test_non_200_envelope_raises() -> None:
+    client, _ = _client([{"code": 429, "message": "rate limited"}])
+    with pytest.raises(ViralSourceError):
+        client.douyin_search(keyword="乡墅")
+
+
+def test_client_dict_has_no_vendor_names() -> None:
+    aweme = {
+        "aweme_id": "1",
+        "desc": "测试",
+        "video": {"cover": {"url_list": ["https://cdn/c.webp"]}},
+    }
+    video = normalize_douyin_aweme(aweme, "")
+    assert video is not None
+    serialized = json.dumps(video.to_client_dict(), ensure_ascii=False).lower()
+    assert "tikhub" not in serialized
+    assert "api_key" not in serialized
+
+
+def test_client_from_config_requires_api_key() -> None:
+    with pytest.raises(ViralSourceUnavailable):
+        viral_source_client_from_config({"api_key": " "})
