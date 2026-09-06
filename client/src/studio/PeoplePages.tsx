@@ -535,7 +535,7 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
   const [error, setError] = useState<string>();
   const [uploadProgress, setUploadProgress] = useState<number>();
   const [uploadedVideo, setUploadedVideo] = useState<UploadedOralSource>();
-  const cloneSubmissionRef = useRef<CloneSubmission>();
+  const cloneSubmissionRef = useRef<CloneSubmission | undefined>(undefined);
   const ready = person.avatars.filter((avatar) => avatar.ready);
   const pending = person.avatars.filter((avatar) => !avatar.ready);
   const sourceAsset = data.assets.find(
@@ -818,7 +818,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
   const [error, setError] = useState<string>();
   const [uploadProgress, setUploadProgress] = useState<number>();
   const [uploadedAudio, setUploadedAudio] = useState<UploadedOralSource>();
-  const cloneSubmissionRef = useRef<CloneSubmission>();
+  const cloneSubmissionRef = useRef<CloneSubmission | undefined>(undefined);
   const sourceAsset = data.assets.find(
     (asset) => asset.id === state.draft.audioId && asset.kind === "audio",
   );

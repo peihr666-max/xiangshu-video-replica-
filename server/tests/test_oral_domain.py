@@ -23,7 +23,7 @@ from app.auth import CurrentUser, get_current_user, get_database
 from app.customer_fence import get_business_db
 from app.db import initialize_database
 from app.db_portable import BusinessConnection
-from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
+from app.hifly import HiflyClient, HiflyError
 from app.internal_billing import BillingInvariantError, finalize_oral_billing
 from app.main import app
 from app.oral import (
@@ -37,13 +37,17 @@ from app.oral import (
     create_oral_task,
     list_oral_consents,
     oral_unit_price_fen,
-    refresh_avatar_clone,
     refresh_oral_task,
-    refresh_voice_clone,
     start_avatar_clone,
     start_voice_clone,
 )
 from app.oral_routes import get_oral_vendor
+from app.oral_worker import (
+    claim_oral_work,
+    finalize_oral_work,
+    perform_oral_work,
+    prepare_oral_work,
+)
 from app.storage import StoredObject
 
 _NOW = "2026-09-06 03:00:00"
@@ -52,9 +56,42 @@ _NOW = "2026-09-06 03:00:00"
 class FakeSourceStorage:
     def __init__(self, payload: bytes = b"FAKEMEDIA") -> None:
         self.payload = payload
+        self.objects: dict[str, bytes] = {}
 
     def get_object(self, key: str) -> bytes:
-        return self.payload
+        return self.objects.get(key, self.payload)
+
+    def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject:
+        self.objects[key] = content
+        return StoredObject(
+            provider="fake",
+            bucket="assets",
+            key=key,
+            uri=f"fake://assets/{key}",
+            size=len(content),
+            content_type=content_type,
+            sha256=f"sha-{key}",
+            updated_at=datetime.now(tz=UTC),
+        )
+
+    def delete_object(self, key: str, *, actor_id: str | None = None) -> None:
+        self.objects.pop(key, None)
+
+
+def run_oral_worker_step(
+    conn: BusinessConnection,
+    *,
+    vendor: HiflyClient,
+    storage: FakeSourceStorage,
+    worker_id: str = "oral-test-worker",
+):
+    lease = claim_oral_work(conn, worker_id=worker_id)
+    if lease is None:
+        return None
+    prepared = prepare_oral_work(conn, lease)
+    result = perform_oral_work(prepared, vendor=vendor, storage=storage)
+    finalize_oral_work(conn, lease=prepared, result=result)
+    return result
 
 
 @pytest.fixture()
@@ -350,7 +387,7 @@ def test_consent_and_voice_confirmation_routes(
         app.dependency_overrides.clear()
 
 
-def test_clone_route_persists_submission_uncertain_before_returning_503(
+def test_clone_route_only_enqueues_before_returning_202(
     tmp_path: Path, fake_source_storage: FakeSourceStorage
 ) -> None:
     conn = seed_scene(tmp_path, "oral-clone-route-uncertain.db")
@@ -403,13 +440,14 @@ def test_clone_route_persists_submission_uncertain_before_returning_503(
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "ORAL_SUBMISSION_UNCERTAIN"
+    assert response.status_code == 202
+    assert response.json()["status"] == "PENDING"
+    assert transport.calls == []
     persisted = conn.execute(
         "SELECT submission_state FROM oral_avatars WHERE idempotency_key = %s",
         ("route-uncertain-key",),
     ).fetchone()
-    assert persisted["submission_state"] == "SUBMISSION_UNKNOWN"
+    assert persisted["submission_state"] == "LOCAL_PENDING"
 
 
 def test_oral_task_route_returns_202_without_vendor_and_cancel_is_idempotent(
@@ -484,9 +522,13 @@ def test_avatar_clone_start_then_refresh_to_ready(
         idempotency_key="avatar-clone-idem-1",
         vendor=vendor,
     )
-    assert started.status == "RUNNING"
-
-    refreshed = refresh_avatar_clone(conn, avatar_id=started.task_id, actor=actor(), vendor=vendor)
+    assert started.status == "PENDING"
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    conn.execute("UPDATE oral_avatars SET next_attempt_at = NULL WHERE id = %s", (started.task_id,))
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    refreshed = conn.execute(
+        "SELECT * FROM oral_avatars WHERE id = %s", (started.task_id,)
+    ).fetchone()
     assert refreshed["status"] == "READY"
     assert refreshed["vendor_avatar_id"] == "vendor-avatar-1"
     # 上传走 PUT；创建与查询各一次 POST/GET。
@@ -527,7 +569,8 @@ def test_avatar_clone_from_image_uses_image_provider_endpoint(
         vendor=vendor,
     )
 
-    assert started.status == "RUNNING"
+    assert started.status == "PENDING"
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
     assert any(url.endswith("/avatar/create_by_image") for _, url in transport.calls)
     assert not any(url.endswith("/avatar/create_by_video") for _, url in transport.calls)
 
@@ -799,7 +842,6 @@ def test_clone_rejects_consent_mismatch_before_vendor_call(
 def test_voice_clone_ready_requires_explicit_confirmation(
     tmp_path: Path,
     fake_source_storage: FakeSourceStorage,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = seed_scene(tmp_path, "oral-voice.db")
     vendor, transport = make_vendor()
@@ -828,24 +870,6 @@ def test_voice_clone_ready_requires_explicit_confirmation(
     )
     transport.on("GET", "https://tmp.example/voice-demo.mp3", b"MP3DEMO")
 
-    class FakeDemoStorage:
-        def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject:
-            return StoredObject(
-                provider="fake",
-                bucket="assets",
-                key=key,
-                uri=f"fake://assets/{key}",
-                size=len(content),
-                content_type=content_type,
-                sha256="demo-sha256",
-                updated_at=datetime.now(tz=UTC),
-            )
-
-        def delete_object(self, key: str, *, actor_id: str | None = None) -> None:
-            return None
-
-    monkeypatch.setattr("app.oral.get_media_storage", lambda _conn: FakeDemoStorage())
-
     started = start_voice_clone(
         conn,
         actor=actor(),
@@ -856,7 +880,12 @@ def test_voice_clone_ready_requires_explicit_confirmation(
         idempotency_key="voice-clone-idem-1",
         vendor=vendor,
     )
-    refreshed = refresh_voice_clone(conn, voice_id=started.task_id, actor=actor(), vendor=vendor)
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    conn.execute("UPDATE oral_voices SET next_attempt_at = NULL WHERE id = %s", (started.task_id,))
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    refreshed = conn.execute(
+        "SELECT * FROM oral_voices WHERE id = %s", (started.task_id,)
+    ).fetchone()
     assert refreshed["status"] == "READY"
     assert refreshed["vendor_voice_id"] == "vendor-voice-2"
     assert refreshed["confirmed"] == 0
@@ -907,7 +936,12 @@ def test_voice_clone_done_without_demo_stays_running(
         vendor=vendor,
     )
 
-    refreshed = refresh_voice_clone(conn, voice_id=started.task_id, actor=actor(), vendor=vendor)
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    conn.execute("UPDATE oral_voices SET next_attempt_at = NULL WHERE id = %s", (started.task_id,))
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    refreshed = conn.execute(
+        "SELECT * FROM oral_voices WHERE id = %s", (started.task_id,)
+    ).fetchone()
 
     assert refreshed["status"] == "RUNNING"
     assert refreshed["demo_asset_id"] is None
@@ -936,24 +970,27 @@ def test_clone_submission_uncertain_is_persisted_and_not_retried(
     transport.on("POST", "/api/v2/hifly/avatar/create_by_video", uncertain)
     consent_id = consent_for(conn, purpose="AVATAR", source_asset_id="asset-src")
 
-    with pytest.raises(HiflySubmissionUncertain):
-        start_avatar_clone(
-            conn,
-            actor=actor(),
-            identity_id="ident-1",
-            title="提交不确定",
-            source_asset_id="asset-src",
-            source_kind="VIDEO",
-            consent_id=consent_id,
-            idempotency_key="avatar-uncertain-key",
-            vendor=vendor,
-        )
+    started = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="提交不确定",
+        source_asset_id="asset-src",
+        source_kind="VIDEO",
+        consent_id=consent_id,
+        idempotency_key="avatar-uncertain-key",
+        vendor=vendor,
+    )
+    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    assert result is not None and result.outcome == "uncertain"
     persisted = conn.execute(
         "SELECT id, status, submission_state FROM oral_avatars WHERE idempotency_key = %s",
         ("avatar-uncertain-key",),
     ).fetchone()
     assert persisted["status"] == "PENDING"
     assert persisted["submission_state"] == "SUBMISSION_UNKNOWN"
+    assert started.task_id == persisted["id"]
+    assert claim_oral_work(conn, worker_id="second-worker") is None
 
     replayed = start_avatar_clone(
         conn,

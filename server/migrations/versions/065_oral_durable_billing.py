@@ -57,9 +57,7 @@ def upgrade() -> None:
                 "submission_state IN ('LOCAL_PENDING', 'SUBMITTING', 'SUBMITTED', "
                 "'SUBMISSION_UNKNOWN', 'FAILED')",
             )
-            batch_op.create_check_constraint(
-                f"ck_{table}_attempt_count", "attempt_count >= 0"
-            )
+            batch_op.create_check_constraint(f"ck_{table}_attempt_count", "attempt_count >= 0")
         op.create_index(
             f"idx_{table}_durable_claim",
             table,
