@@ -701,22 +701,20 @@ export function StudioWorkspace({
           <button
             type="button"
             className={`studio-account-entry ${state.page === "profile" ? "is-active" : ""}`}
+            aria-label={`用户档案，积分 ${review ? "2680" : "—"}`}
             onClick={() => navigate("profile")}
           >
-            {review ? (
-              <img src="/studio/li.png" alt="" />
-            ) : (
-              <span className="studio-user-initial">
-                {currentUser.display_name?.slice(0, 1) || "我"}
-              </span>
-            )}
-            <span>
-              <small>用户档案</small>
-              <strong>
-                {currentUser.display_name || currentUser.username}
-              </strong>
+            <span className="studio-user-initial">
+              {review
+                ? "S"
+                : currentUser.display_name?.slice(0, 1) ||
+                  currentUser.username?.slice(0, 1) ||
+                  "我"}
             </span>
-            <Icon name="chevron" />
+            <span className="studio-account-points">
+              <small>积分</small>
+              <strong>{review ? "2680" : "—"}</strong>
+            </span>
           </button>
         </aside>
         <main className="studio-main">

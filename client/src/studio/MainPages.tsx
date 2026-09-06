@@ -6,7 +6,7 @@ import {
   uploadWorkbenchSourceVideo,
 } from "./live";
 import { draftFromTask } from "./state";
-import type { StudioTask } from "./types";
+import type { StudioTask, StudioVideo } from "./types";
 import {
   Button,
   Empty,
@@ -45,6 +45,14 @@ const statusIcons: Record<StudioTask["status"], string> = {
   completed: "check",
   cancelled: "close",
 };
+
+function formatWorkbenchLikes(video: StudioVideo) {
+  if (video.likeDisplay) return video.likeDisplay;
+  if (video.likes >= 10000) {
+    return `${(video.likes / 10000).toFixed(1).replace(".0", "")}万`;
+  }
+  return video.likes.toLocaleString("zh-CN");
+}
 
 function Status({ task }: { task: StudioTask }) {
   return (
@@ -169,6 +177,7 @@ export function WorkbenchPage() {
   const active = data.tasks.filter((task) =>
     ["running", "queued", "uncertain"].includes(task.status),
   );
+  const featuredVideos = data.videos.slice(0, 6);
   const begin = (mode: "copy" | "replica") => {
     if (review) {
       navigate(mode);
@@ -222,120 +231,136 @@ export function WorkbenchPage() {
   };
   return (
     <section className="studio-home">
+      <h2 className="studio-home-page-title">工作台</h2>
+      <header className="studio-hero">
+        <h1>
+          粘贴一条爆款乡墅视频链接，
+          <strong>快速生成它的原创视频</strong>
+        </h1>
+      </header>
+      <div className="studio-start">
+        <div className="studio-source-input">
+          <button
+            type="button"
+            className="studio-upload-icon"
+            aria-label="上传视频"
+            onClick={() => {
+              if (review) {
+                notify("审核示例不执行真实上传。");
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
+          >
+            <Icon name="upload" />
+          </button>
+          <input
+            aria-label="视频链接"
+            placeholder="粘贴视频链接，如抖音、视频号、小红书链接等"
+            value={sourceLink}
+            onChange={(event) => setSourceLink(event.target.value)}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            aria-label="选择视频文件"
+            accept=".mp4,.mov,video/mp4,video/quicktime"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) handleUploadFile(file);
+              event.target.value = "";
+            }}
+          />
+          <Button variant="primary" onClick={() => begin("copy")}>
+            <Icon name="pen" />
+            提取文案
+          </Button>
+          <Button onClick={() => begin("replica")}>
+            <Icon name="play" />
+            开始复刻
+          </Button>
+        </div>
+        {upload && (
+          <p className="studio-upload-status" role="status">
+            {upload.error
+              ? `上传失败：${upload.error}`
+              : upload.progress >= 100
+                ? `已上传云存储：${upload.name}`
+                : `正在上传 ${upload.name}… ${upload.progress}%`}
+          </p>
+        )}
+        <p className="studio-start-helper">
+          提取文案进入文案工坊，开始复刻进入分镜工作区。
+        </p>
+      </div>
+      <div className="studio-home-metrics">
+        {[
+          {
+            label: "今日成片",
+            value: data.stats ? String(data.stats.today_completed) : "—",
+            hint: review ? "较昨日 +3" : "今日已完成",
+            tone: "success",
+            icon: "video",
+            page: "tasks" as const,
+          },
+          {
+            label: "成片队列",
+            value: data.stats
+              ? String(data.stats.running + data.stats.queued)
+              : data.loading
+                ? "—"
+                : String(active.length),
+            hint: "等待中",
+            tone: "muted",
+            icon: "tasks",
+            page: "tasks" as const,
+          },
+          {
+            label: "累计已发布",
+            // C5 发布能力暂缓：没有真实发布数据源，保持 "—" 不伪造。
+            value: review ? "156" : "—",
+            hint: review ? "本周 +21" : "等待发布统计",
+            tone: "success",
+            icon: "upload",
+            page: "publishing" as const,
+          },
+          {
+            label: "待处理",
+            value: data.stats
+              ? String(data.stats.needs_attention)
+              : data.loading
+                ? "—"
+                : String(
+                    data.tasks.filter((task) =>
+                      ["failed", "uncertain"].includes(task.status),
+                    ).length,
+                  ),
+            hint: "需要您处理",
+            tone: "danger",
+            icon: "warning",
+            page: "tasks" as const,
+          },
+        ].map((metric) => (
+          <button
+            key={metric.label}
+            type="button"
+            className="studio-panel"
+            onClick={() => navigate(metric.page)}
+          >
+            <span>
+              <Icon name={metric.icon} />
+              {metric.label}
+            </span>
+            <strong>{metric.value}</strong>
+            <small className={`studio-metric-hint is-${metric.tone}`}>
+              {metric.hint}
+            </small>
+          </button>
+        ))}
+      </div>
       <div className="studio-home-grid">
         <div className="studio-home-main">
-          <header className="studio-hero">
-            <h1>从一个乡墅灵感，开始视频创作</h1>
-            <p>粘贴视频链接，或直接上传视频</p>
-          </header>
-          <div className="studio-start">
-            <div className="studio-source-input">
-              <button
-                type="button"
-                className="studio-upload-icon"
-                aria-label="上传视频"
-                onClick={() => {
-                  if (review) {
-                    notify("审核示例不执行真实上传。");
-                    return;
-                  }
-                  fileInputRef.current?.click();
-                }}
-              >
-                <Icon name="upload" />
-              </button>
-              <input
-                aria-label="视频链接"
-                placeholder="粘贴视频链接，如抖音、视频号、小红书链接等"
-                value={sourceLink}
-                onChange={(event) => setSourceLink(event.target.value)}
-              />
-              <input
-                ref={fileInputRef}
-                type="file"
-                aria-label="选择视频文件"
-                accept=".mp4,.mov,video/mp4,video/quicktime"
-                hidden
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) handleUploadFile(file);
-                  event.target.value = "";
-                }}
-              />
-              <Button variant="primary" onClick={() => begin("copy")}>
-                <Icon name="pen" />
-                提取文案
-              </Button>
-              <Button onClick={() => begin("replica")}>
-                <Icon name="play" />
-                开始复刻
-              </Button>
-            </div>
-            {upload && (
-              <p className="studio-upload-status" role="status">
-                {upload.error
-                  ? `上传失败：${upload.error}`
-                  : upload.progress >= 100
-                    ? `已上传云存储：${upload.name}`
-                    : `正在上传 ${upload.name}… ${upload.progress}%`}
-              </p>
-            )}
-            <p>提取文案进入文案工坊；开始复刻进入分镜工作区。</p>
-          </div>
-          <div className="studio-home-metrics">
-            {[
-              {
-                label: "今日成片",
-                value: data.stats ? String(data.stats.today_completed) : "—",
-                icon: "video",
-                page: "tasks" as const,
-              },
-              {
-                label: "成片队列",
-                value: data.stats
-                  ? String(data.stats.running + data.stats.queued)
-                  : data.loading
-                    ? "—"
-                    : String(active.length),
-                icon: "tasks",
-                page: "tasks" as const,
-              },
-              {
-                label: "累计已发布",
-                // C5 发布能力暂缓：没有真实发布数据源，保持 "—" 不伪造。
-                value: review ? "156" : "—",
-                icon: "upload",
-                page: "publishing" as const,
-              },
-              {
-                label: "待处理",
-                value: data.stats
-                  ? String(data.stats.needs_attention)
-                  : data.loading
-                    ? "—"
-                    : String(
-                        data.tasks.filter((task) =>
-                          ["failed", "uncertain"].includes(task.status),
-                        ).length,
-                      ),
-                icon: "warning",
-                page: "tasks" as const,
-              },
-            ].map((metric) => (
-              <button
-                key={metric.label}
-                type="button"
-                className="studio-panel"
-                onClick={() => navigate(metric.page)}
-              >
-                <span>
-                  <Icon name={metric.icon} />
-                  {metric.label}
-                </span>
-                <strong>{metric.value}</strong>
-              </button>
-            ))}
-          </div>
           <h2>正在进行</h2>
           <Panel className="studio-running-list">
             {active.length ? (
@@ -383,40 +408,76 @@ export function WorkbenchPage() {
               />
             )}
           </Panel>
-          <h2>我的人物库</h2>
-          <div className="studio-home-people">
-            {data.people.slice(0, 3).map((person) => (
-              <button
-                key={person.id}
-                type="button"
-                onClick={() => {
-                  patchDraft({ ipId: person.id });
-                  navigate("person-ip", { selectedPersonId: person.id });
-                }}
-              >
-                {person.portrait ? (
-                  <img src={person.portrait} alt={person.name} />
-                ) : (
-                  <Icon name="person" size={42} />
-                )}
-                <div>
-                  <strong>{person.name}</strong>
-                  <span>{person.role || "人物 IP"}</span>
-                </div>
-                <Icon name="chevron" />
-              </button>
-            ))}
-            {!data.loading && !data.people.length && (
-              <Button onClick={() => navigate("people")}>
-                前往人物库添加人物
-              </Button>
-            )}
+          <div className="studio-home-section-heading">
+            <h2>爆款灵感精选</h2>
+            <Button
+              variant="quiet"
+              aria-label="查看全部爆款"
+              onClick={() => navigate("viral")}
+            >
+              查看全部爆款
+              <Icon name="arrow" size={16} />
+            </Button>
           </div>
+          {featuredVideos.length ? (
+            <div className="studio-home-viral-grid">
+              {featuredVideos.map((video) => (
+                <article className="studio-home-viral-card" key={video.id}>
+                  <button
+                    type="button"
+                    className="studio-home-viral-cover"
+                    aria-label={`查看详情：${video.title}`}
+                    onClick={() =>
+                      navigate("viral-detail", {
+                        selectedVideoId: video.id,
+                        returnTo: "workbench",
+                      })
+                    }
+                  >
+                    <img src={video.poster} alt="" loading="lazy" />
+                    <span className="studio-home-viral-platform">
+                      {video.platform}
+                    </span>
+                    <span className="studio-home-viral-duration">
+                      {video.duration}
+                    </span>
+                  </button>
+                  <h3 title={video.title}>{video.title}</h3>
+                  <div className="studio-home-viral-meta">
+                    <span>
+                      <Icon name="fire" size={14} />
+                      热度 {formatWorkbenchLikes(video)}
+                    </span>
+                    <Button
+                      variant="quiet"
+                      aria-label={`用它复刻：${video.title}`}
+                      onClick={() => {
+                        patchDraft({ sourceId: video.id });
+                        navigate("replica", {
+                          selectedVideoId: video.id,
+                          returnTo: "workbench",
+                        });
+                      }}
+                    >
+                      用它复刻
+                    </Button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <Panel className="studio-home-viral-empty">
+              <Empty
+                title={data.loading ? "正在读取爆款灵感" : "暂无爆款灵感"}
+                description="前往爆款视频页查看更多乡墅参考作品"
+              />
+            </Panel>
+          )}
         </div>
         <aside className="studio-home-side">
           <Panel className="studio-activity">
             <h2>任务动态</h2>
-            {data.tasks.slice(0, 3).map((task) => (
+            {data.tasks.slice(0, 5).map((task) => (
               <button
                 type="button"
                 key={task.id}
@@ -432,24 +493,50 @@ export function WorkbenchPage() {
               </button>
             ))}
             {!data.tasks.length && <p>暂无任务动态</p>}
-            <Button variant="quiet" onClick={() => navigate("tasks")}>
-              查看更多动态
-              <Icon name="chevron" size={16} />
-            </Button>
           </Panel>
           <Panel className="studio-shortcuts">
             <h2>快捷入口</h2>
-            <button type="button" onClick={() => navigate("viral")}>
-              <Icon name="fire" size={32} />
+            <button
+              type="button"
+              aria-label="快捷入口：文案工坊"
+              onClick={() => navigate("copy")}
+            >
+              <Icon name="pen" size={28} />
               <span>
-                去找爆款<small>查看乡墅参考作品</small>
+                文案工坊<small>创作爆款文案</small>
               </span>
               <Icon name="chevron" />
             </button>
-            <button type="button" onClick={() => navigate("materials")}>
-              <Icon name="folder" size={32} />
+            <button
+              type="button"
+              aria-label="快捷入口：人物库"
+              onClick={() => navigate("people")}
+            >
+              <Icon name="person" size={28} />
               <span>
-                查看素材<small>复用已上传素材</small>
+                人物库<small>管理数字人</small>
+              </span>
+              <Icon name="chevron" />
+            </button>
+            <button
+              type="button"
+              aria-label="快捷入口：素材库"
+              onClick={() => navigate("materials")}
+            >
+              <Icon name="folder" size={28} />
+              <span>
+                素材库<small>管理我的素材</small>
+              </span>
+              <Icon name="chevron" />
+            </button>
+            <button
+              type="button"
+              aria-label="快捷入口：数据看板"
+              onClick={() => navigate("analytics")}
+            >
+              <Icon name="chart" size={28} />
+              <span>
+                数据看板<small>查看创作数据</small>
               </span>
               <Icon name="chevron" />
             </button>

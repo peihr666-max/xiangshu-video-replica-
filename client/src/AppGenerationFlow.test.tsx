@@ -72,7 +72,7 @@ async function openProjectAnalysisFlow() {
   // 入口是“开始复刻”，再打开真实项目分析流。
   await screen.findByRole("heading", {
     level: 1,
-    name: "从一个乡墅灵感，开始视频创作",
+    name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
   });
   fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
   fireEvent.click(

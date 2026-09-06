@@ -6,6 +6,7 @@ import type {
   StudioContextValue,
   StudioData,
   StudioTask,
+  StudioVideo,
 } from "./types";
 
 const {
@@ -56,11 +57,14 @@ const runningTask: StudioTask = {
   submitted: "2026-09-06T09:30:00",
 };
 
-function data(tasks: StudioTask[] = [taskA]): StudioData {
+function data(
+  tasks: StudioTask[] = [taskA],
+  videos: StudioVideo[] = [],
+): StudioData {
   return {
     people: [],
     assets: [],
-    videos: [],
+    videos,
     tasks,
     projects: [],
     errors: [],
@@ -301,6 +305,74 @@ describe("V1.4 工作台正在进行行", () => {
     expect(screen.queryByText("2026-09-06T09:30:00")).not.toBeInTheDocument();
     expect(screen.getByText("今天 09:30")).toBeInTheDocument();
     expect(screen.getByText("68%")).toBeInTheDocument();
+  });
+});
+
+describe("V1.4 工作台新版首页布局", () => {
+  const videos: StudioVideo[] = Array.from({ length: 7 }, (_, index) => ({
+    id: `video-${index + 1}`,
+    title: `灵感视频 ${index + 1}`,
+    author: `作者 ${index + 1}`,
+    platform: index % 2 === 0 ? "抖音" : "视频号",
+    category: "乡墅",
+    poster: `/poster-${index + 1}.jpg`,
+    duration: "00:56",
+    likes: 128000 - index * 1000,
+    collections: 100,
+    shares: 20,
+    description: "乡墅爆款案例",
+  }));
+
+  it("展示新版主标题、居中辅助文案、六个竖屏爆款与四个快捷入口", () => {
+    const value = studio(undefined, {
+      state: createState("workbench"),
+      data: data([runningTask], videos),
+    });
+    useStudio.mockReturnValue(value);
+
+    render(<WorkbenchPage />);
+
+    expect(
+      screen.getByRole("heading", {
+        name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("提取文案进入文案工坊，开始复刻进入分镜工作区。"),
+    ).toHaveClass("studio-start-helper");
+    expect(
+      screen.getByRole("heading", { name: "爆款灵感精选" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("灵感视频 6")).toBeInTheDocument();
+    expect(screen.queryByText("灵感视频 7")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /用它复刻/ })).toHaveLength(6);
+    expect(
+      screen.getByRole("button", { name: "查看全部爆款" }),
+    ).toBeInTheDocument();
+    for (const name of ["文案工坊", "人物库", "素材库", "数据看板"]) {
+      expect(
+        screen.getByRole("button", { name: `快捷入口：${name}` }),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("从首页爆款卡片开始复刻时复用既有草稿与导航流程", () => {
+    const value = studio(undefined, {
+      state: createState("workbench"),
+      data: data([], videos),
+    });
+    useStudio.mockReturnValue(value);
+
+    render(<WorkbenchPage />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "用它复刻：灵感视频 1" }),
+    );
+
+    expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "video-1" });
+    expect(value.navigate).toHaveBeenCalledWith("replica", {
+      selectedVideoId: "video-1",
+      returnTo: "workbench",
+    });
   });
 });
 

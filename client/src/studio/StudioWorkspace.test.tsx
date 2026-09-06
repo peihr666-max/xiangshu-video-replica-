@@ -124,8 +124,10 @@ describe("V1.4 workspace integration", () => {
     expect(nav.getAllByRole("button").map((node) => node.textContent)).toEqual(
       expect.arrayContaining(["爆款视频", "文案工坊", "视频创作"]),
     );
+    expect(screen.getByText("粘贴一条爆款乡墅视频链接，")).toBeInTheDocument();
+    expect(screen.getByText("快速生成它的原创视频")).toBeInTheDocument();
     expect(
-      screen.getByText("从一个乡墅灵感，开始视频创作"),
+      screen.getByRole("button", { name: "用户档案，积分 2680" }),
     ).toBeInTheDocument();
     expect(live.loadStudioData).not.toHaveBeenCalled();
     fireEvent.click(nav.getByRole("button", { name: "文案工坊" }));
