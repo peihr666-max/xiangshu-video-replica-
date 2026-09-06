@@ -169,7 +169,7 @@ export function StudioWorkspace({
   const DRAFT_AUTOSAVE_DELAY_MS = 2000;
   const latestDraftRef = useRef(state.draft);
   const draftTouchedRef = useRef(false);
-  const draftSaveTimerRef = useRef<number>();
+  const draftSaveTimerRef = useRef<number | undefined>(undefined);
   const scheduleDraftSave = useCallback(() => {
     if (review) return;
     window.clearTimeout(draftSaveTimerRef.current);

@@ -20,11 +20,19 @@ const live = vi.hoisted(() => ({
   // C7 云端草稿：默认无草稿/空列表，具体用例再覆盖。
   loadCloudDraft: vi.fn(async (): Promise<unknown> => undefined),
   loadSavedScriptList: vi.fn(async (): Promise<unknown[]> => []),
-  persistCloudDraft: vi.fn(async (): Promise<void> => {}),
-  persistSavedScript: vi.fn(async (): Promise<void> => {}),
-  publishScriptVersion: vi.fn(async (): Promise<boolean> => true),
+  persistCloudDraft: vi.fn(
+    async (_draft: unknown): Promise<void> => {},
+  ),
+  persistSavedScript: vi.fn(
+    async (_script: unknown, _sourceProjectId?: string): Promise<void> => {},
+  ),
+  publishScriptVersion: vi.fn(
+    async (_projectId: string, _text: string): Promise<boolean> => true,
+  ),
   extractScriptFromUpload: vi.fn(
-    async (): Promise<{ text: string }> => ({ text: "" }),
+    async (_projectId: string, _assetId: string): Promise<{ text: string }> => ({
+      text: "",
+    }),
   ),
 }));
 vi.mock("./live", () => live);
@@ -365,7 +373,7 @@ describe("V1.4 workspace integration", () => {
       await openCopyPage();
       fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
       await waitFor(() => expect(live.persistSavedScript).toHaveBeenCalled());
-      const [script] = live.persistSavedScript.mock.calls[0] as [
+      const [script] = live.persistSavedScript.mock.calls[0] as unknown as [
         { text: string },
       ];
       expect(script.text).toBe("要保存的文案");
@@ -389,7 +397,7 @@ describe("V1.4 workspace integration", () => {
         ),
       );
       expect(live.persistCloudDraft).toHaveBeenCalled();
-      const savedDraft = live.persistCloudDraft.mock.calls[0][0] as {
+      const savedDraft = live.persistCloudDraft.mock.calls[0][0] as unknown as {
         script: { confirmed: boolean };
       };
       expect(savedDraft.script.confirmed).toBe(true);
