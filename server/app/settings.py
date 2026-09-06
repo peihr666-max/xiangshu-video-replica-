@@ -11,7 +11,7 @@ from app.db_portable import BusinessConnection
 from app.local_settings_key import LocalSettingsKeyStoreError, load_or_create_local_settings_key
 from app.zpay import parse_enabled_channels
 
-ProviderName = Literal["apilio", "metaso", "cos", "deepseek"]
+ProviderName = Literal["apilio", "metaso", "cos", "deepseek", "hifly"]
 
 SETTINGS_KEY_ENV = "VIDEO_REPLICA_SETTINGS_KEY"
 LOCAL_KEYSTORE_DISABLED_ENV = "VIDEO_REPLICA_DISABLE_LOCAL_KEYSTORE"
@@ -34,6 +34,9 @@ REQUIRED_PROVIDER_FIELDS: dict[ProviderName, tuple[str, ...]] = {
     # 二创口播稿改写默认走 DeepSeek；除 API Key 外的参数（base_url/model）
     # 由服务端固定，界面无需暴露。
     "deepseek": ("api_key",),
+    # 飞影数字人（C1 数字人口播整链）：Bearer Token 即 api_key，见
+    # docs/飞影数字人API-V2-集成参考.md。
+    "hifly": ("api_key",),
 }
 DEFAULT_RUNTIME_SETTINGS: dict[str, int | str] = {
     "max_generation_count_per_batch": 4,
