@@ -1270,3 +1270,37 @@ def list_oral_tasks(
 
 def oral_price_quote(conn: BusinessConnection) -> dict[str, int]:
     return {"unit_price_fen": oral_unit_price_fen(conn)}
+
+
+def oral_task_available_actions(row: dict[str, Any]) -> list[str]:
+    """Retry hints for the customer task center, mirroring the route guards.
+
+    ``retry`` maps to POST /tasks/{id}/retry (submission-uncertain only);
+    ``archive_retry`` maps to POST /tasks/{id}/archive-retry, which further
+    requires an archived provider result URL.
+    """
+    status = str(row["status"])
+    if status == "SUBMISSION_UNCERTAIN":
+        return ["retry"]
+    if status == "ARCHIVE_FAILED" and str(row.get("provider_result_url") or "").strip():
+        return ["archive_retry"]
+    return []
+
+
+def oral_terminal_billing_states(conn: BusinessConnection, *, owner_user_id: str) -> dict[str, str]:
+    """Map task id -> SETTLE/RELEASE for each task's current billing round.
+
+    Wallet rows are the billing truth: a task whose current round has no
+    terminal transaction still holds its reservation (open or frozen).
+    """
+    rows = conn.execute(
+        """
+        SELECT t.id AS task_id, wt.type AS terminal_type
+        FROM oral_tasks AS t
+        JOIN wallet_transactions AS wt
+          ON wt.oral_task_id = t.id AND wt.billing_round = t.billing_round
+        WHERE t.owner_user_id = %s AND wt.type IN ('SETTLE', 'RELEASE')
+        """,
+        (owner_user_id,),
+    ).fetchall()
+    return {str(row["task_id"]): str(row["terminal_type"]) for row in rows}

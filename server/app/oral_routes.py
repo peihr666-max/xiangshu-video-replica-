@@ -38,13 +38,15 @@ from app.oral import (
     list_oral_tasks,
     list_voices,
     oral_price_quote,
+    oral_task_available_actions,
+    oral_terminal_billing_states,
     read_avatar_clone,
     read_oral_task,
     read_voice_clone,
     start_avatar_clone,
     start_voice_clone,
 )
-from app.oral_worker import request_oral_archive_retry
+from app.oral_worker import request_oral_archive_retry, request_oral_submission_retry
 from app.permissions import require_role, write_audit
 
 router = APIRouter(prefix="/api/oral")
@@ -82,6 +84,32 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
         if not key.startswith("vendor_")
         and key not in {"idempotency_key", "request_hash", "subtitle_json"}
     }
+
+
+_TERMINAL_BILLING_LABELS = {"SETTLE": "SETTLED", "RELEASE": "RELEASED"}
+
+
+def _serialize_task(row: dict[str, Any], terminals: dict[str, str]) -> dict[str, Any]:
+    """Task projection with retry hints and the wallet truth of the current round.
+
+    A task whose billing round has no terminal transaction still holds its
+    reservation (open while active, frozen while submission-uncertain), so it
+    reports ``RESERVED``.
+    """
+    data = _serialize(row)
+    data["available_actions"] = oral_task_available_actions(row)
+    if row.get("billing_round") is not None:
+        data["billing_status"] = _TERMINAL_BILLING_LABELS.get(
+            terminals.get(str(row["id"]), ""), "RESERVED"
+        )
+    return data
+
+
+def _serialize_tasks_for_owner(conn: Database, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    terminals = oral_terminal_billing_states(conn, owner_user_id=str(rows[0]["owner_user_id"]))
+    return [_serialize_task(row, terminals) for row in rows]
 
 
 @router.get("/price")
@@ -356,7 +384,7 @@ def list_oral_generation_tasks(
     actor: AuthenticatedUser,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> list[dict[str, Any]]:
-    return [_serialize(row) for row in list_oral_tasks(conn, actor=actor, limit=limit)]
+    return _serialize_tasks_for_owner(conn, list_oral_tasks(conn, actor=actor, limit=limit))
 
 
 @router.get("/tasks/{task_id}")
@@ -369,7 +397,7 @@ def read_oral_generation_task(
         row = read_oral_task(conn, task_id=task_id, actor=actor)
     except OralDomainError as exc:
         raise _domain_guard(exc) from exc
-    return _serialize(row)
+    return _serialize_tasks_for_owner(conn, [row])[0]
 
 
 @router.post("/tasks/{task_id}/refresh")
@@ -382,7 +410,7 @@ def refresh_oral_generation_task(
         row = read_oral_task(conn, task_id=task_id, actor=actor)
     except OralDomainError as exc:
         raise _domain_guard(exc) from exc
-    return _serialize(row)
+    return _serialize_tasks_for_owner(conn, [row])[0]
 
 
 @router.post("/tasks/{task_id}/archive-retry")
@@ -399,7 +427,24 @@ def retry_oral_archive(
                 "只有保留了成片地址的归档失败任务可重试归档。",
                 status_code=409,
             ) from exc
-    return _serialize(row)
+        return _serialize_tasks_for_owner(conn, [row])[0]
+
+
+@router.post("/tasks/{task_id}/retry")
+def retry_oral_submission(
+    task_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            row = request_oral_submission_retry(conn, task_id=task_id, owner_user_id=actor.id)
+        except ValueError as exc:
+            raise OralError(
+                "ORAL_RETRY_NOT_ALLOWED",
+                "只有提交结果未知的口播任务可以重试。",
+                status_code=409,
+            ) from exc
+        return _serialize_tasks_for_owner(conn, [row])[0]
 
 
 @router.post("/tasks/{task_id}/cancel")
@@ -412,7 +457,7 @@ def cancel_oral_generation_task(
             row = cancel_oral_task(conn, task_id=task_id, actor=actor)
         except OralDomainError as exc:
             raise _domain_guard(exc) from exc
-    return _serialize(row)
+        return _serialize_tasks_for_owner(conn, [row])[0]
 
 
 @router.post("/tasks/{task_id}/billing-reconcile")
