@@ -557,4 +557,91 @@ describe("V1.4 任务中心列表", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "查看详情" })).toHaveLength(2);
   });
+
+  it("类型筛选收进单行下拉，菜单项计数与状态筛选联动", () => {
+    useStudio.mockReturnValue(tasksPage());
+    render(<TasksPage />);
+
+    expect(
+      screen.queryByRole("tab", { name: "视频复刻" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "类型：全部类型" }));
+    expect(
+      screen.getByRole("option", { name: "✓ 全部类型 4" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "数字人口播 2" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "视频复刻 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "人物置换 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "视频生成 0" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "进行中 2" }));
+    expect(
+      screen.getByRole("option", { name: "数字人口播 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "视频复刻 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "人物置换 0" }),
+    ).toBeInTheDocument();
+  });
+
+  it("选择类型后过滤表格、高亮触发按钮并更新结果计数", () => {
+    useStudio.mockReturnValue(tasksPage());
+    render(<TasksPage />);
+
+    expect(screen.getByText("共 4 条任务")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "类型：全部类型" }));
+    fireEvent.click(screen.getByRole("option", { name: "数字人口播 2" }));
+
+    const trigger = screen.getByRole("button", { name: "类型：数字人口播" });
+    expect(trigger).toHaveClass("is-active");
+    expect(screen.getByText("共 2 条任务")).toBeInTheDocument();
+    expect(screen.getByText("张工 · 建房预算")).toBeInTheDocument();
+    expect(screen.queryByText("三层新中式乡墅")).not.toBeInTheDocument();
+  });
+
+  it("筛选无结果时提供清除筛选出口，一键复位两个维度", () => {
+    useStudio.mockReturnValue(tasksPage());
+    render(<TasksPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "待处理 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "类型：全部类型" }));
+    fireEvent.click(screen.getByRole("option", { name: "视频复刻 0" }));
+
+    expect(screen.getByText("当前筛选下暂无任务")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+
+    expect(
+      screen.getByRole("tab", { name: "全部", selected: true }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("共 4 条任务")).toBeInTheDocument();
+    expect(screen.getByText("三层新中式乡墅")).toBeInTheDocument();
+  });
+
+  it("类型下拉支持 Escape 与点选外部关闭", () => {
+    useStudio.mockReturnValue(tasksPage());
+    render(<TasksPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "类型：全部类型" }));
+    expect(screen.getByRole("listbox", { name: "类型" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(
+      screen.queryByRole("listbox", { name: "类型" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "类型：全部类型" }));
+    fireEvent.pointerDown(screen.getByRole("heading", { name: "任务中心" }));
+    expect(
+      screen.queryByRole("listbox", { name: "类型" }),
+    ).not.toBeInTheDocument();
+  });
 });

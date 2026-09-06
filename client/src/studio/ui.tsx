@@ -4,7 +4,9 @@ import {
   isValidElement,
   type ReactElement,
   type ReactNode,
+  useEffect,
   useId,
+  useRef,
   useState,
 } from "react";
 import type { StudioAsset } from "./types";
@@ -162,6 +164,90 @@ export function Tabs<T extends string>({
           {item.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** 任务中心类型筛选：单行工具栏右侧的下拉选择器。首项为默认项
+ * （"全部类型"），选中非默认项时触发按钮高亮；菜单项计数由调用方
+ * 按另一维度（状态）联动计算。关闭交互与 RunningRowMenu 一致。 */
+export function FilterSelect<T extends string>({
+  label,
+  items,
+  value,
+  onChange,
+}: {
+  label: string;
+  items: { id: T; label: string; count?: number }[];
+  value: T;
+  onChange: (id: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const selected = items.find((item) => item.id === value) ?? items[0];
+  return (
+    <div className="studio-filter-select" ref={rootRef}>
+      <button
+        type="button"
+        className={`studio-filter-select-trigger${
+          value === items[0].id ? "" : " is-active"
+        }`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {label}：{selected?.label}
+        <Icon name="down" size={16} />
+      </button>
+      {open && (
+        <div
+          className="studio-filter-select-list"
+          role="listbox"
+          aria-label={label}
+        >
+          {items.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="option"
+              aria-selected={item.id === value}
+              onClick={() => {
+                setOpen(false);
+                onChange(item.id);
+              }}
+            >
+              <span>
+                {item.id === value ? "✓ " : ""}
+                {item.label}
+              </span>{" "}
+              {item.count !== undefined && (
+                <small className="studio-filter-select-count">
+                  {item.count}
+                </small>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@ import {
   Button,
   Empty,
   Field,
+  FilterSelect,
   formatTaskTime,
   Hint,
   Icon,
@@ -455,16 +456,31 @@ export function TasksPage() {
   const [status, setStatus] = useState("all");
   const [kind, setKind] = useState("全部");
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const matchesStatus = (task: StudioTask) =>
+    status === "all" ||
+    (status === "active"
+      ? ["running", "queued"].includes(task.status)
+      : status === "attention"
+        ? ["failed", "uncertain"].includes(task.status)
+        : task.status === "completed");
   const tasks = data.tasks.filter(
-    (task) =>
-      (kind === "全部" || kind === task.type) &&
-      (status === "all" ||
-        (status === "active"
-          ? ["running", "queued"].includes(task.status)
-          : status === "attention"
-            ? ["failed", "uncertain"].includes(task.status)
-            : task.status === "completed")),
+    (task) => matchesStatus(task) && (kind === "全部" || kind === task.type),
   );
+  // 类型菜单计数与状态筛选联动：展示"当前状态下各类型还有几个"。
+  const kindItems = [
+    "全部",
+    "视频复刻",
+    "视频生成",
+    "数字人口播",
+    "人物置换",
+  ].map((label) => ({
+    id: label,
+    label: label === "全部" ? "全部类型" : label,
+    count: data.tasks.filter(
+      (task) =>
+        matchesStatus(task) && (label === "全部" || label === task.type),
+    ).length,
+  }));
   const activeCount = data.tasks.filter((task) =>
     ["running", "queued"].includes(task.status),
   ).length;
@@ -503,23 +519,27 @@ export function TasksPage() {
           视频复刻
         </Button>
       </div>
-      <Tabs
-        value={status}
-        onChange={setStatus}
-        items={[
-          { id: "all", label: "全部" },
-          { id: "active", label: `进行中 ${activeCount}` },
-          { id: "attention", label: `待处理 ${attentionCount}` },
-          { id: "completed", label: "已完成" },
-        ]}
-      />
-      <Tabs
-        value={kind}
-        onChange={setKind}
-        items={["全部", "视频复刻", "视频生成", "数字人口播", "人物置换"].map(
-          (label) => ({ id: label, label }),
-        )}
-      />
+      <div className="studio-filter-bar">
+        <Tabs
+          value={status}
+          onChange={setStatus}
+          items={[
+            { id: "all", label: "全部" },
+            { id: "active", label: `进行中 ${activeCount}` },
+            { id: "attention", label: `待处理 ${attentionCount}` },
+            { id: "completed", label: "已完成" },
+          ]}
+        />
+        <FilterSelect
+          label="类型"
+          items={kindItems}
+          value={kind}
+          onChange={setKind}
+        />
+      </div>
+      <p className="studio-result-count" role="status">
+        共 {tasks.length} 条任务
+      </p>
       <div className="studio-table-wrap">
         <table className="studio-table">
           <thead>
@@ -577,6 +597,18 @@ export function TasksPage() {
           <Empty
             title={data.loading ? "正在加载任务" : "当前筛选下暂无任务"}
             description="真实生成任务会在这里显示，不会因接口失败填入示例结果。"
+            action={
+              status !== "all" || kind !== "全部" ? (
+                <Button
+                  onClick={() => {
+                    setStatus("all");
+                    setKind("全部");
+                  }}
+                >
+                  清除筛选
+                </Button>
+              ) : undefined
+            }
           />
         )}
       </div>

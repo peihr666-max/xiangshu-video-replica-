@@ -462,6 +462,88 @@
 .studio-creation-nav .studio-tabs > button.is-active {
   border-bottom-color: #d8aa25;
 }
+/* 任务中心单行筛选工具栏：状态 Tabs 居左，类型下拉居右。 */
+.studio-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 16px 0 8px;
+}
+.studio-filter-bar .studio-tabs {
+  margin: 0;
+}
+.studio-filter-select {
+  position: relative;
+  flex: none;
+}
+.studio-filter-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid #272a24;
+  color: #babcb5;
+  padding: 11px 16px;
+  font-size: 17px;
+  min-height: 45px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.studio-filter-select-trigger:hover {
+  color: #e8e6dc;
+  border-color: #30342d;
+}
+.studio-filter-select-trigger.is-active {
+  color: #efc53a;
+  border-color: #775d22;
+  background: #17160e;
+}
+.studio-filter-select-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 176px;
+  background: #1d201b;
+  border: 1px solid #30342d;
+  border-radius: 8px;
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+.studio-filter-select-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  background: none;
+  border: none;
+  color: #e8e6dc;
+  font-size: 14px;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.studio-filter-select-list button:hover {
+  background: #262922;
+}
+.studio-filter-select-list button[aria-selected="true"] {
+  color: #eec237;
+}
+.studio-filter-select-count {
+  color: #858e7c;
+  font-size: 12px;
+}
+.studio-result-count {
+  margin: 0 0 10px;
+  color: #858e7c;
+  font-size: 14px;
+}
 .studio-panel {
   background: #101111;
   border: 1px solid #292a27;
