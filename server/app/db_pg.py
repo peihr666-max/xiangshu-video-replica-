@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -38,6 +39,11 @@ POOL_MAX_ENV = "VIDEO_REPLICA_PG_POOL_MAX"
 # A misconfigured POOL_MAX must not drain the server's connection budget
 # (shared by the multi-instance API/Worker fleet, M1 review LOW).
 POOL_MAX_CEILING = 64
+# 空闲事务护栏（2026-09-07 梳理）：业务侧纪律是短事务，一个连接停留在
+# "事务开着但不发语句"超过阈值即是缺陷（持锁泄漏会串住整个容量/队列路径）。
+# 默认 5 分钟——高于最长的合法请求内外呼窗口，仍能把真实泄漏变成快速失败。
+IDLE_TX_TIMEOUT_ENV = "VIDEO_REPLICA_PG_IDLE_TX_TIMEOUT"
+DEFAULT_IDLE_TX_TIMEOUT = "5min"
 
 DEFAULT_POOL_MIN = 1
 DEFAULT_POOL_MAX = 8
@@ -219,6 +225,21 @@ def _as_datetime(value: object) -> datetime:
     return datetime.fromisoformat(str(value))
 
 
+def _idle_tx_timeout() -> str:
+    """Pool-wide ``idle_in_transaction_session_timeout`` (validated shape)."""
+    raw = os.environ.get(IDLE_TX_TIMEOUT_ENV, "").strip() or DEFAULT_IDLE_TX_TIMEOUT
+    # GUC 形状只允许数字+可选单位（psycopg options 走 SQL 注入面，收紧白名单）。
+    if not re.fullmatch(r"\d+(\.\d+)?(ms|s|min|h)?", raw):
+        logger.warning(
+            "ignoring invalid %s=%r; falling back to %s",
+            IDLE_TX_TIMEOUT_ENV,
+            raw,
+            DEFAULT_IDLE_TX_TIMEOUT,
+        )
+        return DEFAULT_IDLE_TX_TIMEOUT
+    return raw
+
+
 def get_pg_pool() -> ConnectionPool:
     """Return the process-wide PG connection pool (lazily created)."""
     global _pool
@@ -240,6 +261,9 @@ def get_pg_pool() -> ConnectionPool:
                 max_lifetime=DEFAULT_POOL_MAX_LIFETIME,
                 max_idle=DEFAULT_POOL_MAX_IDLE,
                 timeout=DEFAULT_POOL_TIMEOUT,
+                kwargs={
+                    "options": (f"-c idle_in_transaction_session_timeout={_idle_tx_timeout()}")
+                },
             )
             _pool = pool
         return _pool
