@@ -212,48 +212,46 @@ export function WorkbenchPage() {
   };
   return (
     <section className="studio-home">
-      <header className="studio-hero">
-        <h1>从一个乡墅灵感，开始视频创作</h1>
-        <p>粘贴视频链接，或直接上传视频</p>
-      </header>
       <div className="studio-home-grid">
         <div className="studio-home-main">
+          <header className="studio-hero">
+            <h1>从一个乡墅灵感，开始视频创作</h1>
+            <p>粘贴视频链接，或直接上传视频</p>
+          </header>
           <div className="studio-start">
-            <div className="studio-source-row">
-              <div className="studio-source-input">
-                <button
-                  type="button"
-                  className="studio-upload-icon"
-                  aria-label="上传视频"
-                  onClick={() => {
-                    if (review) {
-                      notify("审核示例不执行真实上传。");
-                      return;
-                    }
-                    fileInputRef.current?.click();
-                  }}
-                >
-                  <Icon name="upload" />
-                </button>
-                <input
-                  aria-label="视频链接"
-                  placeholder="粘贴视频链接，如抖音、视频号、小红书链接等"
-                  value={sourceLink}
-                  onChange={(event) => setSourceLink(event.target.value)}
-                />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  aria-label="选择视频文件"
-                  accept=".mp4,.mov,video/mp4,video/quicktime"
-                  hidden
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) handleUploadFile(file);
-                    event.target.value = "";
-                  }}
-                />
-              </div>
+            <div className="studio-source-input">
+              <button
+                type="button"
+                className="studio-upload-icon"
+                aria-label="上传视频"
+                onClick={() => {
+                  if (review) {
+                    notify("审核示例不执行真实上传。");
+                    return;
+                  }
+                  fileInputRef.current?.click();
+                }}
+              >
+                <Icon name="upload" />
+              </button>
+              <input
+                aria-label="视频链接"
+                placeholder="粘贴视频链接，如抖音、视频号、小红书链接等"
+                value={sourceLink}
+                onChange={(event) => setSourceLink(event.target.value)}
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                aria-label="选择视频文件"
+                accept=".mp4,.mov,video/mp4,video/quicktime"
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) handleUploadFile(file);
+                  event.target.value = "";
+                }}
+              />
               <Button variant="primary" onClick={() => begin("copy")}>
                 <Icon name="pen" />
                 提取文案
@@ -501,8 +499,8 @@ export function TasksPage() {
           <Button onClick={() => openLive("tasks")}>历史任务与下载</Button>
         )}
         <Button variant="primary" onClick={() => navigate("replica")}>
-          <Icon name="plus" />
-          新建创作
+          <Icon name="play" />
+          视频复刻
         </Button>
       </div>
       <Tabs

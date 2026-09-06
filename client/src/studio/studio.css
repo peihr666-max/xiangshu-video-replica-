@@ -618,8 +618,8 @@
   margin-top: 5px;
 }
 .studio-hero {
-  text-align: left;
-  margin: 58px 0 22px;
+  text-align: center;
+  margin: 44px 0 22px;
 }
 .studio-hero h1 {
   font-size: 31px;
@@ -637,28 +637,14 @@
   grid-template-columns: minmax(0, 2.55fr) minmax(270px, 1fr);
   gap: 32px;
 }
+/* hero 移入左栏后，右栏与标题区顶部对齐，避免顶到搜索栏 */
+.studio-home-side {
+  margin-top: 44px;
+}
 .studio-start {
   margin: 0 0 27px;
-  text-align: left;
+  text-align: center;
   padding: 0 20px;
-}
-.studio-source-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.studio-source-row > .studio-button {
-  flex: none;
-  font-size: 14px;
-  min-height: 37px;
-  min-width: 132px;
-  justify-content: center;
-  padding: 6px 9px;
-}
-.studio-upload-status {
-  color: #999c93;
-  font-size: 13px;
-  margin: 8px 0 0;
 }
 .studio-source-input {
   display: flex;
@@ -668,8 +654,6 @@
   border-radius: 12px;
   padding: 8px 8px 8px 12px;
   gap: 12px;
-  flex: 1;
-  min-width: 0;
 }
 .studio-upload-icon {
   flex-shrink: 0;
@@ -690,13 +674,26 @@
   border: none;
   background: transparent;
   width: 100%;
+  min-width: 0;
   padding: 5px 0;
   font-size: 14px;
+}
+.studio-source-input .studio-button {
+  flex: none;
+  font-size: 14px;
+  min-height: 37px;
+  padding: 6px 14px;
+  white-space: nowrap;
+}
+.studio-upload-status {
+  color: #999c93;
+  font-size: 13px;
+  margin: 8px 0 0;
 }
 .studio-start p {
   color: #999c93;
   font-size: 14px;
-  margin: 8px 0 0;
+  margin: 0;
 }
 .studio-home-metrics {
   display: grid;
@@ -1447,16 +1444,11 @@
   .studio-start {
     padding: 0;
   }
-  .studio-source-row {
+  .studio-source-input {
     flex-wrap: wrap;
   }
-  .studio-source-row > .studio-source-input,
-  .studio-source-row > .studio-button {
-    min-width: 0;
-  }
-  .studio-source-row > .studio-button {
-    flex: 1 1 40%;
-    min-height: 37px;
+  .studio-source-input input:not([type="file"]) {
+    flex: 1 1 100%;
   }
   .studio-result-grid {
     grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);
