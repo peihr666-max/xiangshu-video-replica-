@@ -14,14 +14,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
 import re
+import threading
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from app.db_portable import BusinessConnection
@@ -39,8 +44,11 @@ PLATFORM_WECHAT = "wechat_channels"
 MAX_TAGS = 6
 WECHAT_SEARCH_PAGES = 3
 _WECHAT_DETAIL_TIMEOUT_SECONDS = 30.0
+_WECHAT_DETAIL_CACHE_TTL_SECONDS = 60.0
+_WECHAT_DETAIL_CACHE_MAX_SIZE = 128
 
 _EM_TAG_PATTERN = re.compile(r"<em[^>]*>|</em>", re.IGNORECASE)
+_IRRELEVANT_GAME_PATTERN = re.compile(r"minecraft|我的世界|(?<!\w)mc(?!\w)", re.IGNORECASE)
 _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
@@ -94,15 +102,10 @@ class UrllibViralHttpTransport(ViralHttpTransport):
             with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
                 return cast(bytes, response.read())
         except HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read()[:500].decode("utf-8", "replace")
-            except OSError:
-                pass
             logger.warning(
-                "Viral source request failed with HTTP status %s: %s",
+                "Viral source request failed with HTTP status %s (%s)",
                 exc.code,
-                detail,
+                type(exc).__name__,
             )
             raise ViralSourceError("爆款数据源暂时不可用，请稍后重试") from exc
         except (TimeoutError, URLError, OSError) as exc:
@@ -139,6 +142,8 @@ class ViralVideo:
     play_url: str | None = None
     audio_url: str | None = None
     native: dict[str, Any] = field(default_factory=dict)
+    # 封面落主存储后的对象 key；存在时客户端下发自有稳定地址。
+    cover_key: str | None = None
 
     def to_client_dict(self) -> dict[str, Any]:
         return {
@@ -149,7 +154,11 @@ class ViralVideo:
             "author": self.author,
             "authorAvatar": self.author_avatar,
             "verified": self.verified,
-            "coverUrl": self.cover_url,
+            "coverUrl": (
+                f"/api/viral/covers/{self.platform}/{quote(self.video_id, safe='')}"
+                if self.cover_key
+                else self.cover_url
+            ),
             "durationMs": self.duration_ms,
             "likes": self.likes,
             "comments": self.comments,
@@ -160,7 +169,8 @@ class ViralVideo:
             "likeDisplay": self.like_display,
             "tags": list(self.tags[:MAX_TAGS]),
             "hasPlayableAudio": bool(self.audio_url),
-            "native": dict(self.native),
+            "playUrl": self.play_url,
+            "native": {key: value for key, value in self.native.items() if not key.startswith("_")},
         }
 
 
@@ -191,6 +201,20 @@ class WechatVideoDetail:
     duration_ms: int | None
     width: int | None
     height: int | None
+
+
+_WechatDetailCacheKey = tuple[bytes, str, str, str]
+_WECHAT_DETAIL_CACHE: OrderedDict[_WechatDetailCacheKey, tuple[float, WechatVideoDetail]] = (
+    OrderedDict()
+)
+_WECHAT_DETAIL_CACHE_LOCK = threading.Lock()
+_WECHAT_DETAIL_REQUEST_LOCKS = tuple(threading.Lock() for _ in range(32))
+
+
+def _reset_wechat_detail_cache() -> None:
+    """清空进程内短缓存；仅供隔离测试和进程生命周期管理。"""
+    with _WECHAT_DETAIL_CACHE_LOCK:
+        _WECHAT_DETAIL_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +268,19 @@ def parse_compact_count(text: str | int | None) -> int | None:
         return None
 
 
+def is_irrelevant_viral_video(title: str) -> bool:
+    """识别明确的 Minecraft 内容，避免把普通 ``mc`` 子串误杀."""
+    return bool(_IRRELEVANT_GAME_PATTERN.search(strip_highlight(title)))
+
+
+def _optional_count(value: Any) -> int | None:
+    """详情计数仅保留上游实际提供的非负整数，缺失或异常值返回 None."""
+    if isinstance(value, bool):
+        return None
+    parsed = parse_compact_count(value) if isinstance(value, (str, int)) else None
+    return parsed if parsed is not None and parsed >= 0 else None
+
+
 def _first_url(block: Mapping[str, Any] | None) -> str | None:
     if not isinstance(block, Mapping):
         return None
@@ -274,30 +311,40 @@ def _pick_image_url(block: Mapping[str, Any] | None) -> str | None:
     return sorted(strings, key=rank)[0]
 
 
+def pick_douyin_cover(video_block: Mapping[str, Any]) -> str | None:
+    """封面择优：cover/origin_cover/dynamic_cover 全部候选里按可渲染度取优."""
+    best: tuple[tuple[int, int], str] | None = None
+    for block_name in ("cover", "origin_cover", "dynamic_cover"):
+        url = _pick_image_url(video_block.get(block_name))
+        if not url:
+            continue
+        rank = (".heic" in url, "c-sign" in url)
+        if best is None or rank < best[0]:
+            best = (rank, url)
+    return best[1] if best else None
+
+
 def pick_douyin_play_url(video_block: Mapping[str, Any]) -> str | None:
-    """从 bit_rate 多档分辨率里取高度最小的直链（最低分辨率优先）."""
+    """仅在浏览器兼容档位中选最低分辨率，避免 ByteVC/HEVC 私有变体。"""
     gears = video_block.get("bit_rate")
+    candidates = [video_block, *(gears if isinstance(gears, list) else [])]
     best: tuple[int, str] | None = None
-    if isinstance(gears, list):
-        for gear in gears:
-            if not isinstance(gear, Mapping):
-                continue
-            play_addr = gear.get("play_addr")
-            if not isinstance(play_addr, Mapping):
-                continue
-            url = _first_url(play_addr)
-            if not url:
-                continue
-            height = play_addr.get("height")
-            height_value = height if isinstance(height, int) else 0
-            if best is None or height_value < best[0]:
-                best = (height_value, url)
-    if best:
-        return best[1]
-    play_addr = video_block.get("play_addr")
-    if isinstance(play_addr, Mapping):
-        return _first_url(play_addr)
-    return None
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        if any(str(candidate.get(flag) or "0") != "0" for flag in ("is_bytevc1", "is_h265")):
+            continue
+        play_addr = candidate.get("play_addr")
+        if not isinstance(play_addr, Mapping):
+            continue
+        url = _first_url(play_addr)
+        if not url:
+            continue
+        height = play_addr.get("height")
+        rank = height if isinstance(height, int) and height > 0 else 2**31
+        if best is None or rank < best[0]:
+            best = (rank, url)
+    return best[1] if best else None
 
 
 def _wechat_nonce(item: Mapping[str, Any]) -> str | None:
@@ -361,19 +408,19 @@ def normalize_douyin_aweme(aweme: Mapping[str, Any], category: str) -> ViralVide
         author=str(author_block.get("nickname") or "").strip(),
         author_avatar=avatar,
         verified=bool(author_block.get("is_verified")),
-        cover_url=_pick_image_url(video_block.get("cover")),
+        cover_url=pick_douyin_cover(video_block),
         duration_ms=max(duration_ms, 0),
-        likes=int(stats.get("digg_count") or 0),
-        comments=int(stats.get("comment_count") or 0),
-        shares=int(stats.get("share_count") or 0),
-        collects=int(stats.get("collect_count") or 0),
-        published_at=int(aweme["create_time"]) if aweme.get("create_time") else None,
+        likes=_optional_count(stats.get("digg_count")) or 0,
+        comments=_optional_count(stats.get("comment_count")) or 0,
+        shares=_optional_count(stats.get("share_count")) or 0,
+        collects=_optional_count(stats.get("collect_count")) or 0,
+        published_at=_optional_count(aweme.get("create_time")),
         published_display=None,
         like_display=None,
         tags=tags,
         play_url=pick_douyin_play_url(video_block),
         audio_url=audio_url,
-        native={"aweme_id": video_id},
+        native={"aweme_id": video_id, "_playback_version": 1},
     )
 
 
@@ -405,7 +452,7 @@ def normalize_wechat_item(item: Mapping[str, Any], category: str) -> ViralVideo 
         comments=None,
         shares=None,
         collects=None,
-        published_at=int(pub_time) if pub_time else None,
+        published_at=_optional_count(pub_time),
         published_display=str(item.get("dateTime") or "") or None,
         like_display=str(like_display) if like_display else None,
         tags=extract_wechat_tags(title),
@@ -509,7 +556,7 @@ class ViralSourceClient:
                 if not isinstance(aweme, Mapping):
                     continue
                 normalized = normalize_douyin_aweme(aweme, category)
-                if normalized:
+                if normalized and not is_irrelevant_viral_video(normalized.title):
                     videos.append(normalized)
         return videos
 
@@ -552,7 +599,7 @@ class ViralSourceClient:
                         if not isinstance(item, Mapping):
                             continue
                         normalized = normalize_wechat_item(item, category)
-                        if normalized:
+                        if normalized and not is_irrelevant_viral_video(normalized.title):
                             videos.append(normalized)
         cursor_value = data.get("cursor")
         continue_flag = data.get("continue_flag")
@@ -591,6 +638,37 @@ class ViralSourceClient:
     def wechat_video_detail(
         self, *, export_id: str, object_nonce_id: str | None = None
     ) -> WechatVideoDetail:
+        cache_key: _WechatDetailCacheKey = (
+            hashlib.sha256(self.api_key.encode("utf-8")).digest(),
+            self._base_url,
+            export_id,
+            object_nonce_id or "",
+        )
+        request_lock = _WECHAT_DETAIL_REQUEST_LOCKS[
+            hash(cache_key) % len(_WECHAT_DETAIL_REQUEST_LOCKS)
+        ]
+        with request_lock:
+            now = time.monotonic()
+            with _WECHAT_DETAIL_CACHE_LOCK:
+                cached = _WECHAT_DETAIL_CACHE.get(cache_key)
+                if cached is not None and now - cached[0] <= _WECHAT_DETAIL_CACHE_TTL_SECONDS:
+                    _WECHAT_DETAIL_CACHE.move_to_end(cache_key)
+                    return cached[1]
+                _WECHAT_DETAIL_CACHE.pop(cache_key, None)
+
+            detail = self._fetch_wechat_video_detail(
+                export_id=export_id, object_nonce_id=object_nonce_id
+            )
+            with _WECHAT_DETAIL_CACHE_LOCK:
+                _WECHAT_DETAIL_CACHE[cache_key] = (time.monotonic(), detail)
+                _WECHAT_DETAIL_CACHE.move_to_end(cache_key)
+                while len(_WECHAT_DETAIL_CACHE) > _WECHAT_DETAIL_CACHE_MAX_SIZE:
+                    _WECHAT_DETAIL_CACHE.popitem(last=False)
+            return detail
+
+    def _fetch_wechat_video_detail(
+        self, *, export_id: str, object_nonce_id: str | None
+    ) -> WechatVideoDetail:
         payload: dict[str, Any] = {"export_id": export_id, "raw": False}
         if object_nonce_id:
             payload["object_nonce_id"] = object_nonce_id
@@ -611,11 +689,11 @@ class ViralSourceClient:
             description=str(data.get("description") or "") or None,
             nickname=str(data.get("nickname") or "").strip(),
             username=str(data.get("username") or "") or None,
-            create_time=int(data["create_time"]) if data.get("create_time") else None,
-            like_count=int(data["like_count"]) if data.get("like_count") else None,
-            fav_count=int(data["fav_count"]) if data.get("fav_count") else None,
-            forward_count=(int(data["forward_count"]) if data.get("forward_count") else None),
-            comment_count=(int(data["comment_count"]) if data.get("comment_count") else None),
+            create_time=_optional_count(data.get("create_time")),
+            like_count=_optional_count(data.get("like_count")),
+            fav_count=_optional_count(data.get("fav_count")),
+            forward_count=_optional_count(data.get("forward_count")),
+            comment_count=_optional_count(data.get("comment_count")),
             city=str(city) if city else None,
             full_url=str(media_block.get("full_url") or "") or None,
             decode_key=str(media_block.get("decode_key") or "") or None,

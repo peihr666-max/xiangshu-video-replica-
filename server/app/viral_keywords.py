@@ -16,7 +16,7 @@ VIRAL_CATEGORIES: dict[str, dict[str, str]] = {
     "建房预算": {"douyin": "自建房预算", "wechat_channels": "建房预算"},
     "户型设计": {"douyin": "别墅设计", "wechat_channels": "别墅设计"},
     "施工避坑": {"douyin": "自建房施工", "wechat_channels": "自建房避坑"},
-    "庭院案例": {"douyin": "乡墅庭院", "wechat_channels": "乡村别墅庭院"},
+    "庭院案例": {"douyin": "农村庭院设计", "wechat_channels": "农村庭院设计"},
 }
 
 

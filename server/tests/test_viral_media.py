@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier, Lock
 from typing import Any
 
 import pytest
@@ -154,7 +157,7 @@ def test_douyin_falls_back_to_low_resolution_video() -> None:
     object.__setattr__(video, "audio_url", None)
     result = pipeline.fetch(video)
     assert result.kind == "video"
-    assert storage.objects["viral/douyin/v1.mp4"][0] == b"\x00\x00\x00 ftypisom"
+    assert storage.objects["viral/douyin/v1.browser.mp4"][0] == b"\x00\x00\x00 ftypisom"
     assert fetcher_ref.calls == ["https://cdn.test/v1.mp4"]
 
 
@@ -265,3 +268,66 @@ def test_second_fetch_hits_storage_cache() -> None:
     assert fetcher_ref.calls.count("http://wxapp.tc.qq.com/file") == 1
     assert detail_transport.last_body_count == 1
     assert "viral/wechat_channels/doc-5.mp4" in storage.objects
+
+
+def test_concurrent_fetches_share_one_download_and_storage_write() -> None:
+    class SlowFetcher(FakeFetcher):
+        def __init__(self) -> None:
+            super().__init__({"https://cdn.test/v1.mp4": b"\x00\x00\x00 ftypisom"})
+            self._lock = Lock()
+
+        def fetch(self, url: str) -> bytes:
+            with self._lock:
+                self.calls.append(url)
+            time.sleep(0.08)
+            return self.payloads[url]
+
+    storage = FakeViralStorage()
+    fetcher = SlowFetcher()
+    first_pipeline, _, _, _ = _pipeline(storage=storage, fetcher=fetcher)
+    second_pipeline, _, _, _ = _pipeline(storage=storage, fetcher=fetcher)
+    video = _video("douyin")
+    barrier = Barrier(2)
+
+    def fetch(pipeline: ViralMediaPipeline):
+        barrier.wait(timeout=5)
+        return pipeline.fetch(video, prefer="video")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(fetch, [first_pipeline, second_pipeline]))
+
+    assert fetcher.calls == ["https://cdn.test/v1.mp4"]
+    assert sorted(result.cache_hit for result in results) == [False, True]
+
+
+def test_douyin_prefer_video_stores_mp4_even_with_audio() -> None:
+    fetcher = FakeFetcher(
+        {
+            "https://cdn.test/v9.mp3": b"ID3-audio",
+            "https://cdn.test/v9.mp4": b"\x00\x00\x00 ftypisom",
+        }
+    )
+    pipeline, storage, _, _ = _pipeline(fetcher=fetcher)
+    video = _video("douyin", video_id="v9")
+    result = pipeline.fetch(video, prefer="video")
+    assert result.kind == "video"
+    assert "viral/douyin/v9.browser.mp4" in storage.objects
+    assert "viral/douyin/v9.mp3" not in storage.objects
+    # 默认（不传 prefer）仍音频优先。
+    default = pipeline.fetch(video)
+    assert default.kind == "audio"
+    assert "viral/douyin/v9.mp3" in storage.objects
+
+
+def test_wechat_retains_detail_statistics_for_database_feedback():
+    detail = _detail_payload("http://wxapp.tc.qq.com/file", _DECODE_KEY)
+    detail["data"].update(like_count=123, comment_count=0, forward_count=7, fav_count=8)
+    pipeline, _, _, transport = _pipeline(
+        detail_payload=detail,
+        fetcher=FakeFetcher({"http://wxapp.tc.qq.com/file": b"\x00\x00\x00 ftypisom"}),
+    )
+    pipeline.fetch(_video("wechat_channels", export_id="export/feedback"))
+    assert pipeline.detail.comment_count == 0
+    assert pipeline.detail.forward_count == 7
+    assert pipeline.detail.fav_count == 8
+    assert transport.last_body_count == 1

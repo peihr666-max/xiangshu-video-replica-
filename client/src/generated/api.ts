@@ -2424,6 +2424,97 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/viral/videos": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Viral Videos */
+    get: operations["list_viral_videos_api_viral_videos_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/viral/videos/statistics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Fetch Viral Video Statistics */
+    post: operations["fetch_viral_video_statistics_api_viral_videos_statistics_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/viral/videos/media": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Fetch Viral Video Media */
+    post: operations["fetch_viral_video_media_api_viral_videos_media_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/viral/covers/{platform}/{video_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Viral Cover
+     * @description 自有存储的长期封面副本（源站签名链接会过期）.
+     *
+     *     无需登录：封面本身是公开内容，对象 key 由路由参数确定性派生，
+     *     不接受任意 key。视频 id 仅允许字母数字与连字符/下划线。
+     */
+    get: operations["get_viral_cover_api_viral_covers__platform___video_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/viral/videos/media/file": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Download Viral Media File */
+    get: operations["download_viral_media_file_api_viral_videos_media_file_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/projects/{project_id}/main-character": {
     parameters: {
       query?: never;
@@ -6222,6 +6313,106 @@ export interface components {
       /** Stale Reasons */
       stale_reasons: string[];
     };
+    /** ViralListResponse */
+    ViralListResponse: {
+      /** Platform */
+      platform: string;
+      /** Sort */
+      sort: string;
+      /** Categories */
+      categories: string[];
+      /** Items */
+      items: components["schemas"]["ViralVideoItem"][];
+      /** Fetchedat */
+      fetchedAt: string | null;
+      /**
+       * Source
+       * @default database
+       * @constant
+       */
+      source: "database";
+      /**
+       * Stale
+       * @default false
+       */
+      stale: boolean;
+    };
+    /** ViralMediaRequest */
+    ViralMediaRequest: {
+      /** Platform */
+      platform: string;
+      /** Videoid */
+      videoId: string;
+      /** Kind */
+      kind?: ("audio" | "video") | null;
+    };
+    /** ViralMediaResponse */
+    ViralMediaResponse: {
+      /** Kind */
+      kind: string;
+      /** Url */
+      url: string;
+      /** Contenttype */
+      contentType: string;
+      /** Cachehit */
+      cacheHit: boolean;
+      video?: components["schemas"]["ViralVideoItem"] | null;
+    };
+    /** ViralStatisticsRequest */
+    ViralStatisticsRequest: {
+      /** Videoids */
+      videoIds: string[];
+    };
+    /** ViralStatisticsResponse */
+    ViralStatisticsResponse: {
+      /** Items */
+      items: components["schemas"]["ViralVideoItem"][];
+    };
+    /** ViralVideoItem */
+    ViralVideoItem: {
+      /** Platform */
+      platform: string;
+      /** Videoid */
+      videoId: string;
+      /** Category */
+      category: string;
+      /** Title */
+      title: string;
+      /** Author */
+      author: string;
+      /** Authoravatar */
+      authorAvatar: string | null;
+      /** Verified */
+      verified: boolean;
+      /** Coverurl */
+      coverUrl: string | null;
+      /** Durationms */
+      durationMs: number;
+      /** Likes */
+      likes: number;
+      /** Comments */
+      comments: number | null;
+      /** Shares */
+      shares: number | null;
+      /** Collects */
+      collects: number | null;
+      /** Publishedat */
+      publishedAt: number | null;
+      /** Publisheddisplay */
+      publishedDisplay: string | null;
+      /** Likedisplay */
+      likeDisplay: string | null;
+      /** Tags */
+      tags: string[];
+      /** Hasplayableaudio */
+      hasPlayableAudio: boolean;
+      /** Playurl */
+      playUrl?: string | null;
+      /** Native */
+      native?: {
+        [key: string]: unknown;
+      };
+    };
     /** VideoMetadata */
     VideoMetadata: {
       /** Duration Seconds */
@@ -7213,6 +7404,179 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["StudioStatsResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  list_viral_videos_api_viral_videos_get: {
+    parameters: {
+      query?: {
+        platform?: string;
+        sort?: string;
+      };
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ViralListResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  fetch_viral_video_statistics_api_viral_videos_statistics_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ViralStatisticsRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ViralStatisticsResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  fetch_viral_video_media_api_viral_videos_media_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ViralMediaRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ViralMediaResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_viral_cover_api_viral_covers__platform___video_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        platform: string;
+        video_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  download_viral_media_file_api_viral_videos_media_file_get: {
+    parameters: {
+      query: {
+        key: string;
+        expires: string;
+        user_id: string;
+        sig: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
         };
       };
       /** @description Validation Error */

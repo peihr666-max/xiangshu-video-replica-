@@ -4691,6 +4691,10 @@ export async function customerCloseRechargeOrder(
 // 爆款视频（C4 重启）：抖音 / 视频号最近 7 天爆款参考库
 // ---------------------------------------------------------------------------
 
+const VIRAL_LIST_TIMEOUT_MS = 120_000;
+const VIRAL_MEDIA_TIMEOUT_MS = 120_000;
+const VIRAL_STATISTICS_TIMEOUT_MS = 150_000;
+
 export type ViralPlatform = "douyin" | "wechat_channels";
 export type ViralSort = "hot" | "latest";
 
@@ -4713,6 +4717,8 @@ export type ViralVideoItem = {
   likeDisplay: string | null;
   tags: string[];
   hasPlayableAudio: boolean;
+  /** 源平台播放地址；真实列表播放统一由服务端媒体管线转存后使用。 */
+  playUrl: string | null;
 };
 
 export type ViralListResponse = {
@@ -4720,7 +4726,9 @@ export type ViralListResponse = {
   sort: ViralSort;
   categories: string[];
   items: ViralVideoItem[];
-  fetchedAt: string;
+  fetchedAt: string | null;
+  source?: "database";
+  stale?: boolean;
 };
 
 export type ViralMediaResponse = {
@@ -4728,6 +4736,11 @@ export type ViralMediaResponse = {
   url: string;
   contentType: string;
   cacheHit: boolean;
+  video?: ViralVideoItem | null;
+};
+
+export type ViralStatisticsResponse = {
+  items: ViralVideoItem[];
 };
 
 /** 最近 7 天爆款列表（服务端按分类关键词聚合，带计费护栏缓存）。 */
@@ -4736,27 +4749,45 @@ export function listViralVideos(
   sort: ViralSort = "hot",
 ): Promise<ViralListResponse> {
   const query = new URLSearchParams({ platform, sort });
-  // 视频号冷缓存需聚合 12 次上游调用（3 页 × 4 分类），远超常规接口超时。
+  // 视频号冷库需聚合 12 次上游调用（3 页 × 4 分类），实测最长约 80s。
   return requestApiJson<ViralListResponse>(
     `/api/viral/videos?${query}`,
     "爆款视频列表暂不可用",
     {},
-    CLOUD_OP_TIMEOUT_MS,
+    VIRAL_LIST_TIMEOUT_MS,
   );
 }
 
-/** 按需取媒体：抖音音频优先/低清兜底；视频号解密后直传主存储。 */
+/** 按需取媒体：缺省音频优先；kind=video 时取低清视频（播放用）。 */
 export function fetchViralVideoMedia(
   platform: ViralPlatform,
   videoId: string,
+  kind?: "audio" | "video",
 ): Promise<ViralMediaResponse> {
   return requestApiJson<ViralMediaResponse>(
     "/api/viral/videos/media",
     "视频素材准备失败",
     {
       method: "POST",
-      body: JSON.stringify({ platform, videoId }),
+      body: JSON.stringify(
+        kind ? { platform, videoId, kind } : { platform, videoId },
+      ),
     },
-    CLOUD_OP_TIMEOUT_MS,
+    VIRAL_MEDIA_TIMEOUT_MS,
+  );
+}
+
+/** 按需补齐视频号互动统计；服务端负责缓存与失败退避。 */
+export function fetchViralVideoStatistics(
+  videoIds: string[],
+): Promise<ViralStatisticsResponse> {
+  return requestApiJson<ViralStatisticsResponse>(
+    "/api/viral/videos/statistics",
+    "视频统计暂时无法更新",
+    {
+      method: "POST",
+      body: JSON.stringify({ videoIds }),
+    },
+    VIRAL_STATISTICS_TIMEOUT_MS,
   );
 }

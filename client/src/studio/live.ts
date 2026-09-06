@@ -398,7 +398,7 @@ function formatViralDuration(durationMs: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function viralVideo(item: ViralVideoItem): StudioVideo {
+export function studioVideoFromViral(item: ViralVideoItem): StudioVideo {
   return {
     id: `${item.platform}-${item.videoId}`,
     title: item.title,
@@ -408,8 +408,8 @@ function viralVideo(item: ViralVideoItem): StudioVideo {
     poster: item.coverUrl ?? "",
     duration: formatViralDuration(item.durationMs),
     likes: item.likes,
-    collections: item.collects ?? 0,
-    shares: item.shares ?? 0,
+    collections: item.collects,
+    shares: item.shares,
     description: item.title,
     platformKey: item.platform,
     nativeId: item.videoId,
@@ -421,17 +421,31 @@ function viralVideo(item: ViralVideoItem): StudioVideo {
     likeDisplay: item.likeDisplay,
     tags: item.tags,
     hasPlayableAudio: item.hasPlayableAudio,
+    playUrl: item.playUrl,
   };
 }
 
 /** 爆款视频（C4 重启）：两个平台各自聚合；数据源未配置或失败时保持
  * 空态，不打断工作台其余数据的加载（与统计指标同一容错口径）。 */
-async function loadViralVideos(): Promise<StudioVideo[]> {
-  const [douyin, wechat] = await Promise.all([
+async function loadViralVideos(): Promise<{
+  videos: StudioVideo[];
+  errors: string[];
+}> {
+  const results = await Promise.allSettled([
     listViralVideos("douyin"),
     listViralVideos("wechat_channels"),
   ]);
-  return [...douyin.items, ...wechat.items].map(viralVideo);
+  const labels = ["抖音", "视频号"];
+  const videos: StudioVideo[] = [];
+  const errors: string[] = [];
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      videos.push(...result.value.items.map(studioVideoFromViral));
+    } else {
+      errors.push(`读取${labels[index]}爆款失败：${errorText(result.reason)}`);
+    }
+  });
+  return { videos, errors };
 }
 
 export async function loadStudioData(
@@ -482,11 +496,16 @@ export async function loadStudioData(
   if (oralResult.status === "rejected") {
     errors.push(`读取口播任务失败：${errorText(oralResult.reason)}`);
   }
+  if (viralResult.status === "rejected") {
+    errors.push(`读取爆款视频失败：${errorText(viralResult.reason)}`);
+  } else {
+    errors.push(...viralResult.value.errors);
+  }
 
   return {
     people: peopleData.people,
     assets: [...projectData.assets, ...peopleData.assets],
-    videos: viralResult.status === "fulfilled" ? viralResult.value : [],
+    videos: viralResult.status === "fulfilled" ? viralResult.value.videos : [],
     tasks,
     projects: projectData.projects,
     errors,

@@ -17,9 +17,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Protocol, cast
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 from app.storage import DownloadIntent, StoredObject
@@ -30,6 +32,7 @@ from app.viral_tikhub import (
     ViralSourceClient,
     ViralSourceError,
     ViralVideo,
+    WechatVideoDetail,
 )
 
 VIRAL_STORAGE_PREFIX = "viral"
@@ -38,6 +41,7 @@ _DEFAULT_FETCH_TIMEOUT_SECONDS = 60.0
 _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 
 logger = logging.getLogger(__name__)
+_MEDIA_LOCKS = tuple(threading.Lock() for _ in range(32))
 
 
 class ViralMediaError(ViralSourceError):
@@ -56,7 +60,13 @@ class ViralMediaResult:
 
 def viral_media_key(platform: str, video_id: str, kind: str) -> str:
     extension = "mp3" if kind == "audio" else "mp4"
+    if platform == PLATFORM_DOUYIN and kind == "video":
+        extension = "browser.mp4"
     return f"{VIRAL_STORAGE_PREFIX}/{platform}/{video_id}.{extension}"
+
+
+def viral_cover_key(platform: str, video_id: str) -> str:
+    return f"{VIRAL_STORAGE_PREFIX}/cover/{platform}/{video_id}"
 
 
 class ViralStorage(Protocol):
@@ -83,6 +93,22 @@ class UrlFetcher:
             return cast(bytes, response.read())
 
 
+def guess_image_content_type(content: bytes, url: str = "") -> str:
+    """按魔数判定图片类型，扩展名兜底（部分源站 URL 无扩展名）."""
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    if content.startswith(b"\x89PNG"):
+        return "image/png"
+    if content.startswith(b"GIF8"):
+        return "image/gif"
+    from mimetypes import guess_type
+
+    guessed = guess_type(urlsplit(url).path)[0]
+    return guessed if guessed and guessed.startswith("image/") else "image/jpeg"
+
+
 def _fetch_or_raise(fetcher: UrlFetcher, url: str) -> bytes:
     try:
         return fetcher.fetch(url)
@@ -93,34 +119,82 @@ def _fetch_or_raise(fetcher: UrlFetcher, url: str) -> bytes:
         raise ViralMediaError("该视频素材暂时无法获取，请稍后重试") from exc
 
 
+class CoverEnricher:
+    """把数据源封面落成自有存储的长期副本（源站签名链接会过期）.
+
+    每个封面只下载一次（head 去重）；下载失败保留源站链接兜底。
+    """
+
+    def __init__(self, *, storage: ViralStorage, fetcher: UrlFetcher) -> None:
+        self._storage = storage
+        self._fetcher = fetcher
+
+    def stable_url(self, platform: str, video_id: str) -> str:
+        return f"/api/viral/covers/{platform}/{quote(video_id, safe='')}"
+
+    def enrich(self, video: ViralVideo) -> ViralVideo:
+        if not video.cover_url:
+            return video
+        key = viral_cover_key(video.platform, video.video_id)
+        try:
+            if self._storage.head_object(key) is None:
+                content = _fetch_or_raise(self._fetcher, video.cover_url)
+                self._storage.put_object(
+                    key,
+                    content,
+                    content_type=guess_image_content_type(content, video.cover_url),
+                )
+        except Exception as exc:
+            logger.warning(
+                "Viral cover unavailable for %s/%s: %s",
+                video.platform,
+                video.video_id,
+                type(exc).__name__,
+            )
+            return video
+        return replace(
+            video,
+            cover_key=key,
+            cover_url=self.stable_url(video.platform, video.video_id),
+        )
+
+
 class ViralMediaPipeline:
     """按平台把爆款视频媒体取回主存储并返回可播放/下载的签名地址."""
 
     def __init__(
         self,
         *,
-        client: ViralSourceClient,
+        client: ViralSourceClient | None,
         storage: ViralStorage,
         fetcher: UrlFetcher | None = None,
     ) -> None:
         self._client = client
         self._storage = storage
         self._fetcher = fetcher or UrlFetcher()
+        self.detail: WechatVideoDetail | None = None
 
-    def fetch(self, video: ViralVideo) -> ViralMediaResult:
-        kind, content_type = self._resolve_kind(video)
+    def fetch(self, video: ViralVideo, *, prefer: str | None = None) -> ViralMediaResult:
+        kind, content_type = self._resolve_kind(video, prefer)
         key = viral_media_key(video.platform, video.video_id, kind)
-        existing = self._storage.head_object(key)
-        if existing is not None:
-            return self._result(key, existing, kind, content_type, cache_hit=True)
-        content = self._download_content(video, kind)
-        stored = self._storage.put_object(key, content, content_type=content_type)
-        return self._result(key, stored, kind, content_type, cache_hit=False)
+        # 有界锁槽：同一文件的并发播放等待首份副本，不重复付费、下载或覆盖。
+        with _MEDIA_LOCKS[hash(key) % len(_MEDIA_LOCKS)]:
+            self.detail = None
+            existing = self._storage.head_object(key)
+            if existing is not None:
+                return self._result(key, existing, kind, content_type, cache_hit=True)
+            content = self._download_content(video, kind)
+            stored = self._storage.put_object(key, content, content_type=content_type)
+            return self._result(key, stored, kind, content_type, cache_hit=False)
 
     # -- 内部 -----------------------------------------------------------------
 
-    def _resolve_kind(self, video: ViralVideo) -> tuple[str, str]:
+    def _resolve_kind(self, video: ViralVideo, prefer: str | None = None) -> tuple[str, str]:
         if video.platform == PLATFORM_DOUYIN:
+            if prefer == "video":
+                if video.play_url:
+                    return "video", "video/mp4"
+                raise ViralMediaError("该视频暂无可用的媒体地址")
             if video.audio_url:
                 return "audio", "audio/mpeg"
             if video.play_url:
@@ -143,15 +217,19 @@ class ViralMediaPipeline:
             return self._download_wechat_video(video)
         raise ViralMediaError("暂不支持的视频平台")
 
-    def _download_wechat_video(self, video: ViralVideo) -> bytes:
+    def _wechat_detail(self, video: ViralVideo) -> WechatVideoDetail:
         export_id = str(video.native.get("export_id") or "")
-        if not export_id:
+        if not export_id or self._client is None:
             raise ViralMediaError("该视频素材暂时无法获取，请稍后重试")
         nonce = video.native.get("object_nonce_id") or None
         try:
-            detail = self._client.wechat_video_detail(export_id=export_id, object_nonce_id=nonce)
+            return self._client.wechat_video_detail(export_id=export_id, object_nonce_id=nonce)
         except ViralSourceError as exc:
             raise ViralMediaError("该视频素材暂时无法获取，请稍后重试") from exc
+
+    def _download_wechat_video(self, video: ViralVideo) -> bytes:
+        detail = self._wechat_detail(video)
+        self.detail = detail
         if not detail.full_url or not detail.decode_key:
             raise ViralMediaError("该视频素材暂时无法获取，请稍后重试")
         content = _fetch_or_raise(self._fetcher, detail.full_url)

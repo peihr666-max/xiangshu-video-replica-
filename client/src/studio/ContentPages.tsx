@@ -1,7 +1,19 @@
+import type { RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchViralVideoMedia } from "../api";
+import {
+  fetchViralVideoMedia,
+  fetchViralVideoStatistics,
+  listViralVideos,
+  type ViralVideoItem,
+} from "../api";
 import { useStudio } from "./context";
-import type { StudioAsset, StudioPublishDraft, StudioVideo } from "./types";
+import { studioVideoFromViral } from "./live";
+import type {
+  StudioAsset,
+  StudioContextValue,
+  StudioPublishDraft,
+  StudioVideo,
+} from "./types";
 import {
   Button,
   Empty,
@@ -18,7 +30,8 @@ import "./content.css";
 const pageSize = 6;
 const categoryTabs = ["全部", "建房预算", "户型设计", "施工避坑", "庭院案例"];
 
-function formatCount(value: number) {
+function formatCount(value: number | null) {
+  if (value === null) return "—";
   return value >= 10000
     ? `${(value / 10000).toFixed(1).replace(".0", "")}万`
     : value.toLocaleString("zh-CN");
@@ -35,6 +48,17 @@ function viralLikesLabel(video: StudioVideo) {
   return video.likeDisplay ?? formatCount(video.likes);
 }
 
+function viralPublishLabel(video: StudioVideo) {
+  if (video.publishedDisplay) return video.publishedDisplay;
+  if (video.publishedAt) {
+    return new Date(video.publishedAt * 1000).toLocaleDateString("zh-CN", {
+      month: "numeric",
+      day: "numeric",
+    });
+  }
+  return "";
+}
+
 function ViralPoster({
   video,
   className,
@@ -42,8 +66,8 @@ function ViralPoster({
   video: StudioVideo;
   className?: string;
 }) {
-  const [broken, setBroken] = useState(false);
-  if (!video.poster || broken) {
+  const [brokenPoster, setBrokenPoster] = useState<string>();
+  if (!video.poster || brokenPoster === video.poster) {
     return (
       <span
         className={
@@ -59,16 +83,289 @@ function ViralPoster({
   return (
     <img
       alt=""
-      className={className}
+      className={
+        className ? `viral-card-cover-img ${className}` : "viral-card-cover-img"
+      }
       loading="lazy"
-      onError={() => setBroken(true)}
+      referrerPolicy="no-referrer"
+      onError={() => setBrokenPoster(video.poster)}
       src={video.poster}
     />
   );
 }
 
-function ViralCard({ video }: { video: StudioVideo }) {
+type ViralPlayback =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "playing"; src: string }
+  | { status: "error"; message: string };
+
+function updateViralStats(
+  updateData: StudioContextValue["updateData"],
+  item?: ViralVideoItem | null,
+) {
+  updateViralStatistics(updateData, item ? [item] : []);
+}
+
+function updateViralStatistics(
+  updateData: StudioContextValue["updateData"],
+  items: ViralVideoItem[],
+) {
+  if (!items.length) return;
+  const byId = new Map(items.map((item) => [item.videoId, item]));
+  updateData((data) => ({
+    ...data,
+    videos: data.videos.map((video) => {
+      const item = video.nativeId ? byId.get(video.nativeId) : undefined;
+      return item && video.platformKey === item.platform
+        ? {
+            ...video,
+            likes: item.likes,
+            comments: item.comments,
+            shares: item.shares,
+            collections: item.collects,
+            likeDisplay: item.likeDisplay,
+          }
+        : video;
+    }),
+  }));
+}
+
+function useViralStatistics(videos: StudioVideo[], enabled: boolean) {
+  const { updateData } = useStudio();
+  const attemptedIds = useRef(new Set<string>());
+  const [error, setError] = useState<string>();
+  const pendingIds = videos
+    .filter(
+      (video) =>
+        video.platformKey === "wechat_channels" &&
+        video.nativeId &&
+        !attemptedIds.current.has(video.nativeId),
+    )
+    .map((video) => video.nativeId as string)
+    .slice(0, 12);
+  const pendingKey = pendingIds.join(",");
+
+  useEffect(() => {
+    if (!enabled || !pendingKey) return;
+    const ids = pendingKey.split(",");
+    ids.forEach((id) => {
+      attemptedIds.current.add(id);
+    });
+    setError(undefined);
+    void fetchViralVideoStatistics(ids)
+      .then((result) => updateViralStatistics(updateData, result.items))
+      .catch(() => setError("部分视频统计暂时无法更新"));
+  }, [enabled, pendingKey, updateData]);
+
+  return error;
+}
+
+/** 点击播放：真实平台视频先走媒体管线，测试夹具可直接使用 playUrl。 */
+function useViralPlayback(
+  video?: StudioVideo,
+  active = true,
+  onActivate?: () => void,
+) {
+  const { updateData } = useStudio();
+  const [playback, setPlayback] = useState<ViralPlayback>({ status: "idle" });
+  const activeRef = useRef(active);
+  const requestIdRef = useRef(0);
+  const loadingRef = useRef(false);
+  const activate = () => {
+    activeRef.current = true;
+    onActivate?.();
+  };
+
+  useEffect(() => {
+    activeRef.current = active;
+    if (!active) {
+      requestIdRef.current += 1;
+      loadingRef.current = false;
+      setPlayback((current) =>
+        current.status === "loading" ? { status: "idle" } : current,
+      );
+    }
+  }, [active]);
+
+  const playFromStorage = async () => {
+    if (!video?.platformKey || !video.nativeId || loadingRef.current) return;
+    activate();
+    const requestId = ++requestIdRef.current;
+    loadingRef.current = true;
+    setPlayback({ status: "loading" });
+    try {
+      const media = await fetchViralVideoMedia(
+        video.platformKey,
+        video.nativeId,
+        "video",
+      );
+      updateViralStats(updateData, media.video);
+      if (requestId === requestIdRef.current && activeRef.current) {
+        setPlayback({ status: "playing", src: media.url });
+      }
+    } catch {
+      if (requestId === requestIdRef.current && activeRef.current) {
+        setPlayback({
+          status: "error",
+          message: "视频暂时无法播放，请稍后重试",
+        });
+      }
+    } finally {
+      if (requestId === requestIdRef.current) loadingRef.current = false;
+    }
+  };
+  const play = async () => {
+    if (!video || playback.status !== "idle") return;
+    if (video.platformKey && video.nativeId) {
+      await playFromStorage();
+      return;
+    }
+    if (video.playUrl) {
+      activate();
+      setPlayback({ status: "playing", src: video.playUrl });
+      return;
+    }
+    setPlayback({ status: "error", message: "视频暂时无法播放，请稍后重试" });
+  };
+  const markFailed = () => {
+    setPlayback({ status: "error", message: "视频播放失败，请重试" });
+  };
+  return {
+    playback,
+    play,
+    retry: playFromStorage,
+    markFailed,
+    activate,
+  };
+}
+
+/** 封面区（参考 CardCover）：点击原位播放，缓冲态整窗进度条，失败可重试。 */
+function ViralCover({
+  video,
+  playing,
+  loading,
+  src,
+  onPlay,
+  onRetry,
+  onPlaybackError,
+  onNativePlay,
+  playerRef,
+  error,
+}: {
+  video: StudioVideo;
+  playing: boolean;
+  loading: boolean;
+  src?: string;
+  onPlay: () => void;
+  onRetry: () => void;
+  onPlaybackError: () => void;
+  onNativePlay: () => void;
+  playerRef: RefObject<HTMLVideoElement | null>;
+  error?: string;
+}) {
+  const publish = viralPublishLabel(video);
+  return (
+    <div
+      className={`viral-card-cover ${playing ? "is-playing" : ""}`}
+      title={playing ? undefined : "播放"}
+    >
+      {playing ? (
+        // biome-ignore lint/a11y/useMediaCaption: 源平台视频无字幕轨可挂载
+        <video
+          ref={playerRef}
+          autoPlay
+          controls
+          playsInline
+          src={src}
+          title={video.title}
+          onError={onPlaybackError}
+          onPlay={onNativePlay}
+        />
+      ) : (
+        <button
+          type="button"
+          className="viral-card-cover-trigger"
+          onClick={error ? onRetry : onPlay}
+          aria-label={`${error ? "重试播放" : "播放"} ${video.title}`}
+          disabled={loading}
+        >
+          <ViralPoster video={video} />
+          <span className="viral-card-scrim" aria-hidden="true" />
+          <span className="viral-card-playbtn" aria-hidden="true">
+            ▶
+          </span>
+          {loading && <span className="viral-card-loading">准备中…</span>}
+          {error && (
+            <span className="viral-card-loading" role="status">
+              {error}
+            </span>
+          )}
+        </button>
+      )}
+      <span className="viral-card-platform">{video.platform}</span>
+      <span className="viral-card-duration">{video.duration}</span>
+      {!playing && (
+        <div className="viral-card-overlay">
+          <ViralStatsRow video={video} />
+          <div className="viral-card-overlay-author">
+            {video.authorAvatar ? (
+              <img alt="" loading="lazy" src={video.authorAvatar} />
+            ) : (
+              <i>{(video.author || "无").slice(0, 1)}</i>
+            )}
+            <span>{video.author}</span>
+            {video.verified && <em title="认证作者">✓</em>}
+            {publish && <time>{publish}</time>}
+            {video.category && (
+              <em className="viral-card-cat">{video.category}</em>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 统计行（参考统计行四字段常显）：点赞 / 评论 / 转发 / 收藏。 */
+function ViralStatsRow({ video }: { video: StudioVideo }) {
+  const stats: Array<[string, string, string]> = [
+    ["heart", "点赞", viralLikesLabel(video)],
+    ["comment", "评论", formatCount(video.comments ?? null)],
+    ["share", "转发", formatCount(video.shares)],
+    ["star", "收藏", formatCount(video.collections)],
+  ];
+  return (
+    <div className="viral-card-stats">
+      {stats.map(([icon, label, value]) => (
+        <span key={icon} title={label}>
+          <Icon name={icon} size={13} />
+          {value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ViralCard({
+  video,
+  active,
+  onActivate,
+}: {
+  video: StudioVideo;
+  active: boolean;
+  onActivate: () => void;
+}) {
   const { state, navigate, patchDraft, patchState } = useStudio();
+  const playerRef = useRef<HTMLVideoElement | null>(null);
+  const { playback, play, retry, markFailed, activate } = useViralPlayback(
+    video,
+    active,
+    onActivate,
+  );
+  useEffect(() => {
+    if (!active) playerRef.current?.pause();
+  }, [active]);
   const saved = state.favorites.includes(video.id);
   const toggleFavorite = () =>
     patchState({
@@ -83,28 +380,20 @@ function ViralCard({ video }: { video: StudioVideo }) {
     });
   return (
     <article className="viral-card">
-      <button
-        type="button"
-        className="viral-card-cover"
-        onClick={openDetail}
-        aria-label={`查看详情 ${video.title}`}
-      >
-        <ViralPoster video={video} />
-        <span className="viral-card-duration">{video.duration}</span>
-        <span className="viral-card-platform">{video.platform}</span>
-      </button>
+      <ViralCover
+        video={video}
+        playing={playback.status === "playing"}
+        loading={playback.status === "loading"}
+        src={playback.status === "playing" ? playback.src : undefined}
+        onPlay={play}
+        onRetry={retry}
+        onPlaybackError={markFailed}
+        onNativePlay={activate}
+        playerRef={playerRef}
+        error={playback.status === "error" ? playback.message : undefined}
+      />
       <div className="viral-card-body">
         <h3>{video.title}</h3>
-        <div className="viral-card-author">
-          {video.authorAvatar ? (
-            <img alt="" loading="lazy" src={video.authorAvatar} />
-          ) : (
-            <i>{(video.author || "无").slice(0, 1)}</i>
-          )}
-          <span>{video.author}</span>
-          {video.verified && <em title="认证作者">✓</em>}
-          <b>♥ {viralLikesLabel(video)}</b>
-        </div>
         {video.tags && video.tags.length > 0 && (
           <div className="viral-card-tags">
             {video.tags.slice(0, 6).map((tag) => (
@@ -143,12 +432,14 @@ function ViralCard({ video }: { video: StudioVideo }) {
 }
 
 export function ViralPage() {
-  const { data, review } = useStudio();
+  const { data, review, updateData } = useStudio();
   const [platform, setPlatform] = useState<"抖音" | "视频号">("抖音");
   const [category, setCategory] = useState("全部");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"热门优先" | "最新">("热门优先");
   const [visibleCount, setVisibleCount] = useState(viralInitialCount);
+  const [activeVideoId, setActiveVideoId] = useState<string>();
+  const [listError, setListError] = useState<string>();
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   const shown = useMemo(
@@ -195,6 +486,35 @@ export function ViralPage() {
   }, [shown.length]);
 
   const current = shown.slice(0, visibleCount);
+  const statisticsError = useViralStatistics(current, !review);
+
+  useEffect(() => {
+    if (review) return;
+    const platformKey = platform === "抖音" ? "douyin" : "wechat_channels";
+    const sortKey = sort === "最新" ? "latest" : "hot";
+    let cancelled = false;
+    setListError(undefined);
+    void listViralVideos(platformKey, sortKey)
+      .then((result) => {
+        if (cancelled) return;
+        const incoming = result.items.map(studioVideoFromViral);
+        updateData((currentData) => ({
+          ...currentData,
+          videos: [
+            ...currentData.videos.filter(
+              (video) => video.platformKey !== platformKey,
+            ),
+            ...incoming,
+          ],
+        }));
+      })
+      .catch(() => {
+        if (!cancelled) setListError("视频列表暂时无法更新，已保留当前内容");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [platform, review, sort, updateData]);
   const platformTabs = (["抖音", "视频号"] as const).map((item) => ({
     id: item,
     label: `${item} ${
@@ -269,11 +589,21 @@ export function ViralPage() {
           </Button>
         ))}
       </nav>
+      {(listError || statisticsError) && (
+        <p className="viral-media-status is-error" role="status">
+          {listError ?? statisticsError}
+        </p>
+      )}
       {current.length ? (
         <>
           <section className="content-video-grid content-video-grid-viral">
             {current.map((video) => (
-              <ViralCard key={video.id} video={video} />
+              <ViralCard
+                key={video.id}
+                video={video}
+                active={activeVideoId === video.id}
+                onActivate={() => setActiveVideoId(video.id)}
+              />
             ))}
           </section>
           {visibleCount < shown.length && (
@@ -298,6 +628,7 @@ type ViralMediaState = {
 };
 
 function useViralMedia() {
+  const { updateData } = useStudio();
   const [media, setMedia] = useState<ViralMediaState>({ status: "idle" });
   return {
     media,
@@ -315,6 +646,7 @@ function useViralMedia() {
           video.platformKey,
           video.nativeId,
         );
+        updateViralStats(updateData, result.video);
         setMedia({
           status: "ready",
           message:
@@ -332,11 +664,13 @@ function useViralMedia() {
 }
 
 export function ViralDetailPage() {
-  const { data, state, navigate, patchDraft, patchState } = useStudio();
+  const { data, state, review, navigate, patchDraft, patchState } = useStudio();
   const { media, prepare } = useViralMedia();
   const video = state.selectedVideoId
     ? data.videos.find((item) => item.id === state.selectedVideoId)
     : undefined;
+  const statisticsError = useViralStatistics(video ? [video] : [], !review);
+  const { playback, play, retry, markFailed } = useViralPlayback(video);
   if (!video)
     return (
       <section className="content-page">
@@ -352,23 +686,16 @@ export function ViralDetailPage() {
       </section>
     );
   const saved = state.favorites.includes(video.id);
-  const isWechat = video.platform === "视频号";
   const published =
     video.publishedDisplay ??
     (video.publishedAt
       ? new Date(video.publishedAt * 1000).toLocaleDateString("zh-CN")
       : "—");
-  const stats: Array<[string, string]> = [
-    ["点赞", viralLikesLabel(video)],
-    ...(isWechat
-      ? []
-      : ([
-          ["评论", formatCount(video.comments ?? 0)],
-          ["收藏", formatCount(video.collections)],
-          ["转发", formatCount(video.shares)],
-        ] as Array<[string, string]>)),
-    ["发布", published],
-    ["时长", video.duration],
+  const metrics: Array<[string, string, string]> = [
+    ["heart", "点赞", viralLikesLabel(video)],
+    ["comment", "评论", formatCount(video.comments ?? null)],
+    ["share", "转发", formatCount(video.shares)],
+    ["star", "收藏", formatCount(video.collections)],
   ];
   const goExtract = () => {
     patchDraft({ sourceId: video.id });
@@ -395,10 +722,42 @@ export function ViralDetailPage() {
           ‹ 返回列表
         </Button>
       </header>
-      <section className="content-detail-grid">
+      <section className="content-detail-grid content-detail-grid-viral">
         <div className="content-player content-player-viral">
-          <ViralPoster video={video} className="content-player-viral-poster" />
-          <span>▶ {video.duration}</span>
+          {playback.status === "playing" ? (
+            // biome-ignore lint/a11y/useMediaCaption: 源平台视频无字幕轨可挂载
+            <video
+              autoPlay
+              controls
+              playsInline
+              src={playback.src}
+              title={video.title}
+              onError={markFailed}
+            />
+          ) : (
+            <button
+              type="button"
+              className="content-player-viral-trigger"
+              onClick={playback.status === "error" ? retry : play}
+              aria-label={`${playback.status === "error" ? "重试播放" : "播放"} ${video.title}`}
+              disabled={playback.status === "loading"}
+            >
+              <ViralPoster
+                video={video}
+                className="content-player-viral-poster"
+              />
+              {playback.status === "loading" ? (
+                <span className="viral-card-loading">素材准备中…</span>
+              ) : playback.status === "error" ? (
+                <span className="viral-card-loading" role="status">
+                  {playback.message}
+                </span>
+              ) : (
+                <span className="content-player-viral-play">▶ 播放</span>
+              )}
+            </button>
+          )}
+          <span className="viral-card-duration">{video.duration}</span>
         </div>
         <Panel className="content-detail-info">
           <div className="content-detail-author">
@@ -426,20 +785,24 @@ export function ViralDetailPage() {
               ))}
             </div>
           )}
-          <dl className="content-detail-stats">
-            {stats.map(([label, value]) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{value}</dd>
-              </div>
+          <div className="viral-detail-metrics">
+            {metrics.map(([icon, label, value]) => (
+              <span key={label} title={label}>
+                <Icon name={icon} size={14} />
+                {value}
+              </span>
             ))}
-          </dl>
+            <span className="viral-detail-published">发布 {published}</span>
+            <span>时长 {video.duration}</span>
+          </div>
+          {statisticsError && (
+            <p className="viral-media-status is-error" role="status">
+              {statisticsError}
+            </p>
+          )}
           <Field label="视频摘要（来源作品原文）">
             <p className="content-source-copy">{video.description}</p>
           </Field>
-          <Hint>
-            来源内容仅供创作参考；素材按需获取（音频优先，其次低清视频）。
-          </Hint>
           {media.status !== "idle" && (
             <p
               className={`viral-media-status is-${media.status}`}
@@ -460,11 +823,6 @@ export function ViralDetailPage() {
               >
                 提取文案
               </Button>
-              <small>
-                {video.hasPlayableAudio
-                  ? "优先取原声音频，带入文案工坊"
-                  : "取低清视频后抽音频，带入文案工坊"}
-              </small>
             </div>
             <div className="content-detail-action">
               <Button
@@ -474,7 +832,6 @@ export function ViralDetailPage() {
               >
                 视频复刻
               </Button>
-              <small>取低清视频作参考，带入视频创作</small>
             </div>
             <div className="content-detail-action">
               <Button
@@ -489,7 +846,6 @@ export function ViralDetailPage() {
               >
                 {saved ? "已收藏" : "收藏"}
               </Button>
-              <small>加入我的收藏，后续继续参考</small>
             </div>
           </div>
         </Panel>

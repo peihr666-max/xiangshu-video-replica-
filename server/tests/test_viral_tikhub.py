@@ -5,8 +5,13 @@
 
 from __future__ import annotations
 
+import io
 import json
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from urllib.error import HTTPError
 
 import pytest
 
@@ -14,11 +19,14 @@ from app.viral_tikhub import (
     DOUYIN_GENERAL_SEARCH_PATH,
     MAX_TAGS,
     WECHAT_SEARCH_VIDEOS_PATH,
+    UrllibViralHttpTransport,
     ViralSourceClient,
     ViralSourceError,
     ViralSourceUnavailable,
     _pick_image_url,
+    _reset_wechat_detail_cache,
     extract_wechat_tags,
+    is_irrelevant_viral_video,
     normalize_douyin_aweme,
     normalize_wechat_item,
     parse_compact_count,
@@ -46,6 +54,7 @@ class FakeTransport:
 def _client(
     payloads: list[dict[str, Any]],
 ) -> tuple[ViralSourceClient, list[FakeTransport]]:
+    _reset_wechat_detail_cache()
     transports = [FakeTransport(list(payloads)), FakeTransport([])]
     client = ViralSourceClient(
         api_key="test-key",
@@ -91,6 +100,22 @@ def test_parse_compact_count() -> None:
     assert parse_compact_count("1.2万") == 12_000
     assert parse_compact_count("") is None
     assert parse_compact_count(None) is None
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Minecraft 村庄别墅建造教程", True),
+        ("我的世界现代别墅庭院", True),
+        ("乡村庭院 #MC #游戏", True),
+        ("普通中文农村庭院设计", False),
+        ("MCN 机构的自建房案例", False),
+        ("amc建筑事务所的庭院", False),
+        ("mc子串不应被当成独立游戏标签", False),
+    ],
+)
+def test_irrelevant_game_filter_only_matches_explicit_terms(title: str, expected: bool) -> None:
+    assert is_irrelevant_viral_video(title) is expected
 
 
 def test_pick_douyin_play_url_prefers_lowest_resolution() -> None:
@@ -246,6 +271,39 @@ def test_normalize_wechat_item_requires_core_fields() -> None:
     assert normalize_wechat_item({"docID": "d", "exportId": "", "title": "t"}, "") is None
 
 
+def test_normalizers_ignore_malformed_numeric_fields() -> None:
+    douyin = normalize_douyin_aweme(
+        {
+            "aweme_id": "bad-counts",
+            "desc": "农村庭院",
+            "create_time": "unknown",
+            "statistics": {
+                "digg_count": "bad",
+                "comment_count": [],
+                "share_count": {},
+                "collect_count": False,
+            },
+            "video": {"duration": "bad", "cover": {"url_list": ["https://cdn/c.jpg"]}},
+        },
+        "庭院案例",
+    )
+    wechat = normalize_wechat_item(
+        {
+            "docID": "wx-bad-time",
+            "exportId": "export/wx-bad-time",
+            "title": "农村庭院",
+            "pubTime": "unknown",
+        },
+        "庭院案例",
+    )
+
+    assert douyin is not None
+    assert (douyin.likes, douyin.comments, douyin.shares, douyin.collects) == (0, 0, 0, 0)
+    assert douyin.published_at is None
+    assert wechat is not None
+    assert wechat.published_at is None
+
+
 # ---------------------------------------------------------------------------
 # 客户端
 # ---------------------------------------------------------------------------
@@ -281,6 +339,36 @@ def test_douyin_search_filters_related_word_cards() -> None:
     assert request["body"]["sort_type"] == "1"
     assert request["body"]["publish_time"] == "7"
     assert request["body"]["content_type"] == "1"
+
+
+def test_search_filters_minecraft_results_without_rejecting_normal_mc_substrings() -> None:
+    def aweme(video_id: str, title: str) -> dict[str, Any]:
+        return {
+            "type": 1,
+            "data": {
+                "aweme_info": {
+                    "aweme_id": video_id,
+                    "desc": title,
+                    "video": {"cover": {"url_list": ["https://cdn/c.webp"]}},
+                }
+            },
+        }
+
+    payload = {
+        "code": 200,
+        "data": {
+            "business_data": [
+                aweme("game", "Minecraft 农村别墅教程"),
+                aweme("world", "我的世界庭院搭建"),
+                aweme("normal", "MCN 设计师讲农村庭院"),
+            ]
+        },
+    }
+    client, _ = _client([payload])
+
+    videos = client.douyin_search(keyword="农村庭院", category="庭院案例")
+
+    assert [video.video_id for video in videos] == ["normal"]
 
 
 def test_wechat_search_aggregates_three_pages() -> None:
@@ -365,6 +453,91 @@ def test_wechat_video_detail_parses_media_block() -> None:
     assert transports[1].requests[0]["body"]["raw"] is False
 
 
+def test_wechat_video_detail_preserves_present_zero_and_ignores_invalid_counts() -> None:
+    payload = {
+        "code": 200,
+        "data": {
+            "id": "15003884913433053492",
+            "title": "农村庭院",
+            "like_count": 0,
+            "fav_count": "12",
+            "forward_count": "unknown",
+        },
+    }
+    client, _ = _client([])
+    client._detail_transport.payloads = [payload]  # noqa: SLF001
+
+    detail = client.wechat_video_detail(export_id="export/e1")
+
+    assert detail.like_count == 0
+    assert detail.fav_count == 12
+    assert detail.forward_count is None
+    assert detail.comment_count is None
+
+
+def test_wechat_video_detail_cache_reuses_success_and_separates_api_keys() -> None:
+    _reset_wechat_detail_cache()
+    payload = {"code": 200, "data": {"id": "detail", "like_count": 7}}
+    first_transport = FakeTransport([payload])
+    second_transport = FakeTransport([payload])
+    first = ViralSourceClient(
+        api_key="key-one", transport=first_transport, detail_transport=first_transport
+    )
+    second = ViralSourceClient(
+        api_key="key-two", transport=second_transport, detail_transport=second_transport
+    )
+
+    assert first.wechat_video_detail(export_id="export/shared").like_count == 7
+    assert first.wechat_video_detail(export_id="export/shared").like_count == 7
+    assert second.wechat_video_detail(export_id="export/shared").like_count == 7
+
+    assert len(first_transport.requests) == 1
+    assert len(second_transport.requests) == 1
+
+
+def test_wechat_video_detail_cache_merges_concurrent_requests() -> None:
+    _reset_wechat_detail_cache()
+
+    class SlowTransport(FakeTransport):
+        def request(self, method: str, url: str, *, headers, body=None) -> bytes:
+            time.sleep(0.05)
+            return super().request(method, url, headers=headers, body=body)
+
+    payload = {"code": 200, "data": {"id": "detail", "comment_count": 3}}
+    transport = SlowTransport([payload])
+    client = ViralSourceClient(
+        api_key="shared-key", transport=transport, detail_transport=transport
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        details = list(
+            pool.map(
+                lambda _: client.wechat_video_detail(
+                    export_id="export/shared", object_nonce_id="nonce"
+                ),
+                range(2),
+            )
+        )
+
+    assert [detail.comment_count for detail in details] == [3, 3]
+    assert len(transport.requests) == 1
+
+
+def test_wechat_video_detail_failures_are_not_cached() -> None:
+    _reset_wechat_detail_cache()
+    failure = {"code": 200, "data": {"ret": -1, "error": "private upstream text"}}
+    transport = FakeTransport([failure, failure])
+    client = ViralSourceClient(
+        api_key="failure-key", transport=transport, detail_transport=transport
+    )
+
+    for _ in range(2):
+        with pytest.raises(ViralSourceError):
+            client.wechat_video_detail(export_id="export/failure")
+
+    assert len(transport.requests) == 2
+
+
 def test_wechat_video_detail_error_shape_raises() -> None:
     client, _ = _client([])
     client._detail_transport.payloads = [  # noqa: SLF001
@@ -374,10 +547,62 @@ def test_wechat_video_detail_error_shape_raises() -> None:
         client.wechat_video_detail(export_id="export/expired")
 
 
+def test_wechat_video_detail_rejects_actual_error_envelope_with_neutral_message() -> None:
+    client, _ = _client([])
+    client._detail_transport.payloads = [  # noqa: SLF001
+        {
+            "code": 200,
+            "data": {
+                "error": "upstream vendor failure",
+                "ret": -1,
+                "message": "request failed",
+                "debug_id": "debug-secret",
+                "debug_info": {"provider": "vendor-name"},
+            },
+        }
+    ]
+
+    with pytest.raises(ViralSourceError) as exc_info:
+        client.wechat_video_detail(export_id="export/expired")
+
+    message = str(exc_info.value).lower()
+    assert "vendor" not in message
+    assert "debug" not in message
+    assert "tikhub" not in message
+
+
 def test_non_200_envelope_raises() -> None:
     client, _ = _client([{"code": 429, "message": "rate limited"}])
     with pytest.raises(ViralSourceError):
         client.douyin_search(keyword="乡墅")
+
+
+def test_http_error_log_does_not_echo_upstream_response(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def fail_request(*args: object, **kwargs: object) -> bytes:
+        raise HTTPError(
+            "https://source.test/search?token=query-secret",
+            502,
+            "bad gateway",
+            hdrs=None,
+            fp=io.BytesIO(b'{"api_key":"body-secret","provider":"vendor-name"}'),
+        )
+
+    monkeypatch.setattr("app.viral_tikhub.urlopen", fail_request)
+    caplog.set_level(logging.WARNING, logger="app.viral_tikhub")
+
+    with pytest.raises(ViralSourceError):
+        UrllibViralHttpTransport().request(
+            "POST",
+            "https://source.test/search",
+            headers={"Authorization": "Bearer header-secret"},
+        )
+
+    assert "body-secret" not in caplog.text
+    assert "query-secret" not in caplog.text
+    assert "header-secret" not in caplog.text
+    assert "vendor-name" not in caplog.text
 
 
 def test_client_dict_has_no_vendor_names() -> None:
@@ -396,3 +621,22 @@ def test_client_dict_has_no_vendor_names() -> None:
 def test_client_from_config_requires_api_key() -> None:
     with pytest.raises(ViralSourceUnavailable):
         viral_source_client_from_config({"api_key": " "})
+
+
+def test_play_url_prefers_h264_over_smaller_bytevc2():
+    block = {
+        "is_bytevc1": 0,
+        "play_addr": {"height": 1024, "url_list": ["https://cdn.test/h264.mp4"]},
+        "bit_rate": [
+            {
+                "is_bytevc1": 2,
+                "is_h265": 2,
+                "play_addr": {"height": 540, "url_list": ["https://cdn.test/bytevc2.mp4"]},
+            },
+            {
+                "is_bytevc1": 1,
+                "play_addr": {"height": 720, "url_list": ["https://cdn.test/hevc.mp4"]},
+            },
+        ],
+    }
+    assert pick_douyin_play_url(block) == "https://cdn.test/h264.mp4"
