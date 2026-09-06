@@ -20,9 +20,7 @@ const live = vi.hoisted(() => ({
   // C7 云端草稿：默认无草稿/空列表，具体用例再覆盖。
   loadCloudDraft: vi.fn(async (): Promise<unknown> => undefined),
   loadSavedScriptList: vi.fn(async (): Promise<unknown[]> => []),
-  persistCloudDraft: vi.fn(
-    async (_draft: unknown): Promise<void> => {},
-  ),
+  persistCloudDraft: vi.fn(async (_draft: unknown): Promise<void> => {}),
   persistSavedScript: vi.fn(
     async (_script: unknown, _sourceProjectId?: string): Promise<void> => {},
   ),
@@ -30,7 +28,10 @@ const live = vi.hoisted(() => ({
     async (_projectId: string, _text: string): Promise<boolean> => true,
   ),
   extractScriptFromUpload: vi.fn(
-    async (_projectId: string, _assetId: string): Promise<{ text: string }> => ({
+    async (
+      _projectId: string,
+      _assetId: string,
+    ): Promise<{ text: string }> => ({
       text: "",
     }),
   ),
