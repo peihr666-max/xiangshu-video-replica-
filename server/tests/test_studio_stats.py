@@ -100,6 +100,7 @@ def test_admin_sees_workspace_wide_counters(tmp_path: Path) -> None:
         needs_attention=3,
         # t-today / t-old / t-archive / t-current / t-hidden
         total_completed=5,
+        published_total=0,
     )
 
 
@@ -119,6 +120,7 @@ def test_employee_counters_scope_to_own_projects_and_respect_hiding(tmp_path: Pa
         queued=1,
         needs_attention=3,
         total_completed=2,
+        published_total=0,
     )
 
 

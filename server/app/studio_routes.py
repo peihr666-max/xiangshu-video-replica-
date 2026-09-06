@@ -5,9 +5,9 @@ no data source — they rendered fixtures in review mode and "—" in production
 This module exposes one aggregate over the caller's visible generation tasks,
 mirroring the exact visibility semantics of ``list_generation_batches``:
 employees/customers see only batches of projects they own, hidden batches
-stay hidden, superseded tasks never count. Nothing here invents numbers —
-published/external platform metrics (播放/互动) remain absent until their
-capability lands (C5 发布 / C6 外部数据源).
+stay hidden, superseded tasks never count. The C5 published counter reads the
+caller's own publish_records (external 播放/互动 metrics still have no data
+source until C6 lands).
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.auth import AuthenticatedUser, CurrentUser, Database
 from app.db_portable import BusinessConnection
+from app.publish import published_total
 
 router = APIRouter(prefix="/api")
 
@@ -47,6 +48,7 @@ class StudioStatsResponse(BaseModel):
     queued: int
     needs_attention: int
     total_completed: int
+    published_total: int
 
 
 def studio_task_stats(
@@ -98,6 +100,7 @@ def studio_task_stats(
             queued=0,
             needs_attention=0,
             total_completed=0,
+            published_total=0,
         )
     return StudioStatsResponse(
         today_completed=int(row["today_completed"]),
@@ -105,6 +108,9 @@ def studio_task_stats(
         queued=int(row["queued"]),
         needs_attention=int(row["needs_attention"]),
         total_completed=int(row["total_completed"]),
+        published_total=published_total(
+            conn, actor_id=actor.id, scoped_to_owner=actor.role in {"employee", "customer"}
+        ),
     )
 
 
