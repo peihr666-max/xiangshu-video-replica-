@@ -78,8 +78,16 @@ function ControlGroup({
 }
 
 export function CopyPage() {
-  const { state, data, patchDraft, navigate, saveDraft, openLive, openPicker } =
-    useStudio();
+  const {
+    state,
+    data,
+    patchDraft,
+    navigate,
+    saveDraft,
+    confirmFinalDraft,
+    openLive,
+    openPicker,
+  } = useStudio();
   const [tab, setTab] = useState<"rewrite" | "saved">("rewrite");
   const source = findSource(
     data.assets,
@@ -237,11 +245,7 @@ export function CopyPage() {
               </Button>
               <Button
                 variant="quiet"
-                onClick={() =>
-                  patchDraft({
-                    script: { ...state.draft.script, confirmed: true },
-                  })
-                }
+                onClick={confirmFinalDraft}
                 disabled={!state.draft.script.text.trim()}
               >
                 确认终稿

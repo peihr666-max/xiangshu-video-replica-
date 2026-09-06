@@ -668,6 +668,73 @@ export async function getStudioStats(): Promise<StudioStats> {
   return requestApiJson<StudioStats>("/api/studio/stats", "读取工作台统计失败");
 }
 
+/** 云端工作草稿（C7）：GET /api/studio/drafts/{kind}，404 表示尚无草稿。 */
+export async function getStudioDraft(
+  kind: StudioDraftKind,
+): Promise<StudioDraftCloudRecord> {
+  return requestApiJson<StudioDraftCloudRecord>(
+    `/api/studio/drafts/${encodeURIComponent(kind)}`,
+    "读取云端草稿失败",
+  );
+}
+
+/** 云端工作草稿自动保存（C7）：PUT /api/studio/drafts/{kind}，last-write-wins。 */
+export async function saveStudioDraft(
+  kind: StudioDraftKind,
+  payload: Record<string, unknown>,
+  scriptConfirmed: boolean,
+): Promise<StudioDraftCloudRecord> {
+  return requestApiJson<StudioDraftCloudRecord>(
+    `/api/studio/drafts/${encodeURIComponent(kind)}`,
+    "保存云端草稿失败",
+    {
+      method: "PUT",
+      body: JSON.stringify({ payload, script_confirmed: scriptConfirmed }),
+    },
+  );
+}
+
+/** 放弃云端工作草稿：DELETE /api/studio/drafts/{kind}。 */
+export async function deleteStudioDraft(kind: StudioDraftKind): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `/api/studio/drafts/${encodeURIComponent(kind)}`,
+    "删除云端草稿失败",
+    { method: "DELETE" },
+  );
+}
+
+/** 我的文案列表（C7）：GET /api/studio/saved-scripts，最新在前，上限 50。 */
+export async function listStudioSavedScripts(): Promise<
+  StudioSavedScriptRecord[]
+> {
+  const page = await requestApiJson<{ items: StudioSavedScriptRecord[] }>(
+    "/api/studio/saved-scripts",
+    "读取我的文案失败",
+  );
+  return page.items;
+}
+
+/** 保存/覆盖一条我的文案（按 script_id 幂等）。 */
+export async function saveStudioSavedScript(
+  input: StudioSavedScriptInput,
+): Promise<StudioSavedScriptRecord> {
+  return requestApiJson<StudioSavedScriptRecord>(
+    "/api/studio/saved-scripts",
+    "保存我的文案失败",
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+/** 删除一条我的文案。 */
+export async function deleteStudioSavedScript(scriptId: string): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `/api/studio/saved-scripts/${encodeURIComponent(scriptId)}`,
+    "删除我的文案失败",
+    { method: "DELETE" },
+  );
+}
+
+
 export type OralPrice = { unit_price_fen: number };
 
 /** 数字人口播单价（每条）。 */

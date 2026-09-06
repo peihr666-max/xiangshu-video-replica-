@@ -209,5 +209,7 @@ export type StudioContextValue = {
   openLive: (panel: LivePanel) => void;
   requestGeneration: (kind: StudioTask["type"]) => void;
   saveDraft: () => void;
+  /** 确认终稿：置 confirmed + 立即云端持久化；带 projectId 时软发布到项目脚本版本。 */
+  confirmFinalDraft: () => void;
   refresh: () => void;
 };

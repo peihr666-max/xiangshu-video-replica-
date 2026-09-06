@@ -17,6 +17,12 @@ const live = vi.hoisted(() => ({
   loadProjectDraft: vi.fn(),
   reloadTasks: vi.fn(async (): Promise<unknown[]> => []),
   reloadStats: vi.fn(async (): Promise<unknown> => null),
+  // C7 云端草稿：默认无草稿/空列表，具体用例再覆盖。
+  loadCloudDraft: vi.fn(async (): Promise<unknown> => undefined),
+  loadSavedScriptList: vi.fn(async (): Promise<unknown[]> => []),
+  persistCloudDraft: vi.fn(async (): Promise<void> => {}),
+  persistSavedScript: vi.fn(async (): Promise<void> => {}),
+  publishScriptVersion: vi.fn(async (): Promise<boolean> => true),
 }));
 vi.mock("./live", () => live);
 
@@ -257,5 +263,168 @@ describe("V1.4 workspace integration", () => {
     // "已完成" appears as both the filter tab and the refreshed row status.
     expect(screen.getAllByText("已完成")).toHaveLength(2);
     expect(screen.queryByText("生成中 45%")).not.toBeInTheDocument();
+  });
+
+  describe("C7 云端草稿", () => {
+    // 前面的轮询用例开启了 fake timers 且不恢复；本组用例的 waitFor 依赖
+    // 真实 setTimeout，先显式切回，防止用例间定时器状态泄漏。
+    beforeEach(() => {
+      vi.useRealTimers();
+    });
+
+    const emptyStudioData = {
+      people: [],
+      assets: [],
+      videos: [],
+      projects: [],
+      tasks: [],
+      errors: [],
+      loading: false,
+      stats: null,
+    };
+
+    function restoredDraft() {
+      const draft = createState("copy").draft;
+      draft.script.title = "云端恢复的标题";
+      draft.script.text = "云端恢复的文案内容";
+      draft.script.confirmed = true;
+      return draft;
+    }
+
+    async function openCopyPage() {
+      fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
+      await waitFor(() =>
+        expect(screen.getByLabelText("二创文案")).toBeInTheDocument(),
+      );
+    }
+
+    it("挂载时恢复云端草稿与我的文案列表", async () => {
+      live.loadStudioData.mockResolvedValue(emptyStudioData);
+      live.loadCloudDraft.mockResolvedValue({ draft: restoredDraft() });
+      live.loadSavedScriptList.mockResolvedValue([
+        {
+          id: "saved-1",
+          title: "已保存文案",
+          original: "",
+          text: "已保存的文本",
+          version: 2,
+          confirmed: false,
+        },
+      ]);
+      render(<StudioWorkspace currentUser={reviewUser} />);
+
+      await openCopyPage();
+      expect(
+        (screen.getByLabelText("二创文案") as HTMLTextAreaElement).value,
+      ).toBe("云端恢复的文案内容");
+      expect(screen.getByText("终稿 V1")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("tab", { name: "我的文案" }));
+      expect(screen.getByText("已保存文案")).toBeInTheDocument();
+      // 未做任何编辑时不触发自动保存。
+      expect(live.persistCloudDraft).not.toHaveBeenCalled();
+    });
+
+    it("编辑二创文案后防抖自动保存到云端", async () => {
+      live.loadStudioData.mockResolvedValue(emptyStudioData);
+      live.loadCloudDraft.mockResolvedValue(undefined);
+      render(<StudioWorkspace currentUser={reviewUser} />);
+
+      // 用真实定时器完成渲染与导航（waitFor 依赖真实 setTimeout）。
+      await openCopyPage();
+      vi.useFakeTimers();
+      try {
+        fireEvent.change(screen.getByLabelText("二创文案"), {
+          target: { value: "新的二创内容" },
+        });
+        expect(live.persistCloudDraft).not.toHaveBeenCalled();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000);
+        });
+        expect(live.persistCloudDraft).toHaveBeenCalledTimes(1);
+        const savedDraft = live.persistCloudDraft.mock.calls[0][0] as {
+          script: { text: string; confirmed: boolean };
+        };
+        expect(savedDraft.script.text).toBe("新的二创内容");
+        expect(savedDraft.script.confirmed).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("保存版本写入云端我的文案", async () => {
+      live.loadStudioData.mockResolvedValue(emptyStudioData);
+      live.loadCloudDraft.mockResolvedValue(undefined);
+      const state = createState("copy");
+      state.draft.script.text = "要保存的文案";
+      render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+
+      await openCopyPage();
+      fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
+      await waitFor(() => expect(live.persistSavedScript).toHaveBeenCalled());
+      const [script] = live.persistSavedScript.mock.calls[0] as [
+        { text: string },
+      ];
+      expect(script.text).toBe("要保存的文案");
+      expect(screen.getByText(/已保存到我的文案/)).toBeInTheDocument();
+    });
+
+    it("确认终稿立即持久化并带 projectId 时发布到项目脚本版本", async () => {
+      live.loadStudioData.mockResolvedValue(emptyStudioData);
+      live.loadCloudDraft.mockResolvedValue(undefined);
+      const state = createState("copy");
+      state.draft.projectId = "project-1";
+      state.draft.script.text = "终稿内容";
+      render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+
+      await openCopyPage();
+      fireEvent.click(screen.getByRole("button", { name: "确认终稿" }));
+      await waitFor(() =>
+        expect(live.publishScriptVersion).toHaveBeenCalledWith(
+          "project-1",
+          "终稿内容",
+        ),
+      );
+      expect(live.persistCloudDraft).toHaveBeenCalled();
+      const savedDraft = live.persistCloudDraft.mock.calls[0][0] as {
+        script: { confirmed: boolean };
+      };
+      expect(savedDraft.script.confirmed).toBe(true);
+    });
+
+    it("确认终稿无项目来源时不发布脚本版本", async () => {
+      live.loadStudioData.mockResolvedValue(emptyStudioData);
+      live.loadCloudDraft.mockResolvedValue(undefined);
+      const state = createState("copy");
+      state.draft.script.text = "无项目终稿";
+      render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+
+      await openCopyPage();
+      fireEvent.click(screen.getByRole("button", { name: "确认终稿" }));
+      await waitFor(() => expect(live.persistCloudDraft).toHaveBeenCalled());
+      expect(live.publishScriptVersion).not.toHaveBeenCalled();
+    });
+
+    it("审核示例模式不触发任何云端草稿接口", async () => {
+      render(
+        <StudioWorkspace
+          currentUser={reviewUser}
+          reviewData={createReviewData()}
+          initialState={createReviewState("copy")}
+        />,
+      );
+      await openCopyPage();
+      fireEvent.change(screen.getByLabelText("二创文案"), {
+        target: { value: "审核模式编辑" },
+      });
+      await waitFor(() =>
+        expect(
+          screen.getByLabelText("二创文案") as HTMLTextAreaElement,
+        ).toHaveValue("审核模式编辑"),
+      );
+      expect(live.loadCloudDraft).not.toHaveBeenCalled();
+      expect(live.persistCloudDraft).not.toHaveBeenCalled();
+      expect(live.loadSavedScriptList).not.toHaveBeenCalled();
+    });
   });
 });

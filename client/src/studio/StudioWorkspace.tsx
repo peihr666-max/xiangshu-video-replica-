@@ -32,9 +32,14 @@ import {
 import { StudioContext, useStudio } from "./context";
 import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
 import {
+  loadCloudDraft,
   loadPersonAssets,
   loadProjectDraft,
+  loadSavedScriptList,
   loadStudioData,
+  persistCloudDraft,
+  persistSavedScript,
+  publishScriptVersion,
   reloadStats,
   reloadTasks,
 } from "./live";
@@ -157,6 +162,49 @@ export function StudioWorkspace({
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
   const notify = useCallback((message: string) => setNotice(message), []);
+
+  // ---- 云端草稿（C7）----
+  // 编辑后防抖自动保存；恢复只在用户尚未做任何编辑时生效，绝不覆盖进行中的输入。
+  const DRAFT_AUTOSAVE_DELAY_MS = 2000;
+  const latestDraftRef = useRef(state.draft);
+  const draftTouchedRef = useRef(false);
+  const draftSaveTimerRef = useRef<number>();
+  const scheduleDraftSave = useCallback(() => {
+    if (review) return;
+    window.clearTimeout(draftSaveTimerRef.current);
+    draftSaveTimerRef.current = window.setTimeout(() => {
+      void persistCloudDraft(latestDraftRef.current).catch(() => {
+        notify("云端草稿保存失败，内容仍在本机，请稍后继续编辑。");
+      });
+    }, DRAFT_AUTOSAVE_DELAY_MS);
+  }, [review, notify]);
+  // 挂载时恢复云端草稿与我的文案；失败静默（只读路径，不阻塞工作区）。
+  useEffect(() => {
+    if (review) return;
+    let active = true;
+    void loadCloudDraft()
+      .then(async (restore) => {
+        const saved = await loadSavedScriptList().catch(() => []);
+        if (!active) return;
+        if (saved.length)
+          setState((previous) => ({ ...previous, savedScripts: saved }));
+        if (restore && !draftTouchedRef.current) {
+          latestDraftRef.current = restore.draft;
+          setState((previous) => ({ ...previous, draft: restore.draft }));
+          notify("已恢复上次云端草稿，请核对内容并确认终稿。");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+      window.clearTimeout(draftSaveTimerRef.current);
+    };
+  }, [review, notify]);
+  // 自动保存始终跟随最新草稿：导入项目、任务快照回填等不经 patchDraft 的
+  // 路径也在这里并入追踪。
+  useEffect(() => {
+    latestDraftRef.current = state.draft;
+  }, [state.draft]);
   // 数字人口播提交前拉取单价（元/条）；失败保持 null 显示“待服务端报价”。
   useEffect(() => {
     if (review || generation !== "数字人口播") {
@@ -347,6 +395,7 @@ export function StudioWorkspace({
       notify(
         "人物已更换，请重新选择该人物的分身和声音，并核对文案中的自我介绍。",
       );
+    draftTouchedRef.current = true;
     setState((previous) => {
       const next = patchStudioDraft(previous.draft, patch);
       if (patch.ipId && patch.ipId !== previous.draft.ipId) {
@@ -370,6 +419,7 @@ export function StudioWorkspace({
       }
       return { ...previous, draft: next };
     });
+    scheduleDraftSave();
   };
   const openLive = (panel: LivePanel) => {
     if (review) {
@@ -466,17 +516,39 @@ export function StudioWorkspace({
       notify("请先填写创作内容。");
       return;
     }
+    const script = { ...state.draft.script };
     setState((previous) => ({
       ...previous,
       savedScripts: [
         ...previous.savedScripts.filter(
-          (script) => script.id !== previous.draft.script.id,
+          (item) => item.id !== previous.draft.script.id,
         ),
-        { ...previous.draft.script },
+        script,
       ],
     }));
-    notify(
-      "已保留在本次工作区，可继续切换页面。云端草稿接口尚未接入，关闭或刷新页面前请复制文案留存。",
+    if (review) {
+      notify("已保留在本次工作区，可继续切换页面。");
+      return;
+    }
+    void persistSavedScript(script, state.draft.projectId)
+      .then(() => notify("已保存到我的文案，换设备登录也能找回。"))
+      .catch(() => notify("云端保存失败，本次仅保留在工作区，请稍后重试。"));
+    void persistCloudDraft({ ...state.draft, script }).catch(() => {});
+  };
+  const confirmFinalDraft = () => {
+    const script = { ...state.draft.script, confirmed: true };
+    patchDraft({ script });
+    if (review) return;
+    // 立即持久化终稿（不等防抖），并软发布到项目脚本版本。
+    void persistCloudDraft({ ...state.draft, script }).catch(() => {});
+    if (!state.draft.projectId) return;
+    void publishScriptVersion(state.draft.projectId, script.text).then(
+      (published) => {
+        if (!published)
+          notify(
+            "终稿已确认，但同步到项目脚本版本未成功，可稍后在来源分析中重试。",
+          );
+      },
     );
   };
   const context: StudioContextValue = {
@@ -493,6 +565,7 @@ export function StudioWorkspace({
     openLive,
     requestGeneration,
     saveDraft,
+    confirmFinalDraft,
     refresh,
   };
   const activeNav = state.page.startsWith("person-")

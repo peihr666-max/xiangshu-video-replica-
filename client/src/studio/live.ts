@@ -5,23 +5,31 @@ import {
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
   createProject,
+  createScriptVersion,
   createVideoUploadIntent,
   type GenerationBatchListItem,
   getAssetDownloadUrl,
   getCachedCharacterAssetUrl,
   getGenerationBatch,
   getLatestProjectAnalysis,
+  getLatestProjectShotCards,
   getLatestScriptVersion,
+  getStudioDraft,
   getStudioStats,
   listCharacterSceneLooks,
   listGenerationBatches,
   listOralTasks,
   listProjects,
   listSimpleCharacterLibrary,
+  listStudioSavedScripts,
   type OralTaskRecord,
   type Project,
   readAnalysisPayload,
   type SimpleLibraryEntry,
+  type StudioDraftKind,
+  type StudioSavedScriptInput,
+  saveStudioDraft,
+  saveStudioSavedScript,
   uploadReferenceVideo,
 } from "../api";
 import { createDraft } from "./state";
@@ -30,6 +38,7 @@ import type {
   StudioData,
   StudioDraft,
   StudioPerson,
+  StudioScript,
   StudioStats,
   StudioTask,
 } from "./types";
@@ -437,6 +446,127 @@ export async function reloadStats(): Promise<StudioStats | null> {
     return await getStudioStats();
   } catch {
     return null;
+  }
+}
+
+/** 云端草稿恢复结果：草稿 + 我的文案列表。 */
+export type CloudDraftRestore = {
+  draft: StudioDraft;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** 把云端 JSON payload 还原为 StudioDraft；结构不完整时返回 null 而不是抛错，
+ * 云端草稿必须永远不阻塞工作区进入。 */
+function draftFromPayload(payload: unknown): StudioDraft | null {
+  if (!isRecord(payload)) return null;
+  const script = payload.script;
+  const base = createDraft();
+  if (!isRecord(script) || typeof script.text !== "string") return null;
+  const merged: StudioDraft = {
+    ...base,
+    ...(payload as Partial<StudioDraft>),
+    script: {
+      ...base.script,
+      ...(script as Partial<StudioScript>),
+    },
+  };
+  return merged;
+}
+
+/** 读取云端工作草稿（copy 工作区）。无草稿（404）返回 undefined，
+ * 其余错误抛给调用方决定提示方式。 */
+export async function loadCloudDraft(): Promise<CloudDraftRestore | undefined> {
+  let record: Awaited<ReturnType<typeof getStudioDraft>>;
+  try {
+    record = await getStudioDraft("copy");
+  } catch (cause: unknown) {
+    if (
+      cause &&
+      typeof cause === "object" &&
+      "status" in cause &&
+      (cause as { status?: number }).status === 404
+    ) {
+      return undefined;
+    }
+    throw cause;
+  }
+  const draft = draftFromPayload(record.payload);
+  if (!draft) return undefined;
+  draft.script.confirmed = record.script_confirmed;
+  return { draft };
+}
+
+/** 云端草稿自动保存（last-write-wins）。整个 StudioDraft 序列化上送，
+ * 服务端按 (user, kind) 单行 upsert。 */
+export async function persistCloudDraft(draft: StudioDraft): Promise<void> {
+  await saveStudioDraft(
+    "copy" satisfies StudioDraftKind,
+    draft as unknown as Record<string, unknown>,
+    draft.script.confirmed,
+  );
+}
+
+/** 我的文案列表：云端记录 → StudioScript（confirmed 不持久化，回填后需重新确认终稿）。 */
+function savedScriptFromRecord(record: {
+  script_id: string;
+  title: string;
+  text: string;
+  original: string | null;
+  version: number;
+}): StudioScript {
+  return {
+    id: record.script_id,
+    title: record.title,
+    original: record.original ?? "",
+    text: record.text,
+    version: record.version,
+    confirmed: false,
+  };
+}
+
+export async function loadSavedScriptList(): Promise<StudioScript[]> {
+  const records = await listStudioSavedScripts();
+  return records.map(savedScriptFromRecord);
+}
+
+export async function persistSavedScript(
+  script: StudioScript,
+  sourceProjectId?: string,
+): Promise<void> {
+  const input: StudioSavedScriptInput = {
+    script_id: script.id,
+    title: script.title || "未命名文案",
+    text: script.text,
+    original: script.original || null,
+    version: script.version,
+    ip_id: null,
+    source_project_id: sourceProjectId ?? null,
+    source_kind: sourceProjectId ? "project" : "upload",
+  };
+  await saveStudioSavedScript(input);
+}
+
+/** 终稿显式发布到项目脚本版本（C7 衔接点）：仅当草稿带 projectId 且项目已有
+ * 镜头卡版本时可行（ScriptRequest 需要 shot_card_version_id）。任何失败都
+ * 返回 false 由调用方软提示，绝不阻断"确认终稿"本身。 */
+export async function publishScriptVersion(
+  projectId: string,
+  text: string,
+): Promise<boolean> {
+  try {
+    const shotCards = await getLatestProjectShotCards(projectId);
+    if (!shotCards) return false;
+    await createScriptVersion(projectId, {
+      source: "custom",
+      text,
+      shot_card_version_id: shotCards.id,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
