@@ -792,7 +792,7 @@ class BatchResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    project_id: str
+    project_id: str | None = None
     prompt_version_id: str
     status: str
     quantity: int
@@ -2851,13 +2851,33 @@ def run_next_generation_task(
 
         provider.task_created_observer = _record_created_provider_task
     try:
-        first_frame = storage_object_ref_from_uri(str(lease["first_frame_uri"]))
-        require_storage_match(source_storage, first_frame)
-        first_frame_url = source_storage.create_download_intent(
-            first_frame.key,
-            expires_in=FIRST_FRAME_URL_EXPIRES_IN,
-            can_read=True,
-        ).url
+        first_frame_uri = lease.get("first_frame_uri")
+        last_frame_uri = lease.get("last_frame_uri")
+
+        def _signed_url(storage_uri: str) -> str:
+            ref = storage_object_ref_from_uri(storage_uri)
+            require_storage_match(source_storage, ref)
+            return source_storage.create_download_intent(
+                ref.key,
+                expires_in=FIRST_FRAME_URL_EXPIRES_IN,
+                can_read=True,
+            ).url
+
+        first_frame_url = (
+            _signed_url(str(first_frame_uri))
+            if isinstance(first_frame_uri, str) and first_frame_uri
+            else None
+        )
+        last_frame_url = (
+            _signed_url(str(last_frame_uri))
+            if isinstance(last_frame_uri, str) and last_frame_uri
+            else None
+        )
+        reference_images = [
+            {"name": str(image.get("name", "")), "url": _signed_url(str(image["uri"]))}
+            for image in (lease.get("reference_images") or [])
+            if isinstance(image, dict) and image.get("uri")
+        ]
     except (StorageBackendUnavailable, StoragePermissionError, ValueError):
         mark_task_first_frame_url_sign_failed(
             conn,
@@ -2867,6 +2887,8 @@ def run_next_generation_task(
     provider_request = build_h3_request(
         prompt_text=str(lease["prompt_text"]),
         first_frame_url=first_frame_url,
+        last_frame_url=last_frame_url,
+        reference_images=reference_images,
         duration_seconds=int(lease["output_duration_seconds"]),
         resolution=str(lease["resolution"]),
         ratio=str(lease["ratio"]),
@@ -4859,7 +4881,10 @@ def load_worker_task(conn: BusinessConnection, task_id: str) -> dict[str, Any]:
     request_snapshot = json.loads(str(row["request_snapshot_json"]))
     payload = dict(row)
     payload["prompt_text"] = prompt_snapshot["prompt_text"]
-    payload["first_frame_uri"] = prompt_snapshot["first_frame_uri"]
+    payload["first_frame_uri"] = prompt_snapshot.get("first_frame_uri")
+    payload["generation_mode"] = prompt_snapshot.get("generation_mode", "I2V")
+    payload["last_frame_uri"] = prompt_snapshot.get("last_frame_uri")
+    payload["reference_images"] = prompt_snapshot.get("reference_images", [])
     payload["output_duration_seconds"] = request_snapshot["output_duration_seconds"]
     payload["resolution"] = request_snapshot["resolution"]
     payload["ratio"] = request_snapshot.get("ratio", "adaptive")
@@ -4879,16 +4904,32 @@ def prepare_generation_submission(
     if provider_name == "metaso" and first_frame_storage.provider != "cos":
         raise H3ProviderSettingsUnavailable("METASO requires COS first-frame storage")
     selected_provider = provider or h3_provider_for_task(conn, provider_name)
-    first_frame = storage_object_ref_from_uri(str(lease["first_frame_uri"]))
-    require_storage_match(first_frame_storage, first_frame)
-    first_frame_url = first_frame_storage.create_download_intent(
-        first_frame.key,
-        expires_in=FIRST_FRAME_URL_EXPIRES_IN,
-        can_read=True,
-    ).url
+
+    def _signed_url(storage_uri: str) -> str:
+        ref = storage_object_ref_from_uri(storage_uri)
+        require_storage_match(first_frame_storage, ref)
+        return first_frame_storage.create_download_intent(
+            ref.key,
+            expires_in=FIRST_FRAME_URL_EXPIRES_IN,
+            can_read=True,
+        ).url
+
+    first_frame_uri = lease.get("first_frame_uri")
+    last_frame_uri = lease.get("last_frame_uri")
+    reference_images = lease.get("reference_images") or []
     provider_request = build_h3_request(
         prompt_text=str(lease["prompt_text"]),
-        first_frame_url=first_frame_url,
+        first_frame_url=_signed_url(str(first_frame_uri))
+        if isinstance(first_frame_uri, str) and first_frame_uri
+        else None,
+        last_frame_url=_signed_url(str(last_frame_uri))
+        if isinstance(last_frame_uri, str) and last_frame_uri
+        else None,
+        reference_images=[
+            {"name": str(image.get("name", "")), "url": _signed_url(str(image["uri"]))}
+            for image in reference_images
+            if isinstance(image, dict) and image.get("uri")
+        ],
         duration_seconds=int(lease["output_duration_seconds"]),
         resolution=str(lease["resolution"]),
         ratio=str(lease["ratio"]),
@@ -5601,8 +5642,11 @@ def list_generation_batches(
         clauses.append("batch.project_id = %s")
         parameters.append(project_id)
     elif actor.role in {"employee", "customer"}:
-        clauses.append("project.owner_user_id = %s")
-        parameters.append(actor.id)
+        clauses.append(
+            "(project.owner_user_id = %s OR (batch.project_id IS NULL "
+            "AND batch.created_by_user_id = %s))"
+        )
+        parameters.extend([actor.id, actor.id])
     if created_by_user_id is not None:
         clauses.append("batch.created_by_user_id = %s")
         parameters.append(created_by_user_id)
@@ -5636,7 +5680,7 @@ def list_generation_batches(
         SELECT
             batch.id,
             batch.project_id,
-            project.name AS project_name,
+            COALESCE(project.name, '') AS project_name,
             batch.created_by_user_id,
             creator.display_name AS created_by_display_name,
             batch.request_snapshot_json,
@@ -5649,7 +5693,7 @@ def list_generation_batches(
             batch.generation_reason,
             batch.creation_kind
         FROM generation_batches AS batch
-        JOIN projects AS project ON project.id = batch.project_id
+        LEFT JOIN projects AS project ON project.id = batch.project_id
         JOIN users AS creator ON creator.id = batch.created_by_user_id
         WHERE {" AND ".join(clauses)}
         ORDER BY batch.created_at DESC, batch.id DESC
@@ -5820,8 +5864,9 @@ def get_generation_batch(
 ) -> BatchResult:
     batch = conn.execute(
         """
-        SELECT id, project_id, request_snapshot_json, status, display_name,
-               source_batch_id, source_task_id, generation_reason, creation_kind
+        SELECT id, project_id, created_by_user_id, request_snapshot_json, status,
+               display_name, source_batch_id, source_task_id, generation_reason,
+               creation_kind
         FROM generation_batches
         WHERE id = %s
         """,
@@ -5829,24 +5874,29 @@ def get_generation_batch(
     ).fetchone()
     if batch is None:
         raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
-    try:
-        require_project_access(
-            conn,
-            actor=actor,
-            project_id=str(batch["project_id"]),
-            action="generation_batch.read",
-        )
-    except HTTPException as exc:
-        if exc.status_code == 404:
-            raise remap_security_denial(
-                exc,
-                status_code=404,
-                detail={
-                    "code": "BATCH_NOT_FOUND",
-                    "message": "Generation batch does not exist.",
-                },
-            ) from exc
-        raise
+    if batch["project_id"] is None:
+        # 独立创作批次：归属人是唯一可见方（管理员除外），不存在项目门禁。
+        if actor.role != "admin" and str(batch["created_by_user_id"]) != actor.id:
+            raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
+    else:
+        try:
+            require_project_access(
+                conn,
+                actor=actor,
+                project_id=str(batch["project_id"]),
+                action="generation_batch.read",
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise remap_security_denial(
+                    exc,
+                    status_code=404,
+                    detail={
+                        "code": "BATCH_NOT_FOUND",
+                        "message": "Generation batch does not exist.",
+                    },
+                ) from exc
+            raise
     rows = conn.execute(
         """
         SELECT
@@ -5889,7 +5939,7 @@ def get_generation_batch(
     except json.JSONDecodeError:
         request_snapshot = {}
     prompt_version_id = request_snapshot.get("prompt_version_id")
-    stale = True
+    stale = False
     if isinstance(prompt_version_id, str):
         try:
             prompt = require_version(
@@ -5906,7 +5956,7 @@ def get_generation_batch(
         prompt_version_id = "unknown"
     return BatchResult(
         id=str(batch["id"]),
-        project_id=str(batch["project_id"]),
+        project_id=(None if batch["project_id"] is None else str(batch["project_id"])),
         prompt_version_id=prompt_version_id,
         status=status,
         quantity=len(tasks),
@@ -6094,11 +6144,19 @@ def cancel_generation_batch(
 def build_h3_request(
     *,
     prompt_text: str,
-    first_frame_url: str,
+    first_frame_url: str | None = None,
     duration_seconds: int,
     resolution: str,
     ratio: str = "adaptive",
+    last_frame_url: str | None = None,
+    reference_images: Sequence[Mapping[str, str]] = (),
 ) -> dict[str, Any]:
+    """Build an H3 request for any generation mode.
+
+    I2V (default, 复刻流契约): text + first_frame（可选 last_frame）。
+    T2V: 仅 text。R2V: text + reference_image 对象编排，不得携带首尾帧
+    （docs/短视频复刻桌面端开发说明.md §21 H3 输入互斥规则）。
+    """
     if not prompt_text.strip():
         raise ValueError("prompt_text is required")
     if duration_seconds < 4 or duration_seconds > 15:
@@ -6107,16 +6165,50 @@ def build_h3_request(
         raise ValueError("resolution must be 768P or 2K")
     if ratio not in SUPPORTED_RATIOS:
         raise ValueError("ratio is unsupported")
-    return {
-        "model": H3_MODEL,
-        "content": [
-            {"type": "text", "text": prompt_text},
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt_text}]
+    if reference_images:
+        if first_frame_url or last_frame_url:
+            raise ValueError("reference mode must not carry first/last frame")
+        for image in reference_images:
+            name = str(image.get("name", "")).strip()
+            url = str(image.get("url", "")).strip()
+            if not name or not url:
+                raise ValueError("reference image requires a name and a url")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": url},
+                    "role": "reference_image",
+                    "name": name,
+                }
+            )
+    else:
+        if not first_frame_url:
+            return {
+                "model": H3_MODEL,
+                "content": content,
+                "resolution": resolution,
+                "duration": duration_seconds,
+                "ratio": ratio,
+            }
+        content.append(
             {
                 "type": "image_url",
                 "image_url": {"url": first_frame_url},
                 "role": "first_frame",
-            },
-        ],
+            }
+        )
+        if last_frame_url:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": last_frame_url},
+                    "role": "last_frame",
+                }
+            )
+    return {
+        "model": H3_MODEL,
+        "content": content,
         "resolution": resolution,
         "duration": duration_seconds,
         "ratio": ratio,
@@ -6125,17 +6217,62 @@ def build_h3_request(
 
 def validate_h3_request(request: dict[str, Any]) -> None:
     content = request.get("content")
-    if not isinstance(content, list) or len(content) != 2:
+    if not isinstance(content, list) or not content:
         raise ValueError("H3 I2V content must contain text and first_frame only")
     if content[0].get("type") != "text" or not str(content[0].get("text", "")).strip():
         raise ValueError("H3 I2V content requires non-empty text")
-    if content[1].get("role") != "first_frame":
-        raise ValueError("H3 I2V image must use first_frame role")
-    if request.get("ratio") not in SUPPORTED_RATIOS:
-        raise ValueError("H3 I2V ratio is unsupported")
+    roles = [str(item.get("role")) if isinstance(item, dict) else None for item in content[1:]]
     duration = request.get("duration")
     if not isinstance(duration, int) or duration < 4 or duration > 15:
-        raise ValueError("H3 I2V duration must be 4-15 seconds")
+        raise ValueError("H3 duration must be 4-15 seconds")
+    if request.get("ratio") not in SUPPORTED_RATIOS:
+        raise ValueError("H3 ratio is unsupported")
+    if not roles:
+        return  # T2V：仅文本。
+    if roles == ["first_frame"]:
+        _validate_h3_image_element(content[1], expected_role="first_frame")
+        return
+    if roles == ["first_frame", "last_frame"]:
+        _validate_h3_image_element(content[1], expected_role="first_frame")
+        _validate_h3_image_element(content[2], expected_role="last_frame")
+        return
+    if "reference_image" in roles:
+        _validate_h3_reference_request(request, content, roles)
+        return
+    raise ValueError("H3 I2V content must contain text and first_frame only")
+
+
+def _validate_h3_image_element(element: Any, *, expected_role: str) -> None:
+    # HTTPS 强校验只在真实 metaso 提交路径（_h3_request_has_https_first_frame）；
+    # 本地/fake 存储的签名 URL 走 fake:// 协议，这里只校验角色契约。
+    if not isinstance(element, dict) or element.get("role") != expected_role:
+        raise ValueError(f"H3 I2V image must use {expected_role} role")
+    if not isinstance(element.get("image_url"), dict):
+        raise ValueError(f"H3 {expected_role} image requires an image_url object")
+
+
+def _validate_h3_reference_request(
+    request: dict[str, Any],
+    content: list[Any],
+    roles: list[str | None],
+) -> None:
+    if "first_frame" in roles or "last_frame" in roles:
+        raise ValueError("H3 R2V content must not mix reference objects with first/last frame")
+    if len(content) < 2:
+        raise ValueError("H3 R2V content requires at least one reference object")
+    for element, role in zip(content[1:], roles):
+        if role != "reference_image":
+            raise ValueError("H3 R2V supports reference_image objects only")
+        if not isinstance(element, dict) or not str(element.get("name", "")).strip():
+            raise ValueError("H3 R2V reference object requires a name")
+        image_url = element.get("image_url")
+        if not isinstance(image_url, dict) or not str(image_url.get("url", "")).strip():
+            raise ValueError("H3 R2V reference object requires a url")
+    if request.get("ratio") not in SUPPORTED_RATIOS:
+        raise ValueError("H3 R2V ratio is unsupported")
+    duration = request.get("duration")
+    if not isinstance(duration, int) or duration < 4 or duration > 15:
+        raise ValueError("H3 R2V duration must be 4-15 seconds")
 
 
 def _metaso_json_object(content: bytes) -> dict[str, Any]:
@@ -6214,14 +6351,22 @@ def _metaso_output_seconds(item: dict[str, Any]) -> float | None:
 
 
 def _h3_request_has_https_first_frame(request: dict[str, Any]) -> bool:
+    """Every image element must be HTTPS; a text-only T2V request passes."""
     content = request.get("content")
-    if not isinstance(content, list) or len(content) < 2:
+    if not isinstance(content, list):
         return False
-    image = content[1]
-    image_url = image.get("image_url") if isinstance(image, dict) else None
-    value = image_url.get("url") if isinstance(image_url, dict) else None
-    parsed = urlparse(value) if isinstance(value, str) else None
-    return bool(parsed and parsed.scheme == "https" and parsed.hostname)
+    image_elements = [
+        item for item in content[1:] if isinstance(item, dict) and item.get("type") == "image_url"
+    ]
+    if not image_elements:
+        return True
+    for image in image_elements:
+        image_url = image.get("image_url") if isinstance(image, dict) else None
+        value = image_url.get("url") if isinstance(image_url, dict) else None
+        parsed = urlparse(value) if isinstance(value, str) else None
+        if not (parsed and parsed.scheme == "https" and parsed.hostname):
+            return False
+    return True
 
 
 def inspect_generated_video_quality(

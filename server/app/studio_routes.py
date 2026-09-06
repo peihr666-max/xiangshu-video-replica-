@@ -12,6 +12,7 @@ capability lands (C5 发布 / C6 外部数据源).
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter
@@ -110,3 +111,67 @@ def studio_task_stats(
 @router.get("/studio/stats", response_model=StudioStatsResponse)
 def read_studio_stats(conn: Database, actor: AuthenticatedUser) -> StudioStatsResponse:
     return studio_task_stats(conn, actor=actor)
+
+
+# ---------------------------------------------------------------------------
+# C2 独立创作：跨项目「我的提示词」只读聚合
+# ---------------------------------------------------------------------------
+
+
+class SavedPromptListItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    project_id: str
+    name: str
+    prompt_text: str
+    created_at: str
+
+
+class SavedPromptListPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[SavedPromptListItem]
+
+
+@router.get("/studio/saved-prompts", response_model=SavedPromptListPage)
+def read_user_saved_prompts(
+    conn: Database,
+    actor: AuthenticatedUser,
+    limit: int = 50,
+) -> SavedPromptListPage:
+    """跨项目聚合作者本人的已保存提示词（versions kind='saved_prompt'）。
+
+    独立创作页的「导入提示词」数据源：只读、仅作者本人、按时间倒序。
+    存储仍复用项目域的 versions 底座（迁移 061），零新表。
+    """
+    if limit < 1 or limit > 100:
+        limit = 50
+    rows = conn.execute(
+        """
+        SELECT id, project_id, payload_json, created_at
+        FROM versions
+        WHERE kind = 'saved_prompt' AND author_user_id = %s
+        ORDER BY created_at DESC, version_number DESC
+        LIMIT %s
+        """,
+        (actor.id, limit),
+    ).fetchall()
+    items: list[SavedPromptListItem] = []
+    for row in rows:
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        items.append(
+            SavedPromptListItem(
+                id=str(row["id"]),
+                project_id=str(row["project_id"]),
+                name=str(payload.get("name") or "未命名提示词"),
+                prompt_text=str(payload.get("prompt_text") or ""),
+                created_at=str(row["created_at"]),
+            )
+        )
+    return SavedPromptListPage(items=items)

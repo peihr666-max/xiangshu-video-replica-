@@ -5198,7 +5198,8 @@ export interface components {
       /** Reserved Balance After */
       reserved_balance_after: number | null;
       /** Oral Task Id */
-      oral_task_id?: string | null;    };
+      oral_task_id?: string | null;
+    };
     /** ControlWalletTransactionPage */
     ControlWalletTransactionPage: {
       /** Items */

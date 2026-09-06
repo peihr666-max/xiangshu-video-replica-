@@ -25,7 +25,7 @@ import pytest
 
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 SKIP_REASON = "PostgreSQL fixture not reachable; start it via scripts/pg-fixture.sh start"
-HEAD_REVISION = "074_script_rewrite_ip_profile_snapshot"
+HEAD_REVISION = "075_independent_creation"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(
@@ -1816,9 +1816,7 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
                 "INSERT INTO generation_tasks (id,batch_id,provider,model,status) VALUES "
                 "('capacity-g1','capacity-b1','metaso','h3','PENDING')"
             )
-            conn.execute(
-                "UPDATE runtime_settings SET max_concurrent_h3_tasks=1 WHERE id=1"
-            )
+            conn.execute("UPDATE runtime_settings SET max_concurrent_h3_tasks=1 WHERE id=1")
 
         original_oral_limits = oral_worker.read_runtime_limits
         oral_barrier = threading.Barrier(2)
@@ -1901,9 +1899,11 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
             release_oral_queue_slot(conn, oral_task_id="capacity-o2")
             raw.commit()
         with psycopg.connect(dsn) as conn:
-            assert conn.execute(
-                "SELECT running_tasks_count FROM user_queue_cursors "
-                "WHERE user_id='capacity-u2'"
-            ).fetchone()[0] == 0
+            assert (
+                conn.execute(
+                    "SELECT running_tasks_count FROM user_queue_cursors WHERE user_id='capacity-u2'"
+                ).fetchone()[0]
+                == 0
+            )
     finally:
         _drop_database(db_name)

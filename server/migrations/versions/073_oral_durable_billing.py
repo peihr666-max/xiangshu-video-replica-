@@ -15,17 +15,20 @@ branch_labels = None
 depends_on = None
 
 
+# 形状沿用 057_second_based_billing 的按秒放宽语义：
+# RESERVE 为 -reserved_delta（秒数不再固定 1），SETTLE/RELEASE 同步放宽。
 _WALLET_SHAPE_WITH_ORAL = """
 (type = 'CHARGE' AND available_delta > 0 AND reserved_delta = 0
  AND recharge_order_id IS NOT NULL AND task_id IS NULL AND oral_task_id IS NULL
  AND billing_round IS NULL) OR
-(type = 'RESERVE' AND available_delta = -1 AND reserved_delta = 1
+(type = 'RESERVE' AND available_delta = -reserved_delta AND reserved_delta >= 1
  AND recharge_order_id IS NULL AND ((task_id IS NOT NULL) <> (oral_task_id IS NOT NULL))
  AND billing_round IS NOT NULL) OR
-(type = 'SETTLE' AND available_delta = 0 AND reserved_delta = -1
+(type = 'SETTLE' AND available_delta = 0 AND reserved_delta <= -1
  AND recharge_order_id IS NULL AND ((task_id IS NOT NULL) <> (oral_task_id IS NOT NULL))
  AND billing_round IS NOT NULL) OR
-(type = 'RELEASE' AND available_delta = 1 AND reserved_delta = -1
+(type = 'RELEASE' AND available_delta = -reserved_delta AND available_delta >= 1
+ AND reserved_delta <= -1
  AND recharge_order_id IS NULL AND ((task_id IS NOT NULL) <> (oral_task_id IS NOT NULL))
  AND billing_round IS NOT NULL)
 """
@@ -33,11 +36,12 @@ _WALLET_SHAPE_WITH_ORAL = """
 _WALLET_SHAPE_LEGACY = """
 (type = 'CHARGE' AND available_delta > 0 AND reserved_delta = 0
  AND recharge_order_id IS NOT NULL AND task_id IS NULL AND billing_round IS NULL) OR
-(type = 'RESERVE' AND available_delta = -1 AND reserved_delta = 1
+(type = 'RESERVE' AND available_delta = -reserved_delta AND reserved_delta >= 1
  AND recharge_order_id IS NULL AND task_id IS NOT NULL AND billing_round IS NOT NULL) OR
-(type = 'SETTLE' AND available_delta = 0 AND reserved_delta = -1
+(type = 'SETTLE' AND available_delta = 0 AND reserved_delta <= -1
  AND recharge_order_id IS NULL AND task_id IS NOT NULL AND billing_round IS NOT NULL) OR
-(type = 'RELEASE' AND available_delta = 1 AND reserved_delta = -1
+(type = 'RELEASE' AND available_delta = -reserved_delta AND available_delta >= 1
+ AND reserved_delta <= -1
  AND recharge_order_id IS NULL AND task_id IS NOT NULL AND billing_round IS NOT NULL)
 """
 

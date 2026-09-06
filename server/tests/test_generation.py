@@ -6744,7 +6744,7 @@ def test_cancel_queued_batch_cancels_tasks_and_releases_credits(
             FROM wallets WHERE user_id = 'employee_1'
             """
         ).fetchone()
-        assert tuple(reserved) == (999, 1)
+        assert tuple(reserved) == (990, 10)
 
     response = client.post(
         f"/api/generation-batches/{batch['id']}/cancel",

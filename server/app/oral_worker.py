@@ -13,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import uuid4
 
+import psycopg
+
 from app.db_portable import BusinessConnection
 from app.generation import (
     ensure_user_queue_cursor,
@@ -232,11 +234,11 @@ def claim_oral_work(
     with conn:
         lock_shared_generation_capacity(conn)
         _quarantine_expired_submissions(conn, now_text)
-    # BusinessConnection's context manager and commit() are no-ops on the
-    # fenced PostgreSQL lane, but a worker owns its raw connection — the
-    # quarantine boundary must go through it so the capacity row lock is
-    # released before the claim critical section re-acquires it.
-    conn.raw.commit()
+    # BusinessConnection 的 commit() 在 PG fenced 通道上是刻意 no-op；worker
+    # 拥有裸连接时必须真正提交隔离边界，否则容量行锁会跨越 claim 临界区把
+    # 并发 worker 串在后面。pooled pg_transaction() 托管块内禁止显式提交，
+    # 此时边界由外层调用方持有，跳过即可（锁在块结束时释放）。
+    _commit_worker_boundary(conn)
 
     with conn:
         task = conn.execute(
@@ -371,6 +373,32 @@ def claim_oral_work(
                     row=row,
                 )
     return None
+
+
+def _commit_worker_boundary(conn: BusinessConnection) -> None:
+    """End the quarantine transaction before the claim critical section.
+
+    - SQLite: wrapper commit() is the real boundary.
+    - PostgreSQL, bare worker-owned connection (standalone runtimes/tests):
+      the implicit transaction must be committed here, or the capacity row
+      lock serializes every concurrent claim behind this one.
+    - PostgreSQL, pooled ``pg_transaction()`` block: an explicit commit is
+      forbidden; the caller owns the boundary, so skip and let the block end
+      release the lock.
+    """
+    if not conn.is_postgres:
+        conn.commit()
+        return
+    raw = conn.raw
+    if not isinstance(raw, psycopg.Connection):
+        return
+    if raw.info.transaction_status.name != "INTRANS":
+        return
+    try:
+        raw.commit()
+    except psycopg.ProgrammingError:
+        # Raised by psycopg when a Transaction context owns the connection.
+        pass
 
 
 def _object_bytes(storage: StorageAdapter, uri: str) -> bytes:
