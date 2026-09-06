@@ -41,9 +41,9 @@ from app.settings import ProviderName, SettingsRepository
 from app.settings_routes import (
     ProviderTester,
     ProviderTestResult,
-    apply_cos_lifecycle_rules,
     get_provider_tester,
     merge_provider_config,
+    remove_cos_lifecycle_rules,
     require_supported_provider,
 )
 from app.zpay import deployment_config_from_environment
@@ -137,6 +137,7 @@ class ControlWalletTransaction(BaseModel):
     created_at: str
     available_balance_after: int | None
     reserved_balance_after: int | None
+    oral_task_id: str | None = None
 
 
 class ControlWalletTransactionPage(BaseModel):
@@ -364,7 +365,7 @@ def _update_control_provider_settings_business(
         },
     )
     if provider_name == "cos":
-        lifecycle = apply_cos_lifecycle_rules(merged, actor_id=actor.id)
+        lifecycle = remove_cos_lifecycle_rules(merged, actor_id=actor.id)
         write_audit(
             conn,
             actor=actor,
@@ -626,6 +627,7 @@ def list_wallet_transactions(
             tx.reserved_delta,
             tx.recharge_order_id,
             tx.task_id,
+            tx.oral_task_id,
             tx.billing_round,
             tx.created_at,
             CASE WHEN tx.ledger_sequence IS NULL THEN NULL ELSE
@@ -1328,6 +1330,7 @@ def export_wallet_transactions_csv(
             tx.reserved_delta,
             COALESCE(tx.recharge_order_id, '') AS recharge_order_id,
             COALESCE(tx.task_id, '') AS task_id,
+            COALESCE(tx.oral_task_id, '') AS oral_task_id,
             COALESCE(tx.billing_round, '') AS billing_round,
             tx.created_at
         FROM wallet_transactions AS tx
@@ -1349,6 +1352,7 @@ def export_wallet_transactions_csv(
             "reserved_delta",
             "recharge_order_id",
             "task_id",
+            "oral_task_id",
             "billing_round",
             "created_at",
         ),

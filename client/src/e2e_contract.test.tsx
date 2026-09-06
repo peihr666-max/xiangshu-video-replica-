@@ -94,8 +94,13 @@ describe("Fake provider E2E contract", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    // 启动即自动验证身份进入工作台，无需点击“进入”。
-    fireEvent.click(await screen.findByRole("button", { name: "任务记录" }));
+    // 任务中心先展示本地任务概览，再由真实 LiveWorkspacePanel 打开记录。
+    fireEvent.click(await screen.findByRole("button", { name: "任务中心" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "历史任务与下载" }),
+    );
+    await screen.findByRole("region", { name: "任务记录" });
+    fireEvent.click(screen.getByText("兼容查询：通过 Batch ID 查找历史记录"));
     fireEvent.change(await screen.findByLabelText("Batch ID"), {
       target: { value: " batch-fake-e2e " },
     });

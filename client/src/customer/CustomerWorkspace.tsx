@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { WorkspaceShell } from "../App";
 import {
   attachCustomerSessionToken,
   type CustomerActivationCodeReset,
@@ -15,8 +14,10 @@ import {
   customerUpdateProfile,
 } from "../api";
 import { customerToCurrentUser } from "../RootApp";
+import { StudioWorkspace } from "../studio/StudioWorkspace";
 import type {
   CustomerCredentialStore,
+  CustomerSessionRuntime,
   CustomerWorkspaceUser,
 } from "./useCustomerSession";
 
@@ -27,10 +28,14 @@ import type {
  */
 export function CustomerWorkspace({
   user,
+  sessionRuntime = null,
+  onManualHeartbeat,
   store,
   onSessionExpired,
 }: {
   user: CustomerWorkspaceUser;
+  sessionRuntime?: CustomerSessionRuntime | null;
+  onManualHeartbeat?: () => void;
   store: CustomerCredentialStore;
   onSessionExpired: () => void;
 }) {
@@ -223,7 +228,7 @@ export function CustomerWorkspace({
   return (
     <div className="customer-workspace">
       {workspaceCredentialReady ? (
-        <WorkspaceShell
+        <StudioWorkspace
           currentUser={customerToCurrentUser(user, profile)}
           customerAccount={{
             devices,
@@ -240,6 +245,8 @@ export function CustomerWorkspace({
             profile,
             store,
             onSessionExpired,
+            sessionRuntime,
+            onManualHeartbeat,
           }}
         />
       ) : (

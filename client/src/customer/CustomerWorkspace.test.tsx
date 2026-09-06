@@ -83,7 +83,7 @@ function fakeStore(): CustomerCredentialStore {
 
 describe("CustomerWorkspace (T31)", () => {
   beforeEach(() => {
-    window.history.replaceState(null, "", "#projects");
+    window.history.replaceState(null, "", "/");
   });
 
   afterEach(() => {
@@ -182,6 +182,13 @@ describe("CustomerWorkspace (T31)", () => {
     });
   }
 
+  async function openDeviceManagement() {
+    fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
+    await screen.findByRole("heading", { name: "用户档案" });
+    fireEvent.click(screen.getByRole("tab", { name: "设备管理" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^设备管理/ }));
+  }
+
   it("shows pending pairing requests for approval on the device view", async () => {
     const fetchMock = stubDeviceFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -194,10 +201,7 @@ describe("CustomerWorkspace (T31)", () => {
       />,
     );
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "打开个人中心" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: /设备管理/ }));
+    await openDeviceManagement();
     expect(
       await screen.findByRole("heading", { name: "新的设备绑定请求" }),
     ).toBeInTheDocument();
@@ -222,7 +226,9 @@ describe("CustomerWorkspace (T31)", () => {
     );
 
     expect(
-      await screen.findByRole("status", { name: "云服务已连接" }),
+      await screen.findByRole("heading", {
+        name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
+      }),
     ).toBeInTheDocument();
 
     await waitFor(() => {
@@ -246,10 +252,7 @@ describe("CustomerWorkspace (T31)", () => {
         onSessionExpired={vi.fn()}
       />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "打开个人中心" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: /设备管理/ }));
+    await openDeviceManagement();
     await screen.findByRole("heading", { name: "新的设备绑定请求" });
 
     fireEvent.click(screen.getByRole("button", { name: "确认绑定" }));
@@ -281,10 +284,7 @@ describe("CustomerWorkspace (T31)", () => {
         onSessionExpired={vi.fn()}
       />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "打开个人中心" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: /设备管理/ }));
+    await openDeviceManagement();
     await screen.findByRole("heading", { name: "新的设备绑定请求" });
 
     fireEvent.click(screen.getByRole("button", { name: "暂不处理" }));
@@ -305,10 +305,7 @@ describe("CustomerWorkspace (T31)", () => {
         onSessionExpired={vi.fn()}
       />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "打开个人中心" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: /设备管理/ }));
+    await openDeviceManagement();
     await screen.findByRole("heading", { name: "新的设备绑定请求" });
 
     fireEvent.click(screen.getByRole("button", { name: "删除无效请求" }));

@@ -39,6 +39,7 @@ from app.customer_session_routes import router as customer_session_router
 from app.db_pg import close_pg_pool
 from app.first_frame_routes import router as first_frame_router
 from app.generation_routes import router as generation_router
+from app.material_routes import router as material_router
 from app.media_routes import router as media_router
 from app.ops_metrics import (
     business_http_exception_handler,
@@ -47,13 +48,18 @@ from app.ops_metrics import (
     set_current_result_code,
     unhandled_exception_response,
 )
+from app.oral_routes import router as oral_router
 from app.payment_routes import router as payment_router
 from app.rbac_routes import router as rbac_router
 from app.recharge_routes import router as recharge_router
+from app.script_from_audio_routes import router as script_from_audio_router
 from app.settings import SettingsUnavailableError
 from app.settings_routes import router as settings_router
 from app.simple_character_routes import router as character_simple_router
 from app.source_frame_routes import router as source_frame_router
+from app.studio_draft_routes import router as studio_draft_router
+from app.studio_routes import router as studio_router
+from app.viral_routes import router as viral_router
 from app.wallet_routes import router as wallet_router
 
 # Non-loopback hosts that are still accepted: TestClient uses "testclient",
@@ -315,6 +321,11 @@ app.add_middleware(
 # bounded HTTP metric instead of being silently short-circuited.
 app.middleware("http")(request_observability_middleware)
 app.include_router(generation_router)
+app.include_router(studio_router)
+app.include_router(studio_draft_router)
+app.include_router(material_router)
+app.include_router(script_from_audio_router)
+app.include_router(oral_router)
 app.include_router(rbac_router)
 app.include_router(payment_router)
 app.include_router(control_router)
@@ -336,6 +347,7 @@ app.include_router(wallet_router)
 app.include_router(settings_router)
 app.include_router(media_router)
 app.include_router(analysis_router)
+app.include_router(viral_router)
 app.include_router(character_router)
 app.include_router(character_identity_router)
 app.include_router(character_generation_router)

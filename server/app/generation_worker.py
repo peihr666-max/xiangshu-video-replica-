@@ -82,6 +82,14 @@ from app.image_tasks import (
 )
 from app.media_routes import get_media_storage
 from app.operation_costs import begin_operation_cost, complete_operation_cost
+from app.script_from_audio import (
+    acquire_script_from_audio_task,
+    complete_script_from_audio_task,
+    fail_script_from_audio_task,
+    mark_script_from_audio_submission_started,
+    perform_script_from_audio_task,
+    prepare_script_from_audio_task,
+)
 from app.script_rewrite import (
     acquire_script_rewrite_task,
     complete_script_rewrite_task,
@@ -370,6 +378,37 @@ def run_worker_once(
                     lease=script_rewrite_lease,
                     cause=exc,
                     submission_started=submission_started,
+                )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        script_from_audio_lease = acquire_script_from_audio_task(conn, worker_id=worker_id)
+        if script_from_audio_lease is not None:
+            audio_submission_started = False
+            try:
+                audio_work = prepare_script_from_audio_task(
+                    conn,
+                    lease=script_from_audio_lease,
+                    storage=storage,
+                )
+                mark_script_from_audio_submission_started(
+                    conn,
+                    lease=script_from_audio_lease,
+                )
+                audio_submission_started = True
+                audio_result = perform_script_from_audio_task(audio_work)
+                complete_script_from_audio_task(
+                    conn,
+                    lease=script_from_audio_lease,
+                    result=audio_result,
+                )
+            except Exception as exc:
+                fail_script_from_audio_task(
+                    conn,
+                    lease=script_from_audio_lease,
+                    cause=exc,
+                    submission_started=audio_submission_started,
                 )
             processed += 1
             processed_round = True

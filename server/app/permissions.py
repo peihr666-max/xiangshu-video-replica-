@@ -284,7 +284,7 @@ def require_asset_access(
     row = conn.execute(
         """
         SELECT id, project_id, kind, storage_uri, sha256, size_bytes, content_type,
-               metadata_json
+               metadata_json, created_by_user_id
         FROM assets
         WHERE id = %s
         """,
@@ -323,6 +323,33 @@ def require_asset_access(
 
     if actor.role in {"admin", "auditor"}:
         return cast(sqlite3.Row, row)
+
+    if (
+        str(row["kind"]) in {"material_image", "material_audio", "material_video"}
+        and row["created_by_user_id"] is not None
+        and str(row["created_by_user_id"]) == actor.id
+    ):
+        return cast(sqlite3.Row, row)
+
+    if (
+        str(row["kind"]) == "oral_audio"
+        and row["created_by_user_id"] is not None
+        and str(row["created_by_user_id"]) == actor.id
+    ):
+        return cast(sqlite3.Row, row)
+
+    if str(row["kind"]) == "oral_video":
+        owned_oral_result = conn.execute(
+            """
+            SELECT 1
+            FROM oral_tasks
+            WHERE result_asset_id = %s AND owner_user_id = %s
+            LIMIT 1
+            """,
+            (asset_id, actor.id),
+        ).fetchone()
+        if owned_oral_result is not None:
+            return cast(sqlite3.Row, row)
 
     # Contact sheets live outside character_assets, so grant access through the
     # published character version referenced in their asset metadata.

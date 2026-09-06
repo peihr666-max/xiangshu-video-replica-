@@ -20,10 +20,7 @@ export function HeartbeatStatus({
   const isWarning = secondsSinceLast >= intervalSeconds; // overdue
   const isExpired = secondsSinceLast > intervalSeconds * 2; // > 2x interval
 
-  const formattedHeartbeat = heartbeat.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
+  const formattedHeartbeat = heartbeat.toLocaleString("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -36,26 +33,19 @@ export function HeartbeatStatus({
       aria-live="polite"
     >
       <p className="label">
-        Last heartbeat:{" "}
-        <time dateTime={lastHeartbeatAt}>{formattedHeartbeat}</time>
+        上次心跳：<time dateTime={lastHeartbeatAt}>{formattedHeartbeat}</time>
       </p>
 
-      <p className="interval-info">Refreshes every {intervalSeconds} seconds</p>
+      <p className="interval-info">每 {intervalSeconds} 秒自动续约会话</p>
 
-      {isHealthy && (
-        <span className="status-text healthy">✓ Connection healthy</span>
-      )}
+      {isHealthy && <span className="status-text healthy">✓ 连接正常</span>}
 
       {isWarning && !isExpired && (
-        <span className="status-text warning">
-          ⚠️ Heartbeat overdue — will expire soon
-        </span>
+        <span className="status-text warning">⚠️ 心跳已逾期，会话即将失效</span>
       )}
 
       {isExpired && (
-        <span className="status-text expired">
-          ✕ Session expired — refresh required
-        </span>
+        <span className="status-text expired">✕ 会话已过期，请重新登录</span>
       )}
 
       <button
@@ -63,14 +53,13 @@ export function HeartbeatStatus({
         className="btn-refresh"
         onClick={onRefresh}
         disabled={isExpired}
-        aria-label="Manually trigger a heartbeat refresh"
+        aria-label="立即发送心跳"
       >
-        Send Heartbeat Now
+        立即续约
       </button>
 
       <footer className="help-text">
-        The session automatically refreshes every {intervalSeconds} seconds. If
-        inactive for too long, you may need to log in again.
+        会话每 {intervalSeconds} 秒自动续约；长时间失联后需要重新登录。
       </footer>
     </div>
   );

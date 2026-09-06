@@ -14,6 +14,10 @@ if "%VIDEO_REPLICA_DESKTOP_USER_ID%"=="" (
 if "%VIDEO_REPLICA_AUTH_MODE%"=="" set "VIDEO_REPLICA_AUTH_MODE=desktop"
 if "%VIDEO_REPLICA_STORAGE_ROOT%"=="" set VIDEO_REPLICA_STORAGE_ROOT=%CD%\storage
 
+rem 提取文案（script-from-audio）依赖精简构建 ffmpeg/ffprobe，随安装包
+rem 分发到 resources\ffmpeg\；定位顺序见 server/app/media_tools.py。
+if "%VIDEO_REPLICA_FFMPEG_DIR%"=="" set "VIDEO_REPLICA_FFMPEG_DIR=%~dp0ffmpeg"
+
 rem 打包命令是一个整体，禁止一部分走 sidecar、另一部分误回退到开发目录。
 set "VIDEO_REPLICA_PACKAGED_COMMANDS="
 if defined VIDEO_REPLICA_BOOTSTRAP_CMD set "VIDEO_REPLICA_PACKAGED_COMMANDS=1"

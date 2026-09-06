@@ -11,7 +11,6 @@ export function DeviceManagementPage({
   isOnline: boolean;
   leaseExpiresAt?: string | null;
   onUnbind: (deviceId: string) => void;
-  onError: (error: Error) => void;
   onRecharge: () => void;
 }): React.JSX.Element {
   return (

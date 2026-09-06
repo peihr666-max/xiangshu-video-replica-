@@ -28,12 +28,10 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
   };
 
   const mockOnUnbind = vi.fn();
-  const mockOnError = vi.fn();
   const mockOnRecharge = vi.fn();
 
   function renderWithProps(props?: {
     onUnbind?: () => void;
-    onError?: () => void;
     onRecharge?: () => void;
   }) {
     render(
@@ -42,7 +40,6 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
         isOnline={true}
         leaseExpiresAt={new Date(Date.now() + 3600_000).toISOString()} // 1 小时后过期
         onUnbind={props?.onUnbind ?? mockOnUnbind}
-        onError={props?.onError ?? mockOnError}
         onRecharge={props?.onRecharge ?? mockOnRecharge}
       />,
     );

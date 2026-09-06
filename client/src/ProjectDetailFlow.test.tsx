@@ -697,6 +697,7 @@ describe("ProjectDetailFlow", () => {
       status: "QUEUED",
       quantity: 1,
       stale: false,
+      creation_kind: "replica",
       progress: {
         total_count: 1,
         terminal_count: 0,

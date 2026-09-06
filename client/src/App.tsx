@@ -16,10 +16,14 @@ import { CharacterLibrary } from "./CharacterLibrary";
 import { CustomerProfilePanel } from "./customer/CustomerProfilePanel";
 import { CustomerRechargeDialog } from "./customer/CustomerRechargeDialog";
 import { CustomerWalletPanel } from "./customer/CustomerWalletPanel";
-import type { CustomerCredentialStore } from "./customer/useCustomerSession";
+import type {
+  CustomerCredentialStore,
+  CustomerSessionRuntime,
+} from "./customer/useCustomerSession";
 import { ProjectDetailFlow } from "./ProjectDetailFlow";
 import { ProjectsPage } from "./ProjectsPage";
 import { SettingsPanel } from "./SettingsPanel";
+import { StudioWorkspace } from "./studio/StudioWorkspace";
 import { TaskRecordsPanel } from "./TaskRecordsPanel";
 import { WalletPanel } from "./WalletPanel";
 import "./styles.css";
@@ -55,7 +59,6 @@ export function App() {
     setInternalAccessToken(accessToken.trim() || null);
     try {
       const user = await getCurrentUser();
-      ensureWorkspaceHash(workspacePageFromHash(user));
       setCurrentUser(user);
     } catch (error) {
       setCurrentUser(null);
@@ -128,7 +131,7 @@ export function App() {
     );
   }
 
-  return <WorkspaceShell currentUser={currentUser} />;
+  return <StudioWorkspace currentUser={currentUser} />;
 }
 
 /** The shared workspace shell (§10.1): the sidebar, the stage, and the page
@@ -156,6 +159,10 @@ export function WorkspaceShell({
     profile: CustomerProfile | null;
     store: CustomerCredentialStore;
     onSessionExpired: () => void;
+    /** Live heartbeat/lease health from the customer session hook; absent
+     * on the internal lane. Rendered in the profile centre's device tab. */
+    sessionRuntime?: CustomerSessionRuntime | null;
+    onManualHeartbeat?: () => void;
   };
   customerWallet?: {
     store: CustomerCredentialStore;
@@ -792,7 +799,7 @@ function pageTitle(page: WorkspacePage): string {
 // 一级页面的引导副标题：随页头一次性说明该页做什么，页面内部不再重复标题。
 function pageSubtitle(page: WorkspacePage): string {
   return {
-    characters: "上传一张图片一键生成五视角拼合图，供项目选用。",
+    characters: "上传一张图片一键生成五视图拼合图，供项目选用。",
     profile: "查看账号、激活凭证、余额和已绑定设备。",
     projects: "上传参考视频，拆解提示词，配首帧生成新视频。",
     settings: "管理各服务连接凭据与运行参数。",

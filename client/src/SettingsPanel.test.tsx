@@ -25,6 +25,7 @@ const settingsSnapshot = {
       config: { bucket: "bucket-1", region: "ap-shanghai" },
     },
     deepseek: { provider: "deepseek", configured: false, config: {} },
+    tikhub: { provider: "tikhub", configured: false, config: {} },
   },
   runtime: {
     max_generation_count_per_batch: 5,

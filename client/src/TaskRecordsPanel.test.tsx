@@ -77,6 +77,7 @@ function batch(
     status: "NEEDS_ATTENTION",
     quantity: 2,
     stale: false,
+    creation_kind: "replica",
     progress: {
       total_count: 2,
       terminal_count: 2,
@@ -120,6 +121,7 @@ function listItem(
     prompt_version_id: detail.prompt_version_id,
     status: detail.status,
     quantity: detail.quantity,
+    creation_kind: detail.creation_kind,
     created_at: "2026-08-16 10:00:00",
     updated_at: "2026-08-16 10:00:06",
     progress: detail.progress,

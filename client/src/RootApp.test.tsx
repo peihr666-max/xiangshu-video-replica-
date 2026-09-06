@@ -101,7 +101,9 @@ describe("RootApp", () => {
     render(<RootApp path="/" />);
 
     expect(
-      await screen.findByRole("heading", { name: "项目" }),
+      await screen.findByRole("heading", {
+        name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
+      }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "运营管理后台" })).toBeNull();
   });
@@ -219,7 +221,9 @@ describe("RootApp", () => {
         fireEvent.click(screen.getByRole("button", { name: "切换到本设备" }));
       }
       expect(
-        await screen.findByRole("button", { name: "打开个人中心" }),
+        await screen.findByRole("heading", {
+          name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
+        }),
       ).toBeInTheDocument();
       expect(screen.queryByLabelText("激活码")).toBeNull();
       expect(
@@ -261,13 +265,17 @@ describe("RootApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "激活并进入工作台" }));
 
     expect(
-      await screen.findByRole("heading", { name: "项目" }),
+      await screen.findByRole("heading", {
+        name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
+      }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("navigation", { name: "主导航" }),
+      screen.getByRole("navigation", { name: "主要导航" }),
     ).toBeInTheDocument();
-    // The activated username identifies the customer in the shared shell.
-    expect(screen.getByText("user-1")).toBeInTheDocument();
+    // The compact account entry keeps identity details in the profile page.
+    expect(
+      screen.getByRole("button", { name: "用户档案，积分 —" }),
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });
 
@@ -283,7 +291,9 @@ describe("RootApp", () => {
       target: { value: "工作电脑" },
     });
     fireEvent.click(screen.getByRole("button", { name: "激活并进入工作台" }));
-    await screen.findByRole("heading", { name: "项目" });
+    await screen.findByRole("heading", {
+      name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
+    });
 
     window.dispatchEvent(new Event(CUSTOMER_SESSION_REPLACED_EVENT));
 

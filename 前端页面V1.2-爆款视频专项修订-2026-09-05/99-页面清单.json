@@ -1,0 +1,45 @@
+{
+  "version": "V1.2-爆款视频用户端专项修订",
+  "date": "2026-09-05",
+  "scope": "3张效果图+可填写意见的离线审核图册；不是业务前端或API接入",
+  "apiParameters": "用户提供；不再搜索；不在用户端展示",
+  "reviewStatus": "待用户审核",
+  "pages": [
+    {
+      "id": "17A",
+      "name": "爆款视频-抖音列表",
+      "file": "17A-爆款视频-抖音列表.png",
+      "focus": "用户只看视频：抖音独立 30 条，浏览、收藏、用于复刻",
+      "notes": "移除关键词任务、立即采集、频率、接口和云存储状态",
+      "width": 1585,
+      "height": 992,
+      "bytes": 2005313,
+      "sha256": "41e81a10fbd8ceb2f514a55ca88bfddafd8f65fffd34f200c92ed02cbcb00d2d",
+      "generationSource": "/Users/honor.pei/.codex/generated_images/01a06bee-db15-7a03-b6c5-ba5b88cbab80/exec-04963f0e-37a3-4b13-a042-c1b0e300653c.png"
+    },
+    {
+      "id": "17B",
+      "name": "爆款视频-视频号列表",
+      "file": "17B-爆款视频-视频号列表.png",
+      "focus": "切换到视频号，显示该平台自己的 30 条内容",
+      "notes": "保持与抖音相同的卡片结构，不混排平台结果",
+      "width": 1585,
+      "height": 992,
+      "bytes": 2079385,
+      "sha256": "e47dbe95f9b62297a802f4400bd9a6fe1c959c22a2a9d283f323fdf18b12f8af",
+      "generationSource": "/Users/honor.pei/.codex/generated_images/01a06bee-db15-7a03-b6c5-ba5b88cbab80/exec-dc7685b0-f7c9-47ad-a53c-98a8a56e8f28.png"
+    },
+    {
+      "id": "17C",
+      "name": "爆款视频-视频详情",
+      "file": "17C-爆款视频-视频详情.png",
+      "focus": "视频预览、来源、简介与收藏、复刻等内容操作",
+      "notes": "不展示采集设置、API 参数或云端同步详情",
+      "width": 1586,
+      "height": 992,
+      "bytes": 1900314,
+      "sha256": "7ef622dfb81e51646ca84e3fbe6102577d41cb1cffe036f0fcee4a46fbbec96a",
+      "generationSource": "/Users/honor.pei/.codex/generated_images/01a06bee-db15-7a03-b6c5-ba5b88cbab80/exec-1739b07b-975a-4587-b03b-7f8c598d5bcb.png"
+    }
+  ]
+}

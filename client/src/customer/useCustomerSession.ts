@@ -49,6 +49,14 @@ export type CustomerSessionConflict = {
   leaseExpiresAt: string;
 };
 
+/** Live session health for the workspace UI (A1 wiring of FE-04 / T31):
+ * when the last heartbeat succeeded and when the server lease lapses.
+ * Client-clock timestamps; `null` while no session is established. */
+export type CustomerSessionRuntime = {
+  lastHeartbeatAt: string;
+  leaseExpiresAt: string | null;
+};
+
 export type CustomerActivationFormInput = {
   activationCode: string;
   deviceName: string;
@@ -100,6 +108,8 @@ export function useCustomerSession(
   error: CustomerApiError | null;
   conflict: CustomerSessionConflict | null;
   user: CustomerWorkspaceUser | null;
+  /** Heartbeat/lease health while a session is live; null otherwise. */
+  sessionRuntime: CustomerSessionRuntime | null;
   activate(input: CustomerActivationFormInput): Promise<void>;
   retryLogin(): Promise<void>;
   /** The explicit takeover (FE-03): the user confirmed in the conflict dialog,
@@ -110,6 +120,10 @@ export function useCustomerSession(
   /** The user declined the takeover: back to the login screen, the other
    * device keeps the lease. */
   cancelSessionSwitch(): void;
+  /** Manual lease renewal for the HeartbeatStatus / LeaseCountdown refresh
+   * buttons. Failures stay silent — terminal outcomes arrive as the
+   * lifecycle events, transient ones are retried by the next tick. */
+  sendHeartbeatNow(): Promise<void>;
   logout(): Promise<void>;
   restartAfterExpiry(): void;
   restartAfterRevocation(): void;
@@ -128,8 +142,20 @@ export function useCustomerSession(
   // persisted anywhere else.
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [user, setUser] = useState<CustomerWorkspaceUser | null>(null);
+  const [sessionRuntime, setSessionRuntime] =
+    useState<CustomerSessionRuntime | null>(null);
   const sessionTokenRef = useRef<string | null>(null);
   const bootstrappedRef = useRef(false);
+
+  // Every established/renewed lease updates the runtime view: the heartbeat
+  // timestamp is the client clock at success, the lease comes from the
+  // server response.
+  const noteLease = useCallback((leaseExpiresAt: string | null) => {
+    setSessionRuntime({
+      lastHeartbeatAt: new Date().toISOString(),
+      leaseExpiresAt,
+    });
+  }, []);
 
   // For the current activation attempt, retain this key until final outcome to
   // enable retries when the response is lost/timed out. The server can recover
@@ -156,9 +182,10 @@ export function useCustomerSession(
       sessionTokenRef.current = result.session.session_token;
       setSessionToken(result.session.session_token);
       setUser({ userId: result.session.user_id, username: null });
+      noteLease(result.session.session_lease_expires_at);
       return result;
     },
-    [store],
+    [store, noteLease],
   );
 
   // Boot: check the credential store once, then (FE-02 restart gate) try to
@@ -204,6 +231,7 @@ export function useCustomerSession(
           sessionTokenRef.current = response.session_token;
           setSessionToken(response.session_token);
           setUser({ userId: response.user_id, username: response.username });
+          noteLease(response.session_lease_expires_at);
           dispatch({
             type: "boot-check-completed",
             hasDeviceCredential: false,
@@ -283,7 +311,7 @@ export function useCustomerSession(
       // or the customer lane would sit on the checking screen forever.
       bootstrappedRef.current = false;
     };
-  }, [establishSession, store]);
+  }, [establishSession, store, noteLease]);
 
   // The three lifecycle events (§10.1) arrive on window — dispatched by the
   // customer transport on any 401 that ends the session. Each one also does
@@ -291,20 +319,20 @@ export function useCustomerSession(
   // device credential (§13.2: back to the login screen), revoked clears
   // everything (recovery flow).
   useEffect(() => {
-    const onExpired = () => {
+    const clearSession = () => {
       void store.clearSessionToken();
       sessionTokenRef.current = null;
       setSessionToken(null);
       setUser(null);
       setConflict(null);
+      setSessionRuntime(null);
+    };
+    const onExpired = () => {
+      clearSession();
       dispatch({ type: "session-expired" });
     };
     const onReplaced = () => {
-      void store.clearSessionToken();
-      sessionTokenRef.current = null;
-      setSessionToken(null);
-      setUser(null);
-      setConflict(null);
+      clearSession();
       dispatch({ type: "session-replaced" });
     };
     const onRevoked = () => {
@@ -313,6 +341,7 @@ export function useCustomerSession(
       setSessionToken(null);
       setUser(null);
       setConflict(null);
+      setSessionRuntime(null);
       dispatch({ type: "device-revoked" });
     };
     window.addEventListener(CUSTOMER_SESSION_EXPIRED_EVENT, onExpired);
@@ -341,15 +370,19 @@ export function useCustomerSession(
       if (token === null) {
         return;
       }
-      void customerHeartbeat({ kind: "session", token }).catch(() => {
-        // Terminal outcomes arrive as lifecycle events; transient failures
-        // leave the next heartbeat to retry.
-      });
+      void customerHeartbeat({ kind: "session", token })
+        .then((body) => {
+          noteLease(body.lease_expires_at);
+        })
+        .catch(() => {
+          // Terminal outcomes arrive as lifecycle events; transient failures
+          // leave the next heartbeat to retry.
+        });
     }, heartbeatIntervalMs);
     return () => {
       window.clearInterval(timer);
     };
-  }, [heartbeatIntervalMs, screen, sessionToken]);
+  }, [heartbeatIntervalMs, screen, sessionToken, noteLease]);
 
   const activate = useCallback(
     async (input: CustomerActivationFormInput) => {
@@ -385,6 +418,7 @@ export function useCustomerSession(
         sessionTokenRef.current = response.session_token;
         setSessionToken(response.session_token);
         setUser({ userId: response.user_id, username: response.username });
+        noteLease(response.session_lease_expires_at);
         dispatch({ type: "activation-succeeded" });
       } catch (cause) {
         setError(
@@ -396,7 +430,7 @@ export function useCustomerSession(
         setIsBusy(false);
       }
     },
-    [store],
+    [store, noteLease],
   );
 
   // A guard for concurrent retries: while a login attempt is in flight, further
@@ -488,6 +522,7 @@ export function useCustomerSession(
       setSessionToken(result.session.session_token);
       setUser({ userId: result.session.user_id, username: null });
       setConflict(null);
+      noteLease(result.session.session_lease_expires_at);
       dispatch({ type: "login-succeeded" });
     } catch (cause) {
       setError(
@@ -496,13 +531,27 @@ export function useCustomerSession(
     } finally {
       setIsBusy(false);
     }
-  }, [store]);
+  }, [store, noteLease]);
 
   const cancelSessionSwitch = useCallback(() => {
     setError(null);
     setConflict(null);
     dispatch({ type: "conflict-cancelled" });
   }, []);
+
+  const sendHeartbeatNow = useCallback(async () => {
+    const token = sessionTokenRef.current;
+    if (token === null) {
+      return;
+    }
+    try {
+      const body = await customerHeartbeat({ kind: "session", token });
+      noteLease(body.lease_expires_at);
+    } catch {
+      // Terminal outcomes arrive as lifecycle events; transient failures
+      // leave the next heartbeat to retry.
+    }
+  }, [noteLease]);
 
   const logout = useCallback(async () => {
     const token = sessionTokenRef.current;
@@ -532,6 +581,7 @@ export function useCustomerSession(
     sessionTokenRef.current = null;
     setSessionToken(null);
     setUser(null);
+    setSessionRuntime(null);
     dispatch({ type: "logout" });
   }, [store]);
 
@@ -553,10 +603,12 @@ export function useCustomerSession(
     error,
     conflict,
     user,
+    sessionRuntime,
     activate,
     retryLogin,
     switchSession,
     cancelSessionSwitch,
+    sendHeartbeatNow,
     logout,
     restartAfterExpiry,
     restartAfterRevocation,

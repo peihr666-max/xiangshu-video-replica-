@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "063_wallet_ledger_sequence"
+    assert version == "073_oral_durable_billing"
     assert {
         "characters",
         "project_main_characters",

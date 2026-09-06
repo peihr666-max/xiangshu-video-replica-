@@ -74,7 +74,7 @@ export function SimpleCharacterUpload({
     try {
       const result = await uploadSimpleCharacter(projectId, file, name);
       onGenerationProgress?.(100, "多视角拼合图已生成");
-      setMessage(`人物“${name}”五视角拼合图已生成，可在下方预览与下载。`);
+      setMessage(`人物“${name}”五视图拼合图已生成，可在下方预览与下载。`);
       setDisplayName("");
       setFileName("");
       if (fileInputRef.current) {
@@ -98,7 +98,7 @@ export function SimpleCharacterUpload({
     <section className="simple-character-upload" aria-label="一键上传人物">
       <div className="simple-character-upload__intro">
         <p className="simple-character-upload__title">
-          上传人物图片，生成五视角拼合图
+          上传人物图片，生成五视图拼合图
         </p>
         <p className="simple-character-upload__note">
           授权图片 PNG / JPEG，不超过 10MB · AI 绘制约 1~3 分钟
@@ -141,7 +141,7 @@ export function SimpleCharacterUpload({
           onClick={submit}
           type="button"
         >
-          {busy ? "正在生成拼合图（约 1~3 分钟）…" : "一键生成五视角拼合图"}
+          {busy ? "正在生成拼合图（约 1~3 分钟）…" : "一键生成五视图拼合图"}
         </button>
       </div>
       {error ? (

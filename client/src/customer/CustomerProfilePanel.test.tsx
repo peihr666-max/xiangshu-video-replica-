@@ -130,4 +130,33 @@ describe("CustomerProfilePanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/新激活码仅显示这一次/)).toBeInTheDocument();
   });
+
+  it("shows heartbeat and lease health in the device tab and renews on demand", async () => {
+    const onManualHeartbeat = vi.fn();
+    const leaseExpiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    render(
+      <CustomerProfilePanel
+        {...defaultProps}
+        sessionRuntime={{
+          lastHeartbeatAt: new Date(Date.now() - 5_000).toISOString(),
+          leaseExpiresAt,
+        }}
+        onManualHeartbeat={onManualHeartbeat}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "设备管理" }));
+
+    expect(screen.getByText(/上次心跳/)).toBeInTheDocument();
+    expect(screen.getByText(/连接正常/)).toBeInTheDocument();
+    expect(screen.getByText(/本次会话有效至/)).toBeInTheDocument();
+    expect(screen.getByText(/剩余 \d+ 分钟/)).toBeInTheDocument();
+    // The device page header mirrors the live lease instead of the old null.
+    expect(screen.getByText(/本次登录有效至/)).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /立即续约|立即发送心跳/ })[0],
+    );
+    expect(onManualHeartbeat).toHaveBeenCalledTimes(1);
+  });
 });

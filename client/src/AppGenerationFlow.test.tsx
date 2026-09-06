@@ -67,15 +67,24 @@ function createAppFetchMock() {
   });
 }
 
-async function openProjectGenerationFlow() {
-  // 启动即自动验证身份进入工作台，无需点击“进入”；从项目列表
-  // 行内入口进入被 mock 的工作区。
-  await act(async () => Promise.resolve());
+async function openProjectAnalysisFlow() {
+  // 首页“上传视频”已是本机文件上传图标；无来源时进入已实现项目区的
+  // 入口是“开始复刻”，再打开真实项目分析流。
+  await screen.findByRole("heading", {
+    level: 1,
+    name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
+  });
+  fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
   fireEvent.click(
     await screen.findByRole("button", {
       name: "打开项目 夏日咖啡馆口播复刻",
     }),
   );
+  await screen.findByRole("button", { name: "模拟一键生成完成" });
+}
+
+async function openProjectGenerationFlow() {
+  await openProjectAnalysisFlow();
   fireEvent.click(screen.getByRole("button", { name: "模拟一键生成完成" }));
 }
 
@@ -123,10 +132,10 @@ describe("App generation handoff", () => {
     await openProjectGenerationFlow();
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "任务记录" }),
+      await screen.findByRole("region", { name: "任务记录" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
-    expect(window.location.hash).toBe("#tasks");
+    expect(window.location.hash).toBe("");
     expect(window.localStorage.getItem("generation.batchId:employee_1")).toBe(
       batch.id,
     );
@@ -153,10 +162,10 @@ describe("App generation handoff", () => {
     await openProjectGenerationFlow();
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "任务记录" }),
+      await screen.findByRole("region", { name: "任务记录" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
-    expect(window.location.hash).toBe("#tasks");
+    expect(window.location.hash).toBe("");
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         `http://127.0.0.1:8000/api/generation-batches/${batch.id}`,
@@ -172,26 +181,22 @@ describe("App generation handoff", () => {
     vi.stubGlobal("fetch", createAppFetchMock());
 
     render(<App />);
-    await act(async () => Promise.resolve());
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: "打开项目 夏日咖啡馆口播复刻",
-      }),
-    );
+    await openProjectAnalysisFlow();
     fireEvent.click(screen.getByRole("button", { name: "模拟上游写入开始" }));
 
-    expect(screen.getByRole("button", { name: "任务记录" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "任务记录" }));
+    // 新壳保留导航按钮的可见性，但 navigate 会读取忙碌锁；点击后必须
+    // 仍留在真实 AnalysisWorkspace，而不能切进任务中心。
+    expect(screen.getByRole("button", { name: "任务中心" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "任务中心" }));
     expect(
       screen.getByRole("button", { name: "模拟上游写入完成" }),
     ).toBeInTheDocument();
-    expect(window.location.hash).toBe("#projects");
+    expect(window.location.hash).toBe("");
 
     await act(async () => {
       window.history.replaceState(null, "", "#tasks");
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
-    expect(window.location.hash).toBe("#projects");
     expect(
       screen.getByRole("button", { name: "模拟上游写入完成" }),
     ).toBeInTheDocument();
@@ -200,16 +205,18 @@ describe("App generation handoff", () => {
       window.history.replaceState(null, "", "#characters");
       window.dispatchEvent(new PopStateEvent("popstate"));
     });
-    expect(window.location.hash).toBe("#projects");
     expect(
       screen.getByRole("button", { name: "模拟上游写入完成" }),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "模拟上游写入完成" }));
-    expect(screen.getByRole("button", { name: "任务记录" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "任务记录" }));
+    expect(screen.getByRole("button", { name: "任务中心" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "任务中心" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "历史任务与下载" }),
+    );
     expect(
-      await screen.findByRole("heading", { level: 1, name: "任务记录" }),
+      await screen.findByRole("region", { name: "任务记录" }),
     ).toBeInTheDocument();
   });
 
@@ -219,19 +226,14 @@ describe("App generation handoff", () => {
     vi.stubGlobal("fetch", createAppFetchMock());
 
     render(<App />);
-    await act(async () => Promise.resolve());
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: "打开项目 夏日咖啡馆口播复刻",
-      }),
-    );
+    await openProjectAnalysisFlow();
     fireEvent.click(screen.getByRole("button", { name: "模拟上游写入开始" }));
     fireEvent.click(screen.getByRole("button", { name: "模拟一键生成完成" }));
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "任务记录" }),
+      await screen.findByRole("region", { name: "任务记录" }),
     ).toBeInTheDocument();
-    expect(window.location.hash).toBe("#tasks");
+    expect(window.location.hash).toBe("");
     expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
   });
 });

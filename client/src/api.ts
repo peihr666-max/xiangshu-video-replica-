@@ -260,7 +260,14 @@ export type GenerationBatchListFilters = {
   cursor?: string;
 };
 
-export type ProviderName = "metaso" | "apilio" | "cos" | "deepseek";
+export type ProviderName =
+  | "metaso"
+  | "apilio"
+  | "cos"
+  | "deepseek"
+  | "tikhub"
+  | "dashscope"
+  | "douyidou";
 
 export type ProviderSettings = {
   provider: ProviderName;
@@ -327,6 +334,14 @@ export type UploadIntent = {
   expires_at: string | null;
   upload_required?: boolean;
 };
+
+export type MaterialItem = components["schemas"]["MaterialItem"];
+export type MaterialPage = components["schemas"]["MaterialPage"];
+export type MaterialResolveResponse =
+  components["schemas"]["MaterialResolveResponse"];
+export type MaterialUpdate = components["schemas"]["MaterialUpdateRequest"];
+export type MaterialUploadIntent =
+  components["schemas"]["MaterialUploadIntentResponse"];
 
 export type CompletedUpload = {
   asset_id: string;
@@ -678,6 +693,429 @@ export type CharacterVersionInput = {
 
 export async function getHealth(): Promise<HealthResponse> {
   return requestJson<HealthResponse>("/health", "本地服务暂不可用");
+}
+
+export type StudioStats = {
+  today_completed: number;
+  running: number;
+  queued: number;
+  needs_attention: number;
+  total_completed: number;
+};
+
+/** 平台侧真实工作台统计（C6/C10a）：GET /api/studio/stats。
+ * 只统计可见生成任务的真实计数；播放/互动等外部平台数据不在其中。 */
+export async function getStudioStats(): Promise<StudioStats> {
+  return requestApiJson<StudioStats>("/api/studio/stats", "读取工作台统计失败");
+}
+
+export type StudioDraftKind = "copy" | "oral" | "replica";
+
+export type StudioDraftCloudRecord = {
+  draft_kind: StudioDraftKind;
+  payload: Record<string, unknown>;
+  script_confirmed: boolean;
+  revision: number;
+  updated_at: string;
+};
+
+export type StudioSavedScriptRecord = {
+  script_id: string;
+  title: string;
+  text: string;
+  original: string | null;
+  version: number;
+  ip_id: string | null;
+  source_project_id: string | null;
+  source_kind: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StudioSavedScriptInput = {
+  script_id: string;
+  title: string;
+  text: string;
+  original?: string | null;
+  version: number;
+  ip_id?: string | null;
+  source_project_id?: string | null;
+  source_kind?: string | null;
+};
+
+/** 云端工作草稿（C7）：GET /api/studio/drafts/{kind}，404 表示尚无草稿。 */
+export async function getStudioDraft(
+  kind: StudioDraftKind,
+): Promise<StudioDraftCloudRecord> {
+  return requestApiJson<StudioDraftCloudRecord>(
+    `/api/studio/drafts/${encodeURIComponent(kind)}`,
+    "读取云端草稿失败",
+  );
+}
+
+/** 云端工作草稿自动保存（C7）：PUT /api/studio/drafts/{kind}，last-write-wins。 */
+export async function saveStudioDraft(
+  kind: StudioDraftKind,
+  payload: Record<string, unknown>,
+  scriptConfirmed: boolean,
+): Promise<StudioDraftCloudRecord> {
+  return requestApiJson<StudioDraftCloudRecord>(
+    `/api/studio/drafts/${encodeURIComponent(kind)}`,
+    "保存云端草稿失败",
+    {
+      method: "PUT",
+      body: JSON.stringify({ payload, script_confirmed: scriptConfirmed }),
+    },
+  );
+}
+
+/** 放弃云端工作草稿：DELETE /api/studio/drafts/{kind}。 */
+export async function deleteStudioDraft(kind: StudioDraftKind): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `/api/studio/drafts/${encodeURIComponent(kind)}`,
+    "删除云端草稿失败",
+    { method: "DELETE" },
+  );
+}
+
+/** 我的文案列表（C7）：GET /api/studio/saved-scripts，最新在前，上限 50。 */
+export async function listStudioSavedScripts(): Promise<
+  StudioSavedScriptRecord[]
+> {
+  const page = await requestApiJson<{ items: StudioSavedScriptRecord[] }>(
+    "/api/studio/saved-scripts",
+    "读取我的文案失败",
+  );
+  return page.items;
+}
+
+/** 保存/覆盖一条我的文案（按 script_id 幂等）。 */
+export async function saveStudioSavedScript(
+  input: StudioSavedScriptInput,
+): Promise<StudioSavedScriptRecord> {
+  return requestApiJson<StudioSavedScriptRecord>(
+    "/api/studio/saved-scripts",
+    "保存我的文案失败",
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+/** 删除一条我的文案。 */
+export async function deleteStudioSavedScript(scriptId: string): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `/api/studio/saved-scripts/${encodeURIComponent(scriptId)}`,
+    "删除我的文案失败",
+    { method: "DELETE" },
+  );
+}
+
+export type ScriptFromAudioTask = {
+  id: string;
+  project_id: string;
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "SUBMISSION_UNCERTAIN";
+  attempt: number;
+  result: {
+    text: string;
+    duration_sec: number | null;
+    language: string | null;
+  } | null;
+  error_code: string | null;
+  error_message: string | null;
+  retryable: boolean;
+};
+
+/** 提交"提取文案"异步任务（202）：上传视频 → 抽音轨 → ASR 转写。 */
+export async function createScriptFromAudioTask(
+  projectId: string,
+  sourceAssetId: string,
+  idempotencyKey: string,
+): Promise<ScriptFromAudioTask> {
+  return requestApiJson<ScriptFromAudioTask>(
+    `/api/projects/${encodeURIComponent(projectId)}/script-from-audio`,
+    "提交文案提取任务失败",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        source_asset_id: sourceAssetId,
+        idempotency_key: idempotencyKey,
+      }),
+    },
+  );
+}
+
+/** 读取项目最近的提取文案任务；尚无任务返回 null。 */
+export async function getLatestScriptFromAudioTask(
+  projectId: string,
+): Promise<ScriptFromAudioTask | null> {
+  return requestApiJson<ScriptFromAudioTask | null>(
+    `/api/projects/${encodeURIComponent(projectId)}/script-from-audio-tasks/latest`,
+    "读取文案提取任务失败",
+  );
+}
+
+export type OralPrice = { unit_price_fen: number };
+
+/** 数字人口播单价（每条）。 */
+export async function getOralPrice(): Promise<OralPrice> {
+  return requestApiJson<OralPrice>("/api/oral/price", "读取口播报价失败");
+}
+
+export type OralAvatarRecord = {
+  id: string;
+  identity_id: string;
+  title: string;
+  status: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  source_kind: "VIDEO" | "IMAGE";
+  source_asset_id: string;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OralVoiceRecord = {
+  id: string;
+  identity_id: string;
+  title: string;
+  status: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  source_asset_id: string;
+  demo_asset_id: string | null;
+  confirmed: number | boolean;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OralCloneCreated = { id: string; status: string };
+export type OralConsentCreated = { id: string };
+
+export async function createOralConsent(input: {
+  identityId: string;
+  sourceAssetId: string;
+  purpose: "AVATAR" | "VOICE";
+}): Promise<OralConsentCreated> {
+  return requestApiJson<OralConsentCreated>(
+    "/api/oral/consents",
+    "保存人物素材授权失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity_id: input.identityId,
+        source_asset_id: input.sourceAssetId,
+        purpose: input.purpose,
+      }),
+    },
+  );
+}
+
+/** 读取指定人物的口播分身。 */
+export async function listOralAvatars(
+  identityId: string,
+): Promise<OralAvatarRecord[]> {
+  return requestApiJson<OralAvatarRecord[]>(
+    `/api/oral/avatars?identity_id=${encodeURIComponent(identityId)}`,
+    "读取口播分身失败",
+  );
+}
+
+/** 读取指定人物的声音档案。 */
+export async function listOralVoices(
+  identityId: string,
+): Promise<OralVoiceRecord[]> {
+  return requestApiJson<OralVoiceRecord[]>(
+    `/api/oral/voices?identity_id=${encodeURIComponent(identityId)}`,
+    "读取声音档案失败",
+  );
+}
+
+export async function createOralAvatarClone(input: {
+  identityId: string;
+  title: string;
+  sourceAssetId: string;
+  sourceKind: "VIDEO" | "IMAGE";
+  consentId: string;
+  idempotencyKey: string;
+}): Promise<OralCloneCreated> {
+  return requestApiJson<OralCloneCreated>(
+    "/api/oral/avatars",
+    "提交口播分身制作失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity_id: input.identityId,
+        title: input.title,
+        source_asset_id: input.sourceAssetId,
+        source_kind: input.sourceKind,
+        consent_id: input.consentId,
+        idempotency_key: input.idempotencyKey,
+      }),
+    },
+  );
+}
+
+export async function createOralVoiceClone(input: {
+  identityId: string;
+  title: string;
+  sourceAssetId: string;
+  consentId: string;
+  idempotencyKey: string;
+}): Promise<OralCloneCreated> {
+  return requestApiJson<OralCloneCreated>(
+    "/api/oral/voices",
+    "提交声音克隆失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity_id: input.identityId,
+        title: input.title,
+        source_asset_id: input.sourceAssetId,
+        consent_id: input.consentId,
+        idempotency_key: input.idempotencyKey,
+      }),
+    },
+  );
+}
+
+export async function refreshOralAvatar(
+  avatarId: string,
+): Promise<OralAvatarRecord> {
+  return requestApiJson<OralAvatarRecord>(
+    `/api/oral/avatars/${encodeURIComponent(avatarId)}/refresh`,
+    "刷新口播分身状态失败",
+    { method: "POST" },
+  );
+}
+
+export async function refreshOralVoice(
+  voiceId: string,
+): Promise<OralVoiceRecord> {
+  return requestApiJson<OralVoiceRecord>(
+    `/api/oral/voices/${encodeURIComponent(voiceId)}/refresh`,
+    "刷新声音克隆状态失败",
+    { method: "POST" },
+  );
+}
+
+export async function confirmOralVoice(
+  voiceId: string,
+): Promise<OralVoiceRecord> {
+  return requestApiJson<OralVoiceRecord>(
+    `/api/oral/voices/${encodeURIComponent(voiceId)}/confirm`,
+    "确认声音失败",
+    { method: "POST" },
+  );
+}
+
+export type OralTaskRequest = {
+  identityId: string;
+  avatarId: string;
+  voiceId?: string;
+  mode: "TTS" | "AUDIO";
+  title: string;
+  scriptText?: string;
+  audioAssetId?: string;
+  subtitle?: Record<string, unknown>;
+  idempotencyKey: string;
+};
+
+export type OralTaskCreated = {
+  id: string;
+  status: string;
+  estimated_cost_fen: number;
+  replayed: boolean;
+};
+
+/** 创建数字人口播任务（POST /api/oral/tasks）。 */
+export async function createOralTask(
+  input: OralTaskRequest,
+): Promise<OralTaskCreated> {
+  return requestApiJson<OralTaskCreated>(
+    "/api/oral/tasks",
+    "口播任务提交失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity_id: input.identityId,
+        avatar_id: input.avatarId,
+        voice_id: input.voiceId ?? null,
+        mode: input.mode,
+        title: input.title,
+        script_text: input.scriptText ?? null,
+        audio_asset_id: input.audioAssetId ?? null,
+        subtitle: input.subtitle ?? null,
+        idempotency_key: input.idempotencyKey,
+      }),
+    },
+  );
+}
+
+export type OralTaskRecord = {
+  id: string;
+  status:
+    | "QUEUED"
+    | "SUBMITTING"
+    | "RUNNING"
+    | "ARCHIVING"
+    | "SUBMISSION_UNCERTAIN"
+    | "ARCHIVE_FAILED"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "CANCELLED";
+  title: string;
+  mode: "TTS" | "AUDIO";
+  identity_id: string;
+  avatar_id: string;
+  voice_id: string | null;
+  script_text: string | null;
+  audio_asset_id: string | null;
+  status_message?: string | null;
+  error_message?: string | null;
+  result_asset_id: string | null;
+  duration_sec: number | null;
+  estimated_cost_fen: number;
+  billing_status?: string | null;
+  available_actions?: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+/** 数字人口播任务列表（GET /api/oral/tasks）。 */
+export async function listOralTasks(limit = 20): Promise<OralTaskRecord[]> {
+  const body = await requestApiJson<
+    { items?: OralTaskRecord[] } | OralTaskRecord[]
+  >(
+    `/api/oral/tasks?limit=${encodeURIComponent(String(limit))}`,
+    "读取口播任务失败",
+  );
+  return Array.isArray(body) ? body : (body.items ?? []);
+}
+
+function mutateOralTask(taskId: string, action: string, error: string) {
+  return requestApiJson<OralTaskRecord>(
+    `/api/oral/tasks/${encodeURIComponent(taskId)}/${action}`,
+    error,
+    { method: "POST" },
+  );
+}
+
+export function cancelOralTask(taskId: string): Promise<OralTaskRecord> {
+  return mutateOralTask(taskId, "cancel", "取消口播任务失败");
+}
+
+export function retryOralTask(taskId: string): Promise<OralTaskRecord> {
+  return mutateOralTask(taskId, "retry", "重试提交口播任务失败");
+}
+
+export function retryOralTaskArchive(taskId: string): Promise<OralTaskRecord> {
+  return mutateOralTask(taskId, "archive-retry", "重试归档口播成片失败");
 }
 
 export async function getCurrentUser(): Promise<CurrentUser> {
@@ -1551,6 +1989,15 @@ export async function reconcileUncertainTask(
   );
 }
 
+/** 取消仍在排队的生成批次；取消与计费终态均以服务端为准。 */
+export async function cancelGenerationBatch(batchId: string): Promise<void> {
+  await requestApiJson<unknown>(
+    `/api/generation-batches/${encodeURIComponent(batchId)}/cancel`,
+    "取消任务失败",
+    { method: "POST" },
+  );
+}
+
 const generationReconcileWaiters = new Map<
   string,
   Promise<GenerationReconcileOperation>
@@ -1700,6 +2147,119 @@ export function uploadIdentityAsset(
   signal?: AbortSignal,
 ): Promise<void> {
   return uploadStorageObject(intent, file, onProgress, "上传人物资料", signal);
+}
+
+export async function listMaterials(
+  filters: {
+    mediaType?: MaterialItem["media_type"];
+    source?: MaterialItem["source"];
+    query?: string;
+    page?: number;
+    pageSize?: number;
+  } = {},
+): Promise<MaterialPage> {
+  const query = new URLSearchParams();
+  if (filters.mediaType) query.set("media_type", filters.mediaType);
+  if (filters.source) query.set("source", filters.source);
+  if (filters.query?.trim()) query.set("q", filters.query.trim());
+  if (filters.page !== undefined) query.set("page", String(filters.page));
+  if (filters.pageSize !== undefined) {
+    query.set("page_size", String(filters.pageSize));
+  }
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return requestApiJson<MaterialPage>(
+    `/api/studio/materials${suffix}`,
+    "读取素材库失败",
+  );
+}
+
+export async function resolveMaterials(
+  materialIds: string[],
+): Promise<MaterialResolveResponse> {
+  return requestApiJson<MaterialResolveResponse>(
+    "/api/studio/materials/resolve",
+    "恢复素材引用失败",
+    { method: "POST", body: JSON.stringify({ material_ids: materialIds }) },
+  );
+}
+
+export async function createMaterialUploadIntent(
+  file: File,
+  input: { title?: string; group?: string } = {},
+): Promise<MaterialUploadIntent> {
+  const sha256 = await sha256ForUpload(file);
+  return requestApiJson<MaterialUploadIntent>(
+    "/api/studio/materials/upload-intent",
+    "创建素材上传任务失败",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        filename: file.name,
+        content_type: materialContentTypeForFile(file),
+        size_bytes: file.size,
+        ...(sha256 === null ? {} : { sha256 }),
+        ...input,
+      }),
+    },
+  );
+}
+
+export function uploadMaterial(
+  intent: MaterialUploadIntent,
+  file: File,
+  onProgress: (progressPercent: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return uploadStorageObject(intent, file, onProgress, "上传素材", signal);
+}
+
+export async function completeMaterialUpload(
+  assetId: string,
+): Promise<MaterialItem> {
+  return requestApiJson<MaterialItem>(
+    `/api/studio/materials/uploads/${encodeURIComponent(assetId)}/complete`,
+    "完成素材上传失败",
+    { method: "POST" },
+    CLOUD_OP_TIMEOUT_MS,
+  );
+}
+
+export async function updateMaterial(
+  materialId: string,
+  update: MaterialUpdate,
+): Promise<MaterialItem> {
+  return requestApiJson<MaterialItem>(
+    `/api/studio/materials/${encodeURIComponent(materialId)}`,
+    "更新素材失败",
+    { method: "PATCH", body: JSON.stringify(update) },
+  );
+}
+
+export async function hideMaterial(materialId: string): Promise<void> {
+  const response = await requestApi(
+    `/api/studio/materials/${encodeURIComponent(materialId)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "移除素材失败"));
+  }
+}
+
+export async function downloadMaterialAsset(
+  assetId: string,
+  filename: string,
+): Promise<void> {
+  const { url } = await getAssetDownloadUrl(assetId);
+  if (!url) {
+    throw new Error("素材下载链接获取失败，请重试。");
+  }
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 function uploadStorageObject(
@@ -2109,6 +2669,15 @@ export type ScriptRewriteResult = {
 export type ScriptRewriteTask = {
   id: string;
   project_id: string;
+  identity_id?: string | null;
+  ip_profile_hash?: string | null;
+  ip_profile_snapshot?: {
+    display_name?: string;
+    role?: string;
+    service_scope?: string;
+    target_audience?: string;
+    expression_style?: string;
+  } | null;
   status:
     | "PENDING"
     | "RUNNING"
@@ -2131,6 +2700,7 @@ const scriptRewriteTaskWaiters = new Map<string, Promise<ScriptRewriteTask>>();
 export async function rewriteProjectScript(
   projectId: string,
   text: string,
+  identityId?: string,
 ): Promise<ScriptRewriteTask> {
   return requestApiJson<ScriptRewriteTask>(
     `/api/projects/${encodeURIComponent(projectId)}/script-rewrite`,
@@ -2139,6 +2709,7 @@ export async function rewriteProjectScript(
       method: "POST",
       body: JSON.stringify({
         text,
+        ...(identityId ? { identity_id: identityId } : {}),
         idempotency_key: newControlWriteIdempotencyKey(),
       }),
     },
@@ -2234,7 +2805,13 @@ export interface SimpleCharacterResult {
 
 export interface SimpleLibraryEntry {
   identity_id: string;
+  persona_id: string | null;
+  version_number: number | null;
   display_name: string;
+  role: string;
+  service_scope: string;
+  target_audience: string;
+  expression_style: string;
   owner_user_id: string | null;
   status: string;
   contact_sheet_asset_id: string | null;
@@ -2335,6 +2912,27 @@ export async function renamePersonIdentity(
   );
 }
 
+export async function updateSimpleCharacterProfile(
+  identityId: string,
+  profile: {
+    display_name: string;
+    role: string;
+    service_scope: string;
+    target_audience: string;
+    expression_style: string;
+  },
+): Promise<SimpleLibraryEntry> {
+  return requestApiJson<SimpleLibraryEntry>(
+    `/api/simple-characters/identities/${encodeURIComponent(identityId)}/profile`,
+    "保存 IP 定位失败",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(profile),
+    },
+  );
+}
+
 export async function deleteSimpleCharacterIdentity(
   identityId: string,
 ): Promise<void> {
@@ -2383,7 +2981,7 @@ export async function regenerateContactSheet(
   form.append("idempotency_key", createRequestKey("character-regenerate"));
   const task = await requestApiJson<CharacterSheetTask>(
     `/api/simple-characters/identities/${encodeURIComponent(identityId)}/regenerate-contact-sheet-task`,
-    "重新生成多视图失败",
+    "重新生成五视图失败",
     { method: "POST", body: form },
   );
   const completed = await waitForCharacterSheetTask(task.id);
@@ -3464,8 +4062,9 @@ export function customerVisibleErrorMessage(
   } else if (error instanceof Error) {
     message = error.message.trim();
     const details = error as RequestError;
-    code = details.code?.trim() ?? "";
-    requestId = details.requestId?.trim() ?? "";
+    code = typeof details.code === "string" ? details.code.trim() : "";
+    requestId =
+      typeof details.requestId === "string" ? details.requestId.trim() : "";
   } else if (isRecord(error)) {
     message = typeof error.message === "string" ? error.message.trim() : "";
     code = typeof error.code === "string" ? error.code.trim() : "";
@@ -3658,6 +4257,16 @@ function contentTypeForFile(file: File): "video/mp4" | "video/quicktime" {
   return file.name.toLowerCase().endsWith(".mov")
     ? "video/quicktime"
     : "video/mp4";
+}
+
+function materialContentTypeForFile(file: File): string {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".mp3")) return "audio/mpeg";
+  if (name.endsWith(".mov")) return "video/quicktime";
+  if (name.endsWith(".mp4")) return "video/mp4";
+  return file.type || "application/octet-stream";
 }
 
 async function sha256ForUpload(file: File): Promise<string | null> {
@@ -4514,5 +5123,110 @@ export async function customerCloseRechargeOrder(
   await customerJson<undefined>(
     `/api/customer/recharge-orders/${encodeURIComponent(orderNo)}`,
     { method: "DELETE", credential },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 爆款视频（C4 重启）：抖音 / 视频号最近 7 天爆款参考库
+// ---------------------------------------------------------------------------
+
+const VIRAL_LIST_TIMEOUT_MS = 120_000;
+const VIRAL_MEDIA_TIMEOUT_MS = 120_000;
+const VIRAL_STATISTICS_TIMEOUT_MS = 150_000;
+
+export type ViralPlatform = "douyin" | "wechat_channels";
+export type ViralSort = "hot" | "latest";
+
+export type ViralVideoItem = {
+  platform: ViralPlatform;
+  videoId: string;
+  category: string;
+  title: string;
+  author: string;
+  authorAvatar: string | null;
+  verified: boolean;
+  coverUrl: string | null;
+  durationMs: number;
+  likes: number;
+  comments: number | null;
+  shares: number | null;
+  collects: number | null;
+  publishedAt: number | null;
+  publishedDisplay: string | null;
+  likeDisplay: string | null;
+  tags: string[];
+  hasPlayableAudio: boolean;
+  /** 源平台播放地址；真实列表播放统一由服务端媒体管线转存后使用。 */
+  playUrl: string | null;
+};
+
+export type ViralListResponse = {
+  platform: ViralPlatform;
+  sort: ViralSort;
+  categories: string[];
+  items: ViralVideoItem[];
+  fetchedAt: string | null;
+  source?: "database";
+  stale?: boolean;
+};
+
+export type ViralMediaResponse = {
+  kind: "audio" | "video";
+  url: string;
+  contentType: string;
+  cacheHit: boolean;
+  video?: ViralVideoItem | null;
+};
+
+export type ViralStatisticsResponse = {
+  items: ViralVideoItem[];
+};
+
+/** 最近 7 天爆款列表（服务端按分类关键词聚合，带计费护栏缓存）。 */
+export function listViralVideos(
+  platform: ViralPlatform,
+  sort: ViralSort = "hot",
+): Promise<ViralListResponse> {
+  const query = new URLSearchParams({ platform, sort });
+  // 视频号冷库需聚合 12 次上游调用（3 页 × 4 分类），实测最长约 80s。
+  return requestApiJson<ViralListResponse>(
+    `/api/viral/videos?${query}`,
+    "爆款视频列表暂不可用",
+    {},
+    VIRAL_LIST_TIMEOUT_MS,
+  );
+}
+
+/** 按需取媒体：缺省音频优先；kind=video 时取低清视频（播放用）。 */
+export function fetchViralVideoMedia(
+  platform: ViralPlatform,
+  videoId: string,
+  kind?: "audio" | "video",
+): Promise<ViralMediaResponse> {
+  return requestApiJson<ViralMediaResponse>(
+    "/api/viral/videos/media",
+    "视频素材准备失败",
+    {
+      method: "POST",
+      body: JSON.stringify(
+        kind ? { platform, videoId, kind } : { platform, videoId },
+      ),
+    },
+    VIRAL_MEDIA_TIMEOUT_MS,
+  );
+}
+
+/** 按需补齐视频号互动统计；服务端负责缓存与失败退避。 */
+export function fetchViralVideoStatistics(
+  videoIds: string[],
+): Promise<ViralStatisticsResponse> {
+  return requestApiJson<ViralStatisticsResponse>(
+    "/api/viral/videos/statistics",
+    "视频统计暂时无法更新",
+    {
+      method: "POST",
+      body: JSON.stringify({ videoIds }),
+    },
+    VIRAL_STATISTICS_TIMEOUT_MS,
   );
 }

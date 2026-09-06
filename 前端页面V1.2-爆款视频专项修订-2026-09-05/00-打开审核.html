@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>众墅之家 AI 即创 · V1.2 爆款视频专项审核</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0b0e;--panel:#151519;--line:#303035;--text:#f1eee8;--muted:#aaa69f;--gold:#e0a83f}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 "PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+header,main,footer{max-width:1500px;margin:auto;padding:32px}
+header{padding-top:48px;padding-bottom:22px}.eyebrow{color:var(--gold);font-size:13px;letter-spacing:.1em}h1{font-size:32px;line-height:1.3;margin:12px 0}p{color:var(--muted);margin:10px 0}.intro{max-width:900px}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:24px}.button,button,select{font:inherit;border:1px solid var(--line);border-radius:8px;background:#1b1b20;color:var(--text);padding:8px 13px;cursor:pointer}.button{text-decoration:none}button:hover,.button:hover{border-color:var(--gold)}.primary{background:var(--gold);border-color:var(--gold);color:#1a1206}.counter{margin-left:auto;font-size:13px;color:var(--muted)}
+main{padding-top:8px}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}
+.page-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.thumbnail{display:block;width:100%;padding:0;border:0;border-radius:0;background:#09090b;aspect-ratio:1586/992}
+.thumbnail img{display:block;width:100%;height:auto;aspect-ratio:1586/992;object-fit:contain}
+.card-body{padding:17px}.card-heading{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.number{font-variant-numeric:tabular-nums;color:var(--gold);font-size:13px}h2{font-size:17px;line-height:1.4;margin:0}.kind{font-size:11px;color:var(--muted);margin-left:auto}.focus{font-size:13px;min-height:42px;margin:10px 0}
+details{border-top:1px solid var(--line);padding-top:9px}summary{cursor:pointer;color:#d6bd8d;font-size:13px}label{display:block;margin:10px 0;font-size:13px}select{padding:4px 8px;margin-left:8px}textarea{display:block;width:100%;resize:vertical;min-height:78px;margin-top:6px;padding:9px;color:var(--text);background:#101013;border:1px solid var(--line);border-radius:6px;font:inherit}
+:focus-visible{outline:2px solid var(--gold);outline-offset:3px}footer{font-size:13px;padding-top:18px;padding-bottom:38px}footer a{color:#eac77f}footer p{margin:5px 0}
+dialog{position:fixed;inset:0;width:min(97vw,1900px);max-width:none;max-height:96dvh;padding:0;background:#0b0b0e;color:var(--text);border:1px solid #42424a;border-radius:12px;overflow:auto}dialog::backdrop{background:#000d}.viewer-bar{position:sticky;top:0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#17171c;padding:12px 18px;z-index:1}.viewer-title{margin-right:auto;font-size:15px}.viewer-bar button{padding:5px 11px}.viewer-bar a{font-size:13px;color:#edc977}.viewer-image{display:block;width:100%;height:auto}.hint{font-size:12px;color:var(--muted)}
+@media(min-width:1750px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:1020px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}header,main,footer{padding-left:20px;padding-right:20px}}
+@media(max-width:620px){.grid{grid-template-columns:1fr}h1{font-size:25px}.counter{margin-left:0;flex-basis:100%}.viewer-bar{gap:6px}.hint{display:none}}
+@media print{.toolbar,details,dialog{display:none}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.page-card{break-inside:avoid}body{background:white;color:black}}
+</style>
+</head>
+<body>
+<header>
+<div class="eyebrow">众墅之家 · AI 即创</div>
+<h1>V1.2 爆款视频 · 用户端专项修订</h1>
+<p class="intro">3 张用户端效果图 · 抖音列表 / 视频号列表 / 视频详情。仅为效果图，视频、作者与互动数据均为示例。</p>
+<p><a class="button" href="00-爆款视频专项修改说明.md">查看前端与后台的功能分工</a></p>
+<div class="toolbar"><button class="primary" id="start-review">从抖音列表开始审核</button><button id="export">导出审核意见</button><a class="button" href="00-审核说明.md">页面与功能说明</a><label>筛选 <select id="filter"><option>全部页面</option><option>待审核</option><option>通过</option><option>需调整</option></select></label><span id="counter" class="counter"></span></div>
+<p id="save-message" class="hint" role="status">审核意见会尝试保存在当前浏览器中；离开前请导出一份 Markdown 留存。</p>
+</header>
+<main><div class="grid"><article class="page-card" data-id="17A">
+<button class="thumbnail" data-open="17A" aria-label="查看 17A 爆款视频-抖音列表 原图"><img src="17A-爆款视频-抖音列表.png" alt="爆款视频-抖音列表效果图" width="1585" height="992" loading="lazy"></button>
+<div class="card-body"><div class="card-heading"><span class="number">17A</span><h2>爆款视频-抖音列表</h2><span class="kind">用户端</span></div>
+<p class="focus">用户只看视频：抖音独立 30 条，浏览、收藏、用于复刻</p>
+<details><summary>填写审核意见</summary><label>结论 <select data-state="17A"><option>待审核</option><option>通过</option><option>需调整</option></select></label><label>意见<textarea data-note="17A" placeholder="区域 + 希望如何调整" rows="3"></textarea></label></details></div></article>
+<article class="page-card" data-id="17B">
+<button class="thumbnail" data-open="17B" aria-label="查看 17B 爆款视频-视频号列表 原图"><img src="17B-爆款视频-视频号列表.png" alt="爆款视频-视频号列表效果图" width="1585" height="992" loading="lazy"></button>
+<div class="card-body"><div class="card-heading"><span class="number">17B</span><h2>爆款视频-视频号列表</h2><span class="kind">用户端</span></div>
+<p class="focus">切换到视频号，显示该平台自己的 30 条内容</p>
+<details><summary>填写审核意见</summary><label>结论 <select data-state="17B"><option>待审核</option><option>通过</option><option>需调整</option></select></label><label>意见<textarea data-note="17B" placeholder="区域 + 希望如何调整" rows="3"></textarea></label></details></div></article>
+<article class="page-card" data-id="17C">
+<button class="thumbnail" data-open="17C" aria-label="查看 17C 爆款视频-视频详情 原图"><img src="17C-爆款视频-视频详情.png" alt="爆款视频-视频详情效果图" width="1586" height="992" loading="lazy"></button>
+<div class="card-body"><div class="card-heading"><span class="number">17C</span><h2>爆款视频-视频详情</h2><span class="kind">用户端</span></div>
+<p class="focus">视频预览、来源、简介与收藏、复刻等内容操作</p>
+<details><summary>填写审核意见</summary><label>结论 <select data-state="17C"><option>待审核</option><option>通过</option><option>需调整</option></select></label><label>意见<textarea data-note="17C" placeholder="区域 + 希望如何调整" rows="3"></textarea></label></details></div></article></div></main>
+<footer><p>本次仅修订爆款视频模块，原 V1.2 全站审核包与意见不变。前端只展示内容，所有采集配置归管理后台。</p><p>接口参数由你提供，本轮未连接真实 API、未上传云存储、未启用定时任务。</p><p>内置 imagegen 出图。<a href="99-出图规格与提示词.md">完整提示词</a> · <a href="00-爆款视频专项修改说明.md">设计说明</a> · <a href="99-制作检查.md">制作检查</a></p></footer>
+<dialog id="viewer" aria-label="效果图查看器"><div class="viewer-bar"><strong class="viewer-title" id="viewer-title"></strong><span class="hint">← → 翻页 · Esc 关闭</span><a id="original" target="_blank" rel="noopener">打开原图</a><button id="prev" aria-label="上一张">上一张</button><button id="next" aria-label="下一张">下一张</button><button id="close" aria-label="关闭查看器">关闭</button></div><img class="viewer-image" id="viewer-image" alt=""></dialog>
+<script>
+const pages=[{"id":"17A","name":"爆款视频-抖音列表","file":"17A-爆款视频-抖音列表.png"},{"id":"17B","name":"爆款视频-视频号列表","file":"17B-爆款视频-视频号列表.png"},{"id":"17C","name":"爆款视频-视频详情","file":"17C-爆款视频-视频详情.png"}];
+const storageKey="zhongshu-ai-v12-keyword-20260905-review";
+let reviews={};
+try{reviews=JSON.parse(localStorage.getItem(storageKey)||"{}")||{};}catch(error){document.getElementById("save-message").textContent="浏览器未能读取本地记录，请使用导出按钮留存审核意见。";}
+const viewer=document.getElementById("viewer");
+let current=0;
+function showPage(index){current=(index+pages.length)%pages.length;const page=pages[current];document.getElementById("viewer-title").textContent=page.id+" · "+page.name+"  ("+(current+1)+"/"+pages.length+")";const img=document.getElementById("viewer-image");img.src=page.file;img.alt=page.name+"效果图";document.getElementById("original").href=page.file;if(!viewer.open)viewer.showModal();}
+function refresh(){const filter=document.getElementById("filter").value;let approved=0;let adjustments=0;for(const page of pages){const state=reviews[page.id]?.state||"待审核";if(state==="通过")approved++;if(state==="需调整")adjustments++;document.querySelector('[data-id="'+page.id+'"]').hidden=filter!=="全部页面"&&filter!==state;}document.getElementById("counter").textContent="通过 "+approved+" · 需调整 "+adjustments+" · 待审核 "+(pages.length-approved-adjustments);}
+for(const page of pages){const state=document.querySelector('[data-state="'+page.id+'"]');const note=document.querySelector('[data-note="'+page.id+'"]');state.value=reviews[page.id]?.state||"待审核";note.value=reviews[page.id]?.note||"";const save=()=>{reviews[page.id]={state:state.value,note:note.value};try{localStorage.setItem(storageKey,JSON.stringify(reviews));}catch(error){document.getElementById("save-message").textContent="当前浏览器无法保存记录，请在关闭页面前导出审核意见。";}refresh();};state.addEventListener("change",save);note.addEventListener("input",save);}
+document.querySelectorAll("[data-open]").forEach(button=>button.addEventListener("click",()=>showPage(pages.findIndex(page=>page.id===button.dataset.open))));
+document.getElementById("start-review").addEventListener("click",()=>showPage(0));
+document.getElementById("prev").addEventListener("click",()=>showPage(current-1));
+document.getElementById("next").addEventListener("click",()=>showPage(current+1));
+document.getElementById("close").addEventListener("click",()=>viewer.close());
+document.getElementById("filter").addEventListener("change",refresh);
+document.addEventListener("keydown",event=>{if(!viewer.open)return;if(event.key==="ArrowRight"){event.preventDefault();showPage(current+1);}if(event.key==="ArrowLeft"){event.preventDefault();showPage(current-1);}});
+document.getElementById("export").addEventListener("click",()=>{const lines=["# 众墅之家 AI 即创 · V1.2 爆款视频用户端专项审核意见","",...pages.flatMap(page=>["## "+page.id+" "+page.name,"","- 结论："+(reviews[page.id]?.state||"待审核"),"- 意见："+(reviews[page.id]?.note||"未填写"),""])];const url=URL.createObjectURL(new Blob([lines.join("\n")],{type:"text/markdown;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download="众墅AI即创-爆款视频专项-审核意见.md";link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+refresh();
+</script>
+</body>
+</html>

@@ -68,9 +68,35 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
     note: "二创口播稿改写 · 默认 DeepSeek，只需 API Key",
     fields: [{ name: "api_key", label: "API Key", secret: true }],
   },
+  tikhub: {
+    title: "爆款视频数据源",
+    note: "抖音 / 视频号最近 7 天爆款参考库 · 只需 API Key",
+    fields: [{ name: "api_key", label: "API Key", secret: true }],
+  },
+  dashscope: {
+    title: "语音转写",
+    note: "上传视频提取文案 · 只需 API Key",
+    fields: [{ name: "api_key", label: "API Key", secret: true }],
+  },
+  douyidou: {
+    title: "链接解析",
+    note: "抖音 / 快手 / 小红书链接去水印与文案提取",
+    fields: [
+      { name: "app_id", label: "App ID" },
+      { name: "app_secret", label: "App Secret", secret: true },
+    ],
+  },
 };
 
-const PROVIDER_ORDER: ProviderName[] = ["metaso", "apilio", "cos", "deepseek"];
+const PROVIDER_ORDER: ProviderName[] = [
+  "metaso",
+  "apilio",
+  "cos",
+  "deepseek",
+  "tikhub",
+  "dashscope",
+  "douyidou",
+];
 
 export function SettingsPanel({
   source = "workspace",
@@ -150,20 +176,26 @@ export function SettingsPanel({
   return (
     <section className="settings-page" aria-label="服务设置">
       <div className="provider-grid">
-        {PROVIDER_ORDER.map((provider) => (
-          <ProviderForm
-            key={provider}
-            provider={provider}
-            readOnly={readOnly}
-            settings={settings.providers[provider]}
-            onSave={saveProvider}
-            onTest={
-              source === "control"
-                ? testControlProviderConnection
-                : testProviderConnection
-            }
-          />
-        ))}
+        {PROVIDER_ORDER.map((provider) => {
+          // 服务端快照可能落后于前端枚举（灰度/旧版本），缺失的 provider
+          // 直接跳过，不让整个设置页白屏。
+          const providerSettings = settings.providers[provider];
+          if (!providerSettings) return null;
+          return (
+            <ProviderForm
+              key={provider}
+              provider={provider}
+              readOnly={readOnly}
+              settings={providerSettings}
+              onSave={saveProvider}
+              onTest={
+                source === "control"
+                  ? testControlProviderConnection
+                  : testProviderConnection
+              }
+            />
+          );
+        })}
       </div>
 
       <RuntimeForm

@@ -190,7 +190,5 @@ export function useWorkspaceReadiness(
   input: WorkspaceReadinessInput,
 ): WorkspaceReadiness {
   // Memo disabled: compute is O(1) and result not downstream dependent.
-  // (P0-02 will wire this into useEffect deps; current design passes null
-  // placeholder for script/prompt until GenerationComposer split.)
   return computeWorkspaceReadiness(input);
 }
