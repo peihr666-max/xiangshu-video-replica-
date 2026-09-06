@@ -1215,6 +1215,18 @@ def list_avatars(
     return [dict(row) for row in rows]
 
 
+def read_avatar_clone(
+    conn: BusinessConnection, *, actor: CurrentUser, avatar_id: str
+) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM oral_avatars WHERE id = %s AND owner_user_id = %s",
+        (avatar_id, actor.id),
+    ).fetchone()
+    if row is None:
+        raise OralDomainError("口播分身任务不存在")
+    return dict(row)
+
+
 def list_voices(
     conn: BusinessConnection, *, actor: CurrentUser, identity_id: str
 ) -> list[dict[str, Any]]:
@@ -1227,6 +1239,18 @@ def list_voices(
         (identity_id, actor.id),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def read_voice_clone(
+    conn: BusinessConnection, *, actor: CurrentUser, voice_id: str
+) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s",
+        (voice_id, actor.id),
+    ).fetchone()
+    if row is None:
+        raise OralDomainError("声音克隆任务不存在")
+    return dict(row)
 
 
 def list_oral_tasks(

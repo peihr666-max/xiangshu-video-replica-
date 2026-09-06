@@ -20,7 +20,11 @@ from app.hifly import (
     HiflySubmissionUncertain,
     hifly_client_from_settings,
 )
-from app.internal_billing import InsufficientCreditsError
+from app.internal_billing import (
+    BillingInvariantError,
+    InsufficientCreditsError,
+    reconcile_oral_billing_by_evidence,
+)
 from app.oral import (
     ORAL_CONSENT_TEXT_VERSION,
     OralConflictError,
@@ -34,12 +38,14 @@ from app.oral import (
     list_oral_tasks,
     list_voices,
     oral_price_quote,
+    read_avatar_clone,
     read_oral_task,
-    refresh_avatar_clone,
-    refresh_voice_clone,
+    read_voice_clone,
     start_avatar_clone,
     start_voice_clone,
 )
+from app.oral_worker import request_oral_archive_retry
+from app.permissions import require_role, write_audit
 
 router = APIRouter(prefix="/api/oral")
 
@@ -187,14 +193,13 @@ def create_avatar_clone(
 @router.post("/avatars/{avatar_id}/refresh")
 def refresh_avatar(
     avatar_id: str,
-    db: BusinessDbDep,
-    vendor: OralVendor,
+    conn: Database,
+    actor: AuthenticatedUser,
 ) -> dict[str, Any]:
-    with db.write() as (conn, actor):
-        try:
-            row = refresh_avatar_clone(conn, avatar_id=avatar_id, actor=actor, vendor=vendor)
-        except OralDomainError as exc:
-            raise _domain_guard(exc) from exc
+    try:
+        row = read_avatar_clone(conn, avatar_id=avatar_id, actor=actor)
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
     return _serialize(row)
 
 
@@ -256,14 +261,13 @@ def create_voice_clone(
 @router.post("/voices/{voice_id}/refresh")
 def refresh_voice(
     voice_id: str,
-    db: BusinessDbDep,
-    vendor: OralVendor,
+    conn: Database,
+    actor: AuthenticatedUser,
 ) -> dict[str, Any]:
-    with db.write() as (conn, actor):
-        try:
-            row = refresh_voice_clone(conn, voice_id=voice_id, actor=actor, vendor=vendor)
-        except OralDomainError as exc:
-            raise _domain_guard(exc) from exc
+    try:
+        row = read_voice_clone(conn, voice_id=voice_id, actor=actor)
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
     return _serialize(row)
 
 
@@ -296,6 +300,17 @@ class OralTaskRequest(BaseModel):
     audio_asset_id: str | None = Field(default=None, min_length=1, max_length=128)
     subtitle: dict[str, Any] | None = None
     idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class OralBillingReconcileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reconciliation_operation_id: str = Field(min_length=8, max_length=128)
+    provider_outcome: Literal["SUCCEEDED", "FAILED", "CANCELLED", "NOT_FOUND"]
+    provider_charge_state: Literal["CHARGED", "NOT_CHARGED"]
+    resolution: Literal["SETTLE", "RELEASE"]
+    evidence_asset_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=4, max_length=500)
 
 
 @router.post("/tasks", status_code=status.HTTP_202_ACCEPTED)
@@ -360,26 +375,13 @@ def read_oral_generation_task(
 @router.post("/tasks/{task_id}/refresh")
 def refresh_oral_generation_task(
     task_id: str,
-    db: BusinessDbDep,
+    conn: Database,
+    actor: AuthenticatedUser,
 ) -> dict[str, Any]:
-    with db.write() as (conn, actor):
-        try:
-            row = read_oral_task(conn, task_id=task_id, actor=actor)
-        except OralDomainError as exc:
-            raise _domain_guard(exc) from exc
-    if str(row["status"]) in {
-        "QUEUED",
-        "SUBMITTING",
-        "SUBMISSION_UNCERTAIN",
-        "RUNNING",
-        "ARCHIVING",
-        "ARCHIVE_FAILED",
-    }:
-        raise OralError(
-            "ORAL_WORKER_NOT_AVAILABLE",
-            "口播任务已持久化，当前 Worker 尚未接管处理。",
-            status_code=503,
-        )
+    try:
+        row = read_oral_task(conn, task_id=task_id, actor=actor)
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
     return _serialize(row)
 
 
@@ -390,20 +392,14 @@ def retry_oral_archive(
 ) -> dict[str, Any]:
     with db.write() as (conn, actor):
         try:
-            row = read_oral_task(conn, task_id=task_id, actor=actor)
-        except OralDomainError as exc:
-            raise _domain_guard(exc) from exc
-    if str(row["status"]) != "ARCHIVE_FAILED":
-        raise OralError(
-            "ORAL_ARCHIVE_RETRY_NOT_ALLOWED",
-            "只有归档失败的任务可重试归档。",
-            status_code=409,
-        )
-    raise OralError(
-        "ORAL_ARCHIVE_RETRY_UNAVAILABLE",
-        "口播归档 Worker 尚未接管，任务会保留原成片地址且不会重复提交。",
-        status_code=503,
-    )
+            row = request_oral_archive_retry(conn, task_id=task_id, owner_user_id=actor.id)
+        except ValueError as exc:
+            raise OralError(
+                "ORAL_ARCHIVE_RETRY_NOT_ALLOWED",
+                "只有保留了成片地址的归档失败任务可重试归档。",
+                status_code=409,
+            ) from exc
+    return _serialize(row)
 
 
 @router.post("/tasks/{task_id}/cancel")
@@ -417,3 +413,73 @@ def cancel_oral_generation_task(
         except OralDomainError as exc:
             raise _domain_guard(exc) from exc
     return _serialize(row)
+
+
+@router.post("/tasks/{task_id}/billing-reconcile")
+def reconcile_oral_generation_billing(
+    task_id: str,
+    request: OralBillingReconcileRequest,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        require_role(
+            conn,
+            actor=actor,
+            allowed_roles={"admin"},
+            action="oral.billing_reconcile",
+            entity_type="oral_task",
+            entity_id=task_id,
+        )
+        evidence = conn.execute(
+            """
+            SELECT id, sha256 FROM assets
+            WHERE id = %s AND created_by_user_id = %s
+            """,
+            (request.evidence_asset_id, actor.id),
+        ).fetchone()
+        if evidence is None:
+            raise OralError(
+                "ORAL_BILLING_RECONCILE_CONFLICT",
+                "口播账务状态与本次人工对账不一致。",
+                status_code=409,
+            )
+        try:
+            result = reconcile_oral_billing_by_evidence(
+                conn,
+                oral_task_id=task_id,
+                reconciliation_operation_id=request.reconciliation_operation_id,
+                provider_outcome=request.provider_outcome,
+                provider_charge_state=request.provider_charge_state,
+                resolution=request.resolution,
+                reason=request.reason,
+                evidence_asset_id=str(evidence["id"]),
+                evidence_sha256=str(evidence["sha256"]),
+            )
+        except BillingInvariantError as exc:
+            raise OralError(
+                "ORAL_BILLING_RECONCILE_CONFLICT",
+                "口播账务状态与本次人工对账不一致。",
+                status_code=409,
+            ) from exc
+        write_audit(
+            conn,
+            actor=actor,
+            action="oral.billing.reconcile",
+            entity_type="oral_task",
+            entity_id=task_id,
+            metadata={
+                "reconciliation_operation_id": request.reconciliation_operation_id,
+                "provider_outcome": request.provider_outcome,
+                "provider_charge_state": request.provider_charge_state,
+                "resolution": request.resolution,
+                "evidence_asset_id": str(evidence["id"]),
+                "evidence_sha256": str(evidence["sha256"]),
+                "reason": request.reason,
+            },
+            commit=False,
+        )
+    return {
+        "task_id": result.task_id,
+        "billing_round": result.billing_round,
+        "transaction_type": result.transaction_type,
+    }

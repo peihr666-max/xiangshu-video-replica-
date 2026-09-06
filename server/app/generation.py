@@ -4352,6 +4352,14 @@ def _acquire_global_fifo_lease(
                     OR locked_until::timestamptz <= now()
                 )
                 AND (next_poll_at IS NULL OR next_poll_at::timestamptz <= now())
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM oral_tasks AS oral
+                    JOIN generation_batches AS owner_batch
+                      ON owner_batch.id = generation_tasks.batch_id
+                    WHERE oral.owner_user_id = owner_batch.created_by_user_id
+                      AND oral.status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+                )
             ORDER BY created_at, id
             LIMIT 1
             FOR UPDATE SKIP LOCKED
@@ -4375,14 +4383,10 @@ def acquire_generation_task_lease(
     try:
         conn.execute("BEGIN IMMEDIATE")
         runtime = read_runtime_limits(conn)
-        active_count = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM generation_tasks
-            WHERE status IN ('SUBMITTING', 'QUEUED', 'RUNNING', 'ARCHIVING')
-            """
-        ).fetchone()[0]
-        if int(active_count) >= runtime["max_concurrent_h3_tasks"]:
+        if not shared_generation_capacity_available(
+            conn,
+            max_concurrent_tasks=runtime["max_concurrent_h3_tasks"],
+        ):
             conn.commit()
             return None
         if _fair_queue_enabled(conn):
@@ -6163,6 +6167,44 @@ def read_runtime_limits(conn: BusinessConnection) -> dict[str, int]:
         "max_generation_count_per_batch": int(row["max_generation_count_per_batch"]),
         "max_concurrent_h3_tasks": int(row["max_concurrent_h3_tasks"]),
     }
+
+
+def lock_shared_generation_capacity(conn: BusinessConnection) -> None:
+    """Take the first lock in every oral/generation slot transition."""
+    if conn.is_postgres:
+        row = conn.execute("SELECT id FROM runtime_settings WHERE id = 1 FOR UPDATE").fetchone()
+        if row is None:
+            raise RuntimeError("runtime settings capacity row is missing")
+    else:
+        updated = conn.execute("UPDATE runtime_settings SET id = id WHERE id = 1")
+        if updated.rowcount != 1:
+            raise RuntimeError("runtime settings capacity row is missing")
+
+
+def shared_generation_capacity_available(
+    conn: BusinessConnection,
+    *,
+    max_concurrent_tasks: int,
+) -> bool:
+    """Serialize capacity checks before taking any cursor or task lock.
+
+    Both generation and oral claims use the lock order ``capacity row -> user
+    cursor -> task``. PostgreSQL cannot let two workers observe the same last
+    slot; SQLite's no-op UPDATE acquires its single-writer lock.
+    """
+    lock_shared_generation_capacity(conn)
+    active_count = conn.execute(
+        """
+        SELECT (
+            SELECT COUNT(*) FROM generation_tasks
+            WHERE status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+        ) + (
+            SELECT COUNT(*) FROM oral_tasks
+            WHERE status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+        )
+        """
+    ).fetchone()[0]
+    return int(active_count) < max_concurrent_tasks
 
 
 def generation_runtime_limits(conn: BusinessConnection) -> GenerationRuntimeLimits:

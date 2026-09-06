@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import logging
 import sqlite3
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -64,9 +66,12 @@ from app.permissions import (
 from app.script_rewrite import (
     ScriptRewriteRequest,
     ScriptRewriteResult,
+    _canonical_json,
+    _validated_ip_profile_snapshot,
     enqueue_script_rewrite_task,
     latest_script_rewrite_task,
     load_script_rewrite_task,
+    require_owned_script_rewrite_identity,
     script_rewrite_task_result,
 )
 
@@ -74,9 +79,21 @@ router = APIRouter(prefix="/api", tags=["generation"])
 logger = logging.getLogger(__name__)
 
 
+class ScriptRewriteIpProfileSummary(BaseModel):
+    display_name: str
+    role: str
+    service_scope: str
+    target_audience: str
+    expression_style: str
+    profile_version: int
+
+
 class ScriptRewriteTaskResponse(BaseModel):
     id: str
     project_id: str
+    identity_id: str | None
+    ip_profile_hash: str | None
+    ip_profile_snapshot: ScriptRewriteIpProfileSummary | None
     status: str
     attempt: int
     result: ScriptRewriteResult | None
@@ -139,6 +156,7 @@ def rewrite_project_script(
             project_id=project_id,
             source_text=request.text,
             idempotency_key=request.idempotency_key or str(uuid4()),
+            identity_id=request.identity_id,
         )
         return script_rewrite_task_response(row)
 
@@ -170,6 +188,8 @@ def read_latest_script_rewrite_task(
     project_id: str,
     conn: Database,
     actor: AuthenticatedUser,
+    identity_scope: Literal["all", "identity", "none"] = Query(default="all"),
+    identity_id: str | None = Query(default=None, min_length=1, max_length=128),
 ) -> ScriptRewriteTaskResponse | None:
     require_project_access(
         conn,
@@ -177,14 +197,51 @@ def read_latest_script_rewrite_task(
         project_id=project_id,
         action="project.script_rewrite_read",
     )
-    row = latest_script_rewrite_task(conn, project_id=project_id)
+    if identity_scope == "identity" and identity_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SCRIPT_REWRITE_IDENTITY_REQUIRED",
+                "message": "按人物查询时必须提供 identity_id。",
+            },
+        )
+    if identity_scope != "identity" and identity_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SCRIPT_REWRITE_IDENTITY_SCOPE_INVALID",
+                "message": "identity_id 仅可用于 identity 查询范围。",
+            },
+        )
+    if identity_scope == "identity":
+        assert identity_id is not None
+        require_owned_script_rewrite_identity(
+            conn,
+            actor=actor,
+            identity_id=identity_id,
+        )
+    row = latest_script_rewrite_task(
+        conn,
+        project_id=project_id,
+        identity_id=identity_id,
+        identity_scope=identity_scope,
+    )
     return None if row is None else script_rewrite_task_response(row)
 
 
 def script_rewrite_task_response(row: sqlite3.Row) -> ScriptRewriteTaskResponse:
+    snapshot = _script_rewrite_profile_summary(
+        row["ip_profile_snapshot_json"],
+        task_id=str(row["id"]),
+        identity_id=None if row["identity_id"] is None else str(row["identity_id"]),
+        expected_hash=None if row["ip_profile_hash"] is None else str(row["ip_profile_hash"]),
+    )
     return ScriptRewriteTaskResponse(
         id=str(row["id"]),
         project_id=str(row["project_id"]),
+        identity_id=None if row["identity_id"] is None else str(row["identity_id"]),
+        ip_profile_hash=(None if row["ip_profile_hash"] is None else str(row["ip_profile_hash"])),
+        ip_profile_snapshot=snapshot,
         status=str(row["status"]),
         attempt=int(row["attempt"]),
         result=script_rewrite_task_result(row),
@@ -198,6 +255,33 @@ def script_rewrite_task_response(row: sqlite3.Row) -> ScriptRewriteTaskResponse:
         started_at=None if row["started_at"] is None else str(row["started_at"]),
         completed_at=(None if row["completed_at"] is None else str(row["completed_at"])),
     )
+
+
+def _script_rewrite_profile_summary(
+    value: object,
+    *,
+    task_id: str,
+    identity_id: str | None,
+    expected_hash: str | None,
+) -> ScriptRewriteIpProfileSummary | None:
+    if value is None and identity_id is None and expected_hash is None:
+        return None
+    try:
+        snapshot = json.loads(str(value))
+        validated = _validated_ip_profile_snapshot(snapshot)
+        actual_hash = hashlib.sha256(_canonical_json(validated).encode("utf-8")).hexdigest()
+        if validated["identity_id"] != identity_id or actual_hash != expected_hash:
+            raise ValueError("snapshot identity or hash mismatch")
+        return ScriptRewriteIpProfileSummary.model_validate(validated)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        logger.error("Script rewrite task %s has an invalid IP profile snapshot", task_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "SCRIPT_REWRITE_SNAPSHOT_INTEGRITY_ERROR",
+                "message": "改写任务的人物档案快照完整性校验失败。",
+            },
+        ) from None
 
 
 @router.get("/projects/{project_id}/scripts/latest", response_model=VersionState)

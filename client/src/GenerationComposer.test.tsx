@@ -185,6 +185,9 @@ describe("GenerationComposer", () => {
     const pendingTask: api.ScriptRewriteTask = {
       id: "rewrite-task-1",
       project_id: "project-1",
+      identity_id: null,
+      ip_profile_hash: null,
+      ip_profile_snapshot: null,
       status: "PENDING",
       attempt: 0,
       result: null,
@@ -247,7 +250,14 @@ describe("GenerationComposer", () => {
       project_id: "project-1",
       identity_id: "person-a",
       ip_profile_hash: "profile-a",
-      ip_profile_snapshot: { display_name: "张工", role: "设计师" },
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "设计师",
+        service_scope: "乡墅设计",
+        target_audience: "返乡建房家庭",
+        expression_style: "专业直白",
+        profile_version: 1,
+      },
       status: "PENDING",
       attempt: 0,
       result: null,
@@ -268,6 +278,12 @@ describe("GenerationComposer", () => {
         }),
     );
     const view = render(<WorkspaceHost identityId="person-a" />);
+    await waitFor(() =>
+      expect(api.getLatestScriptRewriteTask).toHaveBeenCalledWith(
+        "project-1",
+        "person-a",
+      ),
+    );
     fireEvent.click(await screen.findByRole("button", { name: "AI 改写" }));
     await waitFor(() =>
       expect(api.rewriteProjectScript).toHaveBeenCalledWith(
@@ -281,6 +297,12 @@ describe("GenerationComposer", () => {
     ).toBeInTheDocument();
 
     view.rerender(<WorkspaceHost identityId="person-b" />);
+    await waitFor(() =>
+      expect(api.getLatestScriptRewriteTask).toHaveBeenCalledWith(
+        "project-1",
+        "person-b",
+      ),
+    );
     await act(async () => {
       resolveRewrite?.({
         ...pendingTask,
@@ -304,6 +326,9 @@ describe("GenerationComposer", () => {
     const pendingTask: api.ScriptRewriteTask = {
       id: "rewrite-task-recovered",
       project_id: "project-1",
+      identity_id: null,
+      ip_profile_hash: null,
+      ip_profile_snapshot: null,
       status: "RUNNING",
       attempt: 1,
       result: null,
@@ -333,6 +358,10 @@ describe("GenerationComposer", () => {
       expect(api.waitForScriptRewriteTask).toHaveBeenCalledWith(
         "rewrite-task-recovered",
       ),
+    );
+    expect(api.getLatestScriptRewriteTask).toHaveBeenCalledWith(
+      "project-1",
+      undefined,
     );
     await waitFor(() =>
       expect(screen.getByLabelText("口播稿内容")).toHaveValue(
