@@ -51,6 +51,7 @@ from app.settings import SettingsUnavailableError
 from app.settings_routes import router as settings_router
 from app.simple_character_routes import router as character_simple_router
 from app.source_frame_routes import router as source_frame_router
+from app.studio_routes import router as studio_router
 from app.wallet_routes import router as wallet_router
 
 # Non-loopback hosts that are still accepted: TestClient uses "testclient",
@@ -312,6 +313,7 @@ app.add_middleware(
 # bounded HTTP metric instead of being silently short-circuited.
 app.middleware("http")(request_observability_middleware)
 app.include_router(generation_router)
+app.include_router(studio_router)
 app.include_router(rbac_router)
 app.include_router(payment_router)
 app.include_router(control_router)

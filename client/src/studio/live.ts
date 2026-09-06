@@ -8,6 +8,7 @@ import {
   getGenerationBatch,
   getLatestProjectAnalysis,
   getLatestScriptVersion,
+  getStudioStats,
   listCharacterSceneLooks,
   listGenerationBatches,
   listProjects,
@@ -22,6 +23,7 @@ import type {
   StudioData,
   StudioDraft,
   StudioPerson,
+  StudioStats,
   StudioTask,
 } from "./types";
 
@@ -294,11 +296,13 @@ export function reloadTasks(currentUser: CurrentUser): Promise<StudioTask[]> {
 export async function loadStudioData(
   currentUser: CurrentUser,
 ): Promise<StudioData> {
-  const [projectsResult, peopleResult, tasksResult] = await Promise.allSettled([
-    loadProjects(),
-    loadPeople(),
-    loadTasks(currentUser),
-  ]);
+  const [projectsResult, peopleResult, tasksResult, statsResult] =
+    await Promise.allSettled([
+      loadProjects(),
+      loadPeople(),
+      loadTasks(currentUser),
+      getStudioStats(),
+    ]);
   const errors: string[] = [];
   const projectData =
     projectsResult.status === "fulfilled"
@@ -309,6 +313,8 @@ export async function loadStudioData(
       ? peopleResult.value
       : { people: [], assets: [], errors: [] };
   const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : [];
+  // 统计加载失败不打断工作区：指标卡回退为 "—"，重试路径会再次拉取。
+  const stats = statsResult.status === "fulfilled" ? statsResult.value : null;
 
   if (projectsResult.status === "rejected") {
     errors.push(`读取项目失败：${errorText(projectsResult.reason)}`);
@@ -330,7 +336,17 @@ export async function loadStudioData(
     projects: projectData.projects,
     errors,
     loading: false,
+    stats,
   };
+}
+
+/** 静默轮询用的统计刷新：失败返回 null，由调用方保留旧值。 */
+export async function reloadStats(): Promise<StudioStats | null> {
+  try {
+    return await getStudioStats();
+  } catch {
+    return null;
+  }
 }
 
 export type PersonAssetLoad = {

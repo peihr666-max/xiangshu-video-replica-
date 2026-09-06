@@ -140,6 +140,7 @@ describe("V1.4 数据看板", () => {
           projects: [],
           errors: [],
           loading: false,
+          stats: null,
         },
       }),
     );

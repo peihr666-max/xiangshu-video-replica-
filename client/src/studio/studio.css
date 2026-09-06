@@ -751,14 +751,18 @@
 .studio-running-progress {
   flex: 1;
   min-width: 120px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 .studio-running-progress progress {
   appearance: none;
   display: block;
   width: 100%;
+  flex: 1;
   height: 5px;
   border: none;
-  margin-top: 20px;
+  margin: 0;
   background: #30342d;
   border-radius: 5px;
 }
@@ -769,6 +773,61 @@
 .studio-running-progress progress::-webkit-progress-value {
   background: #e4b338;
   border-radius: 5px;
+}
+.studio-running-percent {
+  font-size: 14px;
+  color: #acafa2;
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.studio-row-menu {
+  position: relative;
+  flex: none;
+}
+.studio-row-menu-trigger {
+  background: none;
+  border: none;
+  color: #acafa2;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+.studio-row-menu-trigger:hover,
+.studio-row-menu-trigger[aria-expanded="true"] {
+  color: #eec237;
+  background: #262922;
+}
+.studio-row-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 132px;
+  background: #1d201b;
+  border: 1px solid #30342d;
+  border-radius: 8px;
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+.studio-row-menu-list button {
+  background: none;
+  border: none;
+  color: #e8e6dc;
+  font-size: 13px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.studio-row-menu-list button:hover {
+  background: #262922;
+  color: #eec237;
 }
 .studio-status {
   color: #eec237;

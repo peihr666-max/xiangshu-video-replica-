@@ -33,6 +33,7 @@ import {
   loadPersonAssets,
   loadProjectDraft,
   loadStudioData,
+  reloadStats,
   reloadTasks,
 } from "./live";
 import {
@@ -76,6 +77,7 @@ const emptyData: StudioData = {
   projects: [],
   errors: [],
   loading: true,
+  stats: null,
 };
 const TASKS_POLL_INTERVAL_MS = 20_000;
 const creationPages = new Set<StudioPage>([
@@ -193,6 +195,9 @@ export function StudioWorkspace({
           setData((previous) => ({ ...previous, tasks }));
         })
         .catch(() => {});
+      void reloadStats().then((stats) => {
+        if (stats) setData((previous) => ({ ...previous, stats }));
+      });
     }, TASKS_POLL_INTERVAL_MS);
     return () => {
       window.clearInterval(timer);

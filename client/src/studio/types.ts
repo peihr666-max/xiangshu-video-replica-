@@ -104,6 +104,13 @@ export type StudioTask = {
   audioId?: string;
   scriptVersion?: number;
 };
+export type StudioStats = {
+  today_completed: number;
+  running: number;
+  queued: number;
+  needs_attention: number;
+  total_completed: number;
+};
 export type StudioData = {
   people: StudioPerson[];
   assets: StudioAsset[];
@@ -112,6 +119,8 @@ export type StudioData = {
   projects: Project[];
   errors: string[];
   loading: boolean;
+  /** 平台侧真实统计（/api/studio/stats）；加载失败或审核模式为 null。 */
+  stats: StudioStats | null;
 };
 export type StudioScript = {
   id: string;

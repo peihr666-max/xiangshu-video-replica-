@@ -16,6 +16,7 @@ const api = vi.hoisted(() => ({
   getCachedCharacterAssetUrl: vi.fn(),
   getGenerationBatch: vi.fn(),
   getLatestProjectAnalysis: vi.fn(),
+  getStudioStats: vi.fn(async () => null),
   getLatestScriptVersion: vi.fn(),
   listCharacterSceneLooks: vi.fn(),
   listGenerationBatches: vi.fn(),
@@ -389,6 +390,7 @@ describe("真实 Studio 只读适配器", () => {
         type: "视频生成",
       }),
     ]);
+    expect(data.stats).toBeNull();
     expect(data.errors).toEqual([]);
   });
 

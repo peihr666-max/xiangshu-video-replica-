@@ -88,6 +88,7 @@ function studio(
       projects: [],
       errors: [],
       loading: false,
+      stats: null,
     },
     review: true,
     user: {} as StudioContextValue["user"],

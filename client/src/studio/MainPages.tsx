@@ -1,9 +1,19 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStudio } from "./context";
 import { loadTaskPreview } from "./live";
 import { draftFromTask } from "./state";
 import type { StudioTask } from "./types";
-import { Button, Empty, Field, Hint, Icon, Media, Panel, Tabs } from "./ui";
+import {
+  Button,
+  Empty,
+  Field,
+  formatTaskTime,
+  Hint,
+  Icon,
+  Media,
+  Panel,
+  Tabs,
+} from "./ui";
 
 const statusNames: Record<StudioTask["status"], string> = {
   running: "生成中",
@@ -22,6 +32,80 @@ function Status({ task }: { task: StudioTask }) {
         ? ` ${task.progress}%`
         : ""}
     </span>
+  );
+}
+
+/** Per-row overflow menu on the workbench "正在进行" list. Every action is
+ * real: jump to the task center, or copy the server batch id for support. */
+function RunningRowMenu({ task }: { task: StudioTask }) {
+  const { navigate, notify } = useStudio();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const copyTaskId = async () => {
+    try {
+      await navigator.clipboard.writeText(task.batchId || task.id);
+      notify("任务编号已复制");
+    } catch {
+      notify("复制失败，请手动复制任务编号。");
+    }
+  };
+
+  return (
+    <div className="studio-row-menu" ref={rootRef}>
+      <button
+        type="button"
+        className="studio-row-menu-trigger"
+        aria-label={`更多操作：${task.title}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Icon name="more" size={20} />
+      </button>
+      {open && (
+        <div className="studio-row-menu-list" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              navigate("tasks");
+            }}
+          >
+            打开任务中心
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              void copyTaskId();
+            }}
+          >
+            复制任务编号
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -80,31 +164,38 @@ export function WorkbenchPage() {
             {[
               {
                 label: "今日成片",
-                value: review ? "8" : "—",
+                value: data.stats ? String(data.stats.today_completed) : "—",
                 icon: "video",
                 page: "tasks" as const,
               },
               {
                 label: "成片队列",
-                value: data.loading ? "—" : String(active.length),
+                value: data.stats
+                  ? String(data.stats.running + data.stats.queued)
+                  : data.loading
+                    ? "—"
+                    : String(active.length),
                 icon: "tasks",
                 page: "tasks" as const,
               },
               {
                 label: "累计已发布",
+                // C5 发布能力暂缓：没有真实发布数据源，保持 "—" 不伪造。
                 value: review ? "156" : "—",
                 icon: "upload",
                 page: "publishing" as const,
               },
               {
                 label: "待处理",
-                value: data.loading
-                  ? "—"
-                  : String(
-                      data.tasks.filter((task) =>
-                        ["failed", "uncertain"].includes(task.status),
-                      ).length,
-                    ),
+                value: data.stats
+                  ? String(data.stats.needs_attention)
+                  : data.loading
+                    ? "—"
+                    : String(
+                        data.tasks.filter((task) =>
+                          ["failed", "uncertain"].includes(task.status),
+                        ).length,
+                      ),
                 icon: "warning",
                 page: "tasks" as const,
               },
@@ -138,10 +229,20 @@ export function WorkbenchPage() {
                     <p>{task.type}</p>
                   </div>
                   <div className="studio-running-progress">
-                    <Status task={task} />
-                    {task.progress !== undefined && (
-                      <progress value={task.progress} max={100} />
-                    )}
+                    <span
+                      className={`studio-status studio-status--${task.status}`}
+                    >
+                      {statusNames[task.status]}
+                    </span>
+                    {task.progress !== undefined &&
+                      task.status === "running" && (
+                        <>
+                          <progress value={task.progress} max={100} />
+                          <span className="studio-running-percent">
+                            {task.progress}%
+                          </span>
+                        </>
+                      )}
                   </div>
                   <Button
                     onClick={() =>
@@ -150,6 +251,7 @@ export function WorkbenchPage() {
                   >
                     查看详情
                   </Button>
+                  <RunningRowMenu task={task} />
                 </div>
               ))
             ) : (
@@ -203,7 +305,7 @@ export function WorkbenchPage() {
                 <i className={`studio-dot studio-dot--${task.status}`} />
                 <span>
                   “{task.title}” {statusNames[task.status]}
-                  <small>{task.submitted}</small>
+                  <small>{formatTaskTime(task.submitted)}</small>
                 </span>
               </button>
             ))}

@@ -16,6 +16,7 @@ const live = vi.hoisted(() => ({
   loadPersonAssets: vi.fn(),
   loadProjectDraft: vi.fn(),
   reloadTasks: vi.fn(async (): Promise<unknown[]> => []),
+  reloadStats: vi.fn(async (): Promise<unknown> => null),
 }));
 vi.mock("./live", () => live);
 
@@ -153,6 +154,7 @@ describe("V1.4 workspace integration", () => {
       projects: [],
       errors: ["人物库暂不可用"],
       loading: false,
+      stats: null,
     });
     render(<StudioWorkspace currentUser={reviewUser} />);
     await waitFor(() => expect(live.loadStudioData).toHaveBeenCalled());
@@ -175,6 +177,25 @@ describe("V1.4 workspace integration", () => {
     await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "返回新工作台" }));
     await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
+  });
+
+  it("workbench metric cards show real platform stats", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+      stats: {
+        today_completed: 5,
+        running: 2,
+        queued: 1,
+        needs_attention: 4,
+        total_completed: 42,
+      },
+    });
+    render(<StudioWorkspace currentUser={reviewUser} />);
+
+    await waitFor(() => expect(screen.getByText("5")).toBeInTheDocument());
+    // 队列 = running + queued（3）；待处理来自统计而非 20 条切片。
+    expect(screen.getByText("4")).toBeInTheDocument();
   });
 
   it("消费任务交接后清除暂存批次", async () => {
@@ -209,6 +230,7 @@ describe("V1.4 workspace integration", () => {
       projects: [],
       errors: [],
       loading: false,
+      stats: null,
       tasks: [runningTask],
     });
     live.reloadTasks.mockResolvedValue([

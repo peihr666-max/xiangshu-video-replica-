@@ -654,6 +654,20 @@ export async function getHealth(): Promise<HealthResponse> {
   return requestJson<HealthResponse>("/health", "本地服务暂不可用");
 }
 
+export type StudioStats = {
+  today_completed: number;
+  running: number;
+  queued: number;
+  needs_attention: number;
+  total_completed: number;
+};
+
+/** 平台侧真实工作台统计（C6/C10a）：GET /api/studio/stats。
+ * 只统计可见生成任务的真实计数；播放/互动等外部平台数据不在其中。 */
+export async function getStudioStats(): Promise<StudioStats> {
+  return requestApiJson<StudioStats>("/api/studio/stats", "读取工作台统计失败");
+}
+
 export async function getCurrentUser(): Promise<CurrentUser> {
   const user = await requestApiJson<unknown>("/api/auth/me", "身份验证失败");
   if (!isCurrentUser(user)) {

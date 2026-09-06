@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createState } from "./state";
 import type {
   StudioAsset,
@@ -16,7 +16,8 @@ const { useStudio, loadTaskPreview } = vi.hoisted(() => ({
 vi.mock("./context", () => ({ useStudio }));
 vi.mock("./live", () => ({ loadTaskPreview }));
 
-import { TaskDetailPage } from "./MainPages";
+import { TaskDetailPage, WorkbenchPage } from "./MainPages";
+import { formatTaskTime } from "./ui";
 
 const taskA: StudioTask = {
   id: "task-a",
@@ -34,6 +35,16 @@ const taskB: StudioTask = {
   batchId: "batch-b",
 };
 
+const runningTask: StudioTask = {
+  id: "batch-9",
+  batchId: "batch-9",
+  title: "张工 · 建房预算",
+  type: "数字人口播",
+  status: "running",
+  progress: 68,
+  submitted: "2026-09-06T09:30:00",
+};
+
 function data(tasks: StudioTask[] = [taskA]): StudioData {
   return {
     people: [],
@@ -43,6 +54,7 @@ function data(tasks: StudioTask[] = [taskA]): StudioData {
     projects: [],
     errors: [],
     loading: false,
+    stats: null,
   };
 }
 
@@ -193,5 +205,111 @@ describe("V1.4 任务详情真实成片预览", () => {
       screen.queryByRole("button", { name: "预览成片" }),
     ).not.toBeInTheDocument();
     expect(loadTaskPreview).not.toHaveBeenCalled();
+  });
+});
+
+describe("V1.4 工作台正在进行行", () => {
+  const clock = new Date("2026-09-06T10:00:00");
+
+  beforeEach(() => {
+    useStudio.mockReset();
+    // Fake only the clock: waitFor relies on real timers.
+    vi.useFakeTimers({ now: clock, toFake: ["Date"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function workbench(
+    overrides: Partial<StudioContextValue> = {},
+  ): StudioContextValue {
+    return studio(undefined, {
+      state: { ...createState("workbench") },
+      data: data([runningTask]),
+      ...overrides,
+    });
+  }
+
+  it("每行提供更多操作菜单：打开任务中心与复制任务编号", async () => {
+    const value = workbench();
+    useStudio.mockReturnValue(value);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<WorkbenchPage />);
+
+    const trigger = screen.getByRole("button", {
+      name: "更多操作：张工 · 建房预算",
+    });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "打开任务中心" }));
+    expect(value.navigate).toHaveBeenCalledWith("tasks");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "复制任务编号" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("batch-9"));
+    expect(value.notify).toHaveBeenCalledWith("任务编号已复制");
+  });
+
+  it("复制失败时给出可感知的失败提示", async () => {
+    const value = workbench();
+    useStudio.mockReturnValue(value);
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<WorkbenchPage />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "更多操作：张工 · 建房预算" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "复制任务编号" }));
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "复制失败，请手动复制任务编号。",
+      ),
+    );
+    expect(writeText).toHaveBeenCalledWith("batch-9");
+  });
+
+  it("任务动态与正在进行行不显示原始 ISO 时间", () => {
+    useStudio.mockReturnValue(workbench());
+    render(<WorkbenchPage />);
+
+    expect(screen.queryByText("2026-09-06T09:30:00")).not.toBeInTheDocument();
+    expect(screen.getByText("今天 09:30")).toBeInTheDocument();
+    expect(screen.getByText("68%")).toBeInTheDocument();
+  });
+});
+
+describe("formatTaskTime", () => {
+  const now = new Date("2026-09-06T10:00:00");
+
+  it("当天显示“今天 HH:mm”", () => {
+    expect(formatTaskTime("2026-09-06T09:30:00", now)).toBe("今天 09:30");
+    expect(formatTaskTime("2026-09-06 00:05", now)).toBe("今天 00:05");
+  });
+
+  it("前一天显示“昨天 HH:mm”", () => {
+    expect(formatTaskTime("2026-09-05T23:58:00", now)).toBe("昨天 23:58");
+  });
+
+  it("同年更早显示“MM-DD HH:mm”，跨年带年份", () => {
+    expect(formatTaskTime("2026-09-03T14:00:00", now)).toBe("09-03 14:00");
+    expect(formatTaskTime("2025-12-31T08:05:00", now)).toBe("2025-12-31 08:05");
+  });
+
+  it("无法解析或已是友好文案时原样返回", () => {
+    expect(formatTaskTime("今天 09:30", now)).toBe("今天 09:30");
+    expect(formatTaskTime("", now)).toBe("");
   });
 });

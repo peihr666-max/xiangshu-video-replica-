@@ -249,3 +249,27 @@ export function Media({
     </figure>
   );
 }
+
+/** Localized short time for task timestamps: 今天/昨天 HH:mm, then MM-DD
+ * HH:mm within the year, full date across years. Values that cannot be
+ * parsed (including already-friendly sample labels) pass through untouched
+ * so review fixtures keep their curated wording. */
+export function formatTaskTime(value: string, now: Date = new Date()): string {
+  if (!value) return value;
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(value)
+    ? value.replace(" ", "T")
+    : value;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const dayKey = (d: Date) =>
+    `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  if (dayKey(date) === dayKey(now)) return `今天 ${time}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (dayKey(date) === dayKey(yesterday)) return `昨天 ${time}`;
+  if (date.getFullYear() === now.getFullYear())
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
+}

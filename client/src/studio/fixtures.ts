@@ -328,6 +328,14 @@ export function createReviewData(): StudioData {
     projects: [],
     errors: [],
     loading: false,
+    // 审核示例的指标卡数值（与示例任务状态一致：1 运行 + 1 排队 + 1 待处理）。
+    stats: {
+      today_completed: 8,
+      running: 1,
+      queued: 1,
+      needs_attention: 1,
+      total_completed: 156,
+    },
   };
 }
 
