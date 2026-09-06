@@ -1,7 +1,7 @@
 """供应商白名单补全：修复 056 丢失的 zpay，纳入 tikhub/dashscope/douyidou。
 
-Revision ID: 061_provider_whitelist_widen
-Revises: 060_script_from_audio_tasks
+Revision ID: 069_provider_whitelist_widen
+Revises: 068_script_from_audio_tasks
 
 056 重建 ``ck_provider_settings_supported_provider`` 时沿用了 020 的列表而
 漏掉 023 引入的 ``zpay``，导致支付配置保存被 CHECK 拒绝（全量回归）。
@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "061_provider_whitelist_widen"
-down_revision = "060_script_from_audio_tasks"
+revision = "069_provider_whitelist_widen"
+down_revision = "068_script_from_audio_tasks"
 branch_labels = None
 depends_on = None
 

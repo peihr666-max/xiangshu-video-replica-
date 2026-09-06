@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "056_hifly_provider"
-down_revision = "055_customer_batch_visibility"
+revision = "064_hifly_provider"
+down_revision = "063_wallet_ledger_sequence"
 branch_labels = None
 depends_on = None
 

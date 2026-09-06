@@ -1,7 +1,7 @@
 """C4 爆款视频参考库：搜索结果落库复用（按 platform+video_id 去重）.
 
-Revision ID: 062_viral_video_library
-Revises: 061_provider_whitelist_widen
+Revision ID: 070_viral_video_library
+Revises: 069_provider_whitelist_widen
 
 两张表：
 - ``viral_videos``：两个平台的爆款视频条目库。(platform, video_id) 唯一，
@@ -17,8 +17,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "062_viral_video_library"
-down_revision = "061_provider_whitelist_widen"
+revision = "070_viral_video_library"
+down_revision = "069_provider_whitelist_widen"
 branch_labels = None
 depends_on = None
 

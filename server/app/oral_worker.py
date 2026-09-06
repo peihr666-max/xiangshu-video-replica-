@@ -10,7 +10,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from app.db_portable import BusinessConnection
@@ -156,11 +156,14 @@ def claim_oral_work(
         if task is not None:
             row = dict(task)
             status = str(row["status"])
-            kind: OralWorkKind = {
-                "QUEUED": "task_submit",
-                "RUNNING": "task_poll",
-                "ARCHIVING": "task_archive",
-            }[status]
+            kind = cast(
+                OralWorkKind,
+                {
+                    "QUEUED": "task_submit",
+                    "RUNNING": "task_poll",
+                    "ARCHIVING": "task_archive",
+                }[status],
+            )
             assignments = (
                 "status = 'SUBMITTING', submission_state = 'SUBMITTING'"
                 if status == "QUEUED"
@@ -200,7 +203,7 @@ def claim_oral_work(
                 continue
             row = dict(candidate)
             submitting = str(row["submission_state"]) == "LOCAL_PENDING"
-            kind = f"{prefix}_{'submit' if submitting else 'poll'}"
+            kind = cast(OralWorkKind, f"{prefix}_{'submit' if submitting else 'poll'}")
             if _claim_row(
                 conn,
                 table=table,
@@ -219,7 +222,7 @@ def claim_oral_work(
                 lease_expires_at=expires,
             ):
                 return OralWorkLease(
-                    kind=kind,  # type: ignore[arg-type]
+                    kind=kind,
                     record_id=str(row["id"]),
                     worker_id=worker_id,
                     row=row,
@@ -243,16 +246,16 @@ def perform_oral_work(
         if lease.kind in {"avatar_submit", "voice_submit", "task_submit"}:
             return _perform_submission(lease, vendor=vendor, storage=storage)
         if lease.kind == "avatar_poll":
-            snapshot = vendor.avatar_task(str(row["vendor_task_id"]))
-            if snapshot.status == "DONE" and snapshot.avatar_id:
-                return OralWorkResult("ready", provider_resource_id=snapshot.avatar_id)
-            if snapshot.status == "FAILED":
+            avatar_snapshot = vendor.avatar_task(str(row["vendor_task_id"]))
+            if avatar_snapshot.status == "DONE" and avatar_snapshot.avatar_id:
+                return OralWorkResult("ready", provider_resource_id=avatar_snapshot.avatar_id)
+            if avatar_snapshot.status == "FAILED":
                 return OralWorkResult("failed", message="分身制作未通过")
             return OralWorkResult("waiting")
         if lease.kind == "voice_poll":
-            snapshot = vendor.voice_task(str(row["vendor_task_id"]))
-            if snapshot.status == "DONE" and snapshot.voice and snapshot.demo_url:
-                demo = vendor.download(snapshot.demo_url)
+            voice_snapshot = vendor.voice_task(str(row["vendor_task_id"]))
+            if voice_snapshot.status == "DONE" and voice_snapshot.voice and voice_snapshot.demo_url:
+                demo = vendor.download(voice_snapshot.demo_url)
                 if not demo:
                     return OralWorkResult("waiting")
                 stored = storage.put_object(
@@ -261,20 +264,20 @@ def perform_oral_work(
                     content_type="audio/mpeg",
                 )
                 return OralWorkResult(
-                    "ready", provider_resource_id=snapshot.voice, stored=stored
+                    "ready", provider_resource_id=voice_snapshot.voice, stored=stored
                 )
-            if snapshot.status == "FAILED":
+            if voice_snapshot.status == "FAILED":
                 return OralWorkResult("failed", message="声音克隆未通过")
             return OralWorkResult("waiting")
         if lease.kind == "task_poll":
-            snapshot = vendor.video_task(str(row["vendor_task_id"]))
-            if snapshot.status == "DONE" and snapshot.video_url:
+            video_snapshot = vendor.video_task(str(row["vendor_task_id"]))
+            if video_snapshot.status == "DONE" and video_snapshot.video_url:
                 return OralWorkResult(
                     "archive",
-                    provider_result_url=snapshot.video_url,
-                    duration_sec=snapshot.duration,
+                    provider_result_url=video_snapshot.video_url,
+                    duration_sec=video_snapshot.duration,
                 )
-            if snapshot.status == "FAILED":
+            if video_snapshot.status == "FAILED":
                 return OralWorkResult("failed", message="数字人服务生成失败")
             return OralWorkResult("waiting")
         if lease.kind == "task_archive":
@@ -295,7 +298,9 @@ def perform_oral_work(
             return OralWorkResult("failed", message=str(exc)[:500])
         return OralWorkResult("waiting", message=str(exc)[:500])
     except Exception as exc:  # noqa: BLE001 - storage/provider boundary
-        logger.warning("oral worker operation failed: kind=%s error=%s", lease.kind, type(exc).__name__)
+        logger.warning(
+            "oral worker operation failed: kind=%s error=%s", lease.kind, type(exc).__name__
+        )
         if lease.kind == "task_archive":
             return OralWorkResult("failed", message="口播成片归档失败")
         if lease.kind.endswith("submit"):
@@ -321,9 +326,7 @@ def _perform_submission(
             if str(row["source_kind"]) == "IMAGE"
             else vendor.create_avatar_by_video
         )
-        task_id = creator(
-            title=str(row["title"])[:20], file_id=target.file_id, aigc_flag=True
-        )
+        task_id = creator(title=str(row["title"])[:20], file_id=target.file_id, aigc_flag=True)
         return OralWorkResult("submitted", provider_task_id=task_id)
     if lease.kind == "voice_submit":
         content = _object_bytes(storage, str(row["source_storage_uri"]))
@@ -360,12 +363,14 @@ def prepare_oral_work(conn: BusinessConnection, lease: OralWorkLease) -> OralWor
             {
                 "avatar_submit": """
                     SELECT clone.*, asset.storage_uri AS source_storage_uri
-                    FROM oral_avatars AS clone JOIN assets AS asset ON asset.id = clone.source_asset_id
+                    FROM oral_avatars AS clone
+                    JOIN assets AS asset ON asset.id = clone.source_asset_id
                     WHERE clone.id = %s
                 """,
                 "voice_submit": """
                     SELECT clone.*, asset.storage_uri AS source_storage_uri
-                    FROM oral_voices AS clone JOIN assets AS asset ON asset.id = clone.source_asset_id
+                    FROM oral_voices AS clone
+                    JOIN assets AS asset ON asset.id = clone.source_asset_id
                     WHERE clone.id = %s
                 """,
                 "task_submit": """

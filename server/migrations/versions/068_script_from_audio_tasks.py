@@ -1,7 +1,7 @@
 """C3/工作台音频提取文案：script-from-audio 异步任务。
 
-Revision ID: 060_script_from_audio_tasks
-Revises: 059_studio_drafts
+Revision ID: 068_script_from_audio_tasks
+Revises: 067_studio_drafts
 
 Uploads arrive as raw reference videos without any analysis, so the
 generation-gated script version table cannot hold their transcripts. The
@@ -15,8 +15,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "060_script_from_audio_tasks"
-down_revision = "059_studio_drafts"
+revision = "068_script_from_audio_tasks"
+down_revision = "067_studio_drafts"
 branch_labels = None
 depends_on = None
 

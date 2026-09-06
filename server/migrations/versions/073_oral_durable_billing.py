@@ -1,7 +1,7 @@
 """Add durable oral-task lifecycle and wallet references.
 
-Revision ID: 065_oral_durable_billing
-Revises: 064_oral_clone_consent
+Revision ID: 073_oral_durable_billing
+Revises: 072_oral_clone_consent
 """
 
 from __future__ import annotations
@@ -9,8 +9,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "065_oral_durable_billing"
-down_revision = "064_oral_clone_consent"
+revision = "073_oral_durable_billing"
+down_revision = "072_oral_clone_consent"
 branch_labels = None
 depends_on = None
 
@@ -41,6 +41,57 @@ _WALLET_SHAPE_LEGACY = """
  AND recharge_order_id IS NULL AND task_id IS NOT NULL AND billing_round IS NOT NULL)
 """
 
+# 063_wallet_ledger_sequence attached these triggers to wallet_transactions.
+# SQLite's batch_alter_table rebuild drops them with the old table, so they
+# must be restored after every rebuild in both directions.
+_SQLITE_LEDGER_TRIGGERS = (
+    (
+        "trg_wallet_transactions_reject_explicit_ledger_sequence",
+        """
+        BEFORE INSERT ON wallet_transactions
+        WHEN NEW.ledger_sequence IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_sequence is database assigned');
+        END
+        """,
+    ),
+    (
+        "trg_wallet_transactions_reject_ledger_sequence_update",
+        """
+        BEFORE UPDATE OF ledger_sequence ON wallet_transactions
+        WHEN OLD.ledger_sequence IS NOT NULL
+             AND NEW.ledger_sequence IS NOT OLD.ledger_sequence
+        BEGIN
+            SELECT RAISE(ABORT, 'ledger_sequence is immutable');
+        END
+        """,
+    ),
+    (
+        "trg_wallet_transactions_assign_ledger_sequence",
+        """
+        AFTER INSERT ON wallet_transactions
+        WHEN NEW.ledger_sequence IS NULL
+        BEGIN
+            UPDATE wallet_transactions
+            SET ledger_sequence = (
+                SELECT COALESCE(MAX(ledger_sequence), 0) + 1
+                FROM wallet_transactions
+                WHERE id <> NEW.id
+            )
+            WHERE id = NEW.id;
+        END
+        """,
+    ),
+)
+
+
+def _restore_sqlite_ledger_triggers() -> None:
+    if op.get_bind().dialect.name != "sqlite":
+        return
+    for name, body in _SQLITE_LEDGER_TRIGGERS:
+        op.execute(sa.text(f"DROP TRIGGER IF EXISTS {name}"))
+        op.execute(sa.text(f"CREATE TRIGGER {name}{body}"))
+
 
 def upgrade() -> None:
     for table in ("oral_avatars", "oral_voices"):
@@ -57,9 +108,7 @@ def upgrade() -> None:
                 "submission_state IN ('LOCAL_PENDING', 'SUBMITTING', 'SUBMITTED', "
                 "'SUBMISSION_UNKNOWN', 'FAILED')",
             )
-            batch_op.create_check_constraint(
-                f"ck_{table}_attempt_count", "attempt_count >= 0"
-            )
+            batch_op.create_check_constraint(f"ck_{table}_attempt_count", "attempt_count >= 0")
         op.create_index(
             f"idx_{table}_durable_claim",
             table,
@@ -77,6 +126,7 @@ def upgrade() -> None:
         )
         batch_op.drop_constraint("ck_wallet_transactions_shape", type_="check")
         batch_op.create_check_constraint("ck_wallet_transactions_shape", _WALLET_SHAPE_WITH_ORAL)
+    _restore_sqlite_ledger_triggers()
     op.create_index(
         "uq_wallet_transactions_oral_reserve_round",
         "wallet_transactions",
@@ -155,6 +205,7 @@ def downgrade() -> None:
         batch_op.drop_constraint("fk_wallet_transactions_oral_task_id", type_="foreignkey")
         batch_op.drop_column("oral_task_id")
         batch_op.create_check_constraint("ck_wallet_transactions_shape", _WALLET_SHAPE_LEGACY)
+    _restore_sqlite_ledger_triggers()
 
     for table in ("oral_voices", "oral_avatars"):
         op.drop_index(f"idx_{table}_durable_claim", table_name=table)

@@ -1,7 +1,7 @@
 """C7 studio drafts: cloud persistence for the V1.4 copy workshop.
 
-Revision ID: 059_studio_drafts
-Revises: 058_generation_creation_kind
+Revision ID: 067_studio_drafts
+Revises: 066_generation_creation_kind
 
 Two user-scoped stores: the auto-saved working draft (one row per user and
 workspace kind, payload kept as opaque JSON text for dual-dialect storage)
@@ -13,8 +13,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "059_studio_drafts"
-down_revision = "058_generation_creation_kind"
+revision = "067_studio_drafts"
+down_revision = "066_generation_creation_kind"
 branch_labels = None
 depends_on = None
 

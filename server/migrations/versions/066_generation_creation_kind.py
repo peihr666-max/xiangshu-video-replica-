@@ -11,8 +11,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "058_generation_creation_kind"
-down_revision = "057_oral_domain"
+revision = "066_generation_creation_kind"
+down_revision = "065_oral_domain"
 branch_labels = None
 depends_on = None
 

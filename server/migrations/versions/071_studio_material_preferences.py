@@ -1,7 +1,7 @@
 """C9 素材库：为现有资产与直出任务保存用户侧名称和隐藏偏好。
 
-Revision ID: 063_studio_material_preferences
-Revises: 062_viral_video_library
+Revision ID: 071_studio_material_preferences
+Revises: 070_viral_video_library
 
 物理文件仍以 assets 为唯一真源，H3 DIRECT 结果仍以 generation_tasks 为
 真源。本表只保存用户侧展示偏好，不授予访问权限，也不删除原业务记录。
@@ -12,8 +12,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "063_studio_material_preferences"
-down_revision = "062_viral_video_library"
+revision = "071_studio_material_preferences"
+down_revision = "070_viral_video_library"
 branch_labels = None
 depends_on = None
 

@@ -12,8 +12,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "057_oral_domain"
-down_revision = "056_hifly_provider"
+revision = "065_oral_domain"
+down_revision = "064_hifly_provider"
 branch_labels = None
 depends_on = None
 

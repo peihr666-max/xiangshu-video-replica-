@@ -1,7 +1,7 @@
 """Require auditable consent for avatar and voice cloning.
 
-Revision ID: 064_oral_clone_consent
-Revises: 063_studio_material_preferences
+Revision ID: 072_oral_clone_consent
+Revises: 071_studio_material_preferences
 """
 
 from __future__ import annotations
@@ -9,8 +9,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "064_oral_clone_consent"
-down_revision = "063_studio_material_preferences"
+revision = "072_oral_clone_consent"
+down_revision = "071_studio_material_preferences"
 branch_labels = None
 depends_on = None
 
