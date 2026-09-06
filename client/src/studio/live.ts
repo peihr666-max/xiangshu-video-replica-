@@ -2,8 +2,10 @@ import {
   type CurrentUser,
   cancelGenerationBatch,
   cancelOralTask,
+  compileGenerationPrompt,
   completeMaterialUpload,
   completeVideoUpload,
+  createGenerationBatch,
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
   createMaterialUploadIntent,
@@ -11,8 +13,11 @@ import {
   createScriptFromAudioTask,
   createScriptVersion,
   createVideoUploadIntent,
+  defaultBatchProvider,
   downloadMaterialAsset,
+  type GenerationBatch,
   type GenerationBatchListItem,
+  type GenerationRatio,
   getAssetDownloadUrl,
   getCachedCharacterAssetUrl,
   getGenerationBatch,
@@ -33,6 +38,7 @@ import {
   listSimpleCharacterLibrary,
   listStudioSavedScripts,
   listViralVideos,
+  lockGenerationPrompt,
   type MaterialItem,
   type OralAvatarRecord,
   type OralTaskRecord,
@@ -41,6 +47,7 @@ import {
   resolveMaterials,
   retryOralTask,
   retryOralTaskArchive,
+  reviseGenerationPrompt,
   type SimpleLibraryEntry,
   type StudioDraftKind,
   type StudioSavedScriptInput,
@@ -1070,4 +1077,55 @@ export async function extractScriptFromUpload(
     }
   }
   throw new Error("文案提取超时，请稍后在任务中心重试。");
+}
+
+/** 复刻一键生成：存稿 → 编译 →（编辑过则存修订）→ 锁定 → 建批。 */
+export async function runReplicaGeneration(
+  projectId: string,
+  input: {
+    promptText: string;
+    originalScriptText: string;
+    shotCardVersionId: string;
+    firstFrameAssetId: string;
+    outputDurationSeconds: number;
+    resolution: "768P" | "2K";
+    ratio: GenerationRatio;
+    quantity: number;
+  },
+): Promise<GenerationBatch> {
+  const script = await createScriptVersion(projectId, {
+    source: input.originalScriptText.trim() ? "original" : "custom",
+    text: input.originalScriptText,
+    shot_card_version_id: input.shotCardVersionId,
+  });
+  const compiled = await compileGenerationPrompt(projectId, {
+    script_version_id: script.id,
+    shot_card_version_id: input.shotCardVersionId,
+    first_frame_asset_id: input.firstFrameAssetId,
+    output_duration_seconds: input.outputDurationSeconds,
+    resolution: input.resolution,
+    ratio: input.ratio,
+  });
+  const compiledText = String(
+    (compiled.payload as Record<string, unknown>).prompt_text ?? "",
+  );
+  const finalPrompt =
+    input.promptText.trim() && input.promptText !== compiledText
+      ? await reviseGenerationPrompt(projectId, {
+          base_prompt_version_id: compiled.id,
+          prompt_text: input.promptText.trim(),
+        })
+      : compiled;
+  const locked = await lockGenerationPrompt(projectId, finalPrompt.id);
+  return createGenerationBatch(projectId, {
+    quantity: input.quantity,
+    prompt_version_id: locked.id,
+    first_frame_asset_id: input.firstFrameAssetId,
+    output_duration_seconds: input.outputDurationSeconds,
+    resolution: input.resolution,
+    ratio: input.ratio,
+    idempotency_key: crypto.randomUUID(),
+    provider: defaultBatchProvider(),
+    fake_audio_quality: "ok",
+  });
 }

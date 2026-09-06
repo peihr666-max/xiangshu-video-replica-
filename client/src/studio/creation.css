@@ -876,3 +876,51 @@
   font-size: 13px;
   margin: 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * C2-复刻：项目选择 / 分镜行 / 拆解面板
+ * ------------------------------------------------------------------------- */
+.creation-project-select {
+  border: 1px solid var(--line, #ddd);
+  border-radius: 10px;
+  background: var(--panel, #fff);
+  color: var(--text, #333);
+  padding: 9px 12px;
+  font-size: 13.5px;
+}
+
+.creation-replica-analyze {
+  display: grid;
+  gap: 10px;
+}
+
+.creation-shot-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  border: 1px solid var(--line, #e2e2e2);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.creation-shot-index {
+  font-family: var(--mono, monospace);
+  color: var(--text-muted, #777);
+  font-size: 13px;
+  padding-top: 2px;
+}
+
+.creation-shot-body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.creation-shot-body strong {
+  font-size: 13.5px;
+}
+
+.creation-shot-body small {
+  color: var(--text-muted, #777);
+  font-size: 12.5px;
+}
