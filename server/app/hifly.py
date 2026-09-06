@@ -1,4 +1,4 @@
-"""HiFly (飞影) digital-human provider client (C1 / 未接通能力拆解).
+"""Digital-human (数字人口播) provider client (C1 / 未接通能力拆解).
 
 Implements the vendor's V2 protocol from docs/飞影数字人API-V2-集成参考.md:
 every call posts/gets JSON against the uniform ``{"code", "msg", "data"}``
@@ -68,17 +68,17 @@ class HiflySettingsUnavailable(RuntimeError):
 
 
 _VENDOR_CODE_MESSAGES: dict[int, str] = {
-    11: "飞影接口参数校验未通过，请检查提交内容",
-    14: "飞影接口未找到对应资源",
-    1001: "飞影并发任务数已达上限，请稍后重试",
-    1002: "飞影积分余额不足，请先充值飞影账户",
-    1005: "当前飞影会员等级不支持该能力（如照片克隆分身为企业专属）",
-    1006: "当前飞影会员权限不足",
-    1009: "飞影声音克隆数量已达套餐上限",
-    1011: "该素材疑似名人声纹/形象，飞影拒绝处理",
-    1013: "飞影声音克隆被限制",
-    1015: "飞影提交任务数已达上限，请稍后重试",
-    2003: "飞影 API Token 无效，请在管理后台检查配置",
+    11: "数字人接口参数校验未通过，请检查提交内容",
+    14: "数字人接口未找到对应资源",
+    1001: "数字人任务并发已达上限，请稍后重试",
+    1002: "数字人服务余额不足，请联系管理员",
+    1005: "当前服务套餐不支持该能力（如照片制作分身）",
+    1006: "当前服务套餐权限不足",
+    1009: "声音克隆数量已达套餐上限",
+    1011: "该素材未通过数字人服务合规校验",
+    1013: "声音克隆被限制，请稍后重试",
+    1015: "数字人任务提交数已达上限，请稍后重试",
+    2003: "数字人服务未正确配置，请联系管理员",
 }
 
 
@@ -86,7 +86,7 @@ def _vendor_message(code: int, msg: str) -> str:
     readable = _VENDOR_CODE_MESSAGES.get(code)
     if readable:
         return readable
-    return f"飞影接口返回错误 {code}: {msg}"[:200]
+    return f"数字人服务返回错误 {code}: {msg}"[:200]
 
 
 class HiflyHttpTransport:
@@ -125,11 +125,11 @@ class UrllibHiflyHttpTransport(HiflyHttpTransport):
                 detail = exc.read()[:1000].decode("utf-8", "replace")
             except OSError:
                 pass
-            logger.warning("HIFLY request failed with HTTP status %s: %s", exc.code, detail)
-            raise HiflyError(f"飞影服务返回 HTTP {exc.code}") from exc
+            logger.warning("ORAL vendor request failed with HTTP status %s: %s", exc.code, detail)
+            raise HiflyError(f"数字人服务返回 HTTP {exc.code}") from exc
         except (TimeoutError, URLError, OSError) as exc:
-            logger.warning("HIFLY request failed: %s", type(exc).__name__)
-            raise HiflyError("飞影服务网络异常，请稍后重试") from exc
+            logger.warning("ORAL vendor request failed: %s", type(exc).__name__)
+            raise HiflyError("数字人服务网络异常，请稍后重试") from exc
 
 
 @dataclass(frozen=True)
@@ -226,14 +226,14 @@ class HiflyClient:
         except HiflyError:
             raise
         except Exception as exc:  # noqa: BLE001 - third-party transports may raise anything
-            logger.warning("HIFLY request failed: %s", type(exc).__name__)
-            raise HiflyError("飞影服务网络异常，请稍后重试") from exc
+            logger.warning("ORAL vendor request failed: %s", type(exc).__name__)
+            raise HiflyError("数字人服务网络异常，请稍后重试") from exc
         try:
             envelope = json.loads(content)
         except json.JSONDecodeError as exc:
-            raise HiflyError("飞影服务返回了无法解析的响应") from exc
+            raise HiflyError("数字人服务返回了无法解析的响应") from exc
         if not isinstance(envelope, dict) or "code" not in envelope:
-            raise HiflyError("飞影服务响应缺少业务状态码")
+            raise HiflyError("数字人服务响应缺少业务状态码")
         code = envelope["code"]
         if int(code) != 0:
             raise HiflyError(
@@ -300,7 +300,7 @@ class HiflyClient:
         data = self._request("POST", path, payload=payload)
         task_id = data.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            raise HiflyError("飞影克隆任务创建成功但缺少 task_id")
+            raise HiflyError("数字人服务克隆任务创建成功但缺少 task_id")
         return task_id
 
     def avatar_task(self, task_id: str) -> HiflyAvatarTaskSnapshot:
@@ -343,7 +343,7 @@ class HiflyClient:
         data = self._request("POST", VOICE_CREATE_PATH, payload=payload)
         task_id = data.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            raise HiflyError("飞影声音克隆任务创建成功但缺少 task_id")
+            raise HiflyError("数字人服务声音克隆任务创建成功但缺少 task_id")
         return task_id
 
     def edit_voice(self, *, voice: str, rate: str, volume: str, pitch: str) -> None:
@@ -480,7 +480,7 @@ class HiflyClient:
         if not all(
             isinstance(value, str) and value for value in (upload_url, content_type, file_id)
         ):
-            raise HiflyError("飞影上传凭证响应不完整")
+            raise HiflyError("数字人服务上传凭证响应不完整")
         return HiflyUploadTarget(
             upload_url=cast(str, upload_url),
             content_type=cast(str, content_type),
@@ -491,20 +491,35 @@ class HiflyClient:
         data = self._request("GET", ACCOUNT_CREDIT_PATH)
         credit = data.get("credit")
         if not isinstance(credit, int):
-            raise HiflyError("飞影积分余额响应不完整")
+            raise HiflyError("数字人服务积分余额响应不完整")
         return credit
+
+    # -- 二进制传输 ---------------------------------------------------------
+
+    def upload_file(self, target: HiflyUploadTarget, content: bytes) -> None:
+        """PUT raw bytes to a vendor-issued upload URL (docs §通用/上传)."""
+        self.transport.request(
+            "PUT",
+            target.upload_url,
+            headers={"Content-Type": target.content_type},
+            body=content,
+        )
+
+    def download(self, url: str) -> bytes:
+        """Fetch a binary result (temporary video URL) from the vendor."""
+        return self.transport.request("GET", url, headers={"Accept": "*/*"})
 
     def _extract_task_id(self, data: Mapping[str, Any]) -> str:
         task_id = data.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            raise HiflyError("飞影创作任务创建成功但缺少 task_id")
+            raise HiflyError("数字人服务创作任务创建成功但缺少 task_id")
         return task_id
 
 
 def hifly_client_from_config(config: Mapping[str, str]) -> HiflyClient:
     api_key = (config.get("api_key") or "").strip()
     if not api_key:
-        raise HiflySettingsUnavailable("飞影 API Token is not configured")
+        raise HiflySettingsUnavailable("数字人服务未正确配置，请联系管理员")
     return HiflyClient(api_key=api_key)
 
 
@@ -512,5 +527,5 @@ def hifly_client_from_settings(conn: BusinessConnection) -> HiflyClient:
     try:
         config = SettingsRepository(conn).load_provider_config("hifly")
     except SettingsUnavailableError as exc:
-        raise HiflySettingsUnavailable("飞影 settings cannot be read") from exc
+        raise HiflySettingsUnavailable("数字人服务暂不可用，请联系管理员") from exc
     return hifly_client_from_config(config)

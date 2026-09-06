@@ -28,7 +28,7 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
-_HEAD_REVISION = "056_hifly_provider"
+_HEAD_REVISION = "057_oral_domain"
 
 
 def _pg_dsn() -> str:

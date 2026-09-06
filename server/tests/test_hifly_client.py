@@ -153,7 +153,8 @@ def test_vendor_business_error_maps_to_read_message_and_code() -> None:
             voice="voice-1", text="文案", avatar="avatar-1", title="t", aigc_flag=True
         )
     assert excinfo.value.vendor_code == 1002
-    assert "积分余额不足" in str(excinfo.value)
+    assert "余额不足" in str(excinfo.value)
+    # 客户可见文案不允许出现供应商名称（红线）。
 
 
 def test_invalid_token_error_is_reported_as_configuration_problem() -> None:
@@ -162,7 +163,7 @@ def test_invalid_token_error_is_reported_as_configuration_problem() -> None:
     with pytest.raises(HiflyError) as excinfo:
         client.account_credit()
     assert excinfo.value.vendor_code == 2003
-    assert "Token" in str(excinfo.value)
+    assert "未正确配置" in str(excinfo.value)
 
 
 def test_avatar_task_normalizes_vendor_status() -> None:
@@ -281,7 +282,7 @@ def test_transport_failure_raises_hifly_error() -> None:
             raise OSError("connection refused")
 
     client = HiflyClient(api_key="k", transport=BrokenTransport())
-    with pytest.raises(HiflyError, match="网络"):
+    with pytest.raises(HiflyError, match="网络异常"):
         client.account_credit()
 
 
@@ -307,3 +308,12 @@ def test_settings_repository_loading_wires_the_client(
     finally:
         connection.close()
     assert client.api_key == "configured-key"
+
+
+def test_customer_visible_messages_never_leak_the_vendor_name() -> None:
+    """红线：客户 UI 任何文案不允许出现 API 供应商名称。"""
+    client, _ = client_with(b'{"code": 1002, "msg": "credit", "data": {}}')
+    with pytest.raises(HiflyError) as excinfo:
+        client.create_video_by_tts(voice="v", text="文案", avatar="a", title="t", aigc_flag=True)
+    assert "飞影" not in str(excinfo.value)
+    assert "hifly" not in str(excinfo.value).lower()

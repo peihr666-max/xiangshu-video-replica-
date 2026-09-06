@@ -44,6 +44,7 @@ from app.ops_metrics import (
     set_current_result_code,
     unhandled_exception_response,
 )
+from app.oral_routes import router as oral_router
 from app.payment_routes import router as payment_router
 from app.rbac_routes import router as rbac_router
 from app.recharge_routes import router as recharge_router
@@ -314,6 +315,7 @@ app.add_middleware(
 app.middleware("http")(request_observability_middleware)
 app.include_router(generation_router)
 app.include_router(studio_router)
+app.include_router(oral_router)
 app.include_router(rbac_router)
 app.include_router(payment_router)
 app.include_router(control_router)
