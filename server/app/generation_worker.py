@@ -66,6 +66,7 @@ from app.generation import (
     reschedule_generation_poll,
     run_next_generation_task,
 )
+from app.hifly import HiflyClient, HiflySettingsUnavailable, hifly_client_from_settings
 from app.image_tasks import (
     acquire_character_sheet_task,
     acquire_first_frame_task,
@@ -82,6 +83,16 @@ from app.image_tasks import (
 )
 from app.media_routes import get_media_storage
 from app.operation_costs import begin_operation_cost, complete_operation_cost
+from app.oral_worker import (
+    OralLeaseLostError,
+    OralWorkKind,
+    OralWorkResult,
+    claim_oral_work,
+    discard_uncommitted_oral_asset,
+    finalize_oral_work,
+    perform_oral_work,
+    prepare_oral_work,
+)
 from app.script_from_audio import (
     acquire_script_from_audio_task,
     complete_script_from_audio_task,
@@ -274,6 +285,43 @@ def _is_quality_settings_failure(exc: HTTPException) -> bool:
     return str(detail.get("code", "")).startswith("FIRST_FRAME_QUALITY_SETTINGS_")
 
 
+def _oral_settings_failure(kind: OralWorkKind) -> OralWorkResult:
+    if kind.endswith("submit"):
+        return OralWorkResult("failed", message="数字人服务未配置，任务未提交")
+    if kind == "task_archive":
+        return OralWorkResult("failed", message="数字人服务暂不可用，成片归档失败")
+    return OralWorkResult("waiting", message="数字人服务暂不可用")
+
+
+def _run_sqlite_oral_step(
+    conn: BusinessConnection,
+    *,
+    worker_id: str,
+    storage: StorageAdapter,
+    vendor_override: HiflyClient | None,
+) -> bool:
+    lease = claim_oral_work(conn, worker_id=worker_id)
+    if lease is None:
+        return False
+    prepared = prepare_oral_work(conn, lease)
+    try:
+        vendor = vendor_override or hifly_client_from_settings(conn)
+    except HiflySettingsUnavailable:
+        result = _oral_settings_failure(prepared.kind)
+    else:
+        result = perform_oral_work(prepared, vendor=vendor, storage=storage)
+    try:
+        finalize_oral_work(conn, lease=prepared, result=result)
+    except OralLeaseLostError:
+        discard_uncommitted_oral_asset(
+            storage,
+            result=result,
+            actor_id=str(prepared.row.get("owner_user_id") or "") or None,
+        )
+        logger.warning("oral worker finalize discarded after lease loss: kind=%s", prepared.kind)
+    return True
+
+
 def run_worker_once(
     conn: BusinessConnection,
     *,
@@ -289,6 +337,7 @@ def run_worker_once(
     source_frame_quality_inspector: SourceFrameQualityInspector | None = None,
     video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
     reconcile_provider: H3Provider | None = None,
+    oral_vendor: HiflyClient | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks, then return so SQLite connections stay short-lived."""
@@ -297,6 +346,16 @@ def run_worker_once(
     processed = 0
     while True:
         processed_round = False
+        if _run_sqlite_oral_step(
+            conn,
+            worker_id=worker_id,
+            storage=storage,
+            vendor_override=oral_vendor,
+        ):
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
         generation_handled = False
         try:
             generation_handled = (
@@ -842,6 +901,7 @@ def run_pg_worker_once(
     source_frame_extractor: SourceFrameExtractor | None = None,
     source_frame_quality_inspector: SourceFrameQualityInspector | None = None,
     video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
+    oral_vendor: HiflyClient | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks on the PostgreSQL lane.
@@ -857,6 +917,45 @@ def run_pg_worker_once(
     processed = 0
     while True:
         processed_round = False
+        with pg_transaction() as raw_conn:
+            oral_lease = claim_oral_work(BusinessConnection.postgres(raw_conn), worker_id=worker_id)
+        if oral_lease is not None:
+            with pg_transaction() as raw_conn:
+                conn = BusinessConnection.postgres(raw_conn)
+                prepared_oral = prepare_oral_work(conn, oral_lease)
+                try:
+                    resolved_oral_vendor = oral_vendor or hifly_client_from_settings(conn)
+                except HiflySettingsUnavailable:
+                    resolved_oral_vendor = None
+            if resolved_oral_vendor is None:
+                oral_result = _oral_settings_failure(prepared_oral.kind)
+            else:
+                oral_result = perform_oral_work(
+                    prepared_oral,
+                    vendor=resolved_oral_vendor,
+                    storage=storage,
+                )
+            try:
+                with pg_transaction() as raw_conn:
+                    finalize_oral_work(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=prepared_oral,
+                        result=oral_result,
+                    )
+            except OralLeaseLostError:
+                discard_uncommitted_oral_asset(
+                    storage,
+                    result=oral_result,
+                    actor_id=(str(prepared_oral.row.get("owner_user_id") or "") or None),
+                )
+                logger.warning(
+                    "oral worker finalize discarded after lease loss: kind=%s",
+                    prepared_oral.kind,
+                )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
         with pg_transaction() as raw_conn:
             conn = BusinessConnection.postgres(raw_conn)
             lease = acquire_generation_continuation_lease(conn, worker_id=worker_id)

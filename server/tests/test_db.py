@@ -96,7 +96,7 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
     assert journal_mode == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5000
-    assert alembic_versions == ["073_oral_durable_billing"]
+    assert alembic_versions == ["074_script_rewrite_ip_profile_snapshot"]
     assert "schema_migrations" not in tables
     assert {
         "users",
@@ -120,6 +120,7 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
         "analysis_tasks",
         "source_frame_tasks",
         "script_rewrite_tasks",
+        "oral_billing_reconciliation_operations",
     }.issubset(tables)
 
 
@@ -156,6 +157,13 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
         script_rewrite_task_indexes = {
             row[1] for row in conn.execute("PRAGMA index_list(script_rewrite_tasks)").fetchall()
         }
+        script_rewrite_task_foreign_keys = {
+            (row["from"], row["table"], row["to"])
+            for row in conn.execute("PRAGMA foreign_key_list(script_rewrite_tasks)").fetchall()
+        }
+        character_persona_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(character_personas)").fetchall()
+        }
         reconcile_operation_columns = {
             row[1]
             for row in conn.execute("PRAGMA table_info(generation_task_operations)").fetchall()
@@ -165,7 +173,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             for row in conn.execute("PRAGMA index_list(generation_task_operations)").fetchall()
         }
 
-    assert version == "073_oral_durable_billing"
+    assert version == "074_script_rewrite_ip_profile_snapshot"
     assert {
         "locked_by",
         "locked_until",
@@ -203,6 +211,9 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
         "project_id",
         "request_hash",
         "request_json",
+        "identity_id",
+        "ip_profile_snapshot_json",
+        "ip_profile_hash",
         "result_json",
         "status",
         "locked_by",
@@ -211,6 +222,9 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
         "retryable",
     }.issubset(script_rewrite_task_columns)
     assert "uq_script_rewrite_tasks_active_project" in script_rewrite_task_indexes
+    assert "idx_script_rewrite_tasks_project_identity_created" in script_rewrite_task_indexes
+    assert "ip_profile_revision" in character_persona_columns
+    assert not any(key[0] == "identity_id" for key in script_rewrite_task_foreign_keys)
     assert {
         "attempt",
         "locked_by",
@@ -277,7 +291,7 @@ def test_retry_lineage_revision_is_reversible(tmp_path: Path) -> None:
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "073_oral_durable_billing"
+            "074_script_rewrite_ip_profile_snapshot"
         )
 
 
@@ -333,7 +347,7 @@ def test_remove_oss_migration_purges_settings_and_selects_safe_fallback(
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE runtime_settings SET active_storage_provider = 'oss' WHERE id = 1")
 
-    assert version == "073_oral_durable_billing"
+    assert version == "074_script_rewrite_ip_profile_snapshot"
     assert "oss" not in providers
     assert active_provider == expected_provider
 
@@ -437,7 +451,7 @@ def test_runtime_bootstrap_upgrades_an_existing_database_before_startup(
     assert result.returncode == 0, result.stderr
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "073_oral_durable_billing"
+            "074_script_rewrite_ip_profile_snapshot"
         )
         assert (
             conn.execute(
@@ -980,3 +994,123 @@ def test_oral_durable_billing_migration_fails_loud_on_downgrade_with_ledger(
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
             "073_oral_durable_billing"
         )
+
+
+@pytest.mark.parametrize("legacy_status", ["QUEUED", "RUNNING"])
+def test_oral_durable_billing_upgrade_rejects_unreserved_active_legacy_tasks(
+    tmp_path: Path,
+    legacy_status: str,
+) -> None:
+    db_path = tmp_path / f"oral-active-legacy-{legacy_status.lower()}.db"
+    config = alembic_config(db_path)
+    command.upgrade(config, "072_oral_clone_consent")
+    with connect_database(db_path) as conn:
+        conn.execute("INSERT INTO users (id, username, display_name) VALUES ('u-old','u-old','U')")
+        conn.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name, status) "
+            "VALUES ('i-old','u-old','I','ACTIVE')"
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, status, source_kind,
+                source_asset_id
+            ) VALUES ('a-old','i-old','u-old','A','READY','VIDEO','source')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_tasks (
+                id, owner_user_id, identity_id, avatar_id, mode, title, status,
+                estimated_cost_fen, idempotency_key, submission_state
+            ) VALUES ('t-old','u-old','i-old','a-old','AUDIO','T',?,1000,
+                      'old-idem','SUBMITTED')
+            """,
+            (legacy_status,),
+        )
+
+    with pytest.raises(RuntimeError, match="active legacy oral tasks"):
+        command.upgrade(config, "073_oral_durable_billing")
+    with connect_database(db_path) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "072_oral_clone_consent"
+        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(oral_tasks)")}
+        assert "billing_round" not in columns
+
+
+@pytest.mark.parametrize("legacy_status", ["SUCCEEDED", "FAILED", "CANCELLED"])
+def test_oral_durable_billing_upgrade_preserves_terminal_legacy_tasks(
+    tmp_path: Path,
+    legacy_status: str,
+) -> None:
+    db_path = tmp_path / f"oral-terminal-legacy-{legacy_status.lower()}.db"
+    config = alembic_config(db_path)
+    command.upgrade(config, "072_oral_clone_consent")
+    with connect_database(db_path) as conn:
+        conn.execute("INSERT INTO users (id, username, display_name) VALUES ('u-old','u-old','U')")
+        conn.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name, status) "
+            "VALUES ('i-old','u-old','I','ACTIVE')"
+        )
+        conn.execute(
+            "INSERT INTO oral_avatars "
+            "(id, identity_id, owner_user_id, title, status, source_kind, source_asset_id) "
+            "VALUES ('a-old','i-old','u-old','A','READY','VIDEO','source')"
+        )
+        conn.execute(
+            "INSERT INTO oral_tasks "
+            "(id, owner_user_id, identity_id, avatar_id, mode, title, status, "
+            "estimated_cost_fen, idempotency_key, submission_state) "
+            "VALUES ('t-old','u-old','i-old','a-old','AUDIO','T',?,1000,"
+            "'old-idem','SUBMITTED')",
+            (legacy_status,),
+        )
+
+    command.upgrade(config, "073_oral_durable_billing")
+    with connect_database(db_path) as conn:
+        row = conn.execute(
+            "SELECT status, billing_round FROM oral_tasks WHERE id = 't-old'"
+        ).fetchone()
+        assert (row["status"], row["billing_round"]) == (legacy_status, None)
+
+
+def test_script_rewrite_ip_snapshot_migration_downgrade_preserves_request_snapshot(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "script-rewrite-ip-downgrade.db"
+    config = alembic_config(db_path)
+    command.upgrade(config, "head")
+    with connect_database(db_path) as conn:
+        conn.execute("INSERT INTO users (id, username, display_name) VALUES ('u-ip','u-ip','U')")
+        conn.execute("INSERT INTO projects (id, owner_user_id, name) VALUES ('p-ip','u-ip','P')")
+        conn.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name, status) "
+            "VALUES ('i-ip','u-ip','I','ACTIVE')"
+        )
+        snapshot = '{"identity_id":"i-ip","profile_version":0}'
+        request_json = json.dumps(
+            {"text": "test", "identity_id": "i-ip", "ip_profile_snapshot": json.loads(snapshot)}
+        )
+        conn.execute(
+            """
+            INSERT INTO script_rewrite_tasks (
+                id, project_id, created_by_user_id, idempotency_key,
+                request_hash, request_json, identity_id,
+                ip_profile_snapshot_json, ip_profile_hash, status
+            ) VALUES ('t-ip','p-ip','u-ip','idem-ip','request-hash',?,'i-ip',
+                      ?, ?, 'FAILED')
+            """,
+            (request_json, snapshot, "0" * 64),
+        )
+
+    command.downgrade(config, "073_oral_durable_billing")
+    with connect_database(db_path) as conn:
+        row = conn.execute(
+            "SELECT request_json FROM script_rewrite_tasks WHERE id = 't-ip'"
+        ).fetchone()
+        assert json.loads(row["request_json"])["ip_profile_snapshot"] == json.loads(snapshot)
+        persona_columns = {
+            item[1] for item in conn.execute("PRAGMA table_info(character_personas)").fetchall()
+        }
+        assert "ip_profile_revision" not in persona_columns

@@ -11,7 +11,7 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository
 
-HEAD_REVISION = "073_oral_durable_billing"
+HEAD_REVISION = "074_script_rewrite_ip_profile_snapshot"
 
 
 def seed_subjects(conn: sqlite3.Connection) -> None:

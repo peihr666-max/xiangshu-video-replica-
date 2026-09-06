@@ -39,6 +39,7 @@ import {
   getHealth,
   getLatestGenerationPrompt,
   getLatestProjectFirstFrames,
+  getLatestScriptRewriteTask,
   getLatestScriptVersion,
   getSettings,
   hideMaterial,
@@ -1870,6 +1871,21 @@ describe("startVideoAnalysis", () => {
       identity_id: "identity-1",
       idempotency_key: expect.any(String),
     });
+  });
+
+  it("按人物或无人物作用域读取最新改写任务", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => null });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getLatestScriptRewriteTask("project-1", "identity 1");
+    await getLatestScriptRewriteTask("project-1");
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:8000/api/projects/project-1/script-rewrite-tasks/latest?identity_scope=identity&identity_id=identity+1",
+      "http://127.0.0.1:8000/api/projects/project-1/script-rewrite-tasks/latest?identity_scope=none",
+    ]);
   });
 
   it("enqueues H3 reconciliation and shares its durable recovery poller", async () => {

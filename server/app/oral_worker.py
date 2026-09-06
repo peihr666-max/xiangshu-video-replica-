@@ -14,8 +14,14 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 from app.db_portable import BusinessConnection
+from app.generation import (
+    ensure_user_queue_cursor,
+    lock_shared_generation_capacity,
+    read_runtime_limits,
+    shared_generation_capacity_available,
+)
 from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
-from app.internal_billing import finalize_oral_billing
+from app.internal_billing import finalize_oral_billing, release_oral_queue_slot
 from app.media import storage_key_from_uri
 from app.storage import StorageAdapter, StoredObject
 
@@ -38,6 +44,8 @@ class OralWorkLease:
     kind: OralWorkKind
     record_id: str
     worker_id: str
+    lease_token: str
+    attempt_count: int
     row: dict[str, Any]
 
 
@@ -69,29 +77,30 @@ def _claim_row(
     *,
     table: str,
     record_id: str,
-    worker_id: str,
+    lease_token: str,
     current_state_sql: str,
     current_state_params: tuple[object, ...],
     assignments: str,
     lease_expires_at: str,
-) -> bool:
-    cursor = conn.execute(
+) -> int | None:
+    row = conn.execute(
         f"""
         UPDATE {table}
         SET {assignments}, lease_owner = %s, lease_expires_at = %s,
             attempt_count = attempt_count + 1, updated_at = CURRENT_TIMESTAMP
         WHERE id = %s AND ({current_state_sql})
           AND (lease_expires_at IS NULL OR lease_expires_at <= %s)
+        RETURNING attempt_count
         """,  # noqa: S608 - table/assignments are fixed internal literals
         (
-            worker_id,
+            lease_token,
             lease_expires_at,
             record_id,
             *current_state_params,
             _iso(_now()),
         ),
-    )
-    return cursor.rowcount == 1
+    ).fetchone()
+    return None if row is None else int(row["attempt_count"])
 
 
 def _quarantine_expired_submissions(conn: BusinessConnection, now: str) -> None:
@@ -106,25 +115,108 @@ def _quarantine_expired_submissions(conn: BusinessConnection, now: str) -> None:
             """,  # noqa: S608 - fixed table names
             ("供应商提交结果未知，已停止自动重试", now),
         )
-    conn.execute(
+    uncertain_tasks = conn.execute(
         """
         UPDATE oral_tasks
         SET status = 'SUBMISSION_UNCERTAIN', submission_state = 'SUBMISSION_UNKNOWN',
+            provider_charge_state = 'UNKNOWN',
             lease_owner = NULL, lease_expires_at = NULL,
             error_message = %s, updated_at = CURRENT_TIMESTAMP
         WHERE status = 'SUBMITTING' AND lease_expires_at <= %s
+        RETURNING id
         """,
         ("供应商提交结果未知，已停止自动重试", now),
-    )
-    conn.execute(
+    ).fetchall()
+    for row in uncertain_tasks:
+        release_oral_queue_slot(conn, oral_task_id=str(row["id"]))
+    interrupted_archives = conn.execute(
         """
         UPDATE oral_tasks
         SET status = 'ARCHIVE_FAILED', lease_owner = NULL, lease_expires_at = NULL,
             next_attempt_at = NULL, error_message = %s, updated_at = CURRENT_TIMESTAMP
         WHERE status = 'ARCHIVING' AND lease_expires_at <= %s
+        RETURNING id
         """,
         ("成片归档中断，可安全重试归档", now),
+    ).fetchall()
+    for row in interrupted_archives:
+        release_oral_queue_slot(conn, oral_task_id=str(row["id"]))
+
+
+def _pg_oral_submit_candidate(
+    conn: BusinessConnection,
+    *,
+    now_text: str,
+) -> dict[str, Any] | None:
+    """Pick an idle user's oral task under the shared render hard limits.
+
+    This deliberately provides the safety gate only: it shares PostgreSQL's
+    per-user cursor slot and the cross-type concurrency ceiling, but full
+    round-robin ordering across generation and oral queues remains follow-up.
+    """
+    runtime = read_runtime_limits(conn)
+    if not shared_generation_capacity_available(
+        conn,
+        max_concurrent_tasks=runtime["max_concurrent_h3_tasks"],
+    ):
+        return None
+    conn.execute(
+        """
+        INSERT INTO user_queue_cursors (user_id, last_dispatched_at, running_tasks_count)
+        SELECT DISTINCT owner_user_id, now(), 0
+        FROM oral_tasks
+        WHERE status = 'QUEUED'
+        ON CONFLICT (user_id) DO NOTHING
+        """
     )
+    owner = conn.execute(
+        """
+        SELECT cursor.user_id
+        FROM user_queue_cursors AS cursor
+        WHERE cursor.running_tasks_count = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM oral_tasks AS active_oral
+              WHERE active_oral.owner_user_id = cursor.user_id
+                AND active_oral.status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM generation_tasks AS generation
+              JOIN generation_batches AS batch ON batch.id = generation.batch_id
+              WHERE batch.created_by_user_id = cursor.user_id
+                AND generation.status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+          )
+          AND EXISTS (
+              SELECT 1 FROM oral_tasks AS task
+              WHERE task.owner_user_id = cursor.user_id
+                AND task.status = 'QUEUED'
+                AND (task.next_attempt_at IS NULL OR task.next_attempt_at <= %s)
+                AND (task.lease_expires_at IS NULL OR task.lease_expires_at <= %s)
+          )
+        ORDER BY (
+            SELECT MIN(task.created_at) FROM oral_tasks AS task
+            WHERE task.owner_user_id = cursor.user_id AND task.status = 'QUEUED'
+        ), cursor.user_id
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+        """,
+        (now_text, now_text),
+    ).fetchone()
+    if owner is None:
+        return None
+    task = conn.execute(
+        """
+        SELECT * FROM oral_tasks
+        WHERE owner_user_id = %s AND status = 'QUEUED'
+          AND (next_attempt_at IS NULL OR next_attempt_at <= %s)
+          AND (lease_expires_at IS NULL OR lease_expires_at <= %s)
+        ORDER BY created_at, id
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+        """,
+        (str(owner["user_id"]), now_text, now_text),
+    ).fetchone()
+    return None if task is None else dict(task)
 
 
 def claim_oral_work(
@@ -138,21 +230,42 @@ def claim_oral_work(
     now_text = _iso(now)
     expires = _iso(now + timedelta(seconds=lease_seconds))
     with conn:
+        lock_shared_generation_capacity(conn)
         _quarantine_expired_submissions(conn, now_text)
+    # BusinessConnection's context manager and commit() are no-ops on the
+    # fenced PostgreSQL lane, but a worker owns its raw connection — the
+    # quarantine boundary must go through it so the capacity row lock is
+    # released before the claim critical section re-acquires it.
+    conn.raw.commit()
 
+    with conn:
         task = conn.execute(
             """
             SELECT * FROM oral_tasks
-            WHERE status IN ('ARCHIVING', 'RUNNING', 'QUEUED')
+            WHERE status IN ('ARCHIVING', 'RUNNING')
               AND (next_attempt_at IS NULL OR next_attempt_at <= %s)
               AND (lease_expires_at IS NULL OR lease_expires_at <= %s)
-            ORDER BY CASE status WHEN 'ARCHIVING' THEN 0 WHEN 'RUNNING' THEN 1 ELSE 2 END,
-                     created_at, id
+            ORDER BY CASE status WHEN 'ARCHIVING' THEN 0 ELSE 1 END, created_at, id
             LIMIT 1
             FOR UPDATE SKIP LOCKED
             """,
             (now_text, now_text),
         ).fetchone()
+        if task is None:
+            if conn.is_postgres:
+                task = _pg_oral_submit_candidate(conn, now_text=now_text)
+            else:
+                task = conn.execute(
+                    """
+                    SELECT * FROM oral_tasks
+                    WHERE status = 'QUEUED'
+                      AND (next_attempt_at IS NULL OR next_attempt_at <= %s)
+                      AND (lease_expires_at IS NULL OR lease_expires_at <= %s)
+                    ORDER BY created_at, id
+                    LIMIT 1
+                    """,
+                    (now_text, now_text),
+                ).fetchone()
         if task is not None:
             row = dict(task)
             status = str(row["status"])
@@ -165,22 +278,46 @@ def claim_oral_work(
                 }[status],
             )
             assignments = (
-                "status = 'SUBMITTING', submission_state = 'SUBMITTING'"
+                "status = 'SUBMITTING', submission_state = 'SUBMITTING', "
+                f"queue_slot_acquired = {1 if conn.is_postgres else 0}"
                 if status == "QUEUED"
                 else "status = status"
             )
-            if _claim_row(
+            lease_token = uuid4().hex
+            attempt_count = _claim_row(
                 conn,
                 table="oral_tasks",
                 record_id=str(row["id"]),
-                worker_id=worker_id,
+                lease_token=lease_token,
                 current_state_sql="status = %s",
                 current_state_params=(status,),
                 assignments=assignments,
                 lease_expires_at=expires,
-            ):
+            )
+            if attempt_count is not None:
+                if status == "QUEUED" and conn.is_postgres:
+                    slot = conn.execute(
+                        """
+                        UPDATE user_queue_cursors
+                        SET running_tasks_count = running_tasks_count + 1,
+                            last_dispatched_at = now()
+                        WHERE user_id = %s AND running_tasks_count = 0
+                        """,
+                        (str(row["owner_user_id"]),),
+                    )
+                    if slot.rowcount != 1:
+                        raise RuntimeError("oral user queue slot was lost")
                 row["status"] = "SUBMITTING" if status == "QUEUED" else status
-                return OralWorkLease(kind, str(row["id"]), worker_id, row)
+                row["attempt_count"] = attempt_count
+                row["lease_owner"] = lease_token
+                return OralWorkLease(
+                    kind=kind,
+                    record_id=str(row["id"]),
+                    worker_id=worker_id,
+                    lease_token=lease_token,
+                    attempt_count=attempt_count,
+                    row=row,
+                )
 
         for table, prefix in (("oral_avatars", "avatar"), ("oral_voices", "voice")):
             candidate = conn.execute(
@@ -204,11 +341,12 @@ def claim_oral_work(
             row = dict(candidate)
             submitting = str(row["submission_state"]) == "LOCAL_PENDING"
             kind = cast(OralWorkKind, f"{prefix}_{'submit' if submitting else 'poll'}")
-            if _claim_row(
+            lease_token = uuid4().hex
+            attempt_count = _claim_row(
                 conn,
                 table=table,
                 record_id=str(row["id"]),
-                worker_id=worker_id,
+                lease_token=lease_token,
                 current_state_sql="submission_state = %s AND status = %s",
                 current_state_params=(
                     str(row["submission_state"]),
@@ -220,11 +358,16 @@ def claim_oral_work(
                     else "submission_state = submission_state"
                 ),
                 lease_expires_at=expires,
-            ):
+            )
+            if attempt_count is not None:
+                row["attempt_count"] = attempt_count
+                row["lease_owner"] = lease_token
                 return OralWorkLease(
                     kind=kind,
                     record_id=str(row["id"]),
                     worker_id=worker_id,
+                    lease_token=lease_token,
+                    attempt_count=attempt_count,
                     row=row,
                 )
     return None
@@ -259,7 +402,8 @@ def perform_oral_work(
                 if not demo:
                     return OralWorkResult("waiting")
                 stored = storage.put_object(
-                    f"oral/voices/{lease.record_id}/demo.mp3",
+                    f"oral/voices/{lease.record_id}/attempt-{lease.attempt_count}-"
+                    f"{lease.lease_token}/demo.mp3",
                     demo,
                     content_type="audio/mpeg",
                 )
@@ -286,7 +430,8 @@ def perform_oral_work(
                 return OralWorkResult("failed", message="口播成片地址缺失")
             content = vendor.download(result_url)
             stored = storage.put_object(
-                f"oral/results/{lease.record_id}.mp4",
+                f"oral/results/{lease.record_id}/attempt-{lease.attempt_count}-"
+                f"{lease.lease_token}.mp4",
                 content,
                 content_type="video/mp4",
             )
@@ -299,7 +444,9 @@ def perform_oral_work(
         return OralWorkResult("waiting", message=str(exc)[:500])
     except Exception as exc:  # noqa: BLE001 - storage/provider boundary
         logger.warning(
-            "oral worker operation failed: kind=%s error=%s", lease.kind, type(exc).__name__
+            "oral worker operation failed: kind=%s error=%s",
+            lease.kind,
+            type(exc).__name__,
         )
         if lease.kind == "task_archive":
             return OralWorkResult("failed", message="口播成片归档失败")
@@ -358,39 +505,60 @@ def _perform_submission(
 
 def prepare_oral_work(conn: BusinessConnection, lease: OralWorkLease) -> OralWorkLease:
     """Load immutable provider/storage inputs before leaving the read transaction."""
-    row = dict(
-        conn.execute(
-            {
-                "avatar_submit": """
+    fetched = conn.execute(
+        {
+            "avatar_submit": """
                     SELECT clone.*, asset.storage_uri AS source_storage_uri
                     FROM oral_avatars AS clone
                     JOIN assets AS asset ON asset.id = clone.source_asset_id
-                    WHERE clone.id = %s
+                    WHERE clone.id = %s AND clone.lease_owner = %s
+                      AND clone.attempt_count = %s
                 """,
-                "voice_submit": """
+            "voice_submit": """
                     SELECT clone.*, asset.storage_uri AS source_storage_uri
                     FROM oral_voices AS clone
                     JOIN assets AS asset ON asset.id = clone.source_asset_id
-                    WHERE clone.id = %s
+                    WHERE clone.id = %s AND clone.lease_owner = %s
+                      AND clone.attempt_count = %s
                 """,
-                "task_submit": """
+            "task_submit": """
                     SELECT task.*, avatar.vendor_avatar_id, voice.vendor_voice_id,
                            asset.storage_uri AS audio_storage_uri
                     FROM oral_tasks AS task
                     JOIN oral_avatars AS avatar ON avatar.id = task.avatar_id
                     LEFT JOIN oral_voices AS voice ON voice.id = task.voice_id
                     LEFT JOIN assets AS asset ON asset.id = task.audio_asset_id
-                    WHERE task.id = %s
+                    WHERE task.id = %s AND task.lease_owner = %s
+                      AND task.attempt_count = %s
                 """,
-                "avatar_poll": "SELECT * FROM oral_avatars WHERE id = %s",
-                "voice_poll": "SELECT * FROM oral_voices WHERE id = %s",
-                "task_poll": "SELECT * FROM oral_tasks WHERE id = %s",
-                "task_archive": "SELECT * FROM oral_tasks WHERE id = %s",
-            }[lease.kind],
-            (lease.record_id,),
-        ).fetchone()
+            "avatar_poll": (
+                "SELECT * FROM oral_avatars WHERE id = %s AND lease_owner = %s "
+                "AND attempt_count = %s"
+            ),
+            "voice_poll": (
+                "SELECT * FROM oral_voices WHERE id = %s AND lease_owner = %s "
+                "AND attempt_count = %s"
+            ),
+            "task_poll": (
+                "SELECT * FROM oral_tasks WHERE id = %s AND lease_owner = %s AND attempt_count = %s"
+            ),
+            "task_archive": (
+                "SELECT * FROM oral_tasks WHERE id = %s AND lease_owner = %s AND attempt_count = %s"
+            ),
+        }[lease.kind],
+        (lease.record_id, lease.lease_token, lease.attempt_count),
+    ).fetchone()
+    if fetched is None:
+        raise OralLeaseLostError("oral work lease was lost before preparation")
+    row = dict(fetched)
+    return OralWorkLease(
+        kind=lease.kind,
+        record_id=lease.record_id,
+        worker_id=lease.worker_id,
+        lease_token=lease.lease_token,
+        attempt_count=lease.attempt_count,
+        row=row,
     )
-    return OralWorkLease(lease.kind, lease.record_id, lease.worker_id, row)
 
 
 def finalize_oral_work(
@@ -410,6 +578,8 @@ def finalize_oral_work(
     now = _now()
     retry_at = _iso(now + timedelta(seconds=15))
     with conn:
+        if table == "oral_tasks":
+            lock_shared_generation_capacity(conn)
         if lease.kind.endswith("submit"):
             if result.outcome == "submitted":
                 if table == "oral_tasks":
@@ -420,6 +590,7 @@ def finalize_oral_work(
                             next_attempt_at = %s, error_message = NULL,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = %s AND status = 'SUBMITTING' AND lease_owner = %s
+                          AND attempt_count = %s
                     """
                 else:
                     sql = f"""
@@ -428,10 +599,17 @@ def finalize_oral_work(
                             next_attempt_at = %s, error_message = NULL,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = %s AND submission_state = 'SUBMITTING' AND lease_owner = %s
+                          AND attempt_count = %s
                     """  # noqa: S608 - fixed table
                 cursor = conn.execute(
                     sql,
-                    (result.provider_task_id, retry_at, lease.record_id, lease.worker_id),
+                    (
+                        result.provider_task_id,
+                        retry_at,
+                        lease.record_id,
+                        lease.lease_token,
+                        lease.attempt_count,
+                    ),
                 )
             else:
                 uncertain = result.outcome == "uncertain"
@@ -446,6 +624,7 @@ def finalize_oral_work(
                             next_attempt_at = NULL, error_message = %s,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = %s AND status = 'SUBMITTING' AND lease_owner = %s
+                          AND attempt_count = %s
                         """,
                         (
                             status,
@@ -453,7 +632,8 @@ def finalize_oral_work(
                             "UNKNOWN" if uncertain else "NOT_CHARGED",
                             result.message,
                             lease.record_id,
-                            lease.worker_id,
+                            lease.lease_token,
+                            lease.attempt_count,
                         ),
                     )
                 else:
@@ -466,8 +646,16 @@ def finalize_oral_work(
                             next_attempt_at = NULL, error_message = %s,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = %s AND submission_state = 'SUBMITTING' AND lease_owner = %s
+                          AND attempt_count = %s
                         """,  # noqa: S608 - fixed table
-                        (status, submission, result.message, lease.record_id, lease.worker_id),
+                        (
+                            status,
+                            submission,
+                            result.message,
+                            lease.record_id,
+                            lease.lease_token,
+                            lease.attempt_count,
+                        ),
                     )
                 if cursor.rowcount == 1 and table == "oral_tasks" and not uncertain:
                     finalize_oral_billing(conn, oral_task_id=lease.record_id)
@@ -482,8 +670,9 @@ def finalize_oral_work(
                     UPDATE {table} SET lease_owner = NULL, lease_expires_at = NULL,
                         next_attempt_at = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s AND status = 'RUNNING' AND lease_owner = %s
+                      AND attempt_count = %s
                     """,  # noqa: S608
-                    (retry_at, lease.record_id, lease.worker_id),
+                    (retry_at, lease.record_id, lease.lease_token, lease.attempt_count),
                 )
             elif result.outcome == "failed":
                 cursor = conn.execute(
@@ -492,8 +681,14 @@ def finalize_oral_work(
                         lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
                         error_message = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s AND status = 'RUNNING' AND lease_owner = %s
+                      AND attempt_count = %s
                     """,  # noqa: S608
-                    (result.message, lease.record_id, lease.worker_id),
+                    (
+                        result.message,
+                        lease.record_id,
+                        lease.lease_token,
+                        lease.attempt_count,
+                    ),
                 )
             elif lease.kind == "avatar_poll":
                 cursor = conn.execute(
@@ -502,8 +697,14 @@ def finalize_oral_work(
                         lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
                         error_message = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s AND status = 'RUNNING' AND lease_owner = %s
+                      AND attempt_count = %s
                     """,
-                    (result.provider_resource_id, lease.record_id, lease.worker_id),
+                    (
+                        result.provider_resource_id,
+                        lease.record_id,
+                        lease.lease_token,
+                        lease.attempt_count,
+                    ),
                 )
             else:
                 if result.stored is None:
@@ -531,12 +732,14 @@ def finalize_oral_work(
                         next_attempt_at = NULL, error_message = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s AND status = 'RUNNING' AND lease_owner = %s
+                      AND attempt_count = %s
                     """,
                     (
                         result.provider_resource_id,
                         asset_id,
                         lease.record_id,
-                        lease.worker_id,
+                        lease.lease_token,
+                        lease.attempt_count,
                     ),
                 )
             if cursor.rowcount != 1:
@@ -552,13 +755,15 @@ def finalize_oral_work(
                         next_attempt_at = %s, error_message = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s AND status = 'RUNNING' AND lease_owner = %s
+                      AND attempt_count = %s
                     """,
                     (
                         result.provider_result_url,
                         result.duration_sec,
                         _iso(now),
                         lease.record_id,
-                        lease.worker_id,
+                        lease.lease_token,
+                        lease.attempt_count,
                     ),
                 )
             elif result.outcome == "failed":
@@ -568,11 +773,15 @@ def finalize_oral_work(
                         lease_expires_at = NULL, next_attempt_at = NULL, error_message = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s AND status = 'RUNNING' AND lease_owner = %s
+                      AND attempt_count = %s
                     """,
-                    (result.message, lease.record_id, lease.worker_id),
+                    (
+                        result.message,
+                        lease.record_id,
+                        lease.lease_token,
+                        lease.attempt_count,
+                    ),
                 )
-                if cursor.rowcount == 1:
-                    finalize_oral_billing(conn, oral_task_id=lease.record_id)
             else:
                 cursor = conn.execute(
                     """
@@ -580,11 +789,20 @@ def finalize_oral_work(
                         next_attempt_at = %s, error_message = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s AND status = 'RUNNING' AND lease_owner = %s
+                      AND attempt_count = %s
                     """,
-                    (retry_at, result.message, lease.record_id, lease.worker_id),
+                    (
+                        retry_at,
+                        result.message,
+                        lease.record_id,
+                        lease.lease_token,
+                        lease.attempt_count,
+                    ),
                 )
             if cursor.rowcount != 1:
                 raise OralLeaseLostError("oral poll lease was lost")
+            if result.outcome == "failed":
+                release_oral_queue_slot(conn, oral_task_id=lease.record_id)
             return
 
         if result.outcome == "ready" and result.stored is not None:
@@ -610,8 +828,9 @@ def finalize_oral_work(
                     lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
                     error_message = NULL, updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s AND status = 'ARCHIVING' AND lease_owner = %s
+                  AND attempt_count = %s
                 """,
-                (asset_id, lease.record_id, lease.worker_id),
+                (asset_id, lease.record_id, lease.lease_token, lease.attempt_count),
             )
             if cursor.rowcount == 1:
                 finalize_oral_billing(conn, oral_task_id=lease.record_id)
@@ -622,11 +841,34 @@ def finalize_oral_work(
                     lease_expires_at = NULL, next_attempt_at = NULL, error_message = %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s AND status = 'ARCHIVING' AND lease_owner = %s
+                  AND attempt_count = %s
                 """,
-                (result.message, lease.record_id, lease.worker_id),
+                (
+                    result.message,
+                    lease.record_id,
+                    lease.lease_token,
+                    lease.attempt_count,
+                ),
             )
         if cursor.rowcount != 1:
             raise OralLeaseLostError("oral archive lease was lost")
+        if result.outcome != "ready":
+            release_oral_queue_slot(conn, oral_task_id=lease.record_id)
+
+
+def discard_uncommitted_oral_asset(
+    storage: StorageAdapter,
+    *,
+    result: OralWorkResult,
+    actor_id: str | None,
+) -> None:
+    """Best-effort cleanup when a fenced finalize loses its database lease."""
+    if result.stored is None:
+        return
+    try:
+        storage.delete_object(result.stored.key, actor_id=actor_id)
+    except Exception:  # noqa: BLE001 - do not hide the original fencing failure
+        logger.warning("failed to clean up uncommitted oral worker asset")
 
 
 def request_oral_archive_retry(
@@ -636,17 +878,65 @@ def request_oral_archive_retry(
     owner_user_id: str,
 ) -> dict[str, Any]:
     with conn:
+        if conn.is_postgres:
+            runtime = read_runtime_limits(conn)
+            if not shared_generation_capacity_available(
+                conn,
+                max_concurrent_tasks=runtime["max_concurrent_h3_tasks"],
+            ):
+                raise ValueError("shared generation capacity is full")
+            ensure_user_queue_cursor(conn, user_id=owner_user_id)
+            cursor_row = conn.execute(
+                """
+                SELECT running_tasks_count FROM user_queue_cursors
+                WHERE user_id = %s
+                FOR UPDATE
+                """,
+                (owner_user_id,),
+            ).fetchone()
+            active_for_owner = conn.execute(
+                """
+                SELECT (
+                    SELECT COUNT(*) FROM oral_tasks
+                    WHERE owner_user_id = %s
+                      AND status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+                ) + (
+                    SELECT COUNT(*) FROM generation_tasks AS task
+                    JOIN generation_batches AS batch ON batch.id = task.batch_id
+                    WHERE batch.created_by_user_id = %s
+                      AND task.status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+                )
+                """,
+                (owner_user_id, owner_user_id),
+            ).fetchone()[0]
+            if cursor_row is None or int(cursor_row["running_tasks_count"]) != 0:
+                raise ValueError("owner queue slot is busy")
+            if int(active_for_owner) != 0:
+                raise ValueError("owner already has active generation work")
         cursor = conn.execute(
             """
             UPDATE oral_tasks SET status = 'ARCHIVING', next_attempt_at = %s,
-                error_message = NULL, updated_at = CURRENT_TIMESTAMP
+                queue_slot_acquired = %s, error_message = NULL,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = %s AND owner_user_id = %s AND status = 'ARCHIVE_FAILED'
               AND provider_result_url IS NOT NULL
             """,
-            (_iso(_now()), task_id, owner_user_id),
+            (_iso(_now()), 1 if conn.is_postgres else 0, task_id, owner_user_id),
         )
         if cursor.rowcount != 1:
             raise ValueError("only an archive-failed oral task with a result URL can retry")
+        if conn.is_postgres:
+            acquired = conn.execute(
+                """
+                UPDATE user_queue_cursors
+                SET running_tasks_count = running_tasks_count + 1,
+                    last_dispatched_at = now()
+                WHERE user_id = %s AND running_tasks_count = 0
+                """,
+                (owner_user_id,),
+            )
+            if acquired.rowcount != 1:
+                raise RuntimeError("oral archive retry queue slot was lost")
     row = conn.execute(
         "SELECT * FROM oral_tasks WHERE id = %s AND owner_user_id = %s",
         (task_id, owner_user_id),

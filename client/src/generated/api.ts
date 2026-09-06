@@ -707,6 +707,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/oral/consents": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Clone Consents */
+    get: operations["read_clone_consents_api_oral_consents_get"];
+    put?: never;
+    /** Create Clone Consent */
+    post: operations["create_clone_consent_api_oral_consents_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/oral/avatars": {
     parameters: {
       query?: never;
@@ -777,6 +795,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/oral/voices/{voice_id}/confirm": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Confirm Voice */
+    post: operations["confirm_voice_api_oral_voices__voice_id__confirm_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/oral/tasks": {
     parameters: {
       query?: never;
@@ -806,6 +841,74 @@ export interface paths {
     get: operations["read_oral_generation_task_api_oral_tasks__task_id__get"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/oral/tasks/{task_id}/refresh": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Refresh Oral Generation Task */
+    post: operations["refresh_oral_generation_task_api_oral_tasks__task_id__refresh_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/oral/tasks/{task_id}/archive-retry": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Retry Oral Archive */
+    post: operations["retry_oral_archive_api_oral_tasks__task_id__archive_retry_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/oral/tasks/{task_id}/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Cancel Oral Generation Task */
+    post: operations["cancel_oral_generation_task_api_oral_tasks__task_id__cancel_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/oral/tasks/{task_id}/billing-reconcile": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Reconcile Oral Generation Billing */
+    post: operations["reconcile_oral_generation_billing_api_oral_tasks__task_id__billing_reconcile_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2890,6 +2993,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/viral/videos/statistics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Fetch Viral Video Statistics */
+    post: operations["fetch_viral_video_statistics_api_viral_videos_statistics_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/viral/videos/media": {
     parameters: {
       query?: never;
@@ -2919,7 +3039,7 @@ export interface paths {
      * @description 自有存储的长期封面副本（源站签名链接会过期）.
      *
      *     无需登录：封面本身是公开内容，对象 key 由路由参数确定性派生，
-     *     不接受任意 key。视频 id 仅允许字母数字与连字符/下划线。
+     *     不接受任意 key。视频号 ID 是可含斜杠的 opaque ID，必须与库中记录精确匹配。
      */
     get: operations["get_viral_cover_api_viral_covers__platform___video_id__get"];
     put?: never;
@@ -4181,6 +4301,10 @@ export interface components {
        * @enum {string}
        */
       source_kind: "VIDEO" | "IMAGE";
+      /** Consent Id */
+      consent_id: string;
+      /** Idempotency Key */
+      idempotency_key: string;
     };
     /** BatchCreateRequest */
     BatchCreateRequest: {
@@ -5073,7 +5197,8 @@ export interface components {
       available_balance_after: number | null;
       /** Reserved Balance After */
       reserved_balance_after: number | null;
-    };
+      /** Oral Task Id */
+      oral_task_id?: string | null;    };
     /** ControlWalletTransactionPage */
     ControlWalletTransactionPage: {
       /** Items */
@@ -6013,6 +6138,40 @@ export interface components {
       /** Expires At */
       expires_at: string;
     };
+    /** OralBillingReconcileRequest */
+    OralBillingReconcileRequest: {
+      /**
+       * Provider Outcome
+       * @enum {string}
+       */
+      provider_outcome: "SUCCEEDED" | "FAILED" | "CANCELLED" | "NOT_FOUND";
+      /**
+       * Provider Charge State
+       * @enum {string}
+       */
+      provider_charge_state: "CHARGED" | "NOT_CHARGED";
+      /**
+       * Resolution
+       * @enum {string}
+       */
+      resolution: "SETTLE" | "RELEASE";
+      /** Evidence Sha256 */
+      evidence_sha256: string;
+      /** Reason */
+      reason: string;
+    };
+    /** OralConsentRequest */
+    OralConsentRequest: {
+      /** Identity Id */
+      identity_id: string;
+      /** Source Asset Id */
+      source_asset_id: string;
+      /**
+       * Purpose
+       * @enum {string}
+       */
+      purpose: "AVATAR" | "VOICE" | "AVATAR_CLONE" | "VOICE_CLONE";
+    };
     /** OralTaskRequest */
     OralTaskRequest: {
       /** Identity Id */
@@ -6729,6 +6888,21 @@ export interface components {
       /** Shot Card Version Id */
       shot_card_version_id: string;
     };
+    /** ScriptRewriteIpProfileSummary */
+    ScriptRewriteIpProfileSummary: {
+      /** Display Name */
+      display_name: string;
+      /** Role */
+      role: string;
+      /** Service Scope */
+      service_scope: string;
+      /** Target Audience */
+      target_audience: string;
+      /** Expression Style */
+      expression_style: string;
+      /** Profile Version */
+      profile_version: number;
+    };
     /**
      * ScriptRewriteRequest
      * @description ``POST /script-rewrite`` 请求体：待改写的原口播稿全文。
@@ -6736,6 +6910,8 @@ export interface components {
     ScriptRewriteRequest: {
       /** Text */
       text: string;
+      /** Identity Id */
+      identity_id?: string | null;
       /** Idempotency Key */
       idempotency_key?: string | null;
     };
@@ -6757,6 +6933,13 @@ export interface components {
       id: string;
       /** Project Id */
       project_id: string;
+      /** Identity Id */
+      identity_id: string | null;
+      /** Ip Profile Hash */
+      ip_profile_hash: string | null;
+      ip_profile_snapshot:
+        | components["schemas"]["ScriptRewriteIpProfileSummary"]
+        | null;
       /** Status */
       status: string;
       /** Attempt */
@@ -7357,7 +7540,18 @@ export interface components {
       /** Items */
       items: components["schemas"]["ViralVideoItem"][];
       /** Fetchedat */
-      fetchedAt: string;
+      fetchedAt: string | null;
+      /**
+       * Source
+       * @default database
+       * @constant
+       */
+      source: "database";
+      /**
+       * Stale
+       * @default false
+       */
+      stale: boolean;
     };
     /** ViralMediaRequest */
     ViralMediaRequest: {
@@ -7378,6 +7572,17 @@ export interface components {
       contentType: string;
       /** Cachehit */
       cacheHit: boolean;
+      video?: components["schemas"]["ViralVideoItem"] | null;
+    };
+    /** ViralStatisticsRequest */
+    ViralStatisticsRequest: {
+      /** Videoids */
+      videoIds: string[];
+    };
+    /** ViralStatisticsResponse */
+    ViralStatisticsResponse: {
+      /** Items */
+      items: components["schemas"]["ViralVideoItem"][];
     };
     /** ViralVideoItem */
     ViralVideoItem: {
@@ -7432,6 +7637,10 @@ export interface components {
       title: string;
       /** Source Asset Id */
       source_asset_id: string;
+      /** Consent Id */
+      consent_id: string;
+      /** Idempotency Key */
+      idempotency_key: string;
     };
     /** WalletResponse */
     WalletResponse: {
@@ -7480,6 +7689,8 @@ export interface components {
       billing_round: number | null;
       /** Created At */
       created_at: string;
+      /** Oral Task Id */
+      oral_task_id?: string | null;
     };
     /** ZPaySettingsUpdate */
     ZPaySettingsUpdate: {
@@ -7615,7 +7826,10 @@ export interface operations {
   };
   read_latest_script_rewrite_task_api_projects__project_id__script_rewrite_tasks_latest_get: {
     parameters: {
-      query?: never;
+      query?: {
+        identity_scope?: "all" | "identity" | "none";
+        identity_id?: string | null;
+      };
       header?: {
         "X-Dev-User-Id"?: string | null;
         Authorization?: string | null;
@@ -9123,6 +9337,77 @@ export interface operations {
       };
     };
   };
+  read_clone_consents_api_oral_consents_get: {
+    parameters: {
+      query: {
+        identity_id: string;
+      };
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          }[];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_clone_consent_api_oral_consents_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OralConsentRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   list_oral_avatars_api_oral_avatars_get: {
     parameters: {
       query: {
@@ -9337,6 +9622,39 @@ export interface operations {
       };
     };
   };
+  confirm_voice_api_oral_voices__voice_id__confirm_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        voice_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   list_oral_generation_tasks_api_oral_tasks_get: {
     parameters: {
       query?: {
@@ -9387,7 +9705,7 @@ export interface operations {
     };
     responses: {
       /** @description Successful Response */
-      201: {
+      202: {
         headers: {
           [name: string]: unknown;
         };
@@ -9421,6 +9739,145 @@ export interface operations {
       cookie?: never;
     };
     requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  refresh_oral_generation_task_api_oral_tasks__task_id__refresh_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  retry_oral_archive_api_oral_tasks__task_id__archive_retry_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  cancel_oral_generation_task_api_oral_tasks__task_id__cancel_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  reconcile_oral_generation_billing_api_oral_tasks__task_id__billing_reconcile_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OralBillingReconcileRequest"];
+      };
+    };
     responses: {
       /** @description Successful Response */
       200: {
@@ -13260,6 +13717,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ViralListResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  fetch_viral_video_statistics_api_viral_videos_statistics_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ViralStatisticsRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ViralStatisticsResponse"];
         };
       };
       /** @description Validation Error */
