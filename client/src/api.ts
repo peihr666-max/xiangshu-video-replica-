@@ -1554,6 +1554,16 @@ export async function reconcileUncertainTask(
   );
 }
 
+/** 取消仍在排队的生成批次：服务端只允许任务尚未被 worker 认领时取消，
+ * 取消成功后预扣积分按 RELEASE 归还。 */
+export async function cancelGenerationBatch(batchId: string): Promise<void> {
+  await requestApiJson<unknown>(
+    `/api/generation-batches/${encodeURIComponent(batchId)}/cancel`,
+    "取消任务失败",
+    { method: "POST" },
+  );
+}
+
 const generationReconcileWaiters = new Map<
   string,
   Promise<GenerationReconcileOperation>

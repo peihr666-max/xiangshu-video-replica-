@@ -757,6 +757,7 @@ class BatchResult(BaseModel):
     source_batch_id: str | None = None
     source_task_id: str | None = None
     generation_reason: str | None = None
+    creation_kind: str = "replica"
     progress: BatchProgress
     tasks: list[TaskResult]
 
@@ -784,6 +785,7 @@ class GenerationBatchListItem(BaseModel):
     source_batch_id: str | None = None
     source_task_id: str | None = None
     generation_reason: str | None = None
+    creation_kind: str = "replica"
     progress: BatchProgress
     total_estimated_cost: float | None
     total_actual_cost: float | None
@@ -1756,9 +1758,10 @@ def create_generation_batch(
                 idempotency_key,
                 request_hash,
                 request_snapshot_json,
+                creation_kind,
                 status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 batch_id,
@@ -1767,6 +1770,9 @@ def create_generation_batch(
                 request.idempotency_key,
                 request_hash,
                 json.dumps(request_snapshot, ensure_ascii=True, sort_keys=True),
+                # 当前唯一的创建通道是项目复刻流；独立创作/人物置换接入时
+                # 在各自的创建路径写入自己的通道值（I13 类型保真）。
+                "replica",
                 "QUEUED",
             ),
         )
@@ -5198,7 +5204,8 @@ def list_generation_batches(
             batch.display_name,
             batch.source_batch_id,
             batch.source_task_id,
-            batch.generation_reason
+            batch.generation_reason,
+            batch.creation_kind
         FROM generation_batches AS batch
         JOIN projects AS project ON project.id = batch.project_id
         JOIN users AS creator ON creator.id = batch.created_by_user_id
@@ -5273,6 +5280,7 @@ def list_generation_batches(
                 source_batch_id=optional_text(row["source_batch_id"]),
                 source_task_id=optional_text(row["source_task_id"]),
                 generation_reason=optional_text(row["generation_reason"]),
+                creation_kind=str(row["creation_kind"]),
                 progress=progress,
                 total_estimated_cost=optional_cost_total([task.estimated_cost for task in tasks]),
                 total_actual_cost=optional_cost_total([task.actual_cost for task in tasks]),
@@ -5368,7 +5376,7 @@ def get_generation_batch(
     batch = conn.execute(
         """
         SELECT id, project_id, request_snapshot_json, status, display_name,
-               source_batch_id, source_task_id, generation_reason
+               source_batch_id, source_task_id, generation_reason, creation_kind
         FROM generation_batches
         WHERE id = %s
         """,
@@ -5462,6 +5470,7 @@ def get_generation_batch(
         source_batch_id=optional_text(batch["source_batch_id"]),
         source_task_id=optional_text(batch["source_task_id"]),
         generation_reason=optional_text(batch["generation_reason"]),
+        creation_kind=str(batch["creation_kind"]),
         progress=progress,
         tasks=tasks,
     )
@@ -5522,6 +5531,118 @@ def rename_generation_batch(
             "to_name": clean_name,
         },
     )
+    return get_generation_batch(conn, batch_id=batch_id, actor=actor)
+
+
+def cancel_generation_batch(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    batch_id: str,
+) -> BatchResult:
+    """Cancel a QUEUED batch before any task leaves PENDING.
+
+    只有还在排队的批次可以取消：任何一个任务一旦被 worker 认领
+    （SUBMITTING）就可能已经产生付费提交，取消窗口即关闭。取消在
+    BEGIN IMMEDIATE 事务里把批次与任务一起置 CANCELLED，并对每个
+    任务走 internal-billing RELEASE 归还预扣积分（与 worker 终态写
+    共用同一套账务收口）。
+    """
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="generation_batch.cancel",
+        entity_type="generation_batch",
+        entity_id=batch_id,
+    )
+    batch = conn.execute(
+        """
+        SELECT id, project_id, created_by_user_id, status
+        FROM generation_batches
+        WHERE id = %s
+        """,
+        (batch_id,),
+    ).fetchone()
+    if batch is None:
+        raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
+    if actor.role != "admin" and str(batch["created_by_user_id"]) != actor.id:
+        raise generation_error(
+            404,
+            "BATCH_NOT_FOUND",
+            "Generation batch does not exist.",
+        )
+    require_project_access(
+        conn,
+        actor=actor,
+        project_id=str(batch["project_id"]),
+        action="generation_batch.cancel",
+    )
+    if str(batch["status"]) in TERMINAL_STATUSES:
+        raise generation_error(
+            409,
+            "BATCH_ALREADY_TERMINAL",
+            "This batch is already finished and cannot be cancelled.",
+        )
+    if str(batch["status"]) != "QUEUED":
+        raise generation_error(
+            409,
+            "BATCH_NOT_CANCELLABLE",
+            "Only queued batches can be cancelled.",
+        )
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        task_rows = conn.execute(
+            """
+            SELECT id, status FROM generation_tasks
+            WHERE batch_id = %s
+            """,
+            (batch_id,),
+        ).fetchall()
+        non_pending = [str(row["id"]) for row in task_rows if str(row["status"]) != "PENDING"]
+        if non_pending:
+            conn.rollback()
+            raise generation_error(
+                409,
+                "BATCH_ALREADY_ACTIVE",
+                "A task in this batch is already being submitted or generated.",
+            )
+        conn.execute(
+            """
+            UPDATE generation_batches
+            SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND status = 'QUEUED'
+            """,
+            (batch_id,),
+        )
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
+            WHERE batch_id = %s AND status = 'PENDING'
+            """,
+            (batch_id,),
+        )
+        for row in task_rows:
+            finalize_internal_billing(conn, task_id=str(row["id"]), outcome="failed")
+        write_audit(
+            conn,
+            actor=actor,
+            action="generation_batch.cancel",
+            entity_type="generation_batch",
+            entity_id=batch_id,
+            metadata={
+                "project_id": str(batch["project_id"]),
+                "cancelled_task_count": len(task_rows),
+            },
+            commit=False,
+        )
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
     return get_generation_batch(conn, batch_id=batch_id, actor=actor)
 
 
@@ -6129,6 +6250,10 @@ def batch_status(stored_status: str, progress: BatchProgress) -> str:
         # optional quality checks no longer change a completed video's status.
         if progress.counts["needs_attention"]:
             return "NEEDS_ATTENTION"
+        # A batch the user cancelled before any paid submission keeps its own
+        # identity: it is not a failure and must not look like 待处理 work.
+        if progress.counts["cancelled"] == progress.total_count:
+            return "CANCELLED"
         if (
             progress.counts["failed"]
             or progress.counts["cancelled"]

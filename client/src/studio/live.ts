@@ -1,5 +1,6 @@
 import {
   type CurrentUser,
+  cancelGenerationBatch,
   completeVideoUpload,
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
@@ -282,13 +283,22 @@ function studioTaskStatus(
   return "running";
 }
 
+/** 批次创作通道 → 任务中心类型页签文案（I13 类型保真）。
+ * 服务端 058 起在 generation_batches.creation_kind 记录创建通道；
+ * 未知通道回退到"视频生成"保持旧数据可见。 */
+const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
+  replica: "视频复刻",
+  independent: "视频生成",
+  replacement: "人物置换",
+};
+
 function studioTask(batch: GenerationBatchListItem): StudioTask {
   return {
     id: batch.id,
     batchId: batch.id,
     projectId: batch.project_id,
     title: batch.display_name?.trim() || batch.project_name || batch.id,
-    type: "视频生成",
+    type: CREATION_KIND_LABELS[batch.creation_kind] ?? "视频生成",
     status: studioTaskStatus(batch),
     progress: batch.progress.progress_percent,
     submitted: batch.created_at,
@@ -296,6 +306,12 @@ function studioTask(batch: GenerationBatchListItem): StudioTask {
       batch.tasks.find((task) => task.result_asset_id)?.result_asset_id ??
       undefined,
   };
+}
+
+/** 任务中心"取消任务"：仅服务端判定为仍可取消（全部任务未认领）的
+ * 排队批次会成功，其余状态返回明确错误由调用方提示。 */
+export async function cancelStudioTask(task: StudioTask): Promise<void> {
+  await cancelGenerationBatch(task.batchId || task.id);
 }
 
 async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {

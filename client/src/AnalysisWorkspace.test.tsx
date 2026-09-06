@@ -311,6 +311,7 @@ vi.mock("./GenerationComposer", () => ({
             status: "QUEUED",
             quantity: 1,
             stale: false,
+            creation_kind: "replica",
             progress: {
               total_count: 1,
               terminal_count: 0,
@@ -1862,6 +1863,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       status: "QUEUED",
       quantity: 1,
       stale: false,
+      creation_kind: "replica",
       progress: {
         total_count: 1,
         terminal_count: 0,
@@ -2060,6 +2062,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       status: "QUEUED",
       quantity: 1,
       stale: false,
+      creation_kind: "replica",
       progress: {
         total_count: 1,
         terminal_count: 0,
@@ -2349,6 +2352,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       status: "QUEUED",
       quantity: 1,
       stale: false,
+      creation_kind: "replica",
       progress: {
         total_count: 1,
         terminal_count: 0,
@@ -2622,6 +2626,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       status: "QUEUED",
       quantity: 3,
       stale: false,
+      creation_kind: "replica",
       progress: {
         total_count: 3,
         terminal_count: 0,
@@ -2679,6 +2684,7 @@ describe("AnalysisWorkspace workflow gates", () => {
         status: "QUEUED",
         quantity: 1,
         stale: false,
+        creation_kind: "replica",
         progress: {
           total_count: 1,
           terminal_count: 0,

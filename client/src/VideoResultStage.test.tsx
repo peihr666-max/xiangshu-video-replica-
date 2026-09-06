@@ -50,6 +50,7 @@ function batch(overrides: Partial<GenerationBatch> = {}): GenerationBatch {
     status: "NEEDS_ATTENTION",
     quantity: 2,
     stale: false,
+    creation_kind: "replica",
     progress: {
       total_count: 2,
       terminal_count: 2,

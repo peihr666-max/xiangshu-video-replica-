@@ -24,11 +24,13 @@ const api = vi.hoisted(() => ({
   listProjects: vi.fn(),
   listSimpleCharacterLibrary: vi.fn(),
   readAnalysisPayload: vi.fn(),
+  cancelGenerationBatch: vi.fn(),
 }));
 
 vi.mock("../api", () => api);
 
 import {
+  cancelStudioTask,
   loadPersonAssets,
   loadProjectDraft,
   loadStudioData,
@@ -81,6 +83,7 @@ const batchPage = {
       created_at: "2026-09-05T09:30:00+08:00",
       updated_at: "2026-09-05T09:31:00+08:00",
       display_name: "庭院镜头生成",
+      creation_kind: "replica",
       progress: {
         total_count: 2,
         terminal_count: 0,
@@ -143,6 +146,7 @@ function generationBatch(
     status: "SUCCEEDED",
     quantity: tasks.length,
     stale: false,
+    creation_kind: "replica",
     progress: {
       total_count: tasks.length,
       terminal_count: tasks.length,
@@ -388,7 +392,7 @@ describe("真实 Studio 只读适配器", () => {
         progress: 37,
         status: "running",
         title: "庭院镜头生成",
-        type: "视频生成",
+        type: "视频复刻",
       }),
     ]);
     expect(data.stats).toBeNull();
@@ -578,5 +582,50 @@ describe("真实 Studio 只读适配器", () => {
       expect.objectContaining({ id: "scene-front", url: undefined }),
     ]);
     expect(result.errors).toEqual(["读取场景图片“庭院讲解”失败：sign failed"]);
+  });
+});
+
+describe("批次类型映射与取消", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    api.listProjects.mockResolvedValue([]);
+    api.listSimpleCharacterLibrary.mockResolvedValue([]);
+    api.listOralTasks.mockResolvedValue([]);
+    api.getStudioStats.mockResolvedValue(null);
+  });
+
+  it("类型按 creation_kind 映射，未知通道回退视频生成", async () => {
+    api.listGenerationBatches.mockResolvedValue({
+      next_cursor: null,
+      items: [
+        { ...batchPage.items[0], creation_kind: "replica" },
+        {
+          ...batchPage.items[0],
+          id: "batch-future",
+          display_name: "未知通道批次",
+          creation_kind: "future_kind",
+        },
+      ],
+    });
+
+    const data = await loadStudioData(user);
+
+    expect(data.tasks.map((task) => task.type)).toEqual([
+      "视频复刻",
+      "视频生成",
+    ]);
+  });
+
+  it("取消排队批次调用服务端取消接口", async () => {
+    api.cancelGenerationBatch.mockResolvedValue(undefined);
+    await cancelStudioTask({
+      id: "batch-1",
+      batchId: "batch-1",
+      title: "排队批次",
+      type: "视频复刻",
+      status: "queued",
+      submitted: "2026-09-06T09:32:00",
+    });
+    expect(api.cancelGenerationBatch).toHaveBeenCalledWith("batch-1");
   });
 });

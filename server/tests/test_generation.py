@@ -6237,3 +6237,148 @@ def test_paid_regeneration_rejects_legacy_payment_confirmation_fields(
     )
 
     assert response.status_code == 422
+
+
+def _create_queued_generation_batch(
+    client: TestClient,
+    *,
+    idempotency_key: str,
+    quantity: int = 1,
+) -> dict[str, Any]:
+    prompt_id = create_locked_prompt(client)
+    response = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": quantity,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": idempotency_key,
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_cancel_queued_batch_cancels_tasks_and_releases_credits(
+    db_path: Path, client: TestClient
+) -> None:
+    batch = _create_queued_generation_batch(client, idempotency_key="cancel-queued")
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        reserved = conn.execute(
+            """
+            SELECT available_credits, reserved_credits
+            FROM wallets WHERE user_id = 'employee_1'
+            """
+        ).fetchone()
+        assert tuple(reserved) == (999, 1)
+
+    response = client.post(
+        f"/api/generation-batches/{batch['id']}/cancel",
+        headers=auth_headers("employee_1"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "CANCELLED"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        task_rows = conn.execute(
+            "SELECT status FROM generation_tasks WHERE batch_id = ?",
+            (batch["id"],),
+        ).fetchall()
+        assert all(str(row["status"]) == "CANCELLED" for row in task_rows)
+        stored = conn.execute(
+            "SELECT status FROM generation_batches WHERE id = ?",
+            (batch["id"],),
+        ).fetchone()
+        assert str(stored["status"]) == "CANCELLED"
+        wallet = conn.execute(
+            """
+            SELECT available_credits, reserved_credits
+            FROM wallets WHERE user_id = 'employee_1'
+            """
+        ).fetchone()
+        assert tuple(wallet) == (1000, 0)
+        audited = conn.execute(
+            """
+            SELECT 1 FROM audit_logs
+            WHERE action = 'generation_batch.cancel' AND entity_id = ?
+            """,
+            (batch["id"],),
+        ).fetchone()
+        assert audited is not None
+
+    listed = client.get(
+        "/api/generation-batches", headers=auth_headers("employee_1")
+    )
+    assert listed.status_code == 200
+    statuses = [item["status"] for item in listed.json()["items"]]
+    assert "CANCELLED" in statuses
+
+
+def test_cancel_batch_rejects_once_a_task_left_pending(
+    db_path: Path, client: TestClient
+) -> None:
+    batch = _create_queued_generation_batch(client, idempotency_key="cancel-active")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE generation_tasks SET status = 'SUBMITTING' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+
+    response = client.post(
+        f"/api/generation-batches/{batch['id']}/cancel",
+        headers=auth_headers("employee_1"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "BATCH_ALREADY_ACTIVE"
+
+
+def test_cancel_batch_is_idempotent_on_terminal_state(
+    db_path: Path, client: TestClient
+) -> None:
+    batch = _create_queued_generation_batch(client, idempotency_key="cancel-twice")
+    first = client.post(
+        f"/api/generation-batches/{batch['id']}/cancel",
+        headers=auth_headers("employee_1"),
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        f"/api/generation-batches/{batch['id']}/cancel",
+        headers=auth_headers("employee_1"),
+    )
+
+    assert second.status_code == 409
+    assert second.json()["detail"]["code"] == "BATCH_ALREADY_TERMINAL"
+
+
+def test_cancel_batch_requires_owner_or_admin(
+    db_path: Path, client: TestClient
+) -> None:
+    batch = _create_queued_generation_batch(client, idempotency_key="cancel-owner")
+
+    response = client.post(
+        f"/api/generation-batches/{batch['id']}/cancel",
+        headers=auth_headers("employee_2"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "BATCH_NOT_FOUND"
+
+
+def test_batch_list_carries_creation_kind(
+    db_path: Path, client: TestClient
+) -> None:
+    _create_queued_generation_batch(client, idempotency_key="creation-kind")
+
+    listed = client.get(
+        "/api/generation-batches", headers=auth_headers("employee_1")
+    )
+
+    assert listed.status_code == 200
+    kinds = [item["creation_kind"] for item in listed.json()["items"]]
+    assert kinds == ["replica"]

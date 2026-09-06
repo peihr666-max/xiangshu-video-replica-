@@ -33,6 +33,7 @@ from app.generation import (
     TaskResult,
     VersionResult,
     VersionState,
+    cancel_generation_batch,
     compile_prompt_version,
     confirm_generation_task_not_charged,
     create_generation_batch,
@@ -342,6 +343,15 @@ def read_generation_batch(
     actor: AuthenticatedUser,
 ) -> BatchResult:
     return get_generation_batch(conn, batch_id=batch_id, actor=actor)
+
+
+@router.post("/generation-batches/{batch_id}/cancel", response_model=BatchResult)
+def cancel_generation_batch_record(
+    batch_id: str,
+    db: BusinessDbDep,
+) -> BatchResult:
+    with db.write() as (conn, actor):
+        return cancel_generation_batch(conn, actor=actor, batch_id=batch_id)
 
 
 @router.patch("/generation-batches/{batch_id}/name", response_model=BatchResult)

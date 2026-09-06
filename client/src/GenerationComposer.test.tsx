@@ -364,6 +364,7 @@ describe("GenerationComposer", () => {
       status: "QUEUED",
       quantity: 4,
       stale: false,
+      creation_kind: "replica",
       progress: {
         total_count: 4,
         terminal_count: 0,
@@ -799,6 +800,7 @@ describe("GenerationComposer", () => {
         status: "QUEUED",
         quantity: 1,
         stale: false,
+        creation_kind: "replica",
         progress: {
           total_count: 1,
           terminal_count: 0,
@@ -864,6 +866,7 @@ describe("GenerationComposer", () => {
       status: "QUEUED",
       quantity: 1,
       stale: false,
+      creation_kind: "replica",
       progress: {
         total_count: 1,
         terminal_count: 0,
@@ -1087,6 +1090,7 @@ describe("GenerationComposer", () => {
         status: "QUEUED",
         quantity: 1,
         stale: false,
+        creation_kind: "replica",
         progress: {
           total_count: 1,
           terminal_count: 0,
@@ -1169,6 +1173,7 @@ describe("GenerationComposer", () => {
         status: "QUEUED",
         quantity: 1,
         stale: false,
+        creation_kind: "replica",
         progress: {
           total_count: 1,
           terminal_count: 0,
@@ -1216,6 +1221,7 @@ describe("GenerationComposer", () => {
       status: "QUEUED",
       quantity: 1,
       stale: false,
+      creation_kind: "replica",
       progress: {
         total_count: 1,
         terminal_count: 0,

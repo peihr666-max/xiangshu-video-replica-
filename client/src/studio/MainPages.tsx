@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useStudio } from "./context";
-import { loadTaskPreview, uploadWorkbenchSourceVideo } from "./live";
+import {
+  cancelStudioTask,
+  loadTaskPreview,
+  uploadWorkbenchSourceVideo,
+} from "./live";
 import { draftFromTask } from "./state";
 import type { StudioTask } from "./types";
 import {
@@ -449,9 +453,10 @@ export function WorkbenchPage() {
 }
 
 export function TasksPage() {
-  const { data, navigate, openLive, review } = useStudio();
+  const { data, navigate, openLive, review, notify, refresh } = useStudio();
   const [status, setStatus] = useState("all");
   const [kind, setKind] = useState("全部");
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const tasks = data.tasks.filter(
     (task) =>
       (kind === "全部" || kind === task.type) &&
@@ -468,6 +473,26 @@ export function TasksPage() {
   const attentionCount = data.tasks.filter((task) =>
     ["failed", "uncertain"].includes(task.status),
   ).length;
+  const cancelTask = async (task: StudioTask) => {
+    if (review) {
+      notify("审核示例不执行真实取消。");
+      return;
+    }
+    setCancellingId(task.id);
+    try {
+      await cancelStudioTask(task);
+      notify("任务已取消，预扣积分已退回。");
+      refresh();
+    } catch (error) {
+      notify(
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "取消失败，请重试。",
+      );
+    } finally {
+      setCancellingId(null);
+    }
+  };
   return (
     <section className="studio-tasks-page">
       <h1>任务中心</h1>
@@ -527,14 +552,24 @@ export function TasksPage() {
                 </td>
                 <td>{formatTaskTime(task.submitted)}</td>
                 <td>
-                  <Button
-                    variant="quiet"
-                    onClick={() =>
-                      navigate("task-detail", { selectedTaskId: task.id })
-                    }
-                  >
-                    {task.status === "completed" ? "查看结果" : "查看详情"}
-                  </Button>
+                  {task.status === "queued" ? (
+                    <Button
+                      variant="quiet"
+                      disabled={cancellingId === task.id}
+                      onClick={() => void cancelTask(task)}
+                    >
+                      {cancellingId === task.id ? "取消中…" : "取消任务"}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="quiet"
+                      onClick={() =>
+                        navigate("task-detail", { selectedTaskId: task.id })
+                      }
+                    >
+                      {task.status === "completed" ? "查看结果" : "查看详情"}
+                    </Button>
+                  )}
                 </td>
               </tr>
             ))}

@@ -8,16 +8,24 @@ import type {
   StudioTask,
 } from "./types";
 
-const { useStudio, loadTaskPreview, uploadWorkbenchSourceVideo } = vi.hoisted(
-  () => ({
-    useStudio: vi.fn<() => StudioContextValue>(),
-    loadTaskPreview: vi.fn(),
-    uploadWorkbenchSourceVideo: vi.fn(),
-  }),
-);
+const {
+  useStudio,
+  loadTaskPreview,
+  uploadWorkbenchSourceVideo,
+  cancelStudioTask,
+} = vi.hoisted(() => ({
+  useStudio: vi.fn<() => StudioContextValue>(),
+  loadTaskPreview: vi.fn(),
+  uploadWorkbenchSourceVideo: vi.fn(),
+  cancelStudioTask: vi.fn(),
+}));
 
 vi.mock("./context", () => ({ useStudio }));
-vi.mock("./live", () => ({ loadTaskPreview, uploadWorkbenchSourceVideo }));
+vi.mock("./live", () => ({
+  loadTaskPreview,
+  uploadWorkbenchSourceVideo,
+  cancelStudioTask,
+}));
 
 import { TaskDetailPage, TasksPage, WorkbenchPage } from "./MainPages";
 import { formatTaskTime } from "./ui";
@@ -459,6 +467,7 @@ describe("V1.4 任务中心列表", () => {
 
   beforeEach(() => {
     useStudio.mockReset();
+    cancelStudioTask.mockReset();
     vi.useFakeTimers({ now: clock, toFake: ["Date"] });
   });
 
@@ -466,10 +475,13 @@ describe("V1.4 任务中心列表", () => {
     vi.useRealTimers();
   });
 
-  function tasksPage(): StudioContextValue {
+  function tasksPage(
+    overrides: Partial<StudioContextValue> = {},
+  ): StudioContextValue {
     return studio(undefined, {
       state: { ...createState("tasks") },
       data: data([runningTask, queuedTask, failedTask, doneTask]),
+      ...overrides,
     });
   }
 
@@ -496,5 +508,53 @@ describe("V1.4 任务中心列表", () => {
 
     expect(screen.getByText("今天 09:32")).toBeInTheDocument();
     expect(screen.queryByText("2026-09-06T09:32:00")).not.toBeInTheDocument();
+  });
+
+  it("排队行提供取消任务：成功后提示并刷新列表", async () => {
+    const value = tasksPage();
+    useStudio.mockReturnValue(value);
+    cancelStudioTask.mockResolvedValue(undefined);
+    render(<TasksPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
+    expect(cancelStudioTask).toHaveBeenCalledWith(queuedTask);
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith("任务已取消，预扣积分已退回。"),
+    );
+    expect(value.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("取消失败时给出可感知的错误提示", async () => {
+    const value = tasksPage();
+    useStudio.mockReturnValue(value);
+    cancelStudioTask.mockRejectedValue(new Error("任务已在提交中"));
+    render(<TasksPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith("任务已在提交中"),
+    );
+    expect(value.refresh).not.toHaveBeenCalled();
+  });
+
+  it("审核模式点击取消只提示，不调用接口", () => {
+    const value = tasksPage({ review: true });
+    useStudio.mockReturnValue(value);
+    render(<TasksPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
+    expect(cancelStudioTask).not.toHaveBeenCalled();
+    expect(value.notify).toHaveBeenCalledWith("审核示例不执行真实取消。");
+  });
+
+  it("非排队行不出现取消入口", () => {
+    useStudio.mockReturnValue(tasksPage());
+    render(<TasksPage />);
+
+    expect(screen.getAllByRole("button", { name: "取消任务" })).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: "查看结果" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "查看详情" })).toHaveLength(2);
   });
 });
