@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  getStudioNotificationPreferences,
+  updateStudioNotificationPreferences,
+} from "../api";
 import { useStudio } from "./context";
 import {
   cancelStudioTask,
@@ -1041,6 +1045,50 @@ export function ProfilePage() {
   const { user, review, openLive, notify } = useStudio();
   const [name, setName] = useState(user.display_name || user.username);
   const [profileTab, setProfileTab] = useState("overview");
+  // C10b 通知偏好：进页拉取，乐观保存、失败回退；审核模式只演示不落库。
+  const [notificationsEnabled, setNotificationsEnabled] = useState<
+    boolean | null
+  >(null);
+  const [savingNotifications, setSavingNotifications] = useState(false);
+
+  useEffect(() => {
+    if (review) {
+      setNotificationsEnabled(true);
+      return;
+    }
+    let cancelled = false;
+    getStudioNotificationPreferences()
+      .then((prefs) => {
+        if (!cancelled) setNotificationsEnabled(prefs.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setNotificationsEnabled(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [review]);
+
+  async function toggleNotifications() {
+    if (review) {
+      notify("审核模式下为演示开关，不保存设置。");
+      return;
+    }
+    if (notificationsEnabled === null || savingNotifications) return;
+    const previous = notificationsEnabled;
+    const next = !previous;
+    setNotificationsEnabled(next);
+    setSavingNotifications(true);
+    try {
+      await updateStudioNotificationPreferences(next);
+      notify(next ? "已开启通知。" : "已关闭通知。");
+    } catch (cause) {
+      setNotificationsEnabled(previous);
+      notify(cause instanceof Error ? cause.message : "保存通知偏好失败");
+    } finally {
+      setSavingNotifications(false);
+    }
+  }
   return (
     <section className="studio-profile">
       <h1>用户档案</h1>
@@ -1137,11 +1185,17 @@ export function ProfilePage() {
                       type="button"
                       className="studio-switch"
                       aria-label="通知偏好"
-                      onClick={() =>
-                        notify("通知偏好接口尚未接入，当前设置未更改。")
+                      aria-pressed={notificationsEnabled === true}
+                      disabled={
+                        notificationsEnabled === null || savingNotifications
                       }
+                      onClick={() => void toggleNotifications()}
                     >
-                      开启
+                      {notificationsEnabled === false
+                        ? "关闭"
+                        : notificationsEnabled === null
+                          ? "—"
+                          : "开启"}
                     </button>
                   </dd>
                 </div>

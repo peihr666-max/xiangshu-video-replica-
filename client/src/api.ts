@@ -709,7 +709,11 @@ export async function getStudioStats(): Promise<StudioStats> {
   return requestApiJson<StudioStats>("/api/studio/stats", "读取工作台统计失败");
 }
 
-export type StudioAnalyticsDay = { day: string; completed: number };
+export type StudioAnalyticsDay = {
+  day: string;
+  completed: number;
+  failed: number;
+};
 export type StudioAnalyticsKindCount = { kind: string; completed: number };
 export type StudioAnalyticsWorkItem = {
   task_id: string;
@@ -718,10 +722,12 @@ export type StudioAnalyticsWorkItem = {
   title: string;
   creation_kind: string;
   completed_at: string;
+  /** 按秒计费实际消耗（秒=积分）；无计费记录（历史数据/未启计费）为 null。 */
+  cost_credits: number | null;
 };
 
 /** 平台侧真实成片聚合（C6 数据看板）：GET /api/studio/analytics。
- * 窗口内按北京日界分桶的成片趋势、任务类型分布与最近成片清单；
+ * 窗口内按北京日界分桶的成片趋势（含失败叠加）、任务类型分布与最近成片清单；
  * 播放/互动等外部平台数据不在其中。 */
 export type StudioAnalytics = {
   range_days: number;
@@ -739,6 +745,30 @@ export async function getStudioAnalytics(
   return requestApiJson<StudioAnalytics>(
     `/api/studio/analytics?days=${days}`,
     "读取数据看板统计失败",
+  );
+}
+
+export type StudioNotificationPreferences = { enabled: boolean };
+
+/** 通知偏好（C10b）：GET /api/studio/notification-preferences。
+ * 未保存过的用户按服务端默认（开启）返回。 */
+export async function getStudioNotificationPreferences(): Promise<StudioNotificationPreferences> {
+  return requestApiJson<StudioNotificationPreferences>(
+    "/api/studio/notification-preferences",
+    "读取通知偏好失败",
+  );
+}
+
+export async function updateStudioNotificationPreferences(
+  enabled: boolean,
+): Promise<StudioNotificationPreferences> {
+  return requestApiJson<StudioNotificationPreferences>(
+    "/api/studio/notification-preferences",
+    "保存通知偏好失败",
+    {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    },
   );
 }
 

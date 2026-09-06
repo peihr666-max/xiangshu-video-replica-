@@ -123,6 +123,7 @@ class StudioAnalyticsDay(BaseModel):
 
     day: str
     completed: int
+    failed: int
 
 
 class StudioAnalyticsKindCount(BaseModel):
@@ -141,6 +142,8 @@ class StudioAnalyticsWorkItem(BaseModel):
     title: str
     creation_kind: str
     completed_at: str
+    # 按秒计费（057+）实际消耗：最新一轮 RESERVE 扣减的秒数；无计费记录为 null。
+    cost_credits: int | None
 
 
 class StudioAnalyticsResponse(BaseModel):
@@ -204,7 +207,14 @@ def studio_analytics(
     rows = conn.execute(
         f"""
         SELECT task.id, task.batch_id, task.status, task.updated_at,
-               batch.creation_kind, batch.project_id, project.name AS project_name
+               batch.creation_kind, batch.project_id, project.name AS project_name,
+               (
+                   SELECT -wt.available_delta
+                   FROM wallet_transactions AS wt
+                   WHERE wt.task_id = task.id AND wt.type = 'RESERVE'
+                   ORDER BY wt.billing_round DESC
+                   LIMIT 1
+               ) AS cost_credits
         FROM generation_tasks AS task
         JOIN generation_batches AS batch ON batch.id = task.batch_id
         JOIN projects AS project ON project.id = batch.project_id
@@ -215,17 +225,23 @@ def studio_analytics(
 
     range_completed = 0
     completed_by_day: dict[str, int] = {}
+    failed_by_day: dict[str, int] = {}
     completed_by_kind: dict[str, int] = {}
     works: list[tuple[datetime, str, StudioAnalyticsWorkItem]] = []
     for row in rows:
-        if row["status"] != "SUCCEEDED":
-            continue
-        range_completed += 1
+        status = str(row["status"])
         completed_at = _utc_moment(str(row["updated_at"]))
         day_label = completed_at.astimezone(_BEIJING_TZ).date().isoformat()
+        if status == "FAILED":
+            failed_by_day[day_label] = failed_by_day.get(day_label, 0) + 1
+            continue
+        if status != "SUCCEEDED":
+            continue
+        range_completed += 1
         completed_by_day[day_label] = completed_by_day.get(day_label, 0) + 1
         kind = str(row["creation_kind"] or "replica")
         completed_by_kind[kind] = completed_by_kind.get(kind, 0) + 1
+        cost_raw = row["cost_credits"]
         works.append(
             (
                 completed_at,
@@ -237,6 +253,7 @@ def studio_analytics(
                     title=str(row["project_name"] or ""),
                     creation_kind=kind,
                     completed_at=str(row["updated_at"]),
+                    cost_credits=int(cost_raw) if cost_raw is not None else None,
                 ),
             )
         )
@@ -246,6 +263,7 @@ def studio_analytics(
         StudioAnalyticsDay(
             day=(start_day + timedelta(days=offset)).isoformat(),
             completed=completed_by_day.get((start_day + timedelta(days=offset)).isoformat(), 0),
+            failed=failed_by_day.get((start_day + timedelta(days=offset)).isoformat(), 0),
         )
         for offset in range(days)
     ]
@@ -271,6 +289,69 @@ def read_studio_analytics(
     days: int = 7,
 ) -> StudioAnalyticsResponse:
     return studio_analytics(conn, actor=actor, days=days)
+
+
+# ---------------------------------------------------------------------------
+# C10b 通知偏好：按用户一行 JSON 偏好（迁移 076），当前唯一键 enabled
+# ---------------------------------------------------------------------------
+
+
+class StudioNotificationPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+
+
+def _read_notification_preferences(
+    conn: BusinessConnection,
+    user_id: str,
+) -> StudioNotificationPreferences:
+    row = conn.execute(
+        "SELECT prefs_json FROM studio_notification_preferences WHERE user_id = %s",
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        return StudioNotificationPreferences()
+    try:
+        payload = json.loads(str(row["prefs_json"]))
+    except json.JSONDecodeError:
+        return StudioNotificationPreferences()
+    if not isinstance(payload, dict):
+        return StudioNotificationPreferences()
+    return StudioNotificationPreferences(enabled=bool(payload.get("enabled", True)))
+
+
+@router.get(
+    "/studio/notification-preferences",
+    response_model=StudioNotificationPreferences,
+)
+def read_studio_notification_preferences(
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> StudioNotificationPreferences:
+    return _read_notification_preferences(conn, actor.id)
+
+
+@router.put(
+    "/studio/notification-preferences",
+    response_model=StudioNotificationPreferences,
+)
+def update_studio_notification_preferences(
+    conn: Database,
+    actor: AuthenticatedUser,
+    payload: StudioNotificationPreferences,
+) -> StudioNotificationPreferences:
+    conn.execute(
+        """
+        INSERT INTO studio_notification_preferences (user_id, prefs_json)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE
+        SET prefs_json = excluded.prefs_json, updated_at = CURRENT_TIMESTAMP
+        """,
+        (actor.id, payload.model_dump_json()),
+    )
+    conn.commit()
+    return payload
 
 
 # ---------------------------------------------------------------------------

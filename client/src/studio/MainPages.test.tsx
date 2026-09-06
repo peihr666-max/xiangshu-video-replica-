@@ -16,6 +16,8 @@ const {
   cancelStudioTask,
   downloadStudioTaskResult,
   retryStudioTask,
+  getStudioNotificationPreferences,
+  updateStudioNotificationPreferences,
 } = vi.hoisted(() => ({
   useStudio: vi.fn<() => StudioContextValue>(),
   loadTaskPreview: vi.fn(),
@@ -23,9 +25,16 @@ const {
   cancelStudioTask: vi.fn(),
   downloadStudioTaskResult: vi.fn(),
   retryStudioTask: vi.fn(),
+  getStudioNotificationPreferences: vi.fn(),
+  updateStudioNotificationPreferences: vi.fn(),
 }));
 
 vi.mock("./context", () => ({ useStudio }));
+vi.mock("../api", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getStudioNotificationPreferences,
+  updateStudioNotificationPreferences,
+}));
 vi.mock("./live", () => ({
   loadTaskPreview,
   uploadWorkbenchSourceVideo,
@@ -34,7 +43,12 @@ vi.mock("./live", () => ({
   retryStudioTask,
 }));
 
-import { TaskDetailPage, TasksPage, WorkbenchPage } from "./MainPages";
+import {
+  ProfilePage,
+  TaskDetailPage,
+  TasksPage,
+  WorkbenchPage,
+} from "./MainPages";
 import { formatTaskTime } from "./ui";
 
 const taskA: StudioTask = {
@@ -817,5 +831,65 @@ describe("V1.4 任务中心列表", () => {
     expect(
       screen.queryByRole("listbox", { name: "类型" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("V1.4 个人中心通知偏好（C10b）", () => {
+  beforeEach(() => {
+    useStudio.mockReset();
+    getStudioNotificationPreferences.mockReset();
+    updateStudioNotificationPreferences.mockReset();
+  });
+
+  it("生产模式拉取偏好并保存开关状态", async () => {
+    getStudioNotificationPreferences.mockResolvedValue({ enabled: true });
+    updateStudioNotificationPreferences.mockResolvedValue({ enabled: false });
+    useStudio.mockReturnValue(studio());
+    render(<ProfilePage />);
+
+    const toggle = await screen.findByRole("button", { name: "通知偏好" });
+    await waitFor(() => expect(toggle).toHaveTextContent("开启"));
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(updateStudioNotificationPreferences).toHaveBeenCalledWith(false),
+    );
+    await waitFor(() => expect(toggle).toHaveTextContent("关闭"));
+  });
+
+  it("保存失败时回退开关状态并提示", async () => {
+    getStudioNotificationPreferences.mockResolvedValue({ enabled: true });
+    updateStudioNotificationPreferences.mockRejectedValue(
+      new Error("保存通知偏好失败"),
+    );
+    const value = studio();
+    useStudio.mockReturnValue(value);
+    render(<ProfilePage />);
+
+    const toggle = await screen.findByRole("button", { name: "通知偏好" });
+    await waitFor(() => expect(toggle).toHaveTextContent("开启"));
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(value.notify).toHaveBeenCalled());
+    expect(toggle).toHaveTextContent("开启");
+  });
+
+  it("加载失败时开关置灰为 —，审核模式点击只提示不保存", async () => {
+    getStudioNotificationPreferences.mockRejectedValue(new Error("网络错误"));
+    useStudio.mockReturnValue(studio());
+    render(<ProfilePage />);
+    const toggle = await screen.findByRole("button", { name: "通知偏好" });
+    await waitFor(() => expect(toggle).toHaveTextContent("—"));
+    expect(toggle).toBeDisabled();
+
+    useStudio.mockReturnValue(studio(undefined, { review: true }));
+    const { unmount } = render(<ProfilePage />);
+    const reviewToggle = screen
+      .getAllByRole("button", { name: "通知偏好" })
+      .at(-1)!;
+    await waitFor(() => expect(reviewToggle).toHaveTextContent("开启"));
+    fireEvent.click(reviewToggle);
+    expect(updateStudioNotificationPreferences).not.toHaveBeenCalled();
+    unmount();
   });
 });

@@ -56,13 +56,13 @@ const sampleAnalytics: StudioAnalytics = {
   range_completed: 9,
   total_completed: 42,
   daily: [
-    { day: "2026-09-01", completed: 1 },
-    { day: "2026-09-02", completed: 0 },
-    { day: "2026-09-03", completed: 2 },
-    { day: "2026-09-04", completed: 1 },
-    { day: "2026-09-05", completed: 2 },
-    { day: "2026-09-06", completed: 3 },
-    { day: "2026-09-07", completed: 0 },
+    { day: "2026-09-01", completed: 1, failed: 0 },
+    { day: "2026-09-02", completed: 0, failed: 1 },
+    { day: "2026-09-03", completed: 2, failed: 0 },
+    { day: "2026-09-04", completed: 1, failed: 0 },
+    { day: "2026-09-05", completed: 2, failed: 0 },
+    { day: "2026-09-06", completed: 3, failed: 1 },
+    { day: "2026-09-07", completed: 0, failed: 0 },
   ],
   kind_breakdown: [
     { kind: "replica", completed: 6 },
@@ -76,6 +76,7 @@ const sampleAnalytics: StudioAnalytics = {
       title: "庭院黄昏实拍",
       creation_kind: "replica",
       completed_at: "2026-09-06 10:00:00",
+      cost_credits: 8,
     },
     {
       task_id: "t-2",
@@ -84,6 +85,7 @@ const sampleAnalytics: StudioAnalytics = {
       title: "户型讲解口播",
       creation_kind: "independent",
       completed_at: "2026-09-05 09:00:00",
+      cost_credits: null,
     },
   ],
 };
@@ -107,6 +109,10 @@ describe("V1.4 数据看板", () => {
     // 类型占比图例覆盖三个创作通道（类型文案也会出现在作品表列）。
     expect(screen.getAllByText("视频复刻").length).toBeGreaterThan(0);
     expect(screen.getAllByText("人物置换").length).toBeGreaterThan(0);
+    // 趋势图例区分成片/失败曲线；作品表含消耗列（示例：12 积分 / —）。
+    expect(screen.getByText("失败")).toBeInTheDocument();
+    expect(screen.getByText("消耗")).toBeInTheDocument();
+    expect(screen.getByText("12 积分")).toBeInTheDocument();
     // 播放/互动等外部平台指标不在看板范畴（C6 不伪造红线）。
     expect(screen.queryByText("播放量")).not.toBeInTheDocument();
     expect(screen.queryByText("互动量")).not.toBeInTheDocument();
@@ -180,6 +186,7 @@ describe("V1.4 数据看板", () => {
       screen.getByRole("img", { name: "近7天成片趋势" }),
     ).toBeInTheDocument();
     expect(screen.getByText("庭院黄昏实拍")).toBeInTheDocument();
+    expect(screen.getByText("8 积分")).toBeInTheDocument();
     expect(screen.queryByText("示例数据")).not.toBeInTheDocument();
   });
 

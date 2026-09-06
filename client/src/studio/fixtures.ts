@@ -18,21 +18,25 @@ const reviewWorks = [
     title: "张工 · 建房预算",
     kind: "replica",
     completedAt: "2026-09-06 10:24:00",
+    costCredits: 12,
   },
   {
     title: "新中式庭院的3个细节",
     kind: "replica",
     completedAt: "2026-09-04 15:40:00",
+    costCredits: 8,
   },
   {
     title: "农村自建房户型避坑",
     kind: "independent",
     completedAt: "2026-09-02 09:12:00",
+    costCredits: null,
   },
   {
     title: "三代同堂的家这样设计",
     kind: "replacement",
     completedAt: "2026-08-24 18:05:00",
+    costCredits: 6,
   },
 ];
 
@@ -65,10 +69,21 @@ function analyticsSample(days: 7 | 30): StudioAnalytics {
     ...daily7,
   ];
   const counts = days === 7 ? daily7 : daily30;
+  const failedCounts =
+    days === 7
+      ? [0, 0, 1, 0, 0, 1, 0]
+      : [
+          0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
+          0, 0, 1, 0, 0, 1, 0,
+        ];
   const daily = counts.map((completed, index, all) => {
     // 固定锚定 2026-09-06 收口，避免样例随真实时钟漂移。
     const day = new Date(Date.UTC(2026, 8, 6 - (all.length - 1 - index)));
-    return { day: day.toISOString().slice(0, 10), completed };
+    return {
+      day: day.toISOString().slice(0, 10),
+      completed,
+      failed: failedCounts[index] ?? 0,
+    };
   });
   const kindBreakdown =
     days === 7
@@ -98,6 +113,7 @@ function analyticsSample(days: 7 | 30): StudioAnalytics {
         title: work.title,
         creation_kind: work.kind,
         completed_at: work.completedAt,
+        cost_credits: work.costCredits,
       })),
   };
 }

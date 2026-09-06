@@ -127,6 +127,20 @@ def seed_analytics_scene(connection) -> None:
         "INSERT INTO customer_batch_visibility (user_id, batch_id) VALUES (?, ?)",
         ("employee_1", "b-hidden"),
     )
+    # 按秒计费账本（057 形状约束）：t1 预留 8 秒并成功结算 → 消耗 8 积分；
+    # 其余成片无计费记录 → cost_credits 为 null（不伪造）。
+    connection.executemany(
+        """
+        INSERT INTO wallet_transactions (
+            id, user_id, type, available_delta, reserved_delta,
+            task_id, billing_round, idempotency_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("wt-reserve-t1", "employee_1", "RESERVE", -8, 8, "t1", 1, "reserve:t1:1"),
+            ("wt-settle-t1", "employee_1", "SETTLE", 0, -8, "t1", 1, "settle:t1:1"),
+        ],
+    )
     connection.commit()
 
 
@@ -155,10 +169,13 @@ def test_daily_series_covers_full_window_by_beijing_day(tmp_path: Path) -> None:
         "2026-09-05",
         "2026-09-06",
     ]
-    # 09-05：t3（北京 23:59）；09-06：t1、t2（北京 00:30 属次日）、t4、t7。
-    by_day = {day.day: day.completed for day in result.daily}
-    assert by_day["2026-09-05"] == 1
-    assert by_day["2026-09-06"] == 4
+    # 09-05：t3（北京 23:59）；09-06：t1、t2（北京 00:30 属次日）、t4、t7；
+    # 失败桶仅 t5-failed（09-06）。
+    by_day = {day.day: day for day in result.daily}
+    assert by_day["2026-09-05"].completed == 1
+    assert by_day["2026-09-05"].failed == 0
+    assert by_day["2026-09-06"].completed == 4
+    assert by_day["2026-09-06"].failed == 1
     assert result.range_completed == 5
     # t3 完成于北京 09-05，不计入"今日"；t9（08-30）计入全期累计。
     assert result.today_completed == 4
@@ -204,6 +221,10 @@ def test_recent_works_sorted_scoped_and_capped(tmp_path: Path) -> None:
         "p-1",
     )
     assert first.completed_at == _TODAY
+    # t1 有按秒计费的 RESERVE 记录 → 消耗 8 积分；无计费记录的成片为 null。
+    assert first.cost_credits == 8
+    assert admin_view.recent_works[3].task_id == "t2"
+    assert admin_view.recent_works[3].cost_credits is None
 
     employee_view = studio_analytics(conn, actor=actor("employee_1", "employee"), now=_NOW, days=7)
     # 隐藏批次与他人的 p-2 任务都不出现。
@@ -284,11 +305,15 @@ def test_analytics_route_scopes_by_caller(tmp_path: Path, monkeypatch) -> None:
         assert payload["range_days"] == 7
         assert len(payload["daily"]) == 7
         assert payload["range_completed"] == 3
-        assert [work["task_id"] for work in payload["recent_works"]] == [
+        assert payload["daily"][-1]["failed"] == 0
+        works = payload["recent_works"]
+        assert [work["task_id"] for work in works] == [
             "t1",
             "t2",
             "t3",
         ]
+        assert works[0]["cost_credits"] == 8
+        assert works[1]["cost_credits"] is None
 
         month = client.get("/api/studio/analytics?days=30", headers={"X-Dev-User-Id": "employee_1"})
         assert month.status_code == 200

@@ -191,7 +191,7 @@
 .analytics-share-body {
   align-items: center;
   display: flex;
-  gap: 34px;
+  gap: 22px;
   height: 202px;
   justify-content: center;
 }
@@ -200,8 +200,8 @@
   align-items: center;
   border-radius: 50%;
   display: flex;
-  flex: 0 0 154px;
-  height: 154px;
+  flex: 0 0 140px;
+  height: 140px;
   justify-content: center;
   position: relative;
 }
@@ -210,7 +210,7 @@
   background: #101110;
   border-radius: 50%;
   content: "";
-  inset: 31px;
+  inset: 28px;
   position: absolute;
 }
 
@@ -274,7 +274,8 @@
 
 .analytics-performance table {
   border-collapse: collapse;
-  min-width: 1000px;
+  /* 五列（作品/类型/完成时间/消耗/操作）常规宽度即可完整呈现。 */
+  min-width: 820px;
   width: 100%;
 }
 
@@ -402,4 +403,47 @@
 .analytics-share-empty {
   color: #8f9089;
   margin: 0;
+}
+
+.analytics-trend-legend {
+  align-items: center;
+  color: #b4b5af;
+  display: flex;
+  font-size: 13px;
+  gap: 16px;
+  margin: 6px 0 0;
+}
+
+.analytics-trend-legend span {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.analytics-trend-legend i {
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.analytics-trend-legend i.is-completed {
+  background: #e8ad29;
+}
+
+.analytics-trend-legend i.is-failed {
+  background: #d0654f;
+}
+
+.analytics-trend-chart .analytics-trend-failed {
+  fill: none;
+  stroke: #d0654f;
+  stroke-width: 2;
+  stroke-dasharray: 6 5;
+}
+
+.analytics-trend-chart circle.analytics-point-failed {
+  fill: #10110f;
+  stroke: #d0654f;
+  stroke-width: 2.5;
 }

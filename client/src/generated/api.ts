@@ -482,6 +482,64 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/studio/analytics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Studio Analytics */
+    get: operations["read_studio_analytics_api_studio_analytics_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/notification-preferences": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Studio Notification Preferences */
+    get: operations["read_studio_notification_preferences_api_studio_notification_preferences_get"];
+    /** Update Studio Notification Preferences */
+    put: operations["update_studio_notification_preferences_api_studio_notification_preferences_put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/saved-prompts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read User Saved Prompts
+     * @description 跨项目聚合作者本人的已保存提示词（versions kind='saved_prompt'）。
+     *
+     *     独立创作页的「导入提示词」数据源：只读、仅作者本人、按时间倒序。
+     *     存储仍复用项目域的 versions 底座（迁移 061），零新表。
+     */
+    get: operations["read_user_saved_prompts_api_studio_saved_prompts_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/studio/drafts/{draft_kind}": {
     parameters: {
       query?: never;
@@ -909,6 +967,46 @@ export interface paths {
     put?: never;
     /** Reconcile Oral Generation Billing */
     post: operations["reconcile_oral_generation_billing_api_oral_tasks__task_id__billing_reconcile_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/independent/capabilities": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Capabilities
+     * @description 视频生成页的能力探测：扩展模式是否开放、单批数量上限。
+     */
+    get: operations["read_capabilities_api_independent_capabilities_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/independent/video-tasks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Create Video Task
+     * @description 幂等创建独立创作批次（含钱包按秒预留与公平队列入列）。
+     */
+    post: operations["create_video_task_api_independent_video_tasks_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -4356,7 +4454,7 @@ export interface components {
       /** Id */
       id: string;
       /** Project Id */
-      project_id: string;
+      project_id?: string | null;
       /** Prompt Version Id */
       prompt_version_id: string;
       /** Status */
@@ -5756,7 +5854,7 @@ export interface components {
       /** Id */
       id: string;
       /** Project Id */
-      project_id: string | null;
+      project_id?: string | null;
       /** Project Name */
       project_name: string;
       /** Created By User Id */
@@ -5854,16 +5952,10 @@ export interface components {
        * @enum {string}
        */
       resolution: "768P" | "2K";
-      /**
-       * Duration Seconds
-       * @enum {integer}
-       */
-      duration_seconds: 4 | 15;
-      /**
-       * Quantity
-       * @enum {integer}
-       */
-      quantity: 1 | 2 | 4;
+      /** Duration Seconds */
+      duration_seconds: number;
+      /** Quantity */
+      quantity: number;
       /** Unit Price Fen Per Second */
       unit_price_fen_per_second: number;
       /** Estimated Seconds */
@@ -5959,6 +6051,66 @@ export interface components {
       content_type: string;
       /** Size Bytes */
       size_bytes: number;
+    };
+    /** IndependentCapabilities */
+    IndependentCapabilities: {
+      /** Extended Modes Enabled */
+      extended_modes_enabled: boolean;
+      /** T2V Enabled */
+      t2v_enabled: boolean;
+      /** I2V Enabled */
+      i2v_enabled: boolean;
+      /** R2V Enabled */
+      r2v_enabled: boolean;
+      /** Last Frame Enabled */
+      last_frame_enabled: boolean;
+      /**
+       * Max Reference Images
+       * @default 4
+       */
+      max_reference_images: number;
+      /** Max Quantity */
+      max_quantity: number;
+    };
+    /** IndependentVideoRequest */
+    IndependentVideoRequest: {
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: "t2v" | "i2v" | "r2v";
+      /** Prompt Text */
+      prompt_text: string;
+      /** First Frame Asset Id */
+      first_frame_asset_id?: string | null;
+      /** Last Frame Asset Id */
+      last_frame_asset_id?: string | null;
+      /** Reference Asset Ids */
+      reference_asset_ids?: string[];
+      /** Output Duration Seconds */
+      output_duration_seconds: number;
+      /**
+       * Resolution
+       * @default 768P
+       * @enum {string}
+       */
+      resolution: "768P" | "2K";
+      /**
+       * Ratio
+       * @default adaptive
+       * @enum {string}
+       */
+      ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
+      /** Quantity */
+      quantity: number;
+      /** Idempotency Key */
+      idempotency_key: string;
+      /**
+       * Provider
+       * @default fake_h3
+       * @enum {string}
+       */
+      provider: "fake_h3" | "metaso";
     };
     /** LoginRequest */
     LoginRequest: {
@@ -6141,6 +6293,8 @@ export interface components {
     };
     /** OralBillingReconcileRequest */
     OralBillingReconcileRequest: {
+      /** Reconciliation Operation Id */
+      reconciliation_operation_id: string;
       /**
        * Provider Outcome
        * @enum {string}
@@ -6156,8 +6310,8 @@ export interface components {
        * @enum {string}
        */
       resolution: "SETTLE" | "RELEASE";
-      /** Evidence Sha256 */
-      evidence_sha256: string;
+      /** Evidence Asset Id */
+      evidence_asset_id: string;
       /** Reason */
       reason: string;
     };
@@ -6771,6 +6925,24 @@ export interface components {
        */
       reason: string;
     };
+    /** SavedPromptListItem */
+    SavedPromptListItem: {
+      /** Id */
+      id: string;
+      /** Project Id */
+      project_id: string;
+      /** Name */
+      name: string;
+      /** Prompt Text */
+      prompt_text: string;
+      /** Created At */
+      created_at: string;
+    };
+    /** SavedPromptListPage */
+    SavedPromptListPage: {
+      /** Items */
+      items: components["schemas"]["SavedPromptListItem"][];
+    };
     /** SavedPromptRequest */
     SavedPromptRequest: {
       /** Name */
@@ -7232,6 +7404,56 @@ export interface components {
       /** Model */
       model: string;
     };
+    /** StudioAnalyticsDay */
+    StudioAnalyticsDay: {
+      /** Day */
+      day: string;
+      /** Completed */
+      completed: number;
+      /** Failed */
+      failed: number;
+    };
+    /** StudioAnalyticsKindCount */
+    StudioAnalyticsKindCount: {
+      /** Kind */
+      kind: string;
+      /** Completed */
+      completed: number;
+    };
+    /** StudioAnalyticsResponse */
+    StudioAnalyticsResponse: {
+      /** Range Days */
+      range_days: number;
+      /** Today Completed */
+      today_completed: number;
+      /** Range Completed */
+      range_completed: number;
+      /** Total Completed */
+      total_completed: number;
+      /** Daily */
+      daily: components["schemas"]["StudioAnalyticsDay"][];
+      /** Kind Breakdown */
+      kind_breakdown: components["schemas"]["StudioAnalyticsKindCount"][];
+      /** Recent Works */
+      recent_works: components["schemas"]["StudioAnalyticsWorkItem"][];
+    };
+    /** StudioAnalyticsWorkItem */
+    StudioAnalyticsWorkItem: {
+      /** Task Id */
+      task_id: string;
+      /** Batch Id */
+      batch_id: string;
+      /** Project Id */
+      project_id: string;
+      /** Title */
+      title: string;
+      /** Creation Kind */
+      creation_kind: string;
+      /** Completed At */
+      completed_at: string;
+      /** Cost Credits */
+      cost_credits: number | null;
+    };
     /** StudioDraftDeleteResponse */
     StudioDraftDeleteResponse: {
       /** Deleted */
@@ -7263,6 +7485,14 @@ export interface components {
        * @default false
        */
       script_confirmed: boolean;
+    };
+    /** StudioNotificationPreferences */
+    StudioNotificationPreferences: {
+      /**
+       * Enabled
+       * @default true
+       */
+      enabled: boolean;
     };
     /** StudioStatsResponse */
     StudioStatsResponse: {
@@ -8463,8 +8693,8 @@ export interface operations {
     parameters: {
       query?: {
         resolution?: "768P" | "2K";
-        duration_seconds?: 4 | 15;
-        quantity?: 1 | 2 | 4;
+        duration_seconds?: number;
+        quantity?: number;
       };
       header?: {
         "X-Dev-User-Id"?: string | null;
@@ -8766,6 +8996,142 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["StudioStatsResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_studio_analytics_api_studio_analytics_get: {
+    parameters: {
+      query?: {
+        days?: number;
+      };
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioAnalyticsResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_studio_notification_preferences_api_studio_notification_preferences_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioNotificationPreferences"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  update_studio_notification_preferences_api_studio_notification_preferences_put: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StudioNotificationPreferences"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioNotificationPreferences"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_user_saved_prompts_api_studio_saved_prompts_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SavedPromptListPage"];
         };
       };
       /** @description Validation Error */
@@ -9889,6 +10255,59 @@ export interface operations {
           "application/json": {
             [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_capabilities_api_independent_capabilities_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IndependentCapabilities"];
+        };
+      };
+    };
+  };
+  create_video_task_api_independent_video_tasks_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["IndependentVideoRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BatchResult"];
         };
       };
       /** @description Validation Error */

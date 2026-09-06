@@ -27,10 +27,12 @@ function kindLabel(kind: string) {
 function TrendChart({
   labels,
   values,
+  failedValues,
   rangeLabel,
 }: {
   labels: string[];
   values: number[];
+  failedValues: number[];
   rangeLabel: string;
 }) {
   const width = 700;
@@ -39,15 +41,27 @@ function TrendChart({
   const right = 18;
   const top = 26;
   const bottom = 44;
-  const maxValue = Math.max(3, Math.ceil(Math.max(0, ...values)));
+  const maxValue = Math.max(
+    3,
+    Math.ceil(Math.max(0, ...values, ...failedValues)),
+  );
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
+  const xAt = (index: number, length: number) =>
+    left + (chartWidth * index) / Math.max(1, length - 1);
   const points = values.map((value, index) => ({
-    x: left + (chartWidth * index) / Math.max(1, values.length - 1),
+    x: xAt(index, values.length),
     y: top + chartHeight * (1 - value / maxValue),
     value,
   }));
+  const failedPoints = failedValues.map((value, index) => ({
+    x: xAt(index, failedValues.length),
+    y: top + chartHeight * (1 - value / maxValue),
+    value,
+  }));
+  const failedTotal = failedValues.reduce((sum, value) => sum + value, 0);
   const pointList = points.map(({ x, y }) => `${x},${y}`).join(" ");
+  const failedPointList = failedPoints.map(({ x, y }) => `${x},${y}`).join(" ");
   const area = `M ${left} ${height - bottom} L ${pointList.replaceAll(" ", " L ")} L ${width - right} ${height - bottom} Z`;
   const ticks = [0, 1, 2, 3].map((value) => (value * maxValue) / 3);
   // 30 天窗口的横轴标签按步长抽稀，避免重叠。
@@ -80,9 +94,20 @@ function TrendChart({
       <line x1={left} x2={left} y1={top} y2={height - bottom} />
       <path d={area} className="analytics-trend-area" />
       <polyline points={pointList} className="analytics-trend-line" />
+      {failedTotal > 0 ? (
+        <polyline points={failedPointList} className="analytics-trend-failed" />
+      ) : null}
       {points.map((point, index) => (
         <g key={labels[index] ?? index}>
           <circle cx={point.x} cy={point.y} r="5" />
+          {failedTotal > 0 && failedPoints[index] ? (
+            <circle
+              className="analytics-point-failed"
+              cx={failedPoints[index].x}
+              cy={failedPoints[index].y}
+              r="4"
+            />
+          ) : null}
           {index % labelStep === 0 ? (
             <text
               className="analytics-point-value"
@@ -125,6 +150,7 @@ export function AnalyticsPage() {
 
   const dailyLabels = analytics.daily.map((day) => day.day.slice(5));
   const dailyValues = analytics.daily.map((day) => day.completed);
+  const dailyFailed = analytics.daily.map((day) => day.failed);
   const kindTotal = analytics.kind_breakdown.reduce(
     (sum, item) => sum + item.completed,
     0,
@@ -224,10 +250,21 @@ export function AnalyticsPage() {
           <h2>
             成片趋势 <small>{rangeLabel}</small>
           </h2>
+          <div className="analytics-trend-legend">
+            <span>
+              <i className="is-completed" />
+              成片
+            </span>
+            <span>
+              <i className="is-failed" />
+              失败
+            </span>
+          </div>
           {dailyValues.length ? (
             <TrendChart
               labels={dailyLabels}
               values={dailyValues}
+              failedValues={dailyFailed}
               rangeLabel={rangeLabel}
             />
           ) : (
@@ -290,6 +327,7 @@ export function AnalyticsPage() {
                   <th>作品</th>
                   <th>类型</th>
                   <th>完成时间</th>
+                  <th>消耗</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -305,6 +343,11 @@ export function AnalyticsPage() {
                     </td>
                     <td>{kindLabel(work.creation_kind)}</td>
                     <td>{formatTaskTime(work.completed_at)}</td>
+                    <td>
+                      {work.cost_credits != null
+                        ? `${work.cost_credits} 积分`
+                        : "—"}
+                    </td>
                     <td>
                       <div className="analytics-actions">
                         <Button
