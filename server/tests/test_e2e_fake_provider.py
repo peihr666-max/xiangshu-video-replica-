@@ -196,9 +196,9 @@ def test_fake_provider_e2e_from_locked_prompt_to_worker_progress(
     assert payload["progress"]["terminal_count"] == 2
     assert payload["progress"]["progress_percent"] == 100
     assert {task["status"] for task in payload["tasks"]} == {"SUCCEEDED"}
-    assert {task["archive_status"] for task in payload["tasks"]} == {"DIRECT"}
-    assert all(task["result_asset_id"] is None for task in payload["tasks"])
-    assert all(task["direct_result_available"] for task in payload["tasks"])
+    assert {task["archive_status"] for task in payload["tasks"]} == {"ARCHIVED"}
+    assert all(task["result_asset_id"] is not None for task in payload["tasks"])
+    assert all(not task["direct_result_available"] for task in payload["tasks"])
     assert all("result_url" not in task for task in payload["tasks"])
 
 
@@ -347,15 +347,11 @@ def test_three_task_mixed_batch_surfaces_partial_failure_and_exposes_successful_
     assert {task["status"] for task in payload["tasks"]} == {"SUCCEEDED", "FAILED"}
 
     successful_task = next(task for task in payload["tasks"] if task["status"] == "SUCCEEDED")
-    assert successful_task["archive_status"] == "DIRECT"
-    assert successful_task["result_asset_id"] is None
-    assert successful_task["direct_result_available"] is True
-    preview_url = client.get(
-        f"/api/generation-tasks/{successful_task['id']}/preview-url",
-        headers=auth_headers("employee_1"),
-    )
-    assert preview_url.status_code == 200
-    assert preview_url.json()["url"].startswith("data:video/mp4;base64,")
+    assert successful_task["archive_status"] == "ARCHIVED"
+    assert successful_task["result_asset_id"] is not None
+    assert successful_task["direct_result_available"] is False
+    archived = output_storage.get_object(f"generation-results/{successful_task['id']}.mp4")
+    assert archived.startswith(b"fake mp4 content")
 
 
 def create_batch(

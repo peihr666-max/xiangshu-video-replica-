@@ -481,8 +481,8 @@ def _reconcile(fair_state: str, task_id: str, provider: MetasoH3Provider) -> obj
 def test_reconcile_success_settles_exactly_once(
     fair_state: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reconciliation preserves the direct result URL and settles the reserved
-    credit exactly once; a repeated reconcile never settles twice."""
+    """Reconciliation archives the paid result and settles the reserved credit
+    exactly once; a repeated reconcile never settles twice."""
     # The SSRF guard is covered by its own tests; here the fake provider's
     # example.com result URL must not trigger a real DNS/address check. Patch
     # only the module-level guard, never the socket module (psycopg relies on
@@ -511,8 +511,8 @@ def test_reconcile_success_settles_exactly_once(
             "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'u1'"
         ).fetchone()
     assert task["status"] == "SUCCEEDED"
-    assert task["archive_status"] == "DIRECT"
-    assert task["result_asset_id"] is None
+    assert task["archive_status"] == "ARCHIVED"
+    assert task["result_asset_id"] is not None
     assert task["provider_result_url"] == "https://example.com/results/ok.mp4"
     assert int(wallet["available_credits"]) == 999
     assert int(wallet["reserved_credits"]) == 0
@@ -791,7 +791,8 @@ def test_pg_worker_once_loop_claims_processes_and_drains(fair_state: str) -> Non
     with psycopg.connect(fair_state, autocommit=True) as pg:
         pg.execute("UPDATE generation_tasks SET provider = 'fake_h3'")
     storage = FakeStorageAdapter(provider="cos", bucket="bucket")
-    for _ in range(4):
+    # Each task crosses a provider round and a separate archive round.
+    for _ in range(8):
         processed = run_pg_worker_once(worker_id="w-loop", storage=storage, max_tasks=1)
         assert processed == 1
     # Drained: an empty round exits with zero.
@@ -805,8 +806,8 @@ def test_pg_worker_once_loop_claims_processes_and_drains(fair_state: str) -> Non
     assert len(rows) == 4
     for row in rows:
         assert row["status"] == "SUCCEEDED"
-        assert row["archive_status"] == "DIRECT"
-        assert row["result_asset_id"] is None
+        assert row["archive_status"] == "ARCHIVED"
+        assert row["result_asset_id"] is not None
         assert row["provider_task_id"]
         assert row["provider_result_url"] == f"fake://h3-results/{row['provider_task_id']}.mp4"
     assert _cursor_count(fair_state, "u1") == 0
@@ -836,7 +837,8 @@ class _StepwiseMetasoProvider(MetasoH3Provider):
         )
 
     def download_result(self, url: str) -> bytes:
-        raise AssertionError("direct video delivery must not download generated media")
+        assert url == "https://example.com/result.mp4"
+        return b"stepwise-result"
 
 
 def test_pg_worker_persists_provider_id_and_resumes_without_resubmit(
@@ -897,8 +899,18 @@ def test_pg_worker_persists_provider_id_and_resumes_without_resubmit(
         row = pg.execute(
             "SELECT status, provider_result_url FROM generation_tasks WHERE id = 'task-u1-0'"
         ).fetchone()
-        assert row == ("SUCCEEDED", "https://example.com/result.mp4")
+        assert row == ("ARCHIVING", "https://example.com/result.mp4")
 
+    assert (
+        run_pg_worker_once(
+            worker_id="w-step",
+            storage=storage,
+            generation_provider=provider,
+            max_tasks=1,
+        )
+        == 1
+    )
+    assert provider.submit_count == 1
     assert (
         run_pg_worker_once(
             worker_id="w-step",
@@ -908,7 +920,6 @@ def test_pg_worker_persists_provider_id_and_resumes_without_resubmit(
         )
         == 0
     )
-    assert provider.submit_count == 1
     with psycopg.connect(fair_state, autocommit=True) as pg:
         row = pg.execute(
             "SELECT status, archive_status, result_asset_id, provider_result_url "
@@ -916,8 +927,8 @@ def test_pg_worker_persists_provider_id_and_resumes_without_resubmit(
         ).fetchone()
     assert row is not None
     assert row[0] == "SUCCEEDED"
-    assert row[1] == "DIRECT"
-    assert row[2] is None
+    assert row[1] == "ARCHIVED"
+    assert row[2] is not None
     assert row[3] == "https://example.com/result.mp4"
     with psycopg.connect(fair_state, autocommit=True) as pg:
         assert pg.execute(
@@ -942,11 +953,15 @@ def test_pg_saved_video_result_finishes_without_provider_or_quality_credentials(
         )
 
     def reject_processing(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("saved video URLs require neither a provider nor media processing")
+        raise AssertionError("saved video URLs must not run media quality processing")
 
-    monkeypatch.setattr("app.generation_worker.h3_provider_for_task", reject_processing)
     monkeypatch.setattr("app.generation.final_generation_quality", reject_processing)
     monkeypatch.setattr("app.generation.h3_audio_quality", reject_processing)
+    monkeypatch.setattr(
+        MetasoH3Provider,
+        "download_result",
+        lambda _provider, _url: b"saved-paid-result",
+    )
     assert (
         run_pg_worker_once(
             worker_id="saved-result",
@@ -956,16 +971,18 @@ def test_pg_saved_video_result_finishes_without_provider_or_quality_credentials(
         == 1
     )
     with psycopg.connect(fair_state, autocommit=True) as pg:
-        assert pg.execute(
+        row = pg.execute(
             "SELECT status, archive_status, quality_status, provider_result_url, result_asset_id "
             "FROM generation_tasks WHERE id = 'task-u1-0'"
-        ).fetchone() == (
+        ).fetchone()
+        assert row is not None
+        assert row[:4] == (
             "SUCCEEDED",
-            "DIRECT",
+            "ARCHIVED",
             "NOT_REQUIRED",
             "https://example.com/result.mp4",
-            None,
         )
+        assert row[4] is not None
     assert _billing_rows(fair_state, "task-u1-0") == [("RESERVE", 1), ("SETTLE", 1)]
 
 

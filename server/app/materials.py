@@ -1,8 +1,8 @@
 """Unified Studio material projection over existing business sources.
 
-Assets remain the physical-file source of truth. Provider-hosted H3 DIRECT
-results are projected as read-only virtual materials until a separate, explicit
-archive action creates a real asset. User preferences never grant access.
+Assets remain the physical-file source of truth. New H3 results are archived as
+owned assets; historical provider-hosted DIRECT results stay visible as read-only
+virtual materials. User preferences never grant access.
 """
 
 from __future__ import annotations
@@ -178,12 +178,22 @@ def _candidate_cte() -> str:
             asset.id AS source_id,
             project.owner_user_id,
             asset.id AS asset_id,
-            NULL AS generation_task_id,
+            generation_task.id AS generation_task_id,
             project.id AS project_id,
             NULL AS person_id,
-            project.name AS base_title,
-            '项目素材' AS base_group,
-            'project' AS source,
+            CASE
+                WHEN generation_task.id IS NOT NULL
+                THEN COALESCE(generation_batch.display_name, project.name) || ' · 成片'
+                ELSE project.name
+            END AS base_title,
+            CASE
+                WHEN generation_task.id IS NOT NULL THEN '任务结果'
+                ELSE '项目素材'
+            END AS base_group,
+            CASE
+                WHEN generation_task.id IS NOT NULL THEN 'generation'
+                ELSE 'project'
+            END AS source,
             asset.content_type,
             asset.size_bytes,
             asset.metadata_json,
@@ -197,9 +207,26 @@ def _candidate_cte() -> str:
             'stored' AS delivery
         FROM assets AS asset
         JOIN projects AS project ON project.id = asset.project_id
-        WHERE asset.content_type LIKE 'image/%%'
-           OR asset.content_type LIKE 'audio/%%'
-           OR asset.content_type LIKE 'video/%%'
+        LEFT JOIN generation_tasks AS generation_task
+          ON generation_task.result_asset_id = asset.id
+         AND generation_task.status = 'SUCCEEDED'
+         AND generation_task.archive_status = 'ARCHIVED'
+         AND generation_task.superseded_by_task_id IS NULL
+        LEFT JOIN generation_batches AS generation_batch
+          ON generation_batch.id = generation_task.batch_id
+        WHERE (
+            asset.content_type LIKE 'image/%%'
+            OR asset.content_type LIKE 'audio/%%'
+            OR asset.content_type LIKE 'video/%%'
+        )
+          AND (
+            generation_task.id IS NULL
+            OR NOT EXISTS (
+                SELECT 1 FROM customer_batch_visibility AS visibility
+                WHERE visibility.user_id = %s
+                  AND visibility.batch_id = generation_batch.id
+            )
+          )
 
         UNION ALL
 
@@ -294,7 +321,7 @@ def _read_rows(
 ) -> list[Any]:
     scope, scope_params = _scope_clause(actor)
     clauses = [scope]
-    parameters: list[object] = [actor.id, actor.id, *scope_params]
+    parameters: list[object] = [actor.id, actor.id, actor.id, *scope_params]
     if not include_hidden:
         clauses.append("COALESCE(preference.hidden, 0) = 0")
     if media_type:
@@ -352,7 +379,7 @@ def _count_rows(
 ) -> int:
     scope, scope_params = _scope_clause(actor)
     clauses = [scope, "COALESCE(preference.hidden, 0) = 0"]
-    parameters: list[object] = [actor.id, actor.id, *scope_params]
+    parameters: list[object] = [actor.id, actor.id, actor.id, *scope_params]
     if media_type:
         clauses.append("candidate.media_type = %s")
         parameters.append(media_type)

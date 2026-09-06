@@ -1065,9 +1065,9 @@ def test_task_paid_regeneration_supersedes_audio_failure_once_and_keeps_history(
         ).fetchone()[0]
 
     assert source_row["status"] == "SUCCEEDED"
-    assert source_row["archive_status"] == "DIRECT"
+    assert source_row["archive_status"] == "ARCHIVED"
     assert source_row["quality_status"] == "AUDIO_QUALITY_FAILED"
-    assert source_row["result_asset_id"] is None
+    assert source_row["result_asset_id"] is not None
     assert source_row["superseded_by_task_id"] == replacement_task_id
     assert source_row["superseded_at"] is not None
     assert replacement_row["retry_of_task_id"] == source_task_id
@@ -1159,7 +1159,7 @@ def test_generated_video_does_not_run_visual_quality_or_require_regeneration(
 
     assert result is not None
     assert result.status == "SUCCEEDED"
-    assert result.archive_status == "DIRECT"
+    assert result.archive_status == "ARCHIVED"
     assert result.quality_status == "NOT_REQUIRED"
     assert result.quality_issue_codes == []
     assert result.available_actions == ["REGENERATE"]
@@ -1556,9 +1556,9 @@ def test_retry_archive_failed_is_idempotent_and_never_creates_provider_task(
     assert operation_count == 1
     assert audit_count == 1
     assert provider.create_calls == 0
-    assert provider.download_calls == 0
+    assert provider.download_calls == 1
     assert result is not None
-    assert result.archive_status == "DIRECT"
+    assert result.archive_status == "ARCHIVED"
 
 
 def test_retry_pre_provider_failure_requeues_once_and_records_lineage(
@@ -2989,7 +2989,7 @@ def test_generation_batch_quantity_limits_idempotency_and_fake_archive(
     ).json()
     assert after_worker["progress"]["terminal_count"] == 3
     assert after_worker["progress"]["progress_percent"] == 100
-    assert {task["archive_status"] for task in after_worker["tasks"]} == {"DIRECT"}
+    assert {task["archive_status"] for task in after_worker["tasks"]} == {"ARCHIVED"}
 
 
 def test_generation_batch_replay_ignores_a_later_lower_quantity_limit(
@@ -4254,7 +4254,7 @@ def test_fake_h3_provider_uses_explicit_gate1_result_fixture(
     assert provider.download_result(result.result_url) == fixture_content
 
 
-def test_worker_delivers_provider_result_without_uploading_to_storage(
+def test_worker_archives_provider_result_to_owned_storage(
     db_path: Path,
     client: TestClient,
 ) -> None:
@@ -4272,16 +4272,13 @@ def test_worker_delivers_provider_result_without_uploading_to_storage(
         },
     )
 
-    class StorageMustNotBeUsed(FakeStorageAdapter):
-        def put_object(self, key: str, content: bytes, *, content_type: str):  # type: ignore[override]
-            raise AssertionError("generated video must not be uploaded to storage")
-
+    storage = FakeStorageAdapter(provider="cos", bucket="generation-results")
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         result = run_next_generation_task(
             conn,
             worker_id="worker_a",
-            provider=FakeH3Provider(),
-            storage=StorageMustNotBeUsed(provider="cos", bucket="generation-results"),
+            provider=FakeH3Provider(result_content=b"owned-h3-result"),
+            storage=storage,
             first_frame_storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
         )
         row = conn.execute(
@@ -4290,15 +4287,22 @@ def test_worker_delivers_provider_result_without_uploading_to_storage(
             FROM generation_tasks
             """
         ).fetchone()
+        asset = conn.execute(
+            "SELECT storage_uri, content_type FROM assets WHERE id = ?",
+            (row["result_asset_id"],),
+        ).fetchone()
 
     assert result is not None
     assert row["status"] == "SUCCEEDED"
-    assert row["archive_status"] == "DIRECT"
-    assert row["result_asset_id"] is None
+    assert row["archive_status"] == "ARCHIVED"
+    assert row["result_asset_id"] is not None
     assert row["error_code"] is None
+    assert asset["content_type"] == "video/mp4"
+    assert asset["storage_uri"].startswith("cos://generation-results/generation-results/")
+    assert storage.get_object(f"generation-results/{result.id}.mp4") == b"owned-h3-result"
 
 
-def test_worker_delivers_result_when_storage_is_unavailable(
+def test_worker_keeps_paid_result_retryable_when_archive_storage_is_unavailable(
     db_path: Path, client: TestClient
 ) -> None:
     prompt_id = create_locked_prompt(client)
@@ -4334,12 +4338,12 @@ def test_worker_delivers_result_when_storage_is_unavailable(
             """
         ).fetchone()
         assert row["status"] == "SUCCEEDED"
-        assert row["archive_status"] == "DIRECT"
+        assert row["archive_status"] == "ARCHIVE_FAILED"
         assert row["provider_result_url"] is not None
         assert row["result_asset_id"] is None
 
 
-def test_archive_retry_finishes_without_downloading_media(
+def test_archive_retry_download_failure_keeps_existing_paid_result_retryable(
     db_path: Path, client: TestClient
 ) -> None:
     prompt_id = create_locked_prompt(client)
@@ -4393,13 +4397,13 @@ def test_archive_retry_finishes_without_downloading_media(
         ).fetchone()
 
     assert row["status"] == "SUCCEEDED"
-    assert row["archive_status"] == "DIRECT"
+    assert row["archive_status"] == "ARCHIVE_FAILED"
     assert row["provider_result_url"] is not None
-    assert row["next_poll_at"] is None
+    assert row["next_poll_at"] is not None
 
 
 def test_archive_retry_does_not_require_provider_credentials(
-    db_path: Path, client: TestClient
+    db_path: Path, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prompt_id = create_locked_prompt(client)
     client.post(
@@ -4426,12 +4430,18 @@ def test_archive_retry_does_not_require_provider_credentials(
         conn.execute(
             """
             UPDATE generation_tasks
-            SET archive_status = 'ARCHIVE_FAILED', next_poll_at = datetime('now', '-1 second')
+            SET archive_status = 'ARCHIVE_FAILED', result_asset_id = NULL,
+                next_poll_at = datetime('now', '-1 second')
             """
         )
         conn.commit()
         # Simulate a paid METASO task whose provider settings vanished.
         conn.execute("UPDATE generation_tasks SET provider = 'metaso'")
+        monkeypatch.setattr(
+            MetasoH3Provider,
+            "download_result",
+            lambda _provider, _url: b"recovered-without-api-key",
+        )
         run_next_generation_task(
             conn,
             worker_id="worker_a",
@@ -4447,7 +4457,7 @@ def test_archive_retry_does_not_require_provider_credentials(
         ).fetchone()
 
     assert row["status"] == "SUCCEEDED"
-    assert row["archive_status"] == "DIRECT"
+    assert row["archive_status"] == "ARCHIVED"
     assert row["provider_result_url"] is not None
     assert row["next_poll_at"] is None
 
@@ -4503,7 +4513,8 @@ class ReconcileSucceededProvider(MetasoH3Provider):
         }
 
     def download_result(self, url: str) -> bytes:
-        raise AssertionError("reconciliation must return the URL without downloading media")
+        assert url == "https://example.com/results/ok.mp4"
+        return b"reconciled-h3-result"
 
 
 class ReconcileRunningProvider(MetasoH3Provider):
@@ -4572,8 +4583,8 @@ def test_reconcile_submission_uncertain_recovers_succeeded_result(
 
     assert result is not None
     assert row["status"] == "SUCCEEDED"
-    assert row["archive_status"] == "DIRECT"
-    assert row["result_asset_id"] is None
+    assert row["archive_status"] == "ARCHIVED"
+    assert row["result_asset_id"] is not None
     assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
     assert billing_rows == [("RESERVE", 1), ("SETTLE", 1)]
 
@@ -4655,10 +4666,11 @@ def test_reconcile_route_is_idempotent_and_audited(
         ).fetchone()[0]
         completed_audits = conn.execute(
             "SELECT COUNT(*) FROM audit_logs WHERE action = ? AND entity_id = ?",
-            ("generation_task.reconcile_direct", task_id),
+            ("generation_task.reconcile_archived", task_id),
         ).fetchone()[0]
 
-    assert dict(task_row) == {"archive_status": "DIRECT", "result_asset_id": None}
+    assert task_row["archive_status"] == "ARCHIVED"
+    assert task_row["result_asset_id"] is not None
     assert operation_count == 1
     assert requested_audits == 1
     assert completed_audits == 1
@@ -5259,7 +5271,7 @@ def test_metaso_batch_requires_cloud_storage(
     assert response.json()["detail"]["code"] == "METASO_REQUIRES_CLOUD_STORAGE"
 
 
-def test_direct_delivery_does_not_exhaust_retries_on_download_failure(
+def test_archive_download_failure_exhausts_bounded_retries(
     db_path: Path, client: TestClient
 ) -> None:
     prompt_id = create_locked_prompt(client)
@@ -5284,18 +5296,11 @@ def test_direct_delivery_does_not_exhaust_retries_on_download_failure(
         run_next_generation_task(
             conn,
             worker_id="worker_a",
-            provider=FakeH3Provider(),
+            provider=FailingDownloadProvider(),
             storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
             first_frame_storage=FakeStorageAdapter(provider="fake", bucket="generation-results"),
         )
-        conn.execute(
-            """
-            UPDATE generation_tasks
-            SET archive_status = 'ARCHIVE_FAILED', next_poll_at = datetime('now', '-1 second')
-            """
-        )
-        conn.commit()
-        for _ in range(MAX_ARCHIVE_RETRIES):
+        for _ in range(MAX_ARCHIVE_RETRIES - 1):
             # Each failed attempt backs off 60s via next_poll_at; fast-forward so
             # the next acquire picks the task up again.
             conn.execute("UPDATE generation_tasks SET next_poll_at = datetime('now', '-1 second')")
@@ -5312,10 +5317,10 @@ def test_direct_delivery_does_not_exhaust_retries_on_download_failure(
             "SELECT status, archive_status, provider_result_url, error_code FROM generation_tasks"
         ).fetchone()
 
-    assert row["status"] == "SUCCEEDED"
-    assert row["archive_status"] == "DIRECT"
-    assert row["error_code"] is None
-    assert row["provider_result_url"] is not None
+    assert row["status"] == "FAILED"
+    assert row["archive_status"] == "ARCHIVE_FAILED"
+    assert row["error_code"] == "ARCHIVE_RETRY_EXHAUSTED"
+    assert row["provider_result_url"] is None
 
 
 def test_reconcile_route_guards_and_rejects_non_uncertain_task(
@@ -5862,7 +5867,7 @@ def test_generation_batch_missing_wallet_returns_structured_invariant_error(
     assert batch_count == 0
 
 
-def test_direct_generation_settles_once_even_when_storage_is_unavailable(
+def test_generation_settles_once_only_after_archive_succeeds(
     client: TestClient,
     db_path: Path,
 ) -> None:
@@ -5905,7 +5910,7 @@ def test_direct_generation_settles_once_even_when_storage_is_unavailable(
         rows = _task_billing_rows(conn, task_id)
 
     assert first is not None
-    assert first.archive_status == "DIRECT"
+    assert first.archive_status == "ARCHIVED"
     assert second is None
     assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
@@ -5946,12 +5951,12 @@ def test_direct_generation_settles_once_even_when_storage_is_unavailable(
         rows = _task_billing_rows(conn, failed_task_id)
 
     assert result is not None
-    assert result.archive_status == "DIRECT"
-    assert dict(wallet) == {"available_credits": 998, "reserved_credits": 0}
-    assert rows == [("RESERVE", 1), ("SETTLE", 1)]
+    assert result.archive_status == "ARCHIVE_FAILED"
+    assert dict(wallet) == {"available_credits": 998, "reserved_credits": 1}
+    assert rows == [("RESERVE", 1)]
 
 
-def test_direct_generation_does_not_depend_on_storage_download_urls(
+def test_archived_generation_does_not_require_a_playback_url_during_worker_run(
     client: TestClient,
     db_path: Path,
 ) -> None:
@@ -5999,7 +6004,8 @@ def test_direct_generation_does_not_depend_on_storage_download_urls(
         rows = _task_billing_rows(conn, task_id)
 
     assert result is not None
-    assert dict(task) == {"archive_status": "DIRECT", "result_asset_id": None}
+    assert task["archive_status"] == "ARCHIVED"
+    assert task["result_asset_id"] is not None
     assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 

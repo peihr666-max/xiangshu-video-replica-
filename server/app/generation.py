@@ -58,6 +58,7 @@ from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
     StoragePermissionError,
+    StoredObject,
     cloud_storage_config_from_settings,
     require_storage_match,
     storage_object_ref_from_uri,
@@ -366,6 +367,7 @@ class ReconcileOperationOutcome:
     result_url: str | None = None
     audio_quality_status: str | None = None
     quality_issue_codes: list[str] | None = None
+    stored: StoredObject | None = None
 
 
 @dataclass(frozen=True)
@@ -373,6 +375,17 @@ class GenerationSubmissionWork:
     provider: H3Provider
     provider_request: dict[str, Any]
     request_hash: str
+
+
+@dataclass(frozen=True)
+class GenerationArchiveWork:
+    task_id: str
+    batch_id: str
+    project_id: str
+    created_by_user_id: str
+    result_url: str
+    provider: H3Provider
+    object_key: str
 
 
 class H3Provider:
@@ -2479,7 +2492,13 @@ def run_next_generation_task(
         lease.get("archive_status") == "ARCHIVE_FAILED" and lease.get("provider_result_url")
     )
     if archive_retry:
-        return _retry_archive(conn, task_id=task_id, batch_id=batch_id)
+        return _retry_archive(
+            conn,
+            task_id=task_id,
+            batch_id=batch_id,
+            provider=provider,
+            storage=storage,
+        )
     if str(lease["provider"]) == "metaso" and source_storage.provider != "cos":
         mark_task_provider_settings_unavailable(
             conn,
@@ -2565,13 +2584,12 @@ def run_next_generation_task(
         )
         mark_generation_task_archiving(conn, lease=lease, result_url=provider_result.result_url)
 
-    with conn:
-        return finalize_generation_direct_result(
-            conn,
-            lease=lease,
-            quality_status="NOT_REQUIRED",
-            quality_issue_codes=[],
-        )
+    return archive_generation_result(
+        conn,
+        lease=lease,
+        provider=provider,
+        storage=storage,
+    )
 
 
 def _retry_archive(
@@ -2579,8 +2597,10 @@ def _retry_archive(
     *,
     task_id: str,
     batch_id: str,
+    provider: H3Provider | None,
+    storage: StorageAdapter,
 ) -> TaskResult:
-    """Finish a saved paid result without downloading or processing its media."""
+    """Recover a saved paid result without issuing another provider create call."""
     row = conn.execute(
         """
         SELECT generation_tasks.provider_result_url
@@ -2597,15 +2617,15 @@ def _retry_archive(
             mark_generation_task_archiving(
                 conn, lease={"id": task_id, "batch_id": batch_id}, result_url=result_url
             )
-            return finalize_generation_direct_result(
-                conn,
-                lease={"id": task_id, "batch_id": batch_id},
-                quality_status="NOT_REQUIRED",
-                quality_issue_codes=[],
-            )
+        return archive_generation_result(
+            conn,
+            lease={"id": task_id, "batch_id": batch_id},
+            provider=provider,
+            storage=storage,
+        )
     except Exception as exc:
         logger.warning(
-            "direct result retry finalization failed for task %s: %s", task_id, type(exc).__name__
+            "generation archive retry failed for task %s: %s", task_id, type(exc).__name__
         )
         _release_archive_retry(conn, task_id=task_id, batch_id=batch_id)
         return get_task_result(conn, task_id)
@@ -3435,11 +3455,22 @@ def perform_generation_reconcile_operation(
             "PROVIDER_RESULT_URL_MISSING",
             "Provider reports success without a result URL.",
         )
+    archive_work = GenerationArchiveWork(
+        task_id=work.lease.task_id,
+        batch_id=work.batch_id,
+        project_id=work.project_id,
+        created_by_user_id=work.created_by_user_id,
+        result_url=query.result_url,
+        provider=work.provider,
+        object_key=f"generation-results/{work.lease.task_id}/{work.lease.id}.mp4",
+    )
+    stored = perform_generation_archive(archive_work, storage=storage)
     return ReconcileOperationOutcome(
         status="SUCCEEDED",
         result_url=query.result_url,
         audio_quality_status="NOT_REQUIRED",
         quality_issue_codes=[],
+        stored=stored,
     )
 
 
@@ -3479,14 +3510,32 @@ def complete_generation_reconcile_operation(
             _refresh_batch_status_in_transaction(conn, batch_id=work.batch_id)
             result = get_task_result(conn, lease.task_id)
         else:
-            if outcome.result_url is None or outcome.audio_quality_status is None:
-                raise RuntimeError("reconciled direct result is unavailable")
+            if (
+                outcome.result_url is None
+                or outcome.audio_quality_status is None
+                or outcome.stored is None
+            ):
+                raise RuntimeError("reconciled archived result is unavailable")
+            archive_work = GenerationArchiveWork(
+                task_id=lease.task_id,
+                batch_id=work.batch_id,
+                project_id=work.project_id,
+                created_by_user_id=work.created_by_user_id,
+                result_url=outcome.result_url,
+                provider=cast(H3Provider, work.provider),
+                object_key=f"generation-results/{lease.task_id}/{lease.id}.mp4",
+            )
+            result_asset_id = insert_generation_archive_asset(
+                conn,
+                work=archive_work,
+                stored=outcome.stored,
+            )
             task_update = conn.execute(
                 """
                 UPDATE generation_tasks
-                SET status = 'SUCCEEDED', archive_status = 'DIRECT',
+                SET status = 'SUCCEEDED', archive_status = 'ARCHIVED',
                     quality_status = %s, quality_issue_codes = %s,
-                    provider_result_url = %s, result_asset_id = NULL, error_code = NULL,
+                    provider_result_url = %s, result_asset_id = %s, error_code = NULL,
                     error_message_redacted = NULL, locked_by = NULL,
                     locked_until = NULL, completed_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
@@ -3497,6 +3546,7 @@ def complete_generation_reconcile_operation(
                     outcome.audio_quality_status,
                     json.dumps(outcome.quality_issue_codes or [], ensure_ascii=True),
                     outcome.result_url,
+                    result_asset_id,
                     lease.task_id,
                 ),
             )
@@ -3534,8 +3584,8 @@ def complete_generation_reconcile_operation(
             conn,
             actor=work.actor,
             action=(
-                "generation_task.reconcile_direct"
-                if result.archive_status == "DIRECT"
+                "generation_task.reconcile_archived"
+                if result.archive_status == "ARCHIVED"
                 else "generation_task.reconcile_terminal_failed"
             ),
             entity_type="generation_task",
@@ -3896,59 +3946,86 @@ def reconcile_submission_uncertain_task(
     if status == "succeeded":
         result_url = _metaso_content_url(item, provider_task_id=str(provider_task_id))
         _renew_reconcile_reservation(conn, reservation=reconcile_reservation)
+        archive_work = GenerationArchiveWork(
+            task_id=task_id,
+            batch_id=batch_id,
+            project_id=project_id,
+            created_by_user_id=created_by_user_id,
+            result_url=result_url,
+            provider=provider,
+            object_key=(
+                f"generation-results/{task_id}/{reconcile_reservation.id}.mp4"
+                if reconcile_reservation is not None
+                else f"generation-results/{task_id}.mp4"
+            ),
+        )
+        archive_storage = storage_factory()
+        try:
+            stored = perform_generation_archive(archive_work, storage=archive_storage)
+        except Exception as exc:
+            raise generation_error(
+                503,
+                "RESULT_ARCHIVE_FAILED",
+                "The recovered provider result could not be saved; retry reconciliation.",
+            ) from exc
+        _renew_reconcile_reservation(conn, reservation=reconcile_reservation)
         task_state_guard = (
             "AND status = 'SUBMISSION_UNCERTAIN' AND result_asset_id IS NULL"
             if reconcile_reservation is not None
             else ""
         )
-        with conn:
-            if reconcile_reservation is not None:
-                _renew_reconcile_reservation_in_transaction(
+        try:
+            with conn:
+                if reconcile_reservation is not None:
+                    _renew_reconcile_reservation_in_transaction(
+                        conn,
+                        reservation_id=reconcile_reservation.id,
+                    )
+                result_asset_id = insert_generation_archive_asset(
                     conn,
-                    reservation_id=reconcile_reservation.id,
+                    work=archive_work,
+                    stored=stored,
                 )
-            task_update = conn.execute(
-                f"""
-                UPDATE generation_tasks
-                SET
-                    status = 'SUCCEEDED',
-                    archive_status = 'DIRECT',
-                    provider_result_url = %s,
-                    quality_status = %s,
-                    quality_issue_codes = %s,
-                    result_asset_id = NULL,
-                    error_code = NULL,
-                    error_message_redacted = NULL,
-                    locked_by = NULL,
-                    locked_until = NULL,
-                    completed_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-                {task_state_guard}
-                """,
-                (
-                    result_url,
-                    "NOT_REQUIRED",
-                    "[]",
-                    task_id,
-                ),
-            )
-            if reconcile_reservation is not None and task_update.rowcount != 1:
-                raise _reconcile_reservation_lost()
-            finalize_internal_billing(conn, task_id=task_id, outcome="success")
-            _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
-            if reconcile_reservation is None:
-                release_user_queue_slot_for_task(conn, task_id=task_id)
-            result = get_task_result(conn, task_id)
-            if reconcile_reservation is not None:
-                _complete_reconcile_operation_in_transaction(
-                    conn,
-                    reservation=reconcile_reservation,
-                    task_id=task_id,
-                    batch_id=batch_id,
-                    project_id=project_id,
-                    result=result,
+                task_update = conn.execute(
+                    f"""
+                    UPDATE generation_tasks
+                    SET
+                        status = 'SUCCEEDED',
+                        archive_status = 'ARCHIVED',
+                        provider_result_url = %s,
+                        quality_status = %s,
+                        quality_issue_codes = %s,
+                        result_asset_id = %s,
+                        error_code = NULL,
+                        error_message_redacted = NULL,
+                        locked_by = NULL,
+                        locked_until = NULL,
+                        completed_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    {task_state_guard}
+                    """,
+                    (result_url, "NOT_REQUIRED", "[]", result_asset_id, task_id),
                 )
+                if reconcile_reservation is not None and task_update.rowcount != 1:
+                    raise _reconcile_reservation_lost()
+                finalize_internal_billing(conn, task_id=task_id, outcome="success")
+                _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
+                if reconcile_reservation is None:
+                    release_user_queue_slot_for_task(conn, task_id=task_id)
+                result = get_task_result(conn, task_id)
+                if reconcile_reservation is not None:
+                    _complete_reconcile_operation_in_transaction(
+                        conn,
+                        reservation=reconcile_reservation,
+                        task_id=task_id,
+                        batch_id=batch_id,
+                        project_id=project_id,
+                        result=result,
+                    )
+        except Exception:
+            discard_generation_archive(archive_storage, work=archive_work)
+            raise
         return result
     if status in {"failed", "cancelled"}:
         with conn:
@@ -4674,25 +4751,124 @@ def mark_generation_task_archiving(
     _refresh_batch_status_in_transaction(conn, batch_id=str(lease["batch_id"]))
 
 
-def finalize_generation_direct_result(
+def prepare_generation_archive(
     conn: BusinessConnection,
     *,
     lease: dict[str, Any],
-    quality_status: str,
-    quality_issue_codes: list[str],
-) -> TaskResult:
-    """Settle a provider-hosted result without copying video bytes to storage."""
+    provider: H3Provider | None = None,
+) -> GenerationArchiveWork:
+    """Load the durable provider URL before doing network or storage I/O."""
 
     task_id = str(lease["id"])
+    row = conn.execute(
+        """
+        SELECT
+            task.status,
+            task.provider,
+            task.provider_result_url,
+            task.result_asset_id,
+            batch.project_id,
+            batch.created_by_user_id
+        FROM generation_tasks AS task
+        JOIN generation_batches AS batch ON batch.id = task.batch_id
+        WHERE task.id = %s
+        """,
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError("generation task disappeared before archiving")
+    if (
+        str(row["status"]) != "ARCHIVING"
+        or row["provider_result_url"] is None
+        or row["result_asset_id"] is not None
+    ):
+        raise RuntimeError("generation task is not ready for archiving")
+    provider_name = str(row["provider"])
+    if provider is None:
+        try:
+            provider = h3_provider_for_task(conn, provider_name)
+        except H3ProviderSettingsUnavailable:
+            if provider_name != "metaso":
+                raise
+            # The signed result URL can be downloaded without the API key.
+            # Keeping archive recovery independent of current credentials
+            # prevents a paid result from being stranded after key rotation.
+            provider = MetasoH3Provider(api_key="")
+    return GenerationArchiveWork(
+        task_id=task_id,
+        batch_id=str(lease["batch_id"]),
+        project_id=str(row["project_id"]),
+        created_by_user_id=str(row["created_by_user_id"]),
+        result_url=str(row["provider_result_url"]),
+        provider=provider,
+        object_key=f"generation-results/{task_id}.mp4",
+    )
+
+
+def perform_generation_archive(
+    work: GenerationArchiveWork,
+    *,
+    storage: StorageAdapter,
+) -> StoredObject:
+    content = work.provider.download_result(work.result_url)
+    if not content:
+        raise H3ProviderFailed("provider result download was empty", terminal=True)
+    return storage.put_object(work.object_key, content, content_type="video/mp4")
+
+
+def insert_generation_archive_asset(
+    conn: BusinessConnection,
+    *,
+    work: GenerationArchiveWork,
+    stored: StoredObject,
+) -> str:
+    result_asset_id = str(uuid4())
+    conn.execute(
+        """
+        INSERT INTO assets (
+            id, project_id, kind, storage_uri, sha256, size_bytes,
+            content_type, created_by_user_id, metadata_json
+        ) VALUES (%s, %s, 'generation_video', %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            result_asset_id,
+            work.project_id,
+            stored.uri,
+            stored.sha256,
+            stored.size,
+            stored.content_type,
+            work.created_by_user_id,
+            json.dumps(
+                {
+                    "generation_task_id": work.task_id,
+                    "original_filename": f"{work.task_id}.mp4",
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+        ),
+    )
+    return result_asset_id
+
+
+def complete_generation_archive(
+    conn: BusinessConnection,
+    *,
+    work: GenerationArchiveWork,
+    stored: StoredObject,
+    quality_status: str = "NOT_REQUIRED",
+    quality_issue_codes: list[str] | None = None,
+) -> TaskResult:
+    result_asset_id = insert_generation_archive_asset(conn, work=work, stored=stored)
     update = conn.execute(
         """
         UPDATE generation_tasks
         SET
             status = 'SUCCEEDED',
-            archive_status = 'DIRECT',
+            archive_status = 'ARCHIVED',
             quality_status = %s,
             quality_issue_codes = %s,
-            result_asset_id = NULL,
+            result_asset_id = %s,
             error_code = NULL,
             error_message_redacted = NULL,
             next_poll_at = NULL,
@@ -4701,22 +4877,69 @@ def finalize_generation_direct_result(
             completed_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s AND status = 'ARCHIVING'
-          AND provider_result_url IS NOT NULL
+          AND provider_result_url = %s
+          AND result_asset_id IS NULL
           AND superseded_by_task_id IS NULL
         """,
-        (quality_status, json.dumps(quality_issue_codes, ensure_ascii=True), task_id),
+        (
+            quality_status,
+            json.dumps(quality_issue_codes or [], ensure_ascii=True),
+            result_asset_id,
+            work.task_id,
+            work.result_url,
+        ),
     )
     if update.rowcount != 1:
         row = conn.execute(
-            "SELECT superseded_by_task_id FROM generation_tasks WHERE id = %s", (task_id,)
+            "SELECT superseded_by_task_id FROM generation_tasks WHERE id = %s",
+            (work.task_id,),
         ).fetchone()
         if row is not None and row["superseded_by_task_id"] is not None:
-            raise GenerationTaskSupersededError(task_id)
-        raise RuntimeError("generation result lease was lost before direct delivery")
-    finalize_internal_billing(conn, task_id=task_id, outcome="success")
-    _refresh_batch_status_in_transaction(conn, batch_id=str(lease["batch_id"]))
-    release_user_queue_slot_for_task(conn, task_id=task_id)
-    return get_task_result(conn, task_id)
+            raise GenerationTaskSupersededError(work.task_id)
+        raise RuntimeError("generation result lease was lost before archive completion")
+    finalize_internal_billing(conn, task_id=work.task_id, outcome="success")
+    _refresh_batch_status_in_transaction(conn, batch_id=work.batch_id)
+    release_user_queue_slot_for_task(conn, task_id=work.task_id)
+    return get_task_result(conn, work.task_id)
+
+
+def discard_generation_archive(
+    storage: StorageAdapter,
+    *,
+    work: GenerationArchiveWork,
+) -> None:
+    try:
+        storage.delete_object(work.object_key, actor_id=None)
+    except Exception as exc:
+        logger.warning(
+            "generation archive cleanup failed for task %s: %s",
+            work.task_id,
+            type(exc).__name__,
+        )
+
+
+def archive_generation_result(
+    conn: BusinessConnection,
+    *,
+    lease: dict[str, Any],
+    provider: H3Provider | None,
+    storage: StorageAdapter,
+) -> TaskResult:
+    work = prepare_generation_archive(conn, lease=lease, provider=provider)
+    try:
+        stored = perform_generation_archive(work, storage=storage)
+    except Exception as exc:
+        logger.warning(
+            "generation archive failed for task %s: %s", work.task_id, type(exc).__name__
+        )
+        _release_archive_retry(conn, task_id=work.task_id, batch_id=work.batch_id)
+        return get_task_result(conn, work.task_id)
+    try:
+        with conn:
+            return complete_generation_archive(conn, work=work, stored=stored)
+    except Exception:
+        discard_generation_archive(storage, work=work)
+        raise
 
 
 def release_generation_archive_retry(

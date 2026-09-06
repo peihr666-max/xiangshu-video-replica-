@@ -50,9 +50,10 @@ from app.generation import (
     acquire_generation_continuation_lease,
     acquire_generation_reconcile_operation,
     acquire_generation_task_lease,
+    complete_generation_archive,
     complete_generation_reconcile_operation,
+    discard_generation_archive,
     fail_generation_reconcile_operation,
-    finalize_generation_direct_result,
     h3_provider_for_task,
     mark_generation_task_archiving,
     mark_generation_task_running,
@@ -60,9 +61,12 @@ from app.generation import (
     mark_task_provider_failed,
     mark_task_provider_settings_unavailable,
     mark_task_submission_uncertain,
+    perform_generation_archive,
     perform_generation_reconcile_operation,
+    prepare_generation_archive,
     prepare_generation_reconcile_operation,
     prepare_generation_submission,
+    release_generation_archive_retry,
     reschedule_generation_poll,
     run_next_generation_task,
 )
@@ -441,6 +445,17 @@ def run_worker_once(
                     outcome=reconcile_outcome,
                 )
             except Exception as exc:
+                if reconcile_outcome is not None and reconcile_outcome.stored is not None:
+                    try:
+                        (generation_storage or storage).delete_object(
+                            reconcile_outcome.stored.key,
+                            actor_id=None,
+                        )
+                    except Exception as cleanup_exc:
+                        logger.warning(
+                            "reconcile archive cleanup failed: %s",
+                            type(cleanup_exc).__name__,
+                        )
                 fail_generation_reconcile_operation(
                     conn,
                     lease=reconcile_lease,
@@ -739,13 +754,6 @@ def _run_pg_generation_step(
                 lease=lease,
                 result_url=result.result_url,
             )
-        with pg_transaction() as raw_conn:
-            finalize_generation_direct_result(
-                BusinessConnection.postgres(raw_conn),
-                lease=lease,
-                quality_status="NOT_REQUIRED",
-                quality_issue_codes=[],
-            )
         return
 
     if status == "RUNNING":
@@ -799,25 +807,47 @@ def _run_pg_generation_step(
                 )
             return
         with pg_transaction() as raw_conn:
-            conn = BusinessConnection.postgres(raw_conn)
             mark_generation_task_archiving(
-                conn,
+                BusinessConnection.postgres(raw_conn),
                 lease=lease,
                 result_url=query.result_url,
-            )
-            finalize_generation_direct_result(
-                conn, lease=lease, quality_status="NOT_REQUIRED", quality_issue_codes=[]
             )
         return
 
     if status == "ARCHIVING":
-        with pg_transaction() as raw_conn:
-            finalize_generation_direct_result(
-                BusinessConnection.postgres(raw_conn),
-                lease=lease,
-                quality_status="NOT_REQUIRED",
-                quality_issue_codes=[],
+        archive_work = None
+        stored = None
+        try:
+            with pg_transaction() as raw_conn:
+                archive_work = prepare_generation_archive(
+                    BusinessConnection.postgres(raw_conn),
+                    lease=lease,
+                    provider=provider_override,
+                )
+            stored = perform_generation_archive(archive_work, storage=storage)
+            with pg_transaction() as raw_conn:
+                complete_generation_archive(
+                    BusinessConnection.postgres(raw_conn),
+                    work=archive_work,
+                    stored=stored,
+                )
+        except GenerationTaskSupersededError:
+            if archive_work is not None and stored is not None:
+                discard_generation_archive(storage, work=archive_work)
+            raise
+        except Exception as exc:
+            if archive_work is not None and stored is not None:
+                discard_generation_archive(storage, work=archive_work)
+            logger.warning(
+                "generation archive step failed for task %s: %s",
+                task_id,
+                type(exc).__name__,
             )
+            with pg_transaction() as raw_conn:
+                release_generation_archive_retry(
+                    BusinessConnection.postgres(raw_conn),
+                    lease=lease,
+                )
 
 
 def run_pg_worker_once(
@@ -997,6 +1027,17 @@ def run_pg_worker_once(
                         outcome=reconcile_outcome,
                     )
             except Exception as exc:
+                if reconcile_outcome is not None and reconcile_outcome.stored is not None:
+                    try:
+                        (generation_storage or storage).delete_object(
+                            reconcile_outcome.stored.key,
+                            actor_id=None,
+                        )
+                    except Exception as cleanup_exc:
+                        logger.warning(
+                            "reconcile archive cleanup failed: %s",
+                            type(cleanup_exc).__name__,
+                        )
                 with pg_transaction() as raw_conn:
                     fail_generation_reconcile_operation(
                         BusinessConnection.postgres(raw_conn),

@@ -7,7 +7,7 @@ smokes are not acceptable evidence.
 
 Two independent tests each own their whole chain (fresh TRUNCATE state):
 
-1. ``test_customer_chain_activation_to_direct_task`` — activate (201),
+1. ``test_customer_chain_activation_to_archived_task`` — activate (201),
    business-login, create the project through the fenced write route,
    script → compile → lock the prompt over the API, submit a batch
    (provider=fake_h3), drain the queue with a real worker
@@ -486,7 +486,7 @@ def _signed_notify_params(
 # ---------------------------------------------------------------------------
 
 
-def test_customer_chain_activation_to_direct_task(client: TestClient, chain_dsn: str) -> None:
+def test_customer_chain_activation_to_archived_task(client: TestClient, chain_dsn: str) -> None:
     """Activate, create the project, lock the prompt and submit the batch
     through the customer API, then drain the queue with the real worker:
     the task lands SUCCEEDED/DIRECT, the batch closes, and the fair-queue
@@ -584,8 +584,8 @@ def test_customer_chain_activation_to_direct_task(client: TestClient, chain_dsn:
             (batch_id,),
         ).fetchone()
         assert task is not None
-        assert task[0] == "SUCCEEDED" and task[1] == "DIRECT", task
-        assert task[2] is None, "direct success must not copy the result into an asset"
+        assert task[0] == "SUCCEEDED" and task[1] == "ARCHIVED", task
+        assert task[2] is not None, "archived success must reference an owned asset"
         assert task[3] is None, "lease must be cleared after completion"
         batch_row = conn.execute(
             "SELECT status FROM generation_batches WHERE id = %s", (batch_id,)

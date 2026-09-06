@@ -157,6 +157,46 @@ def test_direct_result_is_visible_but_not_presented_as_cloud_asset(client: TestC
     assert "rename" not in material["allowed_actions"]
 
 
+def test_archived_generation_result_keeps_generation_identity_and_cloud_actions(
+    client: TestClient, db_path: Path
+) -> None:
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id, project_id, kind, storage_uri, sha256, size_bytes,
+                content_type, metadata_json, created_by_user_id
+            ) VALUES ('archived-video', 'project-owned', 'generation_video',
+                      'fake://private-bucket/generation-results/task-direct.mp4',
+                      ?, 16, 'video/mp4', '{}', 'employee_1')
+            """,
+            ("c" * 64,),
+        )
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET archive_status = 'ARCHIVED', result_asset_id = 'archived-video'
+            WHERE id = 'task-direct'
+            """
+        )
+        conn.commit()
+
+    response = client.get(
+        "/api/studio/materials?source=generation",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    material = response.json()["items"][0]
+    assert material["id"] == "asset:archived-video"
+    assert material["asset_id"] == "archived-video"
+    assert material["generation_task_id"] == "task-direct"
+    assert material["group"] == "任务结果"
+    assert material["delivery"] == "stored"
+    assert material["saved"] is True
+    assert "download" in material["allowed_actions"]
+
+
 def test_upload_audio_to_storage_then_complete_and_list_it(
     client: TestClient,
     storage: FakeStorageAdapter,
