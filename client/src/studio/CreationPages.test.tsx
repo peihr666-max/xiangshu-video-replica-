@@ -6,7 +6,14 @@ const { useStudio } = vi.hoisted(() => ({
   useStudio: vi.fn<() => StudioContextValue>(),
 }));
 
+const api = vi.hoisted(() => ({
+  completeMaterialUpload: vi.fn(),
+  createMaterialUploadIntent: vi.fn(),
+  uploadMaterial: vi.fn(),
+}));
+
 vi.mock("./context", () => ({ useStudio }));
+vi.mock("../api", () => api);
 
 import {
   CopyPage,
@@ -157,7 +164,12 @@ function studio(
 }
 
 describe("V1.4 创作页面", () => {
-  beforeEach(() => useStudio.mockReset());
+  beforeEach(() => {
+    useStudio.mockReset();
+    api.completeMaterialUpload.mockReset();
+    api.createMaterialUploadIntent.mockReset();
+    api.uploadMaterial.mockReset();
+  });
 
   it("文案终稿可带入数字人口播并保留同一草稿", () => {
     const value = studio();
@@ -382,21 +394,62 @@ describe("V1.4 创作页面", () => {
     ).not.toBeNull();
   });
 
-  it("音频驱动只接受audio资产，上传入口不伪装成素材选择", () => {
+  it("音频驱动只接受audio资产，并把本地MP3上传为真实素材引用", async () => {
     const value = studio({
       state: {
         ...studio().state,
         page: "oral-audio",
         draft: { ...studio().state.draft, audioId: "target-1" },
       },
+      review: false,
+    });
+    api.createMaterialUploadIntent.mockResolvedValue({
+      asset_id: "uploaded-audio",
+      material_id: "asset:uploaded-audio",
+    });
+    let finishUpload!: () => void;
+    api.uploadMaterial.mockImplementation(
+      (_intent: unknown, _file: File, onProgress: (value: number) => void) => {
+        onProgress(60);
+        return new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        });
+      },
+    );
+    api.completeMaterialUpload.mockResolvedValue({
+      id: "asset:uploaded-audio",
+      asset_id: "uploaded-audio",
+      generation_task_id: null,
+      title: "完整口播.mp3",
+      media_type: "audio",
+      duration_seconds: 42,
+      group: "完整口播音频",
+      person_id: null,
+      source: "USER_UPLOAD",
+      saved: true,
+      delivery: "stored",
+      allowed_uses: ["oral_audio"],
+      allowed_actions: ["preview"],
     });
     useStudio.mockReturnValue(value);
     render(<OralPage />);
     expect(screen.getByRole("button", { name: "生成口播视频" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "上传音频" }));
-    expect(value.notify).toHaveBeenCalledWith(
-      "音频上传服务尚未接通，请先从素材库选择",
+    fireEvent.change(screen.getByLabelText("选择口播音频"), {
+      target: {
+        files: [new File(["audio"], "完整口播.mp3", { type: "audio/mpeg" })],
+      },
+    });
+
+    expect(await screen.findByText("上传中 60%")).toBeInTheDocument();
+    finishUpload();
+    await vi.waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        audioId: "uploaded-audio",
+        voiceId: undefined,
+      }),
     );
+    expect(api.completeMaterialUpload).toHaveBeenCalledWith("uploaded-audio");
+    expect(value.updateData).toHaveBeenCalled();
     expect(value.openPicker).not.toHaveBeenCalled();
   });
 

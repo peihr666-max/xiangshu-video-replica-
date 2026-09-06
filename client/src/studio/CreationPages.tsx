@@ -1,6 +1,12 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
+import {
+  completeMaterialUpload,
+  createMaterialUploadIntent,
+  uploadMaterial,
+} from "../api";
 import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
+import { studioAssetFromMaterial } from "./live";
 import type { StudioAsset, StudioPerson, StudioVideo } from "./types";
 import {
   Button,
@@ -778,12 +784,16 @@ export function OralPage() {
     state,
     data,
     patchDraft,
+    updateData,
     navigate,
     openPicker,
     saveDraft,
     requestGeneration,
     notify,
+    review,
   } = useStudio();
+  const audioUploadInputRef = useRef<HTMLInputElement>(null);
+  const [audioUploadProgress, setAudioUploadProgress] = useState<number>();
   const audioMode = state.page === "oral-audio";
   const person = activePerson(data.people, state.draft.ipId);
   const avatar = person?.avatars.find(
@@ -804,6 +814,37 @@ export function OralPage() {
           state.draft.script.confirmed &&
           state.draft.script.text.trim(),
       );
+
+  const uploadSpeechAudio = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".mp3")) {
+      notify("仅支持 MP3 口播音频");
+      return;
+    }
+    setAudioUploadProgress(0);
+    try {
+      const intent = await createMaterialUploadIntent(file, {
+        title: file.name,
+        group: "完整口播音频",
+      });
+      await uploadMaterial(intent, file, setAudioUploadProgress);
+      const completed = await completeMaterialUpload(intent.asset_id);
+      const uploaded = studioAssetFromMaterial(completed);
+      updateData((current) => ({
+        ...current,
+        assets: [
+          uploaded,
+          ...current.assets.filter((item) => item.id !== uploaded.id),
+        ],
+      }));
+      patchDraft({ audioId: uploaded.id, voiceId: undefined });
+      notify(`音频“${uploaded.name}”已上传并永久保存`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "上传口播音频失败");
+    } finally {
+      setAudioUploadProgress(undefined);
+      if (audioUploadInputRef.current) audioUploadInputRef.current.value = "";
+    }
+  };
 
   return (
     <section className="creation-page creation-oral">
@@ -858,13 +899,31 @@ export function OralPage() {
                   <Button variant="outline" onClick={() => openPicker("audio")}>
                     从素材库选择
                   </Button>
+                  <input
+                    accept=".mp3,audio/mpeg"
+                    aria-label="选择口播音频"
+                    hidden
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void uploadSpeechAudio(file);
+                    }}
+                    ref={audioUploadInputRef}
+                    type="file"
+                  />
                   <Button
+                    disabled={audioUploadProgress !== undefined}
                     variant="outline"
-                    onClick={() =>
-                      notify("音频上传服务尚未接通，请先从素材库选择")
-                    }
+                    onClick={() => {
+                      if (review) {
+                        notify("审核模式不执行真实上传");
+                        return;
+                      }
+                      audioUploadInputRef.current?.click();
+                    }}
                   >
-                    上传音频
+                    {audioUploadProgress === undefined
+                      ? "上传音频"
+                      : `上传中 ${audioUploadProgress}%`}
                   </Button>
                 </div>
                 <Hint>使用音频中的原声直接驱动口型，无需另选克隆声音。</Hint>
