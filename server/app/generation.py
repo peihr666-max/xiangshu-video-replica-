@@ -735,8 +735,8 @@ class GenerationPriceQuote(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     resolution: Literal["768P", "2K"]
-    duration_seconds: Literal[4, 15]
-    quantity: Literal[1, 2, 4]
+    duration_seconds: int
+    quantity: int
     unit_price_fen_per_second: int
     estimated_seconds: int
     estimated_price_fen: int
@@ -816,7 +816,7 @@ class GenerationBatchListItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    project_id: str
+    project_id: str | None = None
     project_name: str
     created_by_user_id: str
     created_by_display_name: str
@@ -1744,17 +1744,24 @@ def lock_prompt_version(
 
 
 def _find_idempotent_batch(
-    conn: BusinessConnection, *, actor_id: str, project_id: str, key: str
+    conn: BusinessConnection, *, actor_id: str, project_id: str | None, key: str
 ) -> sqlite3.Row | None:
+    # 独立批次（project_id NULL）在 SQL 等值比较下永远不命中，须用 IS NULL。
+    if project_id is None:
+        clause = "created_by_user_id = %s AND project_id IS NULL AND idempotency_key = %s"
+        params: tuple[object, ...] = (actor_id, key)
+    else:
+        clause = "created_by_user_id = %s AND project_id = %s AND idempotency_key = %s"
+        params = (actor_id, project_id, key)
     return cast(
         sqlite3.Row | None,
         conn.execute(
-            """
+            f"""
             SELECT id, request_hash
             FROM generation_batches
-            WHERE created_by_user_id = %s AND project_id = %s AND idempotency_key = %s
+            WHERE {clause}
             """,
-            (actor_id, project_id, key),
+            params,
         ).fetchone(),
     )
 
@@ -2186,7 +2193,7 @@ def regenerate_generation_batch(
     ).fetchone()
     if source_context is None:
         raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
-    project_id = str(source_context["project_id"])
+    project_id = None if source_context["project_id"] is None else str(source_context["project_id"])
     require_not_auditor(
         conn,
         actor=actor,
@@ -2194,10 +2201,11 @@ def regenerate_generation_batch(
         entity_type="generation_batch",
         entity_id=batch_id,
     )
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
         project_id=project_id,
+        created_by_user_id=str(source_context["created_by_user_id"]),
         action="generation_batch.regenerate",
     )
 
@@ -2206,7 +2214,8 @@ def regenerate_generation_batch(
         conn.execute("BEGIN IMMEDIATE")
         source_batch = conn.execute(
             """
-            SELECT id, project_id, created_by_user_id, request_snapshot_json
+            SELECT id, project_id, created_by_user_id, creation_kind,
+                   request_snapshot_json
             FROM generation_batches
             WHERE id = %s
             """,
@@ -2272,10 +2281,10 @@ def regenerate_generation_batch(
             """
             INSERT INTO generation_batches (
                 id, project_id, created_by_user_id, idempotency_key,
-                request_hash, request_snapshot_json, status,
+                request_hash, request_snapshot_json, creation_kind, status,
                 source_batch_id, source_task_id, generation_reason
             )
-            VALUES (%s, %s, %s, %s, %s, %s, 'QUEUED', %s, NULL, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'QUEUED', %s, NULL, %s)
             """,
             (
                 new_batch_id,
@@ -2284,6 +2293,7 @@ def regenerate_generation_batch(
                 request.idempotency_key,
                 request_hash,
                 request_snapshot,
+                str(source_batch["creation_kind"]),
                 batch_id,
                 request.generation_reason,
             ),
@@ -2380,7 +2390,7 @@ def regenerate_generation_task(
     ).fetchone()
     if source_context is None:
         raise generation_error(404, "TASK_NOT_FOUND", "Generation task does not exist.")
-    project_id = str(source_context["project_id"])
+    project_id = None if source_context["project_id"] is None else str(source_context["project_id"])
     require_not_auditor(
         conn,
         actor=actor,
@@ -2388,10 +2398,11 @@ def regenerate_generation_task(
         entity_type="generation_task",
         entity_id=task_id,
     )
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
         project_id=project_id,
+        created_by_user_id=str(source_context["created_by_user_id"]),
         action="generation_task.regenerate",
     )
 
@@ -3775,7 +3786,7 @@ def prepare_generation_reconcile_operation(
         task_status=task_status,
         provider_task_id=provider_task_id,
         provider=provider,
-        first_frame_uri=str(prompt_snapshot["first_frame_uri"]),
+        first_frame_uri=str(prompt_snapshot.get("first_frame_uri") or ""),
     )
 
 
@@ -5753,7 +5764,7 @@ def list_generation_batches(
         items.append(
             GenerationBatchListItem(
                 id=batch_id,
-                project_id=str(row["project_id"]),
+                project_id=(None if row["project_id"] is None else str(row["project_id"])),
                 project_name=str(row["project_name"]),
                 created_by_user_id=str(row["created_by_user_id"]),
                 created_by_display_name=str(row["created_by_display_name"]),
@@ -6066,10 +6077,11 @@ def cancel_generation_batch(
             "BATCH_NOT_FOUND",
             "Generation batch does not exist.",
         )
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
-        project_id=str(batch["project_id"]),
+        project_id=(None if batch["project_id"] is None else str(batch["project_id"])),
+        created_by_user_id=str(batch["created_by_user_id"]),
         action="generation_batch.cancel",
     )
     if str(batch["status"]) in TERMINAL_STATUSES:
@@ -6816,9 +6828,10 @@ def generation_price_quote(
     conn: BusinessConnection,
     *,
     resolution: Literal["768P", "2K"],
-    duration_seconds: Literal[4, 15],
-    quantity: Literal[1, 2, 4],
+    duration_seconds: int,
+    quantity: int,
 ) -> GenerationPriceQuote:
+    # 按秒单价线性外推，任意 4–15 秒档位均可计价。
     row = conn.execute(
         """
         SELECT unit_price_fen
@@ -7133,3 +7146,24 @@ def content_hash(text: str) -> str:
 
 def generation_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def require_batch_access(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    project_id: str | None,
+    created_by_user_id: str | None,
+    action: str,
+) -> None:
+    """批次/任务访问门禁：项目批走项目 ACL；独立批（project_id NULL）仅创建者与 admin。
+
+    所有按批次行（或任务上下文行）做 ``require_project_access`` 的路径都应
+    改走本助手——``str(None)`` 得到字面量 ``"None"``，会让独立批次在取消/
+    预览/隐藏/重试/对账等复用端点上系统性 404。
+    """
+    if project_id is None:
+        if not created_by_user_id or (actor.role != "admin" and created_by_user_id != actor.id):
+            raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
+        return
+    require_project_access(conn, actor=actor, project_id=project_id, action=action)

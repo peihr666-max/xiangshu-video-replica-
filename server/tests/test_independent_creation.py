@@ -508,3 +508,130 @@ def test_saved_prompts_aggregate_across_projects(client: TestClient, db_path: Pa
     assert [item["id"] for item in items] == ["sp-1"]
     assert items[0]["name"] == "庭院黄昏"
     assert items[0]["prompt_text"] == "A 的提示词"
+
+
+def test_cancel_independent_batch_releases_reserved_seconds(
+    client: TestClient, db_path: Path
+) -> None:
+    created = client.post(
+        "/api/independent/video-tasks",
+        headers=auth_headers("employee_1"),
+        json={
+            "mode": "i2v",
+            "prompt_text": "排队中取消",
+            "first_frame_asset_id": "frame-owned",
+            "output_duration_seconds": 10,
+            "quantity": 1,
+            "idempotency_key": "cancel-key",
+        },
+    )
+    assert created.status_code == 201
+    batch_id = created.json()["id"]
+
+    from app.db import connect_database
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        available, reserved = _wallet(conn, "employee_1")
+        assert (available, reserved) == (990, 10)
+
+    cancelled = client.post(
+        f"/api/generation-batches/{batch_id}/cancel",
+        headers=auth_headers("employee_1"),
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "CANCELLED"
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        available, reserved = _wallet(conn, "employee_1")
+        assert (available, reserved) == (1000, 0)  # RELEASE：全额退还
+        releases = conn.execute(
+            "SELECT COUNT(*) AS n FROM wallet_transactions WHERE type = 'RELEASE'"
+        ).fetchone()
+        assert int(releases["n"]) == 1
+
+
+def test_failed_independent_task_releases_credits(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db import connect_database
+
+    monkeypatch.setenv("VIDEO_REPLICA_FAKE_H3_OUTCOME", "provider_failed")
+    created = client.post(
+        "/api/independent/video-tasks",
+        headers=auth_headers("employee_1"),
+        json={
+            "mode": "i2v",
+            "prompt_text": "供应商失败的回款",
+            "first_frame_asset_id": "frame-owned",
+            "output_duration_seconds": 6,
+            "quantity": 1,
+            "idempotency_key": "fail-key",
+        },
+    )
+    assert created.status_code == 201
+
+    storage = FakeStorageAdapter(provider="fake", bucket="generation-results")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        run_worker_once(conn, worker_id="fail-worker", storage=storage)
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        available, reserved = _wallet(conn, "employee_1")
+        assert (available, reserved) == (1000, 0)  # RELEASE：失败不扣费
+        status_row = conn.execute(
+            "SELECT status FROM generation_tasks WHERE batch_id = %s",
+            (created.json()["id"],),
+        ).fetchone()
+        assert str(status_row["status"]) == "FAILED"
+
+
+def test_t2v_and_r2v_tasks_run_through_worker_with_protocol_payload(
+    client: TestClient, db_path: Path
+) -> None:
+    from app.db import connect_database
+
+    _enable_extended_modes(db_path)
+    t2v = client.post(
+        "/api/independent/video-tasks",
+        headers=auth_headers("employee_1"),
+        json={
+            "mode": "t2v",
+            "prompt_text": "清晨山间别墅的延时摄影",
+            "output_duration_seconds": 6,
+            "quantity": 1,
+            "idempotency_key": "t2v-worker",
+        },
+    )
+    r2v = client.post(
+        "/api/independent/video-tasks",
+        headers=auth_headers("employee_1"),
+        json={
+            "mode": "r2v",
+            "prompt_text": "按照参考图生成别墅外观",
+            "reference_asset_ids": ["frame-owned"],
+            "output_duration_seconds": 6,
+            "quantity": 1,
+            "idempotency_key": "r2v-worker",
+        },
+    )
+    assert t2v.status_code == 201 and r2v.status_code == 201
+
+    storage = FakeStorageAdapter(provider="fake", bucket="generation-results")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        processed = run_worker_once(conn, worker_id="mode-worker", storage=storage)
+
+    assert processed == 2
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT generation_mode, provider_request_json FROM generation_tasks"
+        ).fetchall()
+        by_mode = {str(row["generation_mode"]): row for row in rows}
+        t2v_request = json.loads(str(by_mode["T2V"]["provider_request_json"]))
+        assert [item["type"] for item in t2v_request["content"]] == ["text"]
+
+        r2v_request = json.loads(str(by_mode["R2V"]["provider_request_json"]))
+        roles = [item.get("role") for item in r2v_request["content"][1:]]
+        assert roles == ["reference_image"]
+        assert r2v_request["content"][1]["name"] == "ref-1"
+        assert "first_frame" not in roles and "last_frame" not in roles

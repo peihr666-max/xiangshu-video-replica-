@@ -621,7 +621,8 @@ function videoStageIndex(status: StudioTask["status"]): number {
 }
 
 function formatElapsed(from: string): string {
-  const started = new Date(from.replace(" ", "T")).getTime();
+  // 服务端 CURRENT_TIMESTAMP 是 UTC 文本；补 Z 防止按本地时区解析出巨幅偏差。
+  const started = new Date(`${from.replace(" ", "T")}Z`).getTime();
   if (Number.isNaN(started)) return "";
   const seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
   const minutes = Math.floor(seconds / 60);

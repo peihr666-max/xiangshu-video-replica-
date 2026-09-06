@@ -5756,7 +5756,7 @@ export interface components {
       /** Id */
       id: string;
       /** Project Id */
-      project_id: string;
+      project_id: string | null;
       /** Project Name */
       project_name: string;
       /** Created By User Id */

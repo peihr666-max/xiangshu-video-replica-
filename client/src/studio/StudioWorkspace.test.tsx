@@ -636,15 +636,6 @@ describe("视频生成（C2 独立创作）", () => {
     analytics30: null,
   };
 
-  function draftWith(prompt: string) {
-    const state = createState("video");
-    state.draft.prompt = prompt;
-    state.draft.duration = 8;
-    state.draft.count = 1;
-    state.draft.resolution = "768P";
-    return state;
-  }
-
   async function openVideoPage() {
     // 侧边栏「视频创作」进入复刻页签组，再切到「视频生成」。
     fireEvent.click(screen.getByRole("button", { name: "视频创作" }));

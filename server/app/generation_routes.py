@@ -58,6 +58,7 @@ from app.generation import (
     regenerate_generation_batch,
     regenerate_generation_task,
     rename_generation_batch,
+    require_batch_access,
     retry_generation_task,
     revise_prompt_version,
     save_prompt_to_library,
@@ -536,8 +537,12 @@ def delete_generation_batch_record(
             entity_type="generation_batch",
             entity_id=batch_id,
         )
-        require_project_access(
-            conn, actor=actor, project_id=str(batch["project_id"]), action="generation_batch.hide"
+        require_batch_access(
+            conn,
+            actor=actor,
+            project_id=None if batch["project_id"] is None else str(batch["project_id"]),
+            created_by_user_id=str(batch["created_by_user_id"]),
+            action="generation_batch.hide",
         )
         # List removal is an account preference, never cancellation or data erasure.
         with conn:
@@ -576,7 +581,7 @@ def regenerate_batch(
 ) -> BatchResult:
     with db.write() as (conn, actor):
         row = conn.execute(
-            "SELECT project_id FROM generation_batches WHERE id = %s",
+            "SELECT project_id, created_by_user_id FROM generation_batches WHERE id = %s",
             (batch_id,),
         ).fetchone()
         if row is None:
@@ -588,10 +593,11 @@ def regenerate_batch(
             entity_type="generation_batch",
             entity_id=batch_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_batch.regenerate",
         )
         if request is None:
@@ -620,8 +626,8 @@ def read_generation_price_quote(
     conn: Database,
     actor: AuthenticatedUser,
     resolution: Literal["768P", "2K"] = Query(default="768P"),
-    duration_seconds: Literal[4, 15] = Query(default=4),
-    quantity: Literal[1, 2, 4] = Query(default=1),
+    duration_seconds: int = Query(default=8, ge=4, le=15),
+    quantity: int = Query(default=1, ge=1),
 ) -> GenerationPriceQuote:
     del actor
     return generation_price_quote(
@@ -662,7 +668,8 @@ def read_generation_task_preview_url(
 ) -> GenerationTaskPreviewUrlResponse:
     task = conn.execute(
         """
-        SELECT batch.project_id, task.provider, task.provider_result_url
+        SELECT batch.project_id, batch.created_by_user_id,
+               task.provider, task.provider_result_url
         FROM generation_tasks AS task
         JOIN generation_batches AS batch ON batch.id = task.batch_id
         WHERE task.id = %s
@@ -672,10 +679,11 @@ def read_generation_task_preview_url(
     ).fetchone()
     if task is None:
         raise HTTPException(status_code=404, detail={"code": "TASK_NOT_FOUND"})
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
-        project_id=str(task["project_id"]),
+        project_id=None if task["project_id"] is None else str(task["project_id"]),
+        created_by_user_id=str(task["created_by_user_id"]),
         action="generation_task.preview",
     )
     result_url = task["provider_result_url"]
@@ -711,10 +719,11 @@ def retry_task(
             entity_type="generation_task",
             entity_id=task_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_task.retry",
         )
         if request is None:
@@ -740,10 +749,11 @@ def regenerate_task(
             entity_type="generation_task",
             entity_id=task_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_task.regenerate",
         )
         if request is None:
@@ -778,10 +788,11 @@ def confirm_task_not_charged(
             entity_type="generation_task",
             entity_id=task_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_task.confirm_not_charged",
         )
         if request is None:
@@ -816,10 +827,11 @@ def reconcile_uncertain_task(
             entity_type="generation_task",
             entity_id=task_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_task.reconcile",
         )
         if request is None:
@@ -846,10 +858,11 @@ def read_generation_reconcile_operation(
     actor: AuthenticatedUser,
 ) -> GenerationReconcileOperationResponse:
     row = load_generation_reconcile_operation(conn, operation_id)
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
-        project_id=str(row["project_id"]),
+        project_id=None if row["project_id"] is None else str(row["project_id"]),
+        created_by_user_id=str(row["actor_user_id"]),
         action="generation_task.reconcile_read",
     )
     return generation_reconcile_operation_response(row)
@@ -865,10 +878,11 @@ def read_latest_generation_reconcile_operation(
     actor: AuthenticatedUser,
 ) -> GenerationReconcileOperationResponse | None:
     task = _generation_task_context(conn, task_id)
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
-        project_id=str(task["project_id"]),
+        project_id=(None if task["project_id"] is None else str(task["project_id"])),
+        created_by_user_id=str(task["created_by_user_id"]),
         action="generation_task.reconcile_read",
     )
     row = latest_generation_reconcile_operation(conn, task_id=task_id)

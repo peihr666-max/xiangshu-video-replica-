@@ -196,8 +196,8 @@ export type GenerationRatio =
   | "9:16";
 export type GenerationPriceQuote = {
   resolution: "768P" | "2K";
-  duration_seconds: 4 | 15;
-  quantity: 1 | 2 | 4;
+  duration_seconds: number;
+  quantity: number;
   unit_price_fen_per_second: number;
   estimated_seconds: number;
   estimated_price_fen: number;
@@ -1613,8 +1613,8 @@ export async function getGenerationRuntimeLimits(): Promise<GenerationRuntimeLim
 
 export async function getGenerationPriceQuote(input: {
   resolution: "768P" | "2K";
-  duration_seconds: 4 | 15;
-  quantity: 1 | 2 | 4;
+  duration_seconds: number;
+  quantity: number;
 }): Promise<GenerationPriceQuote> {
   const query = new URLSearchParams({
     resolution: input.resolution,

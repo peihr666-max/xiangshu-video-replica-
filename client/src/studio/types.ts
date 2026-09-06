@@ -123,7 +123,8 @@ export type StudioTask = {
   poster?: string;
   resultId?: string;
   batchId?: string;
-  projectId?: string;
+  /** 独立创作批次无项目归属（null）。 */
+  projectId?: string | null;
   driverMode?: "text" | "audio";
   ipId?: string;
   avatarId?: string;
