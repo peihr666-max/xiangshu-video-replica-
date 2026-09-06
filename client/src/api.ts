@@ -768,6 +768,55 @@ export async function deleteStudioSavedScript(scriptId: string): Promise<void> {
   );
 }
 
+export type ScriptFromAudioTask = {
+  id: string;
+  project_id: string;
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "SUBMISSION_UNCERTAIN";
+  attempt: number;
+  result: {
+    text: string;
+    duration_sec: number | null;
+    language: string | null;
+  } | null;
+  error_code: string | null;
+  error_message: string | null;
+  retryable: boolean;
+};
+
+/** 提交"提取文案"异步任务（202）：上传视频 → 抽音轨 → ASR 转写。 */
+export async function createScriptFromAudioTask(
+  projectId: string,
+  sourceAssetId: string,
+  idempotencyKey: string,
+): Promise<ScriptFromAudioTask> {
+  return requestApiJson<ScriptFromAudioTask>(
+    `/api/projects/${encodeURIComponent(projectId)}/script-from-audio`,
+    "提交文案提取任务失败",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        source_asset_id: sourceAssetId,
+        idempotency_key: idempotencyKey,
+      }),
+    },
+  );
+}
+
+/** 读取项目最近的提取文案任务；尚无任务返回 null。 */
+export async function getLatestScriptFromAudioTask(
+  projectId: string,
+): Promise<ScriptFromAudioTask | null> {
+  return requestApiJson<ScriptFromAudioTask | null>(
+    `/api/projects/${encodeURIComponent(projectId)}/script-from-audio-tasks/latest`,
+    "读取文案提取任务失败",
+  );
+}
+
 export type OralPrice = { unit_price_fen: number };
 
 /** 数字人口播单价（每条）。 */

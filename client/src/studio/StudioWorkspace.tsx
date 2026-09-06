@@ -32,6 +32,7 @@ import {
 import { StudioContext, useStudio } from "./context";
 import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
 import {
+  extractScriptFromUpload as extractScriptFromUploadLive,
   loadCloudDraft,
   loadPersonAssets,
   loadProjectDraft,
@@ -551,6 +552,54 @@ export function StudioWorkspace({
       },
     );
   };
+  const extractingRef = useRef(false);
+  const extractScriptFromUpload = () => {
+    if (review) {
+      notify("审核示例不调用真实接口。");
+      return;
+    }
+    if (currentUser.role === "auditor") {
+      notify("当前账号为只读权限，不能提交生成。");
+      return;
+    }
+    if (extractingRef.current) return;
+    const projectId = state.draft.projectId ?? state.draft.sourceId;
+    const assetId =
+      state.draft.sourceAssetId ??
+      data.projects.find((project) => project.id === projectId)
+        ?.reference_asset_id ??
+      undefined;
+    if (!projectId || !assetId) {
+      notify("请先上传视频来源，再提取文案。");
+      openLive("projects");
+      return;
+    }
+    extractingRef.current = true;
+    notify("正在提取音频并转写文案，预计一到两分钟，请勿关闭页面…");
+    void extractScriptFromUploadLive(projectId, assetId)
+      .then(({ text }) => {
+        extractingRef.current = false;
+        const currentScript = latestDraftRef.current.script;
+        patchDraft({
+          sourceId: projectId,
+          sourceAssetId: assetId,
+          script: {
+            ...currentScript,
+            original: text,
+            text: currentScript.text.trim() ? currentScript.text : text,
+            confirmed: false,
+          },
+        });
+        navigate("copy", { returnTo: "workbench" });
+        notify("文案已提取，请在文案工坊核对内容并确认终稿。");
+      })
+      .catch((cause: unknown) => {
+        extractingRef.current = false;
+        notify(
+          customerVisibleErrorMessage(cause, "文案提取失败，请稍后重试。"),
+        );
+      });
+  };
   const context: StudioContextValue = {
     state,
     data,
@@ -566,6 +615,7 @@ export function StudioWorkspace({
     requestGeneration,
     saveDraft,
     confirmFinalDraft,
+    extractScriptFromUpload,
     refresh,
   };
   const activeNav = state.page.startsWith("person-")

@@ -23,6 +23,9 @@ const live = vi.hoisted(() => ({
   persistCloudDraft: vi.fn(async (): Promise<void> => {}),
   persistSavedScript: vi.fn(async (): Promise<void> => {}),
   publishScriptVersion: vi.fn(async (): Promise<boolean> => true),
+  extractScriptFromUpload: vi.fn(
+    async (): Promise<{ text: string }> => ({ text: "" }),
+  ),
 }));
 vi.mock("./live", () => live);
 
@@ -403,6 +406,65 @@ describe("V1.4 workspace integration", () => {
       fireEvent.click(screen.getByRole("button", { name: "确认终稿" }));
       await waitFor(() => expect(live.persistCloudDraft).toHaveBeenCalled());
       expect(live.publishScriptVersion).not.toHaveBeenCalled();
+    });
+
+    it("提取文案成功后回填草稿并跳转文案工坊", async () => {
+      live.loadStudioData.mockResolvedValue(emptyStudioData);
+      live.loadCloudDraft.mockResolvedValue(undefined);
+      live.extractScriptFromUpload.mockResolvedValue({
+        text: "提取出的乡墅口播原文",
+      });
+      const state = createState("workbench");
+      state.draft.projectId = "project-1";
+      state.draft.sourceAssetId = "asset-1";
+      render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+      await waitFor(() =>
+        expect(live.extractScriptFromUpload).toHaveBeenCalledWith(
+          "project-1",
+          "asset-1",
+        ),
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("二创文案")).toBeInTheDocument(),
+      );
+      expect(screen.getByText(/文案已提取/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("tab", { name: "文案改写" }));
+      expect(
+        (screen.getByLabelText("二创文案") as HTMLTextAreaElement).value,
+      ).toBe("提取出的乡墅口播原文");
+    });
+
+    it("提取文案失败时保留工作区并提示服务端错误", async () => {
+      live.loadStudioData.mockResolvedValue(emptyStudioData);
+      live.loadCloudDraft.mockResolvedValue(undefined);
+      live.extractScriptFromUpload.mockRejectedValue(
+        new Error("语音转写服务返回错误（HTTP 500）"),
+      );
+      const state = createState("workbench");
+      state.draft.projectId = "project-1";
+      state.draft.sourceAssetId = "asset-1";
+      render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+      await waitFor(() =>
+        expect(screen.getByText(/语音转写服务返回错误/)).toBeInTheDocument(),
+      );
+      expect(screen.queryByLabelText("二创文案")).not.toBeInTheDocument();
+    });
+
+    it("有项目来源但资产缺失时提取文案提示先上传", async () => {
+      live.loadStudioData.mockResolvedValue(emptyStudioData);
+      live.loadCloudDraft.mockResolvedValue(undefined);
+      const state = createState("workbench");
+      state.draft.sourceId = "proj-9";
+      state.draft.projectId = "proj-9";
+      render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+      expect(screen.getByText(/请先上传视频来源/)).toBeInTheDocument();
+      expect(live.extractScriptFromUpload).not.toHaveBeenCalled();
     });
 
     it("审核示例模式不触发任何云端草稿接口", async () => {

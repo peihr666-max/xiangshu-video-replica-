@@ -145,6 +145,8 @@ export type StudioDraft = {
   id: string;
   ipId?: string;
   sourceId?: string;
+  /** 上传来源视频的资产 id：提取文案（script-from-audio）管线输入。 */
+  sourceAssetId?: string;
   projectId?: string;
   selectedShotId: string;
   originalImageId?: string;
@@ -222,5 +224,7 @@ export type StudioContextValue = {
   saveDraft: () => void;
   /** 确认终稿：置 confirmed + 立即云端持久化；带 projectId 时软发布到项目脚本版本。 */
   confirmFinalDraft: () => void;
+  /** 上传来源视频 → 提取文案（script-from-audio）→ 回填草稿并跳文案工坊。 */
+  extractScriptFromUpload: () => void;
   refresh: () => void;
 };

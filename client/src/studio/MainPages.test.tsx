@@ -87,6 +87,8 @@ function studio(
     openLive: vi.fn(),
     requestGeneration: vi.fn(),
     saveDraft: vi.fn(),
+    confirmFinalDraft: vi.fn(),
+    extractScriptFromUpload: vi.fn(),
     refresh: vi.fn(),
     ...overrides,
   };
@@ -391,7 +393,10 @@ describe("V1.4 工作台上传与创作入口", () => {
 
     pending.resolve?.({ projectId: "proj-1", assetId: "asset-1" });
     await waitFor(() =>
-      expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "proj-1" }),
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        sourceId: "proj-1",
+        sourceAssetId: "asset-1",
+      }),
     );
     expect(screen.getByText("已上传云存储：乡墅案例.mp4")).toBeInTheDocument();
     expect(value.notify).toHaveBeenCalledWith(
@@ -410,14 +415,17 @@ describe("V1.4 工作台上传与创作入口", () => {
 
     changeFile("乡墅案例.mp4");
     await waitFor(() =>
-      expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "proj-1" }),
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        sourceId: "proj-1",
+        sourceAssetId: "asset-1",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
     expect(value.navigate).toHaveBeenCalledWith("replica");
     expect(value.openLive).not.toHaveBeenCalled();
   });
 
-  it("上传后的提取文案等待音频链路，不静默走旧面板", async () => {
+  it("上传后的提取文案走 script-from-audio 管线，不再打开旧项目面板", async () => {
     const value = workbench();
     useStudio.mockReturnValue(value);
     uploadWorkbenchSourceVideo.mockResolvedValue({
@@ -428,12 +436,27 @@ describe("V1.4 工作台上传与创作入口", () => {
 
     changeFile("乡墅案例.mp4");
     await waitFor(() =>
-      expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "proj-1" }),
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        sourceId: "proj-1",
+        sourceAssetId: "asset-1",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
-    expect(value.notify).toHaveBeenCalledWith(
-      "音频文案提取链路接入前，请先在项目面板完成拆解。",
-    );
+    expect(value.extractScriptFromUpload).toHaveBeenCalledTimes(1);
+    expect(value.openLive).not.toHaveBeenCalled();
+    expect(value.navigate).not.toHaveBeenCalled();
+  });
+
+  it("已恢复草稿含来源时，提取文案同样走管线", () => {
+    const state = createState("workbench");
+    state.draft.sourceId = "proj-9";
+    state.draft.projectId = "proj-9";
+    const value = workbench({ state });
+    useStudio.mockReturnValue(value);
+    render(<WorkbenchPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    expect(value.extractScriptFromUpload).toHaveBeenCalledTimes(1);
     expect(value.openLive).not.toHaveBeenCalled();
   });
 });

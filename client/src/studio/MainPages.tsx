@@ -148,7 +148,16 @@ function RunningRowMenu({ task }: { task: StudioTask }) {
 }
 
 export function WorkbenchPage() {
-  const { data, review, navigate, openLive, notify, patchDraft } = useStudio();
+  const {
+    data,
+    review,
+    navigate,
+    openLive,
+    notify,
+    patchDraft,
+    state,
+    extractScriptFromUpload,
+  } = useStudio();
   const [sourceLink, setSourceLink] = useState("");
   const [upload, setUpload] = useState<{
     name: string;
@@ -169,14 +178,14 @@ export function WorkbenchPage() {
       notify("视频链接解析接口尚未接入，可先上传视频进行拆解。");
       return;
     }
-    if (upload?.projectId) {
+    if (upload?.projectId || state.draft.sourceId || state.draft.projectId) {
       // 上传完成的来源已经写进当前草稿：复刻直接进分镜工作区；
-      // 文案提取按新方案走本地音频转写，接入前保持明确提示。
+      // 文案提取走 script-from-audio 异步管线（抽音轨→转写→回填草稿）。
       if (mode === "replica") {
         navigate("replica");
         return;
       }
-      notify("音频文案提取链路接入前，请先在项目面板完成拆解。");
+      extractScriptFromUpload();
       return;
     }
     openLive("projects");
@@ -190,11 +199,11 @@ export function WorkbenchPage() {
     void uploadWorkbenchSourceVideo(file, (progress) =>
       setUpload((current) => (current ? { ...current, progress } : current)),
     )
-      .then(({ projectId }) => {
+      .then(({ projectId, assetId }) => {
         setUpload((current) =>
           current ? { ...current, progress: 100, projectId } : current,
         );
-        patchDraft({ sourceId: projectId });
+        patchDraft({ sourceId: projectId, sourceAssetId: assetId });
         notify("视频已上传云存储，来源已加入当前创作。");
       })
       .catch((error) => {

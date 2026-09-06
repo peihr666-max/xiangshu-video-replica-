@@ -5,6 +5,7 @@ import {
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
   createProject,
+  createScriptFromAudioTask,
   createScriptVersion,
   createVideoUploadIntent,
   type GenerationBatchListItem,
@@ -13,6 +14,7 @@ import {
   getGenerationBatch,
   getLatestProjectAnalysis,
   getLatestProjectShotCards,
+  getLatestScriptFromAudioTask,
   getLatestScriptVersion,
   getStudioDraft,
   getStudioStats,
@@ -679,4 +681,26 @@ export async function loadPersonAssets(
       errors: [`读取人物场景形象照失败：${errorText(error)}`],
     };
   }
+}
+
+/** 提取文案管线（script-from-audio）：提交任务 → 每 2 秒轮询 → 终态返回。
+ * 成功返回转写全文；失败抛出带服务端文案的 Error（含 SUBMISSION_UNCERTAIN）。 */
+export async function extractScriptFromUpload(
+  projectId: string,
+  assetId: string,
+): Promise<{ text: string }> {
+  await createScriptFromAudioTask(projectId, assetId, crypto.randomUUID());
+  const maxAttempts = 150; // 2s × 150 = 5 分钟上限（长音频异步转写兜底）
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    const task = await getLatestScriptFromAudioTask(projectId);
+    if (!task) continue;
+    if (task.status === "SUCCEEDED" && task.result) {
+      return { text: task.result.text };
+    }
+    if (task.status === "FAILED" || task.status === "SUBMISSION_UNCERTAIN") {
+      throw new Error(task.error_message || "文案提取失败，请稍后重试。");
+    }
+  }
+  throw new Error("文案提取超时，请稍后在任务中心重试。");
 }
