@@ -37,6 +37,10 @@ markers = [
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.format]
+# 已发布迁移只追加；保留 061 原始 SQL 文本布局，仍执行 lint 与迁移测试。
+exclude = ["migrations/versions/061_provider_whitelist_widen.py"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 

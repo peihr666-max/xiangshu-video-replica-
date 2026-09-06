@@ -40,9 +40,9 @@ from app.settings import ProviderName, SettingsRepository
 from app.settings_routes import (
     ProviderTester,
     ProviderTestResult,
-    apply_cos_lifecycle_rules,
     get_provider_tester,
     merge_provider_config,
+    remove_cos_lifecycle_rules,
     require_supported_provider,
 )
 from app.zpay import deployment_config_from_environment
@@ -354,7 +354,7 @@ def _update_control_provider_settings_business(
         },
     )
     if provider_name == "cos":
-        lifecycle = apply_cos_lifecycle_rules(merged, actor_id=actor.id)
+        lifecycle = remove_cos_lifecycle_rules(merged, actor_id=actor.id)
         write_audit(
             conn,
             actor=actor,
