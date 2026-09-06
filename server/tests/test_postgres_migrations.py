@@ -37,14 +37,29 @@ def test_customer_batch_visibility_migration_preserves_generation_and_billing(
     with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
         conn.execute(f'CREATE DATABASE "{db_name}"')
     config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
-    tables = (
-        "users",
-        "projects",
-        "generation_batches",
-        "generation_tasks",
-        "wallets",
-        "wallet_transactions",
-    )
+    stable_columns = {
+        "users": "id, username, display_name",
+        "projects": "id, owner_user_id, name",
+        "generation_batches": (
+            "id, project_id, created_by_user_id, idempotency_key, "
+            "request_hash, request_snapshot_json"
+        ),
+        "generation_tasks": "id, batch_id, provider, model",
+        "wallets": "user_id, available_credits, reserved_credits",
+        "wallet_transactions": (
+            "id, user_id, type, available_delta, reserved_delta, task_id, "
+            "billing_round, idempotency_key"
+        ),
+    }
+
+    def preserved_rows(conn: psycopg.Connection) -> dict[str, list[tuple[Any, ...]]]:
+        return {
+            table: conn.execute(
+                f"SELECT {columns} FROM {table} ORDER BY 1"  # noqa: S608 - fixed test schema
+            ).fetchall()
+            for table, columns in stable_columns.items()
+        }
+
     try:
         command.upgrade(config, "054_admin_free_grant_adjustments")
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -72,7 +87,7 @@ def test_customer_batch_visibility_migration_preserves_generation_and_billing(
                 "reserved_delta, task_id, billing_round, idempotency_key) "
                 "VALUES ('tx1', 'u1', 'RESERVE', -1, 1, 't1', 1, 'reserve:t1:1')"
             )
-            before = {table: conn.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
+            before = preserved_rows(conn)
         command.upgrade(config, "head")
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(
@@ -95,15 +110,11 @@ def test_customer_batch_visibility_migration_preserves_generation_and_billing(
                 conn.execute("SELECT to_regclass('customer_batch_visibility')").fetchone()[0]
                 is None
             )
-            assert {
-                table: conn.execute(f"SELECT * FROM {table}").fetchall() for table in tables
-            } == before
+            assert preserved_rows(conn) == before
         command.upgrade(config, "head")
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT count(*) FROM customer_batch_visibility").fetchone()[0] == 0
-            assert {
-                table: conn.execute(f"SELECT * FROM {table}").fetchall() for table in tables
-            } == before
+            assert preserved_rows(conn) == before
     finally:
         _drop_database(db_name)
 
@@ -335,7 +346,7 @@ def test_pg_upgrade_from_published_040_head_applies_fair_queue() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "055_customer_batch_visibility"
+            assert version == "062_viral_video_library"
             fair_queue_column = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.columns "
                 "WHERE table_name = 'runtime_settings' AND column_name = 'fair_queue_enabled'"
@@ -369,9 +380,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
 
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "055_customer_batch_visibility", (
-                f"unexpected head revision: {version}"
-            )
+            assert version == "062_viral_video_library", f"unexpected head revision: {version}"
 
             tables = {
                 row[0]
@@ -396,6 +405,8 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
                 "character_sheet_tasks",
                 "source_frame_tasks",
                 "script_rewrite_tasks",
+                "viral_videos",
+                "viral_fetch_state",
             ):
                 assert required in tables, f"missing table {required} after upgrade head"
 
@@ -486,7 +497,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "055_customer_batch_visibility"
+            assert version == "062_viral_video_library"
     finally:
         _drop_database("t06_migrate_test")
 
@@ -608,7 +619,7 @@ def test_pg_wallet_downgrade_blocked_when_ledger_has_settled_rounds() -> None:
         # The database must be left exactly at head (no partial rollback).
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "055_customer_batch_visibility"
+        assert version == "062_viral_video_library"
     finally:
         _drop_database(db_name)
 
@@ -722,7 +733,7 @@ def test_pg_free_grant_downgrade_preserves_ledger(
 
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "055_customer_batch_visibility",
+                "062_viral_video_library",
             )
             for table in tables:
                 assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]
@@ -999,7 +1010,7 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             command.downgrade(_alembic_config(sqlalchemy_dsn), "025_postgres_runtime_compatibility")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "055_customer_batch_visibility"
+        assert version == "062_viral_video_library"
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
@@ -1101,7 +1112,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "055_customer_batch_visibility"
+            assert version == "062_viral_video_library"
 
             indexes = {
                 row[0]
@@ -1282,7 +1293,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
         # indexes intact when the append-only evidence guard refuses rollback.
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "055_customer_batch_visibility"
+            assert version == "062_viral_video_library"
             index_count = conn.execute(
                 "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
                 "AND indexname = 'idx_wallets_updated_at_user'"
@@ -1454,7 +1465,7 @@ def test_t46_scene_task_constraint_and_downgrade_guard() -> None:
 
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "055_customer_batch_visibility"
+            assert version == "062_viral_video_library"
             conn.execute("DELETE FROM character_sheet_tasks WHERE id = 'scene-task-t46'")
 
         command.downgrade(

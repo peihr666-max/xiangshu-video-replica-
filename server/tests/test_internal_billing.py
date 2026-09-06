@@ -11,7 +11,7 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository
 
-HEAD_REVISION = "061_provider_whitelist_widen"
+HEAD_REVISION = "062_viral_video_library"
 
 
 def seed_subjects(conn: sqlite3.Connection) -> None:
