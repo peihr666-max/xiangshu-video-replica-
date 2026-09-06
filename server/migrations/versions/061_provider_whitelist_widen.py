@@ -35,7 +35,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DELETE FROM provider_settings WHERE provider IN ('tikhub', 'dashscope', 'douyidou')")
+    op.execute(
+        "DELETE FROM provider_settings "
+        "WHERE provider IN ('tikhub', 'dashscope', 'douyidou')"
+    )
     with op.batch_alter_table("provider_settings") as batch_op:
         batch_op.drop_constraint("ck_provider_settings_supported_provider", type_="check")
         batch_op.create_check_constraint(
