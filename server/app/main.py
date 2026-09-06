@@ -36,6 +36,7 @@ from app.customer_session_routes import router as customer_session_router
 from app.db_pg import close_pg_pool
 from app.first_frame_routes import router as first_frame_router
 from app.generation_routes import router as generation_router
+from app.material_routes import router as material_router
 from app.media_routes import router as media_router
 from app.ops_metrics import (
     business_http_exception_handler,
@@ -319,6 +320,7 @@ app.middleware("http")(request_observability_middleware)
 app.include_router(generation_router)
 app.include_router(studio_router)
 app.include_router(studio_draft_router)
+app.include_router(material_router)
 app.include_router(script_from_audio_router)
 app.include_router(oral_router)
 app.include_router(rbac_router)

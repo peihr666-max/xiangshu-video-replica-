@@ -3226,6 +3226,7 @@ def test_batch_detail_exposes_direct_result_availability_but_not_provider_url(
     assert summary.status_code == 200
     listed = next(item for item in summary.json()["items"] if item["id"] == "batch-direct-play-01")
     assert "provider_result_url" not in listed["tasks"][0]
+    assert listed["has_results"] is True
 
 
 def test_fake_direct_preview_returns_fixture_bytes_after_authorization(

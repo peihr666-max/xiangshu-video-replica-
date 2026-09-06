@@ -64,11 +64,13 @@ function WorkspaceHost({
   currentUserId = props.currentUserId,
   durationSeconds = props.durationSeconds,
   firstFrameAssetId = props.firstFrameAssetId,
+  identityId,
   projectId = props.projectId,
 }: {
   currentUserId?: string;
   durationSeconds?: number;
   firstFrameAssetId?: string;
+  identityId?: string;
   projectId?: string;
 }) {
   const drafts = useGenerationDrafts({
@@ -77,6 +79,7 @@ function WorkspaceHost({
     durationSeconds,
     firstFrameAssetId,
     firstFrameSelectionVersionId: props.firstFrameSelectionVersionId,
+    identityId,
     originalScript: props.originalScript,
     projectId,
     readOnly: props.readOnly,
@@ -236,6 +239,65 @@ describe("GenerationComposer", () => {
       "后台完成的二创稿。",
     );
     expect(screen.getByRole("radio", { name: "自定义稿" })).toBeChecked();
+  });
+
+  it("切换人物后不回填旧人物的异步改写结果", async () => {
+    const pendingTask: api.ScriptRewriteTask = {
+      id: "rewrite-person-a",
+      project_id: "project-1",
+      identity_id: "person-a",
+      ip_profile_hash: "profile-a",
+      ip_profile_snapshot: { display_name: "张工", role: "设计师" },
+      status: "PENDING",
+      attempt: 0,
+      result: null,
+      error_code: null,
+      error_message: null,
+      retryable: false,
+      created_at: "2030-01-01T00:00:00Z",
+      updated_at: "2030-01-01T00:00:00Z",
+      started_at: null,
+      completed_at: null,
+    };
+    let resolveRewrite: ((task: api.ScriptRewriteTask) => void) | undefined;
+    vi.mocked(api.rewriteProjectScript).mockResolvedValue(pendingTask);
+    vi.mocked(api.waitForScriptRewriteTask).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRewrite = resolve;
+        }),
+    );
+    const view = render(<WorkspaceHost identityId="person-a" />);
+    fireEvent.click(await screen.findByRole("button", { name: "AI 改写" }));
+    await waitFor(() =>
+      expect(api.rewriteProjectScript).toHaveBeenCalledWith(
+        "project-1",
+        "原稿第一句。原稿第二句。",
+        "person-a",
+      ),
+    );
+    expect(
+      screen.getByText(/AI 改写正在后台执行（人物：张工）/),
+    ).toBeInTheDocument();
+
+    view.rerender(<WorkspaceHost identityId="person-b" />);
+    await act(async () => {
+      resolveRewrite?.({
+        ...pendingTask,
+        status: "SUCCEEDED",
+        result: {
+          rewritten_text: "张工的旧人物改写结果。",
+          provider: "deepseek",
+          model: "deepseek-chat",
+        },
+        completed_at: "2030-01-01T00:00:05Z",
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("口播稿内容")).not.toHaveValue(
+      "张工的旧人物改写结果。",
+    );
   });
 
   it("重新进入项目时恢复仍在执行的 AI 改写任务", async () => {

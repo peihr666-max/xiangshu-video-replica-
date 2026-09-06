@@ -55,6 +55,7 @@ type UseGenerationDraftsInput = {
   // 逻辑容忍 null：无首帧时 prompt 必然 stale、不可编译/建批）。
   firstFrameAssetId: string | null;
   firstFrameSelectionVersionId: string;
+  identityId?: string | null;
   originalScript: string;
   projectId: string;
   readOnly: boolean;
@@ -68,6 +69,7 @@ export function useGenerationDrafts({
   durationSeconds,
   firstFrameAssetId,
   firstFrameSelectionVersionId,
+  identityId,
   originalScript,
   projectId,
   readOnly,
@@ -100,6 +102,8 @@ export function useGenerationDrafts({
   const [busyAction, setBusyAction] = useState<GenerationBusyAction>(null);
   const loadGenerationRef = useRef(0);
   const actionGenerationRef = useRef(0);
+  const identityIdRef = useRef(identityId);
+  identityIdRef.current = identityId;
   const isCreatingBatchRef = useRef(false);
   const idempotencyRecordRef = useRef<IdempotencyRecord | null>(null);
 
@@ -184,11 +188,13 @@ export function useGenerationDrafts({
 
         if (
           latestRewriteTask &&
+          rewriteTaskMatchesIdentity(latestRewriteTask, identityId) &&
           shouldRecoverScriptRewrite(latestRewriteTask, restoredScript)
         ) {
           if (latestRewriteTask.status === "SUCCEEDED") {
             applyRecoveredScriptRewrite(
               latestRewriteTask,
+              identityId,
               setScriptSource,
               setScriptText,
               setMessage,
@@ -205,12 +211,17 @@ export function useGenerationDrafts({
                   : "AI 改写失败，请重新提交。"),
             );
           } else {
-            setMessage("AI 改写正在后台执行，可离开本页继续其他操作。");
+            setMessage(rewriteRunningMessage(latestRewriteTask, identityId));
             void waitForScriptRewriteTask(latestRewriteTask.id)
               .then((completedTask) => {
-                if (active && loadGeneration === loadGenerationRef.current) {
+                if (
+                  active &&
+                  loadGeneration === loadGenerationRef.current &&
+                  rewriteTaskMatchesIdentity(completedTask, identityId)
+                ) {
                   applyRecoveredScriptRewrite(
                     completedTask,
+                    identityId,
                     setScriptSource,
                     setScriptText,
                     setMessage,
@@ -250,6 +261,7 @@ export function useGenerationDrafts({
     durationSeconds,
     firstFrameAssetId,
     firstFrameSelectionVersionId,
+    identityId,
     originalScript,
     projectId,
     referenceSelectionId,
@@ -347,31 +359,51 @@ export function useGenerationDrafts({
     setError("");
     setMessage("");
     try {
-      const task = await rewriteProjectScript(projectId, text);
-      if (actionGeneration !== actionGenerationRef.current) {
+      const task = identityId
+        ? await rewriteProjectScript(projectId, text, identityId)
+        : await rewriteProjectScript(projectId, text);
+      if (
+        actionGeneration !== actionGenerationRef.current ||
+        !sameIdentity(identityIdRef.current, identityId)
+      ) {
+        return;
+      }
+      if (!rewriteTaskMatchesIdentity(task, identityId)) {
+        setError("改写任务的人物与当前选择不一致，已停止回填。");
         return;
       }
       // 任务已持久化后立即释放页面级 busy；Provider 调用由 Worker 完成，
       // 不应再阻止切换标签、项目或页面。
       setBusyAction(null);
-      setMessage("AI 改写正在后台执行，可离开本页继续其他操作。");
+      setMessage(rewriteRunningMessage(task, identityId));
       const completedTask = await waitForScriptRewriteTask(task.id);
-      if (actionGeneration !== actionGenerationRef.current) {
+      if (
+        actionGeneration !== actionGenerationRef.current ||
+        !sameIdentity(identityIdRef.current, identityId) ||
+        !rewriteTaskMatchesIdentity(completedTask, identityId)
+      ) {
         return;
       }
       applyRecoveredScriptRewrite(
         completedTask,
+        identityId,
         setScriptSource,
         setScriptText,
         setMessage,
         setError,
       );
     } catch (requestError) {
-      if (actionGeneration === actionGenerationRef.current) {
+      if (
+        actionGeneration === actionGenerationRef.current &&
+        sameIdentity(identityIdRef.current, identityId)
+      ) {
         setError(errorMessage(requestError, "AI 改写失败。"));
       }
     } finally {
-      if (actionGeneration === actionGenerationRef.current) {
+      if (
+        actionGeneration === actionGenerationRef.current &&
+        sameIdentity(identityIdRef.current, identityId)
+      ) {
         setBusyAction(null);
       }
     }
@@ -851,6 +883,7 @@ function timestampMs(value: string): number {
 
 function applyRecoveredScriptRewrite(
   task: ScriptRewriteTask,
+  expectedIdentityId: string | null | undefined,
   setScriptSource: (source: ScriptSource) => void,
   setScriptText: (text: string) => void,
   setMessage: (message: string) => void,
@@ -864,7 +897,44 @@ function applyRecoveredScriptRewrite(
   setScriptSource("custom");
   setScriptText(task.result.rewritten_text);
   setError("");
-  setMessage("AI 改写完成，请确认后点击「保存口播稿」存为二创稿。");
+  const identity = rewriteIdentityLabel(task, expectedIdentityId);
+  setMessage(
+    `AI 改写完成${identity ? `（人物：${identity}）` : ""}，请确认后点击「保存口播稿」存为二创稿。`,
+  );
+}
+
+function rewriteTaskMatchesIdentity(
+  task: ScriptRewriteTask,
+  identityId: string | null | undefined,
+): boolean {
+  return sameIdentity(task.identity_id, identityId);
+}
+
+function sameIdentity(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  return (left ?? null) === (right ?? null);
+}
+
+function rewriteIdentityLabel(
+  task: ScriptRewriteTask,
+  identityId: string | null | undefined,
+): string | undefined {
+  return (
+    task.ip_profile_snapshot?.display_name ||
+    task.identity_id ||
+    identityId ||
+    undefined
+  );
+}
+
+function rewriteRunningMessage(
+  task: ScriptRewriteTask,
+  identityId: string | null | undefined,
+): string {
+  const identity = rewriteIdentityLabel(task, identityId);
+  return `AI 改写正在后台执行${identity ? `（人物：${identity}）` : ""}，可离开本页继续其他操作。`;
 }
 
 // P0-02-03：状态提升后由 AnalysisWorkspace 持有，注入标签页①的

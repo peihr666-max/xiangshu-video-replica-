@@ -517,6 +517,7 @@ export function AnalysisWorkspace({
     durationSeconds,
     firstFrameAssetId: firstFramePayload?.first_frame_asset_id ?? null,
     firstFrameSelectionVersionId: firstFrameSelection?.id ?? "",
+    identityId: characterSelection?.character_snapshot.identity?.id ?? null,
     originalScript,
     projectId: project.id,
     readOnly: draftsReadOnly,

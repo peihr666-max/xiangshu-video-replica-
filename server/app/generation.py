@@ -5285,7 +5285,10 @@ def list_generation_batches(
                 total_estimated_cost=optional_cost_total([task.estimated_cost for task in tasks]),
                 total_actual_cost=optional_cost_total([task.actual_cost for task in tasks]),
                 needs_attention_count=progress.counts["needs_attention"],
-                has_results=any(task.result_asset_id is not None for task in tasks),
+                has_results=any(
+                    task.result_asset_id is not None or task.direct_result_available
+                    for task in tasks
+                ),
                 tasks=tasks,
             )
         )

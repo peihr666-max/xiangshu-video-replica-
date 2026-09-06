@@ -19,6 +19,10 @@ const live = vi.hoisted(() => ({
   reloadStats: vi.fn(async (): Promise<unknown> => null),
   // C7 云端草稿：默认无草稿/空列表，具体用例再覆盖。
   loadCloudDraft: vi.fn(async (): Promise<unknown> => undefined),
+  loadDraftMaterials: vi.fn(async () => ({
+    assets: [],
+    unavailableIds: [],
+  })),
   loadSavedScriptList: vi.fn(async (): Promise<unknown[]> => []),
   persistCloudDraft: vi.fn(async (_draft: unknown): Promise<void> => {}),
   persistSavedScript: vi.fn(
@@ -389,6 +393,11 @@ describe("V1.4 workspace integration", () => {
       expect(screen.getByText("已保存文案")).toBeInTheDocument();
       // 未做任何编辑时不触发自动保存。
       expect(live.persistCloudDraft).not.toHaveBeenCalled();
+      expect(live.loadDraftMaterials).toHaveBeenCalledWith(
+        expect.objectContaining({
+          script: expect.objectContaining({ text: "云端恢复的文案内容" }),
+        }),
+      );
     });
 
     it("编辑二创文案后防抖自动保存到云端", async () => {

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useStudio } from "./context";
 import {
   cancelStudioTask,
+  downloadStudioTaskResult,
   loadTaskPreview,
+  retryStudioTask,
   uploadWorkbenchSourceVideo,
 } from "./live";
 import { draftFromTask } from "./state";
@@ -108,7 +110,9 @@ function RunningRowMenu({ task }: { task: StudioTask }) {
 
   const copyTaskId = async () => {
     try {
-      await navigator.clipboard.writeText(task.batchId || task.id);
+      await navigator.clipboard.writeText(
+        task.backendId || task.batchId || task.id,
+      );
       notify("任务编号已复制");
     } catch {
       notify("复制失败，请手动复制任务编号。");
@@ -590,8 +594,15 @@ export function TasksPage() {
     }
     setCancellingId(task.id);
     try {
-      await cancelStudioTask(task);
-      notify("任务已取消，预扣积分已退回。");
+      const result = await cancelStudioTask(task);
+      notify(
+        result.billingStatus === "RELEASED" ||
+          result.billingStatus === "RELEASE"
+          ? "任务已取消，预扣积分已退回。"
+          : result.billingStatus
+            ? "任务已取消，计费状态处理中，请稍后刷新核对。"
+            : "任务已取消，请刷新核对计费状态。",
+      );
       refresh();
     } catch (error) {
       notify(
@@ -666,7 +677,9 @@ export function TasksPage() {
                 </td>
                 <td>{formatTaskTime(task.submitted)}</td>
                 <td>
-                  {task.status === "queued" ? (
+                  {task.status === "queued" &&
+                  (task.backendKind !== "oral_task" ||
+                    task.backendStatus === "QUEUED") ? (
                     <Button
                       variant="quiet"
                       disabled={cancellingId === task.id}
@@ -727,7 +740,9 @@ export function TaskDetailPage() {
     patchState,
     updateData,
     notify,
+    refresh,
   } = useStudio();
+  const [actionBusy, setActionBusy] = useState<"download" | "retry">();
   const [previewLoad, setPreviewLoad] = useState<{
     taskId?: string;
     status: "idle" | "loading" | "empty" | "error" | "ready";
@@ -821,6 +836,50 @@ export function TaskDetailPage() {
         setPreviewLoad({ taskId: requestedTask.id, status: "error" });
     }
   };
+  const downloadResult = async () => {
+    if (review) {
+      notify(
+        "这是效果审核示例，未提供可下载成片；真实任务通过原有下载接口获取。",
+      );
+      return;
+    }
+    if (task.backendKind !== "oral_task") {
+      openLive("tasks");
+      return;
+    }
+    setActionBusy("download");
+    try {
+      await downloadStudioTaskResult(task);
+    } catch (error) {
+      notify(
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "口播成片下载失败，请重试。",
+      );
+    } finally {
+      setActionBusy(undefined);
+    }
+  };
+  const retryTask = async () => {
+    setActionBusy("retry");
+    try {
+      await retryStudioTask(task);
+      notify(
+        task.retryAction === "archive-retry"
+          ? "已提交成片归档重试。"
+          : "已提交口播任务重试。",
+      );
+      refresh();
+    } catch (error) {
+      notify(
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "重试失败，请刷新后再试。",
+      );
+    } finally {
+      setActionBusy(undefined);
+    }
+  };
   return (
     <section className="studio-task-detail">
       <h1>任务详情与结果</h1>
@@ -892,17 +951,13 @@ export function TaskDetailPage() {
               </Button>
             )}
             <Button
-              onClick={() =>
-                review
-                  ? notify(
-                      "这是效果审核示例，未提供可下载成片；真实任务通过原有下载接口获取。",
-                    )
-                  : openLive("tasks")
+              onClick={() => void downloadResult()}
+              disabled={
+                task.status !== "completed" || actionBusy === "download"
               }
-              disabled={task.status !== "completed"}
             >
               <Icon name="download" />
-              下载成片
+              {actionBusy === "download" ? "正在下载…" : "下载成片"}
             </Button>
             <Button
               disabled={!result || task.status !== "completed"}
@@ -937,7 +992,15 @@ export function TaskDetailPage() {
             </Hint>
           )}
           <Hint>进入发布管理仅创建发布草稿，不会自动发布。</Hint>
-          {task.status === "uncertain" && (
+          {!review && task.retryAction && (
+            <Button
+              disabled={actionBusy === "retry"}
+              onClick={() => void retryTask()}
+            >
+              {task.retryAction === "archive-retry" ? "重试归档" : "重试提交"}
+            </Button>
+          )}
+          {task.status === "uncertain" && !task.retryAction && (
             <Button onClick={() => openLive("tasks")}>核对任务状态</Button>
           )}
         </Panel>

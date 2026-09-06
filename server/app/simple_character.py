@@ -189,7 +189,13 @@ class SimpleLibraryEntry:
     """One character in the simplified library with its published seven views."""
 
     identity_id: str
+    persona_id: str | None
+    version_number: int | None
     display_name: str
+    role: str
+    service_scope: str
+    target_audience: str
+    expression_style: str
     owner_user_id: str | None
     status: str
     contact_sheet_asset_id: str | None
@@ -657,8 +663,11 @@ def list_simple_library(
                identity.display_name AS display_name,
                identity.owner_user_id AS owner_user_id,
                identity.status AS identity_status,
+               persona.id AS persona_id,
+               persona.occupation AS occupation,
                persona.appearance_constraints_json AS appearance_constraints_json,
                version.id AS version_id,
+               version.version_number AS version_number,
                version.published_at AS published_at,
                version.publication_snapshot_json AS snapshot_json,
                view.view_type AS view_type,
@@ -689,6 +698,10 @@ def list_simple_library(
         ]
         usable = [row for row in base_rows if row["version_id"] is not None]
         latest = usable[0] if usable else None
+        base = base_rows[0] if base_rows else None
+        constraints = (
+            {} if base is None else decode_scene_constraints(base["appearance_constraints_json"])
+        )
         views = tuple(
             SimpleCharacterView(
                 view_type=cast(RequiredCharacterViewType, str(row["view_type"])),
@@ -702,7 +715,15 @@ def list_simple_library(
         entries.append(
             SimpleLibraryEntry(
                 identity_id=identity_id,
+                persona_id=None if base is None else str(base["persona_id"]),
+                version_number=None if latest is None else int(latest["version_number"]),
                 display_name=str(identity_rows[0]["display_name"]),
+                role=(
+                    "" if base is None or base["occupation"] is None else str(base["occupation"])
+                ),
+                service_scope=_profile_constraint(constraints, "ip_service_scope"),
+                target_audience=_profile_constraint(constraints, "ip_target_audience"),
+                expression_style=_profile_constraint(constraints, "ip_expression_style"),
                 owner_user_id=(
                     None
                     if identity_rows[0]["owner_user_id"] is None
@@ -715,6 +736,11 @@ def list_simple_library(
             )
         )
     return entries
+
+
+def _profile_constraint(constraints: dict[str, object], key: str) -> str:
+    value = constraints.get(key)
+    return value if isinstance(value, str) else ""
 
 
 def _snapshot_contact_sheet_asset_id(row: sqlite3.Row | None) -> str | None:
@@ -775,6 +801,7 @@ def rename_simple_character_identity(
             "PERSON_IDENTITY_NOT_FOUND",
             "人物身份不存在或不可用。",
         )
+
     if str(row["status"]) == "ARCHIVED":
         raise character_error(409, "IDENTITY_ARCHIVED", "已归档人物身份不能修改。")
     clean_name = required_text(
@@ -800,6 +827,93 @@ def rename_simple_character_identity(
         metadata={"display_name": clean_name},
     )
     return get_person_identity(conn, actor=actor, identity_id=identity_id)
+
+
+def update_simple_character_profile(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    identity_id: str,
+    display_name: str,
+    role: str,
+    service_scope: str,
+    target_audience: str,
+    expression_style: str,
+) -> SimpleLibraryEntry:
+    """Update the owner-facing IP profile on the identity's base persona."""
+    identity = read_identity_row(conn, identity_id)
+    if actor.role != "admin" and (
+        actor.role == "auditor" or str(identity["owner_user_id"]) != actor.id
+    ):
+        raise character_error(404, "PERSON_IDENTITY_NOT_FOUND", "人物身份不存在或不可用。")
+    if str(identity["status"]) == "ARCHIVED":
+        raise character_error(409, "IDENTITY_ARCHIVED", "已归档人物身份不能修改。")
+
+    persona_rows = conn.execute(
+        """
+        SELECT id, appearance_constraints_json
+        FROM character_personas
+        WHERE identity_id = %s
+        ORDER BY created_at DESC, id
+        """,
+        (identity_id,),
+    ).fetchall()
+    base_persona = next(
+        (
+            row
+            for row in persona_rows
+            if decode_scene_constraints(row["appearance_constraints_json"]).get("appearance_type")
+            != "scene"
+        ),
+        None,
+    )
+    if base_persona is None:
+        raise character_error(409, "BASE_PERSONA_NOT_FOUND", "人物基础档案不存在或不可用。")
+
+    clean_name = required_text(display_name, "IDENTITY_NAME_REQUIRED", "人物显示名不能为空。")
+    constraints = decode_scene_constraints(base_persona["appearance_constraints_json"])
+    constraints.update(
+        {
+            "ip_service_scope": service_scope.strip(),
+            "ip_target_audience": target_audience.strip(),
+            "ip_expression_style": expression_style.strip(),
+        }
+    )
+    persona_id = str(base_persona["id"])
+    with conn:
+        conn.execute(
+            """
+            UPDATE person_identities
+            SET display_name = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (clean_name, identity_id),
+        )
+        conn.execute(
+            """
+            UPDATE character_personas
+            SET occupation = %s,
+                appearance_constraints_json = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (role.strip(), encode_json(constraints), persona_id),
+        )
+        write_audit(
+            conn,
+            actor=actor,
+            action="simple_character.profile_update",
+            entity_type="person_identity",
+            entity_id=identity_id,
+            metadata={"persona_id": persona_id},
+            commit=False,
+        )
+
+    return next(
+        entry
+        for entry in list_simple_library(conn, actor=actor)
+        if entry.identity_id == identity_id
+    )
 
 
 @dataclass(frozen=True)
@@ -846,7 +960,7 @@ def regenerate_simple_character_contact_sheet(
 ) -> SimpleCharacterRegenerationResult:
     """Re-run the single-photo five-view generation and publish a new version.
 
-    The character library's “重新生成多视图” action: read the identity's
+    The character library's “重新生成五视图” action: read the identity's
     original source photo, re-render the contact sheet with the same
     identity-preserve prompt, and publish it as the next version under the
     same persona. The previously published version is left untouched so
@@ -877,16 +991,27 @@ def regenerate_simple_character_contact_sheet(
         raise character_error(
             409,
             "SIMPLE_CHARACTER_SOURCE_MISSING",
-            "人物缺少原始授权照片，无法重新生成多视图。",
+            "人物缺少原始授权照片，无法重新生成五视图。",
         )
 
-    persona = conn.execute(
+    personas = conn.execute(
         """
-        SELECT id FROM character_personas WHERE identity_id = %s
-        ORDER BY created_at DESC, id LIMIT 1
+        SELECT id, appearance_constraints_json
+        FROM character_personas
+        WHERE identity_id = %s
+        ORDER BY created_at DESC, id
         """,
         (identity_id,),
-    ).fetchone()
+    ).fetchall()
+    persona = next(
+        (
+            row
+            for row in personas
+            if decode_scene_constraints(row["appearance_constraints_json"]).get("appearance_type")
+            != "scene"
+        ),
+        None,
+    )
     if persona is None:
         raise character_error(
             409,
@@ -1048,7 +1173,7 @@ def regenerate_simple_character_contact_sheet(
         raise character_error(
             500,
             "SIMPLE_CHARACTER_REGENERATION_FAILED",
-            "重新生成多视图失败，请稍后重试。",
+            "重新生成五视图失败，请稍后重试。",
         ) from exc
 
     return result
@@ -1359,6 +1484,23 @@ def delete_simple_character_identity(
             "人物身份不存在或不可用。",
         )
 
+    oral_billing_history = conn.execute(
+        """
+        SELECT 1
+        FROM wallet_transactions AS tx
+        JOIN oral_tasks AS task ON task.id = tx.oral_task_id
+        WHERE task.identity_id = %s
+        LIMIT 1
+        """,
+        (identity_id,),
+    ).fetchone()
+    if oral_billing_history is not None:
+        raise character_error(
+            409,
+            "IDENTITY_DELETE_HAS_BILLING_HISTORY",
+            "人物已产生口播账务历史，为保留对账记录不可删除。",
+        )
+
     # Paid provider calls may still be in flight for this character; deleting
     # the versions underneath them would lose their write-back.
     active_task = conn.execute(
@@ -1383,7 +1525,23 @@ def delete_simple_character_identity(
         """,
         (identity_id,),
     ).fetchone()
-    if active_task or active_sheet_task:
+    active_oral_task = conn.execute(
+        """
+        SELECT 1 FROM oral_tasks
+        WHERE identity_id = %s
+          AND status IN ('QUEUED', 'SUBMITTING', 'SUBMISSION_UNCERTAIN', 'RUNNING',
+                         'ARCHIVING', 'ARCHIVE_FAILED')
+        UNION ALL
+        SELECT 1 FROM oral_avatars
+        WHERE identity_id = %s AND status IN ('PENDING', 'RUNNING')
+        UNION ALL
+        SELECT 1 FROM oral_voices
+        WHERE identity_id = %s AND status IN ('PENDING', 'RUNNING')
+        LIMIT 1
+        """,
+        (identity_id, identity_id, identity_id),
+    ).fetchone()
+    if active_task or active_sheet_task or active_oral_task:
         raise character_error(
             409,
             "IDENTITY_DELETE_HAS_ACTIVE_TASKS",
@@ -1513,17 +1671,49 @@ def _identity_asset_ids(conn: BusinessConnection, identity_id: str) -> set[str]:
             if value is not None:
                 asset_ids.add(str(value))
 
-    for view_asset_id in conn.execute(
-        """
+    published_asset_ids = {
+        str(row[0])
+        for row in conn.execute(
+            """
         SELECT view.asset_id
         FROM character_assets AS view
         JOIN character_versions AS version ON version.id = view.character_version_id
         JOIN character_personas AS persona ON persona.id = version.persona_id
         WHERE persona.identity_id = %s AND view.asset_id IS NOT NULL
         """,
-        (identity_id,),
+            (identity_id,),
+        ).fetchall()
+    }
+    asset_ids.update(published_asset_ids)
+
+    for row in conn.execute(
+        """
+        SELECT result_asset_id AS asset_id
+        FROM oral_tasks
+        WHERE identity_id = %s AND result_asset_id IS NOT NULL
+        UNION
+        SELECT demo_asset_id AS asset_id
+        FROM oral_voices
+        WHERE identity_id = %s AND demo_asset_id IS NOT NULL
+        """,
+        (identity_id, identity_id),
     ).fetchall():
-        asset_ids.add(str(view_asset_id[0]))
+        asset_ids.add(str(row[0]))
+
+    # Publishing replaces character_assets.asset_id with the approved object.
+    # Its metadata retains the generated candidate id, which must be deleted too.
+    if published_asset_ids:
+        placeholders = ",".join("%s" for _ in published_asset_ids)
+        for row in conn.execute(
+            f"SELECT metadata_json FROM assets WHERE id IN ({placeholders})",  # noqa: S608
+            tuple(published_asset_ids),
+        ).fetchall():
+            try:
+                generated_asset_id = json.loads(str(row[0])).get("generated_asset_id")
+            except (TypeError, ValueError):
+                generated_asset_id = None
+            if generated_asset_id:
+                asset_ids.add(str(generated_asset_id))
 
     for snapshot_row in conn.execute(
         """
@@ -2368,7 +2558,7 @@ def _generate_contact_sheet_content(
             raise character_error(
                 502,
                 "CONTACT_SHEET_PROVIDER_FAILED",
-                "人物多视图生成服务暂不可用，请稍后重试。",
+                "人物五视图生成服务暂不可用，请稍后重试。",
             ) from exc
         else:
             if generated:
@@ -2379,7 +2569,7 @@ def _generate_contact_sheet_content(
             raise character_error(
                 502,
                 "CONTACT_SHEET_PROVIDER_INVALID_OUTPUT",
-                "人物多视图生成服务返回了无效图片，请稍后重试。",
+                "人物五视图生成服务返回了无效图片，请稍后重试。",
             )
     raise AssertionError("configured image provider path must return or raise")
 

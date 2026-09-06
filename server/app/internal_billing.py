@@ -225,6 +225,168 @@ def reserve_internal_billing(
     return billing_round
 
 
+def reserve_oral_billing(
+    conn: BusinessConnection,
+    *,
+    user_id: str,
+    oral_task_id: str,
+    billing_round: int = 1,
+) -> int:
+    """Reserve one wallet credit for an oral task in the caller transaction."""
+    task = conn.execute(
+        "SELECT owner_user_id FROM oral_tasks WHERE id = %s", (oral_task_id,)
+    ).fetchone()
+    if task is None:
+        raise BillingInvariantError("oral task does not exist")
+    if str(task["owner_user_id"]) != user_id:
+        raise BillingInvariantError("wallet owner does not match oral task owner")
+    if billing_round < 1:
+        raise BillingInvariantError("billing round must be positive")
+
+    existing = conn.execute(
+        """
+        SELECT user_id FROM wallet_transactions
+        WHERE oral_task_id = %s AND billing_round = %s AND type = 'RESERVE'
+        """,
+        (oral_task_id, billing_round),
+    ).fetchone()
+    if existing is not None:
+        if str(existing["user_id"]) != user_id:
+            raise BillingInvariantError("existing reservation belongs to another wallet")
+        return billing_round
+
+    cursor = conn.execute(
+        """
+        UPDATE wallets
+        SET available_credits = available_credits - 1,
+            reserved_credits = reserved_credits + 1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = %s AND available_credits >= 1
+        """,
+        (user_id,),
+    )
+    if cursor.rowcount != 1:
+        wallet = conn.execute("SELECT 1 FROM wallets WHERE user_id = %s", (user_id,)).fetchone()
+        if wallet is None:
+            raise BillingInvariantError("wallet does not exist")
+        raise InsufficientCreditsError("available credits are insufficient")
+
+    conn.execute(
+        """
+        INSERT INTO wallet_transactions (
+            id, user_id, type, available_delta, reserved_delta,
+            oral_task_id, billing_round, idempotency_key
+        ) VALUES (%s, %s, 'RESERVE', -1, 1, %s, %s, %s)
+        """,
+        (
+            str(uuid4()),
+            user_id,
+            oral_task_id,
+            billing_round,
+            f"oral-reserve:{oral_task_id}:{billing_round}",
+        ),
+    )
+    conn.execute(
+        "UPDATE oral_tasks SET billing_round = %s WHERE id = %s",
+        (billing_round, oral_task_id),
+    )
+    return billing_round
+
+
+def finalize_oral_billing(
+    conn: BusinessConnection,
+    *,
+    oral_task_id: str,
+) -> BillingFinalization:
+    """Settle archived success or release an explicitly failed/cancelled oral task."""
+    task = conn.execute(
+        """
+        SELECT task.status, task.owner_user_id, task.result_asset_id, asset.storage_uri
+        FROM oral_tasks AS task
+        LEFT JOIN assets AS asset ON asset.id = task.result_asset_id
+        WHERE task.id = %s
+        """,
+        (oral_task_id,),
+    ).fetchone()
+    if task is None:
+        raise BillingInvariantError("oral task does not exist")
+    reservation = conn.execute(
+        """
+        SELECT user_id, billing_round FROM wallet_transactions
+        WHERE oral_task_id = %s AND type = 'RESERVE'
+        ORDER BY billing_round DESC LIMIT 1
+        """,
+        (oral_task_id,),
+    ).fetchone()
+    if reservation is None:
+        return BillingFinalization(task_id=oral_task_id, billing_round=None, transaction_type=None)
+    user_id = str(reservation["user_id"])
+    billing_round = int(reservation["billing_round"])
+    if user_id != str(task["owner_user_id"]):
+        raise BillingInvariantError("reservation owner does not match oral task owner")
+    existing = conn.execute(
+        """
+        SELECT type FROM wallet_transactions
+        WHERE oral_task_id = %s AND billing_round = %s
+          AND type IN ('SETTLE', 'RELEASE')
+        """,
+        (oral_task_id, billing_round),
+    ).fetchone()
+    if existing is not None:
+        return BillingFinalization(
+            task_id=oral_task_id,
+            billing_round=billing_round,
+            transaction_type=cast(TerminalTransactionType, str(existing["type"])),
+        )
+
+    status = str(task["status"])
+    if status == "SUCCEEDED":
+        if task["result_asset_id"] is None or not str(task["storage_uri"] or "").strip():
+            raise BillingInvariantError("successful oral billing requires an archived asset")
+        transaction_type: TerminalTransactionType = "SETTLE"
+        available_delta = 0
+    elif status in {"FAILED", "CANCELLED"}:
+        transaction_type = "RELEASE"
+        available_delta = 1
+    else:
+        raise BillingInvariantError("oral reservation must remain frozen for non-terminal status")
+
+    cursor = conn.execute(
+        """
+        UPDATE wallets
+        SET available_credits = available_credits + %s,
+            reserved_credits = reserved_credits - 1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = %s AND reserved_credits >= 1
+        """,
+        (available_delta, user_id),
+    )
+    if cursor.rowcount != 1:
+        raise BillingInvariantError("reserved wallet credit is missing")
+    conn.execute(
+        """
+        INSERT INTO wallet_transactions (
+            id, user_id, type, available_delta, reserved_delta,
+            oral_task_id, billing_round, idempotency_key
+        ) VALUES (%s, %s, %s, %s, -1, %s, %s, %s)
+        """,
+        (
+            str(uuid4()),
+            user_id,
+            transaction_type,
+            available_delta,
+            oral_task_id,
+            billing_round,
+            f"oral-{transaction_type.lower()}:{oral_task_id}:{billing_round}",
+        ),
+    )
+    return BillingFinalization(
+        task_id=oral_task_id,
+        billing_round=billing_round,
+        transaction_type=transaction_type,
+    )
+
+
 def finalize_internal_billing(
     conn: BusinessConnection,
     *,

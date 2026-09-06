@@ -4,14 +4,20 @@ import type {
   GenerationBatch,
   GenerationBatchListPage,
   GenerationTask,
+  MaterialItem,
+  OralAvatarRecord,
+  OralTaskRecord,
+  OralVoiceRecord,
   Project,
   SimpleLibraryEntry,
   SimpleSceneLook,
 } from "../api";
+import { createDraft } from "./state";
 
 const api = vi.hoisted(() => ({
   createGenerationResultPreviewUrl: vi.fn(),
   createGenerationTaskPreviewUrl: vi.fn(),
+  downloadMaterialAsset: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
   getCachedCharacterAssetUrl: vi.fn(),
   getGenerationBatch: vi.fn(),
@@ -20,22 +26,32 @@ const api = vi.hoisted(() => ({
   getLatestScriptVersion: vi.fn(),
   listCharacterSceneLooks: vi.fn(),
   listGenerationBatches: vi.fn(),
-  listOralTasks: vi.fn(async () => []),
+  listOralAvatars: vi.fn<() => Promise<OralAvatarRecord[]>>(async () => []),
+  listOralTasks: vi.fn<() => Promise<OralTaskRecord[]>>(async () => []),
+  listOralVoices: vi.fn<() => Promise<OralVoiceRecord[]>>(async () => []),
   listViralVideos: vi.fn(),
   listProjects: vi.fn(),
   listSimpleCharacterLibrary: vi.fn(),
   readAnalysisPayload: vi.fn(),
   cancelGenerationBatch: vi.fn(),
+  cancelOralTask: vi.fn(),
+  retryOralTask: vi.fn(),
+  retryOralTaskArchive: vi.fn(),
+  resolveMaterials: vi.fn(),
 }));
 
 vi.mock("../api", () => api);
 
 import {
   cancelStudioTask,
+  downloadStudioTaskResult,
+  loadDraftMaterials,
   loadPersonAssets,
   loadProjectDraft,
   loadStudioData,
   loadTaskPreview,
+  reloadTasks,
+  retryStudioTask,
 } from "./live";
 import type { StudioTask } from "./types";
 
@@ -58,7 +74,13 @@ const project: Project = {
 
 const person: SimpleLibraryEntry = {
   identity_id: "person-1",
+  persona_id: "persona-1",
+  version_number: 1,
   display_name: "张工",
+  role: "乡墅设计师",
+  service_scope: "乡墅设计",
+  target_audience: "准备建房家庭",
+  expression_style: "专业直白",
   owner_user_id: "user-1",
   status: "PUBLISHED",
   contact_sheet_asset_id: "sheet-1",
@@ -174,6 +196,8 @@ describe("真实 Studio 只读适配器", () => {
     vi.resetAllMocks();
     api.listProjects.mockResolvedValue([project]);
     api.listSimpleCharacterLibrary.mockResolvedValue([person]);
+    api.listOralAvatars.mockResolvedValue([]);
+    api.listOralVoices.mockResolvedValue([]);
     api.listViralVideos.mockImplementation((platform: string) =>
       Promise.resolve({
         platform,
@@ -215,6 +239,58 @@ describe("真实 Studio 只读适配器", () => {
         created_at: "2026-09-05T09:00:00+08:00",
       },
     });
+  });
+
+  it("恢复云端草稿时批量解析其中的素材引用", async () => {
+    const material = {
+      id: "asset:image-1",
+      owner_user_id: "user-1",
+      asset_id: "image-1",
+      generation_task_id: null,
+      project_id: null,
+      person_id: null,
+      title: "云端首帧.png",
+      group: "我的上传",
+      media_type: "image",
+      source: "upload",
+      status: "ready",
+      delivery: "stored",
+      content_type: "image/png",
+      size_bytes: 128,
+      duration_seconds: null,
+      created_at: "2026-09-06 10:00:00",
+      hidden: false,
+      saved: true,
+      allowed_uses: ["first_frame", "tail_frame", "reference"],
+      allowed_actions: ["preview", "download", "rename", "hide"],
+    } satisfies MaterialItem;
+    api.resolveMaterials.mockResolvedValue({
+      items: [material],
+      unavailable_ids: ["asset:missing-audio"],
+    });
+    const draft = createDraft();
+    draft.firstFrameId = "image-1";
+    draft.tailFrameId = "image-1";
+    draft.audioId = "missing-audio";
+    draft.referenceIds = ["image-1"];
+
+    const result = await loadDraftMaterials(draft);
+
+    expect(api.resolveMaterials).toHaveBeenCalledWith([
+      "asset:image-1",
+      "asset:missing-audio",
+    ]);
+    expect(result.assets).toEqual([
+      expect.objectContaining({
+        id: "image-1",
+        materialId: "asset:image-1",
+        name: "云端首帧.png",
+        kind: "image",
+        saved: true,
+        url: "https://signed/source",
+      }),
+    ]);
+    expect(result.unavailableIds).toEqual(["missing-audio"]);
   });
 
   it("详情按需读取批次并优先预览成功的直出结果", async () => {
@@ -288,6 +364,35 @@ describe("真实 Studio 只读适配器", () => {
     await expect(loadTaskPreview(studioTask)).resolves.toBeUndefined();
     expect(api.createGenerationResultPreviewUrl).not.toHaveBeenCalled();
     expect(api.createGenerationTaskPreviewUrl).not.toHaveBeenCalled();
+  });
+
+  it("口播成片预览和下载都直接签发 result_asset_id", async () => {
+    const oralResult: StudioTask = {
+      id: "oral-visible",
+      backendKind: "oral_task",
+      backendId: "oral-backend",
+      backendStatus: "SUCCEEDED",
+      title: "张工口播",
+      type: "数字人口播",
+      status: "completed",
+      submitted: "2026-09-06T09:00:00Z",
+      resultId: "oral-result-asset",
+    };
+    api.getAssetDownloadUrl.mockResolvedValue({
+      url: "https://signed/oral-result",
+    });
+    await expect(loadTaskPreview(oralResult)).resolves.toMatchObject({
+      id: "oral-result-asset",
+      url: "https://signed/oral-result",
+    });
+    await downloadStudioTaskResult(oralResult);
+
+    expect(api.getAssetDownloadUrl).toHaveBeenCalledWith("oral-result-asset");
+    expect(api.downloadMaterialAsset).toHaveBeenCalledWith(
+      "oral-result-asset",
+      "张工口播.mp4",
+    );
+    expect(api.getGenerationBatch).not.toHaveBeenCalled();
   });
 
   it("批次或签名请求失败时向上抛出以便界面明确重试", async () => {
@@ -450,6 +555,72 @@ describe("真实 Studio 只读适配器", () => {
     expect(data.videos).toHaveLength(1);
     expect(data.videos[0]?.nativeId).toBe("douyin-1");
     expect(data.errors).toContain("读取视频号爆款失败：channels timeout");
+  });
+
+  it("把真实声音和分身按人物绑定并加载可预览素材", async () => {
+    api.listOralAvatars.mockResolvedValue([
+      {
+        id: "avatar-1",
+        identity_id: "person-1",
+        title: "张工照片分身",
+        status: "READY",
+        source_kind: "IMAGE",
+        source_asset_id: "scene-asset-1",
+        error_message: null,
+        created_at: "2026-09-06T10:00:00Z",
+        updated_at: "2026-09-06T10:03:00Z",
+      },
+    ] as OralAvatarRecord[]);
+    api.listOralVoices.mockResolvedValue([
+      {
+        id: "voice-1",
+        identity_id: "person-1",
+        title: "张工本人音色",
+        status: "READY",
+        source_asset_id: "voice-source-1",
+        demo_asset_id: null,
+        confirmed: 1,
+        error_message: null,
+        created_at: "2026-09-06T10:00:00Z",
+        updated_at: "2026-09-06T10:02:00Z",
+      },
+    ] as OralVoiceRecord[]);
+
+    const data = await loadStudioData(user);
+
+    expect(api.listOralAvatars).toHaveBeenCalledWith("person-1");
+    expect(api.listOralVoices).toHaveBeenCalledWith("person-1");
+    expect(data.people[0]?.avatars).toEqual([
+      expect.objectContaining({
+        id: "avatar-1",
+        imageId: "scene-asset-1",
+        origin: "照片制作",
+        ready: true,
+        status: "READY",
+      }),
+    ]);
+    expect(data.people[0]?.voices).toEqual([
+      expect.objectContaining({
+        id: "voice-1",
+        confirmed: false,
+        status: "READY",
+        url: undefined,
+      }),
+    ]);
+    expect(data.assets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "scene-asset-1",
+          kind: "image",
+          personId: "person-1",
+        }),
+        expect.objectContaining({
+          id: "voice-source-1",
+          kind: "audio",
+          personId: "person-1",
+        }),
+      ]),
+    );
   });
 
   it("部分成功且仍需处理的批次不会冒充已完成", async () => {
@@ -644,6 +815,7 @@ describe("批次类型映射与取消", () => {
     api.listProjects.mockResolvedValue([]);
     api.listSimpleCharacterLibrary.mockResolvedValue([]);
     api.listOralTasks.mockResolvedValue([]);
+    api.listGenerationBatches.mockResolvedValue(batchPage);
     api.getStudioStats.mockResolvedValue(null);
   });
 
@@ -680,5 +852,136 @@ describe("批次类型映射与取消", () => {
       submitted: "2026-09-06T09:32:00",
     });
     expect(api.cancelGenerationBatch).toHaveBeenCalledWith("batch-1");
+  });
+
+  it("任务标识明确区分生成批次与口播任务", async () => {
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-1",
+        status: "QUEUED",
+        title: "张工口播",
+        mode: "TTS",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: "voice-1",
+        script_text: "正文",
+        audio_asset_id: null,
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        created_at: "2026-09-06T09:00:00Z",
+        updated_at: "2026-09-06T09:00:00Z",
+      },
+    ] satisfies OralTaskRecord[]);
+
+    const tasks = await reloadTasks(user);
+
+    expect(tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          backendKind: "generation_batch",
+          backendId: "batch-1",
+        }),
+        expect.objectContaining({
+          backendKind: "oral_task",
+          backendId: "oral-1",
+        }),
+      ]),
+    );
+  });
+
+  it("轮询时某类任务失败仍保留另一类", async () => {
+    api.listGenerationBatches.mockRejectedValue(new Error("generation down"));
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-keep",
+        status: "RUNNING",
+        title: "保留口播",
+        mode: "AUDIO",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: null,
+        script_text: null,
+        audio_asset_id: "audio-1",
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        created_at: "2026-09-06T09:00:00Z",
+        updated_at: "2026-09-06T09:01:00Z",
+      },
+    ] satisfies OralTaskRecord[]);
+
+    await expect(reloadTasks(user)).resolves.toEqual([
+      expect.objectContaining({
+        backendKind: "oral_task",
+        backendId: "oral-keep",
+      }),
+    ]);
+  });
+
+  it.each([
+    ["SUBMITTING", "queued", undefined],
+    ["RUNNING", "running", undefined],
+    ["ARCHIVING", "running", undefined],
+    ["SUBMISSION_UNCERTAIN", "uncertain", "retry"],
+    ["ARCHIVE_FAILED", "uncertain", "archive-retry"],
+  ] as const)(
+    "映射口播新状态 %s",
+    async (backendStatus, status, retryAction) => {
+      api.listGenerationBatches.mockResolvedValue({ ...batchPage, items: [] });
+      api.listOralTasks.mockResolvedValue([
+        {
+          id: `oral-${backendStatus}`,
+          status: backendStatus,
+          title: backendStatus,
+          mode: "TTS",
+          identity_id: "person-1",
+          avatar_id: "avatar-1",
+          voice_id: "voice-1",
+          script_text: "正文",
+          audio_asset_id: null,
+          result_asset_id: null,
+          duration_sec: null,
+          estimated_cost_fen: 100,
+          created_at: "2026-09-06T09:00:00Z",
+          updated_at: "2026-09-06T09:01:00Z",
+        },
+      ] as OralTaskRecord[]);
+
+      const [task] = await reloadTasks(user);
+
+      expect(task).toEqual(
+        expect.objectContaining({ status, backendStatus, retryAction }),
+      );
+    },
+  );
+
+  it("口播取消和重试按 backendKind/backendId 分派", async () => {
+    const queuedOral: StudioTask = {
+      id: "display-id-without-prefix",
+      backendKind: "oral_task",
+      backendId: "oral-real-id",
+      backendStatus: "QUEUED",
+      title: "排队口播",
+      type: "数字人口播",
+      status: "queued",
+      submitted: "2026-09-06T09:00:00Z",
+    };
+    api.cancelOralTask.mockResolvedValue({
+      id: "oral-real-id",
+      status: "CANCELLED",
+      billing_status: "RELEASED",
+    });
+
+    await expect(cancelStudioTask(queuedOral)).resolves.toEqual({
+      billingStatus: "RELEASED",
+    });
+    expect(api.cancelOralTask).toHaveBeenCalledWith("oral-real-id");
+    expect(api.cancelGenerationBatch).not.toHaveBeenCalled();
+
+    await retryStudioTask({ ...queuedOral, retryAction: "retry" });
+    await retryStudioTask({ ...queuedOral, retryAction: "archive-retry" });
+    expect(api.retryOralTask).toHaveBeenCalledWith("oral-real-id");
+    expect(api.retryOralTaskArchive).toHaveBeenCalledWith("oral-real-id");
   });
 });

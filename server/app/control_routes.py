@@ -127,6 +127,7 @@ class ControlWalletTransaction(BaseModel):
     task_id: str | None
     billing_round: int | None
     created_at: str
+    oral_task_id: str | None = None
 
 
 class ControlWalletTransactionPage(BaseModel):
@@ -594,6 +595,7 @@ def list_wallet_transactions(
             tx.reserved_delta,
             tx.recharge_order_id,
             tx.task_id,
+            tx.oral_task_id,
             tx.billing_round,
             tx.created_at
         FROM wallet_transactions AS tx
@@ -1200,6 +1202,7 @@ def export_wallet_transactions_csv(
             tx.reserved_delta,
             COALESCE(tx.recharge_order_id, '') AS recharge_order_id,
             COALESCE(tx.task_id, '') AS task_id,
+            COALESCE(tx.oral_task_id, '') AS oral_task_id,
             COALESCE(tx.billing_round, '') AS billing_round,
             tx.created_at
         FROM wallet_transactions AS tx
@@ -1221,6 +1224,7 @@ def export_wallet_transactions_csv(
             "reserved_delta",
             "recharge_order_id",
             "task_id",
+            "oral_task_id",
             "billing_round",
             "created_at",
         ),

@@ -48,7 +48,13 @@ function viewsFor(prefix: string): api.SimpleCharacterView[] {
 
 const entry: api.SimpleLibraryEntry = {
   identity_id: "identity-1",
+  persona_id: "persona-1",
+  version_number: 1,
   display_name: "林夏",
+  role: "",
+  service_scope: "",
+  target_audience: "",
+  expression_style: "",
   owner_user_id: "employee_1",
   status: "ACTIVE",
   contact_sheet_asset_id: null,
@@ -123,6 +129,24 @@ describe("CharacterLibrary", () => {
     vi.mocked(api.getLatestCharacterSheetTask).mockResolvedValue(null);
     vi.mocked(api.getLatestSceneLookTask).mockResolvedValue(null);
     vi.spyOn(window, "confirm").mockReturnValue(true);
+  });
+
+  it("从 Studio 指定人物进入时直接打开该人物的场景造型", async () => {
+    vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([entry]);
+
+    render(
+      <CharacterLibrary
+        initialIdentityId="identity-1"
+        initialTab="scenes"
+        userRole="employee"
+        userId="employee_1"
+      />,
+    );
+
+    expect(
+      await screen.findByRole("tab", { name: "场景造型" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(api.listCharacterSceneLooks).toHaveBeenCalledWith("identity-1");
   });
 
   it("separates the base appearance from scene looks and directly generates a new look", async () => {
@@ -265,9 +289,9 @@ describe("CharacterLibrary", () => {
     fireEvent.click(screen.getByRole("button", { name: "关闭人物预览" }));
     expect(screen.queryByRole("dialog")).toBeNull();
 
-    // 新人物灯箱=五视角拼合大图。
+    // 新人物灯箱=五视图拼合大图。
     fireEvent.click(screen.getByRole("button", { name: "查看人物 荣哥 大图" }));
-    expect(await screen.findByAltText("荣哥 五视角拼合图")).toBeInTheDocument();
+    expect(await screen.findByAltText("荣哥 五视图拼合图")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "下载拼合图" }),
     ).toBeInTheDocument();
@@ -341,7 +365,7 @@ describe("CharacterLibrary", () => {
       },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "一键生成五视角拼合图" }),
+      screen.getByRole("button", { name: "一键生成五视图拼合图" }),
     );
 
     await waitFor(() =>
@@ -352,7 +376,7 @@ describe("CharacterLibrary", () => {
       ),
     );
     expect(await screen.findByAltText("林夏 正脸近景")).toBeInTheDocument();
-    expect(screen.getByText(/五视角拼合图已生成/)).toBeInTheDocument();
+    expect(screen.getByText(/五视图拼合图已生成/)).toBeInTheDocument();
   });
 
   it("shows the source image and progress card while generation is running", async () => {
@@ -374,7 +398,7 @@ describe("CharacterLibrary", () => {
       },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "一键生成五视角拼合图" }),
+      screen.getByRole("button", { name: "一键生成五视图拼合图" }),
     );
 
     expect(
@@ -411,7 +435,7 @@ describe("CharacterLibrary", () => {
     render(<CharacterLibrary userRole="employee" userId="employee_1" />);
 
     expect(await screen.findByAltText("林夏 正脸近景")).toBeInTheDocument();
-    expect(screen.getByText(/人物“林夏”多视图已生成/)).toBeInTheDocument();
+    expect(screen.getByText(/人物“林夏”五视图已生成/)).toBeInTheDocument();
     expect(api.listSimpleCharacterLibrary).toHaveBeenCalledTimes(2);
     expect(api.waitForCharacterSheetTask).not.toHaveBeenCalled();
   });
@@ -447,7 +471,7 @@ describe("CharacterLibrary", () => {
     expect(await screen.findByText("本地占位结果")).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
-        name: "重新生成人物 林夏 的多视图",
+        name: "重新生成人物 林夏 的五视图",
       }),
     ).toBeInTheDocument();
   });
@@ -487,7 +511,7 @@ describe("CharacterLibrary", () => {
     await waitFor(() =>
       expect(api.downloadCharacterAsset).toHaveBeenCalledWith(
         "sheet-foreign",
-        "荣哥-五视角拼合图.png",
+        "荣哥-五视图拼合图.png",
       ),
     );
   });
@@ -635,7 +659,7 @@ describe("CharacterLibrary", () => {
     expect(await screen.findByText("林夏")).toBeInTheDocument();
     expect(screen.queryByLabelText("一键上传人物")).toBeNull();
     expect(
-      screen.queryByRole("button", { name: "一键生成五视角拼合图" }),
+      screen.queryByRole("button", { name: "一键生成五视图拼合图" }),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "改名" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除人物 林夏" })).toBeNull();
@@ -701,7 +725,7 @@ describe("CharacterLibrary", () => {
 
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "重新生成人物 荣哥 的多视图",
+        name: "重新生成人物 荣哥 的五视图",
       }),
     );
 
@@ -709,7 +733,7 @@ describe("CharacterLibrary", () => {
       expect(api.regenerateContactSheet).toHaveBeenCalledWith("identity-2"),
     );
     expect(
-      await screen.findByText(/多视图已重新生成（V2）/),
+      await screen.findByText(/五视图已重新生成（V2）/),
     ).toBeInTheDocument();
     expect(api.listSimpleCharacterLibrary).toHaveBeenCalledTimes(2);
   });
@@ -724,14 +748,14 @@ describe("CharacterLibrary", () => {
 
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "重新生成人物 荣哥 的多视图",
+        name: "重新生成人物 荣哥 的五视图",
       }),
     );
 
     expect(await screen.findByText("生成服务暂不可用。")).toBeInTheDocument();
     // 失败后按钮恢复可用，人物卡片仍在列表中。
     expect(
-      screen.getByRole("button", { name: "重新生成人物 荣哥 的多视图" }),
+      screen.getByRole("button", { name: "重新生成人物 荣哥 的五视图" }),
     ).toBeEnabled();
   });
 
@@ -746,7 +770,7 @@ describe("CharacterLibrary", () => {
     expect(screen.queryByText("荣哥")).toBeNull();
     expect(
       screen.queryByRole("button", {
-        name: "重新生成人物 荣哥 的多视图",
+        name: "重新生成人物 荣哥 的五视图",
       }),
     ).toBeNull();
   });

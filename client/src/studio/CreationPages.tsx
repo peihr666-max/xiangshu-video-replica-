@@ -1017,7 +1017,9 @@ export function OralPage() {
           生成口播视频
         </Button>
       </footer>
-      <Hint>确认费用后提交；当前供应商接口未接通时不会创建正式任务。</Hint>
+      <Hint>
+        确认费用后提交；数字人服务未配置时会明确提示，不会生成伪造成片。
+      </Hint>
     </section>
   );
 }

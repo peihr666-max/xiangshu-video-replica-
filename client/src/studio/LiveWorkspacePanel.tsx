@@ -23,6 +23,8 @@ export function LiveWorkspacePanel({
   customerAccount,
   customerWallet,
   project,
+  characterIdentityId,
+  characterInitialTab = "base",
   handoffBatch = null,
   onClose,
   onBusyChange,
@@ -36,6 +38,8 @@ export function LiveWorkspacePanel({
   customerAccount?: CustomerAccount;
   customerWallet?: CustomerWallet;
   project?: Project;
+  characterIdentityId?: string;
+  characterInitialTab?: "base" | "scenes";
   handoffBatch?: GenerationBatch | null;
   onClose: () => void;
   onBusyChange: (busy: boolean) => void;
@@ -123,7 +127,12 @@ export function LiveWorkspacePanel({
         )
       ) : null}
       {panel === "characters" ? (
-        <CharacterLibrary userId={currentUser.id} userRole={currentUser.role} />
+        <CharacterLibrary
+          initialIdentityId={characterIdentityId}
+          initialTab={characterInitialTab}
+          userId={currentUser.id}
+          userRole={currentUser.role}
+        />
       ) : null}
       {panel === "tasks" ? (
         <TaskRecordsPanel

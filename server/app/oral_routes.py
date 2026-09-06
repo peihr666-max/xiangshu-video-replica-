@@ -14,16 +14,28 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
-from app.hifly import HiflyClient, HiflyError, hifly_client_from_settings
+from app.hifly import (
+    HiflyClient,
+    HiflyError,
+    HiflySubmissionUncertain,
+    hifly_client_from_settings,
+)
+from app.internal_billing import InsufficientCreditsError
 from app.oral import (
+    ORAL_CONSENT_TEXT_VERSION,
+    OralConflictError,
     OralDomainError,
+    cancel_oral_task,
+    confirm_voice_clone,
+    create_oral_consent,
     create_oral_task,
     list_avatars,
+    list_oral_consents,
     list_oral_tasks,
     list_voices,
     oral_price_quote,
+    read_oral_task,
     refresh_avatar_clone,
-    refresh_oral_task,
     refresh_voice_clone,
     start_avatar_clone,
     start_voice_clone,
@@ -45,10 +57,14 @@ class OralError(HTTPException):
 
 
 def _domain_guard(exc: OralDomainError) -> HTTPException:
+    if isinstance(exc, OralConflictError):
+        return OralError("ORAL_IDEMPOTENCY_CONFLICT", str(exc), status_code=409)
     return OralError("ORAL_REQUEST_INVALID", str(exc))
 
 
 def _vendor_guard(exc: HiflyError) -> HTTPException:
+    if isinstance(exc, HiflySubmissionUncertain):
+        return OralError("ORAL_SUBMISSION_UNCERTAIN", str(exc), status_code=503)
     return OralError("ORAL_VENDOR_UNAVAILABLE", str(exc), status_code=503)
 
 
@@ -57,13 +73,58 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in row.items()
-        if not key.startswith("vendor_") and key not in {"idempotency_key", "subtitle_json"}
+        if not key.startswith("vendor_")
+        and key not in {"idempotency_key", "request_hash", "subtitle_json"}
     }
 
 
 @router.get("/price")
 def read_oral_price(conn: Database) -> dict[str, int]:
     return oral_price_quote(conn)
+
+
+# ---------------------------------------------------------------------------
+# Clone consent
+# ---------------------------------------------------------------------------
+
+
+class OralConsentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    identity_id: str = Field(min_length=1, max_length=128)
+    source_asset_id: str = Field(min_length=1, max_length=128)
+    purpose: Literal["AVATAR", "VOICE", "AVATAR_CLONE", "VOICE_CLONE"]
+
+
+@router.post("/consents", status_code=status.HTTP_201_CREATED)
+def create_clone_consent(
+    request: OralConsentRequest,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            return create_oral_consent(
+                conn,
+                actor=actor,
+                identity_id=request.identity_id,
+                source_asset_id=request.source_asset_id,
+                purpose=request.purpose,
+                consent_text_version=ORAL_CONSENT_TEXT_VERSION,
+            )
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+
+
+@router.get("/consents")
+def read_clone_consents(
+    identity_id: Annotated[str, Query(min_length=1, max_length=128)],
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> list[dict[str, Any]]:
+    try:
+        return list_oral_consents(conn, actor=actor, identity_id=identity_id)
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -87,14 +148,17 @@ class AvatarCloneRequest(BaseModel):
     title: str = Field(min_length=1, max_length=60)
     source_asset_id: str = Field(min_length=1, max_length=128)
     source_kind: Literal["VIDEO", "IMAGE"]
+    consent_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 
 @router.post("/avatars", status_code=status.HTTP_202_ACCEPTED)
 def create_avatar_clone(
     request: AvatarCloneRequest,
     db: BusinessDbDep,
-    vendor: OralVendor,
 ) -> dict[str, Any]:
+    domain_error: OralDomainError | None = None
+    result = None
     with db.write() as (conn, actor):
         try:
             result = start_avatar_clone(
@@ -104,26 +168,33 @@ def create_avatar_clone(
                 title=request.title,
                 source_asset_id=request.source_asset_id,
                 source_kind=request.source_kind,
-                vendor=vendor,
+                consent_id=request.consent_id,
+                idempotency_key=request.idempotency_key,
             )
         except OralDomainError as exc:
-            raise _domain_guard(exc) from exc
-        except HiflyError as exc:
-            raise _vendor_guard(exc) from exc
-    return {"id": result.task_id, "status": result.status}
+            domain_error = exc
+    if domain_error is not None:
+        raise _domain_guard(domain_error) from domain_error
+    assert result is not None
+    return {
+        "id": result.task_id,
+        "status": result.status,
+        "submission_state": result.submission_state,
+        "replayed": result.replayed,
+    }
 
 
 @router.post("/avatars/{avatar_id}/refresh")
 def refresh_avatar(
     avatar_id: str,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
     vendor: OralVendor,
 ) -> dict[str, Any]:
-    try:
-        row = refresh_avatar_clone(conn, avatar_id=avatar_id, actor=actor, vendor=vendor)
-    except OralDomainError as exc:
-        raise _domain_guard(exc) from exc
+    with db.write() as (conn, actor):
+        try:
+            row = refresh_avatar_clone(conn, avatar_id=avatar_id, actor=actor, vendor=vendor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
     return _serialize(row)
 
 
@@ -147,14 +218,17 @@ class VoiceCloneRequest(BaseModel):
     identity_id: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=60)
     source_asset_id: str = Field(min_length=1, max_length=128)
+    consent_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 
 @router.post("/voices", status_code=status.HTTP_202_ACCEPTED)
 def create_voice_clone(
     request: VoiceCloneRequest,
     db: BusinessDbDep,
-    vendor: OralVendor,
 ) -> dict[str, Any]:
+    domain_error: OralDomainError | None = None
+    result = None
     with db.write() as (conn, actor):
         try:
             result = start_voice_clone(
@@ -163,27 +237,46 @@ def create_voice_clone(
                 identity_id=request.identity_id,
                 title=request.title,
                 source_asset_id=request.source_asset_id,
-                vendor=vendor,
+                consent_id=request.consent_id,
+                idempotency_key=request.idempotency_key,
             )
         except OralDomainError as exc:
-            raise _domain_guard(exc) from exc
-        except HiflyError as exc:
-            raise _vendor_guard(exc) from exc
-    return {"id": result.task_id, "status": result.status}
+            domain_error = exc
+    if domain_error is not None:
+        raise _domain_guard(domain_error) from domain_error
+    assert result is not None
+    return {
+        "id": result.task_id,
+        "status": result.status,
+        "submission_state": result.submission_state,
+        "replayed": result.replayed,
+    }
 
 
 @router.post("/voices/{voice_id}/refresh")
 def refresh_voice(
     voice_id: str,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
     vendor: OralVendor,
 ) -> dict[str, Any]:
-    try:
-        row = refresh_voice_clone(conn, voice_id=voice_id, actor=actor, vendor=vendor)
-    except OralDomainError as exc:
-        raise _domain_guard(exc) from exc
+    with db.write() as (conn, actor):
+        try:
+            row = refresh_voice_clone(conn, voice_id=voice_id, actor=actor, vendor=vendor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
     return _serialize(row)
+
+
+@router.post("/voices/{voice_id}/confirm")
+def confirm_voice(
+    voice_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            return _serialize(confirm_voice_clone(conn, voice_id=voice_id, actor=actor))
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +298,13 @@ class OralTaskRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 
-@router.post("/tasks", status_code=status.HTTP_201_CREATED)
+@router.post("/tasks", status_code=status.HTTP_202_ACCEPTED)
 def create_oral_generation_task(
     request: OralTaskRequest,
     db: BusinessDbDep,
-    vendor: OralVendor,
 ) -> dict[str, Any]:
-    with db.write() as (conn, actor):
-        try:
+    try:
+        with db.write() as (conn, actor):
             result = create_oral_task(
                 conn,
                 actor=actor,
@@ -225,17 +317,21 @@ def create_oral_generation_task(
                 audio_asset_id=request.audio_asset_id,
                 subtitle=request.subtitle,
                 idempotency_key=request.idempotency_key,
-                vendor=vendor,
             )
-        except OralDomainError as exc:
-            raise _domain_guard(exc) from exc
-        except HiflyError as exc:
-            raise _vendor_guard(exc) from exc
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
+    except InsufficientCreditsError as exc:
+        raise OralError(
+            "INSUFFICIENT_CREDITS",
+            "可用次数不足，请先充值。",
+            status_code=402,
+        ) from exc
     return {
         "id": result.task_id,
         "status": result.status,
         "estimated_cost_fen": result.estimated_cost_fen,
         "replayed": result.replayed,
+        "submission_state": result.submission_state,
     }
 
 
@@ -253,10 +349,71 @@ def read_oral_generation_task(
     task_id: str,
     conn: Database,
     actor: AuthenticatedUser,
-    vendor: OralVendor,
 ) -> dict[str, Any]:
     try:
-        row = refresh_oral_task(conn, task_id=task_id, actor=actor, vendor=vendor)
+        row = read_oral_task(conn, task_id=task_id, actor=actor)
     except OralDomainError as exc:
         raise _domain_guard(exc) from exc
+    return _serialize(row)
+
+
+@router.post("/tasks/{task_id}/refresh")
+def refresh_oral_generation_task(
+    task_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            row = read_oral_task(conn, task_id=task_id, actor=actor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+    if str(row["status"]) in {
+        "QUEUED",
+        "SUBMITTING",
+        "SUBMISSION_UNCERTAIN",
+        "RUNNING",
+        "ARCHIVING",
+        "ARCHIVE_FAILED",
+    }:
+        raise OralError(
+            "ORAL_WORKER_NOT_AVAILABLE",
+            "口播任务已持久化，当前 Worker 尚未接管处理。",
+            status_code=503,
+        )
+    return _serialize(row)
+
+
+@router.post("/tasks/{task_id}/archive-retry")
+def retry_oral_archive(
+    task_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            row = read_oral_task(conn, task_id=task_id, actor=actor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+    if str(row["status"]) != "ARCHIVE_FAILED":
+        raise OralError(
+            "ORAL_ARCHIVE_RETRY_NOT_ALLOWED",
+            "只有归档失败的任务可重试归档。",
+            status_code=409,
+        )
+    raise OralError(
+        "ORAL_ARCHIVE_RETRY_UNAVAILABLE",
+        "口播归档 Worker 尚未接管，任务会保留原成片地址且不会重复提交。",
+        status_code=503,
+    )
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_oral_generation_task(
+    task_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            row = cancel_oral_task(conn, task_id=task_id, actor=actor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
     return _serialize(row)

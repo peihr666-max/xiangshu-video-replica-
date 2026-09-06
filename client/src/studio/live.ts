@@ -1,6 +1,7 @@
 import {
   type CurrentUser,
   cancelGenerationBatch,
+  cancelOralTask,
   completeVideoUpload,
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
@@ -8,6 +9,7 @@ import {
   createScriptFromAudioTask,
   createScriptVersion,
   createVideoUploadIntent,
+  downloadMaterialAsset,
   type GenerationBatchListItem,
   getAssetDownloadUrl,
   getCachedCharacterAssetUrl,
@@ -20,14 +22,21 @@ import {
   getStudioStats,
   listCharacterSceneLooks,
   listGenerationBatches,
+  listOralAvatars,
   listOralTasks,
+  listOralVoices,
   listProjects,
   listSimpleCharacterLibrary,
   listStudioSavedScripts,
   listViralVideos,
+  type MaterialItem,
+  type OralAvatarRecord,
   type OralTaskRecord,
   type Project,
   readAnalysisPayload,
+  resolveMaterials,
+  retryOralTask,
+  retryOralTaskArchive,
   type SimpleLibraryEntry,
   type StudioDraftKind,
   type StudioSavedScriptInput,
@@ -39,6 +48,7 @@ import {
 import { createDraft } from "./state";
 import type {
   StudioAsset,
+  StudioAvatar,
   StudioData,
   StudioDraft,
   StudioPerson,
@@ -46,6 +56,7 @@ import type {
   StudioStats,
   StudioTask,
   StudioVideo,
+  StudioVoice,
 } from "./types";
 
 const projectLimit = 24;
@@ -59,11 +70,93 @@ function errorText(error: unknown) {
     : "未知错误";
 }
 
+const materialSourceLabels: Record<MaterialItem["source"], string> = {
+  upload: "我的上传",
+  project: "项目素材",
+  character: "人物库",
+  oral: "口播成片",
+  generation: "生成结果",
+};
+
+function materialDuration(seconds: number | null) {
+  if (seconds === null) return undefined;
+  const rounded = Math.max(0, Math.round(seconds));
+  return `${String(Math.floor(rounded / 60)).padStart(2, "0")}:${String(
+    rounded % 60,
+  ).padStart(2, "0")}`;
+}
+
+export function studioAssetFromMaterial(item: MaterialItem): StudioAsset {
+  return {
+    id: item.asset_id ?? item.id,
+    materialId: item.id,
+    assetId: item.asset_id ?? undefined,
+    generationTaskId: item.generation_task_id ?? undefined,
+    name: item.title,
+    kind: item.media_type,
+    duration: materialDuration(item.duration_seconds),
+    group: item.group,
+    personId: item.person_id ?? undefined,
+    source: materialSourceLabels[item.source],
+    saved: item.saved,
+    delivery: item.delivery,
+    allowedUses: item.allowed_uses,
+    allowedActions: item.allowed_actions,
+  };
+}
+
+function draftAssetIds(draft: StudioDraft): string[] {
+  return [
+    draft.sourceAssetId,
+    draft.originalImageId,
+    draft.imageId,
+    draft.firstFrameId,
+    draft.tailFrameId,
+    draft.audioId,
+    ...draft.referenceIds,
+  ].filter((id): id is string => Boolean(id));
+}
+
+/** 草稿只保存物理资产 ID；恢复时由服务端重新校验归属并补齐元数据。 */
+export async function loadDraftMaterials(draft: StudioDraft): Promise<{
+  assets: StudioAsset[];
+  unavailableIds: string[];
+}> {
+  const assetIds = [...new Set(draftAssetIds(draft))];
+  if (!assetIds.length) return { assets: [], unavailableIds: [] };
+  const materialIds = assetIds.map((id) =>
+    id.startsWith("asset:") ? id : `asset:${id}`,
+  );
+  const resolved = await resolveMaterials(materialIds);
+  const assets = resolved.items.map(studioAssetFromMaterial);
+  const previewResults = await Promise.allSettled(
+    assets.map((asset) =>
+      asset.assetId
+        ? getAssetDownloadUrl(asset.assetId).then((result) => result.url)
+        : asset.generationTaskId
+          ? createGenerationTaskPreviewUrl(asset.generationTaskId)
+          : Promise.resolve(undefined),
+    ),
+  );
+  return {
+    assets: assets.map((asset, index) => ({
+      ...asset,
+      url:
+        previewResults[index]?.status === "fulfilled"
+          ? previewResults[index].value
+          : undefined,
+    })),
+    unavailableIds: resolved.unavailable_ids.map((id) =>
+      id.startsWith("asset:") ? id.slice("asset:".length) : id,
+    ),
+  };
+}
+
 export async function loadTaskPreview(
   task: StudioTask,
 ): Promise<StudioAsset | undefined> {
   // 数字人口播任务没有生成批次：成片按平台资产直取签名地址。
-  if (!task.batchId && task.resultId) {
+  if (task.backendKind === "oral_task" && task.resultId) {
     const url = (await getAssetDownloadUrl(task.resultId)).url;
     return {
       id: task.resultId,
@@ -75,6 +168,7 @@ export async function loadTaskPreview(
       saved: true,
     };
   }
+  if (task.backendKind === "oral_task") return undefined;
   if (!task.batchId) return undefined;
 
   const batch = await getGenerationBatch(task.batchId);
@@ -212,20 +306,134 @@ async function loadProjects(): Promise<{
 function basePerson(
   entry: SimpleLibraryEntry,
   portrait?: string,
+  avatars: StudioAvatar[] = [],
+  voices: StudioVoice[] = [],
 ): StudioPerson {
   return {
     id: entry.identity_id,
     name: entry.display_name,
-    role: "",
+    role: entry.role,
     portrait,
-    version: 0,
-    scope: "",
-    audience: "",
-    expression: "",
+    version: entry.version_number ?? 0,
+    scope: entry.service_scope,
+    audience: entry.target_audience,
+    expression: entry.expression_style,
     sheetId: entry.contact_sheet_asset_id ?? undefined,
     photoIds: [],
-    avatars: [],
-    voices: [],
+    avatars,
+    voices,
+  };
+}
+
+type OralIdentityAssets = {
+  avatars: StudioAvatar[];
+  voices: StudioVoice[];
+  assets: StudioAsset[];
+  errors: string[];
+};
+
+function oralStatusLabel(status: OralAvatarRecord["status"]): string {
+  if (status === "READY") return "已就绪";
+  if (status === "FAILED") return "制作失败";
+  return "制作中";
+}
+
+async function loadOralIdentityAssets(
+  identityId: string,
+): Promise<OralIdentityAssets> {
+  const [avatarResult, voiceResult] = await Promise.allSettled([
+    listOralAvatars(identityId),
+    listOralVoices(identityId),
+  ]);
+  const errors: string[] = [];
+  const avatarRows =
+    avatarResult.status === "fulfilled" ? avatarResult.value : [];
+  const voiceRows = voiceResult.status === "fulfilled" ? voiceResult.value : [];
+  if (avatarResult.status === "rejected") {
+    errors.push(`读取口播分身失败：${errorText(avatarResult.reason)}`);
+  }
+  if (voiceResult.status === "rejected") {
+    errors.push(`读取声音档案失败：${errorText(voiceResult.reason)}`);
+  }
+
+  const sourceAssets = new Map<
+    string,
+    { name: string; kind: "image" | "video" | "audio"; source: string }
+  >();
+  for (const avatar of avatarRows) {
+    sourceAssets.set(avatar.source_asset_id, {
+      name: `${avatar.title} · 制作素材`,
+      kind: avatar.source_kind === "IMAGE" ? "image" : "video",
+      source: "口播分身",
+    });
+  }
+  for (const voice of voiceRows) {
+    sourceAssets.set(voice.source_asset_id, {
+      name: `${voice.title} · 声音样本`,
+      kind: "audio",
+      source: "声音档案",
+    });
+    if (voice.demo_asset_id) {
+      sourceAssets.set(voice.demo_asset_id, {
+        name: `${voice.title} · 试听`,
+        kind: "audio",
+        source: "声音档案",
+      });
+    }
+  }
+  const sourceEntries = [...sourceAssets.entries()];
+  const previews = await Promise.allSettled(
+    sourceEntries.map(([assetId]) => signedUrl(assetId, getAssetDownloadUrl)),
+  );
+  const previewUrls = new Map<string, string>();
+  sourceEntries.forEach(([assetId, descriptor], index) => {
+    const preview = previews[index];
+    if (preview?.status === "fulfilled" && preview.value) {
+      previewUrls.set(assetId, preview.value);
+    } else if (preview?.status === "rejected") {
+      errors.push(`读取“${descriptor.name}”失败：${errorText(preview.reason)}`);
+    }
+  });
+
+  return {
+    avatars: avatarRows.map((avatar) => ({
+      id: avatar.id,
+      name: avatar.title,
+      imageId: avatar.source_asset_id,
+      ready: avatar.status === "READY",
+      status: avatar.status,
+      error: avatar.error_message ?? undefined,
+      origin: avatar.source_kind === "IMAGE" ? "照片制作" : "视频制作",
+      duration: oralStatusLabel(avatar.status),
+    })),
+    voices: voiceRows.map((voice) => {
+      const demoUrl = voice.demo_asset_id
+        ? previewUrls.get(voice.demo_asset_id)
+        : undefined;
+      return {
+        id: voice.id,
+        name: voice.title,
+        confirmed:
+          voice.status === "READY" &&
+          Boolean(voice.confirmed) &&
+          Boolean(demoUrl),
+        isDefault: false,
+        status: voice.status,
+        error: voice.error_message ?? undefined,
+        url: demoUrl,
+      };
+    }),
+    assets: sourceEntries.map(([id, descriptor]) => ({
+      id,
+      name: descriptor.name,
+      kind: descriptor.kind,
+      url: previewUrls.get(id),
+      group: descriptor.source,
+      personId: identityId,
+      source: descriptor.source,
+      saved: true,
+    })),
+    errors,
   };
 }
 
@@ -250,6 +458,7 @@ async function loadPeople(): Promise<{
       entry.contact_sheet_asset_id
         ? signedUrl(entry.contact_sheet_asset_id, getCachedCharacterAssetUrl)
         : Promise.resolve(undefined),
+      loadOralIdentityAssets(entry.identity_id),
     ]);
     const portrait =
       requests[0].status === "fulfilled" ? requests[0].value : undefined;
@@ -265,7 +474,18 @@ async function loadPeople(): Promise<{
         `读取人物五视图“${entry.display_name}”失败：${errorText(requests[1].reason)}`,
       );
     }
-    people.push(basePerson(entry, portrait));
+    const oral =
+      requests[2].status === "fulfilled"
+        ? requests[2].value
+        : { avatars: [], voices: [], assets: [], errors: [] };
+    if (requests[2].status === "rejected") {
+      errors.push(
+        `读取人物口播资产“${entry.display_name}”失败：${errorText(requests[2].reason)}`,
+      );
+    }
+    errors.push(...oral.errors);
+    people.push(basePerson(entry, portrait, oral.avatars, oral.voices));
+    assets.push(...oral.assets);
     if (entry.contact_sheet_asset_id) {
       assets.push({
         id: entry.contact_sheet_asset_id,
@@ -309,6 +529,9 @@ const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
 function studioTask(batch: GenerationBatchListItem): StudioTask {
   return {
     id: batch.id,
+    backendKind: "generation_batch",
+    backendId: batch.id,
+    backendStatus: batch.status,
     batchId: batch.id,
     projectId: batch.project_id,
     title: batch.display_name?.trim() || batch.project_name || batch.id,
@@ -324,8 +547,18 @@ function studioTask(batch: GenerationBatchListItem): StudioTask {
 
 /** 任务中心"取消任务"：仅服务端判定为仍可取消（全部任务未认领）的
  * 排队批次会成功，其余状态返回明确错误由调用方提示。 */
-export async function cancelStudioTask(task: StudioTask): Promise<void> {
-  await cancelGenerationBatch(task.batchId || task.id);
+export async function cancelStudioTask(
+  task: StudioTask,
+): Promise<{ billingStatus?: string }> {
+  if (task.backendKind === "oral_task") {
+    if (task.backendStatus !== "QUEUED") {
+      throw new Error("只有仍在排队的口播任务可以取消。");
+    }
+    const result = await cancelOralTask(task.backendId || task.id);
+    return { billingStatus: result.billing_status ?? undefined };
+  }
+  await cancelGenerationBatch(task.backendId || task.batchId || task.id);
+  return {};
 }
 
 async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {
@@ -335,11 +568,24 @@ async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {
   return page.items.map(studioTask);
 }
 
-/** Re-read only the generation batches. The workspace shell polls this so a
- * batch that advances while the customer watches stays current without a
- * full project/people reload. */
-export function reloadTasks(currentUser: CurrentUser): Promise<StudioTask[]> {
-  return loadTasks(currentUser);
+/** 每轮同时刷新生成批次和口播任务；单边失败不丢弃另一边的有效结果。 */
+export async function reloadTasks(
+  currentUser: CurrentUser,
+): Promise<StudioTask[]> {
+  const [generationResult, oralResult] = await Promise.allSettled([
+    loadTasks(currentUser),
+    loadOralTasks(),
+  ]);
+  if (
+    generationResult.status === "rejected" &&
+    oralResult.status === "rejected"
+  ) {
+    throw generationResult.reason;
+  }
+  return [
+    ...(generationResult.status === "fulfilled" ? generationResult.value : []),
+    ...(oralResult.status === "fulfilled" ? oralResult.value : []),
+  ];
 }
 
 /** Workbench quick upload: create a project, PUT the raw video to cloud
@@ -365,13 +611,31 @@ export async function uploadWorkbenchSourceVideo(
 function oralTask(row: OralTaskRecord): StudioTask {
   const statusMap: Record<OralTaskRecord["status"], StudioTask["status"]> = {
     QUEUED: "queued",
+    SUBMITTING: "queued",
     RUNNING: "running",
+    ARCHIVING: "running",
+    SUBMISSION_UNCERTAIN: "uncertain",
+    ARCHIVE_FAILED: "uncertain",
     SUCCEEDED: "completed",
     FAILED: "failed",
     CANCELLED: "cancelled",
   };
+  const availableActions = row.available_actions ?? [];
+  const retryAction =
+    row.status === "ARCHIVE_FAILED" ||
+    availableActions.includes("archive_retry")
+      ? "archive-retry"
+      : row.status === "SUBMISSION_UNCERTAIN" ||
+          availableActions.includes("retry")
+        ? "retry"
+        : undefined;
   return {
     id: `oral-${row.id}`,
+    backendKind: "oral_task",
+    backendId: row.id,
+    backendStatus: row.status,
+    billingStatus: row.billing_status ?? undefined,
+    retryAction,
     batchId: undefined,
     title: row.title,
     type: "数字人口播",
@@ -389,6 +653,27 @@ function oralTask(row: OralTaskRecord): StudioTask {
 async function loadOralTasks(): Promise<StudioTask[]> {
   const rows = await listOralTasks(20);
   return rows.map(oralTask);
+}
+
+export async function retryStudioTask(task: StudioTask): Promise<void> {
+  if (task.backendKind !== "oral_task" || !task.retryAction) {
+    throw new Error("当前任务状态不支持重试。");
+  }
+  const taskId = task.backendId || task.id;
+  if (task.retryAction === "archive-retry") {
+    await retryOralTaskArchive(taskId);
+    return;
+  }
+  await retryOralTask(taskId);
+}
+
+export async function downloadStudioTaskResult(
+  task: StudioTask,
+): Promise<void> {
+  if (task.backendKind !== "oral_task" || !task.resultId) {
+    throw new Error("当前任务没有可下载的口播成片。");
+  }
+  await downloadMaterialAsset(task.resultId, `${task.title}.mp4`);
 }
 
 function formatViralDuration(durationMs: number): string {

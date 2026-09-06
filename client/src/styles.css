@@ -5164,7 +5164,7 @@ button.regenerate-button {
   list-style: none;
 }
 
-/* 单张五视角拼合图（灯箱内）：宽幅大图 + 底部操作条 */
+/* 单张五视图拼合图（灯箱内）：宽幅大图 + 底部操作条 */
 .character-contact-sheet {
   display: grid;
   gap: 10px;

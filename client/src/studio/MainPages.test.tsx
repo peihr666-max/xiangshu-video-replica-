@@ -14,11 +14,15 @@ const {
   loadTaskPreview,
   uploadWorkbenchSourceVideo,
   cancelStudioTask,
+  downloadStudioTaskResult,
+  retryStudioTask,
 } = vi.hoisted(() => ({
   useStudio: vi.fn<() => StudioContextValue>(),
   loadTaskPreview: vi.fn(),
   uploadWorkbenchSourceVideo: vi.fn(),
   cancelStudioTask: vi.fn(),
+  downloadStudioTaskResult: vi.fn(),
+  retryStudioTask: vi.fn(),
 }));
 
 vi.mock("./context", () => ({ useStudio }));
@@ -26,6 +30,8 @@ vi.mock("./live", () => ({
   loadTaskPreview,
   uploadWorkbenchSourceVideo,
   cancelStudioTask,
+  downloadStudioTaskResult,
+  retryStudioTask,
 }));
 
 import { TaskDetailPage, TasksPage, WorkbenchPage } from "./MainPages";
@@ -112,6 +118,8 @@ describe("V1.4 任务详情真实成片预览", () => {
   beforeEach(() => {
     useStudio.mockReset();
     loadTaskPreview.mockReset();
+    downloadStudioTaskResult.mockReset();
+    retryStudioTask.mockReset();
   });
 
   it("仅在用户点击后按需加载，并只回填发起任务的结果", async () => {
@@ -222,6 +230,55 @@ describe("V1.4 任务详情真实成片预览", () => {
       screen.queryByRole("button", { name: "预览成片" }),
     ).not.toBeInTheDocument();
     expect(loadTaskPreview).not.toHaveBeenCalled();
+  });
+
+  it("口播成片下载直接使用结果资产，不再打开旧任务面板", async () => {
+    const oralTask: StudioTask = {
+      ...taskA,
+      id: "oral-visible-id",
+      backendKind: "oral_task",
+      backendId: "oral-backend-id",
+      resultId: "oral-result-asset",
+      batchId: undefined,
+    };
+    const value = studio(oralTask.id, { data: data([oralTask]) });
+    useStudio.mockReturnValue(value);
+    downloadStudioTaskResult.mockResolvedValue(undefined);
+    render(<TaskDetailPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "下载成片" }));
+
+    await waitFor(() =>
+      expect(downloadStudioTaskResult).toHaveBeenCalledWith(oralTask),
+    );
+    expect(value.openLive).not.toHaveBeenCalled();
+  });
+
+  it("只对后端允许的口播异常状态展示真实重试动作", async () => {
+    const retryable: StudioTask = {
+      ...taskA,
+      id: "oral-uncertain",
+      backendKind: "oral_task",
+      backendId: "oral-uncertain",
+      backendStatus: "SUBMISSION_UNCERTAIN",
+      status: "uncertain",
+      retryAction: "retry",
+      resultId: undefined,
+    };
+    const value = studio(retryable.id, { data: data([retryable]) });
+    useStudio.mockReturnValue(value);
+    retryStudioTask.mockResolvedValue(undefined);
+    render(<TaskDetailPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "重试提交" }));
+
+    await waitFor(() =>
+      expect(retryStudioTask).toHaveBeenCalledWith(retryable),
+    );
+    expect(value.refresh).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "重试归档" }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -608,13 +665,15 @@ describe("V1.4 任务中心列表", () => {
   it("排队行提供取消任务：成功后提示并刷新列表", async () => {
     const value = tasksPage();
     useStudio.mockReturnValue(value);
-    cancelStudioTask.mockResolvedValue(undefined);
+    cancelStudioTask.mockResolvedValue({ billingStatus: "PENDING" });
     render(<TasksPage />);
 
     fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
     expect(cancelStudioTask).toHaveBeenCalledWith(queuedTask);
     await waitFor(() =>
-      expect(value.notify).toHaveBeenCalledWith("任务已取消，预扣积分已退回。"),
+      expect(value.notify).toHaveBeenCalledWith(
+        "任务已取消，计费状态处理中，请稍后刷新核对。",
+      ),
     );
     expect(value.refresh).toHaveBeenCalledOnce();
   });
@@ -651,6 +710,23 @@ describe("V1.4 任务中心列表", () => {
       screen.getByRole("button", { name: "查看结果" }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "查看详情" })).toHaveLength(2);
+  });
+
+  it("口播任务只有后端 QUEUED 状态可取消", () => {
+    const submittingOral: StudioTask = {
+      ...queuedTask,
+      id: "oral-submitting",
+      backendKind: "oral_task",
+      backendId: "oral-submitting",
+      backendStatus: "SUBMITTING",
+      type: "数字人口播",
+    };
+    useStudio.mockReturnValue(
+      tasksPage({ data: data([submittingOral, queuedTask]) }),
+    );
+    render(<TasksPage />);
+
+    expect(screen.getAllByRole("button", { name: "取消任务" })).toHaveLength(1);
   });
 
   it("类型筛选收进单行下拉，菜单项计数与状态筛选联动", () => {

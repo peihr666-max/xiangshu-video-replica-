@@ -25,6 +25,9 @@ export type StudioPage =
 export type AssetKind = "image" | "video" | "audio";
 export type StudioAsset = {
   id: string;
+  materialId?: string;
+  assetId?: string;
+  generationTaskId?: string;
   name: string;
   kind: AssetKind;
   url?: string;
@@ -35,12 +38,17 @@ export type StudioAsset = {
   composite?: boolean;
   source: string;
   saved: boolean;
+  delivery?: "stored" | "direct";
+  allowedUses?: string[];
+  allowedActions?: string[];
 };
 export type StudioAvatar = {
   id: string;
   name: string;
   imageId: string;
   ready: boolean;
+  status?: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  error?: string;
   origin: "视频制作" | "照片制作";
   duration: string;
 };
@@ -49,6 +57,8 @@ export type StudioVoice = {
   name: string;
   confirmed: boolean;
   isDefault: boolean;
+  status?: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  error?: string;
   url?: string;
 };
 export type StudioPerson = {
@@ -94,6 +104,11 @@ export type StudioVideo = {
 export type StudioTask = {
   draftSnapshot?: StudioDraft;
   id: string;
+  backendKind?: "generation_batch" | "oral_task";
+  backendId?: string;
+  backendStatus?: string;
+  billingStatus?: string;
+  retryAction?: "retry" | "archive-retry";
   title: string;
   type: "视频复刻" | "人物置换" | "视频生成" | "数字人口播";
   status:

@@ -96,7 +96,7 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
     assert journal_mode == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5000
-    assert alembic_versions == ["062_viral_video_library"]
+    assert alembic_versions == ["065_oral_durable_billing"]
     assert "schema_migrations" not in tables
     assert {
         "users",
@@ -165,7 +165,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             for row in conn.execute("PRAGMA index_list(generation_task_operations)").fetchall()
         }
 
-    assert version == "062_viral_video_library"
+    assert version == "065_oral_durable_billing"
     assert {
         "locked_by",
         "locked_until",
@@ -277,7 +277,7 @@ def test_retry_lineage_revision_is_reversible(tmp_path: Path) -> None:
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "062_viral_video_library"
+            "065_oral_durable_billing"
         )
 
 
@@ -333,7 +333,7 @@ def test_remove_oss_migration_purges_settings_and_selects_safe_fallback(
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE runtime_settings SET active_storage_provider = 'oss' WHERE id = 1")
 
-    assert version == "062_viral_video_library"
+    assert version == "065_oral_durable_billing"
     assert "oss" not in providers
     assert active_provider == expected_provider
 
@@ -437,7 +437,7 @@ def test_runtime_bootstrap_upgrades_an_existing_database_before_startup(
     assert result.returncode == 0, result.stderr
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "062_viral_video_library"
+            "065_oral_durable_billing"
         )
         assert (
             conn.execute(
@@ -819,3 +819,164 @@ def test_migration_009_downgrade_fails_on_cross_project_duplicate_key(tmp_path: 
     # downgrading with the same key across two projects must fail.
     with pytest.raises(Exception):
         command.downgrade(alembic_config(db_path), "008_provider_result_url")
+
+
+def test_oral_clone_consent_migration_is_reversible(tmp_path: Path) -> None:
+    db_path = tmp_path / "oral-consent-migration.db"
+    config = alembic_config(db_path)
+
+    command.upgrade(config, "064_oral_clone_consent")
+    with connect_database(db_path) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "064_oral_clone_consent"
+        )
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        voice_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(oral_voices)").fetchall()
+        }
+        avatar_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(oral_avatars)").fetchall()
+        }
+    assert "oral_consents" in tables
+    assert {
+        "consent_id",
+        "confirmed_by_user_id",
+        "confirmed_at",
+        "idempotency_key",
+        "request_hash",
+        "submission_state",
+    }.issubset(voice_columns)
+    assert {
+        "consent_id",
+        "idempotency_key",
+        "request_hash",
+        "submission_state",
+    }.issubset(avatar_columns)
+
+    with connect_database(db_path) as conn:
+        conn.execute(
+            "INSERT INTO users (id, username, display_name) "
+            "VALUES ('oral-user', 'oral-user', 'Oral')"
+        )
+        conn.execute(
+            """
+            INSERT INTO person_identities (id, owner_user_id, display_name, status)
+            VALUES ('oral-identity', 'oral-user', 'Oral', 'ACTIVE')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id, kind, storage_uri, sha256, size_bytes, content_type, created_by_user_id
+            ) VALUES ('oral-source', 'oral_audio', 'local://oral/source.mp3',
+                      'oral-hash', 1, 'audio/mpeg', 'oral-user')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_consents (
+                id, identity_id, owner_user_id, source_asset_id, purpose,
+                consent_text_version, source_sha256, consented_at
+            ) VALUES ('oral-consent', 'oral-identity', 'oral-user', 'oral-source',
+                      'VOICE_CLONE', 'v1', 'oral-hash', CURRENT_TIMESTAMP)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_voices (
+                id, identity_id, owner_user_id, title, status, source_asset_id,
+                consent_id, confirmed, confirmed_by_user_id, confirmed_at
+            ) VALUES ('oral-voice', 'oral-identity', 'oral-user', 'Voice', 'READY',
+                      'oral-source', 'oral-consent', 1, 'oral-user', CURRENT_TIMESTAMP)
+            """
+        )
+
+    command.downgrade(config, "063_studio_material_preferences")
+    with connect_database(db_path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        voice_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(oral_voices)").fetchall()
+        }
+        avatar_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(oral_avatars)").fetchall()
+        }
+        voice_count = conn.execute(
+            "SELECT COUNT(*) FROM oral_voices WHERE id = 'oral-voice'"
+        ).fetchone()[0]
+    assert "oral_consents" not in tables
+    assert {
+        "consent_id",
+        "confirmed_by_user_id",
+        "confirmed_at",
+        "idempotency_key",
+        "request_hash",
+        "submission_state",
+    }.isdisjoint(voice_columns)
+    assert {
+        "consent_id",
+        "idempotency_key",
+        "request_hash",
+        "submission_state",
+    }.isdisjoint(avatar_columns)
+    assert voice_count == 1
+
+
+def test_oral_durable_billing_migration_fails_loud_on_downgrade_with_ledger(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "oral-billing-downgrade.db"
+    config = alembic_config(db_path)
+    command.upgrade(config, "065_oral_durable_billing")
+    with connect_database(db_path) as conn:
+        conn.execute(
+            "INSERT INTO users (id, username, display_name) VALUES ('u-oral','u-oral','U')"
+        )
+        conn.execute(
+            "INSERT INTO wallets (user_id, available_credits, reserved_credits) "
+            "VALUES ('u-oral', 0, 1)"
+        )
+        conn.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name, status) "
+            "VALUES ('i-oral','u-oral','I','ACTIVE')"
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, status, source_kind, source_asset_id
+            ) VALUES ('a-oral','i-oral','u-oral','A','READY','VIDEO','source')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_tasks (
+                id, owner_user_id, identity_id, avatar_id, mode, title, status,
+                estimated_cost_fen, idempotency_key, billing_round
+            ) VALUES ('t-oral','u-oral','i-oral','a-oral','AUDIO','T','QUEUED',
+                      1000,'oral-idem',1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO wallet_transactions (
+                id, user_id, type, available_delta, reserved_delta, oral_task_id,
+                billing_round, idempotency_key
+            ) VALUES ('tx-oral','u-oral','RESERVE',-1,1,'t-oral',1,'oral-reserve')
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="oral wallet transactions exist"):
+        command.downgrade(config, "064_oral_clone_consent")
+    with connect_database(db_path) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "065_oral_durable_billing"
+        )

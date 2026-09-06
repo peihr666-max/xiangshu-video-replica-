@@ -16,6 +16,7 @@ from app.hifly import (
     HiflyClient,
     HiflyError,
     HiflySettingsUnavailable,
+    HiflySubmissionUncertain,
     hifly_client_from_config,
 )
 from app.settings import (
@@ -176,6 +177,14 @@ def test_avatar_task_normalizes_vendor_status() -> None:
     assert snapshot.raw["status"] == 3
 
 
+def test_unknown_vendor_task_status_is_fail_safe() -> None:
+    client, _ = client_with(b'{"code": 0, "msg": "", "data": {"status": 99, "avatar_id": "av-9"}}')
+
+    snapshot = client.avatar_task("task-9")
+
+    assert snapshot.status == "UNKNOWN"
+
+
 def test_video_task_reads_temporary_video_url() -> None:
     body = json.dumps(
         {
@@ -284,6 +293,38 @@ def test_transport_failure_raises_hifly_error() -> None:
     client = HiflyClient(api_key="k", transport=BrokenTransport())
     with pytest.raises(HiflyError, match="网络异常"):
         client.account_credit()
+
+
+def test_creation_transport_failure_is_submission_uncertain() -> None:
+    class BrokenTransport:
+        def request(
+            self,
+            method: str,
+            url: str,
+            *,
+            headers: Mapping[str, str],
+            body: bytes | None = None,
+        ) -> bytes:
+            raise OSError("connection reset after POST")
+
+    client = HiflyClient(api_key="k", transport=BrokenTransport())
+
+    with pytest.raises(HiflySubmissionUncertain, match="网络异常"):
+        client.create_video_by_tts(
+            voice="voice", text="文案", avatar="avatar", title="t", aigc_flag=True
+        )
+
+
+def test_known_creation_rejection_is_not_submission_uncertain() -> None:
+    client, _ = client_with(b'{"code": 1002, "msg": "credit", "data": {}}')
+
+    with pytest.raises(HiflyError) as excinfo:
+        client.create_video_by_tts(
+            voice="voice", text="文案", avatar="avatar", title="t", aigc_flag=True
+        )
+
+    assert not isinstance(excinfo.value, HiflySubmissionUncertain)
+    assert excinfo.value.vendor_code == 1002
 
 
 def test_settings_repository_loading_wires_the_client(

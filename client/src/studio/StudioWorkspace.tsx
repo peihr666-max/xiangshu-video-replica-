@@ -34,6 +34,7 @@ import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
 import {
   extractScriptFromUpload as extractScriptFromUploadLive,
   loadCloudDraft,
+  loadDraftMaterials,
   loadPersonAssets,
   loadProjectDraft,
   loadSavedScriptList,
@@ -63,6 +64,7 @@ import {
 import type {
   LivePanel,
   PickerKind,
+  StudioAsset,
   StudioContextValue,
   StudioData,
   StudioDraft,
@@ -77,6 +79,23 @@ type Props = ComponentProps<typeof WorkspaceShell> & {
   reviewData?: StudioData;
   initialState?: StudioState;
 };
+
+function mergeStudioAssets(
+  current: StudioAsset[],
+  incoming: StudioAsset[],
+): StudioAsset[] {
+  const merged = new Map(current.map((asset) => [asset.id, asset]));
+  for (const asset of incoming) {
+    const existing = merged.get(asset.id);
+    merged.set(asset.id, {
+      ...existing,
+      ...asset,
+      url: existing?.url ?? asset.url,
+    });
+  }
+  return [...merged.values()];
+}
+
 const emptyData: StudioData = {
   people: [],
   assets: [],
@@ -181,6 +200,7 @@ export function StudioWorkspace({
   const busyRef = useRef(false);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
+  const restoredAssetsRef = useRef<StudioAsset[]>([]);
   const notify = useCallback((message: string) => setNotice(message), []);
 
   // ---- 云端草稿（C7）----
@@ -212,6 +232,18 @@ export function StudioWorkspace({
           latestDraftRef.current = restore.draft;
           setState((previous) => ({ ...previous, draft: restore.draft }));
           notify("已恢复上次云端草稿，请核对内容并确认终稿。");
+          const restored = await loadDraftMaterials(restore.draft).catch(
+            () => null,
+          );
+          if (!active || !restored) return;
+          restoredAssetsRef.current = restored.assets;
+          setData((previous) => ({
+            ...previous,
+            assets: mergeStudioAssets(previous.assets, restored.assets),
+          }));
+          if (restored.unavailableIds.length) {
+            notify("草稿已恢复，部分原素材已不可用，请重新选择。");
+          }
         }
       })
       .catch(() => {});
@@ -286,7 +318,11 @@ export function StudioWorkspace({
     setData((previous) => ({ ...previous, loading: true }));
     void loadStudioData(currentUser)
       .then((result) => {
-        if (active) setData(result);
+        if (active)
+          setData({
+            ...result,
+            assets: mergeStudioAssets(result.assets, restoredAssetsRef.current),
+          });
       })
       .catch((cause: unknown) => {
         if (active)
@@ -788,6 +824,10 @@ export function StudioWorkspace({
               <LiveWorkspacePanel
                 panel={livePanel}
                 currentUser={currentUser}
+                characterIdentityId={state.selectedPersonId ?? state.draft.ipId}
+                characterInitialTab={
+                  state.page === "person-photos" ? "scenes" : "base"
+                }
                 customerAccount={customerAccount}
                 customerWallet={customerWallet}
                 project={liveProject}
