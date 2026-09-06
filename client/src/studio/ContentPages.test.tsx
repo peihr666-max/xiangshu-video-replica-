@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StudioContextValue, StudioState } from "./types";
 
@@ -913,8 +919,10 @@ describe("V1.4 内容与运营页面", () => {
       returnTo: "materials",
     });
 
-    fireEvent.change(screen.getByLabelText("素材名称"), {
-      target: { value: "新庭院首帧" },
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("素材名称"), {
+        target: { value: "新庭院首帧" },
+      });
     });
     fireEvent.click(screen.getByRole("button", { name: "保存名称" }));
     await waitFor(() =>

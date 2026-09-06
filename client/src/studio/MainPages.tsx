@@ -864,11 +864,7 @@ export function TaskDetailPage() {
     setActionBusy("retry");
     try {
       await retryStudioTask(task);
-      notify(
-        task.retryAction === "archive-retry"
-          ? "已提交成片归档重试。"
-          : "已提交口播任务重试。",
-      );
+      notify("已提交成片归档重试。");
       refresh();
     } catch (error) {
       notify(
@@ -997,7 +993,7 @@ export function TaskDetailPage() {
               disabled={actionBusy === "retry"}
               onClick={() => void retryTask()}
             >
-              {task.retryAction === "archive-retry" ? "重试归档" : "重试提交"}
+              重试归档
             </Button>
           )}
           {task.status === "uncertain" && !task.retryAction && (

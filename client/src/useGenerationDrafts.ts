@@ -126,7 +126,7 @@ export function useGenerationDrafts({
       getLatestScriptVersion(projectId),
       getLatestGenerationPrompt(projectId),
       getGenerationRuntimeLimits(),
-      getLatestScriptRewriteTask(projectId),
+      getLatestScriptRewriteTask(projectId, identityId),
     ])
       .then(([scriptState, promptState, runtime, latestRewriteTask]) => {
         if (!active || loadGeneration !== loadGenerationRef.current) {

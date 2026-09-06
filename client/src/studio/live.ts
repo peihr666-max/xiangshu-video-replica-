@@ -35,7 +35,6 @@ import {
   type Project,
   readAnalysisPayload,
   resolveMaterials,
-  retryOralTask,
   retryOralTaskArchive,
   type SimpleLibraryEntry,
   type StudioDraftKind,
@@ -625,10 +624,7 @@ function oralTask(row: OralTaskRecord): StudioTask {
     row.status === "ARCHIVE_FAILED" ||
     availableActions.includes("archive_retry")
       ? "archive-retry"
-      : row.status === "SUBMISSION_UNCERTAIN" ||
-          availableActions.includes("retry")
-        ? "retry"
-        : undefined;
+      : undefined;
   return {
     id: `oral-${row.id}`,
     backendKind: "oral_task",
@@ -660,11 +656,7 @@ export async function retryStudioTask(task: StudioTask): Promise<void> {
     throw new Error("当前任务状态不支持重试。");
   }
   const taskId = task.backendId || task.id;
-  if (task.retryAction === "archive-retry") {
-    await retryOralTaskArchive(taskId);
-    return;
-  }
-  await retryOralTask(taskId);
+  await retryOralTaskArchive(taskId);
 }
 
 export async function downloadStudioTaskResult(

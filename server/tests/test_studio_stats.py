@@ -10,6 +10,7 @@ from app.studio_routes import StudioStatsResponse, studio_task_stats, utc_cutoff
 
 _NOW = "2026-09-06 03:00:00"
 _DAYS_AGO = "2026-09-03 03:00:00"
+_STATS_NOW = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
 
 
 def seed_stats_scene(connection) -> None:
@@ -84,7 +85,11 @@ def test_beijing_day_cutoff_converts_utc_to_beijing_day_start() -> None:
 def test_admin_sees_workspace_wide_counters(tmp_path: Path) -> None:
     conn = stats_connection(tmp_path, "stats-admin.db")
 
-    stats = studio_task_stats(conn, actor=actor("admin_1", "admin"))
+    stats = studio_task_stats(
+        conn,
+        actor=actor("admin_1", "admin"),
+        now=_STATS_NOW,
+    )
 
     assert stats == StudioStatsResponse(
         # t-today / t-archive / t-current / t-hidden completed today（t-superseded 已被替代不计）
@@ -101,7 +106,11 @@ def test_admin_sees_workspace_wide_counters(tmp_path: Path) -> None:
 def test_employee_counters_scope_to_own_projects_and_respect_hiding(tmp_path: Path) -> None:
     conn = stats_connection(tmp_path, "stats-employee.db")
 
-    stats = studio_task_stats(conn, actor=actor("employee_1", "employee"))
+    stats = studio_task_stats(
+        conn,
+        actor=actor("employee_1", "employee"),
+        now=_STATS_NOW,
+    )
 
     # employee_1 只看 p-1（p-2 属于 employee_2），且 b-hidden 被本人隐藏。
     assert stats == StudioStatsResponse(

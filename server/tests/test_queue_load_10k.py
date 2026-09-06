@@ -353,7 +353,12 @@ def test_four_workers_drain_10k_without_double_claim(t27_state: str) -> None:
             raw,
             "SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()",
         )
-        pending_locks = _fetch_scalar(raw, "SELECT COUNT(*) FROM pg_locks WHERE NOT granted")
+        pending_locks = _fetch_scalar(
+            raw,
+            "SELECT COUNT(*) FROM pg_locks "
+            "WHERE NOT granted "
+            "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+        )
         terminal = _fetch_scalar(
             raw,
             "SELECT COUNT(*) FROM generation_tasks "

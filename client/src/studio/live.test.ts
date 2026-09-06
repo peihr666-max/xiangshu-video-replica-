@@ -35,7 +35,6 @@ const api = vi.hoisted(() => ({
   readAnalysisPayload: vi.fn(),
   cancelGenerationBatch: vi.fn(),
   cancelOralTask: vi.fn(),
-  retryOralTask: vi.fn(),
   retryOralTaskArchive: vi.fn(),
   resolveMaterials: vi.fn(),
 }));
@@ -923,7 +922,7 @@ describe("批次类型映射与取消", () => {
     ["SUBMITTING", "queued", undefined],
     ["RUNNING", "running", undefined],
     ["ARCHIVING", "running", undefined],
-    ["SUBMISSION_UNCERTAIN", "uncertain", "retry"],
+    ["SUBMISSION_UNCERTAIN", "uncertain", undefined],
     ["ARCHIVE_FAILED", "uncertain", "archive-retry"],
   ] as const)(
     "映射口播新状态 %s",
@@ -956,7 +955,7 @@ describe("批次类型映射与取消", () => {
     },
   );
 
-  it("口播取消和重试按 backendKind/backendId 分派", async () => {
+  it("口播取消和归档重试按 backendKind/backendId 分派", async () => {
     const queuedOral: StudioTask = {
       id: "display-id-without-prefix",
       backendKind: "oral_task",
@@ -979,9 +978,7 @@ describe("批次类型映射与取消", () => {
     expect(api.cancelOralTask).toHaveBeenCalledWith("oral-real-id");
     expect(api.cancelGenerationBatch).not.toHaveBeenCalled();
 
-    await retryStudioTask({ ...queuedOral, retryAction: "retry" });
     await retryStudioTask({ ...queuedOral, retryAction: "archive-retry" });
-    expect(api.retryOralTask).toHaveBeenCalledWith("oral-real-id");
     expect(api.retryOralTaskArchive).toHaveBeenCalledWith("oral-real-id");
   });
 });

@@ -851,7 +851,7 @@ def update_simple_character_profile(
 
     persona_rows = conn.execute(
         """
-        SELECT id, appearance_constraints_json
+        SELECT id, occupation, appearance_constraints_json, ip_profile_revision
         FROM character_personas
         WHERE identity_id = %s
         ORDER BY created_at DESC, id
@@ -870,50 +870,92 @@ def update_simple_character_profile(
     if base_persona is None:
         raise character_error(409, "BASE_PERSONA_NOT_FOUND", "人物基础档案不存在或不可用。")
 
-    clean_name = required_text(display_name, "IDENTITY_NAME_REQUIRED", "人物显示名不能为空。")
+    clean_name = _validated_ip_profile_field(
+        display_name,
+        field_name="display_name",
+        max_length=120,
+        required=True,
+    )
+    clean_role = _validated_ip_profile_field(role, field_name="role", max_length=160)
+    clean_service_scope = _validated_ip_profile_field(
+        service_scope, field_name="service_scope", max_length=600
+    )
+    clean_target_audience = _validated_ip_profile_field(
+        target_audience, field_name="target_audience", max_length=600
+    )
+    clean_expression_style = _validated_ip_profile_field(
+        expression_style, field_name="expression_style", max_length=600
+    )
     constraints = decode_scene_constraints(base_persona["appearance_constraints_json"])
     constraints.update(
         {
-            "ip_service_scope": service_scope.strip(),
-            "ip_target_audience": target_audience.strip(),
-            "ip_expression_style": expression_style.strip(),
+            "ip_service_scope": clean_service_scope,
+            "ip_target_audience": clean_target_audience,
+            "ip_expression_style": clean_expression_style,
         }
     )
     persona_id = str(base_persona["id"])
+    profile_changed = (
+        str(identity["display_name"]) != clean_name
+        or str(base_persona["occupation"] or "") != clean_role
+        or decode_scene_constraints(base_persona["appearance_constraints_json"]) != constraints
+    )
     with conn:
-        conn.execute(
-            """
-            UPDATE person_identities
-            SET display_name = %s, updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-            """,
-            (clean_name, identity_id),
-        )
-        conn.execute(
-            """
-            UPDATE character_personas
-            SET occupation = %s,
-                appearance_constraints_json = %s,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-            """,
-            (role.strip(), encode_json(constraints), persona_id),
-        )
-        write_audit(
-            conn,
-            actor=actor,
-            action="simple_character.profile_update",
-            entity_type="person_identity",
-            entity_id=identity_id,
-            metadata={"persona_id": persona_id},
-            commit=False,
-        )
+        if profile_changed:
+            conn.execute(
+                """
+                UPDATE person_identities
+                SET display_name = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (clean_name, identity_id),
+            )
+            conn.execute(
+                """
+                UPDATE character_personas
+                SET occupation = %s,
+                    appearance_constraints_json = %s,
+                    ip_profile_revision = ip_profile_revision + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (clean_role, encode_json(constraints), persona_id),
+            )
+            write_audit(
+                conn,
+                actor=actor,
+                action="simple_character.profile_update",
+                entity_type="person_identity",
+                entity_id=identity_id,
+                metadata={"persona_id": persona_id},
+                commit=False,
+            )
 
     return next(
         entry
         for entry in list_simple_library(conn, actor=actor)
         if entry.identity_id == identity_id
     )
+
+
+def _validated_ip_profile_field(
+    value: str,
+    *,
+    field_name: str,
+    max_length: int,
+    required: bool = False,
+) -> str:
+    clean = value.strip()
+    if required and not clean:
+        raise character_error(422, "IDENTITY_NAME_REQUIRED", "人物显示名不能为空。")
+    has_control_character = any(ord(character) < 32 or ord(character) == 127 for character in clean)
+    if len(clean) > max_length or has_control_character:
+        raise character_error(
+            422,
+            "IP_PROFILE_FIELD_INVALID",
+            f"人物档案字段 {field_name} 含非法字符或长度超限。",
+        )
+    return clean
 
 
 @dataclass(frozen=True)

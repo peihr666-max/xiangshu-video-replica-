@@ -23,8 +23,14 @@ from app.auth import CurrentUser, get_current_user, get_database
 from app.customer_fence import get_business_db
 from app.db import initialize_database
 from app.db_portable import BusinessConnection
-from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
-from app.internal_billing import BillingInvariantError, finalize_oral_billing
+from app.generation_worker import run_worker_once
+from app.hifly import HiflyClient, HiflyError
+from app.internal_billing import (
+    BillingInvariantError,
+    finalize_oral_billing,
+    reconcile_dangling_billing_reservations,
+    reconcile_oral_billing_by_evidence,
+)
 from app.main import app
 from app.oral import (
     ORAL_CONSENT_TEXT_VERSION,
@@ -37,13 +43,22 @@ from app.oral import (
     create_oral_task,
     list_oral_consents,
     oral_unit_price_fen,
-    refresh_avatar_clone,
     refresh_oral_task,
-    refresh_voice_clone,
     start_avatar_clone,
     start_voice_clone,
 )
 from app.oral_routes import get_oral_vendor
+from app.oral_worker import (
+    OralLeaseLostError,
+    OralWorkLease,
+    OralWorkResult,
+    claim_oral_work,
+    discard_uncommitted_oral_asset,
+    finalize_oral_work,
+    perform_oral_work,
+    prepare_oral_work,
+    request_oral_archive_retry,
+)
 from app.storage import StoredObject
 
 _NOW = "2026-09-06 03:00:00"
@@ -52,9 +67,42 @@ _NOW = "2026-09-06 03:00:00"
 class FakeSourceStorage:
     def __init__(self, payload: bytes = b"FAKEMEDIA") -> None:
         self.payload = payload
+        self.objects: dict[str, bytes] = {}
 
     def get_object(self, key: str) -> bytes:
-        return self.payload
+        return self.objects.get(key, self.payload)
+
+    def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject:
+        self.objects[key] = content
+        return StoredObject(
+            provider="fake",
+            bucket="assets",
+            key=key,
+            uri=f"fake://assets/{key}",
+            size=len(content),
+            content_type=content_type,
+            sha256=f"sha-{key}",
+            updated_at=datetime.now(tz=UTC),
+        )
+
+    def delete_object(self, key: str, *, actor_id: str | None = None) -> None:
+        self.objects.pop(key, None)
+
+
+def run_oral_worker_step(
+    conn: BusinessConnection,
+    *,
+    vendor: HiflyClient,
+    storage: FakeSourceStorage,
+    worker_id: str = "oral-test-worker",
+):
+    lease = claim_oral_work(conn, worker_id=worker_id)
+    if lease is None:
+        return None
+    prepared = prepare_oral_work(conn, lease)
+    result = perform_oral_work(prepared, vendor=vendor, storage=storage)
+    finalize_oral_work(conn, lease=prepared, result=result)
+    return result
 
 
 @pytest.fixture()
@@ -223,6 +271,32 @@ def seed_ready_assets(conn: BusinessConnection) -> tuple[str, str]:
     return "avatar-ready", "voice-ready"
 
 
+def seed_active_generation(
+    conn: BusinessConnection,
+    *,
+    owner_user_id: str,
+    suffix: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO generation_batches (
+            id, project_id, created_by_user_id, idempotency_key,
+            request_hash, request_snapshot_json
+        ) VALUES (%s, 'oral-project', %s, %s, %s, '{}')
+        """,
+        (f"generation-batch-{suffix}", owner_user_id, f"key-{suffix}", f"hash-{suffix}"),
+    )
+    conn.execute(
+        """
+        INSERT INTO generation_tasks (
+            id, batch_id, generation_mode, provider, model, status
+        ) VALUES (%s, %s, 'I2V', 'metaso', 'MiniMax-H3', 'RUNNING')
+        """,
+        (f"generation-task-{suffix}", f"generation-batch-{suffix}"),
+    )
+    conn.commit()
+
+
 def consent_for(
     conn: BusinessConnection,
     *,
@@ -350,7 +424,7 @@ def test_consent_and_voice_confirmation_routes(
         app.dependency_overrides.clear()
 
 
-def test_clone_route_persists_submission_uncertain_before_returning_503(
+def test_clone_route_only_enqueues_before_returning_202(
     tmp_path: Path, fake_source_storage: FakeSourceStorage
 ) -> None:
     conn = seed_scene(tmp_path, "oral-clone-route-uncertain.db")
@@ -403,13 +477,14 @@ def test_clone_route_persists_submission_uncertain_before_returning_503(
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "ORAL_SUBMISSION_UNCERTAIN"
+    assert response.status_code == 202
+    assert response.json()["status"] == "PENDING"
+    assert transport.calls == []
     persisted = conn.execute(
         "SELECT submission_state FROM oral_avatars WHERE idempotency_key = %s",
         ("route-uncertain-key",),
     ).fetchone()
-    assert persisted["submission_state"] == "SUBMISSION_UNKNOWN"
+    assert persisted["submission_state"] == "LOCAL_PENDING"
 
 
 def test_oral_task_route_returns_202_without_vendor_and_cancel_is_idempotent(
@@ -484,9 +559,13 @@ def test_avatar_clone_start_then_refresh_to_ready(
         idempotency_key="avatar-clone-idem-1",
         vendor=vendor,
     )
-    assert started.status == "RUNNING"
-
-    refreshed = refresh_avatar_clone(conn, avatar_id=started.task_id, actor=actor(), vendor=vendor)
+    assert started.status == "PENDING"
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    conn.execute("UPDATE oral_avatars SET next_attempt_at = NULL WHERE id = %s", (started.task_id,))
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    refreshed = conn.execute(
+        "SELECT * FROM oral_avatars WHERE id = %s", (started.task_id,)
+    ).fetchone()
     assert refreshed["status"] == "READY"
     assert refreshed["vendor_avatar_id"] == "vendor-avatar-1"
     # 上传走 PUT；创建与查询各一次 POST/GET。
@@ -527,7 +606,8 @@ def test_avatar_clone_from_image_uses_image_provider_endpoint(
         vendor=vendor,
     )
 
-    assert started.status == "RUNNING"
+    assert started.status == "PENDING"
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
     assert any(url.endswith("/avatar/create_by_image") for _, url in transport.calls)
     assert not any(url.endswith("/avatar/create_by_video") for _, url in transport.calls)
 
@@ -799,7 +879,6 @@ def test_clone_rejects_consent_mismatch_before_vendor_call(
 def test_voice_clone_ready_requires_explicit_confirmation(
     tmp_path: Path,
     fake_source_storage: FakeSourceStorage,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = seed_scene(tmp_path, "oral-voice.db")
     vendor, transport = make_vendor()
@@ -828,24 +907,6 @@ def test_voice_clone_ready_requires_explicit_confirmation(
     )
     transport.on("GET", "https://tmp.example/voice-demo.mp3", b"MP3DEMO")
 
-    class FakeDemoStorage:
-        def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject:
-            return StoredObject(
-                provider="fake",
-                bucket="assets",
-                key=key,
-                uri=f"fake://assets/{key}",
-                size=len(content),
-                content_type=content_type,
-                sha256="demo-sha256",
-                updated_at=datetime.now(tz=UTC),
-            )
-
-        def delete_object(self, key: str, *, actor_id: str | None = None) -> None:
-            return None
-
-    monkeypatch.setattr("app.oral.get_media_storage", lambda _conn: FakeDemoStorage())
-
     started = start_voice_clone(
         conn,
         actor=actor(),
@@ -856,7 +917,12 @@ def test_voice_clone_ready_requires_explicit_confirmation(
         idempotency_key="voice-clone-idem-1",
         vendor=vendor,
     )
-    refreshed = refresh_voice_clone(conn, voice_id=started.task_id, actor=actor(), vendor=vendor)
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    conn.execute("UPDATE oral_voices SET next_attempt_at = NULL WHERE id = %s", (started.task_id,))
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    refreshed = conn.execute(
+        "SELECT * FROM oral_voices WHERE id = %s", (started.task_id,)
+    ).fetchone()
     assert refreshed["status"] == "READY"
     assert refreshed["vendor_voice_id"] == "vendor-voice-2"
     assert refreshed["confirmed"] == 0
@@ -907,7 +973,12 @@ def test_voice_clone_done_without_demo_stays_running(
         vendor=vendor,
     )
 
-    refreshed = refresh_voice_clone(conn, voice_id=started.task_id, actor=actor(), vendor=vendor)
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    conn.execute("UPDATE oral_voices SET next_attempt_at = NULL WHERE id = %s", (started.task_id,))
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    refreshed = conn.execute(
+        "SELECT * FROM oral_voices WHERE id = %s", (started.task_id,)
+    ).fetchone()
 
     assert refreshed["status"] == "RUNNING"
     assert refreshed["demo_asset_id"] is None
@@ -936,24 +1007,27 @@ def test_clone_submission_uncertain_is_persisted_and_not_retried(
     transport.on("POST", "/api/v2/hifly/avatar/create_by_video", uncertain)
     consent_id = consent_for(conn, purpose="AVATAR", source_asset_id="asset-src")
 
-    with pytest.raises(HiflySubmissionUncertain):
-        start_avatar_clone(
-            conn,
-            actor=actor(),
-            identity_id="ident-1",
-            title="提交不确定",
-            source_asset_id="asset-src",
-            source_kind="VIDEO",
-            consent_id=consent_id,
-            idempotency_key="avatar-uncertain-key",
-            vendor=vendor,
-        )
+    started = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="提交不确定",
+        source_asset_id="asset-src",
+        source_kind="VIDEO",
+        consent_id=consent_id,
+        idempotency_key="avatar-uncertain-key",
+        vendor=vendor,
+    )
+    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    assert result is not None and result.outcome == "uncertain"
     persisted = conn.execute(
         "SELECT id, status, submission_state FROM oral_avatars WHERE idempotency_key = %s",
         ("avatar-uncertain-key",),
     ).fetchone()
     assert persisted["status"] == "PENDING"
     assert persisted["submission_state"] == "SUBMISSION_UNKNOWN"
+    assert started.task_id == persisted["id"]
+    assert claim_oral_work(conn, worker_id="second-worker") is None
 
     replayed = start_avatar_clone(
         conn,
@@ -1530,7 +1604,816 @@ def test_task_create_never_calls_vendor_inside_request_transaction(
     assert row["submission_state"] == "LOCAL_PENDING"
     assert row["error_message"] is None
 
+    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    assert result is not None and result.outcome == "failed"
+    failed = conn.execute(
+        "SELECT status, provider_charge_state FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert (failed["status"], failed["provider_charge_state"]) == (
+        "FAILED",
+        "NOT_CHARGED",
+    )
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (20, 0)
+
+
+def test_oral_task_uncertain_submission_freezes_credit_and_never_retries(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-uncertain.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+
+    def uncertain(_body: bytes | None) -> bytes:
+        raise HiflyError("connection dropped")
+
+    transport.on("POST", "/api/v2/hifly/video/create_by_tts", uncertain)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="不确定提交",
+        script_text="禁止盲目重提。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-worker-uncertain-key",
+    )
+    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    assert result is not None and result.outcome == "uncertain"
+    task = conn.execute(
+        "SELECT status, provider_charge_state FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert (task["status"], task["provider_charge_state"]) == (
+        "SUBMISSION_UNCERTAIN",
+        "UNKNOWN",
+    )
+    assert claim_oral_work(conn, worker_id="second-worker") is None
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (19, 1)
+    assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
+
+
+def test_sqlite_uncertain_submit_releases_slot_without_releasing_credit(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-uncertain-slot.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="不确定提交释放槽位",
+        script_text="保留冻结金额但释放执行容量。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-worker-uncertain-slot-key",
+    )
+    lease = claim_oral_work(conn, worker_id="uncertain-slot-worker")
+    assert lease is not None and lease.kind == "task_submit"
+    conn.execute(
+        "UPDATE oral_tasks SET queue_slot_acquired = 1 WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+
+    finalize_oral_work(
+        conn,
+        lease=lease,
+        result=OralWorkResult(outcome="uncertain", message="provider response unknown"),
+    )
+    row = conn.execute(
+        "SELECT status, submission_state, provider_charge_state, queue_slot_acquired "
+        "FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("SUBMISSION_UNCERTAIN", "SUBMISSION_UNKNOWN", "UNKNOWN", 0)
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (19, 1)
+    transactions = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY created_at, id",
+        (created.task_id,),
+    ).fetchall()
+    assert [row["type"] for row in transactions] == ["RESERVE"]
+    assert claim_oral_work(conn, worker_id="no-blind-retry") is None
+
+
+def test_sqlite_uncertain_submit_lease_loss_does_not_release_winner_slot(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-uncertain-lease-lost.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="旧租约不得释放赢家槽位",
+        script_text="CAS 失败必须无副作用。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-worker-uncertain-lease-lost-key",
+    )
+    lease = claim_oral_work(conn, worker_id="stale-worker")
+    assert lease is not None and lease.kind == "task_submit"
+    conn.execute(
+        "UPDATE oral_tasks SET lease_owner = 'winner-token', queue_slot_acquired = 1 WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+
+    with pytest.raises(OralLeaseLostError):
+        finalize_oral_work(
+            conn,
+            lease=OralWorkLease(
+                kind=lease.kind,
+                record_id=lease.record_id,
+                worker_id=lease.worker_id,
+                lease_token=lease.lease_token,
+                attempt_count=lease.attempt_count,
+                row=lease.row,
+            ),
+            result=OralWorkResult(outcome="uncertain", message="stale result"),
+        )
+    row = conn.execute(
+        "SELECT status, lease_owner, queue_slot_acquired FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("SUBMITTING", "winner-token", 1)
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (19, 1)
+
+
+def test_dangling_oral_reservation_reconciles_only_known_not_charged_failure(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-dangling-reconcile.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="对账任务",
+        script_text="仅明确未扣费可释放。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-dangling-key",
+    )
+    conn.execute(
+        "UPDATE oral_tasks SET status = 'FAILED', submission_state = 'FAILED', "
+        "provider_charge_state = 'NOT_CHARGED' WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+
+    with conn:
+        result = reconcile_dangling_billing_reservations(conn)
+    assert (result.scanned, result.released, result.settled, result.failed) == (1, 1, 0, 0)
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (20, 0)
+
 
 def test_oral_unit_price_defaults_and_reads_settings(tmp_path: Path) -> None:
     conn = seed_scene(tmp_path, "oral-price.db")
     assert oral_unit_price_fen(conn) == ORAL_UNIT_PRICE_FEN_DEFAULT == 1000
+
+
+def test_oral_clone_claim_is_exclusive_and_expired_submit_is_quarantined(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-clone-claim.db")
+    started = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="多实例分身",
+        source_asset_id="asset-src",
+        source_kind="VIDEO",
+        consent_id=consent_for(conn, purpose="AVATAR", source_asset_id="asset-src"),
+        idempotency_key="exclusive-avatar-key",
+    )
+    first = claim_oral_work(conn, worker_id="worker-a", lease_seconds=120)
+    assert first is not None and first.record_id == started.task_id
+    assert claim_oral_work(conn, worker_id="worker-b", lease_seconds=120) is None
+
+    conn.execute(
+        "UPDATE oral_avatars SET lease_expires_at = %s WHERE id = %s",
+        ("2000-01-01T00:00:00+00:00", started.task_id),
+    )
+    conn.commit()
+    assert claim_oral_work(conn, worker_id="worker-b", lease_seconds=120) is None
+    row = conn.execute(
+        "SELECT submission_state, attempt_count FROM oral_avatars WHERE id = %s",
+        (started.task_id,),
+    ).fetchone()
+    assert (row["submission_state"], row["attempt_count"]) == (
+        "SUBMISSION_UNKNOWN",
+        1,
+    )
+
+
+def test_expired_voice_poll_lease_cannot_delete_winner_demo(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-voice-lease-fence.db")
+    vendor, transport = make_vendor()
+    transport.on(
+        "POST",
+        "/api/v2/hifly/tool/create_upload_url",
+        envelope(
+            {
+                "upload_url": "https://up.example/lease-voice",
+                "content_type": "audio/mpeg",
+                "file_id": "lease-file",
+            }
+        ),
+    )
+    transport.on("POST", "/api/v2/hifly/voice/create", envelope({"task_id": "lease-vt"}))
+    transport.on(
+        "GET",
+        "/api/v2/hifly/voice/task",
+        envelope(
+            {
+                "status": 3,
+                "voice": "lease-vendor-voice",
+                "demo_url": "https://tmp.example/lease-demo.mp3",
+            }
+        ),
+    )
+    transport.on("GET", "https://tmp.example/lease-demo.mp3", b"LEASE-DEMO")
+    started = start_voice_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="租约声音",
+        source_asset_id="asset-audio",
+        consent_id=consent_for(conn, purpose="VOICE", source_asset_id="asset-audio"),
+        idempotency_key="voice-lease-fence-key",
+    )
+    assert run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage) is not None
+    conn.execute("UPDATE oral_voices SET next_attempt_at = NULL WHERE id = %s", (started.task_id,))
+
+    first = claim_oral_work(conn, worker_id="worker-a", lease_seconds=120)
+    assert first is not None and first.kind == "voice_poll"
+    first = prepare_oral_work(conn, first)
+    first_result = perform_oral_work(first, vendor=vendor, storage=fake_source_storage)
+    assert first_result.stored is not None
+
+    conn.execute(
+        "UPDATE oral_voices SET lease_expires_at = %s WHERE id = %s",
+        ("2000-01-01T00:00:00+00:00", started.task_id),
+    )
+    conn.commit()
+    second = claim_oral_work(conn, worker_id="worker-b", lease_seconds=120)
+    assert second is not None and second.kind == "voice_poll"
+    second = prepare_oral_work(conn, second)
+    second_result = perform_oral_work(second, vendor=vendor, storage=fake_source_storage)
+    assert second_result.stored is not None
+    assert second.attempt_count == first.attempt_count + 1
+    assert second.lease_token != first.lease_token
+    assert first_result.stored.key != second_result.stored.key
+
+    finalize_oral_work(conn, lease=second, result=second_result)
+    with pytest.raises(OralLeaseLostError):
+        finalize_oral_work(conn, lease=first, result=first_result)
+    discard_uncommitted_oral_asset(
+        fake_source_storage,
+        result=first_result,
+        actor_id="employee_1",
+    )
+
+    assert first_result.stored.key not in fake_source_storage.objects
+    assert second_result.stored.key in fake_source_storage.objects
+    winner = conn.execute(
+        """
+        SELECT asset.storage_uri
+        FROM oral_voices AS voice
+        JOIN assets AS asset ON asset.id = voice.demo_asset_id
+        WHERE voice.id = %s
+        """,
+        (started.task_id,),
+    ).fetchone()
+    assert winner["storage_uri"] == second_result.stored.uri
+
+
+def test_oral_manual_billing_reconciliation_is_admin_only_audited_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-manual-reconcile.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    release_task = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="人工释放",
+        script_text="供应商确认未扣费。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="manual-release-key",
+    )
+    conn.execute(
+        "UPDATE oral_tasks SET status = 'SUBMISSION_UNCERTAIN', "
+        "submission_state = 'SUBMISSION_UNKNOWN', provider_charge_state = 'UNKNOWN' "
+        "WHERE id = %s",
+        (release_task.task_id,),
+    )
+    conn.executemany(
+        """
+        INSERT INTO assets (
+            id, project_id, kind, storage_uri, sha256, size_bytes,
+            content_type, created_by_user_id
+        ) VALUES (%s, NULL, 'document', %s, %s, 10, 'application/pdf', 'admin_1')
+        """,
+        [
+            ("evidence-release", "local://evidence/release.pdf", "a" * 64),
+            ("evidence-settle", "local://evidence/settle.pdf", "c" * 64),
+        ],
+    )
+    conn.commit()
+
+    class TestBusinessDb:
+        current_actor = actor()
+
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            yield conn, self.current_actor
+
+    db = TestBusinessDb()
+    app.dependency_overrides[get_business_db] = lambda: db
+    request = {
+        "reconciliation_operation_id": "reconcile-release-001",
+        "provider_outcome": "NOT_FOUND",
+        "provider_charge_state": "NOT_CHARGED",
+        "resolution": "RELEASE",
+        "evidence_asset_id": "evidence-release",
+        "reason": "供应商工单确认任务未创建",
+    }
+    try:
+        client = TestClient(app)
+        denied = client.post(
+            f"/api/oral/tasks/{release_task.task_id}/billing-reconcile",
+            json=request,
+        )
+        db.current_actor = actor("admin_1", "admin")
+        released = client.post(
+            f"/api/oral/tasks/{release_task.task_id}/billing-reconcile",
+            json=request,
+        )
+        replay = client.post(
+            f"/api/oral/tasks/{release_task.task_id}/billing-reconcile",
+            json=request,
+        )
+        conflict = client.post(
+            f"/api/oral/tasks/{release_task.task_id}/billing-reconcile",
+            json={
+                **request,
+                "provider_charge_state": "CHARGED",
+                "resolution": "SETTLE",
+                "evidence_asset_id": "evidence-settle",
+            },
+        )
+        different_operation = client.post(
+            f"/api/oral/tasks/{release_task.task_id}/billing-reconcile",
+            json={**request, "reconciliation_operation_id": "reconcile-release-002"},
+        )
+        unowned_evidence = client.post(
+            f"/api/oral/tasks/{release_task.task_id}/billing-reconcile",
+            json={
+                **request,
+                "reconciliation_operation_id": "reconcile-release-003",
+                "evidence_asset_id": "asset-src",
+            },
+        )
+        charged_task = create_oral_task(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            avatar_id=avatar_id,
+            voice_id=voice_id,
+            mode="TTS",
+            title="人工结算",
+            script_text="供应商确认已扣费。",
+            audio_asset_id=None,
+            subtitle=None,
+            idempotency_key="manual-settle-key",
+        )
+        conn.execute(
+            "UPDATE oral_tasks SET status = 'FAILED', submission_state = 'FAILED', "
+            "provider_charge_state = 'CHARGED' WHERE id = %s",
+            (charged_task.task_id,),
+        )
+        conn.commit()
+        settled = client.post(
+            f"/api/oral/tasks/{charged_task.task_id}/billing-reconcile",
+            json={
+                "reconciliation_operation_id": "reconcile-settle-001",
+                "provider_outcome": "FAILED",
+                "provider_charge_state": "CHARGED",
+                "resolution": "SETTLE",
+                "evidence_asset_id": "evidence-settle",
+                "reason": "供应商账单确认已产生扣费",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert denied.status_code == 403
+    assert released.status_code == replay.status_code == 200
+    assert (
+        released.json()
+        == replay.json()
+        == {
+            "task_id": release_task.task_id,
+            "billing_round": 1,
+            "transaction_type": "RELEASE",
+        }
+    )
+    assert "evidence_sha256" not in released.json()
+    assert conflict.status_code == 409
+    assert different_operation.status_code == 409
+    assert unowned_evidence.status_code == 409
+    assert settled.status_code == 200
+    assert settled.json()["transaction_type"] == "SETTLE"
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (19, 0)
+    audit = conn.execute(
+        "SELECT metadata_json FROM audit_logs "
+        "WHERE action = 'oral.billing.reconcile' AND entity_id = %s "
+        "ORDER BY created_at LIMIT 1",
+        (release_task.task_id,),
+    ).fetchone()
+    assert json.loads(str(audit["metadata_json"])) == {
+        "evidence_asset_id": "evidence-release",
+        "evidence_sha256": "a" * 64,
+        "provider_charge_state": "NOT_CHARGED",
+        "provider_outcome": "NOT_FOUND",
+        "reason": "供应商工单确认任务未创建",
+        "reconciliation_operation_id": "reconcile-release-001",
+        "resolution": "RELEASE",
+    }
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "ARCHIVING", "SUCCEEDED"])
+def test_manual_oral_reconciliation_rejects_non_attention_states(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-reconcile-state-{status}.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    task = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="不可人工对账",
+        script_text="状态门禁",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key=f"reconcile-state-{status}",
+    )
+    conn.execute(
+        "UPDATE oral_tasks SET status = %s, provider_charge_state = 'CHARGED', "
+        "result_asset_id = CASE WHEN %s = 'SUCCEEDED' THEN 'asset-src' ELSE NULL END "
+        "WHERE id = %s",
+        (status, status, task.task_id),
+    )
+    if status == "SUCCEEDED":
+        finalize_oral_billing(conn, oral_task_id=task.task_id)
+    conn.commit()
+    with pytest.raises(BillingInvariantError):
+        reconcile_oral_billing_by_evidence(
+            conn,
+            oral_task_id=task.task_id,
+            reconciliation_operation_id=f"operation-{status}",
+            provider_outcome="SUCCEEDED",
+            provider_charge_state="CHARGED",
+            resolution="SETTLE",
+            reason="供应商账单人工复核",
+            evidence_asset_id="asset-src",
+            evidence_sha256="video-hash",
+        )
+
+
+def test_expired_oral_submission_releases_queue_slot_once(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-expired-submit-slot.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    task = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="过期提交",
+        script_text="过期提交释放槽位",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="expired-submit-slot-key",
+    )
+    conn.execute(
+        "UPDATE oral_tasks SET status = 'SUBMITTING', submission_state = 'SUBMITTING', "
+        "queue_slot_acquired = 1, lease_expires_at = '2000-01-01 00:00:00' WHERE id = %s",
+        (task.task_id,),
+    )
+    conn.commit()
+
+    assert claim_oral_work(conn, worker_id="expiry-worker") is None
+    assert claim_oral_work(conn, worker_id="expiry-worker-2") is None
+    row = conn.execute(
+        "SELECT status, queue_slot_acquired FROM oral_tasks WHERE id = %s", (task.task_id,)
+    ).fetchone()
+    assert (row["status"], row["queue_slot_acquired"]) == ("SUBMISSION_UNCERTAIN", 0)
+
+
+def test_sqlite_oral_claim_respects_shared_global_capacity(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-sqlite-global-capacity.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    task = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="全局容量门禁",
+        script_text="全局容量已满时不得提交。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="sqlite-global-capacity",
+    )
+    seed_active_generation(conn, owner_user_id="employee_2", suffix="global-capacity")
+    conn.execute("UPDATE runtime_settings SET max_concurrent_h3_tasks = 1 WHERE id = 1")
+    conn.commit()
+
+    assert claim_oral_work(conn, worker_id="sqlite-global-capacity-worker") is None
+    row = conn.execute(
+        "SELECT status, queue_slot_acquired FROM oral_tasks WHERE id = %s", (task.task_id,)
+    ).fetchone()
+    assert (row["status"], row["queue_slot_acquired"]) == ("QUEUED", 0)
+
+
+@pytest.mark.parametrize("active_kind", ["generation", "oral"])
+def test_sqlite_oral_claim_respects_owner_active_gate(
+    tmp_path: Path,
+    active_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-sqlite-owner-active-{active_kind}.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    queued = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="同用户门禁",
+        script_text="同用户已有任务时不得重复提交。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key=f"sqlite-owner-active-{active_kind}",
+    )
+    if active_kind == "generation":
+        seed_active_generation(conn, owner_user_id="employee_1", suffix="owner-active")
+    else:
+        active = create_oral_task(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            avatar_id=avatar_id,
+            voice_id=voice_id,
+            mode="TTS",
+            title="运行中的同用户口播",
+            script_text="等待后续轮询。",
+            audio_asset_id=None,
+            subtitle=None,
+            idempotency_key="sqlite-owner-active-running",
+        )
+        conn.execute(
+            "UPDATE oral_tasks SET status = 'RUNNING', next_attempt_at = '2999-01-01' "
+            "WHERE id = %s",
+            (active.task_id,),
+        )
+        conn.commit()
+    conn.execute("UPDATE runtime_settings SET max_concurrent_h3_tasks = 2 WHERE id = 1")
+    conn.commit()
+
+    assert claim_oral_work(conn, worker_id="sqlite-owner-active-worker") is None
+    row = conn.execute(
+        "SELECT status, queue_slot_acquired FROM oral_tasks WHERE id = %s", (queued.task_id,)
+    ).fetchone()
+    assert (row["status"], row["queue_slot_acquired"]) == ("QUEUED", 0)
+
+
+@pytest.mark.parametrize("gate", ["global", "owner"])
+def test_sqlite_archive_retry_preserves_failed_state_when_capacity_rejects(
+    tmp_path: Path,
+    gate: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-sqlite-archive-retry-{gate}.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    task = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="归档重试门禁",
+        script_text="门禁拒绝后保持原状态。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key=f"sqlite-archive-retry-{gate}",
+    )
+    conn.execute(
+        "UPDATE oral_tasks SET status = 'ARCHIVE_FAILED', "
+        "provider_result_url = 'https://provider.invalid/result.mp4' WHERE id = %s",
+        (task.task_id,),
+    )
+    seed_active_generation(
+        conn,
+        owner_user_id="employee_2" if gate == "global" else "employee_1",
+        suffix=f"archive-{gate}",
+    )
+    conn.execute(
+        "UPDATE runtime_settings SET max_concurrent_h3_tasks = %s WHERE id = 1",
+        (1 if gate == "global" else 2,),
+    )
+    conn.commit()
+
+    with pytest.raises(ValueError):
+        request_oral_archive_retry(
+            conn,
+            task_id=task.task_id,
+            owner_user_id="employee_1",
+        )
+    row = conn.execute(
+        "SELECT status, queue_slot_acquired FROM oral_tasks WHERE id = %s", (task.task_id,)
+    ).fetchone()
+    assert (row["status"], row["queue_slot_acquired"]) == ("ARCHIVE_FAILED", 0)
+
+
+def test_generation_worker_completes_oral_task_and_settles_once(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-success.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    transport.on("POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "oral-vt-1"}))
+    transport.on(
+        "GET",
+        "/api/v2/hifly/video/task",
+        envelope(
+            {
+                "status": 3,
+                "video_url": "https://tmp.example/oral-result.mp4",
+                "duration": 12,
+            }
+        ),
+    )
+    transport.on("GET", "https://tmp.example/oral-result.mp4", b"ORAL-MP4")
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="Worker 口播",
+        script_text="这是完整的异步口播。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-worker-success-key",
+    )
+
+    for index in range(3):
+        if index == 1:
+            conn.execute(
+                "UPDATE oral_tasks SET next_attempt_at = NULL WHERE id = %s",
+                (created.task_id,),
+            )
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="generation-worker",
+                storage=fake_source_storage,
+                oral_vendor=vendor,
+                max_tasks=1,
+            )
+            == 1
+        )
+
+    task = conn.execute(
+        "SELECT status, result_asset_id, provider_charge_state FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert task["status"] == "SUCCEEDED"
+    assert task["result_asset_id"]
+    assert task["provider_charge_state"] == "CHARGED"
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (19, 0)
+    ledger = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY type",
+        (created.task_id,),
+    ).fetchall()
+    assert [row["type"] for row in ledger] == ["RESERVE", "SETTLE"]
+    assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
+
+
+def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-archive-retry.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    transport.on("POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "oral-vt-2"}))
+    transport.on(
+        "GET",
+        "/api/v2/hifly/video/task",
+        envelope({"status": 3, "video_url": "https://tmp.example/retry.mp4"}),
+    )
+    transport.on("GET", "https://tmp.example/retry.mp4", b"RETRY-MP4")
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="归档重试",
+        script_text="归档失败也不重复提交。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-archive-retry-key",
+    )
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    conn.execute("UPDATE oral_tasks SET next_attempt_at = NULL WHERE id = %s", (created.task_id,))
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+
+    original_put = fake_source_storage.put_object
+    failures = 0
+
+    def fail_once(key: str, content: bytes, *, content_type: str) -> StoredObject:
+        nonlocal failures
+        if failures == 0 and key.startswith("oral/results/"):
+            failures += 1
+            raise RuntimeError("temporary storage outage")
+        return original_put(key, content, content_type=content_type)
+
+    fake_source_storage.put_object = fail_once  # type: ignore[method-assign]
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    failed = conn.execute(
+        "SELECT status, provider_result_url FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert failed["status"] == "ARCHIVE_FAILED"
+    assert failed["provider_result_url"] == "https://tmp.example/retry.mp4"
+
+    request_oral_archive_retry(conn, task_id=created.task_id, owner_user_id="employee_1")
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    assert (
+        conn.execute("SELECT status FROM oral_tasks WHERE id = %s", (created.task_id,)).fetchone()[
+            "status"
+        ]
+        == "SUCCEEDED"
+    )
+    ledger = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY type",
+        (created.task_id,),
+    ).fetchall()
+    assert [row["type"] for row in ledger] == ["RESERVE", "SETTLE"]
+    assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1

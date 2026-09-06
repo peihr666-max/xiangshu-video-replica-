@@ -1084,10 +1084,6 @@ export function cancelOralTask(taskId: string): Promise<OralTaskRecord> {
   return mutateOralTask(taskId, "cancel", "取消口播任务失败");
 }
 
-export function retryOralTask(taskId: string): Promise<OralTaskRecord> {
-  return mutateOralTask(taskId, "retry", "重试提交口播任务失败");
-}
-
 export function retryOralTaskArchive(taskId: string): Promise<OralTaskRecord> {
   return mutateOralTask(taskId, "archive-retry", "重试归档口播成片失败");
 }
@@ -2577,14 +2573,15 @@ export type ScriptRewriteResult = {
 export type ScriptRewriteTask = {
   id: string;
   project_id: string;
-  identity_id?: string | null;
-  ip_profile_hash?: string | null;
-  ip_profile_snapshot?: {
-    display_name?: string;
-    role?: string;
-    service_scope?: string;
-    target_audience?: string;
-    expression_style?: string;
+  identity_id: string | null;
+  ip_profile_hash: string | null;
+  ip_profile_snapshot: {
+    display_name: string;
+    role: string;
+    service_scope: string;
+    target_audience: string;
+    expression_style: string;
+    profile_version: number;
   } | null;
   status:
     | "PENDING"
@@ -2635,9 +2632,14 @@ export async function getScriptRewriteTask(
 
 export async function getLatestScriptRewriteTask(
   projectId: string,
+  identityId?: string | null,
 ): Promise<ScriptRewriteTask | null> {
+  const query = new URLSearchParams({
+    identity_scope: identityId ? "identity" : "none",
+  });
+  if (identityId) query.set("identity_id", identityId);
   const response = await requestApi(
-    `/api/projects/${encodeURIComponent(projectId)}/script-rewrite-tasks/latest`,
+    `/api/projects/${encodeURIComponent(projectId)}/script-rewrite-tasks/latest?${query}`,
     { method: "GET" },
   );
   if (response.status === 404) {

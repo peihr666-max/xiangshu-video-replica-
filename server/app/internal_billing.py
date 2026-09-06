@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Literal, cast
 from uuid import uuid4
@@ -8,6 +10,8 @@ from app.db_portable import BusinessConnection
 
 BillingOutcome = Literal["success", "failed", "cancelled"]
 TerminalTransactionType = Literal["SETTLE", "RELEASE"]
+OralProviderOutcome = Literal["SUCCEEDED", "FAILED", "CANCELLED", "NOT_FOUND"]
+OralChargeEvidence = Literal["CHARGED", "NOT_CHARGED"]
 
 
 class InternalBillingError(RuntimeError):
@@ -31,6 +35,7 @@ class BillingFinalization:
 
 @dataclass(frozen=True)
 class DanglingBillingReservation:
+    task_kind: Literal["generation", "oral"]
     task_id: str
     user_id: str
     billing_round: int
@@ -62,33 +67,52 @@ def find_dangling_billing_reservations(
     """
     rows = conn.execute(
         """
-        SELECT
-            wt.id AS reservation_id,
-            wt.task_id,
-            wt.user_id,
-            wt.billing_round,
-            task.status
-        FROM wallet_transactions AS wt
-        JOIN generation_tasks AS task ON task.id = wt.task_id
-        WHERE wt.type = 'RESERVE'
-          AND NOT EXISTS (
-              SELECT 1
-              FROM wallet_transactions AS terminal
-              WHERE terminal.task_id = wt.task_id
-                AND terminal.billing_round = wt.billing_round
-                AND terminal.type IN ('SETTLE', 'RELEASE')
-          )
-          AND (
-              (task.status = 'SUCCEEDED' AND task.archive_status IN ('ARCHIVED', 'DIRECT'))
-              OR task.status IN ('FAILED', 'CANCELLED')
-          )
-        ORDER BY wt.created_at
+        SELECT * FROM (
+            SELECT 'generation' AS task_kind, wt.id AS reservation_id,
+                   wt.task_id, wt.user_id, wt.billing_round, task.status, wt.created_at
+            FROM wallet_transactions AS wt
+            JOIN generation_tasks AS task ON task.id = wt.task_id
+            WHERE wt.type = 'RESERVE'
+              AND NOT EXISTS (
+                  SELECT 1 FROM wallet_transactions AS terminal
+                  WHERE terminal.task_id = wt.task_id
+                    AND terminal.billing_round = wt.billing_round
+                    AND terminal.type IN ('SETTLE', 'RELEASE')
+              )
+              AND (
+                  (task.status = 'SUCCEEDED'
+                   AND task.archive_status IN ('ARCHIVED', 'DIRECT'))
+                  OR task.status IN ('FAILED', 'CANCELLED')
+              )
+            UNION ALL
+            SELECT 'oral' AS task_kind, wt.id AS reservation_id,
+                   wt.oral_task_id AS task_id, wt.user_id, wt.billing_round,
+                   task.status, wt.created_at
+            FROM wallet_transactions AS wt
+            JOIN oral_tasks AS task ON task.id = wt.oral_task_id
+            WHERE wt.type = 'RESERVE'
+              AND NOT EXISTS (
+                  SELECT 1 FROM wallet_transactions AS terminal
+                  WHERE terminal.oral_task_id = wt.oral_task_id
+                    AND terminal.billing_round = wt.billing_round
+                    AND terminal.type IN ('SETTLE', 'RELEASE')
+              )
+              AND (
+                  (task.status = 'SUCCEEDED' AND task.result_asset_id IS NOT NULL)
+                  OR (
+                      task.status IN ('FAILED', 'CANCELLED')
+                      AND task.provider_charge_state IN ('NOT_SUBMITTED', 'NOT_CHARGED')
+                  )
+              )
+        ) AS candidates
+        ORDER BY created_at
         LIMIT %s
         """,
         (limit,),
     ).fetchall()
     return [
         DanglingBillingReservation(
+            task_kind=cast(Literal["generation", "oral"], str(row["task_kind"])),
             task_id=str(row["task_id"]),
             user_id=str(row["user_id"]),
             billing_round=int(row["billing_round"]),
@@ -293,6 +317,35 @@ def reserve_oral_billing(
     return billing_round
 
 
+def release_oral_queue_slot(
+    conn: BusinessConnection,
+    *,
+    oral_task_id: str,
+) -> None:
+    """Release an oral submit slot exactly once in the caller transaction."""
+    _lock_oral_capacity_row(conn)
+    released = conn.execute(
+        """
+        UPDATE oral_tasks
+        SET queue_slot_acquired = 0, updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s AND queue_slot_acquired = 1
+        RETURNING owner_user_id
+        """,
+        (oral_task_id,),
+    ).fetchone()
+    if released is None or not conn.is_postgres:
+        return
+    conn.execute(
+        """
+        UPDATE user_queue_cursors
+        SET running_tasks_count = GREATEST(running_tasks_count - 1, 0),
+            last_dispatched_at = now()
+        WHERE user_id = %s
+        """,
+        (str(released["owner_user_id"]),),
+    )
+
+
 def finalize_oral_billing(
     conn: BusinessConnection,
     *,
@@ -301,7 +354,8 @@ def finalize_oral_billing(
     """Settle archived success or release an explicitly failed/cancelled oral task."""
     task = conn.execute(
         """
-        SELECT task.status, task.owner_user_id, task.result_asset_id, asset.storage_uri
+        SELECT task.status, task.owner_user_id, task.result_asset_id,
+               task.provider_charge_state, asset.storage_uri
         FROM oral_tasks AS task
         LEFT JOIN assets AS asset ON asset.id = task.result_asset_id
         WHERE task.id = %s
@@ -345,7 +399,10 @@ def finalize_oral_billing(
             raise BillingInvariantError("successful oral billing requires an archived asset")
         transaction_type: TerminalTransactionType = "SETTLE"
         available_delta = 0
-    elif status in {"FAILED", "CANCELLED"}:
+    elif status in {"FAILED", "CANCELLED"} and str(task["provider_charge_state"]) in {
+        "NOT_SUBMITTED",
+        "NOT_CHARGED",
+    }:
         transaction_type = "RELEASE"
         available_delta = 1
     else:
@@ -380,11 +437,209 @@ def finalize_oral_billing(
             f"oral-{transaction_type.lower()}:{oral_task_id}:{billing_round}",
         ),
     )
+    release_oral_queue_slot(conn, oral_task_id=oral_task_id)
     return BillingFinalization(
         task_id=oral_task_id,
         billing_round=billing_round,
         transaction_type=transaction_type,
     )
+
+
+def reconcile_oral_billing_by_evidence(
+    conn: BusinessConnection,
+    *,
+    oral_task_id: str,
+    reconciliation_operation_id: str,
+    provider_outcome: OralProviderOutcome,
+    provider_charge_state: OralChargeEvidence,
+    resolution: TerminalTransactionType,
+    reason: str,
+    evidence_asset_id: str,
+    evidence_sha256: str,
+) -> BillingFinalization:
+    """Apply an operator-evidenced terminal decision without guessing locally."""
+    _lock_oral_capacity_row(conn)
+    if (resolution, provider_charge_state) not in {
+        ("SETTLE", "CHARGED"),
+        ("RELEASE", "NOT_CHARGED"),
+    }:
+        raise BillingInvariantError("billing resolution contradicts provider charge evidence")
+    if provider_outcome not in {"SUCCEEDED", "FAILED", "CANCELLED", "NOT_FOUND"}:
+        raise BillingInvariantError("provider outcome is unsupported")
+
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "oral_task_id": oral_task_id,
+                "provider_outcome": provider_outcome,
+                "provider_charge_state": provider_charge_state,
+                "resolution": resolution,
+                "reason": reason,
+                "evidence_asset_id": evidence_asset_id,
+                "evidence_sha256": evidence_sha256,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    conn.execute(
+        """
+        INSERT INTO oral_billing_reconciliation_operations (
+            id, oral_task_id, request_hash, evidence_asset_id,
+            evidence_sha256, resolution
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (
+            reconciliation_operation_id,
+            oral_task_id,
+            request_hash,
+            evidence_asset_id,
+            evidence_sha256,
+            resolution,
+        ),
+    )
+    operation = conn.execute(
+        """
+        SELECT oral_task_id, request_hash, evidence_asset_id, evidence_sha256,
+               resolution, applied_at
+        FROM oral_billing_reconciliation_operations
+        WHERE id = %s
+        FOR UPDATE
+        """,
+        (reconciliation_operation_id,),
+    ).fetchone()
+    if operation is None or (
+        str(operation["oral_task_id"]) != oral_task_id
+        or str(operation["request_hash"]) != request_hash
+        or str(operation["evidence_asset_id"]) != evidence_asset_id
+        or str(operation["evidence_sha256"]) != evidence_sha256
+        or str(operation["resolution"]) != resolution
+    ):
+        raise BillingInvariantError("billing reconciliation operation conflicts")
+
+    task = conn.execute(
+        """
+        SELECT owner_user_id, provider_charge_state, status
+        FROM oral_tasks
+        WHERE id = %s
+        FOR UPDATE
+        """,
+        (oral_task_id,),
+    ).fetchone()
+    if task is None:
+        raise BillingInvariantError("oral task does not exist")
+    reservation = conn.execute(
+        """
+        SELECT user_id, billing_round
+        FROM wallet_transactions
+        WHERE oral_task_id = %s AND type = 'RESERVE'
+        ORDER BY billing_round DESC LIMIT 1
+        """,
+        (oral_task_id,),
+    ).fetchone()
+    if reservation is None:
+        raise BillingInvariantError("oral task has no billing reservation")
+    user_id = str(reservation["user_id"])
+    billing_round = int(reservation["billing_round"])
+    if user_id != str(task["owner_user_id"]):
+        raise BillingInvariantError("reservation owner does not match oral task owner")
+
+    existing = conn.execute(
+        """
+        SELECT type FROM wallet_transactions
+        WHERE oral_task_id = %s AND billing_round = %s
+          AND type IN ('SETTLE', 'RELEASE')
+        """,
+        (oral_task_id, billing_round),
+    ).fetchone()
+    if existing is not None:
+        existing_type = cast(TerminalTransactionType, str(existing["type"]))
+        if existing_type != resolution or operation["applied_at"] is None:
+            raise BillingInvariantError("oral billing already has a different operation")
+        return BillingFinalization(oral_task_id, billing_round, existing_type)
+
+    if str(task["status"]) not in {"SUBMISSION_UNCERTAIN", "FAILED", "CANCELLED"}:
+        raise BillingInvariantError("oral task does not require manual billing attention")
+    if str(task["provider_charge_state"]) not in {"UNKNOWN", "CHARGED"}:
+        raise BillingInvariantError("oral task does not require manual billing reconciliation")
+    available_delta = 1 if resolution == "RELEASE" else 0
+    wallet = conn.execute(
+        """
+        UPDATE wallets
+        SET available_credits = available_credits + %s,
+            reserved_credits = reserved_credits - 1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = %s AND reserved_credits >= 1
+        """,
+        (available_delta, user_id),
+    )
+    if wallet.rowcount != 1:
+        raise BillingInvariantError("reserved wallet credit is missing")
+    conn.execute(
+        """
+        INSERT INTO wallet_transactions (
+            id, user_id, type, available_delta, reserved_delta,
+            oral_task_id, billing_round, idempotency_key
+        ) VALUES (%s, %s, %s, %s, -1, %s, %s, %s)
+        """,
+        (
+            str(uuid4()),
+            user_id,
+            resolution,
+            available_delta,
+            oral_task_id,
+            billing_round,
+            f"oral-manual-{resolution.lower()}:{oral_task_id}:{billing_round}",
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE oral_tasks
+        SET provider_charge_state = %s,
+            status = CASE WHEN %s = 'RELEASE' THEN 'FAILED' ELSE status END,
+            submission_state = CASE
+                WHEN %s = 'RELEASE' THEN 'FAILED' ELSE submission_state
+            END,
+            error_message = CASE
+                WHEN %s = 'RELEASE' THEN '供应商凭证确认未扣费，已人工释放预留次数'
+                ELSE error_message
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (
+            provider_charge_state,
+            resolution,
+            resolution,
+            resolution,
+            oral_task_id,
+        ),
+    )
+    applied = conn.execute(
+        """
+        UPDATE oral_billing_reconciliation_operations
+        SET applied_at = CURRENT_TIMESTAMP
+        WHERE id = %s AND applied_at IS NULL
+        """,
+        (reconciliation_operation_id,),
+    )
+    if applied.rowcount != 1:
+        raise BillingInvariantError("billing reconciliation operation was already applied")
+    release_oral_queue_slot(conn, oral_task_id=oral_task_id)
+    return BillingFinalization(oral_task_id, billing_round, resolution)
+
+
+def _lock_oral_capacity_row(conn: BusinessConnection) -> None:
+    """Match worker lock order without importing generation into billing."""
+    if conn.is_postgres:
+        row = conn.execute("SELECT id FROM runtime_settings WHERE id = 1 FOR UPDATE").fetchone()
+        if row is None:
+            raise BillingInvariantError("runtime settings capacity row is missing")
+        return
+    updated = conn.execute("UPDATE runtime_settings SET id = id WHERE id = 1")
+    if updated.rowcount != 1:
+        raise BillingInvariantError("runtime settings capacity row is missing")
 
 
 def finalize_internal_billing(
@@ -531,11 +786,14 @@ def reconcile_dangling_billing_reservations(
     for candidate in candidates:
         conn.execute("SAVEPOINT billing_reconcile_item")
         try:
-            result = finalize_internal_billing(
-                conn,
-                task_id=candidate.task_id,
-                outcome=candidate.outcome,
-            )
+            if candidate.task_kind == "oral":
+                result = finalize_oral_billing(conn, oral_task_id=candidate.task_id)
+            else:
+                result = finalize_internal_billing(
+                    conn,
+                    task_id=candidate.task_id,
+                    outcome=candidate.outcome,
+                )
         except Exception:
             conn.execute("ROLLBACK TO SAVEPOINT billing_reconcile_item")
             conn.execute("RELEASE SAVEPOINT billing_reconcile_item")
