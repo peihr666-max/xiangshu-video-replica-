@@ -84,7 +84,11 @@ def test_beijing_day_cutoff_converts_utc_to_beijing_day_start() -> None:
 def test_admin_sees_workspace_wide_counters(tmp_path: Path) -> None:
     conn = stats_connection(tmp_path, "stats-admin.db")
 
-    stats = studio_task_stats(conn, actor=actor("admin_1", "admin"))
+    stats = studio_task_stats(
+        conn,
+        actor=actor("admin_1", "admin"),
+        now=datetime.fromisoformat(_NOW).replace(tzinfo=UTC),
+    )
 
     assert stats == StudioStatsResponse(
         # t-today / t-archive / t-current / t-hidden completed today（t-superseded 已被替代不计）
@@ -101,7 +105,11 @@ def test_admin_sees_workspace_wide_counters(tmp_path: Path) -> None:
 def test_employee_counters_scope_to_own_projects_and_respect_hiding(tmp_path: Path) -> None:
     conn = stats_connection(tmp_path, "stats-employee.db")
 
-    stats = studio_task_stats(conn, actor=actor("employee_1", "employee"))
+    stats = studio_task_stats(
+        conn,
+        actor=actor("employee_1", "employee"),
+        now=datetime.fromisoformat(_NOW).replace(tzinfo=UTC),
+    )
 
     # employee_1 只看 p-1（p-2 属于 employee_2），且 b-hidden 被本人隐藏。
     assert stats == StudioStatsResponse(
