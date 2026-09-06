@@ -68,9 +68,20 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
     note: "二创口播稿改写 · 默认 DeepSeek，只需 API Key",
     fields: [{ name: "api_key", label: "API Key", secret: true }],
   },
+  tikhub: {
+    title: "爆款视频数据源",
+    note: "抖音 / 视频号最近 7 天爆款参考库 · 只需 API Key",
+    fields: [{ name: "api_key", label: "API Key", secret: true }],
+  },
 };
 
-const PROVIDER_ORDER: ProviderName[] = ["metaso", "apilio", "cos", "deepseek"];
+const PROVIDER_ORDER: ProviderName[] = [
+  "metaso",
+  "apilio",
+  "cos",
+  "deepseek",
+  "tikhub",
+];
 
 export function SettingsPanel({
   source = "workspace",
