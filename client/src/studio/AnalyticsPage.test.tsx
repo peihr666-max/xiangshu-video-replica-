@@ -164,6 +164,7 @@ describe("V1.4 数据看板", () => {
             queued: 2,
             needs_attention: 1,
             total_completed: 42,
+            published_total: 0,
           },
           analytics7: sampleAnalytics,
           analytics30: { ...sampleAnalytics, range_days: 30 },

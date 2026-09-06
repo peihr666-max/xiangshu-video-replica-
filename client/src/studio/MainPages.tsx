@@ -2,13 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { useStudio } from "./context";
 import {
   cancelStudioTask,
+  connectPublishAccount,
   downloadStudioTaskResult,
+  loadPublishAccounts,
   loadTaskPreview,
+  removePublishAccount,
+  requestPublishAccountVerify,
   retryStudioTask,
   uploadWorkbenchSourceVideo,
 } from "./live";
 import { draftFromTask } from "./state";
-import type { StudioTask, StudioVideo } from "./types";
+import type { StudioPublishAccount, StudioTask, StudioVideo } from "./types";
 import {
   Button,
   Empty,
@@ -322,9 +326,13 @@ export function WorkbenchPage() {
           },
           {
             label: "累计已发布",
-            // C5 发布能力暂缓：没有真实发布数据源，保持 "—" 不伪造。
-            value: review ? "156" : "—",
-            hint: review ? "本周 +21" : "等待发布统计",
+            // C5：真实发布计数来自 /api/studio/stats 的 published_total。
+            value: review
+              ? "156"
+              : data.stats
+                ? String(data.stats.published_total)
+                : "—",
+            hint: review ? "本周 +21" : "已发布作品",
             tone: "success",
             icon: "upload",
             page: "publishing" as const,
@@ -1078,35 +1086,26 @@ export function ProfilePage() {
         ]}
       />
       {profileTab === "publishing" ? (
-        <Panel>
-          <h2>发布账号管理</h2>
-          <Hint>这里管理平台账号，人物 IP 与作品发布在各自模块中管理。</Hint>
-          {review ? (
-            <>
-              <div className="studio-publish-account">
-                <Icon name="video" size={32} />
-                <span>抖音 · 张工说乡墅</span>
-                <small>已连接 · 示例</small>
-              </div>
-              <div className="studio-publish-account">
-                <Icon name="link" size={32} />
-                <span>视频号 · 众墅乡建</span>
-                <small>已连接 · 示例</small>
-              </div>
-            </>
-          ) : (
-            <Empty
-              title="尚未连接发布账号"
-              description="平台账号授权接口尚未接入，暂不可添加账号。"
-            />
-          )}
-          <Button disabled>连接发布账号</Button>
-          <Hint>
-            {review
-              ? "这里只展示账号管理样式，不代表已连接真实账号。"
-              : "接入后，已授权账号将同步提供给发布管理选择。"}
-          </Hint>
-        </Panel>
+        review ? (
+          <Panel>
+            <h2>发布账号管理</h2>
+            <Hint>这里管理平台账号，人物 IP 与作品发布在各自模块中管理。</Hint>
+            <div className="studio-publish-account">
+              <Icon name="video" size={32} />
+              <span>抖音 · 张工说乡墅</span>
+              <small>已连接 · 示例</small>
+            </div>
+            <div className="studio-publish-account">
+              <Icon name="link" size={32} />
+              <span>视频号 · 众墅乡建</span>
+              <small>已连接 · 示例</small>
+            </div>
+            <Button disabled>连接发布账号</Button>
+            <Hint>这里只展示账号管理样式，不代表已连接真实账号。</Hint>
+          </Panel>
+        ) : (
+          <PublishAccountsPanel notify={notify} />
+        )
       ) : (
         <>
           <div className="studio-profile-grid">
@@ -1149,22 +1148,7 @@ export function ProfilePage() {
             </Panel>
             <Panel>
               <h2>发布账号概览</h2>
-              {review ? (
-                <>
-                  <div className="studio-publish-account">
-                    <Icon name="video" size={32} />
-                    <span>抖音 · 张工说乡墅</span>
-                    <small>已连接 · 示例</small>
-                  </div>
-                  <div className="studio-publish-account">
-                    <Icon name="link" size={32} />
-                    <span>视频号 · 众墅乡建</span>
-                    <small>已连接 · 示例</small>
-                  </div>
-                </>
-              ) : (
-                <p>发布账号服务尚未接入</p>
-              )}
+              <PublishAccountsSummary />
               <Button onClick={() => setProfileTab("publishing")}>
                 <Icon name="person" />
                 管理发布账号
@@ -1216,5 +1200,242 @@ export function ProfilePage() {
         </>
       )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// C5 发布账号管理：连接（粘贴 Cookie / security_sdk）、校验、删除
+// ---------------------------------------------------------------------------
+
+const PUBLISH_PLATFORM_LABELS: Record<
+  StudioPublishAccount["platform"],
+  string
+> = { douyin: "抖音", wechat_channels: "视频号" };
+
+function publishPanelError(error: unknown) {
+  return error instanceof Error && error.message.trim()
+    ? error.message.trim()
+    : "操作失败，请稍后重试";
+}
+
+async function fetchPublishAccounts(): Promise<StudioPublishAccount[]> {
+  try {
+    const accounts = await loadPublishAccounts();
+    return accounts ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function PublishAccountsSummary() {
+  const { review } = useStudio();
+  const [accounts, setAccounts] = useState<StudioPublishAccount[]>([]);
+  useEffect(() => {
+    if (review) return;
+    let active = true;
+    void fetchPublishAccounts().then((next) => {
+      if (active) setAccounts(next);
+    });
+    return () => {
+      active = false;
+    };
+  }, [review]);
+  if (review) {
+    return (
+      <div className="studio-publish-account">
+        <Icon name="video" size={32} />
+        <span>抖音 · 张工说乡墅</span>
+        <small>已连接 · 示例</small>
+      </div>
+    );
+  }
+  if (!accounts.length) {
+    return <p>尚未连接发布账号，可在下方“发布账号”页签连接。</p>;
+  }
+  return (
+    <>
+      {accounts.map((account) => (
+        <div className="studio-publish-account" key={account.id}>
+          <Icon name="video" size={32} />
+          <span>
+            {PUBLISH_PLATFORM_LABELS[account.platform]} · {account.displayName}
+          </span>
+          <small>
+            {account.status === "connected" ? "已连接" : "登录态已失效"}
+          </small>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function PublishAccountsPanel({
+  notify,
+}: {
+  notify: (message: string) => void;
+}) {
+  const [accounts, setAccounts] = useState<StudioPublishAccount[]>([]);
+  const [platform, setPlatform] =
+    useState<StudioPublishAccount["platform"]>("douyin");
+  const [displayName, setDisplayName] = useState("");
+  const [cookie, setCookie] = useState("");
+  const [securitySdk, setSecuritySdk] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void fetchPublishAccounts().then((next) => {
+      if (active) setAccounts(next);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const reload = () => {
+    void fetchPublishAccounts()
+      .then(setAccounts)
+      .catch(() => {});
+  };
+
+  const connect = async () => {
+    if (busy) return;
+    if (!displayName.trim() || !cookie.trim()) {
+      notify("请填写账号名称并粘贴平台 Cookie。");
+      return;
+    }
+    if (platform === "douyin" && !securitySdk.trim()) {
+      notify(
+        "抖音需要同时粘贴 security_sdk 材料（浏览器 localStorage 导出）。",
+      );
+      return;
+    }
+    setBusy(true);
+    try {
+      const account = await connectPublishAccount({
+        platform,
+        displayName: displayName.trim(),
+        cookie: cookie.trim(),
+        securitySdk: platform === "douyin" ? securitySdk.trim() : undefined,
+      });
+      setAccounts((previous) => [...previous, account]);
+      setDisplayName("");
+      setCookie("");
+      setSecuritySdk("");
+      notify("发布账号已连接，可点击“校验登录态”确认有效性。");
+    } catch (error) {
+      notify(publishPanelError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verify = async (account: StudioPublishAccount) => {
+    try {
+      await requestPublishAccountVerify(account.id);
+      notify("已发起登录态校验，稍候自动刷新结果。");
+      window.setTimeout(reload, 2500);
+    } catch (error) {
+      notify(publishPanelError(error));
+    }
+  };
+
+  const remove = async (account: StudioPublishAccount) => {
+    try {
+      await removePublishAccount(account.id);
+      setAccounts((previous) =>
+        previous.filter((item) => item.id !== account.id),
+      );
+      notify("发布账号已删除。");
+    } catch (error) {
+      notify(publishPanelError(error));
+    }
+  };
+
+  return (
+    <Panel>
+      <h2>发布账号管理</h2>
+      <Hint>
+        在电脑浏览器登录平台创作者后台，把整段 Cookie
+        粘贴到这里；服务端加密保存，不会回传明文。
+      </Hint>
+      {accounts.length ? (
+        accounts.map((account) => (
+          <div className="studio-publish-account" key={account.id}>
+            <Icon name="video" size={32} />
+            <span>
+              {PUBLISH_PLATFORM_LABELS[account.platform]} ·{" "}
+              {account.displayName}
+            </span>
+            <small>
+              {account.status === "connected"
+                ? "已连接"
+                : `登录态已失效${account.errorMessage ? `：${account.errorMessage}` : ""}`}
+            </small>
+            <Button
+              disabled={busy}
+              onClick={() => void verify(account)}
+              variant="quiet"
+            >
+              校验登录态
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => void remove(account)}
+              variant="quiet"
+            >
+              删除
+            </Button>
+          </div>
+        ))
+      ) : (
+        <Empty
+          title="尚未连接发布账号"
+          description="连接后即可在发布管理中选择该账号发布作品。"
+        />
+      )}
+      <div className="studio-publish-connect">
+        <Field label="平台">
+          <div className="content-platform-options">
+            {(["douyin", "wechat_channels"] as const).map((key) => (
+              <Button
+                aria-pressed={platform === key}
+                key={key}
+                onClick={() => setPlatform(key)}
+                variant={platform === key ? "primary" : "outline"}
+              >
+                {PUBLISH_PLATFORM_LABELS[key]}
+              </Button>
+            ))}
+          </div>
+        </Field>
+        <Field label="账号名称">
+          <input
+            onChange={(event) => setDisplayName(event.target.value)}
+            placeholder="例如：张工说乡墅"
+            value={displayName}
+          />
+        </Field>
+        <Field label="Cookie">
+          <textarea
+            onChange={(event) => setCookie(event.target.value)}
+            placeholder="粘贴从浏览器复制的整段 Cookie"
+            value={cookie}
+          />
+        </Field>
+        {platform === "douyin" ? (
+          <Field label="security_sdk（抖音必填）">
+            <textarea
+              onChange={(event) => setSecuritySdk(event.target.value)}
+              placeholder="粘贴浏览器 localStorage 中 security-sdk 对应的 JSON 内容"
+              value={securitySdk}
+            />
+          </Field>
+        ) : null}
+        <Button disabled={busy} onClick={() => void connect()}>
+          {busy ? "连接中…" : "连接发布账号"}
+        </Button>
+      </div>
+    </Panel>
   );
 }

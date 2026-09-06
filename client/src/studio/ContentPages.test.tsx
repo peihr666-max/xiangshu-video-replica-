@@ -31,6 +31,39 @@ const {
   getAssetDownloadUrl: vi.fn(),
   createGenerationTaskPreviewUrl: vi.fn(),
 }));
+const {
+  loadPublishAccounts,
+  loadPublishRecords,
+  loadVideoMaterials,
+  savePublishDraftToCloud,
+  submitCloudPublishRecord,
+  cancelCloudPublishRecord,
+  removeCloudPublishRecord,
+  uploadVideoMaterial,
+} = vi.hoisted(() => ({
+  loadPublishAccounts: vi.fn(),
+  loadPublishRecords: vi.fn(),
+  loadVideoMaterials: vi.fn(),
+  savePublishDraftToCloud: vi.fn(),
+  submitCloudPublishRecord: vi.fn(),
+  cancelCloudPublishRecord: vi.fn(),
+  removeCloudPublishRecord: vi.fn(),
+  uploadVideoMaterial: vi.fn(),
+}));
+vi.mock("./live", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./live")>();
+  return {
+    ...actual,
+    loadPublishAccounts,
+    loadPublishRecords,
+    loadVideoMaterials,
+    savePublishDraftToCloud,
+    submitCloudPublishRecord,
+    cancelCloudPublishRecord,
+    removeCloudPublishRecord,
+    uploadVideoMaterial,
+  };
+});
 vi.mock("./context", () => ({ useStudio }));
 vi.mock("../api", () => ({
   fetchViralVideoMedia,
@@ -1228,5 +1261,170 @@ describe("V1.4 内容与运营页面", () => {
       screen.queryByAltText("不可随机回退的完成视频.mp4 视频预览"),
     ).toBeNull();
     expect(screen.getByRole("button", { name: "保存草稿" })).toBeDisabled();
+  });
+});
+
+describe("C5 发布模块（正式模式接入云端）", () => {
+  beforeEach(() => {
+    loadPublishAccounts.mockClear();
+    loadPublishRecords.mockClear();
+    loadVideoMaterials.mockClear();
+    savePublishDraftToCloud.mockClear();
+    submitCloudPublishRecord.mockClear();
+    uploadVideoMaterial.mockClear();
+  });
+
+  const publishAccount = {
+    id: "acc-1",
+    platform: "douyin",
+    displayName: "张工说乡墅",
+    status: "connected",
+    lastVerifiedAt: null,
+    errorMessage: null,
+    securitySdkRequired: true,
+    createdAt: "2026-09-07 00:00:00",
+  };
+  const savedRecord = {
+    id: "rec-1",
+    assetId: "completed-video",
+    platform: "douyin",
+    accountId: "acc-1",
+    accountName: "张工说乡墅",
+    title: "乡墅建房预算避坑清单",
+    description: "",
+    tags: ["农村自建房"],
+    coverAssetId: null,
+    scheduleAt: null,
+    status: "draft",
+    platformItemId: null,
+    shortUrl: null,
+    errorMessage: null,
+    attempts: 0,
+    publishedAt: null,
+    createdAt: "2026-09-07 01:00:00",
+    updatedAt: "2026-09-07 01:00:00",
+  };
+  const queuedRecord = {
+    ...savedRecord,
+    status: "queued",
+  };
+
+  function productionValue() {
+    const base = studio();
+    return studio({
+      review: false,
+      state: { ...base.state, selectedAssetId: "completed-video" },
+      data: {
+        ...base.data,
+        assets: [
+          ...base.data.assets,
+          {
+            id: "completed-video",
+            name: "乡墅建房预算确认版.mp4",
+            kind: "video",
+            poster: "/studio/completed.jpg",
+            group: "成片",
+            source: "任务中心",
+            saved: true,
+          },
+        ],
+        tasks: [
+          {
+            id: "task-completed",
+            title: "乡墅建房预算确认版",
+            type: "数字人口播",
+            status: "completed",
+            submitted: "今天 09:27",
+            resultId: "completed-video",
+          },
+        ],
+      },
+    });
+  }
+
+  it("正式发布按钮解除禁用；封面支持自动抽帧/素材库/上传", async () => {
+    loadPublishAccounts.mockResolvedValue([publishAccount]);
+    loadPublishRecords.mockResolvedValue([queuedRecord]);
+    loadVideoMaterials.mockResolvedValue([
+      {
+        id: "cover-asset-1",
+        assetId: "cover-asset-1",
+        name: "庭院效果图",
+        kind: "image",
+        poster: "/studio/cover.jpg",
+        group: "发布封面",
+        source: "我的上传",
+        saved: true,
+        url: "/studio/cover.jpg",
+      },
+    ]);
+    useStudio.mockReturnValue(productionValue());
+    render(<PublishPage />);
+
+    expect(
+      await screen.findByRole("button", { name: "自动抽帧" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "上传自定义封面（存入素材库）" }),
+    ).toBeEnabled();
+    const accountButton = await screen.findByRole("button", {
+      name: "张工说乡墅",
+    });
+    expect(accountButton).toBeInTheDocument();
+    const publishButton = screen.getByRole("button", { name: "正式发布" });
+    expect(publishButton).toBeDisabled();
+    fireEvent.click(accountButton);
+    expect(publishButton).toBeEnabled();
+    expect(screen.getAllByText("待发布").length).toBeGreaterThan(0);
+  });
+
+  it("保存草稿与正式发布都写入云端记录", async () => {
+    loadPublishAccounts.mockResolvedValue([publishAccount]);
+    loadPublishRecords.mockResolvedValue([]);
+    loadVideoMaterials.mockResolvedValue([]);
+    savePublishDraftToCloud.mockResolvedValue(savedRecord);
+    submitCloudPublishRecord.mockResolvedValue(queuedRecord);
+    const value = productionValue();
+    useStudio.mockReturnValue(value);
+    render(<PublishPage />);
+
+    const accountButton = await screen.findByRole("button", {
+      name: "张工说乡墅",
+    });
+    fireEvent.click(accountButton);
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(savePublishDraftToCloud).toHaveBeenCalled());
+    expect(savePublishDraftToCloud).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assetId: "completed-video",
+        platform: "抖音",
+        accountId: "acc-1",
+      }),
+    );
+    expect(await screen.findByText("已保存到云端草稿。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "正式发布" }));
+    await waitFor(() =>
+      expect(submitCloudPublishRecord).toHaveBeenCalledWith("rec-1"),
+    );
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "已加入发布队列，发布结果会回填到发布记录。",
+      ),
+    );
+  });
+
+  it("未连接账号时正式发布保持禁用并给出引导", async () => {
+    loadPublishAccounts.mockResolvedValue([]);
+    loadPublishRecords.mockResolvedValue([]);
+    loadVideoMaterials.mockResolvedValue([]);
+    const value = productionValue();
+    useStudio.mockReturnValue(value);
+    render(<PublishPage />);
+    const publishButton = await screen.findByRole("button", {
+      name: "正式发布",
+    });
+    expect(publishButton).toBeDisabled();
+    expect(screen.getByText("尚未连接发布账号")).toBeInTheDocument();
   });
 });

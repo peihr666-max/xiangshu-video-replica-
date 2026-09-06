@@ -701,6 +701,8 @@ export type StudioStats = {
   queued: number;
   needs_attention: number;
   total_completed: number;
+  /** C5：累计已发布（publish_records 中 published 的真实计数）。 */
+  published_total: number;
 };
 
 /** 平台侧真实工作台统计（C6/C10a）：GET /api/studio/stats。
@@ -5334,5 +5336,163 @@ export function fetchViralVideoStatistics(
       body: JSON.stringify({ videoIds }),
     },
     VIRAL_STATISTICS_TIMEOUT_MS,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// C5 发布模块：平台发布账号与发布记录（/api/studio/publish/*）
+// ---------------------------------------------------------------------------
+
+export type PublishAccountItem = {
+  id: string;
+  platform: "douyin" | "wechat_channels";
+  display_name: string;
+  status: "connected" | "invalid";
+  last_verified_at: string | null;
+  error_message: string | null;
+  security_sdk_required: boolean;
+  created_at: string;
+};
+
+export type PublishRecordItem = {
+  id: string;
+  asset_id: string;
+  platform: "douyin" | "wechat_channels";
+  account_id: string | null;
+  account_name: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  cover_asset_id: string | null;
+  schedule_at: string | null;
+  status:
+    | "draft"
+    | "queued"
+    | "publishing"
+    | "published"
+    | "failed"
+    | "canceled";
+  platform_item_id: string | null;
+  short_url: string | null;
+  error_message: string | null;
+  attempts: number;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listPublishAccounts(): Promise<PublishAccountItem[]> {
+  return requestApiJson<{ accounts: PublishAccountItem[] }>(
+    "/api/studio/publish/accounts",
+    "读取发布账号失败",
+  ).then((payload) => payload.accounts);
+}
+
+export async function createPublishAccount(input: {
+  platform: PublishAccountItem["platform"];
+  display_name: string;
+  cookie: string;
+  security_sdk?: string;
+}): Promise<PublishAccountItem> {
+  return requestApiJson<PublishAccountItem>(
+    "/api/studio/publish/accounts",
+    "连接发布账号失败",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function deletePublishAccount(accountId: string): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `/api/studio/publish/accounts/${encodeURIComponent(accountId)}`,
+    "删除发布账号失败",
+    { method: "DELETE" },
+  );
+}
+
+export async function verifyPublishAccount(accountId: string): Promise<void> {
+  await requestApiJson<{ submitted: boolean }>(
+    `/api/studio/publish/accounts/${encodeURIComponent(accountId)}/verify`,
+    "发起登录态校验失败",
+    { method: "POST" },
+  );
+}
+
+export async function listPublishRecords(): Promise<PublishRecordItem[]> {
+  return requestApiJson<{ records: PublishRecordItem[] }>(
+    "/api/studio/publish/records",
+    "读取发布记录失败",
+  ).then((payload) => payload.records);
+}
+
+export async function createPublishRecord(input: {
+  asset_id: string;
+  platform: PublishRecordItem["platform"];
+  account_id?: string;
+  title?: string;
+  description?: string;
+  tags?: string[];
+  cover_asset_id?: string;
+  schedule_at?: string;
+  submit?: boolean;
+}): Promise<PublishRecordItem> {
+  return requestApiJson<PublishRecordItem>(
+    "/api/studio/publish/records",
+    "保存发布草稿失败",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function updatePublishRecord(
+  recordId: string,
+  patch: {
+    title?: string;
+    description?: string;
+    tags?: string[];
+    cover_asset_id?: string | null;
+    schedule_at?: string | null;
+    account_id?: string;
+  },
+): Promise<PublishRecordItem> {
+  return requestApiJson<PublishRecordItem>(
+    `/api/studio/publish/records/${encodeURIComponent(recordId)}`,
+    "更新发布草稿失败",
+    {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    },
+  );
+}
+
+export async function submitPublishRecord(
+  recordId: string,
+): Promise<PublishRecordItem> {
+  return requestApiJson<PublishRecordItem>(
+    `/api/studio/publish/records/${encodeURIComponent(recordId)}/submit`,
+    "提交发布失败",
+    { method: "POST" },
+  );
+}
+
+export async function cancelPublishRecord(
+  recordId: string,
+): Promise<PublishRecordItem> {
+  return requestApiJson<PublishRecordItem>(
+    `/api/studio/publish/records/${encodeURIComponent(recordId)}/cancel`,
+    "取消发布失败",
+    { method: "POST" },
+  );
+}
+
+export async function deletePublishRecord(recordId: string): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `/api/studio/publish/records/${encodeURIComponent(recordId)}`,
+    "删除发布记录失败",
+    { method: "DELETE" },
   );
 }

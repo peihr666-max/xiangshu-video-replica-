@@ -1357,3 +1357,11 @@ span.viral-card-cover-empty.content-player-viral-poster {
     width: min(100%, 340px);
   }
 }
+
+/* C5 发布记录卡片动作区 */
+.content-publish-record-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}

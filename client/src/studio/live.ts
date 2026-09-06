@@ -2,15 +2,20 @@ import {
   type CurrentUser,
   cancelGenerationBatch,
   cancelOralTask,
+  cancelPublishRecord,
   completeMaterialUpload,
   completeVideoUpload,
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
   createMaterialUploadIntent,
   createProject,
+  createPublishAccount,
+  createPublishRecord,
   createScriptFromAudioTask,
   createScriptVersion,
   createVideoUploadIntent,
+  deletePublishAccount,
+  deletePublishRecord,
   downloadMaterialAsset,
   type GenerationBatchListItem,
   getAssetDownloadUrl,
@@ -30,6 +35,8 @@ import {
   listOralTasks,
   listOralVoices,
   listProjects,
+  listPublishAccounts,
+  listPublishRecords,
   listSimpleCharacterLibrary,
   listStudioSavedScripts,
   listViralVideos,
@@ -37,6 +44,8 @@ import {
   type OralAvatarRecord,
   type OralTaskRecord,
   type Project,
+  type PublishAccountItem,
+  type PublishRecordItem,
   readAnalysisPayload,
   resolveMaterials,
   retryOralTask,
@@ -46,9 +55,12 @@ import {
   type StudioSavedScriptInput,
   saveStudioDraft,
   saveStudioSavedScript,
+  submitPublishRecord,
+  updatePublishRecord,
   uploadMaterial,
   uploadReferenceVideo,
   type ViralVideoItem,
+  verifyPublishAccount,
 } from "../api";
 import { createDraft } from "./state";
 import type {
@@ -57,6 +69,8 @@ import type {
   StudioData,
   StudioDraft,
   StudioPerson,
+  StudioPublishAccount,
+  StudioPublishRecord,
   StudioScript,
   StudioStats,
   StudioTask,
@@ -1070,4 +1084,171 @@ export async function extractScriptFromUpload(
     }
   }
   throw new Error("文案提取超时，请稍后在任务中心重试。");
+}
+
+// ---------------------------------------------------------------------------
+// C5 发布模块：账号连接、草稿持久化与真实发布提交
+// ---------------------------------------------------------------------------
+
+export const PUBLISH_PLATFORM_LABELS: Record<
+  StudioPublishAccount["platform"],
+  "抖音" | "视频号"
+> = { douyin: "抖音", wechat_channels: "视频号" };
+
+export const PUBLISH_STATUS_LABELS: Record<
+  StudioPublishRecord["status"],
+  string
+> = {
+  draft: "草稿",
+  queued: "待发布",
+  publishing: "发布中",
+  published: "已发布",
+  failed: "发布失败",
+  canceled: "已取消",
+};
+
+function studioPublishAccountFromApi(
+  item: PublishAccountItem,
+): StudioPublishAccount {
+  return {
+    id: item.id,
+    platform: item.platform,
+    displayName: item.display_name,
+    status: item.status,
+    lastVerifiedAt: item.last_verified_at,
+    errorMessage: item.error_message,
+    securitySdkRequired: item.security_sdk_required,
+    createdAt: item.created_at,
+  };
+}
+
+function studioPublishRecordFromApi(
+  item: PublishRecordItem,
+): StudioPublishRecord {
+  return {
+    id: item.id,
+    assetId: item.asset_id,
+    platform: item.platform,
+    accountId: item.account_id,
+    accountName: item.account_name,
+    title: item.title,
+    description: item.description,
+    tags: item.tags,
+    coverAssetId: item.cover_asset_id,
+    scheduleAt: item.schedule_at,
+    status: item.status,
+    platformItemId: item.platform_item_id,
+    shortUrl: item.short_url,
+    errorMessage: item.error_message,
+    attempts: item.attempts,
+    publishedAt: item.published_at,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
+
+export async function loadPublishAccounts(): Promise<StudioPublishAccount[]> {
+  const accounts = await listPublishAccounts();
+  return accounts.map(studioPublishAccountFromApi);
+}
+
+export async function loadPublishRecords(): Promise<StudioPublishRecord[]> {
+  const records = await listPublishRecords();
+  return records.map(studioPublishRecordFromApi);
+}
+
+export async function connectPublishAccount(input: {
+  platform: StudioPublishAccount["platform"];
+  displayName: string;
+  cookie: string;
+  securitySdk?: string;
+}): Promise<StudioPublishAccount> {
+  const created = await createPublishAccount({
+    platform: input.platform,
+    display_name: input.displayName,
+    cookie: input.cookie,
+    ...(input.securitySdk ? { security_sdk: input.securitySdk } : {}),
+  });
+  return studioPublishAccountFromApi(created);
+}
+
+export async function removePublishAccount(accountId: string): Promise<void> {
+  await deletePublishAccount(accountId);
+}
+
+export async function requestPublishAccountVerify(
+  accountId: string,
+): Promise<void> {
+  await verifyPublishAccount(accountId);
+}
+
+export type PublishDraftInput = {
+  recordId?: string;
+  assetId: string;
+  platform: "抖音" | "视频号";
+  accountId?: string;
+  title: string;
+  description: string;
+  tags: string[];
+  coverAssetId?: string;
+  scheduleAt?: string;
+};
+
+const PLATFORM_API_KEYS: Record<
+  "抖音" | "视频号",
+  StudioPublishRecord["platform"]
+> = { 抖音: "douyin", 视频号: "wechat_channels" };
+
+function localScheduleToUtc(value?: string): string | undefined {
+  if (!value) return undefined;
+  const moment = new Date(value);
+  if (Number.isNaN(moment.getTime())) return undefined;
+  return moment.toISOString();
+}
+
+/** 保存（创建或更新）一条云端发布草稿，返回最新记录。 */
+export async function savePublishDraftToCloud(
+  input: PublishDraftInput,
+): Promise<StudioPublishRecord> {
+  const platform = PLATFORM_API_KEYS[input.platform];
+  const scheduleAt = localScheduleToUtc(input.scheduleAt);
+  const common = {
+    title: input.title,
+    description: input.description,
+    tags: input.tags,
+    ...(input.accountId ? { account_id: input.accountId } : {}),
+  };
+  // 更新时显式回传 cover/schedule（可为 null），保证“改回自动抽帧/立即发布”能清空旧值。
+  const record = input.recordId
+    ? await updatePublishRecord(input.recordId, {
+        ...common,
+        cover_asset_id: input.coverAssetId ?? null,
+        schedule_at: scheduleAt ?? null,
+      })
+    : await createPublishRecord({
+        asset_id: input.assetId,
+        platform,
+        ...common,
+        ...(input.coverAssetId ? { cover_asset_id: input.coverAssetId } : {}),
+        ...(scheduleAt ? { schedule_at: scheduleAt } : {}),
+      });
+  return studioPublishRecordFromApi(record);
+}
+
+export async function submitCloudPublishRecord(
+  recordId: string,
+): Promise<StudioPublishRecord> {
+  return studioPublishRecordFromApi(await submitPublishRecord(recordId));
+}
+
+export async function cancelCloudPublishRecord(
+  recordId: string,
+): Promise<StudioPublishRecord> {
+  return studioPublishRecordFromApi(await cancelPublishRecord(recordId));
+}
+
+export async function removeCloudPublishRecord(
+  recordId: string,
+): Promise<void> {
+  await deletePublishRecord(recordId);
 }

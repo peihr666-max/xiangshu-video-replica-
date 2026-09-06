@@ -457,6 +457,7 @@ export function createReviewData(): StudioData {
       queued: 1,
       needs_attention: 1,
       total_completed: 156,
+      published_total: 156,
     },
     analytics7: analyticsSample(7),
     analytics30: analyticsSample(30),

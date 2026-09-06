@@ -16,11 +16,25 @@ import {
   uploadMaterial,
 } from "../api";
 import { useStudio } from "./context";
-import { studioAssetFromMaterial, studioVideoFromViral } from "./live";
+import {
+  cancelCloudPublishRecord,
+  loadPublishAccounts,
+  loadPublishRecords,
+  loadVideoMaterials,
+  PUBLISH_STATUS_LABELS,
+  removeCloudPublishRecord,
+  savePublishDraftToCloud,
+  studioAssetFromMaterial,
+  studioVideoFromViral,
+  submitCloudPublishRecord,
+  uploadVideoMaterial,
+} from "./live";
 import type {
   StudioAsset,
   StudioContextValue,
+  StudioPublishAccount,
   StudioPublishDraft,
+  StudioPublishRecord,
   StudioVideo,
 } from "./types";
 import { Button, Empty, Field, Hint, Icon, Media, Panel, Tabs } from "./ui";
@@ -1482,8 +1496,23 @@ function newPublishDraft(
   };
 }
 
+const PUBLISH_PLATFORM_KEYS = {
+  抖音: "douyin",
+  视频号: "wechat_channels",
+} as const;
+
+function publishPlatformLabel(platform: StudioPublishRecord["platform"]) {
+  return platform === "douyin" ? "抖音" : "视频号";
+}
+
+function publishErrorText(error: unknown) {
+  return error instanceof Error && error.message.trim()
+    ? error.message.trim()
+    : "操作失败，请稍后重试";
+}
+
 export function PublishPage() {
-  const { data, navigate, patchState, review, state } = useStudio();
+  const { data, navigate, notify, patchState, review, state } = useStudio();
   const completedResultIds = new Set(
     data.tasks
       .filter((task) => task.status === "completed" && task.resultId)
@@ -1495,15 +1524,6 @@ export function PublishPage() {
       asset.kind === "video" &&
       (completedResultIds.size === 0 || completedResultIds.has(asset.id)),
   );
-  const coverCandidates = [
-    ...(selectedAsset ? [selectedAsset] : []),
-    ...data.assets.filter(
-      (asset) =>
-        asset.id !== selectedAsset?.id &&
-        asset.kind === "image" &&
-        (Boolean(asset.personId) || asset.group.includes("场景")),
-    ),
-  ].slice(0, 3);
   const savedDraftForAsset = state.publishDrafts?.find(
     (draft) => draft.assetId === selectedAsset?.id,
   );
@@ -1515,15 +1535,50 @@ export function PublishPage() {
   );
   const [tagInput, setTagInput] = useState("");
   const [saveNotice, setSaveNotice] = useState(false);
-  const draftCount = visibleDrafts.length;
-  const selectedCover =
-    coverCandidates.find((asset) => asset.id === form.coverId) ??
-    coverCandidates[0];
+  // C5：正式模式的云端数据（账号 / 发布记录 / 素材库封面）。
+  const [accounts, setAccounts] = useState<StudioPublishAccount[]>([]);
+  const [records, setRecords] = useState<StudioPublishRecord[]>([]);
+  const [materialCovers, setMaterialCovers] = useState<StudioAsset[]>([]);
+  const [cloudBusy, setCloudBusy] = useState(false);
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const coverFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setForm(savedDraftForAsset ?? newPublishDraft(selectedAsset, review));
     setSaveNotice(false);
   }, [review, savedDraftForAsset, selectedAsset]);
+
+  useEffect(() => {
+    if (review) return;
+    let active = true;
+    const adopt = async <T,>(
+      promise: Promise<T> | undefined,
+      apply: (value: T) => void,
+    ) => {
+      try {
+        const value = await promise;
+        if (active && value) apply(value);
+      } catch {
+        // 只读加载失败保持空态，不阻塞页面。
+      }
+    };
+    void adopt(loadPublishAccounts(), setAccounts);
+    void adopt(loadPublishRecords(), setRecords);
+    void adopt(loadVideoMaterials(), (assets) =>
+      setMaterialCovers(assets.filter((asset) => asset.kind === "image")),
+    );
+    return () => {
+      active = false;
+    };
+  }, [review]);
+
+  const reloadRecords = async () => {
+    try {
+      setRecords(await loadPublishRecords());
+    } catch {
+      // 保留旧列表，错误由具体动作提示。
+    }
+  };
 
   const updateForm = (patch: Partial<StudioPublishDraft>) => {
     setSaveNotice(false);
@@ -1540,24 +1595,132 @@ export function PublishPage() {
     setTagInput("");
   };
 
-  const savePublishDraft = () => {
+  const platformKey = PUBLISH_PLATFORM_KEYS[form.platform];
+  const platformAccounts = accounts.filter(
+    (account) => account.platform === platformKey,
+  );
+  const coverOptions = [
+    ...(selectedAsset ? [selectedAsset] : []),
+    ...materialCovers,
+  ];
+  const selectedCover =
+    coverOptions.find((asset) => asset.id === form.coverId) ?? undefined;
+  const draftPayload = {
+    assetId: selectedAsset?.id ?? form.assetId,
+    platform: form.platform,
+    accountId: form.account || undefined,
+    title: form.title,
+    description: form.description,
+    tags: form.tags,
+    coverAssetId: form.coverId,
+    scheduleAt: form.scheduleAt,
+  };
+  const queueCount = records.filter(
+    (record) => record.status === "queued" || record.status === "publishing",
+  ).length;
+  const publishedCount = records.filter(
+    (record) => record.status === "published",
+  ).length;
+
+  const savePublishDraft = async () => {
     if (!selectedAsset) return;
-    const savedDraft = {
-      ...form,
-      id: savedDraftForAsset?.id ?? `publish-${selectedAsset.id}`,
-      assetId: selectedAsset.id,
-      coverId: selectedCover?.id,
-    };
-    const currentDrafts = state.publishDrafts ?? [];
-    patchState({
-      publishDrafts: savedDraftForAsset
-        ? currentDrafts.map((draft) =>
-            draft.id === savedDraftForAsset.id ? savedDraft : draft,
-          )
-        : [...currentDrafts, savedDraft],
-    });
-    setForm(savedDraft);
-    setSaveNotice(true);
+    if (review) {
+      const savedDraft = {
+        ...form,
+        id: savedDraftForAsset?.id ?? `publish-${selectedAsset.id}`,
+        assetId: selectedAsset.id,
+        coverId: selectedCover?.id,
+      };
+      const currentDrafts = state.publishDrafts ?? [];
+      patchState({
+        publishDrafts: savedDraftForAsset
+          ? currentDrafts.map((draft) =>
+              draft.id === savedDraftForAsset.id ? savedDraft : draft,
+            )
+          : [...currentDrafts, savedDraft],
+      });
+      setForm(savedDraft);
+      setSaveNotice(true);
+      return;
+    }
+    setCloudBusy(true);
+    try {
+      const record = await savePublishDraftToCloud({
+        ...draftPayload,
+        recordId: form.recordId,
+        assetId: selectedAsset.id,
+      });
+      setForm((current) => ({
+        ...current,
+        recordId: record.id,
+        account: record.accountId ?? current.account,
+      }));
+      setRecords((previous) => [
+        record,
+        ...previous.filter((item) => item.id !== record.id),
+      ]);
+      setSaveNotice(true);
+    } catch (error) {
+      notify(publishErrorText(error));
+    } finally {
+      setCloudBusy(false);
+    }
+  };
+
+  const publishNow = async () => {
+    if (!selectedAsset || cloudBusy) return;
+    if (!form.account) {
+      notify("请先选择发布账号；还没有连接账号时，前往用户档案连接。");
+      return;
+    }
+    setCloudBusy(true);
+    try {
+      const saved = await savePublishDraftToCloud({
+        ...draftPayload,
+        recordId: form.recordId,
+        assetId: selectedAsset.id,
+      });
+      const record = await submitCloudPublishRecord(saved.id);
+      setForm((current) => ({ ...current, recordId: record.id }));
+      setRecords((previous) => [
+        record,
+        ...previous.filter((item) => item.id !== record.id),
+      ]);
+      notify("已加入发布队列，发布结果会回填到发布记录。");
+    } catch (error) {
+      notify(publishErrorText(error));
+    } finally {
+      setCloudBusy(false);
+    }
+  };
+
+  const onUploadCover = async (file: File | undefined) => {
+    if (!file || uploadingCover) return;
+    setUploadingCover(true);
+    try {
+      const asset = await uploadVideoMaterial(file, "发布封面", () => {});
+      setMaterialCovers((previous) => [asset, ...previous]);
+      updateForm({ coverId: asset.id });
+      notify("封面已上传到素材库。");
+    } catch (error) {
+      notify(publishErrorText(error));
+    } finally {
+      setUploadingCover(false);
+    }
+  };
+
+  const recordAction = async (
+    action: "cancel" | "retry" | "delete",
+    record: StudioPublishRecord,
+  ) => {
+    try {
+      if (action === "cancel") await cancelCloudPublishRecord(record.id);
+      else if (action === "retry") await submitCloudPublishRecord(record.id);
+      else await removeCloudPublishRecord(record.id);
+      await reloadRecords();
+    } catch (error) {
+      notify(publishErrorText(error));
+    }
   };
 
   return (
@@ -1572,58 +1735,119 @@ export function PublishPage() {
         <Panel className="content-publish-drafts">
           <div className="content-publish-draft-tabs">
             <strong>
-              发布草稿 <b>{draftCount}</b>
+              发布记录 <b>{review ? visibleDrafts.length : records.length}</b>
             </strong>
             <span>
-              待发布 <b>0</b>
+              待发布 <b>{review ? 0 : queueCount}</b>
             </span>
             <span>
-              已发布 <b>0</b>
+              已发布 <b>{review ? 0 : publishedCount}</b>
             </span>
           </div>
-          {visibleDrafts.length ? (
-            visibleDrafts.map((draft) => {
-              const draftAsset = data.assets.find(
-                (asset) => asset.id === draft.assetId,
-              );
-              const isReviewSample = !state.publishDrafts;
-              return (
-                <button
-                  className="content-publish-draft-card"
-                  key={draft.id}
-                  onClick={() => {
-                    setForm(draft);
-                    setSaveNotice(false);
-                    patchState({ selectedAssetId: draft.assetId });
-                  }}
-                  type="button"
-                >
-                  {draftAsset ? (
-                    <Media asset={draftAsset} alt={`${draft.title} 草稿封面`} />
-                  ) : (
-                    <div className="content-publish-draft-card-empty">
-                      <Icon name="video" />
-                    </div>
-                  )}
-                  <span>
-                    <strong>{draft.title || "未命名发布草稿"}</strong>
-                    <small>来源：任务中心</small>
-                    <i>已保存 · 待发布</i>
-                    <small>
-                      {isReviewSample ? "审核示例" : "当前会话草稿"}
-                    </small>
-                  </span>
-                </button>
-              );
-            })
+          {review ? (
+            visibleDrafts.length ? (
+              visibleDrafts.map((draft) => {
+                const draftAsset = data.assets.find(
+                  (asset) => asset.id === draft.assetId,
+                );
+                return (
+                  <button
+                    className="content-publish-draft-card"
+                    key={draft.id}
+                    onClick={() => {
+                      setForm(draft);
+                      setSaveNotice(false);
+                      patchState({ selectedAssetId: draft.assetId });
+                    }}
+                    type="button"
+                  >
+                    {draftAsset ? (
+                      <Media
+                        asset={draftAsset}
+                        alt={`${draft.title} 草稿封面`}
+                      />
+                    ) : (
+                      <div className="content-publish-draft-card-empty">
+                        <Icon name="video" />
+                      </div>
+                    )}
+                    <span>
+                      <strong>{draft.title || "未命名发布草稿"}</strong>
+                      <small>来源：任务中心</small>
+                      <i>已保存 · 待发布</i>
+                      <small>审核示例</small>
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <Empty
+                title="暂无发布草稿"
+                description={
+                  selectedAsset
+                    ? "填写右侧信息后保存。"
+                    : "从任务中心选择一条已完成的视频后创建草稿。"
+                }
+              />
+            )
+          ) : records.length ? (
+            records.map((record) => (
+              <div className="content-publish-draft-card" key={record.id}>
+                <span>
+                  <strong>{record.title || "未命名发布记录"}</strong>
+                  <small>
+                    {publishPlatformLabel(record.platform)}
+                    {record.accountName ? ` · ${record.accountName}` : ""}
+                  </small>
+                  <i>{PUBLISH_STATUS_LABELS[record.status]}</i>
+                  {record.errorMessage ? (
+                    <small>{record.errorMessage}</small>
+                  ) : null}
+                  <small className="content-publish-record-actions">
+                    {record.status === "queued" ? (
+                      <Button
+                        disabled={cloudBusy}
+                        onClick={() => void recordAction("cancel", record)}
+                        variant="quiet"
+                      >
+                        取消发布
+                      </Button>
+                    ) : null}
+                    {record.status === "failed" && record.attempts < 3 ? (
+                      <Button
+                        disabled={cloudBusy}
+                        onClick={() => void recordAction("retry", record)}
+                        variant="quiet"
+                      >
+                        重新发布
+                      </Button>
+                    ) : null}
+                    {["draft", "failed", "canceled"].includes(record.status) ? (
+                      <Button
+                        disabled={cloudBusy}
+                        onClick={() => void recordAction("delete", record)}
+                        variant="quiet"
+                      >
+                        删除
+                      </Button>
+                    ) : null}
+                    {record.shortUrl ? (
+                      <a
+                        href={record.shortUrl}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        查看作品
+                      </a>
+                    ) : null}
+                  </small>
+                </span>
+              </div>
+            ))
           ) : (
             <Empty
-              title="暂无发布草稿"
-              description={
-                selectedAsset
-                  ? "填写右侧信息后保存到当前会话。"
-                  : "从任务中心选择一条已完成的视频后创建草稿。"
-              }
+              title="暂无发布记录"
+              description="从任务中心选择一条已完成的视频，填写右侧信息后保存或发布。"
             />
           )}
         </Panel>
@@ -1649,14 +1873,19 @@ export function PublishPage() {
             </section>
             <section className="content-publish-cover">
               <h3>封面选择</h3>
-              {coverCandidates.length ? (
+              <Button
+                aria-pressed={!form.coverId}
+                onClick={() => updateForm({ coverId: undefined })}
+                variant={form.coverId ? "outline" : "primary"}
+              >
+                自动抽帧
+              </Button>
+              {coverOptions.length ? (
                 <div className="content-cover-options">
-                  {coverCandidates.map((asset, index) => (
+                  {coverOptions.map((asset, index) => (
                     <button
                       aria-label={`选择封面 ${asset.name}`}
-                      className={
-                        selectedCover?.id === asset.id ? "is-selected" : ""
-                      }
+                      className={form.coverId === asset.id ? "is-selected" : ""}
                       key={asset.id}
                       onClick={() => updateForm({ coverId: asset.id })}
                       type="button"
@@ -1668,11 +1897,27 @@ export function PublishPage() {
               ) : (
                 <div className="content-cover-empty">
                   <Icon name="image" />
-                  <span>暂无可选封面</span>
+                  <span>素材库暂无可选封面</span>
                 </div>
               )}
-              <Button disabled variant="outline">
-                上传自定义封面（接口待接通）
+              <input
+                accept="image/*"
+                hidden
+                onChange={(event) => {
+                  void onUploadCover(event.target.files?.[0]);
+                  event.target.value = "";
+                }}
+                ref={coverFileRef}
+                type="file"
+              />
+              <Button
+                disabled={uploadingCover}
+                onClick={() => coverFileRef.current?.click()}
+                variant="outline"
+              >
+                {uploadingCover
+                  ? "封面上传中…"
+                  : "上传自定义封面（存入素材库）"}
               </Button>
             </section>
           </div>
@@ -1683,7 +1928,12 @@ export function PublishPage() {
                   <Button
                     aria-pressed={form.platform === platform}
                     key={platform}
-                    onClick={() => updateForm({ platform })}
+                    onClick={() =>
+                      updateForm({
+                        platform,
+                        account: "",
+                      })
+                    }
                     variant={form.platform === platform ? "primary" : "outline"}
                   >
                     {platform}
@@ -1702,6 +1952,25 @@ export function PublishPage() {
                     张工说乡墅
                   </Button>
                   <span>审核示例账号</span>
+                </div>
+              ) : platformAccounts.length ? (
+                <div className="content-publish-account">
+                  {platformAccounts.map((account) => (
+                    <span key={account.id}>
+                      <Button
+                        aria-pressed={form.account === account.id}
+                        onClick={() => updateForm({ account: account.id })}
+                        variant={
+                          form.account === account.id ? "primary" : "outline"
+                        }
+                      >
+                        {account.displayName}
+                      </Button>
+                      {account.status === "invalid" ? (
+                        <small>登录态已失效，请到用户档案重新校验</small>
+                      ) : null}
+                    </span>
+                  ))}
                 </div>
               ) : (
                 <div className="content-publish-account-empty">
@@ -1746,27 +2015,50 @@ export function PublishPage() {
                 />
               </div>
             </Field>
+            <Field label="定时发布（可选）">
+              <input
+                onChange={(event) =>
+                  updateForm({ scheduleAt: event.target.value || undefined })
+                }
+                type="datetime-local"
+                value={form.scheduleAt ?? ""}
+              />
+              <Hint>留空表示保存后立即发布；到点由服务端执行。</Hint>
+            </Field>
           </div>
           {saveNotice && (
             <p className="content-publish-save-notice">
-              已保存到当前会话，未同步到云端。
+              {review
+                ? "已保存到当前会话，未同步到云端。"
+                : "已保存到云端草稿。"}
             </p>
           )}
           <div className="content-publish-actions">
             <Button
-              disabled={!selectedAsset}
-              onClick={savePublishDraft}
+              disabled={!selectedAsset || cloudBusy}
+              onClick={() => void savePublishDraft()}
               variant="outline"
             >
               保存草稿
             </Button>
-            <Button
-              aria-label="正式发布（接口未接通）"
-              disabled
-              variant="primary"
-            >
-              正式发布（接口未接通）
-            </Button>
+            {review ? (
+              <Button
+                aria-label="正式发布（接口未接通）"
+                disabled
+                variant="primary"
+              >
+                正式发布（接口未接通）
+              </Button>
+            ) : (
+              <Button
+                aria-label="正式发布"
+                disabled={!selectedAsset || cloudBusy || !form.account}
+                onClick={() => void publishNow()}
+                variant="primary"
+              >
+                {cloudBusy ? "处理中…" : "正式发布"}
+              </Button>
+            )}
           </div>
         </Panel>
       </section>

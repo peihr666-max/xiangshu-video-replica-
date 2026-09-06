@@ -1801,3 +1801,11 @@
     scroll-behavior: auto;
   }
 }
+
+/* C5 发布账号连接表单 */
+.studio-publish-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}

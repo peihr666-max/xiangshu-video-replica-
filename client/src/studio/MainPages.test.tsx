@@ -16,6 +16,10 @@ const {
   cancelStudioTask,
   downloadStudioTaskResult,
   retryStudioTask,
+  loadPublishAccounts,
+  connectPublishAccount,
+  removePublishAccount,
+  requestPublishAccountVerify,
 } = vi.hoisted(() => ({
   useStudio: vi.fn<() => StudioContextValue>(),
   loadTaskPreview: vi.fn(),
@@ -23,6 +27,10 @@ const {
   cancelStudioTask: vi.fn(),
   downloadStudioTaskResult: vi.fn(),
   retryStudioTask: vi.fn(),
+  loadPublishAccounts: vi.fn(),
+  connectPublishAccount: vi.fn(),
+  removePublishAccount: vi.fn(),
+  requestPublishAccountVerify: vi.fn(),
 }));
 
 vi.mock("./context", () => ({ useStudio }));
@@ -32,9 +40,18 @@ vi.mock("./live", () => ({
   cancelStudioTask,
   downloadStudioTaskResult,
   retryStudioTask,
+  loadPublishAccounts,
+  connectPublishAccount,
+  removePublishAccount,
+  requestPublishAccountVerify,
 }));
 
-import { TaskDetailPage, TasksPage, WorkbenchPage } from "./MainPages";
+import {
+  ProfilePage,
+  TaskDetailPage,
+  TasksPage,
+  WorkbenchPage,
+} from "./MainPages";
 import { formatTaskTime } from "./ui";
 
 const taskA: StudioTask = {
@@ -817,5 +834,89 @@ describe("V1.4 任务中心列表", () => {
     expect(
       screen.queryByRole("listbox", { name: "类型" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("C5 发布账号管理（正式模式）", () => {
+  beforeEach(() => {
+    connectPublishAccount.mockClear();
+    loadPublishAccounts.mockClear();
+    removePublishAccount.mockClear();
+    requestPublishAccountVerify.mockClear();
+  });
+
+  it("连接发布账号：填写 Cookie 后提交并回显列表", async () => {
+    loadPublishAccounts.mockResolvedValue([]);
+    connectPublishAccount.mockResolvedValue({
+      id: "acc-9",
+      platform: "douyin",
+      displayName: "张工说乡墅",
+      status: "connected",
+      lastVerifiedAt: null,
+      errorMessage: null,
+      securitySdkRequired: true,
+      createdAt: "2026-09-07 00:00:00",
+    });
+    const value = studio(undefined as unknown as string, { review: false });
+    useStudio.mockReturnValue(value);
+    render(<ProfilePage />);
+
+    fireEvent.click(screen.getByText("发布账号"));
+    fireEvent.change(screen.getByPlaceholderText("例如：张工说乡墅"), {
+      target: { value: "张工说乡墅" },
+    });
+    fireEvent.change(
+      screen.getByPlaceholderText("粘贴从浏览器复制的整段 Cookie"),
+      { target: { value: "sessionid=test; ttwid=1" } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        "粘贴浏览器 localStorage 中 security-sdk 对应的 JSON 内容",
+      ),
+      { target: { value: '{"key_version":3}' } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "连接发布账号" }));
+
+    await waitFor(() =>
+      expect(connectPublishAccount).toHaveBeenCalledWith({
+        platform: "douyin",
+        displayName: "张工说乡墅",
+        cookie: "sessionid=test; ttwid=1",
+        securitySdk: '{"key_version":3}',
+      }),
+    );
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "发布账号已连接，可点击“校验登录态”确认有效性。",
+      ),
+    );
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "发布账号已连接，可点击“校验登录态”确认有效性。",
+      ),
+    );
+    expect(value.notify).toHaveBeenCalledWith(
+      "发布账号已连接，可点击“校验登录态”确认有效性。",
+    );
+  });
+
+  it("抖音未填 security_sdk 时给出明确提示", async () => {
+    loadPublishAccounts.mockResolvedValue([]);
+    const value = studio(undefined as unknown as string, { review: false });
+    useStudio.mockReturnValue(value);
+    render(<ProfilePage />);
+    fireEvent.click(screen.getByText("发布账号"));
+    fireEvent.change(screen.getByPlaceholderText("例如：张工说乡墅"), {
+      target: { value: "张工说乡墅" },
+    });
+    fireEvent.change(
+      screen.getByPlaceholderText("粘贴从浏览器复制的整段 Cookie"),
+      { target: { value: "sessionid=test" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "连接发布账号" }));
+    expect(value.notify).toHaveBeenCalledWith(
+      "抖音需要同时粘贴 security_sdk 材料（浏览器 localStorage 导出）。",
+    );
+    expect(connectPublishAccount).not.toHaveBeenCalled();
   });
 });

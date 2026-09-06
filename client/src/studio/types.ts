@@ -138,6 +138,8 @@ export type StudioStats = {
   queued: number;
   needs_attention: number;
   total_completed: number;
+  /** C5：本人（或全工作台）累计已发布的真实计数。 */
+  published_total: number;
 };
 export type StudioData = {
   people: StudioPerson[];
@@ -213,6 +215,47 @@ export type StudioPublishDraft = {
   title: string;
   description: string;
   tags: string[];
+  /** 云端发布记录 id：保存过草稿后回填，后续编辑走 PATCH。 */
+  recordId?: string;
+  /** 定时发布时间（datetime-local 本地值）；空为立即发布。 */
+  scheduleAt?: string;
+};
+export type StudioPublishAccount = {
+  id: string;
+  platform: "douyin" | "wechat_channels";
+  displayName: string;
+  status: "connected" | "invalid";
+  lastVerifiedAt: string | null;
+  errorMessage: string | null;
+  securitySdkRequired: boolean;
+  createdAt: string;
+};
+export type StudioPublishRecordStatus =
+  | "draft"
+  | "queued"
+  | "publishing"
+  | "published"
+  | "failed"
+  | "canceled";
+export type StudioPublishRecord = {
+  id: string;
+  assetId: string;
+  platform: "douyin" | "wechat_channels";
+  accountId: string | null;
+  accountName: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  coverAssetId: string | null;
+  scheduleAt: string | null;
+  status: StudioPublishRecordStatus;
+  platformItemId: string | null;
+  shortUrl: string | null;
+  errorMessage: string | null;
+  attempts: number;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 export type StudioState = {
   page: StudioPage;
@@ -225,6 +268,9 @@ export type StudioState = {
   savedScripts: StudioScript[];
   favorites: string[];
   publishDrafts?: StudioPublishDraft[];
+  /** C5：云端发布账号/记录（正式模式由发布页与档案页自行加载）。 */
+  publishAccounts?: StudioPublishAccount[];
+  publishRecords?: StudioPublishRecord[];
 };
 export type LivePanel =
   | "projects"
