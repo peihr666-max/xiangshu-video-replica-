@@ -74,8 +74,11 @@ function data(
     tasks,
     projects: [],
     errors: [],
+    materials: [],
     loading: false,
     stats: null,
+    analytics7: null,
+    analytics30: null,
   };
 }
 

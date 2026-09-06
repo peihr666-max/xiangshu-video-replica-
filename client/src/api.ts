@@ -709,6 +709,39 @@ export async function getStudioStats(): Promise<StudioStats> {
   return requestApiJson<StudioStats>("/api/studio/stats", "读取工作台统计失败");
 }
 
+export type StudioAnalyticsDay = { day: string; completed: number };
+export type StudioAnalyticsKindCount = { kind: string; completed: number };
+export type StudioAnalyticsWorkItem = {
+  task_id: string;
+  batch_id: string;
+  project_id: string;
+  title: string;
+  creation_kind: string;
+  completed_at: string;
+};
+
+/** 平台侧真实成片聚合（C6 数据看板）：GET /api/studio/analytics。
+ * 窗口内按北京日界分桶的成片趋势、任务类型分布与最近成片清单；
+ * 播放/互动等外部平台数据不在其中。 */
+export type StudioAnalytics = {
+  range_days: number;
+  today_completed: number;
+  range_completed: number;
+  total_completed: number;
+  daily: StudioAnalyticsDay[];
+  kind_breakdown: StudioAnalyticsKindCount[];
+  recent_works: StudioAnalyticsWorkItem[];
+};
+
+export async function getStudioAnalytics(
+  days: 7 | 30,
+): Promise<StudioAnalytics> {
+  return requestApiJson<StudioAnalytics>(
+    `/api/studio/analytics?days=${days}`,
+    "读取数据看板统计失败",
+  );
+}
+
 export type StudioDraftKind = "copy" | "oral" | "replica";
 
 export type StudioDraftCloudRecord = {

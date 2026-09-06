@@ -9,23 +9,6 @@ import walletIcon from "../assets/icons/wallet.svg";
 import { PageBanner } from "./ui/PageBanner";
 import "./economics.css";
 
-type EconomicsSummary = Omit<DashboardSummary, "today" | "trend" | "todos"> & {
-  today: DashboardSummary["today"] & {
-    success_rate_pct?: number | null;
-    output_seconds?: number;
-    cost_fen?: number;
-    revenue_fen?: number;
-    gross_fen?: number | null;
-    margin_pct?: number | null;
-    recharge_orders?: number;
-  };
-  trend: Array<DashboardSummary["trend"][number] & { cost_fen?: number }>;
-  todos: DashboardSummary["todos"] & {
-    unconfigured_rates?: number;
-    unknown_cost_records?: number;
-  };
-};
-
 function fenToYuan(fen: number): string {
   return (fen / 100).toFixed(2);
 }
@@ -93,13 +76,13 @@ export function OverviewPage({
   readOnly?: boolean;
   onNavigate?: (tab: string) => void;
 }) {
-  const [summary, setSummary] = useState<EconomicsSummary | null>(null);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
     try {
       setError("");
-      setSummary((await getDashboardSummary()) as EconomicsSummary);
+      setSummary(await getDashboardSummary());
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "读取仪表盘失败");
     }

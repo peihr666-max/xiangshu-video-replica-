@@ -14,6 +14,7 @@ import {
   defaultBatchProvider,
   type GenerationBatch,
   type GenerationPriceQuote,
+  type GenerationRatio,
   getGenerationBatch,
   getGenerationPriceQuote,
   getIndependentCapabilities,
@@ -114,6 +115,8 @@ const emptyData: StudioData = {
   errors: [],
   loading: true,
   stats: null,
+  analytics7: null,
+  analytics30: null,
 };
 const TASKS_POLL_INTERVAL_MS = 20_000;
 const creationPages = new Set<StudioPage>([
@@ -402,7 +405,7 @@ export function StudioWorkspace({
         ratio: (SUPPORTED_VIDEO_RATIOS as readonly string[]).includes(
           draft.ratio,
         )
-          ? draft.ratio
+          ? (draft.ratio as GenerationRatio)
           : "adaptive",
         quantity: draft.count === 2 || draft.count === 4 ? draft.count : 1,
         idempotency_key: crypto.randomUUID(),

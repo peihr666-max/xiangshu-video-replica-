@@ -20,6 +20,7 @@ import {
   getLatestProjectShotCards,
   getLatestScriptFromAudioTask,
   getLatestScriptVersion,
+  getStudioAnalytics,
   getStudioDraft,
   getStudioStats,
   listCharacterSceneLooks,
@@ -524,7 +525,7 @@ function studioTaskStatus(
 /** 批次创作通道 → 任务中心类型页签文案（I13 类型保真）。
  * 服务端 058 起在 generation_batches.creation_kind 记录创建通道；
  * 未知通道回退到"视频生成"保持旧数据可见。 */
-const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
+export const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
   replica: "视频复刻",
   independent: "视频生成",
   replacement: "人物置换",
@@ -745,6 +746,8 @@ export async function loadStudioData(
     peopleResult,
     tasksResult,
     statsResult,
+    analytics7Result,
+    analytics30Result,
     oralResult,
     viralResult,
     materialsResult,
@@ -753,6 +756,8 @@ export async function loadStudioData(
     loadPeople(),
     loadTasks(currentUser),
     getStudioStats(),
+    getStudioAnalytics(7),
+    getStudioAnalytics(30),
     loadOralTasks(),
     loadViralVideos(),
     loadVideoMaterials(),
@@ -772,6 +777,11 @@ export async function loadStudioData(
   ];
   // 统计加载失败不打断工作区：指标卡回退为 "—"，重试路径会再次拉取。
   const stats = statsResult.status === "fulfilled" ? statsResult.value : null;
+  // 数据看板聚合同理：失败回退 null，看板页展示"尚未就绪"空态。
+  const analytics7 =
+    analytics7Result.status === "fulfilled" ? analytics7Result.value : null;
+  const analytics30 =
+    analytics30Result.status === "fulfilled" ? analytics30Result.value : null;
 
   if (projectsResult.status === "rejected") {
     errors.push(`读取项目失败：${errorText(projectsResult.reason)}`);
@@ -806,6 +816,8 @@ export async function loadStudioData(
     errors,
     loading: false,
     stats,
+    analytics7,
+    analytics30,
   };
 }
 

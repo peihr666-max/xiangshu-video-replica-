@@ -1,4 +1,4 @@
-import type { CurrentUser, Project } from "../api";
+import type { CurrentUser, Project, StudioAnalytics } from "../api";
 
 export type StudioPage =
   | "workbench"
@@ -150,6 +150,10 @@ export type StudioData = {
   loading: boolean;
   /** 平台侧真实统计（/api/studio/stats）；加载失败或审核模式为 null。 */
   stats: StudioStats | null;
+  /** 平台侧真实成片聚合（/api/studio/analytics，C6 数据看板），7/30 天双窗口；
+   * 加载失败为 null，看板页回退"尚未就绪"空态。 */
+  analytics7: StudioAnalytics | null;
+  analytics30: StudioAnalytics | null;
 };
 export type StudioScript = {
   id: string;

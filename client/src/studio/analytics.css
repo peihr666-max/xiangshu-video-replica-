@@ -398,3 +398,8 @@
     padding: 24px 0;
   }
 }
+
+.analytics-share-empty {
+  color: #8f9089;
+  margin: 0;
+}

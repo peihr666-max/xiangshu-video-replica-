@@ -462,7 +462,8 @@ def test_saved_prompts_aggregate_across_projects(client: TestClient, db_path: Pa
     raw = sqlite3.connect(db_path)
     try:
         raw.execute(
-            "INSERT INTO users (id, username, display_name, role) VALUES ('u3','u3','U3','employee')"
+            "INSERT INTO users (id, username, display_name, role) "
+            "VALUES ('u3','u3','U3','employee')"
         )
         raw.execute("INSERT INTO projects (id, owner_user_id, name) VALUES ('project_c','u3','C')")
         raw.executemany(

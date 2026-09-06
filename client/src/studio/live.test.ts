@@ -22,6 +22,7 @@ const api = vi.hoisted(() => ({
   getCachedCharacterAssetUrl: vi.fn(),
   getGenerationBatch: vi.fn(),
   getLatestProjectAnalysis: vi.fn(),
+  getStudioAnalytics: vi.fn(async () => null),
   getStudioStats: vi.fn(async () => null),
   getLatestScriptVersion: vi.fn(),
   listCharacterSceneLooks: vi.fn(),

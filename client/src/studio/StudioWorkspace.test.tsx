@@ -276,6 +276,8 @@ describe("V1.4 workspace integration", () => {
       errors: ["人物库暂不可用"],
       loading: false,
       stats: null,
+      analytics7: null,
+      analytics30: null,
     });
     render(<StudioWorkspace currentUser={reviewUser} />);
     await waitFor(() => expect(live.loadStudioData).toHaveBeenCalled());
@@ -354,6 +356,8 @@ describe("V1.4 workspace integration", () => {
       errors: [],
       loading: false,
       stats: null,
+      analytics7: null,
+      analytics30: null,
       tasks: [runningTask],
     });
     live.reloadTasks.mockResolvedValue([
@@ -396,6 +400,8 @@ describe("V1.4 workspace integration", () => {
       errors: [],
       loading: false,
       stats: null,
+      analytics7: null,
+      analytics30: null,
     };
 
     function restoredDraft() {
@@ -626,6 +632,8 @@ describe("视频生成（C2 独立创作）", () => {
     errors: [],
     loading: false,
     stats: null,
+    analytics7: null,
+    analytics30: null,
   };
 
   function draftWith(prompt: string) {
@@ -731,7 +739,9 @@ describe("视频生成（C2 独立创作）", () => {
 
     // 提交后留在本页：预览区出现阶段进度（数据来自任务轮询）。
     expect(await screen.findByText("生成中")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "生成进度" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("progressbar", { name: "生成进度" }),
+    ).toBeInTheDocument();
   });
 
   it("提示词导入：从我的提示词一键回填", async () => {
@@ -751,8 +761,8 @@ describe("视频生成（C2 独立创作）", () => {
     fireEvent.click(screen.getByRole("button", { name: "导入提示词" }));
     fireEvent.click(await screen.findByText("庭院黄昏"));
 
-    expect(
-      (screen.getByLabelText("提示词") as HTMLTextAreaElement).value,
-    ).toBe("黄昏光线下的庭院推进镜头");
+    expect((screen.getByLabelText("提示词") as HTMLTextAreaElement).value).toBe(
+      "黄昏光线下的庭院推进镜头",
+    );
   });
 });

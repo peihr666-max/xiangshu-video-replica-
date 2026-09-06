@@ -1550,16 +1550,25 @@ export type DashboardSummary = {
   today: {
     generation_count: number;
     succeeded: number;
+    success_rate_pct?: number | null;
+    output_seconds?: number;
+    cost_fen?: number;
+    revenue_fen?: number;
+    gross_fen?: number | null;
+    margin_pct?: number | null;
     online_devices: number;
     active_customers: number;
     recharge_fen: number;
+    recharge_orders?: number;
   };
-  trend: DashboardTrendPoint[];
+  trend: Array<DashboardTrendPoint & { cost_fen?: number }>;
   todos: {
     pending_pairings: number;
     failed_tasks_7d: number;
     reconciliation_problems: number;
     expiring_codes_7d: number;
+    unconfigured_rates?: number;
+    unknown_cost_records?: number;
   };
   device_slots: { bound: number; total: number };
 };
