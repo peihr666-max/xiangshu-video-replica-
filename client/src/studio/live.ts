@@ -1,7 +1,10 @@
 import {
   type CurrentUser,
+  completeVideoUpload,
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
+  createProject,
+  createVideoUploadIntent,
   type GenerationBatchListItem,
   getAssetDownloadUrl,
   getCachedCharacterAssetUrl,
@@ -11,11 +14,14 @@ import {
   getStudioStats,
   listCharacterSceneLooks,
   listGenerationBatches,
+  listOralTasks,
   listProjects,
   listSimpleCharacterLibrary,
+  type OralTaskRecord,
   type Project,
   readAnalysisPayload,
   type SimpleLibraryEntry,
+  uploadReferenceVideo,
 } from "../api";
 import { createDraft } from "./state";
 import type {
@@ -41,6 +47,19 @@ function errorText(error: unknown) {
 export async function loadTaskPreview(
   task: StudioTask,
 ): Promise<StudioAsset | undefined> {
+  // 数字人口播任务没有生成批次：成片按平台资产直取签名地址。
+  if (!task.batchId && task.resultId) {
+    const url = (await getAssetDownloadUrl(task.resultId)).url;
+    return {
+      id: task.resultId,
+      name: `${task.title} · 成片`,
+      kind: "video",
+      url,
+      group: "任务结果",
+      source: "任务中心",
+      saved: true,
+    };
+  }
   if (!task.batchId) return undefined;
 
   const batch = await getGenerationBatch(task.batchId);
@@ -293,15 +312,65 @@ export function reloadTasks(currentUser: CurrentUser): Promise<StudioTask[]> {
   return loadTasks(currentUser);
 }
 
+/** Workbench quick upload: create a project, PUT the raw video to cloud
+ * storage through the presigned intent, and hand back the source identity so
+ * 后续复刻/文案提取都拿这个来源继续，而不是把大视频当解析输入。 */
+export async function uploadWorkbenchSourceVideo(
+  file: File,
+  onProgress: (percent: number) => void,
+  signal?: AbortSignal,
+): Promise<{ projectId: string; assetId: string }> {
+  const base = file.name.replace(/\.(mp4|mov)$/i, "").trim();
+  const project = await createProject((base || file.name).slice(0, 120));
+  const intent = await createVideoUploadIntent(project.id, file);
+  let assetId = intent.asset_id;
+  if (intent.upload_required !== false) {
+    await uploadReferenceVideo(intent, file, onProgress, signal);
+    const completed = await completeVideoUpload(intent.asset_id);
+    assetId = completed.asset_id;
+  }
+  return { projectId: project.id, assetId };
+}
+
+function oralTask(row: OralTaskRecord): StudioTask {
+  const statusMap: Record<OralTaskRecord["status"], StudioTask["status"]> = {
+    QUEUED: "queued",
+    RUNNING: "running",
+    SUCCEEDED: "completed",
+    FAILED: "failed",
+    CANCELLED: "cancelled",
+  };
+  return {
+    id: `oral-${row.id}`,
+    batchId: undefined,
+    title: row.title,
+    type: "数字人口播",
+    status: statusMap[row.status] ?? "running",
+    submitted: row.created_at,
+    resultId: row.result_asset_id ?? undefined,
+    driverMode: row.mode === "AUDIO" ? "audio" : "text",
+    ipId: row.identity_id,
+    avatarId: row.avatar_id,
+    voiceId: row.voice_id ?? undefined,
+    audioId: row.audio_asset_id ?? undefined,
+  };
+}
+
+async function loadOralTasks(): Promise<StudioTask[]> {
+  const rows = await listOralTasks(20);
+  return rows.map(oralTask);
+}
+
 export async function loadStudioData(
   currentUser: CurrentUser,
 ): Promise<StudioData> {
-  const [projectsResult, peopleResult, tasksResult, statsResult] =
+  const [projectsResult, peopleResult, tasksResult, statsResult, oralResult] =
     await Promise.allSettled([
       loadProjects(),
       loadPeople(),
       loadTasks(currentUser),
       getStudioStats(),
+      loadOralTasks(),
     ]);
   const errors: string[] = [];
   const projectData =
@@ -312,7 +381,10 @@ export async function loadStudioData(
     peopleResult.status === "fulfilled"
       ? peopleResult.value
       : { people: [], assets: [], errors: [] };
-  const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : [];
+  const tasks = [
+    ...(tasksResult.status === "fulfilled" ? tasksResult.value : []),
+    ...(oralResult.status === "fulfilled" ? oralResult.value : []),
+  ];
   // 统计加载失败不打断工作区：指标卡回退为 "—"，重试路径会再次拉取。
   const stats = statsResult.status === "fulfilled" ? statsResult.value : null;
 
@@ -326,6 +398,9 @@ export async function loadStudioData(
   errors.push(...peopleData.errors);
   if (tasksResult.status === "rejected") {
     errors.push(`读取任务失败：${errorText(tasksResult.reason)}`);
+  }
+  if (oralResult.status === "rejected") {
+    errors.push(`读取口播任务失败：${errorText(oralResult.reason)}`);
   }
 
   return {

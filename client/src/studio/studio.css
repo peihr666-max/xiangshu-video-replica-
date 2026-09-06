@@ -618,7 +618,7 @@
   margin-top: 5px;
 }
 .studio-hero {
-  text-align: center;
+  text-align: left;
   margin: 58px 0 22px;
 }
 .studio-hero h1 {
@@ -639,8 +639,26 @@
 }
 .studio-start {
   margin: 0 0 27px;
-  text-align: center;
+  text-align: left;
   padding: 0 20px;
+}
+.studio-source-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.studio-source-row > .studio-button {
+  flex: none;
+  font-size: 14px;
+  min-height: 37px;
+  min-width: 132px;
+  justify-content: center;
+  padding: 6px 9px;
+}
+.studio-upload-status {
+  color: #999c93;
+  font-size: 13px;
+  margin: 8px 0 0;
 }
 .studio-source-input {
   display: flex;
@@ -648,37 +666,37 @@
   border: 1px solid #3a3d33;
   background: #101111;
   border-radius: 12px;
-  padding: 15px 17px;
+  padding: 8px 8px 8px 12px;
   gap: 12px;
+  flex: 1;
+  min-width: 0;
 }
-.studio-source-input > svg {
+.studio-upload-icon {
   flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: #eec237;
+  cursor: pointer;
 }
-.studio-source-input input {
+.studio-upload-icon:hover {
+  background: #262922;
+}
+.studio-source-input input:not([type="file"]) {
   border: none;
   background: transparent;
   width: 100%;
   padding: 5px 0;
   font-size: 14px;
 }
-.studio-source-input .studio-button {
-  font-size: 14px;
-  min-height: 37px;
-  padding: 6px 9px;
-}
-.studio-start-actions {
-  display: flex;
-  gap: 36px;
-  justify-content: center;
-  margin: 20px 0 11px;
-}
-.studio-start-actions .studio-button {
-  min-width: 188px;
-}
 .studio-start p {
   color: #999c93;
   font-size: 14px;
-  margin: 0;
+  margin: 8px 0 0;
 }
 .studio-home-metrics {
   display: grid;
@@ -1412,14 +1430,16 @@
   .studio-start {
     padding: 0;
   }
-  .studio-source-input {
-    padding: 12px;
+  .studio-source-row {
+    flex-wrap: wrap;
   }
-  .studio-start-actions {
-    gap: 20px;
+  .studio-source-row > .studio-source-input,
+  .studio-source-row > .studio-button {
+    min-width: 0;
   }
-  .studio-start-actions > .studio-button {
-    min-width: 150px;
+  .studio-source-row > .studio-button {
+    flex: 1 1 40%;
+    min-height: 37px;
   }
   .studio-result-grid {
     grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);

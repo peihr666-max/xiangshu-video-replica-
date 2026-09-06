@@ -68,12 +68,13 @@ function createAppFetchMock() {
 }
 
 async function openProjectAnalysisFlow() {
-  // 新工作台先从首页上传入口进入已实现的项目区，再打开真实项目分析流。
+  // 首页“上传视频”已是本机文件上传图标；无来源时进入已实现项目区的
+  // 入口是“开始复刻”，再打开真实项目分析流。
   await screen.findByRole("heading", {
     level: 1,
     name: "从一个乡墅灵感，开始视频创作",
   });
-  fireEvent.click(screen.getByRole("button", { name: "上传视频" }));
+  fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
   fireEvent.click(
     await screen.findByRole("button", {
       name: "打开项目 夏日咖啡馆口播复刻",

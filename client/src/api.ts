@@ -668,6 +668,87 @@ export async function getStudioStats(): Promise<StudioStats> {
   return requestApiJson<StudioStats>("/api/studio/stats", "读取工作台统计失败");
 }
 
+export type OralPrice = { unit_price_fen: number };
+
+/** 数字人口播单价（每条）。 */
+export async function getOralPrice(): Promise<OralPrice> {
+  return requestApiJson<OralPrice>("/api/oral/price", "读取口播报价失败");
+}
+
+export type OralTaskRequest = {
+  identityId: string;
+  avatarId: string;
+  voiceId?: string;
+  mode: "TTS" | "AUDIO";
+  title: string;
+  scriptText?: string;
+  audioAssetId?: string;
+  subtitle?: Record<string, unknown>;
+  idempotencyKey: string;
+};
+
+export type OralTaskCreated = {
+  id: string;
+  status: string;
+  estimated_cost_fen: number;
+  replayed: boolean;
+};
+
+/** 创建数字人口播任务（POST /api/oral/tasks）。 */
+export async function createOralTask(
+  input: OralTaskRequest,
+): Promise<OralTaskCreated> {
+  return requestApiJson<OralTaskCreated>(
+    "/api/oral/tasks",
+    "口播任务提交失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity_id: input.identityId,
+        avatar_id: input.avatarId,
+        voice_id: input.voiceId ?? null,
+        mode: input.mode,
+        title: input.title,
+        script_text: input.scriptText ?? null,
+        audio_asset_id: input.audioAssetId ?? null,
+        subtitle: input.subtitle ?? null,
+        idempotency_key: input.idempotencyKey,
+      }),
+    },
+  );
+}
+
+export type OralTaskRecord = {
+  id: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  title: string;
+  mode: "TTS" | "AUDIO";
+  identity_id: string;
+  avatar_id: string;
+  voice_id: string | null;
+  script_text: string | null;
+  audio_asset_id: string | null;
+  status_message?: string | null;
+  error_message?: string | null;
+  result_asset_id: string | null;
+  duration_sec: number | null;
+  estimated_cost_fen: number;
+  created_at: string;
+  updated_at: string;
+};
+
+/** 数字人口播任务列表（GET /api/oral/tasks）。 */
+export async function listOralTasks(limit = 20): Promise<OralTaskRecord[]> {
+  const body = await requestApiJson<
+    { items?: OralTaskRecord[] } | OralTaskRecord[]
+  >(
+    `/api/oral/tasks?limit=${encodeURIComponent(String(limit))}`,
+    "读取口播任务失败",
+  );
+  return Array.isArray(body) ? body : (body.items ?? []);
+}
+
 export async function getCurrentUser(): Promise<CurrentUser> {
   const user = await requestApiJson<unknown>("/api/auth/me", "身份验证失败");
   if (!isCurrentUser(user)) {

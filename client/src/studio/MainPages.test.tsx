@@ -8,13 +8,16 @@ import type {
   StudioTask,
 } from "./types";
 
-const { useStudio, loadTaskPreview } = vi.hoisted(() => ({
-  useStudio: vi.fn<() => StudioContextValue>(),
-  loadTaskPreview: vi.fn(),
-}));
+const { useStudio, loadTaskPreview, uploadWorkbenchSourceVideo } = vi.hoisted(
+  () => ({
+    useStudio: vi.fn<() => StudioContextValue>(),
+    loadTaskPreview: vi.fn(),
+    uploadWorkbenchSourceVideo: vi.fn(),
+  }),
+);
 
 vi.mock("./context", () => ({ useStudio }));
-vi.mock("./live", () => ({ loadTaskPreview }));
+vi.mock("./live", () => ({ loadTaskPreview, uploadWorkbenchSourceVideo }));
 
 import { TaskDetailPage, WorkbenchPage } from "./MainPages";
 import { formatTaskTime } from "./ui";
@@ -311,5 +314,118 @@ describe("formatTaskTime", () => {
   it("无法解析或已是友好文案时原样返回", () => {
     expect(formatTaskTime("今天 09:30", now)).toBe("今天 09:30");
     expect(formatTaskTime("", now)).toBe("");
+  });
+});
+
+describe("V1.4 工作台上传与创作入口", () => {
+  beforeEach(() => {
+    useStudio.mockReset();
+    uploadWorkbenchSourceVideo.mockReset();
+  });
+
+  function workbench(
+    overrides: Partial<StudioContextValue> = {},
+  ): StudioContextValue {
+    return studio(undefined, {
+      state: { ...createState("workbench") },
+      data: data([]),
+      ...overrides,
+    });
+  }
+
+  function changeFile(name: string) {
+    const input = screen.getByLabelText("选择视频文件");
+    fireEvent.change(input, {
+      target: { files: [new File(["video"], name, { type: "video/mp4" })] },
+    });
+  }
+
+  it("审核模式点击上传图标只提示，不进入真实上传", () => {
+    const value = workbench({ review: true });
+    useStudio.mockReturnValue(value);
+    render(<WorkbenchPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "上传视频" }));
+    expect(value.notify).toHaveBeenCalledWith("审核示例不执行真实上传。");
+    expect(uploadWorkbenchSourceVideo).not.toHaveBeenCalled();
+  });
+
+  it("非 MP4/MOV 文件被拒收并提示", () => {
+    const value = workbench();
+    useStudio.mockReturnValue(value);
+    render(<WorkbenchPage />);
+
+    changeFile("相册导出.avi");
+    expect(value.notify).toHaveBeenCalledWith(
+      "目前仅支持 MP4 / MOV 视频文件。",
+    );
+    expect(uploadWorkbenchSourceVideo).not.toHaveBeenCalled();
+  });
+
+  it("上传成功：展示进度与云存储状态，并把来源写入当前草稿", async () => {
+    const value = workbench();
+    useStudio.mockReturnValue(value);
+    const pending: {
+      resolve?: (value: { projectId: string; assetId: string }) => void;
+    } = {};
+    uploadWorkbenchSourceVideo.mockImplementation(
+      (_file: File, onProgress: (percent: number) => void) =>
+        new Promise<{ projectId: string; assetId: string }>((resolve) => {
+          pending.resolve = resolve;
+          onProgress(40);
+        }),
+    );
+    render(<WorkbenchPage />);
+
+    changeFile("乡墅案例.mp4");
+    expect(uploadWorkbenchSourceVideo).toHaveBeenCalledOnce();
+    expect(screen.getByText("正在上传 乡墅案例.mp4… 40%")).toBeInTheDocument();
+
+    pending.resolve?.({ projectId: "proj-1", assetId: "asset-1" });
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "proj-1" }),
+    );
+    expect(screen.getByText("已上传云存储：乡墅案例.mp4")).toBeInTheDocument();
+    expect(value.notify).toHaveBeenCalledWith(
+      "视频已上传云存储，来源已加入当前创作。",
+    );
+  });
+
+  it("上传完成后开始复刻直接进分镜工作区，不再打开项目面板", async () => {
+    const value = workbench();
+    useStudio.mockReturnValue(value);
+    uploadWorkbenchSourceVideo.mockResolvedValue({
+      projectId: "proj-1",
+      assetId: "asset-1",
+    });
+    render(<WorkbenchPage />);
+
+    changeFile("乡墅案例.mp4");
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "proj-1" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
+    expect(value.navigate).toHaveBeenCalledWith("replica");
+    expect(value.openLive).not.toHaveBeenCalled();
+  });
+
+  it("上传后的提取文案等待音频链路，不静默走旧面板", async () => {
+    const value = workbench();
+    useStudio.mockReturnValue(value);
+    uploadWorkbenchSourceVideo.mockResolvedValue({
+      projectId: "proj-1",
+      assetId: "asset-1",
+    });
+    render(<WorkbenchPage />);
+
+    changeFile("乡墅案例.mp4");
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "proj-1" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    expect(value.notify).toHaveBeenCalledWith(
+      "音频文案提取链路接入前，请先在项目面板完成拆解。",
+    );
+    expect(value.openLive).not.toHaveBeenCalled();
   });
 });

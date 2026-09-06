@@ -8,9 +8,11 @@ import {
 } from "react";
 import type { WorkspaceShell } from "../App";
 import {
+  createOralTask,
   customerVisibleErrorMessage,
   type GenerationBatch,
   getGenerationBatch,
+  getOralPrice,
   type Project,
 } from "../api";
 import { AnalyticsPage } from "./AnalyticsPage";
@@ -150,10 +152,62 @@ export function StudioWorkspace({
   const [menuOpen, setMenuOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
+  const [oralPriceFen, setOralPriceFen] = useState<number | null>(null);
   const busyRef = useRef(false);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
   const notify = useCallback((message: string) => setNotice(message), []);
+  // 数字人口播提交前拉取单价（元/条）；失败保持 null 显示“待服务端报价”。
+  useEffect(() => {
+    if (review || generation !== "数字人口播") {
+      setOralPriceFen(null);
+      return;
+    }
+    let active = true;
+    void getOralPrice()
+      .then((price) => {
+        if (active) setOralPriceFen(price.unit_price_fen);
+      })
+      .catch(() => {
+        if (active) setOralPriceFen(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [review, generation]);
+
+  const submitOralTask = async () => {
+    if (currentUser.role === "auditor") {
+      notify("当前账号为只读权限，不能提交生成。");
+      return;
+    }
+    try {
+      const mode = state.page === "oral-audio" ? "audio" : "text";
+      const input = buildOralInput(state.draft, mode);
+      const result = await createOralTask({
+        identityId: input.ipId,
+        avatarId: input.avatarId,
+        voiceId: input.voiceId,
+        mode: mode === "audio" ? "AUDIO" : "TTS",
+        title: state.draft.script.title || "未命名口播",
+        scriptText: state.draft.script.text,
+        audioAssetId: input.audioAssetId,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      setGeneration(undefined);
+      if (result.status === "FAILED") {
+        notify("口播任务提交未成功，请核对素材后重试。");
+      } else {
+        notify("口播任务已提交，可在任务中心查看进度。");
+        navigate("tasks");
+        refresh();
+      }
+    } catch (cause: unknown) {
+      notify(
+        customerVisibleErrorMessage(cause, "口播任务提交失败，请稍后重试。"),
+      );
+    }
+  };
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
 
   useEffect(() => {
@@ -484,7 +538,7 @@ export function StudioWorkspace({
               <img src="/studio/brand.png" alt="众墅之家" />
               <b>｜ AI 即创</b>
             </span>
-            <small>AI 视频创作平台</small>
+            <small>乡墅爆款视频创作平台</small>
           </button>
           <Button
             variant="primary"
@@ -690,7 +744,7 @@ export function StudioWorkspace({
               {review
                 ? "当前为效果审核，不会创建真实生成任务，也不会扣费。"
                 : generation === "数字人口播"
-                  ? "数字人口播服务尚未接入。当前选择已保留，无法报价或提交。"
+                  ? "将创建一条数字人口播任务，提交前请核对文案与声音。"
                   : "此独立创作接口尚未接入。现有项目复刻可通过已实现的生成流程报价与提交。"}
             </Hint>
             <dl className="studio-details">
@@ -700,16 +754,26 @@ export function StudioWorkspace({
               </div>
               <div>
                 <dt>费用</dt>
-                <dd>待服务端报价</dd>
+                <dd>
+                  {generation === "数字人口播" && oralPriceFen !== null
+                    ? `${(oralPriceFen / 100).toFixed(2)} 元/条`
+                    : "待服务端报价"}
+                </dd>
               </div>
               <div>
                 <dt>提交状态</dt>
                 <dd>尚未提交 · 未扣费</dd>
               </div>
             </dl>
-            <Button variant="primary" disabled>
-              确认费用并提交
-            </Button>
+            {review || generation !== "数字人口播" ? (
+              <Button variant="primary" disabled>
+                确认费用并提交
+              </Button>
+            ) : (
+              <Button variant="primary" onClick={() => void submitOralTask()}>
+                确认费用并提交
+              </Button>
+            )}
             {!review && generation !== "数字人口播" && (
               <Button
                 onClick={() => {

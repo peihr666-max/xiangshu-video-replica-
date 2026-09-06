@@ -20,6 +20,7 @@ const api = vi.hoisted(() => ({
   getLatestScriptVersion: vi.fn(),
   listCharacterSceneLooks: vi.fn(),
   listGenerationBatches: vi.fn(),
+  listOralTasks: vi.fn(async () => []),
   listProjects: vi.fn(),
   listSimpleCharacterLibrary: vi.fn(),
   readAnalysisPayload: vi.fn(),

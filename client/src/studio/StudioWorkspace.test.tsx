@@ -172,7 +172,9 @@ describe("V1.4 workspace integration", () => {
     live.loadProjectDraft.mockResolvedValue({ draft: imported, errors: [] });
     render(<StudioWorkspace currentUser={reviewUser} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "上传视频" }));
+    // 工作台“上传视频”已是图标化的本机文件上传；打开旧项目面板的入口
+    // 是无来源时的“开始复刻”。
+    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
     fireEvent.click(screen.getByRole("button", { name: "选择测试项目" }));
     await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "返回新工作台" }));
@@ -205,7 +207,7 @@ describe("V1.4 workspace integration", () => {
     });
     render(<StudioWorkspace currentUser={reviewUser} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "上传视频" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
     fireEvent.click(screen.getByRole("button", { name: "创建测试批次" }));
     expect(screen.getByText("存在交接批次")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "消费交接批次" }));

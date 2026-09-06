@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useStudio } from "./context";
-import { loadTaskPreview } from "./live";
+import { loadTaskPreview, uploadWorkbenchSourceVideo } from "./live";
 import { draftFromTask } from "./state";
 import type { StudioTask } from "./types";
 import {
@@ -112,6 +112,13 @@ function RunningRowMenu({ task }: { task: StudioTask }) {
 export function WorkbenchPage() {
   const { data, review, navigate, openLive, notify, patchDraft } = useStudio();
   const [sourceLink, setSourceLink] = useState("");
+  const [upload, setUpload] = useState<{
+    name: string;
+    progress: number;
+    error: string;
+    projectId: string | null;
+  } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const active = data.tasks.filter((task) =>
     ["running", "queued", "uncertain"].includes(task.status),
   );
@@ -124,7 +131,47 @@ export function WorkbenchPage() {
       notify("视频链接解析接口尚未接入，可先上传视频进行拆解。");
       return;
     }
+    if (upload?.projectId) {
+      // 上传完成的来源已经写进当前草稿：复刻直接进分镜工作区；
+      // 文案提取按新方案走本地音频转写，接入前保持明确提示。
+      if (mode === "replica") {
+        navigate("replica");
+        return;
+      }
+      notify("音频文案提取链路接入前，请先在项目面板完成拆解。");
+      return;
+    }
     openLive("projects");
+  };
+  const handleUploadFile = (file: File) => {
+    if (!/\.(mp4|mov)$/i.test(file.name)) {
+      notify("目前仅支持 MP4 / MOV 视频文件。");
+      return;
+    }
+    setUpload({ name: file.name, progress: 0, error: "", projectId: null });
+    void uploadWorkbenchSourceVideo(file, (progress) =>
+      setUpload((current) => (current ? { ...current, progress } : current)),
+    )
+      .then(({ projectId }) => {
+        setUpload((current) =>
+          current ? { ...current, progress: 100, projectId } : current,
+        );
+        patchDraft({ sourceId: projectId });
+        notify("视频已上传云存储，来源已加入当前创作。");
+      })
+      .catch((error) => {
+        setUpload((current) =>
+          current
+            ? {
+                ...current,
+                error:
+                  error instanceof Error && error.message.trim()
+                    ? error.message.trim()
+                    : "上传失败，请重试。",
+              }
+            : current,
+        );
+      });
   };
   return (
     <section className="studio-home">
@@ -135,20 +182,41 @@ export function WorkbenchPage() {
       <div className="studio-home-grid">
         <div className="studio-home-main">
           <div className="studio-start">
-            <div className="studio-source-input">
-              <Icon name="link" />
-              <input
-                aria-label="视频链接"
-                placeholder="粘贴视频链接，如抖音、视频号、小红书链接等"
-                value={sourceLink}
-                onChange={(event) => setSourceLink(event.target.value)}
-              />
-              <Button onClick={() => openLive("projects")}>
-                <Icon name="upload" />
-                上传视频
-              </Button>
-            </div>
-            <div className="studio-start-actions">
+            <div className="studio-source-row">
+              <div className="studio-source-input">
+                <button
+                  type="button"
+                  className="studio-upload-icon"
+                  aria-label="上传视频"
+                  onClick={() => {
+                    if (review) {
+                      notify("审核示例不执行真实上传。");
+                      return;
+                    }
+                    fileInputRef.current?.click();
+                  }}
+                >
+                  <Icon name="upload" />
+                </button>
+                <input
+                  aria-label="视频链接"
+                  placeholder="粘贴视频链接，如抖音、视频号、小红书链接等"
+                  value={sourceLink}
+                  onChange={(event) => setSourceLink(event.target.value)}
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  aria-label="选择视频文件"
+                  accept=".mp4,.mov,video/mp4,video/quicktime"
+                  hidden
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) handleUploadFile(file);
+                    event.target.value = "";
+                  }}
+                />
+              </div>
               <Button variant="primary" onClick={() => begin("copy")}>
                 <Icon name="pen" />
                 提取文案
@@ -158,6 +226,15 @@ export function WorkbenchPage() {
                 开始复刻
               </Button>
             </div>
+            {upload && (
+              <p className="studio-upload-status" role="status">
+                {upload.error
+                  ? `上传失败：${upload.error}`
+                  : upload.progress >= 100
+                    ? `已上传云存储：${upload.name}`
+                    : `正在上传 ${upload.name}… ${upload.progress}%`}
+              </p>
+            )}
             <p>提取文案进入文案工坊；开始复刻进入分镜工作区。</p>
           </div>
           <div className="studio-home-metrics">
