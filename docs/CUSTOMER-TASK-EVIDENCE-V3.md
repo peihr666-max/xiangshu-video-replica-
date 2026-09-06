@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## 素材库、自有存储归档与永久保存（2026-09-06）
+
+用户后续要求取消 180 天保留并让新内容进入自有云存储。新 H3 正常完成、归档重试及提交不确定恢复路径均改为先写入应用存储和 `assets`，再结算任务；口播创作页已接通 MP3 直传。历史 `DIRECT` 记录保持兼容。2026-09-07 全仓门禁复验为前端 897 passed、服务端 1780 passed，secret/Biome/TypeScript/Tauri/Ruff/mypy 全绿。代码证据与测试记录见 `docs/evidence/material-library-permanent-retention-2026-09-06.md`；生产 COS 两条 180 天规则已通过主账号控制台删除并刷新确认，见 `docs/evidence/cos-permanent-retention-production-2026-09-06.md`。真实付费生成和生产 COS 成片上传尚未执行。
+
 ## 视频直链交付与桌面下载反馈（2026-09-04，自动化验证完成）
 
 基于用户最新确认，取消生成视频后的媒体处理，保留授权/审计/结算；精简客户任务 UI，新增真实桌面保存反馈，并将客户删除改为账号级隐藏、管理端永久保留。最终全仓门禁为客户前端 715/715、服务端 1555 通过/1 项因本机无 `ffmpeg` 跳过，Tauri/Ruff/mypy/密钥扫描通过。证据记录：`docs/evidence/VIDEO-DIRECT-DELIVERY-DOWNLOAD-EVIDENCE.md`。当前仅为 `AUTOMATED_VERIFIED`，不宣称生产已更新或桌面安装包已验收。
