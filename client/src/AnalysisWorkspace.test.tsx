@@ -1833,7 +1833,10 @@ describe("AnalysisWorkspace workflow gates", () => {
     );
 
     expect(await screen.findByText("拆解完成")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
+    const startGeneration = screen.getByRole("button", { name: "开始生成" });
+    // 就绪探测异步返回前主按钮处于禁用态，直接点击会落空。
+    await waitFor(() => expect(startGeneration).toBeEnabled());
+    fireEvent.click(startGeneration);
 
     const characterRow = screen
       .getByText("未选择角色版本")
