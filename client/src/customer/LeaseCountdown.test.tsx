@@ -24,7 +24,7 @@ describe("LeaseCountdown (FE-04 / T31)", () => {
       <LeaseCountdown expiresAt={mockExpiresAt} onRefresh={mockOnRefresh} />,
     );
 
-    expect(screen.getByText(/session expires/i)).toBeInTheDocument();
+    expect(screen.getByText(/本次会话有效至/)).toBeInTheDocument();
   });
 
   it("shows countdown timer updating every second", () => {
@@ -34,7 +34,7 @@ describe("LeaseCountdown (FE-04 / T31)", () => {
     );
 
     // Initial display should show time remaining
-    expect(screen.getByText(/\d+ minutes/)).toBeInTheDocument();
+    expect(screen.getByText(/剩余 \d+ 分钟/)).toBeInTheDocument();
   });
 
   it("changes to warning state when lease < 5 minutes", () => {
@@ -47,7 +47,7 @@ describe("LeaseCountdown (FE-04 / T31)", () => {
       <LeaseCountdown expiresAt={mockNearExpiry} onRefresh={mockOnRefresh} />,
     );
 
-    expect(screen.getByText(/Expiring soon/i)).toBeInTheDocument();
+    expect(screen.getByText(/即将过期/)).toBeInTheDocument();
   });
 
   it("changes to expired state when lease <= 0", () => {
@@ -58,7 +58,7 @@ describe("LeaseCountdown (FE-04 / T31)", () => {
       <LeaseCountdown expiresAt={mockExpired} onRefresh={mockOnRefresh} />,
     );
 
-    expect(screen.getByText(/expired/i)).toBeInTheDocument();
+    expect(screen.getByText(/已过期/)).toBeInTheDocument();
   });
 
   it("provides refresh/renew button that calls onRefresh callback", () => {
@@ -67,7 +67,7 @@ describe("LeaseCountdown (FE-04 / T31)", () => {
       <LeaseCountdown expiresAt={mockExpiresAt} onRefresh={mockOnRefresh} />,
     );
 
-    const button = screen.getByLabelText(/Renew or extend this session/i);
+    const button = screen.getByLabelText(/续约会话/);
     button.click();
     expect(mockOnRefresh).toHaveBeenCalledTimes(1);
   });

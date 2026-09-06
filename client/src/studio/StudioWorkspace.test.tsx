@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -8,11 +9,13 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createReviewData, createReviewState, reviewUser } from "./fixtures";
 import { StudioWorkspace } from "./StudioWorkspace";
+import { createState } from "./state";
 
 const live = vi.hoisted(() => ({
   loadStudioData: vi.fn(),
   loadPersonAssets: vi.fn(),
   loadProjectDraft: vi.fn(),
+  reloadTasks: vi.fn(async (): Promise<unknown[]> => []),
 }));
 vi.mock("./live", () => live);
 
@@ -186,5 +189,49 @@ describe("V1.4 workspace integration", () => {
     expect(screen.getByText("存在交接批次")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "消费交接批次" }));
     expect(screen.getByText("没有交接批次")).toBeInTheDocument();
+  });
+
+  it("polls generation task progress silently while the workspace is open", async () => {
+    vi.useFakeTimers();
+    const runningTask = {
+      id: "batch-9",
+      batchId: "batch-9",
+      title: "乡墅批次一",
+      type: "视频生成" as const,
+      status: "running" as const,
+      progress: 45,
+      submitted: "2026-09-06T09:00:00Z",
+    };
+    live.loadStudioData.mockResolvedValue({
+      people: [],
+      assets: [],
+      videos: [],
+      projects: [],
+      errors: [],
+      loading: false,
+      tasks: [runningTask],
+    });
+    live.reloadTasks.mockResolvedValue([
+      { ...runningTask, status: "completed" as const, progress: 100 },
+    ]);
+
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        initialState={createState("tasks")}
+      />,
+    );
+    await vi.waitFor(() =>
+      expect(screen.getByText("生成中 45%")).toBeInTheDocument(),
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+
+    expect(live.reloadTasks).toHaveBeenCalledWith(reviewUser);
+    // "已完成" appears as both the filter tab and the refreshed row status.
+    expect(screen.getAllByText("已完成")).toHaveLength(2);
+    expect(screen.queryByText("生成中 45%")).not.toBeInTheDocument();
   });
 });

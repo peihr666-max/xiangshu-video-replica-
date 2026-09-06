@@ -51,9 +51,19 @@ export function LiveWorkspacePanel({
     project ?? null,
   );
   const [isRechargeOpen, setIsRechargeOpen] = useState(false);
+  // The wallet panel suggests an amount for the topping-up context it lives
+  // in; a plain "充值条数" click clears it so the dialog starts empty.
+  const [suggestedAmountYuan, setSuggestedAmountYuan] = useState<
+    number | undefined
+  >(undefined);
   const [walletRefreshKey, setWalletRefreshKey] = useState(0);
   const canWrite = currentUser.role !== "auditor";
   const customerSession = customerAccount ?? customerWallet;
+
+  function openRecharge(amountYuan?: number) {
+    setSuggestedAmountYuan(amountYuan);
+    setIsRechargeOpen(true);
+  }
 
   function selectProject(
     nextProject: Project,
@@ -129,7 +139,7 @@ export function LiveWorkspacePanel({
             key={walletRefreshKey}
             store={customerWallet.store}
             onSessionExpired={customerWallet.onSessionExpired}
-            onRechargeRequested={() => setIsRechargeOpen(true)}
+            onRechargeRequested={(amountYuan) => openRecharge(amountYuan)}
           />
         ) : (
           <WalletPanel currentUserId={currentUser.id} />
@@ -141,14 +151,16 @@ export function LiveWorkspacePanel({
           devices={customerAccount.devices}
           onApprovePairing={customerAccount.onApprovePairing}
           onDismissPairing={customerAccount.onDismissPairing}
+          onManualHeartbeat={customerAccount.onManualHeartbeat}
           onProfileUpdated={customerAccount.onProfileUpdated}
-          onRecharge={() => setIsRechargeOpen(true)}
+          onRecharge={(amountYuan) => openRecharge(amountYuan)}
           onRefreshDevices={customerAccount.onRefreshDevices}
           onResetActivationCode={customerAccount.onResetActivationCode}
           onSessionExpired={customerAccount.onSessionExpired}
           onUnbind={customerAccount.onUnbind}
           onUpdateProfile={customerAccount.onUpdateProfile}
           profile={customerAccount.profile}
+          sessionRuntime={customerAccount.sessionRuntime}
           store={customerAccount.store}
           walletRefreshKey={walletRefreshKey}
         />
@@ -163,11 +175,15 @@ export function LiveWorkspacePanel({
       {customerSession ? (
         <CustomerRechargeDialog
           isOpen={isRechargeOpen}
-          onClose={() => setIsRechargeOpen(false)}
+          onClose={() => {
+            setIsRechargeOpen(false);
+            setSuggestedAmountYuan(undefined);
+          }}
           onOrderCreated={finishRecharge}
           onPaid={finishRecharge}
           onSessionExpired={customerSession.onSessionExpired}
           store={customerSession.store}
+          suggestedAmountYuan={suggestedAmountYuan}
         />
       ) : null}
     </section>

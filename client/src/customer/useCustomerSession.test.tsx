@@ -685,6 +685,89 @@ describe("useCustomerSession", () => {
     expect(beatsAfter).toBe(2);
   });
 
+  it("exposes the session lease runtime from activation and clears it on logout", async () => {
+    const store = memoryStore();
+    stubFetch((url) => {
+      if (url.endsWith("/api/customer/activate")) {
+        return jsonResponse(activationBody, 201);
+      }
+      if (url.endsWith("/api/customer/sessions/logout")) {
+        return jsonResponse(undefined, 204);
+      }
+      return jsonResponse({}, 500);
+    });
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+    await waitFor(() => expect(result.current.screen).toBe("activation"));
+
+    await act(async () => {
+      await result.current.activate({
+        activationCode: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
+        deviceName: "工作电脑",
+      });
+    });
+
+    expect(result.current.screen).toBe("workspace");
+    expect(result.current.sessionRuntime).not.toBeNull();
+    expect(result.current.sessionRuntime?.leaseExpiresAt).toBe(
+      activationBody.session_lease_expires_at,
+    );
+    expect(
+      Number.isNaN(
+        Date.parse(result.current.sessionRuntime?.lastHeartbeatAt ?? ""),
+      ),
+    ).toBe(false);
+
+    await act(async () => {
+      await result.current.logout();
+    });
+    expect(result.current.sessionRuntime).toBeNull();
+  });
+
+  it("refreshes the runtime lease on heartbeat ticks and manual renewal", async () => {
+    vi.useFakeTimers();
+    const store = memoryStore({ deviceToken: "device-token-1" });
+    const fetchMock = stubFetch((url) => {
+      if (url.endsWith("/api/customer/sessions/login")) {
+        return jsonResponse(loginBody, 201);
+      }
+      if (url.endsWith("/api/customer/sessions/heartbeat")) {
+        return jsonResponse(heartbeatBody, 200);
+      }
+      return jsonResponse({}, 500);
+    });
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+    await vi.waitFor(() => expect(result.current.screen).toBe("workspace"));
+    // The restart login carries the login lease until the first beat lands.
+    expect(result.current.sessionRuntime?.leaseExpiresAt).toBe(
+      loginBody.session_lease_expires_at,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    });
+    expect(result.current.sessionRuntime?.leaseExpiresAt).toBe(
+      heartbeatBody.lease_expires_at,
+    );
+
+    const beatsBefore = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/api/customer/sessions/heartbeat"),
+    ).length;
+    await act(async () => {
+      await result.current.sendHeartbeatNow();
+    });
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith("/api/customer/sessions/heartbeat"),
+      ).length,
+    ).toBe(beatsBefore + 1);
+  });
+
   it("never writes a credential into Web Storage (dev doc §7 red line)", async () => {
     const store = memoryStore();
     stubFetch((url) => {

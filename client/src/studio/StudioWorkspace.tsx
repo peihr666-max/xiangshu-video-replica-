@@ -29,7 +29,12 @@ import {
 } from "./CreationPages";
 import { StudioContext, useStudio } from "./context";
 import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
-import { loadPersonAssets, loadProjectDraft, loadStudioData } from "./live";
+import {
+  loadPersonAssets,
+  loadProjectDraft,
+  loadStudioData,
+  reloadTasks,
+} from "./live";
 import {
   ProfilePage,
   TaskDetailPage,
@@ -72,6 +77,7 @@ const emptyData: StudioData = {
   errors: [],
   loading: true,
 };
+const TASKS_POLL_INTERVAL_MS = 20_000;
 const creationPages = new Set<StudioPage>([
   "replica",
   "replacement",
@@ -172,6 +178,26 @@ export function StudioWorkspace({
       active = false;
     };
   }, [review, currentUser, revision]);
+
+  // Silent tasks poll: the shell reads everything once on entry, so a batch
+  // that finishes while the customer watches would otherwise stay "running"
+  // until a manual refresh. Only the tasks slice updates, failures stay
+  // quiet (the next tick retries; the explicit 重试加载 path reports errors),
+  // and the poll pauses while the tab is hidden or a live panel is busy.
+  useEffect(() => {
+    if (review) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden || busyRef.current) return;
+      void reloadTasks(currentUser)
+        .then((tasks) => {
+          setData((previous) => ({ ...previous, tasks }));
+        })
+        .catch(() => {});
+    }, TASKS_POLL_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [review, currentUser]);
 
   const personToLoad = state.page.startsWith("person-")
     ? state.selectedPersonId

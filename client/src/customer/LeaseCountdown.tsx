@@ -21,10 +21,7 @@ export function LeaseCountdown({
   }
 
   const minutesRemaining = Math.floor(diffMs / 60_000);
-  const formattedExpiry = expiry.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
+  const formattedExpiry = expiry.toLocaleString("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -32,25 +29,24 @@ export function LeaseCountdown({
   return (
     <div className={`lease-countdown ${status}`}>
       <p className="label">
-        Session expires at: <time dateTime={expiresAt}>{formattedExpiry}</time>
+        本次会话有效至：
+        <time dateTime={expiresAt}>{formattedExpiry}</time>
       </p>
 
       {status === "expired" && (
         <span className="status-text expired">
-          ⚠️ Expired — please refresh your session
+          ⚠️ 已过期——请刷新会话或重新登录
         </span>
       )}
 
       {status === "warning" && (
         <span className="status-text warning">
-          ⏰ Expiring soon ({minutesRemaining} minutes remaining)
+          ⏰ 即将过期（剩余 {minutesRemaining} 分钟）
         </span>
       )}
 
       {status === "normal" && (
-        <span className="status-text normal">
-          {minutesRemaining} minutes remaining
-        </span>
+        <span className="status-text normal">剩余 {minutesRemaining} 分钟</span>
       )}
 
       <button
@@ -58,9 +54,9 @@ export function LeaseCountdown({
         className="btn-renew"
         onClick={onRefresh}
         disabled={status === "expired"}
-        aria-label="Renew or extend this session"
+        aria-label="续约会话"
       >
-        Refresh Session
+        立即续约
       </button>
     </div>
   );

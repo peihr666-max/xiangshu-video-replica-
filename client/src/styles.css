@@ -8476,3 +8476,86 @@ button.activation-generator__submit {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/* ---------------------------------------------------------------------------
+ * 客户会话状态（个人中心 · 设备管理）：心跳健康度 + 租约倒计时
+ * ------------------------------------------------------------------------- */
+.customer-session-status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.heartbeat-status,
+.lease-countdown {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.heartbeat-status .label,
+.lease-countdown .label {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.heartbeat-status .label time,
+.lease-countdown .label time {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.heartbeat-status .interval-info,
+.heartbeat-status .help-text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.heartbeat-status .status-text,
+.lease-countdown .status-text {
+  font-weight: 560;
+}
+
+.heartbeat-status .status-text.healthy,
+.lease-countdown .status-text.normal {
+  color: #4ade80;
+}
+
+.heartbeat-status .status-text.warning,
+.lease-countdown .status-text.warning {
+  color: var(--accent-strong);
+}
+
+.heartbeat-status .status-text.expired,
+.lease-countdown .status-text.expired {
+  color: #f87171;
+}
+
+.heartbeat-status.healthy {
+  border-color: rgba(74, 222, 128, 0.35);
+}
+
+.heartbeat-status.warning,
+.lease-countdown.warning {
+  border-color: rgba(240, 188, 94, 0.4);
+}
+
+.heartbeat-status.expired,
+.lease-countdown.expired {
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.heartbeat-status .btn-refresh,
+.lease-countdown .btn-renew {
+  margin-top: 4px;
+  padding: 7px 14px;
+  font-size: 13px;
+}

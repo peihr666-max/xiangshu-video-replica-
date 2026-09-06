@@ -14,7 +14,7 @@ describe("HeartbeatStatus (FE-04 / T31)", () => {
       />,
     );
 
-    expect(screen.getByText(/last heartbeat/i)).toBeInTheDocument();
+    expect(screen.getByText(/上次心跳/)).toBeInTheDocument();
   });
 
   it("shows connection healthy status when within 80% interval", () => {
@@ -27,7 +27,7 @@ describe("HeartbeatStatus (FE-04 / T31)", () => {
       />,
     );
 
-    expect(screen.getByText(/connection healthy/i)).toBeInTheDocument();
+    expect(screen.getByText(/连接正常/)).toBeInTheDocument();
   });
 
   it("shows warning when heartbeat is overdue (> interval)", () => {
@@ -42,7 +42,7 @@ describe("HeartbeatStatus (FE-04 / T31)", () => {
       />,
     );
 
-    expect(screen.getByText(/overdue/i)).toBeInTheDocument();
+    expect(screen.getByText(/心跳已逾期/)).toBeInTheDocument();
   });
 
   it("shows expired when heartbeat is > 2x interval", () => {
@@ -57,7 +57,7 @@ describe("HeartbeatStatus (FE-04 / T31)", () => {
       />,
     );
 
-    expect(screen.getByText(/expired/i)).toBeInTheDocument();
+    expect(screen.getByText(/会话已过期/)).toBeInTheDocument();
   });
 
   it("provides refresh button that calls onRefresh callback", () => {
@@ -69,9 +69,7 @@ describe("HeartbeatStatus (FE-04 / T31)", () => {
       />,
     );
 
-    const button = screen.getByLabelText(
-      /Manually trigger a heartbeat refresh/i,
-    );
+    const button = screen.getByLabelText(/立即发送心跳/);
     button.click();
     expect(mockOnRefresh).toHaveBeenCalledTimes(1);
   });

@@ -284,6 +284,13 @@ async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {
   return page.items.map(studioTask);
 }
 
+/** Re-read only the generation batches. The workspace shell polls this so a
+ * batch that advances while the customer watches stays current without a
+ * full project/people reload. */
+export function reloadTasks(currentUser: CurrentUser): Promise<StudioTask[]> {
+  return loadTasks(currentUser);
+}
+
 export async function loadStudioData(
   currentUser: CurrentUser,
 ): Promise<StudioData> {

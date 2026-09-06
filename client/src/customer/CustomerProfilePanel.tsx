@@ -7,8 +7,13 @@ import type {
 } from "../api";
 import { CustomerWalletPanel } from "./CustomerWalletPanel";
 import { DeviceManagementPage } from "./DeviceManagementPage";
+import { HeartbeatStatus } from "./HeartbeatStatus";
+import { LeaseCountdown } from "./LeaseCountdown";
 import { PairingApprovalCard } from "./PairingApprovalCard";
-import type { CustomerCredentialStore } from "./useCustomerSession";
+import type {
+  CustomerCredentialStore,
+  CustomerSessionRuntime,
+} from "./useCustomerSession";
 
 type ProfileTab = "overview" | "devices" | "billing";
 
@@ -17,6 +22,7 @@ export function CustomerProfilePanel({
   deviceError,
   onApprovePairing,
   onDismissPairing,
+  onManualHeartbeat,
   onProfileUpdated,
   onRecharge,
   onRefreshDevices,
@@ -25,6 +31,7 @@ export function CustomerProfilePanel({
   onUnbind,
   onUpdateProfile,
   profile,
+  sessionRuntime = null,
   store,
   walletRefreshKey,
 }: {
@@ -32,6 +39,7 @@ export function CustomerProfilePanel({
   deviceError: string;
   onApprovePairing: (pairingId: string) => void;
   onDismissPairing: (pairingId: string) => void;
+  onManualHeartbeat?: () => void;
   onProfileUpdated: (profile: CustomerProfile) => void;
   onRecharge: (amountYuan?: number) => void;
   onRefreshDevices: () => Promise<void>;
@@ -40,6 +48,7 @@ export function CustomerProfilePanel({
   onUnbind: (deviceId: string) => void;
   onUpdateProfile: (displayName: string) => Promise<CustomerProfile>;
   profile: CustomerProfile | null;
+  sessionRuntime?: CustomerSessionRuntime | null;
   store: CustomerCredentialStore;
   walletRefreshKey: number;
 }) {
@@ -316,6 +325,20 @@ export function CustomerProfilePanel({
               {deviceError}
             </p>
           ) : null}
+          {sessionRuntime ? (
+            <div className="customer-session-status">
+              <HeartbeatStatus
+                lastHeartbeatAt={sessionRuntime.lastHeartbeatAt}
+                onRefresh={() => onManualHeartbeat?.()}
+              />
+              {sessionRuntime.leaseExpiresAt ? (
+                <LeaseCountdown
+                  expiresAt={sessionRuntime.leaseExpiresAt}
+                  onRefresh={() => onManualHeartbeat?.()}
+                />
+              ) : null}
+            </div>
+          ) : null}
           {pendingPairings.map((pending) => (
             <PairingApprovalCard
               key={pending.pairing_request_id}
@@ -333,8 +356,7 @@ export function CustomerProfilePanel({
             <DeviceManagementPage
               devices={devices}
               isOnline
-              leaseExpiresAt={null}
-              onError={() => undefined}
+              leaseExpiresAt={sessionRuntime?.leaseExpiresAt ?? null}
               onRecharge={() => onRecharge()}
               onUnbind={onUnbind}
             />

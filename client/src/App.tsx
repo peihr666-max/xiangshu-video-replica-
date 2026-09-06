@@ -16,7 +16,10 @@ import { CharacterLibrary } from "./CharacterLibrary";
 import { CustomerProfilePanel } from "./customer/CustomerProfilePanel";
 import { CustomerRechargeDialog } from "./customer/CustomerRechargeDialog";
 import { CustomerWalletPanel } from "./customer/CustomerWalletPanel";
-import type { CustomerCredentialStore } from "./customer/useCustomerSession";
+import type {
+  CustomerCredentialStore,
+  CustomerSessionRuntime,
+} from "./customer/useCustomerSession";
 import { ProjectDetailFlow } from "./ProjectDetailFlow";
 import { ProjectsPage } from "./ProjectsPage";
 import { SettingsPanel } from "./SettingsPanel";
@@ -156,6 +159,10 @@ export function WorkspaceShell({
     profile: CustomerProfile | null;
     store: CustomerCredentialStore;
     onSessionExpired: () => void;
+    /** Live heartbeat/lease health from the customer session hook; absent
+     * on the internal lane. Rendered in the profile centre's device tab. */
+    sessionRuntime?: CustomerSessionRuntime | null;
+    onManualHeartbeat?: () => void;
   };
   customerWallet?: {
     store: CustomerCredentialStore;

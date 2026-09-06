@@ -138,6 +138,8 @@ function CustomerSessionShell({
       return session.user === null ? null : (
         <CustomerWorkspace
           user={session.user}
+          sessionRuntime={session.sessionRuntime}
+          onManualHeartbeat={() => void session.sendHeartbeatNow()}
           store={store}
           onSessionExpired={session.restartAfterExpiry}
         />
