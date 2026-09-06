@@ -234,7 +234,7 @@ export type GenerationBatchListFilters = {
   cursor?: string;
 };
 
-export type ProviderName = "metaso" | "apilio" | "cos" | "deepseek";
+export type ProviderName = "metaso" | "apilio" | "cos" | "deepseek" | "tikhub";
 
 export type ProviderSettings = {
   provider: ProviderName;
@@ -3626,8 +3626,9 @@ export function customerVisibleErrorMessage(
   } else if (error instanceof Error) {
     message = error.message.trim();
     const details = error as RequestError;
-    code = details.code?.trim() ?? "";
-    requestId = details.requestId?.trim() ?? "";
+    code = typeof details.code === "string" ? details.code.trim() : "";
+    requestId =
+      typeof details.requestId === "string" ? details.requestId.trim() : "";
   } else if (isRecord(error)) {
     message = typeof error.message === "string" ? error.message.trim() : "";
     code = typeof error.code === "string" ? error.code.trim() : "";
