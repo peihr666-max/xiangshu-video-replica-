@@ -635,9 +635,7 @@ def _worker_fixture(
     return {"calls": calls, "fernet": fernet, "worker_mod": worker_mod}
 
 
-def test_worker_round_publishes_end_to_end(
-    db_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_worker_round_publishes_end_to_end(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     setup = _worker_fixture(
         db_path,
         monkeypatch,
@@ -648,10 +646,12 @@ def test_worker_round_publishes_end_to_end(
             short_url="https://v.douyin.com/abc/",
         ),
     )
-    with _connect(db_path) as conn:
-        processed = setup["worker_mod"].run_publish_round(  # type: ignore[attr-defined]
-            conn, worker_id="w1", storage=_FakeStorage(), fernet=setup["fernet"]
-        )
+    processed = setup["worker_mod"].run_publish_round(  # type: ignore[attr-defined]
+        lambda: _connect(db_path),
+        worker_id="w1",
+        storage=_FakeStorage(),
+        fernet=setup["fernet"],
+    )
     assert processed == 1
     raw = sqlite3.connect(db_path)
     row = raw.execute(
@@ -684,17 +684,17 @@ def test_worker_round_failure_marks_account_invalid(
             account_invalid=True,
         ),
     )
-    with _connect(db_path) as conn:
-        setup["worker_mod"].run_publish_round(  # type: ignore[attr-defined]
-            conn, worker_id="w1", storage=_FakeStorage(), fernet=setup["fernet"]
-        )
+    setup["worker_mod"].run_publish_round(  # type: ignore[attr-defined]
+        lambda: _connect(db_path),
+        worker_id="w1",
+        storage=_FakeStorage(),
+        fernet=setup["fernet"],
+    )
     raw = sqlite3.connect(db_path)
     record = raw.execute(
         "SELECT status, error_message FROM publish_records WHERE id = 'rec_w'"
     ).fetchone()
-    account = raw.execute(
-        "SELECT status FROM publish_accounts WHERE id = 'acc_1'"
-    ).fetchone()
+    account = raw.execute("SELECT status FROM publish_accounts WHERE id = 'acc_1'").fetchone()
     raw.close()
     assert record is not None and record[0] == "failed" and record[1] == "登录态已失效"
     assert account is not None and account[0] == "invalid"
@@ -726,16 +726,14 @@ def test_worker_round_verifies_invalid_account(
         return False, "Cookie 已过期"
 
     monkeypatch.setattr(worker_mod, "_dispatch_probe", fake_probe)
-    with _connect(db_path) as conn:
-        processed = worker_mod.run_publish_round(
-            conn, worker_id="w1", storage=_FakeStorage(), fernet=fernet
-        )
+    processed = worker_mod.run_publish_round(
+        lambda: _connect(db_path), worker_id="w1", storage=_FakeStorage(), fernet=fernet
+    )
     assert processed == 1
     assert probes == [("wechat_channels", _DOUYIN_COOKIE)]
     raw = sqlite3.connect(db_path)
     account = raw.execute(
-        "SELECT status, verify_requested, error_message FROM publish_accounts"
-        " WHERE id = 'acc_v'"
+        "SELECT status, verify_requested, error_message FROM publish_accounts WHERE id = 'acc_v'"
     ).fetchone()
     raw.close()
     assert account is not None

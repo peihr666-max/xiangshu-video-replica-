@@ -16,6 +16,8 @@ import logging
 import os
 import tempfile
 import time
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
 from app.db import connect_database
@@ -30,6 +32,7 @@ from app.media import storage_key_from_uri
 from app.media_routes import get_media_storage
 from app.publish import (
     PublishCredentialError,
+    PublishLease,
     PublishLeaseLostError,
     claim_account_verify_work,
     claim_publish_work,
@@ -157,19 +160,27 @@ def perform_publish_delivery(
 
 
 def run_publish_round(
-    conn: BusinessConnection,
+    open_txn: Callable[[], AbstractContextManager[BusinessConnection]],
     *,
     worker_id: str,
     storage: StorageAdapter,
     fernet: object = None,
 ) -> int:
-    """Claim and process at most one verify probe and one publish."""
+    """Claim and process at most one verify probe and one publish.
+
+    Every claim/prepare/finalize gets its own short transaction via
+    ``open_txn`` (SQLite: a short-lived connection; PG: one
+    ``pg_transaction`` block) — the minutes-long platform delivery I/O must
+    never run inside an open transaction, or the claimed lease would not
+    commit and per-account serialization would break across workers.
+    """
     from cryptography.fernet import Fernet
 
     key = fernet if isinstance(fernet, Fernet) else fernet_from_environment()
     processed = 0
 
-    lease = claim_account_verify_work(conn, worker_id=worker_id)
+    with open_txn() as conn:
+        lease = claim_account_verify_work(conn, worker_id=worker_id)
     if lease is not None:
         processed += 1
         row = lease.row
@@ -186,32 +197,41 @@ def run_publish_round(
             logger.warning("account verify preparation failed: %s", type(exc).__name__)
             ok, message = False, "登录态材料无法读取，请重新连接账号"
         try:
-            finalize_account_verify(conn, lease=lease, ok=ok, message=message)
+            with open_txn() as conn:
+                finalize_account_verify(conn, lease=lease, ok=ok, message=message)
         except PublishLeaseLostError:
             logger.warning("account verify finalize lost lease: %s", lease.record_id)
 
-    publish_lease = claim_publish_work(conn, worker_id=worker_id)
+    with open_txn() as conn:
+        publish_lease = claim_publish_work(conn, worker_id=worker_id)
     if publish_lease is not None:
         processed += 1
+        prepared: PublishLease | None = None
+        credential_failed = False
         try:
-            prepared = prepare_publish_work(conn, publish_lease, fernet=key)
+            with open_txn() as conn:
+                prepared = prepare_publish_work(conn, publish_lease, fernet=key)
         except PublishLeaseLostError:
             return processed
         except PublishCredentialError:
             logger.error("publish credentials cannot be decrypted: %s", publish_lease.record_id)
+            credential_failed = True
+        if credential_failed and prepared is None:
             try:
-                finalize_publish_work(
-                    conn,
-                    lease=publish_lease,
-                    result=PublishResult(
-                        platform=str(publish_lease.row["platform"]),
-                        status="failed",
-                        message="发布凭据无法解密，请重新连接账号",
-                    ),
-                )
+                with open_txn() as conn:
+                    finalize_publish_work(
+                        conn,
+                        lease=publish_lease,
+                        result=PublishResult(
+                            platform=str(publish_lease.row["platform"]),
+                            status="failed",
+                            message="发布凭据无法解密，请重新连接账号",
+                        ),
+                    )
             except PublishLeaseLostError:
                 pass
             return processed
+        assert prepared is not None
         try:
             result = perform_publish_delivery(prepared.row, storage=storage)
         except Exception as exc:  # noqa: BLE001 - delivery boundary
@@ -222,16 +242,25 @@ def run_publish_round(
                 message="发布执行异常，请重试",
             )
         try:
-            finalize_publish_work(conn, lease=prepared, result=result)
+            with open_txn() as conn:
+                finalize_publish_work(conn, lease=prepared, result=result)
         except PublishLeaseLostError:
             logger.warning("publish finalize lost lease: %s", prepared.record_id)
     return processed
 
 
-def _sqlite_round(db_path: Path, *, worker_id: str) -> int:
+@contextmanager
+def _open_sqlite_txn(db_path: Path) -> Iterator[BusinessConnection]:
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        yield conn
+
+
+def _sqlite_round(db_path: Path, *, worker_id: str) -> int:
+    with _open_sqlite_txn(db_path) as conn:
         storage = get_media_storage(conn)
-        return run_publish_round(conn, worker_id=worker_id, storage=storage)
+    return run_publish_round(
+        lambda: _open_sqlite_txn(db_path), worker_id=worker_id, storage=storage
+    )
 
 
 def run_sqlite_forever(
@@ -251,9 +280,14 @@ def _pg_round(*, worker_id: str) -> int:  # pragma: no cover - process loop
     from app.db_pg import pg_transaction
 
     with pg_transaction() as raw_conn:
-        conn = BusinessConnection.postgres(raw_conn)
-        storage = get_media_storage(conn)
-        return run_publish_round(conn, worker_id=worker_id, storage=storage)
+        storage = get_media_storage(BusinessConnection.postgres(raw_conn))
+
+    @contextmanager
+    def open_txn() -> Iterator[BusinessConnection]:
+        with pg_transaction() as raw_conn:
+            yield BusinessConnection.postgres(raw_conn)
+
+    return run_publish_round(open_txn, worker_id=worker_id, storage=storage)
 
 
 def run_pg_forever(

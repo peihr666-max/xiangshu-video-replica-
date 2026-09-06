@@ -76,12 +76,8 @@ def upgrade() -> None:
             "platform IN ('douyin', 'wechat_channels')",
             name="ck_publish_accounts_platform",
         ),
-        sa.CheckConstraint(
-            "status IN ('connected', 'invalid')", name="ck_publish_accounts_status"
-        ),
-        sa.CheckConstraint(
-            "verify_requested IN (0, 1)", name="ck_publish_accounts_verify_flag"
-        ),
+        sa.CheckConstraint("status IN ('connected', 'invalid')", name="ck_publish_accounts_status"),
+        sa.CheckConstraint("verify_requested IN (0, 1)", name="ck_publish_accounts_verify_flag"),
     )
     op.create_index(
         "idx_publish_accounts_user_created",
@@ -127,8 +123,7 @@ def upgrade() -> None:
             name="ck_publish_records_platform",
         ),
         sa.CheckConstraint(
-            "status IN ('draft', 'queued', 'publishing', 'published', 'failed',"
-            " 'canceled')",
+            "status IN ('draft', 'queued', 'publishing', 'published', 'failed', 'canceled')",
             name="ck_publish_records_status",
         ),
         sa.CheckConstraint("attempt_count >= 0", name="ck_publish_records_attempts"),
