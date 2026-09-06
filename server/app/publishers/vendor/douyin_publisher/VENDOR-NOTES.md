@@ -13,7 +13,7 @@
 | `publish_options.py` | PublishOptions 参数模型 |
 | `sign_params.py` | msToken / a_bogus / ticket-guard 风控签名（Node 子进程池） |
 | `http_client.py` | curl_cffi TLS 指纹会话 |
-| `_reverse/*.js` | bdms/secsdk 逆向运行时（仅 JS；开发用 `*.py` 分析脚本未拷贝） |
+| `_reverse/bdms.min.js`、`_reverse/sdk-glue.js` | 运行时必需的逆向 bundle（a_bogus 虚拟机与 mssdk 映射）；其余 `_reverse` 参考产物**未引入**——其中 `ucenter_ticket.umd.js` 含 PEM 密钥头模板字符串，会触发静态凭据扫描，且运行时并不需要 |
 | `sign_a_bogus/`、`sign_mssdk/` | Node 签名脚本（运行时依赖 Node.js ≥ 18） |
 
 ## 未拷贝（及原因）
