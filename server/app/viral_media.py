@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 from dataclasses import dataclass, replace
@@ -58,15 +59,28 @@ class ViralMediaResult:
     cache_hit: bool
 
 
+def _storage_video_id(video_id: str) -> str:
+    """保留历史合法 key；仅把含危险路径段的 opaque ID 映射为稳定名称。"""
+    parts = video_id.split("/")
+    if (
+        "\\" not in video_id
+        and "\x00" not in video_id
+        and all(part not in {"", ".", ".."} for part in parts)
+    ):
+        return video_id
+    digest = hashlib.sha256(video_id.encode("utf-8")).hexdigest()
+    return f"unsafe-{digest}"
+
+
 def viral_media_key(platform: str, video_id: str, kind: str) -> str:
     extension = "mp3" if kind == "audio" else "mp4"
     if platform == PLATFORM_DOUYIN and kind == "video":
         extension = "browser.mp4"
-    return f"{VIRAL_STORAGE_PREFIX}/{platform}/{video_id}.{extension}"
+    return f"{VIRAL_STORAGE_PREFIX}/{platform}/{_storage_video_id(video_id)}.{extension}"
 
 
 def viral_cover_key(platform: str, video_id: str) -> str:
-    return f"{VIRAL_STORAGE_PREFIX}/cover/{platform}/{video_id}"
+    return f"{VIRAL_STORAGE_PREFIX}/cover/{platform}/{_storage_video_id(video_id)}"
 
 
 class ViralStorage(Protocol):
