@@ -1116,16 +1116,33 @@ def test_storage_provider_tester_preserves_put_failure_when_best_effort_cleanup_
     }
 
 
-def test_update_cos_settings_applies_lifecycle_rules(
+def test_update_cos_settings_removes_lifecycle_rules_for_permanent_storage(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """保存 COS 配置后下发桶生命周期规则：视频/项目素材 180 天过期，
-    users/（人物图片）不配规则即长期。"""
+    """保存 COS 配置后删除桶生命周期规则，所有媒体永久保存。"""
     calls: list[dict[str, object]] = []
 
     class RecordingLifecycleClient:
-        def put_bucket_lifecycle(self, **kwargs: object) -> None:
+        def get_bucket_lifecycle(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "Rule": [
+                    {
+                        "ID": "expire-project-media-180d",
+                        "Filter": {"Prefix": "projects/"},
+                        "Status": "Enabled",
+                        "Expiration": {"Days": 180},
+                    },
+                    {
+                        "ID": "expire-generation-results-180d",
+                        "Filter": {"Prefix": "generation-results/"},
+                        "Status": "Enabled",
+                        "Expiration": {"Days": 180},
+                    },
+                ]
+            }
+
+        def delete_bucket_lifecycle(self, **kwargs: object) -> None:
             calls.append(cast("dict[str, object]", kwargs))
 
     def fake_factory(config: object) -> CloudStorageAdapter:
@@ -1151,16 +1168,79 @@ def test_update_cos_settings_applies_lifecycle_rules(
     assert response.status_code == 200
     assert len(calls) == 1
     assert calls[0]["Bucket"] == "lifecycle-bucket"
-    configuration = cast("dict[str, object]", calls[0]["LifecycleConfiguration"])
-    rules = cast("list[dict[str, object]]", configuration["Rule"])
-    prefix_days = {
-        cast("dict[str, object]", rule["Filter"])["Prefix"]: cast(
-            "dict[str, object]", rule["Expiration"]
-        )["Days"]
-        for rule in rules
+    assert response.json()["lifecycle"] == {
+        "status": "removed",
+        "message": "已移除项目素材与成片的 180 天自动过期规则，按永久保存执行。",
     }
-    assert prefix_days == {"projects/": 180, "generation-results/": 180}
-    assert response.json()["lifecycle"]["status"] == "applied"
+
+
+def test_update_cos_settings_preserves_unrelated_lifecycle_rules(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[dict[str, object]] = []
+
+    class MixedLifecycleClient:
+        def get_bucket_lifecycle(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "Rule": [
+                    {
+                        "ID": "expire-project-media-180d",
+                        "Filter": {"Prefix": "projects/"},
+                        "Status": "Enabled",
+                        "Expiration": {"Days": 180},
+                    },
+                    {
+                        "ID": "abort-incomplete-uploads",
+                        "Filter": {"Prefix": "temporary/"},
+                        "Status": "Enabled",
+                        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+                    },
+                ]
+            }
+
+        def put_bucket_lifecycle(self, **kwargs: object) -> None:
+            writes.append(cast("dict[str, object]", kwargs))
+
+        def delete_bucket_lifecycle(self, **_kwargs: object) -> None:
+            raise AssertionError("有无关规则时不得删除整个生命周期配置")
+
+    monkeypatch.setattr(
+        "app.settings_routes.create_storage_adapter",
+        lambda config: CloudStorageAdapter(
+            cast("CloudStorageConfig", config), client=MixedLifecycleClient()
+        ),
+    )
+
+    response = client.put(
+        "/api/admin/settings/providers/cos",
+        headers=admin_headers(),
+        json={
+            "config": {
+                "access_key_id": "cos-id",
+                "secret_access_key": "cos-secret",
+                "bucket": "mixed-lifecycle-bucket",
+                "region": "ap-shanghai",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert writes == [
+        {
+            "Bucket": "mixed-lifecycle-bucket",
+            "LifecycleConfiguration": {
+                "Rule": [
+                    {
+                        "ID": "abort-incomplete-uploads",
+                        "Filter": {"Prefix": "temporary/"},
+                        "Status": "Enabled",
+                        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+                    }
+                ]
+            },
+        }
+    ]
 
 
 def test_update_cos_settings_lifecycle_failure_does_not_block_save(
@@ -1168,10 +1248,22 @@ def test_update_cos_settings_lifecycle_failure_does_not_block_save(
     conn: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """生命周期下发失败不得阻断配置保存：状态回 failed、配置落库、审计留痕。"""
+    """生命周期删除失败不得阻断配置保存：状态回 failed、配置落库、审计留痕。"""
 
     class FailingLifecycleClient:
-        def put_bucket_lifecycle(self, **kwargs: object) -> None:
+        def get_bucket_lifecycle(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "Rule": [
+                    {
+                        "ID": "expire-project-media-180d",
+                        "Filter": {"Prefix": "projects/"},
+                        "Status": "Enabled",
+                        "Expiration": {"Days": 180},
+                    }
+                ]
+            }
+
+        def delete_bucket_lifecycle(self, **kwargs: object) -> None:
             raise RuntimeError("lifecycle api down")
 
     monkeypatch.setattr(
@@ -1205,6 +1297,42 @@ def test_update_cos_settings_lifecycle_failure_does_not_block_save(
         ).fetchall()
     ]
     assert audit_actions == ["cos_lifecycle.failed"]
+
+
+def test_update_cos_settings_treats_missing_lifecycle_as_already_permanent(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MissingLifecycleError(RuntimeError):
+        def get_error_code(self) -> str:
+            return "NoSuchLifecycleConfiguration"
+
+    class AlreadyPermanentClient:
+        def get_bucket_lifecycle(self, **_kwargs: object) -> dict[str, object]:
+            raise MissingLifecycleError
+
+    monkeypatch.setattr(
+        "app.settings_routes.create_storage_adapter",
+        lambda config: CloudStorageAdapter(
+            cast("CloudStorageConfig", config), client=AlreadyPermanentClient()
+        ),
+    )
+
+    response = client.put(
+        "/api/admin/settings/providers/cos",
+        headers=admin_headers(),
+        json={
+            "config": {
+                "access_key_id": "cos-id",
+                "secret_access_key": "cos-secret",
+                "bucket": "permanent-bucket",
+                "region": "ap-shanghai",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["lifecycle"]["status"] == "removed"
 
 
 def test_masked_secret_roundtrip_does_not_overwrite_saved_secret(

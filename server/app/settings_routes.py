@@ -194,19 +194,19 @@ class StorageProviderTester:
         return self.fallback.paid_test(provider, config)
 
 
-def apply_cos_lifecycle_rules(
+def remove_cos_lifecycle_rules(
     config: dict[str, str],
     *,
     actor_id: str,
 ) -> dict[str, str]:
-    """保存 COS 配置后对齐桶生命周期规则；下发失败不阻断配置保存。"""
+    """保存 COS 配置后删除自动过期规则；失败不阻断配置保存。"""
     try:
         adapter = create_storage_adapter(cloud_storage_config_from_settings("cos", config))
     except (ValueError, StorageBackendUnavailable) as exc:
-        logger.warning("COS lifecycle rules skipped: %s", exc, exc_info=True)
+        logger.warning("COS lifecycle rule removal skipped: %s", exc, exc_info=True)
         return {
             "status": "skipped",
-            "message": "对象存储配置不完整或客户端初始化失败，已跳过生命周期规则下发。",
+            "message": "对象存储配置不完整或客户端初始化失败，已跳过旧媒体过期规则清理。",
         }
     cloud_adapter = adapter if isinstance(adapter, CloudStorageAdapter) else None
     if cloud_adapter is None:
@@ -215,16 +215,16 @@ def apply_cos_lifecycle_rules(
             "message": "当前存储适配器不支持生命周期规则。",
         }
     try:
-        cloud_adapter.apply_lifecycle_rules(actor_id=actor_id)
+        cloud_adapter.remove_lifecycle_rules(actor_id=actor_id)
     except StorageBackendUnavailable as exc:
-        logger.warning("COS lifecycle rules apply failed: %s", exc)
+        logger.warning("COS lifecycle rules removal failed: %s", exc)
         return {
             "status": "failed",
-            "message": "生命周期规则下发失败；配置已保存，可重新保存以重试。",
+            "message": "自动过期规则删除失败；配置已保存，可重新保存以重试。",
         }
     return {
-        "status": "applied",
-        "message": "人物图片长期保留；视频与项目素材 180 天后自动删除。",
+        "status": "removed",
+        "message": "已移除项目素材与成片的 180 天自动过期规则，按永久保存执行。",
     }
 
 
@@ -307,7 +307,7 @@ def update_provider_settings(
 
     lifecycle = None
     if provider_name == "cos":
-        lifecycle = apply_cos_lifecycle_rules(incoming_config, actor_id=admin.id)
+        lifecycle = remove_cos_lifecycle_rules(incoming_config, actor_id=admin.id)
         write_audit_log(
             conn,
             actor_user_id=admin.id,

@@ -20,6 +20,26 @@ StorageProvider = Literal["cos", "local", "fake"]
 
 logger = logging.getLogger(__name__)
 
+_LEGACY_MEDIA_RETENTION_RULE_IDS = {
+    "expire-project-media-180d",
+    "expire-generation-results-180d",
+}
+_LEGACY_MEDIA_RETENTION_PREFIXES = {"projects/", "generation-results/"}
+_LEGACY_MEDIA_RETENTION_DAYS = 180
+
+
+def _is_legacy_media_retention_rule(rule: dict[str, Any]) -> bool:
+    if rule.get("ID") in _LEGACY_MEDIA_RETENTION_RULE_IDS:
+        return True
+    lifecycle_filter = rule.get("Filter")
+    expiration = rule.get("Expiration")
+    return (
+        isinstance(lifecycle_filter, dict)
+        and lifecycle_filter.get("Prefix") in _LEGACY_MEDIA_RETENTION_PREFIXES
+        and isinstance(expiration, dict)
+        and expiration.get("Days") == _LEGACY_MEDIA_RETENTION_DAYS
+    )
+
 
 class StoragePermissionError(PermissionError):
     """Raised when the business layer denies object access."""
@@ -142,27 +162,6 @@ class CloudStorageConfig:
 
 def create_storage_adapter(config: CloudStorageConfig) -> StorageAdapter:
     return CloudStorageAdapter(config)
-
-
-# COS 生命周期策略：人物图片（users/ 前缀：身份素材 + 角色版本图）长期
-# 保留——不配置规则即永久；项目源视频/首帧与生成成片按 180 天（6 个月）
-# 到期自动删除。COS 规则只认前缀，新增顶层业务前缀时需同步评估这里。
-COS_MEDIA_RETENTION_DAYS = 180
-
-COS_LIFECYCLE_RULES: list[dict[str, object]] = [
-    {
-        "ID": "expire-project-media-180d",
-        "Filter": {"Prefix": "projects/"},
-        "Status": "Enabled",
-        "Expiration": {"Days": COS_MEDIA_RETENTION_DAYS},
-    },
-    {
-        "ID": "expire-generation-results-180d",
-        "Filter": {"Prefix": "generation-results/"},
-        "Status": "Enabled",
-        "Expiration": {"Days": COS_MEDIA_RETENTION_DAYS},
-    },
-]
 
 
 STORAGE_ROOT_ENV = "VIDEO_REPLICA_STORAGE_ROOT"
@@ -608,17 +607,38 @@ class CloudStorageAdapter(_BaseStorageAdapter):
     ) -> StoredObject:
         return super().archive_result(source, destination_key=destination_key, actor_id=actor_id)
 
-    def apply_lifecycle_rules(self, *, actor_id: str | None = None) -> None:
-        """把媒体保留策略下发为桶级生命周期规则（覆盖式对齐，幂等）。"""
+    def remove_lifecycle_rules(self, *, actor_id: str | None = None) -> None:
+        """只移除历史媒体 180 天过期规则，保留桶内其他管理规则。"""
         try:
-            self._client.put_bucket_lifecycle(
-                Bucket=self.bucket,
-                LifecycleConfiguration={"Rule": COS_LIFECYCLE_RULES},
-            )
+            response = self._client.get_bucket_lifecycle(Bucket=self.bucket)
         except Exception as exc:
-            raise StorageBackendUnavailable("cloud lifecycle rule apply failed") from exc
+            error_code = getattr(exc, "get_error_code", lambda: None)()
+            if error_code in {"NoSuchLifecycle", "NoSuchLifecycleConfiguration"}:
+                response = {"Rule": []}
+            else:
+                raise StorageBackendUnavailable("cloud lifecycle rule read failed") from exc
+
+        raw_rules = response.get("Rule", []) if isinstance(response, dict) else None
+        if isinstance(raw_rules, dict):
+            rules = [raw_rules]
+        elif isinstance(raw_rules, list) and all(isinstance(rule, dict) for rule in raw_rules):
+            rules = raw_rules
+        else:
+            raise StorageBackendUnavailable("cloud lifecycle response is invalid")
+        retained = [rule for rule in rules if not _is_legacy_media_retention_rule(rule)]
+        if len(retained) != len(rules):
+            try:
+                if retained:
+                    self._client.put_bucket_lifecycle(
+                        Bucket=self.bucket,
+                        LifecycleConfiguration={"Rule": retained},
+                    )
+                else:
+                    self._client.delete_bucket_lifecycle(Bucket=self.bucket)
+            except Exception as exc:
+                raise StorageBackendUnavailable("cloud lifecycle rule removal failed") from exc
         self._audit(
-            "lifecycle_rules.applied",
+            "lifecycle_rules.removed",
             "succeeded",
             f"{self.bucket}/lifecycle-rules",
             actor_id,
