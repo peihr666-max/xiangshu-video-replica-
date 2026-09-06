@@ -323,7 +323,7 @@ describe("V1.4 工作台新版首页布局", () => {
     description: "乡墅爆款案例",
   }));
 
-  it("展示新版主标题、居中辅助文案、六个竖屏爆款与四个快捷入口", () => {
+  it("展示新版主标题、居中辅助文案、五个竖屏爆款与四个快捷入口", () => {
     const value = studio(undefined, {
       state: createState("workbench"),
       data: data([runningTask], videos),
@@ -341,11 +341,11 @@ describe("V1.4 工作台新版首页布局", () => {
       screen.getByText("提取文案进入文案工坊，开始复刻进入分镜工作区。"),
     ).toHaveClass("studio-start-helper");
     expect(
-      screen.getByRole("heading", { name: "爆款灵感精选" }),
+      screen.getByRole("heading", { name: "爆款视频精选" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("灵感视频 6")).toBeInTheDocument();
-    expect(screen.queryByText("灵感视频 7")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /用它复刻/ })).toHaveLength(6);
+    expect(screen.getByText("灵感视频 5")).toBeInTheDocument();
+    expect(screen.queryByText("灵感视频 6")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /用它复刻/ })).toHaveLength(5);
     expect(
       screen.getByRole("button", { name: "查看全部爆款" }),
     ).toBeInTheDocument();

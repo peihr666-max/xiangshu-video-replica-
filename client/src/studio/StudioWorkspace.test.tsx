@@ -88,6 +88,56 @@ vi.mock("./LiveWorkspacePanel", () => ({
 }));
 
 describe("V1.4 workspace integration", () => {
+  it("保持共享壳层尺寸稳定，避免路由切换时 Logo 和标题跳动", () => {
+    const { container } = render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("workbench")}
+      />,
+    );
+    const shell = container.querySelector(".studio-shell");
+    const main = container.querySelector(".studio-main");
+    const sidebar = container.querySelector(".studio-sidebar");
+
+    expect(shell?.className).not.toContain("studio-route-");
+    expect(main).toHaveClass("studio-route-workbench");
+    expect(sidebar?.closest("[class*='studio-route-']")).toBeNull();
+
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "主要导航" })).getByRole(
+        "button",
+        { name: /任务中心/ },
+      ),
+    );
+
+    expect(shell?.className).not.toContain("studio-route-");
+    expect(main).toHaveClass("studio-route-tasks");
+    expect(sidebar?.closest("[class*='studio-route-']")).toBeNull();
+  });
+
+  it("左下角与右上角使用同一个账号头像", () => {
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("workbench")}
+      />,
+    );
+
+    const accountAvatar = screen
+      .getByRole("button", { name: "用户档案，积分 2680" })
+      .querySelector("img");
+    const topAvatar = screen
+      .getByRole("button", { name: "用户档案" })
+      .querySelector("img");
+
+    expect(accountAvatar).not.toBeNull();
+    expect(accountAvatar?.getAttribute("src")).toBe(
+      topAvatar?.getAttribute("src"),
+    );
+  });
+
   it("publishing accounts stay in account settings, not the publishing editor", () => {
     render(
       <StudioWorkspace

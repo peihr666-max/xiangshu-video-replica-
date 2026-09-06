@@ -177,7 +177,7 @@ export function WorkbenchPage() {
   const active = data.tasks.filter((task) =>
     ["running", "queued", "uncertain"].includes(task.status),
   );
-  const featuredVideos = data.videos.slice(0, 6);
+  const featuredVideos = data.videos.slice(0, 5);
   const begin = (mode: "copy" | "replica") => {
     if (review) {
       navigate(mode);
@@ -409,7 +409,7 @@ export function WorkbenchPage() {
             )}
           </Panel>
           <div className="studio-home-section-heading">
-            <h2>爆款灵感精选</h2>
+            <h2>爆款视频精选</h2>
             <Button
               variant="quiet"
               aria-label="查看全部爆款"

@@ -130,6 +130,25 @@ const navGroups: {
   },
 ];
 
+function WorkspaceUserAvatar({
+  currentUser,
+  review,
+}: {
+  currentUser: Props["currentUser"];
+  review: boolean;
+}) {
+  if (review) {
+    return <img className="studio-user-avatar" src="/studio/li.png" alt="" />;
+  }
+  return (
+    <span className="studio-user-initial">
+      {currentUser.display_name?.slice(0, 1) ||
+        currentUser.username?.slice(0, 1) ||
+        "我"}
+    </span>
+  );
+}
+
 export function StudioWorkspace({
   currentUser,
   customerAccount,
@@ -647,7 +666,7 @@ export function StudioWorkspace({
   return (
     <StudioContext.Provider value={context}>
       <div
-        className={`studio-shell studio-route-${state.page} ${menuOpen ? "studio-shell--menu-open" : ""}`}
+        className={`studio-shell ${menuOpen ? "studio-shell--menu-open" : ""}`}
       >
         <aside className="studio-sidebar">
           <button
@@ -704,20 +723,14 @@ export function StudioWorkspace({
             aria-label={`用户档案，积分 ${review ? "2680" : "—"}`}
             onClick={() => navigate("profile")}
           >
-            <span className="studio-user-initial">
-              {review
-                ? "S"
-                : currentUser.display_name?.slice(0, 1) ||
-                  currentUser.username?.slice(0, 1) ||
-                  "我"}
-            </span>
+            <WorkspaceUserAvatar currentUser={currentUser} review={review} />
             <span className="studio-account-points">
               <small>积分</small>
               <strong>{review ? "2680" : "—"}</strong>
             </span>
           </button>
         </aside>
-        <main className="studio-main">
+        <main className={`studio-main studio-route-${state.page}`}>
           <div className="studio-topbar">
             <button
               type="button"
@@ -759,11 +772,7 @@ export function StudioWorkspace({
               className="studio-top-avatar"
               onClick={() => navigate("profile")}
             >
-              {review ? (
-                <img src="/studio/li.png" alt="" />
-              ) : (
-                <Icon name="person" />
-              )}
+              <WorkspaceUserAvatar currentUser={currentUser} review={review} />
             </button>
           </div>
           <div className="studio-stage">
