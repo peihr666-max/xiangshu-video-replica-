@@ -294,9 +294,11 @@ class DashScopeFunAsr:
 def load_asr_configuration(conn: BusinessConnection) -> AsrConfiguration:
     """Fail-fast credential read (enqueue path); secrets never enter task rows."""
     if _provider_override() == "fake":
+        # fake 模式从不发起真实请求；占位值只满足 dataclass 必填，
+        # 且刻意短于 secret 扫描器的最小长度阈值。
         return AsrConfiguration(
             base_url=DASHSCOPE_DEFAULT_BASE_URL,
-            api_key="fake-key",
+            api_key="fake",
             model=DASHSCOPE_DEFAULT_MODEL,
             flash_model=DASHSCOPE_DEFAULT_FLASH_MODEL,
             flash_threshold_sec=DASHSCOPE_FLASH_THRESHOLD_SECONDS,
