@@ -4,7 +4,7 @@
 
 素材库已形成服务端列表、按 ID 恢复、通用上传、预览下载、创作引用和基础管理闭环。口播页可以直接上传 MP3 并把真实资产 ID 写入草稿。新 H3 成片会归档到当前应用存储，归档成功后才结算；归档失败保留供应商结果并有限重试。代码不再创建项目素材与成片的 180 天自动过期规则，保存 COS 配置时会读取现有生命周期配置，仅移除历史媒体 180 天规则；其他业务规则原样保留。
 
-证据层级：素材库代码与自动化为 `AUTOMATED_VERIFIED`；真实生产 COS 生命周期删除为 `REAL_CHAIN_VERIFIED`。
+证据层级：素材库代码与自动化为 `AUTOMATED_VERIFIED`；真实生产 COS 生命周期删除及图片素材上传为 `REAL_CHAIN_VERIFIED`。
 
 ## 主要实现
 
@@ -40,9 +40,11 @@
 - 当前应用凭据仍无法读取或修改桶生命周期，自动化查询/清理能力仍受权限限制；
 - 该权限限制不影响本次主账号控制台已完成的生产变更，但后续若要由应用自动管理生命周期，仍需给 API 执行身份授予相应权限。
 
+2026-09-07，用户明确确认调整生产 COS 上传权限。主账号在 CAM 自定义策略 `VideoReplicaCosObjectAccess` 中保留原有 `projects/*`、`generation-results/*`、`users/*` 资源及 `PutObject`、`GetObject`、`HeadObject`、`DeleteObject` 操作，只新增 `materials/*` 资源，并保存为当前第 4 版。随后使用隔离数据库执行真实生产 COS 图片素材上传：预签名 PUT 返回 HTTP 200，完成接口返回 `media_type=image`、`delivery=stored`、`saved=true`、`provider=cos`；验证对象随后通过同一应用身份删除。因此素材图片上传的生产 COS 权限与应用闭环达到 `REAL_CHAIN_VERIFIED`，且没有在业务数据库或桶内留下测试素材。
+
 ## 未执行的真实链路
 
-- 没有调用付费 Metaso 生成接口，也没有向生产 COS 上传测试成片；这两项仍需凭据与生产环境 UAT。
+- 没有调用付费 Metaso 生成接口，也没有向生产 COS 上传测试成片；图片素材上传已经实测，成片链路仍需凭据与生产环境 UAT。
 - 已存在的历史 `DIRECT` 任务继续兼容读取，不在本次代码变更中自动回迁到 COS。
 
 生产变更记录另见 `docs/evidence/cos-permanent-retention-production-2026-09-06.md`。
