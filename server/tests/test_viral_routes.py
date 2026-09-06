@@ -254,3 +254,88 @@ def test_media_unknown_video_returns_404(client: tuple[TestClient, StubViralClie
     )
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "VIRAL_VIDEO_NOT_FOUND"
+
+
+class _StubLocalStorage:
+    """最小本地存储桩：head/get 即可驱动签名文件路由."""
+
+    def __init__(self, objects: dict[str, tuple[bytes, str]]) -> None:
+        self.objects = objects
+
+    def head_object(self, key):
+        from types import SimpleNamespace
+
+        entry = self.objects.get(key)
+        if entry is None:
+            return None
+        content, content_type = entry
+        return SimpleNamespace(
+            key=key,
+            uri=f"local://local-private/{key}",
+            size=len(content),
+            content_type=content_type,
+        )
+
+    def get_object(self, key):
+        return self.objects[key][0]
+
+
+def test_local_media_url_converts_to_signed_file_route(
+    client: tuple[TestClient, StubViralClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    http, _ = client
+
+    class StubPipeline:
+        def __init__(self, *, client, storage) -> None:
+            pass
+
+        def fetch(self, video):
+            from app.viral_media import ViralMediaResult
+
+            return ViralMediaResult(
+                kind="audio",
+                storage_uri=f"local://local-private/viral/douyin/{video.video_id}.mp3",
+                url=f"local://local-private/viral/douyin/{video.video_id}.mp3?method=GET&expires=1",
+                size=16,
+                content_type="audio/mpeg",
+                cache_hit=False,
+            )
+
+    import app.viral_routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "settings_encryption_key",
+        lambda: "MTIzNDU2Nzg5MGFiY2RlZjAxMjM0NTY3ODkwYWJjZGVm",
+    )
+    video_id = "dy-自建房预算-0"
+    storage_key = f"viral/douyin/{video_id}.mp3"
+    monkeypatch.setattr(routes, "ViralMediaPipeline", StubPipeline)
+    monkeypatch.setattr(
+        routes,
+        "get_media_storage",
+        lambda conn: _StubLocalStorage({storage_key: (b"ID3-fake-audio", "audio/mpeg")}),
+    )
+    response = http.post(
+        "/api/viral/videos/media",
+        json={"platform": "douyin", "videoId": video_id},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+    url = response.json()["url"]
+    assert url.startswith("/api/viral/videos/media/file?key=viral/douyin/")
+    # 签名 URL 自带授权，浏览器直接 GET 可取回字节。
+    file_response = http.get(url)
+    assert file_response.status_code == 200
+    assert file_response.content == b"ID3-fake-audio"
+    assert file_response.headers["content-type"] == "audio/mpeg"
+    # 篡改签名被拒绝。
+    tampered = url.replace("sig=", "sig=x")
+    assert http.get(tampered).status_code == 403
+    # 非 viral 前缀的对象 key 被拒绝。
+    assert (
+        http.get(
+            "/api/viral/videos/media/file?key=projects%2Fx.bin&expires=9999999999&user_id=admin1&sig=abc"
+        ).status_code
+        == 403
+    )

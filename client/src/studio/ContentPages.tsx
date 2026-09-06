@@ -35,6 +35,38 @@ function viralLikesLabel(video: StudioVideo) {
   return video.likeDisplay ?? formatCount(video.likes);
 }
 
+function ViralPoster({
+  video,
+  className,
+}: {
+  video: StudioVideo;
+  className?: string;
+}) {
+  const [broken, setBroken] = useState(false);
+  if (!video.poster || broken) {
+    return (
+      <span
+        className={
+          className
+            ? `viral-card-cover-empty ${className}`
+            : "viral-card-cover-empty"
+        }
+      >
+        <Icon name="video" />
+      </span>
+    );
+  }
+  return (
+    <img
+      alt=""
+      className={className}
+      loading="lazy"
+      onError={() => setBroken(true)}
+      src={video.poster}
+    />
+  );
+}
+
 function ViralCard({ video }: { video: StudioVideo }) {
   const { state, navigate, patchDraft, patchState } = useStudio();
   const saved = state.favorites.includes(video.id);
@@ -57,13 +89,7 @@ function ViralCard({ video }: { video: StudioVideo }) {
         onClick={openDetail}
         aria-label={`查看详情 ${video.title}`}
       >
-        {video.poster ? (
-          <img alt="" loading="lazy" src={video.poster} />
-        ) : (
-          <span className="viral-card-cover-empty">
-            <Icon name="video" />
-          </span>
-        )}
+        <ViralPoster video={video} />
         <span className="viral-card-duration">{video.duration}</span>
         <span className="viral-card-platform">{video.platform}</span>
       </button>
@@ -371,13 +397,7 @@ export function ViralDetailPage() {
       </header>
       <section className="content-detail-grid">
         <div className="content-player content-player-viral">
-          {video.poster ? (
-            <img alt={video.title} src={video.poster} />
-          ) : (
-            <span className="viral-card-cover-empty">
-              <Icon name="video" />
-            </span>
-          )}
+          <ViralPoster video={video} className="content-player-viral-poster" />
           <span>▶ {video.duration}</span>
         </div>
         <Panel className="content-detail-info">

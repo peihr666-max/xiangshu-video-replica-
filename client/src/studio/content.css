@@ -1028,3 +1028,15 @@
 .viral-media-status.is-error {
   color: #e07b6a;
 }
+
+.content-player-viral-poster {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+span.viral-card-cover-empty.content-player-viral-poster {
+  position: absolute;
+  inset: 0;
+}

@@ -10,17 +10,22 @@
 
 from __future__ import annotations
 
+import hmac
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
+from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from app.auth import AuthenticatedUser, Database
 from app.media_routes import get_media_storage
+from app.settings import settings_encryption_key
+from app.storage import StorageBackendUnavailable, local_download_signature
 from app.viral_keywords import viral_categories, viral_keyword
-from app.viral_media import ViralMediaPipeline, ViralMediaResult
+from app.viral_media import VIRAL_MEDIA_URL_TTL, ViralMediaPipeline, ViralMediaResult
 from app.viral_tikhub import (
     PLATFORM_DOUYIN,
     PLATFORM_WECHAT,
@@ -271,7 +276,87 @@ def fetch_viral_video_media(
         ) from exc
     return ViralMediaResponse(
         kind=result.kind,
-        url=result.url,
+        url=_browser_playable_url(result.url, actor),
         contentType=result.content_type,
         cacheHit=result.cache_hit,
+    )
+
+
+_VIRAL_FILE_SCHEME = "local://"
+_VIRAL_KEY_PREFIX = "viral/"
+_VIRAL_SIGNATURE_ASSET = "viral-media"
+_VIRAL_SIGNATURE_EPOCH = "viral"
+
+
+def _browser_playable_url(intent_url: str, actor: AuthenticatedUser) -> str:
+    """把本地存储的 ``local://`` URI 转成浏览器可用的签名文件路由.
+
+    云存储（COS）返回预签名 HTTPS 直链，原样返回；本地盘（桌面单机）
+    的 ``local://`` URI 浏览器无法访问，改发自带 HMAC 的文件端点。
+    """
+    if intent_url.startswith(("http://", "https://")):
+        return intent_url
+    if not intent_url.startswith(_VIRAL_FILE_SCHEME):
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "VIRAL_MEDIA_URL_UNSUPPORTED"},
+        )
+    # urlsplit 会把 local:// 后的 bucket 解析成 hostname，path 即 /<key>。
+    path = urlsplit(intent_url).path
+    key = path.lstrip("/")
+    if not key.startswith(_VIRAL_KEY_PREFIX):
+        raise HTTPException(status_code=502, detail={"code": "VIRAL_MEDIA_URL_UNSUPPORTED"})
+    expires_at = str(int(time.time()) + int(VIRAL_MEDIA_URL_TTL.total_seconds()))
+    signature = local_download_signature(
+        key,
+        expires_at,
+        user_id=actor.id,
+        asset_id=_VIRAL_SIGNATURE_ASSET,
+        session_epoch=_VIRAL_SIGNATURE_EPOCH,
+        secret=settings_encryption_key(),
+    )
+    return (
+        f"/api/viral/videos/media/file?key={quote(key)}"
+        f"&expires={expires_at}&user_id={quote(actor.id)}&sig={signature}"
+    )
+
+
+@router.get("/videos/media/file")
+def download_viral_media_file(
+    conn: Database,
+    key: Annotated[str, Query(min_length=1)],
+    expires: Annotated[str, Query(min_length=1, max_length=20)],
+    user_id: Annotated[str, Query(min_length=1)],
+    sig: Annotated[str, Query(min_length=1)],
+) -> Response:
+    # 签名即授权（绑定 user_id + 过期时间），与本地资产签名下载同一模式；
+    # 浏览器 <audio>/<video> 标签无法携带身份头，故不设登录依赖。
+    if int(expires) < int(time.time()):
+        raise HTTPException(status_code=403, detail={"code": "VIRAL_MEDIA_FORBIDDEN"})
+    if not key.startswith(_VIRAL_KEY_PREFIX):
+        raise HTTPException(status_code=403, detail={"code": "VIRAL_MEDIA_FORBIDDEN"})
+    expected = local_download_signature(
+        key,
+        expires,
+        user_id=user_id,
+        asset_id=_VIRAL_SIGNATURE_ASSET,
+        session_epoch=_VIRAL_SIGNATURE_EPOCH,
+        secret=settings_encryption_key(),
+    )
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(status_code=403, detail={"code": "VIRAL_MEDIA_FORBIDDEN"})
+    storage = get_media_storage(conn)
+    try:
+        stored = storage.head_object(key)
+        content = storage.get_object(key)
+    except StorageBackendUnavailable:
+        raise HTTPException(
+            status_code=503, detail={"code": "STORAGE_BACKEND_UNAVAILABLE"}
+        ) from None
+    if stored is None:
+        raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
+    return Response(
+        content=content,
+        media_type=stored.content_type,
+        headers={"Cache-Control": "private, max-age=3600"},
     )

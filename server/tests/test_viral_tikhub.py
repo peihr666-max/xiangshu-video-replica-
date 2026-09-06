@@ -17,6 +17,7 @@ from app.viral_tikhub import (
     ViralSourceClient,
     ViralSourceError,
     ViralSourceUnavailable,
+    _pick_image_url,
     extract_wechat_tags,
     normalize_douyin_aweme,
     normalize_wechat_item,
@@ -102,6 +103,21 @@ def test_pick_douyin_play_url_prefers_lowest_resolution() -> None:
         "play_addr": {"url_list": ["https://cdn/fallback.mp4"]},
     }
     assert pick_douyin_play_url(video_block) == "https://cdn/540.mp4"
+
+
+def test_pick_image_url_prefers_renderable_format_and_host() -> None:
+    block = {
+        "url_list": [
+            "https://p3-c-sign.douyinpic.com/a.heic?sig=1",
+            "https://p96-sign.douyinpic.com/a.webp?sig=2",
+            "https://p3-c-sign.douyinpic.com/b.webp?sig=3",
+        ]
+    }
+    assert _pick_image_url(block) == "https://p96-sign.douyinpic.com/a.webp?sig=2"
+    # 全是 heic 时退回首项（Safari 可渲染，Chromium 走前端占位）。
+    assert _pick_image_url({"url_list": ["https://x/a.heic"]}) == "https://x/a.heic"
+    assert _pick_image_url(None) is None
+    assert _pick_image_url({"url_list": []}) is None
 
 
 def test_pick_douyin_play_url_falls_back_to_play_addr() -> None:

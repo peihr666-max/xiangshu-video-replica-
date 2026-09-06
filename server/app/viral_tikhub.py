@@ -41,6 +41,10 @@ WECHAT_SEARCH_PAGES = 3
 _WECHAT_DETAIL_TIMEOUT_SECONDS = 30.0
 
 _EM_TAG_PATTERN = re.compile(r"<em[^>]*>|</em>", re.IGNORECASE)
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +84,26 @@ class UrllibViralHttpTransport(ViralHttpTransport):
         body: bytes | None = None,
     ) -> bytes:
         try:
-            request = Request(url, data=body, headers=dict(headers), method=method)
+            # 上游网关（Cloudflare 1010）拦截默认 Python-urllib UA，必须伪装浏览器。
+            request = Request(
+                url,
+                data=body,
+                headers={**dict(headers), "User-Agent": _BROWSER_USER_AGENT},
+                method=method,
+            )
             with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
                 return cast(bytes, response.read())
         except HTTPError as exc:
-            logger.warning("Viral source request failed with HTTP status %s", exc.code)
+            detail = ""
+            try:
+                detail = exc.read()[:500].decode("utf-8", "replace")
+            except OSError:
+                pass
+            logger.warning(
+                "Viral source request failed with HTTP status %s: %s",
+                exc.code,
+                detail,
+            )
             raise ViralSourceError("爆款数据源暂时不可用，请稍后重试") from exc
         except (TimeoutError, URLError, OSError) as exc:
             logger.warning("Viral source request failed: %s", type(exc).__name__)
@@ -234,6 +253,27 @@ def _first_url(block: Mapping[str, Any] | None) -> str | None:
     return None
 
 
+def _pick_image_url(block: Mapping[str, Any] | None) -> str | None:
+    """封面/头像择址：优先浏览器可渲染的格式与可达主机.
+
+    上游偶发返回 ``.heic`` 模板（Chromium 无法渲染）与 ``c-sign`` 主机
+    （部分网络不可达）的变体，按「非 heic > 非 c-sign > 首个」排序取优.
+    """
+    if not isinstance(block, Mapping):
+        return None
+    urls = block.get("url_list")
+    if not isinstance(urls, list) or not urls:
+        return None
+    strings = [url for url in urls if isinstance(url, str)]
+    if not strings:
+        return None
+
+    def rank(url: str) -> tuple[int, int]:
+        return (".heic" in url, "c-sign" in url)
+
+    return sorted(strings, key=rank)[0]
+
+
 def pick_douyin_play_url(video_block: Mapping[str, Any]) -> str | None:
     """从 bit_rate 多档分辨率里取高度最小的直链（最低分辨率优先）."""
     gears = video_block.get("bit_rate")
@@ -304,9 +344,9 @@ def normalize_douyin_aweme(aweme: Mapping[str, Any], category: str) -> ViralVide
     author = aweme.get("author")
     author_block = author if isinstance(author, Mapping) else {}
     avatar = (
-        _first_url(author_block.get("avatar_thumb"))
-        or _first_url(author_block.get("avatar_medium"))
-        or _first_url(author_block.get("avatar_larger"))
+        _pick_image_url(author_block.get("avatar_thumb"))
+        or _pick_image_url(author_block.get("avatar_medium"))
+        or _pick_image_url(author_block.get("avatar_larger"))
     )
     music = aweme.get("music")
     music_block = music if isinstance(music, Mapping) else {}
@@ -321,7 +361,7 @@ def normalize_douyin_aweme(aweme: Mapping[str, Any], category: str) -> ViralVide
         author=str(author_block.get("nickname") or "").strip(),
         author_avatar=avatar,
         verified=bool(author_block.get("is_verified")),
-        cover_url=_first_url(video_block.get("cover")),
+        cover_url=_pick_image_url(video_block.get("cover")),
         duration_ms=max(duration_ms, 0),
         likes=int(stats.get("digg_count") or 0),
         comments=int(stats.get("comment_count") or 0),
