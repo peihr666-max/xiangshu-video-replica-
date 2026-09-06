@@ -1,6 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
 import type { GenerationBatch } from "../api";
+import * as api from "../api";
+import type { CustomerCredentialStore } from "../customer/useCustomerSession";
 import { reviewUser } from "./fixtures";
 
 vi.mock("../TaskRecordsPanel", () => ({
@@ -16,6 +18,8 @@ vi.mock("../TaskRecordsPanel", () => ({
 }));
 
 import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
+
+afterEach(() => vi.restoreAllMocks());
 
 it("任务面板消费交接后回传给工作区控制器清除暂存批次", () => {
   const onHandoffConsumed = vi.fn();
@@ -35,4 +39,69 @@ it("任务面板消费交接后回传给工作区控制器清除暂存批次", (
 
   fireEvent.click(screen.getByRole("button", { name: "消费交接" }));
   expect(onHandoffConsumed).toHaveBeenCalledTimes(1);
+});
+
+it("客户账号进入使用记录时读取客户钱包并能打开预设充值", async () => {
+  const sessionTokenText = "workspace-wallet-fixture-session";
+  const store: CustomerCredentialStore = {
+    loadDeviceCredentialToken: vi.fn().mockResolvedValue(null),
+    loadSessionToken: vi.fn().mockResolvedValue(sessionTokenText),
+    saveActivation: vi.fn(),
+    saveSessionToken: vi.fn(),
+    clearSessionToken: vi.fn(),
+    clearAllCredentials: vi.fn(),
+    deviceInstanceId: vi.fn().mockResolvedValue("workspace-wallet-fixture"),
+    devicePlatform: () => "windows",
+  };
+  const customerWallet = vi.spyOn(api, "customerGetWallet").mockResolvedValue({
+    available_credits: 12,
+    reserved_credits: 2,
+    internal_unit_price_fen: 1000,
+    min_recharge_fen: 10000,
+    recharge_step_fen: 1000,
+  });
+  const internalWallet = vi
+    .spyOn(api, "getWallet")
+    .mockRejectedValue(new Error("客户不应请求内部钱包"));
+  const emptyPage = { items: [], total: 0, limit: 20, offset: 0 };
+  vi.spyOn(api, "customerListWalletTransactions").mockResolvedValue(emptyPage);
+  vi.spyOn(api, "customerListRechargeOrders").mockResolvedValue(emptyPage);
+  render(
+    <LiveWorkspacePanel
+      currentUser={reviewUser}
+      customerAccount={{
+        devices: null,
+        deviceError: "",
+        profile: null,
+        store,
+        onApprovePairing: vi.fn(),
+        onDismissPairing: vi.fn(),
+        onProfileUpdated: vi.fn(),
+        onRefreshDevices: vi.fn(),
+        onResetActivationCode: vi.fn(),
+        onSessionExpired: vi.fn(),
+        onUnbind: vi.fn(),
+        onUpdateProfile: vi.fn(),
+      }}
+      onBatchCreated={vi.fn()}
+      onBusyChange={vi.fn()}
+      onClose={vi.fn()}
+      onHandoffConsumed={vi.fn()}
+      onProjectSelected={vi.fn()}
+      onRefresh={vi.fn()}
+      panel="wallet"
+    />,
+  );
+
+  expect(await screen.findByText("10元 / 条")).toBeInTheDocument();
+  expect(screen.getByText("冻结 2 条")).toBeInTheDocument();
+  expect(customerWallet).toHaveBeenCalledWith({
+    kind: "session",
+    token: sessionTokenText,
+  });
+  expect(internalWallet).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole("button", { name: "充值100元" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("spinbutton")).toHaveValue(100);
 });
