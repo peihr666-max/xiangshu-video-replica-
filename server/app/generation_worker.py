@@ -382,9 +382,7 @@ def run_worker_once(
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
                 return processed
-        script_from_audio_lease = acquire_script_from_audio_task(
-            conn, worker_id=worker_id
-        )
+        script_from_audio_lease = acquire_script_from_audio_task(conn, worker_id=worker_id)
         if script_from_audio_lease is not None:
             audio_submission_started = False
             try:
