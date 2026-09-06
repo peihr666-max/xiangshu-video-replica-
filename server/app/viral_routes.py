@@ -15,9 +15,9 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
 from typing import Annotated, Any, Literal
@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import AuthenticatedUser, Database
 from app.db import connect_database
-from app.db_pg import DATABASE_URL_ENV, pg_transaction
+from app.db_pg import DATABASE_URL_ENV, get_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media_routes import api_base_url, get_media_storage
 from app.settings import settings_encryption_key
@@ -192,6 +192,27 @@ def _open_worker_connection() -> tuple[BusinessConnection, Callable[[], None]]:
     return conn, conn.close
 
 
+@contextmanager
+def _refresh_connection(request_conn: Database) -> Iterator[BusinessConnection]:
+    """回源期间改用独立连接，请求事务内不做外呼与平台锁等待.
+
+    上游回源是数十秒级外呼：若在请求级 PG 事务内等待平台锁/承载回源，
+    锁队列里的每个请求都会钉住一条 idle-in-transaction 的池连接，一次冷
+    回源即可占满默认连接池（2026-09-07 安全专项 P1）。PG 通道借出独立池
+    连接并置 autocommit——每条语句独立提交，写入语义与原单事务版本一致
+    （重试状态与部分刷新本就按 category 粒度落库）；SQLite 桌面单机通道
+    直接复用请求连接。
+    """
+    if os.environ.get(DATABASE_URL_ENV, "").strip():
+        pool = get_pg_pool()
+        with pool.connection() as raw:
+            borrowed = BusinessConnection.postgres(raw)
+            borrowed.raw.autocommit = True
+            yield borrowed
+        return
+    yield request_conn
+
+
 def _spawn_cover_enrich(enricher: CoverEnricher, videos: list[ViralVideo]) -> None:
     pending = [video for video in videos if not video.cover_key and video.cover_url]
     if not pending:
@@ -236,7 +257,9 @@ def _collect_videos(
     enricher: CoverEnricher | None = None,
 ) -> list[ViralVideo]:
     """响应始终从库读取；同平台冷请求等待首轮落库，随后复用。"""
-    with _REFRESH_LOCKS[platform]:
+    with _REFRESH_LOCKS[platform], _refresh_connection(conn) as refresh_conn:
+        # 回源/落库全部走独立连接；请求事务内不承载外呼（安全专项 P1）。
+        conn = refresh_conn
         if not fetch_state_is_fresh(conn, platform=platform, sort=sort, max_age=max_age):
             failures: list[ViralSourceError] = []
             jobs: list[tuple[str, str]] = []
@@ -440,14 +463,19 @@ def fetch_viral_video_media(
         scope = f"playback:{video.video_id}"
         retry_scope = f"playback:retry:{video.video_id}"
         try:
-            with _REFRESH_LOCKS[video.platform]:
+            with (
+                _REFRESH_LOCKS[video.platform],
+                _refresh_connection(conn) as refresh_conn,
+            ):
+                # 回源走独立连接（安全专项 P1）；请求事务内只做读写收尾。
                 # 等锁期间另一请求可能已经修复；数据库里的版本才是可播放依据。
                 video = (
-                    get_viral_video(conn, platform=video.platform, video_id=video.video_id) or video
+                    get_viral_video(refresh_conn, platform=video.platform, video_id=video.video_id)
+                    or video
                 )
                 if video.native.get("_playback_version") != 1:
                     if fetch_state_is_fresh(
-                        conn,
+                        refresh_conn,
                         platform=video.platform,
                         sort=retry_scope,
                         max_age=timedelta(minutes=1),
@@ -462,16 +490,16 @@ def fetch_viral_video_media(
                             SORT_HOT,
                         )
                     except (ViralSourceError, ValueError, TypeError) as exc:
-                        mark_fetch_state(conn, platform=video.platform, sort=retry_scope)
+                        mark_fetch_state(refresh_conn, platform=video.platform, sort=retry_scope)
                         raise ViralSourceError("爆款视频源暂时无法刷新，请稍后重试") from exc
-                    upsert_viral_videos(conn, refreshed)
+                    upsert_viral_videos(refresh_conn, refreshed)
                     repaired = get_viral_video(
-                        conn, platform=video.platform, video_id=video.video_id
+                        refresh_conn, platform=video.platform, video_id=video.video_id
                     )
                     if repaired is None or repaired.native.get("_playback_version") != 1:
-                        mark_fetch_state(conn, platform=video.platform, sort=retry_scope)
+                        mark_fetch_state(refresh_conn, platform=video.platform, sort=retry_scope)
                         raise ViralSourceError("爆款视频源暂时无法刷新，请稍后重试")
-                    mark_fetch_state(conn, platform=video.platform, sort=scope)
+                    mark_fetch_state(refresh_conn, platform=video.platform, sort=scope)
                     video = repaired
         except ViralSourceError as exc:
             raise HTTPException(
