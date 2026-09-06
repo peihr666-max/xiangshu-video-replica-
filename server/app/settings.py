@@ -11,7 +11,9 @@ from app.db_portable import BusinessConnection
 from app.local_settings_key import LocalSettingsKeyStoreError, load_or_create_local_settings_key
 from app.zpay import parse_enabled_channels
 
-ProviderName = Literal["apilio", "metaso", "cos", "deepseek", "hifly", "tikhub"]
+ProviderName = Literal[
+    "apilio", "metaso", "cos", "deepseek", "hifly", "tikhub", "dashscope", "douyidou"
+]
 
 SETTINGS_KEY_ENV = "VIDEO_REPLICA_SETTINGS_KEY"
 LOCAL_KEYSTORE_DISABLED_ENV = "VIDEO_REPLICA_DISABLE_LOCAL_KEYSTORE"
@@ -40,6 +42,11 @@ REQUIRED_PROVIDER_FIELDS: dict[ProviderName, tuple[str, ...]] = {
     # 爆款视频参考库（C4 重启）：抖音/视频号内容搜索与媒体下载，
     # 见 docs/爆款视频TikHub接入-需求理解-2026-09-06.md。
     "tikhub": ("api_key",),
+    # 工作台"提取文案"（script-from-audio）：Fun-ASR 语音转写，方案移植自
+    # oral-ip-agents-research，见 docs/文案工坊优化-C7草稿库与ASR文案链路设计-2026-09-06.md。
+    "dashscope": ("api_key",),
+    # 链接解析（C3）：抖音/快手/小红书等去水印与文案提取网关凭据。
+    "douyidou": ("app_id", "app_secret"),
 }
 DEFAULT_RUNTIME_SETTINGS: dict[str, int | str] = {
     "max_generation_count_per_batch": 4,

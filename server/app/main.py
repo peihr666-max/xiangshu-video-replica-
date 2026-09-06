@@ -48,6 +48,7 @@ from app.oral_routes import router as oral_router
 from app.payment_routes import router as payment_router
 from app.rbac_routes import router as rbac_router
 from app.recharge_routes import router as recharge_router
+from app.script_from_audio_routes import router as script_from_audio_router
 from app.settings import SettingsUnavailableError
 from app.settings_routes import router as settings_router
 from app.simple_character_routes import router as character_simple_router
@@ -318,6 +319,7 @@ app.middleware("http")(request_observability_middleware)
 app.include_router(generation_router)
 app.include_router(studio_router)
 app.include_router(studio_draft_router)
+app.include_router(script_from_audio_router)
 app.include_router(oral_router)
 app.include_router(rbac_router)
 app.include_router(payment_router)
