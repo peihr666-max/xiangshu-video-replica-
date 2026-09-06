@@ -621,6 +621,33 @@ def test_cover_route_accepts_persisted_wechat_base64_id_with_slash(client, monke
     assert client[0].get("/api/viral/covers/wechat_channels/finderobj/../secret").status_code == 404
 
 
+def test_cover_route_accepts_real_wechat_id_with_consecutive_slashes(client, monkeypatch):
+    from urllib.parse import quote
+
+    from app.viral_media import viral_cover_key
+    from app.viral_routes import _open_worker_connection
+    from app.viral_store import upsert_viral_videos
+
+    video_id = "finderobjv0POr//CKfOesFBgIVVkCT4LG1YHnvIIJ9FmgsD4gFi9o="
+    storage = _CoverStorage()
+    key = viral_cover_key("wechat_channels", video_id)
+    storage.put_object(key, b"jpeg-cover", content_type="image/jpeg")
+    monkeypatch.setattr("app.viral_routes.get_media_storage", lambda conn: storage)
+    conn, close = _open_worker_connection()
+    try:
+        upsert_viral_videos(
+            conn, [_video(platform="wechat_channels", video_id=video_id, category="建房预算")]
+        )
+    finally:
+        close()
+
+    response = client[0].get("/api/viral/covers/wechat_channels/" + quote(video_id, safe=""))
+
+    assert response.status_code == 200
+    assert response.content == b"jpeg-cover"
+    assert "//" not in key
+
+
 def test_list_remains_available_from_database_without_source_configuration(client):
     http, stub = client
     first = http.get("/api/viral/videos?platform=douyin", headers=_AUTH_HEADERS)

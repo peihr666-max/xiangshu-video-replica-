@@ -565,15 +565,14 @@ def get_viral_cover(
     无需登录：封面本身是公开内容，对象 key 由路由参数确定性派生，
     不接受任意 key。视频号 ID 是可含斜杠的 opaque ID，必须与库中记录精确匹配。
     """
-    if (
-        platform not in _VALID_PLATFORMS
-        or not video_id
-        or "\\" in video_id
-        or any(part in {"", ".", ".."} for part in video_id.split("/"))
-    ):
+    if platform not in _VALID_PLATFORMS or not video_id:
         raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
     video = get_viral_video(conn, platform=platform, video_id=video_id)
-    if video is None:
+    if (
+        video is None
+        or "\\" in video_id
+        or any(part in {".", ".."} for part in video_id.split("/"))
+    ):
         raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
     storage = get_media_storage(conn)
     key = viral_cover_key(platform, video_id)

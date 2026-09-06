@@ -5,15 +5,18 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Barrier, Lock
 from typing import Any
 
 import pytest
 
+from app.storage import LocalStorageAdapter
 from app.viral_decrypt import keystream
 from app.viral_media import (
     ViralMediaError,
     ViralMediaPipeline,
+    viral_cover_key,
     viral_media_key,
 )
 from app.viral_tikhub import ViralSourceClient, ViralVideo
@@ -136,6 +139,42 @@ def _pipeline(
 def test_viral_media_key_naming() -> None:
     assert viral_media_key("douyin", "v1", "audio") == "viral/douyin/v1.mp3"
     assert viral_media_key("wechat_channels", "v2", "video") == ("viral/wechat_channels/v2.mp4")
+
+
+def test_unsafe_video_id_uses_stable_flat_storage_name(tmp_path: Path) -> None:
+    video_id = "finderobjv0POr//CKfOesFBgIVVkCT4LG1YHnvIIJ9FmgsD4gFi9o="
+
+    media_key = viral_media_key("wechat_channels", video_id, "video")
+    cover_key = viral_cover_key("wechat_channels", video_id)
+
+    assert "//" not in media_key
+    assert "//" not in cover_key
+    assert media_key == viral_media_key("wechat_channels", video_id, "video")
+    assert cover_key == viral_cover_key("wechat_channels", video_id)
+    assert viral_media_key("wechat_channels", "legal/id", "video") == (
+        "viral/wechat_channels/legal/id.mp4"
+    )
+    storage = LocalStorageAdapter(root=tmp_path)
+    storage.put_object(media_key, b"video", content_type="video/mp4")
+    storage.put_object(cover_key, b"cover", content_type="image/jpeg")
+    assert storage.head_object(media_key) is not None
+    assert storage.head_object(cover_key) is not None
+
+
+@pytest.mark.parametrize(
+    "video_id",
+    ["opaque//id", "opaque/./id", "opaque/../id", "opaque\\id", "opaque\x00id"],
+)
+def test_all_unsafe_path_forms_use_deterministic_safe_keys(video_id: str) -> None:
+    first = viral_media_key("wechat_channels", video_id, "video")
+    second = viral_media_key("wechat_channels", video_id, "video")
+    storage_name = first.removeprefix("viral/wechat_channels/").removesuffix(".mp4")
+
+    assert first == second
+    assert storage_name.startswith("unsafe-")
+    assert "/" not in storage_name
+    assert "\\" not in storage_name
+    assert "\x00" not in storage_name
 
 
 def test_douyin_prefers_audio() -> None:
@@ -268,6 +307,28 @@ def test_second_fetch_hits_storage_cache() -> None:
     assert fetcher_ref.calls.count("http://wxapp.tc.qq.com/file") == 1
     assert detail_transport.last_body_count == 1
     assert "viral/wechat_channels/doc-5.mp4" in storage.objects
+
+
+def test_wechat_id_with_empty_path_segment_hits_media_cache() -> None:
+    video_id = "finderobjv0POr//CKfOesFBgIVVkCT4LG1YHnvIIJ9FmgsD4gFi9o="
+    plain = b"\x00\x00\x00 ftypisom" + b"\x00" * 64
+    fetcher = FakeFetcher({"http://wxapp.tc.qq.com/file": plain})
+    detail = _detail_payload("http://wxapp.tc.qq.com/file", _DECODE_KEY)
+    pipeline, storage, fetcher_ref, detail_transport = _pipeline(
+        fetcher=fetcher, detail_payload=detail
+    )
+    video = _video("wechat_channels", video_id=video_id, export_id="export/unsafe-id")
+
+    first = pipeline.fetch(video)
+    second = pipeline.fetch(video)
+
+    key = viral_media_key("wechat_channels", video_id, "video")
+    assert first.cache_hit is False
+    assert second.cache_hit is True
+    assert "//" not in key
+    assert key in storage.objects
+    assert fetcher_ref.calls == ["http://wxapp.tc.qq.com/file"]
+    assert detail_transport.last_body_count == 1
 
 
 def test_concurrent_fetches_share_one_download_and_storage_write() -> None:
