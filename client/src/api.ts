@@ -234,7 +234,14 @@ export type GenerationBatchListFilters = {
   cursor?: string;
 };
 
-export type ProviderName = "metaso" | "apilio" | "cos" | "deepseek" | "tikhub";
+export type ProviderName =
+  | "metaso"
+  | "apilio"
+  | "cos"
+  | "deepseek"
+  | "tikhub"
+  | "dashscope"
+  | "douyidou";
 
 export type ProviderSettings = {
   provider: ProviderName;
@@ -4729,9 +4736,12 @@ export function listViralVideos(
   sort: ViralSort = "hot",
 ): Promise<ViralListResponse> {
   const query = new URLSearchParams({ platform, sort });
+  // 视频号冷缓存需聚合 12 次上游调用（3 页 × 4 分类），远超常规接口超时。
   return requestApiJson<ViralListResponse>(
     `/api/viral/videos?${query}`,
     "爆款视频列表暂不可用",
+    {},
+    CLOUD_OP_TIMEOUT_MS,
   );
 }
 
