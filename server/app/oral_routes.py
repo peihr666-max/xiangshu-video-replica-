@@ -47,7 +47,7 @@ from app.oral import (
     start_voice_clone,
 )
 from app.oral_worker import request_oral_archive_retry
-from app.permissions import require_role, write_audit
+from app.permissions import require_not_auditor, require_role, write_audit
 
 router = APIRouter(prefix="/api/oral")
 
@@ -419,6 +419,13 @@ def retry_oral_archive(
     db: BusinessDbDep,
 ) -> dict[str, Any]:
     with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.task.archive_retry",
+            entity_type="oral_task",
+            entity_id=task_id,
+        )
         try:
             row = request_oral_archive_retry(conn, task_id=task_id, owner_user_id=actor.id)
         except ValueError as exc:

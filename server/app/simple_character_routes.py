@@ -39,11 +39,12 @@ from app.image_tasks import (
     require_character_sheet_task_access,
 )
 from app.media_routes import storage_for_asset
-from app.permissions import require_not_auditor, require_project_access
+from app.permissions import require_not_auditor, require_project_access, write_audit
 from app.simple_character import (
     SIMPLE_UPLOAD_ALLOWED_TYPES,
     SIMPLE_UPLOAD_MAX_BYTES,
     PreparedSimpleCharacterPublication,
+    cleanup_deleted_character_objects,
     create_simple_character,
     delete_simple_character_identity,
     list_simple_library,
@@ -699,15 +700,41 @@ def delete_identity(
     identity_id: str,
     db: BusinessDbDep,
 ) -> Response:
+    cleanup_plan = None
+    delete_actor = None
     with db.write() as (conn, actor):
         """Delete a character identity with all derived assets (owner or admin)."""
-        delete_simple_character_identity(
+        cleanup_plan = delete_simple_character_identity(
             conn,
             actor=actor,
             identity_id=identity_id,
             storage_for_uri=storage_for_asset,
         )
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        delete_actor = actor
+
+    assert cleanup_plan is not None and delete_actor is not None
+    cleanup_result = cleanup_deleted_character_objects(cleanup_plan)
+    try:
+        with db.write() as (conn, _actor):
+            write_audit(
+                conn,
+                actor=delete_actor,
+                action="simple_character.delete.storage_cleanup",
+                entity_type="person_identity",
+                entity_id=identity_id,
+                metadata={
+                    "planned_count": len(cleanup_plan.targets),
+                    "deleted_count": cleanup_result.deleted_count,
+                    "failed_count": cleanup_result.failed_count,
+                },
+            )
+    except Exception:  # noqa: BLE001 - primary database deletion already committed
+        logger.warning(
+            "unable to audit character storage cleanup identity=%s",
+            identity_id,
+            exc_info=True,
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

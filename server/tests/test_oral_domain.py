@@ -46,8 +46,11 @@ from app.oral import (
     create_oral_consent,
     create_oral_task,
     list_oral_consents,
+    oral_price_quote,
     oral_unit_price_fen,
+    refresh_avatar_clone,
     refresh_oral_task,
+    refresh_voice_clone,
     start_avatar_clone,
     start_voice_clone,
 )
@@ -403,6 +406,147 @@ def test_consent_read_keeps_foreign_and_missing_identity_indistinguishable(
         list_oral_consents(conn, actor=actor("employee_2"), identity_id="missing")
 
     assert str(foreign.value) == str(missing.value)
+
+
+def test_auditor_is_denied_from_every_oral_write_service(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-auditor-write-denial.db")
+    vendor, _ = make_vendor()
+    auditor = actor("auditor_1", "auditor")
+    operations: list[tuple[str, Callable[[], object]]] = [
+        (
+            "oral.consent.create",
+            lambda: create_oral_consent(
+                conn,
+                actor=auditor,
+                identity_id="ident-1",
+                source_asset_id="asset-audio",
+                purpose="VOICE_CLONE",
+                consent_text_version=ORAL_CONSENT_TEXT_VERSION,
+            ),
+        ),
+        (
+            "oral.avatar.create",
+            lambda: start_avatar_clone(
+                conn,
+                actor=auditor,
+                identity_id="ident-1",
+                title="auditor avatar",
+                source_asset_id="asset-image",
+                source_kind="IMAGE",
+                consent_id="missing",
+                idempotency_key="auditor-avatar",
+            ),
+        ),
+        (
+            "oral.voice.create",
+            lambda: start_voice_clone(
+                conn,
+                actor=auditor,
+                identity_id="ident-1",
+                title="auditor voice",
+                source_asset_id="asset-audio",
+                consent_id="missing",
+                idempotency_key="auditor-voice",
+            ),
+        ),
+        (
+            "oral.task.create",
+            lambda: create_oral_task(
+                conn,
+                actor=auditor,
+                identity_id="ident-1",
+                avatar_id="missing",
+                voice_id=None,
+                mode="AUDIO",
+                title="auditor oral",
+                script_text=None,
+                audio_asset_id="asset-audio",
+                subtitle=None,
+                idempotency_key="auditor-oral-task",
+            ),
+        ),
+        (
+            "oral.task.cancel",
+            lambda: cancel_oral_task(conn, task_id="missing", actor=auditor),
+        ),
+        (
+            "oral.task.refresh",
+            lambda: refresh_oral_task(
+                conn,
+                task_id="missing",
+                actor=auditor,
+                vendor=vendor,
+            ),
+        ),
+        (
+            "oral.avatar.refresh",
+            lambda: refresh_avatar_clone(
+                conn,
+                avatar_id="missing",
+                actor=auditor,
+                vendor=vendor,
+            ),
+        ),
+        (
+            "oral.voice.refresh",
+            lambda: refresh_voice_clone(
+                conn,
+                voice_id="missing",
+                actor=auditor,
+                vendor=vendor,
+            ),
+        ),
+        (
+            "oral.voice.confirm",
+            lambda: confirm_voice_clone(conn, voice_id="missing", actor=auditor),
+        ),
+    ]
+
+    for _expected_action, operation in operations:
+        with pytest.raises(HTTPException) as denied:
+            operation()
+        assert denied.value.status_code == 403
+        assert denied.value.detail["code"] == "ROLE_FORBIDDEN"
+    audited_actions = {
+        json.loads(str(row["metadata_json"]))["attempted_action"]
+        for row in conn.execute(
+            """
+            SELECT metadata_json FROM audit_logs
+            WHERE actor_user_id = 'auditor_1' AND action = 'security.role_denied'
+            """
+        ).fetchall()
+    }
+    assert audited_actions == {action for action, _operation in operations}
+
+
+def test_auditor_cannot_request_oral_archive_retry(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-auditor-archive-retry.db")
+
+    class TestBusinessDb:
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            yield conn, actor("auditor_1", "auditor")
+
+    app.dependency_overrides[get_business_db] = TestBusinessDb
+    try:
+        response = TestClient(app).post("/api/oral/tasks/missing/archive-retry")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "ROLE_FORBIDDEN"
+    audit = conn.execute(
+        """
+        SELECT metadata_json FROM audit_logs
+        WHERE actor_user_id = 'auditor_1' AND action = 'security.role_denied'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    assert audit is not None
+    assert json.loads(str(audit["metadata_json"]))["attempted_action"] == (
+        "oral.task.archive_retry"
+    )
 
 
 def test_consent_and_voice_confirmation_routes(
@@ -820,7 +964,7 @@ def test_privileged_roles_cannot_clone_another_users_biometric_asset(
             vendor=vendor,
         )
 
-    assert hidden.value.status_code == 404
+    assert hidden.value.status_code == (403 if role == "auditor" else 404)
     assert transport.calls == []
 
 
@@ -1887,6 +2031,34 @@ def test_dangling_oral_reservation_reconciles_only_known_not_charged_failure(
 def test_oral_unit_price_defaults_and_reads_settings(tmp_path: Path) -> None:
     conn = seed_scene(tmp_path, "oral-price.db")
     assert oral_unit_price_fen(conn) == ORAL_UNIT_PRICE_FEN_DEFAULT == 1000
+    conn.execute("UPDATE runtime_settings SET oral_unit_price_fen = %s WHERE id = 1", (1800,))
+    conn.commit()
+
+    assert oral_unit_price_fen(conn) == 1800
+
+
+def test_oral_task_snapshots_configured_unit_price(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-price-snapshot.db")
+    seed_ready_assets(conn)
+    conn.execute("UPDATE runtime_settings SET oral_unit_price_fen = %s WHERE id = 1", (1800,))
+    conn.commit()
+
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id="avatar-ready",
+        voice_id="voice-ready",
+        mode="TTS",
+        title="价格快照",
+        script_text="测试口播价格快照",
+        audio_asset_id=None,
+        subtitle={"enabled": True},
+        idempotency_key="oral-price-snapshot-key",
+    )
+
+    assert created.estimated_cost_fen == 1800
+    assert oral_price_quote(conn) == {"unit_price_fen": 1800}
 
 
 def test_oral_clone_claim_is_exclusive_and_expired_submit_is_quarantined(

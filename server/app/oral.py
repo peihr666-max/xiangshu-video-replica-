@@ -30,8 +30,7 @@ from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
 from app.internal_billing import finalize_oral_billing, reserve_oral_billing
 from app.media_routes import get_media_storage, storage_for_asset
 from app.media_tools import inspect_media_bytes
-from app.permissions import require_asset_access, write_audit
-from app.settings import SettingsRepository
+from app.permissions import require_asset_access, require_not_auditor, write_audit
 from app.storage import StorageAdapter
 
 logger = logging.getLogger(__name__)
@@ -61,11 +60,15 @@ class OralConflictError(OralDomainError):
 def oral_unit_price_fen(conn: BusinessConnection) -> int:
     """Per-task list price for oral renders; admin-configurable via billing."""
     try:
-        billing = SettingsRepository(conn).read_billing_settings()
-    except Exception:  # noqa: BLE001 - pricing must never break task creation
+        row = conn.execute(
+            "SELECT oral_unit_price_fen FROM runtime_settings WHERE id = 1"
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - old databases keep the safe default
+        return ORAL_UNIT_PRICE_FEN_DEFAULT
+    if row is None:
         return ORAL_UNIT_PRICE_FEN_DEFAULT
     try:
-        price = int(billing.get("oral_unit_price_fen", ORAL_UNIT_PRICE_FEN_DEFAULT))
+        price = int(row["oral_unit_price_fen"])
     except (TypeError, ValueError):
         return ORAL_UNIT_PRICE_FEN_DEFAULT
     return price if price > 0 else ORAL_UNIT_PRICE_FEN_DEFAULT
@@ -182,6 +185,13 @@ def create_oral_consent(
     purpose: str,
     consent_text_version: str,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.consent.create",
+        entity_type="person_identity",
+        entity_id=identity_id,
+    )
     _require_own_identity(conn, actor, identity_id)
     if consent_text_version != ORAL_CONSENT_TEXT_VERSION:
         raise OralDomainError("授权文本版本已更新，请重新确认")
@@ -332,6 +342,13 @@ def start_avatar_clone(
     idempotency_key: str,
     vendor: HiflyClient | None = None,
 ) -> CloneStartResult:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.avatar.create",
+        entity_type="person_identity",
+        entity_id=identity_id,
+    )
     if source_kind not in {"VIDEO", "IMAGE"}:
         raise OralDomainError("分身素材类型不支持")
     _require_own_identity(conn, actor, identity_id)
@@ -420,6 +437,13 @@ def start_voice_clone(
     idempotency_key: str,
     vendor: HiflyClient | None = None,
 ) -> CloneStartResult:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.voice.create",
+        entity_type="person_identity",
+        entity_id=identity_id,
+    )
     _require_own_identity(conn, actor, identity_id)
     asset = _require_biometric_source_asset(
         conn,
@@ -544,6 +568,13 @@ def create_oral_task(
     idempotency_key: str,
     vendor: HiflyClient | None = None,
 ) -> OralTaskCreated:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.task.create",
+        entity_type="person_identity",
+        entity_id=identity_id,
+    )
     if mode not in {"TTS", "AUDIO"}:
         raise OralDomainError("口播模式不支持")
     if not title.strip():
@@ -821,6 +852,13 @@ def cancel_oral_task(
     task_id: str,
     actor: CurrentUser,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.task.cancel",
+        entity_type="oral_task",
+        entity_id=task_id,
+    )
     row = read_oral_task(conn, task_id=task_id, actor=actor)
     if str(row["status"]) == "CANCELLED":
         return row
@@ -855,6 +893,13 @@ def refresh_oral_task(
     actor: CurrentUser,
     vendor: HiflyClient,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.task.refresh",
+        entity_type="oral_task",
+        entity_id=task_id,
+    )
     row = _oral_task_row(conn, task_id)
     if row["owner_user_id"] != actor.id:
         raise OralDomainError("口播任务不存在")
@@ -987,6 +1032,13 @@ def refresh_avatar_clone(
     actor: CurrentUser,
     vendor: HiflyClient,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.avatar.refresh",
+        entity_type="oral_avatar",
+        entity_id=avatar_id,
+    )
     row = conn.execute(
         "SELECT * FROM oral_avatars WHERE id = %s AND owner_user_id = %s",
         (avatar_id, actor.id),
@@ -1038,6 +1090,13 @@ def refresh_voice_clone(
     actor: CurrentUser,
     vendor: HiflyClient,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.voice.refresh",
+        entity_type="oral_voice",
+        entity_id=voice_id,
+    )
     row = conn.execute(
         "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s",
         (voice_id, actor.id),
@@ -1136,6 +1195,13 @@ def confirm_voice_clone(
     voice_id: str,
     actor: CurrentUser,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.voice.confirm",
+        entity_type="oral_voice",
+        entity_id=voice_id,
+    )
     row = conn.execute(
         "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s",
         (voice_id, actor.id),
