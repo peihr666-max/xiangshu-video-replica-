@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import {
+  type BillingSettings,
   getControlSettings,
   getSettings,
   type ProviderName,
@@ -10,6 +11,8 @@ import {
   type SettingsSnapshot,
   testControlProviderConnection,
   testProviderConnection,
+  updateBillingSettings,
+  updateControlBillingSettings,
   updateControlProviderSettings,
   updateControlRuntimeSettings,
   updateProviderSettings,
@@ -68,6 +71,11 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
     note: "二创口播稿改写 · 默认 DeepSeek，只需 API Key",
     fields: [{ name: "api_key", label: "API Key", secret: true }],
   },
+  hifly: {
+    title: "数字人口播",
+    note: "人物分身、声音克隆与数字人口播 · 测试连接不发起付费生成",
+    fields: [{ name: "api_key", label: "API Key", secret: true }],
+  },
   tikhub: {
     title: "爆款视频数据源",
     note: "抖音 / 视频号最近 7 天爆款参考库 · 只需 API Key",
@@ -93,6 +101,7 @@ const PROVIDER_ORDER: ProviderName[] = [
   "apilio",
   "cos",
   "deepseek",
+  "hifly",
   "tikhub",
   "dashscope",
   "douyidou",
@@ -161,6 +170,21 @@ export function SettingsPanel({
     );
   }
 
+  async function saveBilling(billing: BillingSettings) {
+    const payload = {
+      internal_base_unit_price_fen: billing.internal_base_unit_price_fen,
+      oral_unit_price_fen: billing.oral_unit_price_fen,
+      min_recharge_fen: billing.min_recharge_fen,
+      recharge_step_fen: billing.recharge_step_fen,
+    };
+    const updated = await (source === "control"
+      ? updateControlBillingSettings(payload)
+      : updateBillingSettings(payload));
+    setSettings((current) =>
+      current ? { ...current, billing: updated } : current,
+    );
+  }
+
   if (loadError) {
     return (
       <section className="settings-error" role="alert">
@@ -203,7 +227,81 @@ export function SettingsPanel({
         runtime={settings.runtime}
         onSave={saveRuntime}
       />
+      <OralPriceForm
+        readOnly={readOnly}
+        billing={settings.billing}
+        onSave={saveBilling}
+      />
     </section>
+  );
+}
+
+function OralPriceForm({
+  billing,
+  readOnly,
+  onSave,
+}: {
+  billing: BillingSettings;
+  readOnly: boolean;
+  onSave: (billing: BillingSettings) => Promise<void>;
+}) {
+  const [priceYuan, setPriceYuan] = useState(
+    (billing.oral_unit_price_fen / 100).toString(),
+  );
+  const [status, setStatus] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    setPriceYuan((billing.oral_unit_price_fen / 100).toString());
+  }, [billing.oral_unit_price_fen]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isSaving) return;
+    const numericPrice = Number(priceYuan);
+    const oralUnitPriceFen = Math.round(numericPrice * 100);
+    if (!Number.isFinite(numericPrice) || oralUnitPriceFen < 1) {
+      setStatus("口播单价必须大于 0 元");
+      return;
+    }
+    setIsSaving(true);
+    setStatus("");
+    try {
+      await onSave({ ...billing, oral_unit_price_fen: oralUnitPriceFen });
+      setStatus("口播价格已保存");
+    } catch {
+      setStatus("口播价格保存失败");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <form className="runtime-form" onSubmit={submit}>
+      <h3>数字人口播价格</h3>
+      <div className="runtime-fields">
+        <label>
+          数字人口播单价（元/条）
+          <input
+            disabled={readOnly || isSaving}
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={priceYuan}
+            onChange={(event) => setPriceYuan(event.target.value)}
+          />
+        </label>
+      </div>
+      <p className="storage-provider-hint">
+        任务创建时冻结价格快照，后续改价不影响已创建任务。
+      </p>
+      <div className="form-actions">
+        <button disabled={readOnly || isSaving} type="submit">
+          {isSaving ? "正在保存" : "保存口播价格"}
+        </button>
+        {status ? <span role="status">{status}</span> : null}
+      </div>
+    </form>
   );
 }
 

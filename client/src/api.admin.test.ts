@@ -232,6 +232,7 @@ describe("admin activation API adapter", () => {
       jsonResponse({
         internal_base_unit_price_fen: 100,
         charged_unit_price_fen: 100,
+        oral_unit_price_fen: 100,
         min_recharge_fen: 100,
         recharge_step_fen: 100,
       }),
@@ -239,6 +240,7 @@ describe("admin activation API adapter", () => {
 
     await updateControlBillingSettings({
       internal_base_unit_price_fen: 100,
+      oral_unit_price_fen: 100,
       min_recharge_fen: 100,
       recharge_step_fen: 100,
     });
@@ -254,6 +256,7 @@ describe("admin activation API adapter", () => {
     expect(request?.body).toBe(
       JSON.stringify({
         internal_base_unit_price_fen: 100,
+        oral_unit_price_fen: 100,
         min_recharge_fen: 100,
         recharge_step_fen: 100,
         confirm: true,

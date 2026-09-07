@@ -137,6 +137,7 @@ export type ControlWalletTransactionPage = {
 export type BillingSettings = {
   internal_base_unit_price_fen: number;
   charged_unit_price_fen: number;
+  oral_unit_price_fen: number;
   min_recharge_fen: number;
   recharge_step_fen: number;
 };
@@ -265,6 +266,7 @@ export type ProviderName =
   | "apilio"
   | "cos"
   | "deepseek"
+  | "hifly"
   | "tikhub"
   | "dashscope"
   | "douyidou";
@@ -288,6 +290,7 @@ export type RuntimeSettings = {
 export type SettingsSnapshot = {
   providers: Record<ProviderName, ProviderSettings>;
   runtime: RuntimeSettings;
+  billing: BillingSettings;
 };
 
 export type DiagnosticProviderResult = {
@@ -1389,6 +1392,7 @@ export async function updateControlZPaySettings(input: {
 
 export async function updateControlBillingSettings(input: {
   internal_base_unit_price_fen: number;
+  oral_unit_price_fen: number;
   min_recharge_fen: number;
   recharge_step_fen: number;
 }): Promise<BillingSettings> {
@@ -3898,6 +3902,19 @@ export async function updateRuntimeSettings(
     "/api/admin/settings/runtime",
     "保存运行设置失败",
     { method: "PATCH", body: JSON.stringify(runtime) },
+  );
+}
+
+export async function updateBillingSettings(input: {
+  internal_base_unit_price_fen: number;
+  oral_unit_price_fen: number;
+  min_recharge_fen: number;
+  recharge_step_fen: number;
+}): Promise<BillingSettings> {
+  return requestAdminJson<BillingSettings>(
+    "/api/admin/settings/billing",
+    "保存口播价格失败",
+    { method: "PATCH", body: JSON.stringify(input) },
   );
 }
 

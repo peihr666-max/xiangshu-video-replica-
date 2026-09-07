@@ -4484,6 +4484,8 @@ export interface components {
     BillingSettingsRequest: {
       /** Internal Base Unit Price Fen */
       internal_base_unit_price_fen: number;
+      /** Oral Unit Price Fen */
+      oral_unit_price_fen: number;
       /** Min Recharge Fen */
       min_recharge_fen: number;
       /** Recharge Step Fen */
@@ -4495,6 +4497,8 @@ export interface components {
       internal_base_unit_price_fen: number;
       /** Charged Unit Price Fen */
       charged_unit_price_fen: number;
+      /** Oral Unit Price Fen */
+      oral_unit_price_fen: number;
       /** Min Recharge Fen */
       min_recharge_fen: number;
       /** Recharge Step Fen */
@@ -4514,6 +4518,8 @@ export interface components {
       reason: string;
       /** Internal Base Unit Price Fen */
       internal_base_unit_price_fen: number;
+      /** Oral Unit Price Fen */
+      oral_unit_price_fen: number;
       /** Min Recharge Fen */
       min_recharge_fen: number;
       /** Recharge Step Fen */

@@ -138,6 +138,7 @@ const settings = {
   billing: {
     internal_base_unit_price_fen: 1000,
     charged_unit_price_fen: 1000,
+    oral_unit_price_fen: 1000,
     min_recharge_fen: 10000,
     recharge_step_fen: 1000,
   },

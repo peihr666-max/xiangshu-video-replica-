@@ -204,6 +204,7 @@ class BillingSettingsUpdate(AdminWriteContract):
     model_config = ConfigDict(extra="forbid")
 
     internal_base_unit_price_fen: StrictInt
+    oral_unit_price_fen: StrictInt
     min_recharge_fen: StrictInt
     recharge_step_fen: StrictInt
 
@@ -213,6 +214,7 @@ class BillingSettingsSnapshot(BaseModel):
 
     internal_base_unit_price_fen: int
     charged_unit_price_fen: int
+    oral_unit_price_fen: int
     min_recharge_fen: int
     recharge_step_fen: int
 
@@ -460,6 +462,7 @@ def _update_control_billing_settings_business(
     try:
         result = SettingsRepository(conn).save_billing_settings(
             internal_base_unit_price_fen=payload.internal_base_unit_price_fen,
+            oral_unit_price_fen=payload.oral_unit_price_fen,
             min_recharge_fen=payload.min_recharge_fen,
             recharge_step_fen=payload.recharge_step_fen,
             actor_user_id=actor.id,

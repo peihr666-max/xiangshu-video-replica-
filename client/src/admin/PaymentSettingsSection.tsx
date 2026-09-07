@@ -94,6 +94,7 @@ export function PaymentSettingsSection({
     try {
       const nextBilling = await updateControlBillingSettings({
         internal_base_unit_price_fen: billing.internal_base_unit_price_fen,
+        oral_unit_price_fen: billing.oral_unit_price_fen,
         min_recharge_fen: billing.min_recharge_fen,
         recharge_step_fen: billing.recharge_step_fen,
       });

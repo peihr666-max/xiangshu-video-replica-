@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from alembic import command
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.db import connect_database, initialize_database
+from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import (
     SettingsDecryptError,
@@ -148,13 +149,56 @@ def test_settings_migration_creates_tables_and_defaults(tmp_path: Path, settings
             """
         ).fetchone()
 
-    assert version == "076_studio_notification_preferences"
+    assert version == "077_oral_unit_price"
     assert {"provider_settings", "runtime_settings"}.issubset(tables)
     assert dict(runtime) == {
         "max_generation_count_per_batch": 4,
         "max_concurrent_h3_tasks": 2,
         "active_storage_provider": "cos",
     }
+
+
+def test_oral_unit_price_migration_upgrades_downgrades_and_reupgrades(tmp_path: Path) -> None:
+    db_path = tmp_path / "oral-price-migration.db"
+    config = alembic_config(db_path)
+
+    command.upgrade(config, "076_studio_notification_preferences")
+    with connect_database(db_path) as conn:
+        assert "oral_unit_price_fen" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(runtime_settings)").fetchall()
+        }
+
+    command.upgrade(config, "head")
+    with connect_database(db_path) as conn:
+        assert (
+            conn.execute(
+                "SELECT oral_unit_price_fen FROM runtime_settings WHERE id = 1"
+            ).fetchone()[0]
+            == 1000
+        )
+        conn.execute("UPDATE runtime_settings SET oral_unit_price_fen = 1800 WHERE id = 1")
+        conn.commit()
+
+    command.downgrade(config, "076_studio_notification_preferences")
+    with connect_database(db_path) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "076_studio_notification_preferences"
+        )
+        assert "oral_unit_price_fen" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(runtime_settings)").fetchall()
+        }
+
+    command.upgrade(config, "head")
+    with connect_database(db_path) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "077_oral_unit_price"
+        )
+        assert (
+            conn.execute(
+                "SELECT oral_unit_price_fen FROM runtime_settings WHERE id = 1"
+            ).fetchone()[0]
+            == 1000
+        )
 
 
 def test_master_key_must_come_from_environment(
@@ -671,6 +715,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
         headers=admin_headers(),
         json={
             "internal_base_unit_price_fen": 1000,
+            "oral_unit_price_fen": 1800,
             "min_recharge_fen": 20000,
             "recharge_step_fen": 2000,
         },
@@ -680,6 +725,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
     assert initial.json()["billing"] == {
         "internal_base_unit_price_fen": 1000,
         "charged_unit_price_fen": 1000,
+        "oral_unit_price_fen": 1000,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
     }
@@ -687,6 +733,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
     assert updated.json() == {
         "internal_base_unit_price_fen": 1000,
         "charged_unit_price_fen": 1000,
+        "oral_unit_price_fen": 1800,
         "min_recharge_fen": 20000,
         "recharge_step_fen": 2000,
     }
@@ -696,6 +743,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
     ("field", "value"),
     [
         ("internal_base_unit_price_fen", True),
+        ("oral_unit_price_fen", 0),
         ("min_recharge_fen", "10000"),
         ("recharge_step_fen", 1000.0),
     ],
@@ -707,6 +755,7 @@ def test_billing_settings_api_rejects_coerced_integer_values(
 ) -> None:
     payload: dict[str, object] = {
         "internal_base_unit_price_fen": 1000,
+        "oral_unit_price_fen": 1000,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
     }

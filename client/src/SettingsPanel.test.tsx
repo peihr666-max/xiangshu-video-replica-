@@ -25,12 +25,26 @@ const settingsSnapshot = {
       config: { bucket: "bucket-1", region: "ap-shanghai" },
     },
     deepseek: { provider: "deepseek", configured: false, config: {} },
+    hifly: {
+      provider: "hifly",
+      configured: true,
+      config: { api_key: "********-key" },
+    },
     tikhub: { provider: "tikhub", configured: false, config: {} },
+    dashscope: { provider: "dashscope", configured: false, config: {} },
+    douyidou: { provider: "douyidou", configured: false, config: {} },
   },
   runtime: {
     max_generation_count_per_batch: 5,
     max_concurrent_h3_tasks: 2,
     active_storage_provider: "cos",
+  },
+  billing: {
+    internal_base_unit_price_fen: 1000,
+    charged_unit_price_fen: 1000,
+    oral_unit_price_fen: 1800,
+    min_recharge_fen: 10000,
+    recharge_step_fen: 1000,
   },
 };
 
@@ -38,6 +52,15 @@ function installFetch(options?: { providerSave?: "ok" | "fail" }) {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url.endsWith("/api/admin/settings")) {
       return jsonResponse(settingsSnapshot);
+    }
+    if (
+      url.endsWith("/api/admin/settings/billing") &&
+      init?.method === "PATCH"
+    ) {
+      return jsonResponse({
+        ...settingsSnapshot.billing,
+        oral_unit_price_fen: 2500,
+      });
     }
     if (
       url.endsWith("/api/admin/settings/providers/metaso") &&
@@ -102,9 +125,39 @@ describe("SettingsPanel", () => {
     const cos = providerCard(container, "cos");
     expect(cos.getByLabelText("Bucket")).toHaveValue("bucket-1");
 
+    const hifly = providerCard(container, "hifly");
+    expect(hifly.getByText("数字人口播")).toBeInTheDocument();
+    expect(hifly.getByLabelText("API Key")).toHaveAttribute("type", "password");
+    expect(hifly.getByLabelText("API Key")).toHaveValue("");
+
     expect(screen.getByText("运行设置")).toBeInTheDocument();
     expect(screen.getByLabelText("单次生成数量上限")).toHaveValue(5);
     expect(screen.getByLabelText("视频生成并发数")).toHaveValue(2);
+    expect(screen.getByLabelText("数字人口播单价（元/条）")).toHaveValue(18);
+  });
+
+  it("updates the oral unit price through the admin billing route", async () => {
+    const fetchMock = installFetch();
+    render(<SettingsPanel />);
+
+    const input = await screen.findByLabelText("数字人口播单价（元/条）");
+    fireEvent.change(input, { target: { value: "25" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存口播价格" }));
+
+    expect(await screen.findByText("口播价格已保存")).toBeInTheDocument();
+    const saveCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/admin/settings/billing") &&
+        init?.method === "PATCH",
+    );
+    expect(saveCall?.[1]?.body).toBe(
+      JSON.stringify({
+        internal_base_unit_price_fen: 1000,
+        oral_unit_price_fen: 2500,
+        min_recharge_fen: 10000,
+        recharge_step_fen: 1000,
+      }),
+    );
   });
 
   it("shows a role=alert error when the settings snapshot cannot be loaded", async () => {
