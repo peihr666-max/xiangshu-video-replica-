@@ -233,6 +233,7 @@ describe("admin activation API adapter", () => {
         charged_unit_price_fen: 100,
         min_recharge_fen: 100,
         recharge_step_fen: 100,
+        oral_unit_price_fen: 100,
       }),
     );
 
@@ -240,6 +241,7 @@ describe("admin activation API adapter", () => {
       internal_base_unit_price_fen: 100,
       min_recharge_fen: 100,
       recharge_step_fen: 100,
+      oral_unit_price_fen: 100,
     });
 
     const [url, request] = fetchMock.mock.calls.at(-1) ?? [];
@@ -255,6 +257,7 @@ describe("admin activation API adapter", () => {
         internal_base_unit_price_fen: 100,
         min_recharge_fen: 100,
         recharge_step_fen: 100,
+        oral_unit_price_fen: 100,
         confirm: true,
         reason: "更新后台计费配置",
       }),

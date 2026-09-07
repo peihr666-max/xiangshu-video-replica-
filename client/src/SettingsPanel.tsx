@@ -66,6 +66,19 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
   deepseek: {
     title: "AI 改写",
     note: "二创口播稿改写 · 默认 DeepSeek，只需 API Key",
+    fields: [
+      { name: "api_key", label: "API Key", secret: true },
+      {
+        name: "base_url",
+        label: "接口地址（可选）",
+        placeholder: "https://api.deepseek.com",
+      },
+      { name: "model", label: "模型（可选）", placeholder: "deepseek-chat" },
+    ],
+  },
+  hifly: {
+    title: "数字人口播",
+    note: "口播分身制作、声音克隆与口播视频生成 · 只需 API Key",
     fields: [{ name: "api_key", label: "API Key", secret: true }],
   },
   tikhub: {
@@ -75,12 +88,42 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
   },
   dashscope: {
     title: "语音转写",
-    note: "上传视频提取文案 · 只需 API Key",
-    fields: [{ name: "api_key", label: "API Key", secret: true }],
+    note: "上传视频提取文案（Fun-ASR）· 通常只需 API Key 与工作空间 ID",
+    fields: [
+      { name: "api_key", label: "API Key", secret: true },
+      { name: "workspace_id", label: "工作空间 ID（可选）" },
+      { name: "region", label: "区域（可选）", placeholder: "cn-beijing" },
+      {
+        name: "base_url",
+        label: "接口地址（可选）",
+        placeholder: "https://dashscope.aliyuncs.com",
+      },
+      { name: "model", label: "转写模型（可选）", placeholder: "fun-asr" },
+      {
+        name: "flash_model",
+        label: "极速模型（可选）",
+        placeholder: "fun-asr-flash-2026-06-15",
+      },
+      {
+        name: "flash_threshold_sec",
+        label: "极速模型秒数阈值（可选）",
+        placeholder: "300",
+      },
+      {
+        name: "poll_interval_sec",
+        label: "轮询间隔秒（可选）",
+        placeholder: "2",
+      },
+      {
+        name: "poll_max_attempts",
+        label: "轮询最大次数（可选）",
+        placeholder: "90",
+      },
+    ],
   },
   douyidou: {
     title: "链接解析",
-    note: "抖音 / 快手 / 小红书链接去水印与文案提取",
+    note: "抖音 / 快手 / 小红书链接去水印与文案提取 · 链接解析能力上线后生效",
     fields: [
       { name: "app_id", label: "App ID" },
       { name: "app_secret", label: "App Secret", secret: true },
@@ -93,6 +136,7 @@ const PROVIDER_ORDER: ProviderName[] = [
   "apilio",
   "cos",
   "deepseek",
+  "hifly",
   "tikhub",
   "dashscope",
   "douyidou",

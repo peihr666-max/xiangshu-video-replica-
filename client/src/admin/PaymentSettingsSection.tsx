@@ -96,6 +96,7 @@ export function PaymentSettingsSection({
         internal_base_unit_price_fen: billing.internal_base_unit_price_fen,
         min_recharge_fen: billing.min_recharge_fen,
         recharge_step_fen: billing.recharge_step_fen,
+        oral_unit_price_fen: billing.oral_unit_price_fen,
       });
       setBilling(nextBilling);
       setNotice("内部价格已保存。");
@@ -209,6 +210,18 @@ export function PaymentSettingsSection({
             value={billing?.recharge_step_fen ?? 0}
             onChange={(event) =>
               updateBilling("recharge_step_fen", event.target.value)
+            }
+          />
+        </label>
+        <label>
+          口播单价（分/条）
+          <input
+            disabled={readOnly}
+            inputMode="numeric"
+            type="number"
+            value={billing?.oral_unit_price_fen ?? 0}
+            onChange={(event) =>
+              updateBilling("oral_unit_price_fen", event.target.value)
             }
           />
         </label>

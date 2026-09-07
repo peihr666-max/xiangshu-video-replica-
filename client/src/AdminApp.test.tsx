@@ -140,6 +140,7 @@ const settings = {
     charged_unit_price_fen: 1000,
     min_recharge_fen: 10000,
     recharge_step_fen: 1000,
+    oral_unit_price_fen: 1000,
   },
   zpay: {
     provider: "zpay",
@@ -439,6 +440,26 @@ describe("AdminApp", () => {
     expect(String(zpayCall?.[1]?.body)).not.toContain("gateway_url");
     expect(String(zpayCall?.[1]?.body)).not.toContain("notify_url");
     expect(String(zpayCall?.[1]?.body)).not.toContain("return_url");
+
+    // ZPay 保存完成后 saving 复位，内部价格提交必须带上口播单价。
+    fireEvent.click(screen.getByRole("button", { name: "保存内部价格" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, options]) =>
+            String(url).endsWith("/api/control/settings/billing") &&
+            options?.method === "PATCH",
+        ),
+      ).toBe(true),
+    );
+    const billingCall = fetchMock.mock.calls.find(
+      ([url, options]) =>
+        String(url).endsWith("/api/control/settings/billing") &&
+        options?.method === "PATCH",
+    );
+    expect(String(billingCall?.[1]?.body)).toContain(
+      '"oral_unit_price_fen":1000',
+    );
   });
 
   it("configures generic services through the production control plane", async () => {

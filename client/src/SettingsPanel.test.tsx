@@ -25,7 +25,13 @@ const settingsSnapshot = {
       config: { bucket: "bucket-1", region: "ap-shanghai" },
     },
     deepseek: { provider: "deepseek", configured: false, config: {} },
+    hifly: { provider: "hifly", configured: false, config: {} },
     tikhub: { provider: "tikhub", configured: false, config: {} },
+    dashscope: {
+      provider: "dashscope",
+      configured: false,
+      config: { workspace_id: "ws-123" },
+    },
   },
   runtime: {
     max_generation_count_per_batch: 5,
@@ -60,6 +66,22 @@ function installFetch(options?: { providerSave?: "ok" | "fail" }) {
         status: "ok",
         provider: "metaso",
         test_kind: "metaso_h3",
+      });
+    }
+    if (
+      url.endsWith("/api/admin/settings/providers/hifly") &&
+      init?.method === "PUT"
+    ) {
+      return jsonResponse({ provider: "hifly", configured: true, config: {} });
+    }
+    if (
+      url.endsWith("/api/admin/settings/providers/dashscope") &&
+      init?.method === "PUT"
+    ) {
+      return jsonResponse({
+        provider: "dashscope",
+        configured: true,
+        config: {},
       });
     }
     throw new Error(`unexpected request: ${url} ${init?.method ?? "GET"}`);
@@ -183,5 +205,65 @@ describe("SettingsPanel", () => {
           ) && init?.method === "POST",
       ),
     ).toBe(true);
+  });
+
+  it("renders the hifly card and saves its api key", async () => {
+    const fetchMock = installFetch();
+    const { container } = render(<SettingsPanel />);
+
+    await screen.findByText("视频生成");
+    const hifly = providerCard(container, "hifly");
+    expect(hifly.getByText("数字人口播")).toBeInTheDocument();
+    expect(hifly.getByText("未配置")).toBeInTheDocument();
+
+    fireEvent.change(hifly.getByLabelText("API Key"), {
+      target: { value: DUMMY_KEY },
+    });
+    fireEvent.click(hifly.getByRole("button", { name: "保存" }));
+
+    expect(await hifly.findByText("已保存")).toBeInTheDocument();
+    const saveCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/admin/settings/providers/hifly") &&
+        init?.method === "PUT",
+    );
+    expect(saveCall).toBeDefined();
+    expect(saveCall?.[1]?.body).toBe(
+      JSON.stringify({ config: { api_key: DUMMY_KEY } }),
+    );
+  });
+
+  it("saves dashscope optional fields alongside the api key", async () => {
+    const fetchMock = installFetch();
+    const { container } = render(<SettingsPanel />);
+
+    await screen.findByText("视频生成");
+    const dashscope = providerCard(container, "dashscope");
+    // 非密钥字段从快照预填
+    expect(dashscope.getByLabelText("工作空间 ID（可选）")).toHaveValue(
+      "ws-123",
+    );
+
+    fireEvent.change(dashscope.getByLabelText("API Key"), {
+      target: { value: DUMMY_KEY },
+    });
+    fireEvent.change(dashscope.getByLabelText("极速模型秒数阈值（可选）"), {
+      target: { value: "120" },
+    });
+    fireEvent.click(dashscope.getByRole("button", { name: "保存" }));
+
+    expect(await dashscope.findByText("已保存")).toBeInTheDocument();
+    const saveCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/admin/settings/providers/dashscope") &&
+        init?.method === "PUT",
+    );
+    expect(saveCall).toBeDefined();
+    const body = JSON.parse(String(saveCall?.[1]?.body)) as {
+      config: Record<string, string>;
+    };
+    expect(body.config.api_key).toBe(DUMMY_KEY);
+    expect(body.config.workspace_id).toBe("ws-123");
+    expect(body.config.flash_threshold_sec).toBe("120");
   });
 });

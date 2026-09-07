@@ -139,6 +139,7 @@ export type BillingSettings = {
   charged_unit_price_fen: number;
   min_recharge_fen: number;
   recharge_step_fen: number;
+  oral_unit_price_fen: number;
 };
 
 export type ControlSettings = {
@@ -239,6 +240,7 @@ export type ProviderName =
   | "apilio"
   | "cos"
   | "deepseek"
+  | "hifly"
   | "tikhub"
   | "dashscope"
   | "douyidou";
@@ -1302,6 +1304,7 @@ export async function updateControlBillingSettings(input: {
   internal_base_unit_price_fen: number;
   min_recharge_fen: number;
   recharge_step_fen: number;
+  oral_unit_price_fen: number;
 }): Promise<BillingSettings> {
   return requestControlJson<BillingSettings>(
     "/api/control/settings/billing",
