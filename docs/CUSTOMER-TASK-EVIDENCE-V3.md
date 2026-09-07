@@ -19,14 +19,14 @@
 | Field | Evidence |
 | --- | --- |
 | **Task ID** | T46 |
-| **Status** | `AUTOMATED_VERIFIED` |
+| **Status** | `IN_PROGRESS`（用户追加 CL-12/CL-13） |
 | **Baseline / Branch** | `7f08678` / `feat/character-library-page-closure` |
 | **Scope** | Character list, five-view and scene generation, IP rewrite, avatar/voice cloning, oral generation, task recovery, provider settings and billing price |
 | **Work Plan** | `docs/人物库页面全链路收口计划-2026-09-07.md` |
-| **Current Evidence Level** | `AUTOMATED_VERIFIED`; `npm run check` passed: client 990/990, server 1930/1930, secret/E2E/Tauri/Ruff/format/Mypy all green |
+| **Current Evidence Level** | CL-00–CL-10 are `AUTOMATED_VERIFIED`; server-side character pagination and post-production templates are in progress as CL-12/CL-13 |
 | **External Boundary** | Real Apilio/DeepSeek/Hifly/COS/payment validation remains T40 and requires explicit authorization |
 
-CL-00–CL-10 are complete. Formal pages use the real API path and do not fall back to review/mock fixtures; CL-11 remains the authorized real-chain gate. Full evidence is recorded in `docs/evidence/T46-EVIDENCE.md`.
+CL-00–CL-10 are complete. Formal pages use the real API path and do not fall back to review/mock fixtures. CL-12/CL-13 implement the newly requested remaining code; CL-11 remains the authorized real-chain gate. Full evidence is recorded in `docs/evidence/T46-EVIDENCE.md`.
 
 ## T45 — Security Defense-in-Depth Closure
 
