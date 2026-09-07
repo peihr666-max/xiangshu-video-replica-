@@ -1810,11 +1810,18 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
                 "(id,project_id,created_by_user_id,idempotency_key,request_hash,"
                 "request_snapshot_json) VALUES "
                 "('capacity-b1','capacity-p2','capacity-u2','capacity-b-key',"
-                "'capacity-b-hash','{}')"
+                "'capacity-b-hash',"
+                '\'{"output_duration_seconds":4,"resolution":"480P","ratio":"adaptive"}\')'
             )
+            # 完整快照：赛跑中无论口播还是生成赢下唯一容量槽，两个 claim
+            # 路径都必须能走完（load_worker_task 解析快照），否则测试随机
+            # 在生成侧赢锁的分支上以 JSONDecodeError 收场。
             conn.execute(
-                "INSERT INTO generation_tasks (id,batch_id,provider,model,status) VALUES "
-                "('capacity-g1','capacity-b1','metaso','h3','PENDING')"
+                "INSERT INTO generation_tasks "
+                "(id,batch_id,provider,model,status,prompt_snapshot_json) VALUES "
+                "('capacity-g1','capacity-b1','metaso','h3','PENDING',"
+                '\'{"prompt_text":"capacity","first_frame_uri":null,'
+                '"generation_mode":"I2V"}\')'
             )
             conn.execute("UPDATE runtime_settings SET max_concurrent_h3_tasks=1 WHERE id=1")
 

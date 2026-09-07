@@ -38,6 +38,9 @@ POOL_MAX_ENV = "VIDEO_REPLICA_PG_POOL_MAX"
 # A misconfigured POOL_MAX must not drain the server's connection budget
 # (shared by the multi-instance API/Worker fleet, M1 review LOW).
 POOL_MAX_CEILING = 64
+# 空闲事务护栏（2026-09-07 梳理）：业务侧纪律是短事务，一个连接停留在
+# "事务开着但不发语句"超过阈值即是缺陷（持锁泄漏会串住整个容量/队列路径）。
+# 默认 5 分钟——高于最长的合法请求内外呼窗口，仍能把真实泄漏变成快速失败。
 
 DEFAULT_POOL_MIN = 1
 DEFAULT_POOL_MAX = 8

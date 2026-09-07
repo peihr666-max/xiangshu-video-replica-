@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
+import socket
 import threading
 from dataclasses import dataclass, replace
 from datetime import timedelta
-from typing import Protocol, cast
+from typing import Protocol
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
@@ -40,6 +42,9 @@ VIRAL_STORAGE_PREFIX = "viral"
 VIRAL_MEDIA_URL_TTL = timedelta(hours=6)
 _DEFAULT_FETCH_TIMEOUT_SECONDS = 60.0
 _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+# 单文件下载上限：短视频/封面远超此值的必然是异常响应，防止把响应体整读进
+# 内存时被恶意或异常源站打爆 API 进程。
+_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 _MEDIA_LOCKS = tuple(threading.Lock() for _ in range(32))
@@ -96,15 +101,53 @@ class ViralStorage(Protocol):
 
 
 class UrlFetcher:
-    """下载远端媒体字节（可注入以便测试）."""
+    """下载远端媒体字节（可注入以便测试）.
+
+    上游返回的媒体/封面 URL 属于半可信输入：真实视频号 CDN 链接就是
+    ``http://``，因此不能强制 https，但必须拒绝非 http(s) 协议与解析到
+    私网/环回/链路本地的地址（``file://``、云元数据 169.254.169.254 等），
+    否则被污染的数据源响应可以驱动服务端 SSRF。解析与请求之间存在 TOCTOU
+    窗口，与 METASO 结果下载的防护同级（generation._require_public_https_host）。
+    """
 
     def __init__(self, *, timeout_seconds: float = _DEFAULT_FETCH_TIMEOUT_SECONDS) -> None:
         self.timeout_seconds = timeout_seconds
 
     def fetch(self, url: str) -> bytes:
+        _require_public_http_url(url)
         request = Request(url, headers={"User-Agent": _USER_AGENT}, method="GET")
         with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
-            return cast(bytes, response.read())
+            declared = response.headers.get("Content-Length")
+            if declared and int(declared) > _MAX_DOWNLOAD_BYTES:
+                raise ViralMediaError("媒体文件超出可下载大小上限")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_DOWNLOAD_BYTES:
+                    raise ViralMediaError("媒体文件超出可下载大小上限")
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+
+def _require_public_http_url(url: str) -> None:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ViralMediaError("媒体地址协议不受支持")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ViralMediaError("媒体地址缺少主机名")
+    try:
+        addresses = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ViralMediaError("媒体地址无法解析") from exc
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if not ip.is_global:
+            raise ViralMediaError("媒体地址必须指向公网主机")
 
 
 def guess_image_content_type(content: bytes, url: str = "") -> str:
