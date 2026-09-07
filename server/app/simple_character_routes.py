@@ -15,6 +15,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Response,
     UploadFile,
     status,
@@ -47,7 +48,7 @@ from app.simple_character import (
     cleanup_deleted_character_objects,
     create_simple_character,
     delete_simple_character_identity,
-    list_simple_library,
+    list_simple_library_page,
     list_simple_scene_looks,
     prepare_simple_character_generation,
     regenerate_simple_character_contact_sheet,
@@ -123,6 +124,13 @@ class SimpleLibraryEntryResponse(BaseModel):
     generation_source: str | None
     scene_look_count: int
     views: list[SimpleCharacterViewResponse]
+
+
+class SimpleLibraryPageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[SimpleLibraryEntryResponse]
+    next_cursor: str | None
 
 
 class SimpleCharacterRegenerationResponse(BaseModel):
@@ -349,13 +357,23 @@ async def enqueue_project_simple_character(
     )
 
 
-@router.get("/library", response_model=list[SimpleLibraryEntryResponse])
+@router.get("/library", response_model=SimpleLibraryPageResponse)
 def read_simple_library(
     conn: Database,
     actor: AuthenticatedUser,
-) -> list[SimpleLibraryEntryResponse]:
+    limit: Annotated[int, Query(ge=1, le=100)] = 12,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
+    query: Annotated[str, Query(max_length=100)] = "",
+) -> SimpleLibraryPageResponse:
     """List characters with their contact sheet and seven-view asset ids."""
-    return [
+    page = list_simple_library_page(
+        conn,
+        actor=actor,
+        limit=limit,
+        cursor=cursor,
+        query=query,
+    )
+    items = [
         SimpleLibraryEntryResponse(
             identity_id=entry.identity_id,
             persona_id=entry.persona_id,
@@ -378,8 +396,9 @@ def read_simple_library(
                 for view in entry.views
             ],
         )
-        for entry in list_simple_library(conn, actor=actor)
+        for entry in page.items
     ]
+    return SimpleLibraryPageResponse(items=items, next_cursor=page.next_cursor)
 
 
 @router.get(

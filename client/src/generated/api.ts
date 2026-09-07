@@ -7278,6 +7278,13 @@ export interface components {
       /** Views */
       views: components["schemas"]["SimpleCharacterViewResponse"][];
     };
+    /** SimpleLibraryPageResponse */
+    SimpleLibraryPageResponse: {
+      /** Items */
+      items: components["schemas"]["SimpleLibraryEntryResponse"][];
+      /** Next Cursor */
+      next_cursor: string | null;
+    };
     /** SimpleSceneLookCreateRequest */
     SimpleSceneLookCreateRequest: {
       /** Scene Name */
@@ -16197,7 +16204,14 @@ export interface operations {
   };
   read_simple_library_api_simple_characters_library_get: {
     parameters: {
-      query?: never;
+      query?: {
+        /** Limit */
+        limit?: number;
+        /** Cursor */
+        cursor?: string | null;
+        /** Query */
+        query?: string;
+      };
       header?: {
         "X-Dev-User-Id"?: string | null;
         Authorization?: string | null;
@@ -16213,7 +16227,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["SimpleLibraryEntryResponse"][];
+          "application/json": components["schemas"]["SimpleLibraryPageResponse"];
         };
       };
       /** @description Validation Error */

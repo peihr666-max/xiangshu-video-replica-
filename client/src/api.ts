@@ -2969,6 +2969,17 @@ export interface SimpleLibraryEntry {
   views: SimpleCharacterView[];
 }
 
+export interface SimpleLibraryPage {
+  items: SimpleLibraryEntry[];
+  next_cursor: string | null;
+}
+
+export interface SimpleLibraryPageFilters {
+  limit?: number;
+  cursor?: string;
+  query?: string;
+}
+
 export type DurableImageTaskStatus =
   | "PENDING"
   | "RUNNING"
@@ -3202,13 +3213,37 @@ async function pollCharacterSheetTask(
   throw new Error("人物生成仍在后台进行，请稍后返回人物库查看。");
 }
 
+export async function listSimpleCharacterLibraryPage(
+  filters: SimpleLibraryPageFilters = {},
+): Promise<SimpleLibraryPage> {
+  const query = new URLSearchParams();
+  if (filters.limit !== undefined) {
+    query.set("limit", String(filters.limit));
+  }
+  if (filters.cursor) {
+    query.set("cursor", filters.cursor);
+  }
+  if (filters.query) {
+    query.set("query", filters.query);
+  }
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return requestApiJson<SimpleLibraryPage>(
+    `/api/simple-characters/library${suffix}`,
+    "读取人物库失败",
+  );
+}
+
 export async function listSimpleCharacterLibrary(): Promise<
   SimpleLibraryEntry[]
 > {
-  return requestApiJson<SimpleLibraryEntry[]>(
-    "/api/simple-characters/library",
-    "读取人物库失败",
-  );
+  const entries: SimpleLibraryEntry[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await listSimpleCharacterLibraryPage({ limit: 100, cursor });
+    entries.push(...page.items);
+    cursor = page.next_cursor ?? undefined;
+  } while (cursor);
+  return entries;
 }
 
 export async function listCharacterSceneLooks(

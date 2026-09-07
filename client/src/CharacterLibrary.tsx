@@ -15,7 +15,7 @@ import {
   getLatestCharacterSheetTask,
   getLatestSceneLookTask,
   listCharacterSceneLooks,
-  listSimpleCharacterLibrary,
+  listSimpleCharacterLibraryPage,
   regenerateContactSheet,
   renamePersonIdentity,
   type SimpleCharacterView,
@@ -117,17 +117,11 @@ export function CharacterLibrary({
   const [busyRegenerateId, setBusyRegenerateId] = useState("");
   const [lightboxId, setLightboxId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [visibleCount, setVisibleCount] = useState(CHARACTER_PAGE_SIZE);
-  const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
-  const matchingEntries = normalizedQuery
-    ? entries.filter((entry) =>
-        [entry.display_name, entry.role, entry.service_scope].some((value) =>
-          value.toLocaleLowerCase().includes(normalizedQuery),
-        ),
-      )
-    : entries;
-  const shownEntries = matchingEntries.slice(0, visibleCount);
-  const shownAssetKey = shownEntries.flatMap(entryAssetIds).join("\n");
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const libraryRequestIdRef = useRef(0);
+  const normalizedQuery = searchQuery.trim();
+  const shownAssetKey = entries.flatMap(entryAssetIds).join("\n");
 
   const loadPreviewUrls = useCallback(
     async (assetIds: string[], retry = false) => {
@@ -174,21 +168,73 @@ export function CharacterLibrary({
   }, []);
 
   const loadLibrary = useCallback(async () => {
+    const requestId = ++libraryRequestIdRef.current;
     setIsLoading(true);
+    setIsLoadingMore(false);
     try {
-      const result = await listSimpleCharacterLibrary();
+      const result = await listSimpleCharacterLibraryPage({
+        limit: CHARACTER_PAGE_SIZE,
+        query: normalizedQuery,
+      });
+      if (requestId !== libraryRequestIdRef.current) {
+        return;
+      }
       const ownedEntries =
         userRole === "admin" || userRole === "auditor"
-          ? result
-          : result.filter((entry) => entry.owner_user_id === userId);
+          ? result.items
+          : result.items.filter((entry) => entry.owner_user_id === userId);
       setEntries(ownedEntries);
+      setNextCursor(result.next_cursor);
       setError("");
     } catch (loadError) {
-      setError(errorMessage(loadError, "人物库暂不可用，请重试。"));
+      if (requestId === libraryRequestIdRef.current) {
+        setError(errorMessage(loadError, "人物库暂不可用，请重试。"));
+      }
     } finally {
-      setIsLoading(false);
+      if (requestId === libraryRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
-  }, [userId, userRole]);
+  }, [normalizedQuery, userId, userRole]);
+
+  async function loadMoreCharacters() {
+    if (!nextCursor || isLoadingMore) {
+      return;
+    }
+    const requestId = ++libraryRequestIdRef.current;
+    setIsLoadingMore(true);
+    try {
+      const result = await listSimpleCharacterLibraryPage({
+        limit: CHARACTER_PAGE_SIZE,
+        cursor: nextCursor,
+        query: normalizedQuery,
+      });
+      if (requestId !== libraryRequestIdRef.current) {
+        return;
+      }
+      const allowedItems =
+        userRole === "admin" || userRole === "auditor"
+          ? result.items
+          : result.items.filter((entry) => entry.owner_user_id === userId);
+      setEntries((current) => {
+        const knownIds = new Set(current.map((entry) => entry.identity_id));
+        return [
+          ...current,
+          ...allowedItems.filter((entry) => !knownIds.has(entry.identity_id)),
+        ];
+      });
+      setNextCursor(result.next_cursor);
+      setError("");
+    } catch (loadError) {
+      if (requestId === libraryRequestIdRef.current) {
+        setError(errorMessage(loadError, "加载更多人物失败，请重试。"));
+      }
+    } finally {
+      if (requestId === libraryRequestIdRef.current) {
+        setIsLoadingMore(false);
+      }
+    }
+  }
 
   const releasePendingPreview = useCallback(() => {
     if (pendingPreviewUrlRef.current) {
@@ -337,6 +383,10 @@ export function CharacterLibrary({
 
   // 上传成功后立刻把新人物置顶展示，无需等待整表刷新。
   function handleCreated(newEntry: SimpleLibraryEntry) {
+    // A slower initial/search request must not erase the newly created card.
+    libraryRequestIdRef.current += 1;
+    setIsLoading(false);
+    setIsLoadingMore(false);
     clearPendingGeneration();
     setEntries((current) => [
       newEntry,
@@ -560,31 +610,28 @@ export function CharacterLibrary({
         </div>
       ) : null}
       {message ? <p className="setup-success">{message}</p> : null}
-      {entries.length > 0 ? (
+      {entries.length > 0 || normalizedQuery ? (
         <div className="character-library-search">
           <input
             aria-label="搜索人物"
-            onChange={(event) => {
-              setSearchQuery(event.target.value);
-              setVisibleCount(CHARACTER_PAGE_SIZE);
-            }}
+            onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="搜索人物名称、角色或服务范围"
             type="search"
             value={searchQuery}
           />
           <span>
-            {matchingEntries.length === entries.length
-              ? `共 ${entries.length} 位人物`
-              : `找到 ${matchingEntries.length} 位人物`}
+            {normalizedQuery
+              ? `已找到 ${entries.length} 位人物`
+              : `已加载 ${entries.length} 位人物`}
           </span>
         </div>
       ) : null}
       {isLoading && !pendingCharacter ? (
         <p className="status-note">正在读取人物库…</p>
+      ) : entries.length === 0 && normalizedQuery && !pendingCharacter ? (
+        <p className="status-note">未找到匹配人物，请更换搜索词。</p>
       ) : entries.length === 0 && !pendingCharacter ? (
         <p className="status-note">还没有人物，上传一张图片开始创建。</p>
-      ) : matchingEntries.length === 0 && !pendingCharacter ? (
-        <p className="status-note">未找到匹配人物，请更换搜索词。</p>
       ) : (
         <>
           <ul className="character-preview-list">
@@ -594,7 +641,7 @@ export function CharacterLibrary({
                 onClear={clearPendingGeneration}
               />
             ) : null}
-            {shownEntries.map((entry) => {
+            {entries.map((entry) => {
               const isEditing = editingId === entry.identity_id;
               const isRenaming = busyRenameId === entry.identity_id;
               const cover = coverAsset(entry);
@@ -730,15 +777,14 @@ export function CharacterLibrary({
               );
             })}
           </ul>
-          {shownEntries.length < matchingEntries.length ? (
+          {nextCursor ? (
             <button
               className="secondary-button"
-              onClick={() =>
-                setVisibleCount((count) => count + CHARACTER_PAGE_SIZE)
-              }
+              disabled={isLoadingMore}
+              onClick={() => void loadMoreCharacters()}
               type="button"
             >
-              加载更多人物
+              {isLoadingMore ? "正在加载…" : "加载更多人物"}
             </button>
           ) : null}
         </>

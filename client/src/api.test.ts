@@ -50,6 +50,7 @@ import {
   listProjectCharacterVersions,
   listProjects,
   listSavedGenerationPrompts,
+  listSimpleCharacterLibraryPage,
   lockGenerationPrompt,
   readAnalysisPayload,
   readFirstFrameCandidates,
@@ -237,6 +238,30 @@ describe("素材库 API", () => {
     expect(progress).toHaveBeenLastCalledWith(100);
     expect(MaterialUploadRequest.latest?.headers.get("Content-Type")).toBe(
       "audio/mpeg",
+    );
+  });
+});
+
+describe("人物库 API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("使用服务端查询和不透明游标读取下一页", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], next_cursor: "next-cursor" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listSimpleCharacterLibraryPage({
+      limit: 12,
+      cursor: "cursor/value",
+      query: "林 夏",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/simple-characters/library?limit=12&cursor=cursor%2Fvalue&query=%E6%9E%97+%E5%A4%8F",
     );
   });
 });

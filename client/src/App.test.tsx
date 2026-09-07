@@ -337,6 +337,12 @@ describe("App", () => {
       if (url.endsWith("/health")) {
         return Promise.resolve({ ok: true, json: async () => healthResponse });
       }
+      if (url.includes("/api/simple-characters/library")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [], next_cursor: null }),
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => [] });
     });
     vi.stubGlobal("fetch", withAuth(fetchMock, adminUser));

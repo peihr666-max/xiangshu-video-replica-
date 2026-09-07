@@ -15,6 +15,7 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     listSimpleCharacterLibrary: vi.fn(),
+    listSimpleCharacterLibraryPage: vi.fn(),
     listCharacterSceneLooks: vi.fn(),
     createCharacterSceneLook: vi.fn(),
     regenerateContactSheet: vi.fn(),
@@ -129,6 +130,12 @@ describe("CharacterLibrary", () => {
     vi.mocked(api.listCharacterSceneLooks).mockResolvedValue([]);
     vi.mocked(api.getLatestCharacterSheetTask).mockResolvedValue(null);
     vi.mocked(api.getLatestSceneLookTask).mockResolvedValue(null);
+    vi.mocked(api.listSimpleCharacterLibraryPage).mockImplementation(
+      async () => ({
+        items: await api.listSimpleCharacterLibrary(),
+        next_cursor: null,
+      }),
+    );
     vi.spyOn(window, "confirm").mockReturnValue(true);
   });
 
@@ -172,27 +179,108 @@ describe("CharacterLibrary", () => {
   });
 
   it("支持搜索人物并通过加载更多访问第十三个人物", async () => {
-    vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue(
-      Array.from({ length: 13 }, (_, index) => ({
-        ...entry,
-        identity_id: `identity-${index + 1}`,
-        display_name: `人物${index + 1}`,
-        views: viewsFor(`asset-${index + 1}`),
-      })),
-    );
+    const firstPage = Array.from({ length: 12 }, (_, index) => ({
+      ...entry,
+      identity_id: `identity-${index + 1}`,
+      display_name: `人物${index + 1}`,
+      views: viewsFor(`asset-${index + 1}`),
+    }));
+    const thirteenth = {
+      ...entry,
+      identity_id: "identity-13",
+      display_name: "人物13",
+      views: viewsFor("asset-13"),
+    };
+    vi.mocked(api.listSimpleCharacterLibraryPage)
+      .mockResolvedValueOnce({ items: firstPage, next_cursor: "page-2" })
+      .mockResolvedValueOnce({ items: [thirteenth], next_cursor: null })
+      .mockResolvedValueOnce({ items: [firstPage[11]], next_cursor: null })
+      .mockResolvedValueOnce({ items: [], next_cursor: null });
 
     render(<CharacterLibrary userRole="employee" userId="employee_1" />);
 
     expect(await screen.findByText("人物1")).toBeInTheDocument();
     expect(screen.queryByText("人物13")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "加载更多人物" }));
-    expect(screen.getByText("人物13")).toBeInTheDocument();
+    expect(await screen.findByText("人物13")).toBeInTheDocument();
+    expect(api.listSimpleCharacterLibraryPage).toHaveBeenNthCalledWith(2, {
+      limit: 12,
+      cursor: "page-2",
+      query: "",
+    });
 
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索人物" }), {
       target: { value: "人物12" },
     });
-    expect(screen.getByText("人物12")).toBeInTheDocument();
+    expect(await screen.findByText("人物12")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(api.listSimpleCharacterLibraryPage).toHaveBeenNthCalledWith(3, {
+        limit: 12,
+        cursor: undefined,
+        query: "人物12",
+      }),
+    );
     expect(screen.queryByText("人物1")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索人物" }), {
+      target: { value: "不存在" },
+    });
+    expect(
+      await screen.findByText("未找到匹配人物，请更换搜索词。"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "搜索人物" })).toHaveValue(
+      "不存在",
+    );
+  });
+
+  it("新建人物取代正在请求的下一页时恢复加载更多按钮", async () => {
+    let finishPage!: (page: api.SimpleLibraryPage) => void;
+    const pendingPage = new Promise<api.SimpleLibraryPage>((resolve) => {
+      finishPage = resolve;
+    });
+    vi.mocked(api.listSimpleCharacterLibraryPage)
+      .mockResolvedValueOnce({ items: [entry], next_cursor: "page-2" })
+      .mockReturnValueOnce(pendingPage);
+    vi.mocked(api.uploadSimpleCharacter).mockResolvedValue({
+      identity_id: "identity-new",
+      persona_id: "persona-new",
+      character_version_id: "version-new",
+      publication_hash: "publication-new",
+      contact_sheet_asset_id: "sheet-new",
+      generation_source: "image_provider",
+      views: viewsFor("new"),
+    });
+
+    render(<CharacterLibrary userRole="employee" userId="employee_1" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "加载更多人物" }),
+    );
+    expect(screen.getByRole("button", { name: "正在加载…" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("人物名称"), {
+      target: { value: "新人物" },
+    });
+    fireEvent.change(screen.getByLabelText("授权图片"), {
+      target: {
+        files: [new File(["png"], "source.png", { type: "image/png" })],
+      },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "一键生成五视图拼合图" }),
+    );
+
+    await waitFor(() =>
+      expect(api.uploadSimpleCharacter).toHaveBeenCalledWith(
+        null,
+        expect.any(File),
+        "新人物",
+      ),
+    );
+    expect(
+      await screen.findByRole("button", { name: "查看人物 新人物 大图" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "加载更多人物" })).toBeEnabled();
+    finishPage({ items: [], next_cursor: null });
   });
 
   it("separates the base appearance from scene looks and directly generates a new look", async () => {
