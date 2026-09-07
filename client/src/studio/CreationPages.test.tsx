@@ -707,6 +707,23 @@ describe("视频复刻（模块①）", () => {
     replicaLive.uploadWorkbenchSourceVideo.mockResolvedValue({
       projectId: "project-upload-1",
       assetId: "asset-upload-1",
+      project: {
+        id: "project-upload-1",
+        owner_user_id: "user-1",
+        name: "a",
+        status: "DRAFT",
+        reference_asset_id: "asset-upload-1",
+        reference_upload_status: "READY",
+        analysis_status: "NOT_READY",
+      },
+      asset: {
+        id: "asset-upload-1",
+        name: "a · 来源视频",
+        kind: "video",
+        group: "a",
+        source: "项目上传",
+        saved: true,
+      },
     });
     useStudio.mockReturnValue(value);
     render(<ReplicaPage />);
@@ -726,6 +743,82 @@ describe("视频复刻（模块①）", () => {
         sourceAssetId: "asset-upload-1",
       }),
     );
+    expect(value.updateData).toHaveBeenCalledOnce();
+    const update = vi.mocked(value.updateData).mock.calls[0][0];
+    const updated = update(value.data);
+    expect(updated.projects).toContainEqual(
+      expect.objectContaining({ id: "project-upload-1" }),
+    );
+    expect(updated.assets).toContainEqual(
+      expect.objectContaining({ id: "asset-upload-1" }),
+    );
+    expect(screen.queryByText("先导入参考视频")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "启动 AI 拆解" }),
+    ).toBeInTheDocument();
+  });
+
+  it("选择已有项目后忽略仍在上传的旧来源", async () => {
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "replica",
+      draft: {
+        ...value.state.draft,
+        projectId: undefined,
+        sourceId: undefined,
+      },
+    };
+    value.data = {
+      ...value.data,
+      projects: [
+        {
+          id: "project-1",
+          owner_user_id: "user-1",
+          name: "已有项目",
+          status: "READY",
+          reference_asset_id: "asset-1",
+          reference_upload_status: "READY",
+          analysis_status: "READY",
+        },
+      ],
+    };
+    let resolveUpload:
+      | ((value: { projectId: string; assetId: string }) => void)
+      | undefined;
+    replicaLive.uploadWorkbenchSourceVideo.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpload = resolve;
+        }),
+    );
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "上传参考视频" }));
+    const input = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [new File([], "a.mp4")] });
+    fireEvent.change(input);
+    fireEvent.change(screen.getByLabelText("选择已有项目"), {
+      target: { value: "project-1" },
+    });
+
+    expect(
+      replicaLive.uploadWorkbenchSourceVideo.mock.calls[0]?.[2]?.aborted,
+    ).toBe(true);
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        projectId: "project-1",
+        sourceId: "asset-1",
+        sourceAssetId: "asset-1",
+      }),
+    );
+
+    resolveUpload?.({ projectId: "late-project", assetId: "late-asset" });
+    await Promise.resolve();
+    expect(value.patchDraft).toHaveBeenCalledTimes(1);
   });
 
   it("启动 AI 拆解后生成分镜行与逐镜头 Prompt", async () => {

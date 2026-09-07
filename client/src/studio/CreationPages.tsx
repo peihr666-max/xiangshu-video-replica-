@@ -368,6 +368,7 @@ export function ReplicaPage() {
     data,
     review,
     patchDraft,
+    updateData,
     navigate,
     notify,
     saveDraft,
@@ -394,10 +395,19 @@ export function ReplicaPage() {
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [generating, setGenerating] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const uploadOperationRef = useRef(0);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   // 拆解完成回调用：比对发起时的项目，防止换视频后的旧结果覆盖新状态。
   const analysisProjectRef = useRef<string | undefined>(undefined);
   const promptTextRef = useRef(promptText);
   promptTextRef.current = promptText;
+  useEffect(
+    () => () => {
+      uploadOperationRef.current += 1;
+      uploadAbortRef.current?.abort();
+    },
+    [],
+  );
 
   const resetReplicaState = () => {
     setShots([]);
@@ -410,19 +420,52 @@ export function ReplicaPage() {
       notify("审核示例不上传视频。");
       return;
     }
+    const operation = ++uploadOperationRef.current;
+    uploadAbortRef.current?.abort();
+    const abortController = new AbortController();
+    uploadAbortRef.current = abortController;
     notify("正在上传参考视频…");
     try {
-      const uploaded = await uploadWorkbenchSourceVideo(file, (percent) =>
-        notify(`参考视频上传中 ${percent}%`),
+      const uploaded = await uploadWorkbenchSourceVideo(
+        file,
+        (percent) => {
+          if (operation === uploadOperationRef.current)
+            notify(`参考视频上传中 ${percent}%`);
+        },
+        abortController.signal,
       );
+      if (operation !== uploadOperationRef.current) return;
       resetReplicaState();
       patchDraft({
         projectId: uploaded.projectId,
         sourceId: uploaded.assetId,
         sourceAssetId: uploaded.assetId,
       });
+      if (uploaded.project || uploaded.asset) {
+        updateData((current) => ({
+          ...current,
+          projects: uploaded.project
+            ? [
+                uploaded.project,
+                ...current.projects.filter(
+                  (project) => project.id !== uploaded.project?.id,
+                ),
+              ]
+            : current.projects,
+          assets: uploaded.asset
+            ? [
+                uploaded.asset,
+                ...current.assets.filter(
+                  (asset) => asset.id !== uploaded.asset?.id,
+                ),
+              ]
+            : current.assets,
+        }));
+      }
+      setStage("ready");
       notify("参考视频已上传，点击「启动 AI 拆解」反推分镜与提示词。");
     } catch {
+      if (operation !== uploadOperationRef.current) return;
       notify("参考视频上传失败，请稍后重试。");
     }
   };
@@ -432,6 +475,8 @@ export function ReplicaPage() {
     if (!selected) {
       return;
     }
+    uploadOperationRef.current += 1;
+    uploadAbortRef.current?.abort();
     resetReplicaState();
     patchDraft({
       projectId: selected.id,
