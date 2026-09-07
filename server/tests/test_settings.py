@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -605,6 +606,91 @@ def test_admin_updates_settings_without_echoing_secret_or_authorization(
     audit_metadata = conn.execute("SELECT metadata_json FROM audit_logs").fetchone()[0]
     assert "Authorization" not in audit_metadata
     assert "must-not-be-stored" not in audit_metadata
+
+
+def test_admin_can_reveal_one_saved_secret_without_cache_or_audit_leak(
+    client: TestClient,
+    conn: sqlite3.Connection,
+) -> None:
+    SettingsRepository(conn).save_provider_config(
+        "metaso",
+        {"api_key": "test-reveal-key"},
+        actor_user_id="admin_1",
+    )
+
+    response = client.post(
+        "/api/admin/settings/providers/metaso/secrets/api_key/reveal",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"value": "test-reveal-key"}
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+    audit = conn.execute(
+        """
+        SELECT action, metadata_json FROM audit_logs
+        WHERE action = 'provider_settings.secret_reveal'
+        ORDER BY created_at DESC LIMIT 1
+        """
+    ).fetchone()
+    assert audit is not None
+    assert json.loads(audit["metadata_json"]) == {
+        "field": "api_key",
+        "provider": "metaso",
+    }
+    assert "test-reveal-key" not in audit["metadata_json"]
+
+
+@pytest.mark.parametrize("user_id", ["employee_1", "auditor_1"])
+def test_non_admin_cannot_reveal_provider_secret(
+    client: TestClient,
+    conn: sqlite3.Connection,
+    user_id: str,
+) -> None:
+    SettingsRepository(conn).save_provider_config(
+        "metaso",
+        {"api_key": "test-reveal-key"},
+        actor_user_id="admin_1",
+    )
+
+    response = client.post(
+        "/api/admin/settings/providers/metaso/secrets/api_key/reveal",
+        headers={"X-Dev-User-Id": user_id},
+    )
+
+    assert response.status_code == 403
+    assert "test-reveal-key" not in response.text
+
+
+def test_provider_secret_reveal_rejects_non_secret_and_missing_fields(
+    client: TestClient,
+    conn: sqlite3.Connection,
+) -> None:
+    SettingsRepository(conn).save_provider_config(
+        "cos",
+        {
+            "access_key_id": "test-secret-id",
+            "secret_access_key": "test-secret-key",
+            "bucket": "test-bucket",
+            "region": "ap-shanghai",
+        },
+        actor_user_id="admin_1",
+    )
+
+    non_secret = client.post(
+        "/api/admin/settings/providers/cos/secrets/bucket/reveal",
+        headers=admin_headers(),
+    )
+    missing = client.post(
+        "/api/admin/settings/providers/cos/secrets/api_key/reveal",
+        headers=admin_headers(),
+    )
+
+    assert non_secret.status_code == 422
+    assert non_secret.json()["detail"]["code"] == "SETTINGS_FIELD_NOT_SECRET"
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "SETTINGS_SECRET_NOT_CONFIGURED"
 
 
 def test_admin_can_update_a_non_secret_field_without_reentering_a_saved_secret(

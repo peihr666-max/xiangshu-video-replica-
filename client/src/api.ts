@@ -3943,6 +3943,18 @@ export async function updateProviderSettings(
   );
 }
 
+export async function revealProviderSecret(
+  provider: ProviderName,
+  field: string,
+): Promise<string> {
+  const result = await requestAdminJson<{ value: string }>(
+    `/api/admin/settings/providers/${provider}/secrets/${encodeURIComponent(field)}/reveal`,
+    "读取已保存密钥失败",
+    { method: "POST" },
+  );
+  return result.value;
+}
+
 export async function updateRuntimeSettings(
   runtime: RuntimeSettings,
 ): Promise<RuntimeSettings> {

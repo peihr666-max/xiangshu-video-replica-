@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsPanel } from "./SettingsPanel";
@@ -84,6 +90,14 @@ function installFetch(options?: { providerSave?: "ok" | "fail" }) {
         provider: "metaso",
         test_kind: "metaso_h3",
       });
+    }
+    if (
+      url.endsWith(
+        "/api/admin/settings/providers/metaso/secrets/api_key/reveal",
+      ) &&
+      init?.method === "POST"
+    ) {
+      return jsonResponse({ value: DUMMY_KEY });
     }
     throw new Error(`unexpected request: ${url} ${init?.method ?? "GET"}`);
   });
@@ -197,6 +211,36 @@ describe("SettingsPanel", () => {
     expect(saveCall?.[1]?.body).toBe(
       JSON.stringify({ config: { api_key: DUMMY_KEY } }),
     );
+  });
+
+  it("用星光按钮按需读取并显示已保存密钥", async () => {
+    const fetchMock = installFetch();
+    const { container } = render(<SettingsPanel />);
+
+    await screen.findByText("视频生成");
+    const metaso = providerCard(container, "metaso");
+    const input = metaso.getByLabelText("API Key");
+    const reveal = metaso.getByRole("button", { name: "显示API Key" });
+
+    expect(reveal).toHaveTextContent("✨");
+    expect(input).toHaveAttribute("type", "password");
+    expect(input).toHaveValue("");
+
+    fireEvent.click(reveal);
+
+    await waitFor(() => expect(input).toHaveValue(DUMMY_KEY));
+    expect(input).toHaveAttribute("type", "text");
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url).endsWith(
+            "/api/admin/settings/providers/metaso/secrets/api_key/reveal",
+          ) && init?.method === "POST",
+      ),
+    ).toBe(true);
+
+    fireEvent.click(metaso.getByRole("button", { name: "隐藏API Key" }));
+    expect(input).toHaveAttribute("type", "password");
   });
 
   it("reports a provider save failure inline without crashing", async () => {

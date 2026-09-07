@@ -8,6 +8,7 @@ import {
   type ProviderSettings,
   type ProviderTestResult,
   type RuntimeSettings,
+  revealProviderSecret,
   type SettingsSnapshot,
   testControlProviderConnection,
   testProviderConnection,
@@ -170,6 +171,13 @@ export function SettingsPanel({
     );
   }
 
+  async function revealSavedSecret(provider: ProviderName, field: string) {
+    if (source === "control") {
+      throw new Error("控制台不支持显示已保存密钥");
+    }
+    return revealProviderSecret(provider, field);
+  }
+
   async function saveBilling(billing: BillingSettings) {
     const payload = {
       internal_base_unit_price_fen: billing.internal_base_unit_price_fen,
@@ -212,6 +220,7 @@ export function SettingsPanel({
               readOnly={readOnly}
               settings={providerSettings}
               onSave={saveProvider}
+              onReveal={source === "workspace" ? revealSavedSecret : undefined}
               onTest={
                 source === "control"
                   ? testControlProviderConnection
@@ -306,6 +315,7 @@ function ProviderForm({
   readOnly,
   settings,
   onSave,
+  onReveal,
   onTest,
 }: {
   provider: ProviderName;
@@ -315,6 +325,7 @@ function ProviderForm({
     provider: ProviderName,
     config: Record<string, string>,
   ) => Promise<void>;
+  onReveal?: (provider: ProviderName, field: string) => Promise<string>;
   onTest: (provider: ProviderName) => Promise<ProviderTestResult>;
 }) {
   const form = PROVIDER_FORMS[provider];
@@ -324,6 +335,12 @@ function ProviderForm({
   const [visibleFields, setVisibleFields] = useState<Record<string, boolean>>(
     {},
   );
+  const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [revealingFields, setRevealingFields] = useState<
+    Record<string, boolean>
+  >({});
   const [status, setStatus] = useState("");
   const [statusTone, setStatusTone] = useState<"ok" | "error">("ok");
   const [isSaving, setIsSaving] = useState(false);
@@ -338,8 +355,38 @@ function ProviderForm({
     setValues(initialValues(form.fields, settings.config));
   }, [form.fields, settings.config]);
 
-  function toggleSecretVisibility(name: string) {
-    setVisibleFields((current) => ({ ...current, [name]: !current[name] }));
+  async function toggleSecretVisibility(name: string) {
+    if (visibleFields[name]) {
+      setVisibleFields((current) => ({ ...current, [name]: false }));
+      if (revealedFields[name]) {
+        setValues((current) => ({ ...current, [name]: "" }));
+        setRevealedFields((current) => ({ ...current, [name]: false }));
+      }
+      return;
+    }
+
+    if (values[name] || !settings.configured) {
+      setVisibleFields((current) => ({ ...current, [name]: true }));
+      return;
+    }
+
+    if (!onReveal || revealingFields[name]) {
+      return;
+    }
+
+    setRevealingFields((current) => ({ ...current, [name]: true }));
+    setStatus("");
+    try {
+      const value = await onReveal(provider, name);
+      setValues((current) => ({ ...current, [name]: value }));
+      setRevealedFields((current) => ({ ...current, [name]: true }));
+      setVisibleFields((current) => ({ ...current, [name]: true }));
+    } catch (error) {
+      setStatus(visibleErrorMessage(error, "读取已保存密钥失败。"));
+      setStatusTone("error");
+    } finally {
+      setRevealingFields((current) => ({ ...current, [name]: false }));
+    }
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -353,6 +400,7 @@ function ProviderForm({
       await onSave(provider, values);
       setValues((current) => clearSecretFields(current, form.fields));
       setVisibleFields({});
+      setRevealedFields({});
       setStatus("已保存");
       setStatusTone("ok");
     } catch {
@@ -401,12 +449,13 @@ function ProviderForm({
       <div className="field-stack">
         {form.fields.map((field) => {
           const isVisible = Boolean(visibleFields[field.name]);
+          const isRevealing = Boolean(revealingFields[field.name]);
           return (
             <label key={field.name}>
               {field.label}
               <span className={field.secret ? "secret-field" : undefined}>
                 <input
-                  disabled={readOnly}
+                  disabled={readOnly || isRevealing}
                   type={field.secret && !isVisible ? "password" : "text"}
                   value={values[field.name] ?? ""}
                   placeholder={
@@ -414,25 +463,33 @@ function ProviderForm({
                       ? "已保存，留空不修改"
                       : field.placeholder
                   }
-                  onChange={(event) =>
+                  onChange={(event) => {
                     setValues((current) => ({
                       ...current,
                       [field.name]: event.target.value,
-                    }))
-                  }
+                    }));
+                    setRevealedFields((current) => ({
+                      ...current,
+                      [field.name]: false,
+                    }));
+                  }}
                 />
                 {field.secret ? (
                   <button
-                    disabled={readOnly}
+                    disabled={readOnly || isRevealing}
                     type="button"
                     className="secret-toggle"
                     aria-label={
-                      isVisible ? `隐藏${field.label}` : `显示${field.label}`
+                      isRevealing
+                        ? `正在读取${field.label}`
+                        : isVisible
+                          ? `隐藏${field.label}`
+                          : `显示${field.label}`
                     }
                     aria-pressed={isVisible}
-                    onClick={() => toggleSecretVisibility(field.name)}
+                    onClick={() => void toggleSecretVisibility(field.name)}
                   >
-                    <SecretToggleIcon visible={isVisible} />
+                    <span aria-hidden="true">✨</span>
                   </button>
                 ) : null}
               </span>
@@ -561,26 +618,6 @@ function RuntimeForm({
         {status ? <span role="status">{status}</span> : null}
       </div>
     </form>
-  );
-}
-
-function SecretToggleIcon({ visible }: { visible: boolean }) {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      {visible ? (
-        <>
-          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
-          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
-          <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
-          <line x1="1" y1="1" x2="23" y2="23" />
-        </>
-      ) : (
-        <>
-          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-          <circle cx="12" cy="12" r="3" />
-        </>
-      )}
-    </svg>
   );
 }
 
