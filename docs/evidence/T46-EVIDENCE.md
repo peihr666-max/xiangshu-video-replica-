@@ -2,11 +2,11 @@
 
 ## 当前状态
 
-- 状态：`IN_PROGRESS`（用户追加 CL-12/CL-13）
+- 状态：`IN_PROGRESS`（CL-12 已完成；CL-13 待依赖决策；CL-11 待 T40 授权）
 - 基线：`7f08678`
 - 分支：`feat/character-library-page-closure`
 - 计划：`docs/人物库页面全链路收口计划-2026-09-07.md`
-- 当前证据层级：CL-00–CL-10 为 `AUTOMATED_VERIFIED`；CL-12/CL-13 开发中
+- 当前证据层级：CL-00–CL-12 为 `AUTOMATED_VERIFIED`；CL-13 待后期渲染依赖和许可决策
 - 真实 Apilio、DeepSeek、Hifly、COS 和账务联合链未执行，仍归 T40。
 
 ## 工作包证据
@@ -24,8 +24,8 @@
 | CL-08 | 口播价格迁移、权限、掩码和请求字段先红 | 新增可逆迁移 `077_oral_unit_price`；管理设置增加 Hifly 与口播价格；OpenAPI/类型同步 | 服务端设置/迁移 64、前端设置 35；`dfb6feb` | 完成 |
 | CL-09 | 第 9 人/第 13 场景、混类资产、UNKNOWN 展示与计数先红 | 新版人物页只嵌入真实 CharacterLibrary；取消静默截断；场景/分身分组；服务端真实计数；搜索并按 12 人分批加载；只加载可见预览；UNKNOWN 禁止普通重提 | 人物页、API、工作台专项；前端全量 990；`754cd93`、`3a3d51e` | 完成 |
 | CL-10 | 全仓迁移 head、设置计价、夹具来源和动态签名契约回归 | 同步迁移 head 与所有测试契约；修复口播价格初始同步竞态；动态签名按媒体身份而非过期查询参数比较 | `npm run check`：前端 990、服务端 1930、密钥/E2E/Tauri/Ruff/format/Mypy 全绿；`f0b6abc`、`89ae7c6`、`16a1c45` | 完成 |
-| CL-12 | 待以失败测试锁定分页、搜索、owner/cursor 绑定和完整人物聚合 | 待实现 | 待验证 | 进行中 |
-| CL-13 | 待以失败测试锁定模板版本、字幕/封面输出、幂等、失败补偿与媒体质检 | 待实现 | 待验证 | 未开始 |
+| CL-12 | 数组响应、缺失分页函数、跨用户/跨搜索 cursor、跨页重复和前端请求竞态先红 | 服务端先按 identity `(created_at,id)` keyset 分页再聚合完整人物；cursor 绑定 actor/role/query 且失败关闭；前端服务端搜索、追加去重与迟到响应废弃；Studio 全量读取保持兼容 | 后端人物专项 66/66；前端人物/API/Studio 183/183；全仓前端 992/992、后端 1932/1932；`869be55` | 完成 |
+| CL-13 | 依赖审计确认现有随包 FFmpeg 只支持音频，无视频编解码/文字渲染/可分发中文字体 | 已冻结“独立合成任务与版本、不改写 Hifly 原件、不二次结算、BGM 关闭”的实施边界 | 渲染器自动化待依赖选型后开始 | 待依赖决策 |
 
 ## 页面与后端联动结论
 
@@ -49,35 +49,34 @@
 - 命令：`npm run check`。
 - 密钥扫描：通过，无运行时契约硬编码密钥。
 - 生产依赖审计：`npm audit --omit=dev`，0 vulnerabilities。
-- 前端：Biome、TypeScript、Vitest 全绿，72 个文件、990 个用例通过。
+- 前端：Biome、TypeScript、Vitest 全绿，72 个文件、992 个用例通过。
 - E2E 源码：Biome 14 个文件通过。
 - Tauri：`cargo fmt --check` 与 `cargo check --locked` 通过。
 - 服务端：Ruff 276 个文件、Mypy 100 个源文件通过。
-- 服务端测试：1930/1930 通过；耗时 790.97 秒。
+- 服务端测试：1932/1932 通过；耗时 836.70 秒。
 - 已知非阻断告警：既有 analytics CSS specificity 1 条、macOS 下 Windows 凭据常量 dead-code 2 条、Starlette TestClient 弃用告警 1 条。
 
 ## §14 任务证据记录
 
 ```text
-任务/工作包：T46 / CL-00–CL-10
+任务/工作包：T46 / CL-00–CL-12
 Owner / Reviewer：Codex / independent verifier
 分支 / 基线 SHA：feat/character-library-page-closure / 7f08678
 上游规格段落：客户版任务清单 V3 §12–§15；人物库页面全链路收口计划
-改动文件：前端人物/创作/设置/API/状态模型；后端人物/素材/媒体探测/口播/设置；迁移 077；对应测试与本证据文档，共 60 个文件
-失败测试或回归锁定：UNKNOWN 重提与槽位、图片/媒体伪成功、auditor 写入、删除顺序、IP/场景跨页、音频与字幕、计价迁移、第 13 人可达、输入同步竞态、动态签名跨秒
-实现结果：CL-00–CL-10 全部完成；页面与后端代码链形成单一真实入口；正式运行不回退 review/mock
-验证命令与通过数：`npm run check`；前端 990/990，后端 1930/1930，密钥/E2E/Tauri/Ruff/format/Mypy 全通过
+改动文件：CL-00–CL-10 前端人物/创作/设置/API/状态模型与后端人物/素材/媒体探测/口播/设置；迁移 077；CL-12 额外修改前后端人物列表/API/OpenAPI 及测试 9 个文件
+失败测试或回归锁定：UNKNOWN 重提与槽位、图片/媒体伪成功、auditor 写入、删除顺序、IP/场景跨页、音频与字幕、计价迁移、第 13 人可达、输入同步竞态、动态签名跨秒、人物列表 keyset 分页/cursor 作用域/完整聚合/请求竞态
+实现结果：CL-00–CL-12 全部完成；页面与后端代码链形成单一真实入口；正式运行不回退 review/mock；人物列表不再全量返回给页面
+验证命令与通过数：`npm run check`；前端 992/992，后端 1932/1932，密钥/E2E/Tauri/Ruff/format/Mypy 全通过
 证据层级：AUTOMATED_VERIFIED
 安全与可观测性：真实凭据不得入库、日志、测试夹具或提交
 迁移与回滚：新增可逆迁移 `077_oral_unit_price`；代码按 Lore 提交逐包 `git revert`
 外部授权记录：未授权真实付费 Provider、生产 COS、支付和发布
 未测试项：真实 Apilio/DeepSeek/Hifly/COS/钱包联合链
-Lore 提交 SHA：`40b62e7`、`50146b6`、`9d222f4`、`9fb616e`、`263c4f2`、`dfb6feb`、`754cd93`、`f0b6abc`、`3a3d51e`、`89ae7c6`、`16a1c45`
+Lore 提交 SHA：`40b62e7`、`50146b6`、`9d222f4`、`9fb616e`、`263c4f2`、`dfb6feb`、`754cd93`、`f0b6abc`、`3a3d51e`、`89ae7c6`、`16a1c45`、`869be55`
 ```
 
 ## 仍未完成/未授权
 
 1. CL-11：真实 Apilio 五视图/场景图、DeepSeek IP 改写、Hifly 分身/声音/口播、COS 归档和钱包对账，必须在 T40 经用户明确授权并使用同一候选 SHA 验证。
-2. `oral-ip-agents-research` 中的网感后期模板（字幕、封面、BGM 合成）不属于 Hifly 生成参数，当前仓库没有模板渲染器，页面已停止展示伪生效入口。
-3. 当前人物列表为服务端全量返回、前端搜索和每批 12 人加载；服务端游标分页已转为 CL-12 开发项。
-4. 尚未完成 staging、生产发布、真实角色 UAT、真实供应商余额/回执/媒体取回与生产告警演练，不得宣称 `REAL_CHAIN_VERIFIED` 或 `PRODUCTION_GO`。
+2. CL-13：`oral-ip-agents-research` 中的网感后期模板（字幕、封面、BGM 合成）不属于 Hifly 生成参数。当前随包 FFmpeg 只支持音频，且无已审核文字栅格化库/中文字体；待用户确认新依赖与分发许可路线后实施，页面保持不展示伪生效入口。
+3. 尚未完成 staging、生产发布、真实角色 UAT、真实供应商余额/回执/媒体取回与生产告警演练，不得宣称 `REAL_CHAIN_VERIFIED` 或 `PRODUCTION_GO`。
