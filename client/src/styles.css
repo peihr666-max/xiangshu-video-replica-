@@ -5155,6 +5155,22 @@ button.regenerate-button {
   min-width: 150px;
 }
 
+.character-library-search {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.character-library-search input {
+  flex: 1;
+  max-width: 420px;
+}
+
+.character-library-search span {
+  color: #aaa297;
+  font-size: 12px;
+}
+
 .character-preview-list {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

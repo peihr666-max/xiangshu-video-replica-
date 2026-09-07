@@ -171,6 +171,30 @@ describe("CharacterLibrary", () => {
     expect(onOpenProfile).toHaveBeenCalledWith("identity-1");
   });
 
+  it("支持搜索人物并通过加载更多访问第十三个人物", async () => {
+    vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue(
+      Array.from({ length: 13 }, (_, index) => ({
+        ...entry,
+        identity_id: `identity-${index + 1}`,
+        display_name: `人物${index + 1}`,
+        views: viewsFor(`asset-${index + 1}`),
+      })),
+    );
+
+    render(<CharacterLibrary userRole="employee" userId="employee_1" />);
+
+    expect(await screen.findByText("人物1")).toBeInTheDocument();
+    expect(screen.queryByText("人物13")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "加载更多人物" }));
+    expect(screen.getByText("人物13")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索人物" }), {
+      target: { value: "人物12" },
+    });
+    expect(screen.getByText("人物12")).toBeInTheDocument();
+    expect(screen.queryByText("人物1")).not.toBeInTheDocument();
+  });
+
   it("separates the base appearance from scene looks and directly generates a new look", async () => {
     const onChanged = vi.fn();
     vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([entry]);
