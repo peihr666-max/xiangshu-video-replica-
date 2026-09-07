@@ -206,6 +206,7 @@ class SimpleLibraryEntry:
     status: str
     contact_sheet_asset_id: str | None
     generation_source: str | None
+    scene_look_count: int
     views: tuple[SimpleCharacterView, ...]
 
 
@@ -708,6 +709,17 @@ def list_simple_library(
         constraints = (
             {} if base is None else decode_scene_constraints(base["appearance_constraints_json"])
         )
+        scene_look_count = len(
+            {
+                str(row["persona_id"])
+                for row in identity_rows
+                if row["version_id"] is not None
+                and decode_scene_constraints(row["appearance_constraints_json"]).get(
+                    "appearance_type"
+                )
+                == "scene"
+            }
+        )
         views = tuple(
             SimpleCharacterView(
                 view_type=cast(RequiredCharacterViewType, str(row["view_type"])),
@@ -738,6 +750,7 @@ def list_simple_library(
                 status=str(identity_rows[0]["identity_status"]),
                 contact_sheet_asset_id=_snapshot_contact_sheet_asset_id(latest),
                 generation_source=_snapshot_generation_source(latest),
+                scene_look_count=scene_look_count,
                 views=views,
             )
         )

@@ -2,7 +2,6 @@ import { type ComponentProps, useState } from "react";
 import { AnalysisWorkspace } from "../AnalysisWorkspace";
 import type { WorkspaceShell } from "../App";
 import type { CurrentUser, GenerationBatch, Project } from "../api";
-import { CharacterLibrary } from "../CharacterLibrary";
 import { CustomerProfilePanel } from "../customer/CustomerProfilePanel";
 import { CustomerRechargeDialog } from "../customer/CustomerRechargeDialog";
 import { CustomerWalletPanel } from "../customer/CustomerWalletPanel";
@@ -24,7 +23,6 @@ export function LiveWorkspacePanel({
   customerWallet,
   project,
   characterIdentityId,
-  characterInitialTab = "base",
   handoffBatch = null,
   onClose,
   onBusyChange,
@@ -39,7 +37,6 @@ export function LiveWorkspacePanel({
   customerWallet?: CustomerWallet;
   project?: Project;
   characterIdentityId?: string;
-  characterInitialTab?: "base" | "scenes";
   handoffBatch?: GenerationBatch | null;
   onClose: () => void;
   onBusyChange: (busy: boolean) => void;
@@ -126,14 +123,6 @@ export function LiveWorkspacePanel({
             onOpenDetail={(nextProject) => selectProject(nextProject, "detail")}
           />
         )
-      ) : null}
-      {panel === "characters" ? (
-        <CharacterLibrary
-          initialIdentityId={characterIdentityId}
-          initialTab={characterInitialTab}
-          userId={currentUser.id}
-          userRole={currentUser.role}
-        />
       ) : null}
       {panel === "tasks" ? (
         <TaskRecordsPanel

@@ -59,6 +59,7 @@ const entry: api.SimpleLibraryEntry = {
   status: "ACTIVE",
   contact_sheet_asset_id: null,
   generation_source: "image_provider",
+  scene_look_count: 0,
   views: viewsFor("asset"),
 };
 
@@ -151,7 +152,27 @@ describe("CharacterLibrary", () => {
     );
   });
 
+  it("展示后端场景造型数量并从统一页面进入完整档案", async () => {
+    const onOpenProfile = vi.fn();
+    vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([
+      { ...entry, scene_look_count: 2 },
+    ]);
+
+    render(
+      <CharacterLibrary
+        onOpenProfile={onOpenProfile}
+        userRole="employee"
+        userId="employee_1"
+      />,
+    );
+
+    expect(await screen.findByText("场景造型 2 套")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "完整档案" }));
+    expect(onOpenProfile).toHaveBeenCalledWith("identity-1");
+  });
+
   it("separates the base appearance from scene looks and directly generates a new look", async () => {
+    const onChanged = vi.fn();
     vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([entry]);
     vi.mocked(api.listCharacterSceneLooks).mockResolvedValue([sceneLook]);
     vi.mocked(api.createCharacterSceneLook).mockResolvedValue({
@@ -163,7 +184,13 @@ describe("CharacterLibrary", () => {
       costume_description: "深灰色西装和浅色衬衫",
     });
 
-    render(<CharacterLibrary userRole="employee" userId="employee_1" />);
+    render(
+      <CharacterLibrary
+        onChanged={onChanged}
+        userRole="employee"
+        userId="employee_1"
+      />,
+    );
     fireEvent.click(
       await screen.findByRole("button", { name: "查看人物 林夏 大图" }),
     );
@@ -205,6 +232,7 @@ describe("CharacterLibrary", () => {
     );
     expect(await screen.findByText("商务讲解")).toBeInTheDocument();
     expect(screen.queryByText("等待管理员审核")).toBeNull();
+    expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
   it("restores a scene task inside its identity scene tab", async () => {

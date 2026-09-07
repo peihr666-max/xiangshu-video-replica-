@@ -71,9 +71,7 @@ import type {
 } from "./types";
 
 const projectLimit = 24;
-const personLimit = 8;
 const projectPreviewLimit = 8;
-const sceneLimit = 12;
 
 function errorText(error: unknown) {
   return error instanceof Error && error.message.trim()
@@ -330,7 +328,7 @@ function basePerson(
     audience: entry.target_audience,
     expression: entry.expression_style,
     sheetId: entry.contact_sheet_asset_id ?? undefined,
-    photoIds: [],
+    sceneLookCount: entry.scene_look_count,
     avatars,
     voices,
   };
@@ -343,7 +341,11 @@ type OralIdentityAssets = {
   errors: string[];
 };
 
-function oralStatusLabel(status: OralAvatarRecord["status"]): string {
+function oralStatusLabel(
+  status: OralAvatarRecord["status"],
+  submissionState: OralAvatarRecord["submission_state"],
+): string {
+  if (submissionState === "SUBMISSION_UNKNOWN") return "提交结果待核对";
   if (status === "READY") return "已就绪";
   if (status === "FAILED") return "制作失败";
   return "制作中";
@@ -413,9 +415,10 @@ async function loadOralIdentityAssets(
       imageId: avatar.source_asset_id,
       ready: avatar.status === "READY",
       status: avatar.status,
+      submissionState: avatar.submission_state,
       error: avatar.error_message ?? undefined,
       origin: avatar.source_kind === "IMAGE" ? "照片制作" : "视频制作",
-      duration: oralStatusLabel(avatar.status),
+      duration: oralStatusLabel(avatar.status, avatar.submission_state),
     })),
     voices: voiceRows.map((voice) => {
       const demoUrl = voice.demo_asset_id
@@ -428,8 +431,8 @@ async function loadOralIdentityAssets(
           voice.status === "READY" &&
           Boolean(voice.confirmed) &&
           Boolean(demoUrl),
-        isDefault: false,
         status: voice.status,
+        submissionState: voice.submission_state,
         error: voice.error_message ?? undefined,
         url: demoUrl,
       };
@@ -453,7 +456,7 @@ async function loadPeople(): Promise<{
   assets: StudioAsset[];
   errors: string[];
 }> {
-  const entries = (await listSimpleCharacterLibrary()).slice(0, personLimit);
+  const entries = await listSimpleCharacterLibrary();
   const errors: string[] = [];
   const people: StudioPerson[] = [];
   const assets: StudioAsset[] = [];
@@ -1028,10 +1031,7 @@ export async function loadPersonAssets(
   identityId: string,
 ): Promise<PersonAssetLoad> {
   try {
-    const scenes = (await listCharacterSceneLooks(identityId)).slice(
-      0,
-      sceneLimit,
-    );
+    const scenes = await listCharacterSceneLooks(identityId);
     const selected = scenes
       .map((scene) => ({
         scene,

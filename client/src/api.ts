@@ -936,6 +936,12 @@ export type OralAvatarRecord = {
   identity_id: string;
   title: string;
   status: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  submission_state:
+    | "LOCAL_PENDING"
+    | "SUBMITTING"
+    | "SUBMITTED"
+    | "SUBMISSION_UNKNOWN"
+    | "FAILED";
   source_kind: "VIDEO" | "IMAGE";
   source_asset_id: string;
   error_message: string | null;
@@ -948,6 +954,12 @@ export type OralVoiceRecord = {
   identity_id: string;
   title: string;
   status: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  submission_state:
+    | "LOCAL_PENDING"
+    | "SUBMITTING"
+    | "SUBMITTED"
+    | "SUBMISSION_UNKNOWN"
+    | "FAILED";
   source_asset_id: string;
   demo_asset_id: string | null;
   confirmed: number | boolean;
@@ -2953,6 +2965,7 @@ export interface SimpleLibraryEntry {
   status: string;
   contact_sheet_asset_id: string | null;
   generation_source: "image_provider" | "local_placeholder" | null;
+  scene_look_count: number;
   views: SimpleCharacterView[];
 }
 

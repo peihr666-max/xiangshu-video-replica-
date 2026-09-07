@@ -12,6 +12,7 @@ import {
   updateSimpleCharacterProfile,
   uploadMaterial,
 } from "../api";
+import { CharacterLibrary } from "../CharacterLibrary";
 import { useStudio } from "./context";
 import type { StudioPage, StudioPerson } from "./types";
 import { Button, Empty, Field, Hint, Media, Panel, Tabs } from "./ui";
@@ -114,8 +115,30 @@ function selectedPerson(people: StudioPerson[], id?: string) {
 }
 
 export function PeoplePage() {
-  const { data, navigate, openLive } = useStudio();
+  const { data, navigate, refresh, review, state, user } = useStudio();
   const [roleFilter, setRoleFilter] = useState("全部");
+  if (!review) {
+    return (
+      <section className="people-page" aria-label="人物库">
+        <div className="people-toolbar">
+          <div>
+            <h1>人物库</h1>
+            <p>统一管理人物定位、五视图、场景造型、口播分身与声音</p>
+          </div>
+        </div>
+        <CharacterLibrary
+          initialIdentityId={state.selectedPersonId}
+          initialTab={state.selectedPersonId ? "scenes" : "base"}
+          onChanged={refresh}
+          onOpenProfile={(identityId) =>
+            navigate("person-ip", { selectedPersonId: identityId })
+          }
+          userId={user.id}
+          userRole={user.role}
+        />
+      </section>
+    );
+  }
   const people = data.people;
   const visiblePeople =
     roleFilter === "全部"
@@ -131,7 +154,7 @@ export function PeoplePage() {
         <Button
           aria-label="新增人物"
           variant="primary"
-          onClick={() => openLive("characters")}
+          onClick={() => navigate("people")}
         >
           ＋ 新增人物
         </Button>
@@ -155,7 +178,7 @@ export function PeoplePage() {
           title="还没有人物"
           description="从人物库创建第一位乡墅行业 IP。"
           action={
-            <Button variant="primary" onClick={() => openLive("characters")}>
+            <Button variant="primary" onClick={() => navigate("people")}>
               新增人物
             </Button>
           }
@@ -214,7 +237,7 @@ function PersonCard({
         <h2>{person.name}</h2>
         <p>{person.role}</p>
         <div className="person-card__meta">
-          <span>✓ 形象照片 {person.photoIds.length} 张</span>
+          <span>✓ 场景造型 {person.sceneLookCount} 套</span>
           <span>✓ 口播分身 {avatars} 个</span>
           <span className={voices ? "" : "is-warning"}>
             {voices ? `✓ 可用声音 ${voices} 个` : "！声音待添加"}
@@ -415,9 +438,12 @@ function IpPanel({ person }: { person: StudioPerson }) {
 }
 
 function PhotosPanel({ person }: { person: StudioPerson }) {
-  const { openLive, navigate, patchDraft, data, notify } = useStudio();
+  const { navigate, patchDraft, data, notify } = useStudio();
   const assets = data.assets.filter(
-    (asset) => asset.personId === person.id && asset.kind === "image",
+    (asset) =>
+      asset.personId === person.id &&
+      asset.kind === "image" &&
+      (asset.composite || asset.source === "人物库场景造型"),
   );
   return (
     <div className="photos-panel">
@@ -431,7 +457,7 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
             variant="outline"
             onClick={() => {
               notify(`正在打开${person.name}的五视图与场景造型。`);
-              openLive("characters");
+              navigate("people", { selectedPersonId: person.id });
             }}
           >
             管理形象照
@@ -440,7 +466,7 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
             variant="primary"
             onClick={() => {
               notify(`将在人物管理中为${person.name}选择并生成场景形象照。`);
-              openLive("characters");
+              navigate("people", { selectedPersonId: person.id });
             }}
           >
             AI 生成场景照
@@ -470,7 +496,12 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
             title="暂无五视图合成图"
             description="前往人物管理上传照片创建。"
             action={
-              <Button variant="outline" onClick={() => openLive("characters")}>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  navigate("people", { selectedPersonId: person.id })
+                }
+              >
                 打开人物管理
               </Button>
             }
@@ -543,7 +574,7 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
       asset.id === state.draft.imageId &&
       asset.kind === "image" &&
       asset.personId === person.id &&
-      !asset.composite,
+      asset.source === "人物库场景造型",
   );
   const selectedSourceAssetId = sourceAsset?.id;
   const previousSourceAssetId = useRef(selectedSourceAssetId);
@@ -558,7 +589,9 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
     !review,
     pending
       .filter(
-        (avatar) => avatar.status === "PENDING" || avatar.status === "RUNNING",
+        (avatar) =>
+          avatar.submissionState !== "SUBMISSION_UNKNOWN" &&
+          (avatar.status === "PENDING" || avatar.status === "RUNNING"),
       )
       .map((avatar) => avatar.id),
     refreshOralAvatar,
@@ -706,8 +739,13 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
               alt={avatar.name}
             />
             <h3>{avatar.name}</h3>
-            <p>{avatar.error || avatar.duration}</p>
-            {avatar.status === "PENDING" || avatar.status === "RUNNING" ? (
+            <p>
+              {avatar.submissionState === "SUBMISSION_UNKNOWN"
+                ? "提交结果待人工核对，禁止重复提交"
+                : avatar.error || avatar.duration}
+            </p>
+            {avatar.submissionState !== "SUBMISSION_UNKNOWN" &&
+            (avatar.status === "PENDING" || avatar.status === "RUNNING") ? (
               <Button
                 variant="outline"
                 disabled={busy}
@@ -837,6 +875,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
       .filter(
         (voice) =>
           !voice.confirmed &&
+          voice.submissionState !== "SUBMISSION_UNKNOWN" &&
           (voice.status === "PENDING" ||
             voice.status === "RUNNING" ||
             (voice.status === "READY" && !voice.url)),
@@ -978,19 +1017,19 @@ function VoicePanel({ person }: { person: StudioPerson }) {
             key={voice.id}
           >
             <div>
-              <h3>
-                {voice.name} {voice.isDefault ? <small>默认</small> : null}
-              </h3>
+              <h3>{voice.name}</h3>
               <p>
                 {voice.confirmed
                   ? "已确认，可用于文案口播"
-                  : voice.status === "FAILED"
-                    ? voice.error || "克隆失败，请更换样本重试"
-                    : voice.status === "PENDING" || voice.status === "RUNNING"
-                      ? "声音克隆中，暂不可选用"
-                      : voice.status === "READY" && !voice.url
-                        ? "试听样例归档中"
-                        : "待试听确认，暂不可选用"}
+                  : voice.submissionState === "SUBMISSION_UNKNOWN"
+                    ? "提交结果待人工核对，禁止重复提交"
+                    : voice.status === "FAILED"
+                      ? voice.error || "克隆失败，请更换样本重试"
+                      : voice.status === "PENDING" || voice.status === "RUNNING"
+                        ? "声音克隆中，暂不可选用"
+                        : voice.status === "READY" && !voice.url
+                          ? "试听样例归档中"
+                          : "待试听确认，暂不可选用"}
               </p>
             </div>
             <div>
@@ -1026,7 +1065,9 @@ function VoicePanel({ person }: { person: StudioPerson }) {
                 </Button>
               ) : null}
               {!voice.confirmed ? (
-                voice.status === "PENDING" || voice.status === "RUNNING" ? (
+                voice.submissionState ===
+                "SUBMISSION_UNKNOWN" ? null : voice.status === "PENDING" ||
+                  voice.status === "RUNNING" ? (
                   <Button
                     variant="outline"
                     disabled={busy}

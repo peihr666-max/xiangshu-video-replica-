@@ -94,6 +94,7 @@ const person: SimpleLibraryEntry = {
   status: "PUBLISHED",
   contact_sheet_asset_id: "sheet-1",
   generation_source: "image_provider",
+  scene_look_count: 0,
   views: [
     { view_type: "FRONT_FACE", asset_id: "face-1" },
     { view_type: "FRONT_FULL", asset_id: "full-1" },
@@ -637,6 +638,7 @@ describe("真实 Studio 只读适配器", () => {
         identity_id: "person-1",
         title: "张工照片分身",
         status: "READY",
+        submission_state: "SUBMITTED",
         source_kind: "IMAGE",
         source_asset_id: "scene-asset-1",
         error_message: null,
@@ -650,6 +652,7 @@ describe("真实 Studio 只读适配器", () => {
         identity_id: "person-1",
         title: "张工本人音色",
         status: "READY",
+        submission_state: "SUBMITTED",
         source_asset_id: "voice-source-1",
         demo_asset_id: null,
         confirmed: 1,
@@ -793,7 +796,7 @@ describe("真实 Studio 只读适配器", () => {
     expect(data.errors).toHaveLength(3);
   });
 
-  it("限制首页数量及签名预览请求，避免无界N+1", async () => {
+  it("项目预览保持限流但人物库不静默截断", async () => {
     api.listProjects.mockResolvedValue(
       Array.from({ length: 30 }, (_, index) => ({
         ...project,
@@ -815,9 +818,9 @@ describe("真实 Studio 只读适配器", () => {
     const data = await loadStudioData(user);
 
     expect(data.projects).toHaveLength(24);
-    expect(data.people).toHaveLength(8);
+    expect(data.people).toHaveLength(20);
     expect(api.getAssetDownloadUrl).toHaveBeenCalledTimes(8);
-    expect(api.getCachedCharacterAssetUrl).toHaveBeenCalledTimes(16);
+    expect(api.getCachedCharacterAssetUrl).toHaveBeenCalledTimes(40);
   });
 
   it("场景形象照每个场景只取一张正面预览，不展开成五张", async () => {
@@ -855,6 +858,26 @@ describe("真实 Studio 只读适配器", () => {
       }),
     ]);
     expect(result.errors).toEqual([]);
+  });
+
+  it("场景形象照不静默截断人物已生成的造型", async () => {
+    api.listCharacterSceneLooks.mockResolvedValue(
+      Array.from({ length: 13 }, (_, index) => ({
+        identity_id: "person-1",
+        persona_id: `persona-scene-${index}`,
+        character_version_id: `version-scene-${index}`,
+        scene_name: `场景${index}`,
+        scene_description: "乡墅讲解",
+        costume_description: "商务休闲",
+        contact_sheet_asset_id: `scene-sheet-${index}`,
+        generation_source: "image_provider",
+        views: [{ view_type: "FRONT_FACE", asset_id: `scene-front-${index}` }],
+      })),
+    );
+
+    const result = await loadPersonAssets("person-1");
+
+    expect(result.assets).toHaveLength(13);
   });
 
   it("场景预览签名失败仍保留资产身份并报告错误", async () => {

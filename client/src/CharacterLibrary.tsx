@@ -86,11 +86,15 @@ export function CharacterLibrary({
   userId,
   initialIdentityId,
   initialTab = "base",
+  onChanged,
+  onOpenProfile,
 }: {
   userRole: UserRole;
   userId: string;
   initialIdentityId?: string;
   initialTab?: "base" | "scenes";
+  onChanged?: () => void;
+  onOpenProfile?: (identityId: string) => void;
 }) {
   const canManage = userRole !== "auditor";
   const [entries, setEntries] = useState<SimpleLibraryEntry[]>([]);
@@ -321,6 +325,7 @@ export function CharacterLibrary({
       ...current.filter((item) => item.identity_id !== newEntry.identity_id),
     ]);
     void loadPreviewUrls(entryAssetIds(newEntry));
+    onChanged?.();
   }
 
   function viewFileName(entryName: string, view: SimpleCharacterView): string {
@@ -410,6 +415,7 @@ export function CharacterLibrary({
         `人物“${entry.display_name}”的五视图已重新生成（V${result.version_number}）。`,
       );
       await loadLibrary();
+      onChanged?.();
     } catch (regenerateError) {
       setError(
         errorMessage(regenerateError, "重新生成五视图失败，请稍后重试。"),
@@ -434,6 +440,7 @@ export function CharacterLibrary({
         current.filter((item) => item.identity_id !== entry.identity_id),
       );
       setMessage(`人物“${entry.display_name}”已删除。`);
+      onChanged?.();
     } catch (deleteError) {
       setError(errorMessage(deleteError, "删除人物失败，请稍后重试。"));
     } finally {
@@ -476,6 +483,7 @@ export function CharacterLibrary({
         ),
       );
       setMessage(`人物名称已更新为“${updated.display_name}”。`);
+      onChanged?.();
       cancelRename();
     } catch (renameError) {
       setError(errorMessage(renameError, "修改人物名称失败，请重试。"));
@@ -508,6 +516,7 @@ export function CharacterLibrary({
               status: "ACTIVE",
               contact_sheet_asset_id: result.contact_sheet_asset_id,
               generation_source: result.generation_source,
+              scene_look_count: 0,
               views: result.views,
             })
           }
@@ -627,6 +636,15 @@ export function CharacterLibrary({
                         ) : null}
                       </div>
                       <div className="character-preview-card__actions">
+                        {onOpenProfile ? (
+                          <button
+                            className="secondary-button"
+                            onClick={() => onOpenProfile(entry.identity_id)}
+                            type="button"
+                          >
+                            完整档案
+                          </button>
+                        ) : null}
                         {canRename(entry) ? (
                           <button
                             className="secondary-button"
@@ -663,6 +681,7 @@ export function CharacterLibrary({
                           </button>
                         ) : null}
                       </div>
+                      <small>场景造型 {entry.scene_look_count} 套</small>
                     </>
                   )}
                 </div>
@@ -682,6 +701,7 @@ export function CharacterLibrary({
           onDownloadView={handleDownloadView}
           onDownloadAll={handleDownloadAll}
           onLoadPreviewUrls={loadPreviewUrls}
+          onSceneCreated={onChanged}
           previewUrls={previewUrls}
         />
       ) : null}
@@ -761,6 +781,7 @@ function CharacterLightbox({
   onDownloadView,
   onDownloadAll,
   onLoadPreviewUrls,
+  onSceneCreated,
   previewUrls,
 }: {
   busyDownloadKey: string;
@@ -775,6 +796,7 @@ function CharacterLightbox({
   ) => Promise<void>;
   onDownloadAll: (entry: SimpleLibraryEntry) => Promise<void>;
   onLoadPreviewUrls: (assetIds: string[]) => Promise<void>;
+  onSceneCreated?: () => void;
   previewUrls: Record<string, string>;
 }) {
   const [activeTab, setActiveTab] = useState<"base" | "scenes">(initialTab);
@@ -889,6 +911,7 @@ function CharacterLightbox({
       setSceneDescription("");
       setCostumeDescription("");
       setSceneFormOpen(false);
+      onSceneCreated?.();
     } catch (createError) {
       setSceneError(errorMessage(createError, "场景造型生成失败，请重试。"));
     } finally {

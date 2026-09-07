@@ -121,6 +121,7 @@ class SimpleLibraryEntryResponse(BaseModel):
     status: str
     contact_sheet_asset_id: str | None
     generation_source: str | None
+    scene_look_count: int
     views: list[SimpleCharacterViewResponse]
 
 
@@ -368,6 +369,7 @@ def read_simple_library(
             status=entry.status,
             contact_sheet_asset_id=entry.contact_sheet_asset_id,
             generation_source=entry.generation_source,
+            scene_look_count=entry.scene_look_count,
             views=[
                 SimpleCharacterViewResponse(
                     view_type=view.view_type,
@@ -552,6 +554,7 @@ def update_identity_profile(
             status=entry.status,
             contact_sheet_asset_id=entry.contact_sheet_asset_id,
             generation_source=entry.generation_source,
+            scene_look_count=entry.scene_look_count,
             views=[
                 SimpleCharacterViewResponse(
                     view_type=view.view_type,

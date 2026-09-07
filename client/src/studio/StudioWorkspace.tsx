@@ -542,9 +542,9 @@ export function StudioWorkspace({
             person.id === personToLoad
               ? {
                   ...person,
-                  photoIds: result.assets
-                    .filter((asset) => !asset.composite)
-                    .map((asset) => asset.id),
+                  sceneLookCount: result.assets.filter(
+                    (asset) => asset.source === "人物库场景造型",
+                  ).length,
                 }
               : person,
           ),
@@ -1012,14 +1012,7 @@ export function StudioWorkspace({
               <LiveWorkspacePanel
                 panel={livePanel}
                 currentUser={currentUser}
-                characterIdentityId={
-                  livePanel === "analysis"
-                    ? state.draft.ipId
-                    : (state.selectedPersonId ?? state.draft.ipId)
-                }
-                characterInitialTab={
-                  state.page === "person-photos" ? "scenes" : "base"
-                }
+                characterIdentityId={state.draft.ipId}
                 customerAccount={customerAccount}
                 customerWallet={customerWallet}
                 project={liveProject}
@@ -1324,6 +1317,7 @@ function StudioPicker({
         ? true
         : asset.kind === "image" &&
           !asset.composite &&
+          (kind !== "avatar-photo" || asset.source === "人物库场景造型") &&
           ((kind !== "image" && kind !== "avatar-photo") ||
             !person ||
             asset.personId === person.id),
@@ -1359,7 +1353,7 @@ function StudioPicker({
                   >
                     <Icon name="audio" size={36} />
                     <strong>{voice.name}</strong>
-                    <small>已确认{voice.isDefault ? " · 默认" : ""}</small>
+                    <small>已确认</small>
                   </button>
                 ))
             : kind === "avatar"

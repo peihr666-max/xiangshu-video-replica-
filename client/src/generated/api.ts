@@ -7273,6 +7273,8 @@ export interface components {
       contact_sheet_asset_id: string | null;
       /** Generation Source */
       generation_source: string | null;
+      /** Scene Look Count */
+      scene_look_count: number;
       /** Views */
       views: components["schemas"]["SimpleCharacterViewResponse"][];
     };

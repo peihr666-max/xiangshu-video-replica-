@@ -171,7 +171,7 @@ function studio(
           scope: "乡墅设计",
           audience: "自建房家庭",
           expression: "专业通俗",
-          photoIds: [],
+          sceneLookCount: 0,
           avatars: [
             {
               id: "avatar-1",
@@ -187,7 +187,6 @@ function studio(
               id: "voice-1",
               name: "张工本人音色 V1",
               confirmed: true,
-              isDefault: true,
             },
           ],
         },

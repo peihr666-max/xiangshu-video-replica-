@@ -2151,6 +2151,7 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
     ).json()
     base = next(item for item in library if item["identity_id"] == identity_id)
     assert base["contact_sheet_asset_id"] == created["contact_sheet_asset_id"]
+    assert base["scene_look_count"] == 1
 
     # The first-frame flow can select this exact scene look while the base
     # appearance remains the safe automatic default in the client.

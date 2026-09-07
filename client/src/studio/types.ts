@@ -48,6 +48,12 @@ export type StudioAvatar = {
   imageId: string;
   ready: boolean;
   status?: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  submissionState?:
+    | "LOCAL_PENDING"
+    | "SUBMITTING"
+    | "SUBMITTED"
+    | "SUBMISSION_UNKNOWN"
+    | "FAILED";
   error?: string;
   origin: "视频制作" | "照片制作";
   duration: string;
@@ -56,8 +62,13 @@ export type StudioVoice = {
   id: string;
   name: string;
   confirmed: boolean;
-  isDefault: boolean;
   status?: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  submissionState?:
+    | "LOCAL_PENDING"
+    | "SUBMITTING"
+    | "SUBMITTED"
+    | "SUBMISSION_UNKNOWN"
+    | "FAILED";
   error?: string;
   url?: string;
 };
@@ -71,7 +82,7 @@ export type StudioPerson = {
   audience: string;
   expression: string;
   sheetId?: string;
-  photoIds: string[];
+  sceneLookCount: number;
   avatars: StudioAvatar[];
   voices: StudioVoice[];
 };
@@ -234,7 +245,6 @@ export type StudioState = {
 };
 export type LivePanel =
   | "projects"
-  | "characters"
   | "tasks"
   | "profile"
   | "wallet"
