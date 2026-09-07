@@ -45,7 +45,6 @@ import {
   type Project,
   readAnalysisPayload,
   resolveMaterials,
-  retryOralTask,
   retryOralTaskArchive,
   reviseGenerationPrompt,
   type SimpleLibraryEntry,
@@ -648,14 +647,9 @@ function oralTask(row: OralTaskRecord): StudioTask {
     CANCELLED: "cancelled",
   };
   const availableActions = row.available_actions ?? [];
-  const retryAction =
-    row.status === "ARCHIVE_FAILED" ||
-    availableActions.includes("archive_retry")
-      ? "archive-retry"
-      : row.status === "SUBMISSION_UNCERTAIN" ||
-          availableActions.includes("retry")
-        ? "retry"
-        : undefined;
+  const retryAction = availableActions.includes("archive_retry")
+    ? "archive-retry"
+    : undefined;
   return {
     id: `oral-${row.id}`,
     backendKind: "oral_task",
@@ -691,7 +685,7 @@ export async function retryStudioTask(task: StudioTask): Promise<void> {
     await retryOralTaskArchive(taskId);
     return;
   }
-  await retryOralTask(taskId);
+  throw new Error("当前任务状态不支持重试。");
 }
 
 export async function downloadStudioTaskResult(

@@ -1273,15 +1273,13 @@ def oral_price_quote(conn: BusinessConnection) -> dict[str, int]:
 
 
 def oral_task_available_actions(row: dict[str, Any]) -> list[str]:
-    """Retry hints for the customer task center, mirroring the route guards.
+    """Safe retry hints for the customer task center.
 
-    ``retry`` maps to POST /tasks/{id}/retry (submission-uncertain only);
     ``archive_retry`` maps to POST /tasks/{id}/archive-retry, which further
-    requires an archived provider result URL.
+    requires an archived provider result URL. Submission-uncertain work needs
+    provider evidence and manual reconciliation; it must never be re-posted.
     """
     status = str(row["status"])
-    if status == "SUBMISSION_UNCERTAIN":
-        return ["retry"]
     if status == "ARCHIVE_FAILED" and str(row.get("provider_result_url") or "").strip():
         return ["archive_retry"]
     return []

@@ -50,13 +50,14 @@ from app.oral import (
 from app.oral_routes import get_oral_vendor
 from app.oral_worker import (
     OralLeaseLostError,
+    OralWorkLease,
+    OralWorkResult,
     claim_oral_work,
     discard_uncommitted_oral_asset,
     finalize_oral_work,
     perform_oral_work,
     prepare_oral_work,
     request_oral_archive_retry,
-    request_oral_submission_retry,
 )
 from app.storage import StoredObject
 
@@ -1637,6 +1638,107 @@ def test_oral_task_uncertain_submission_freezes_credit_and_never_retries(
     assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
 
 
+def test_uncertain_submit_releases_slot_only_after_successful_cas(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-uncertain-slot.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="不确定提交释放槽位",
+        script_text="保留冻结金额但释放执行容量。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-worker-uncertain-slot-key",
+    )
+    lease = claim_oral_work(conn, worker_id="uncertain-slot-worker")
+    assert lease is not None and lease.kind == "task_submit"
+    conn.execute(
+        "UPDATE oral_tasks SET queue_slot_acquired = 1 WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+
+    finalize_oral_work(
+        conn,
+        lease=lease,
+        result=OralWorkResult(outcome="uncertain", message="provider response unknown"),
+    )
+    row = conn.execute(
+        "SELECT status, submission_state, provider_charge_state, queue_slot_acquired "
+        "FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("SUBMISSION_UNCERTAIN", "SUBMISSION_UNKNOWN", "UNKNOWN", 0)
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (19, 1)
+    transactions = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY created_at, id",
+        (created.task_id,),
+    ).fetchall()
+    assert [entry["type"] for entry in transactions] == ["RESERVE"]
+
+
+def test_uncertain_submit_lease_loss_does_not_release_winner_slot(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-uncertain-lease-lost.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="旧租约不得释放赢家槽位",
+        script_text="CAS 失败必须无副作用。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-worker-uncertain-lease-lost-key",
+    )
+    lease = claim_oral_work(conn, worker_id="stale-worker")
+    assert lease is not None and lease.kind == "task_submit"
+    conn.execute(
+        "UPDATE oral_tasks SET lease_owner = 'winner-token', queue_slot_acquired = 1 WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+
+    with pytest.raises(OralLeaseLostError):
+        finalize_oral_work(
+            conn,
+            lease=OralWorkLease(
+                kind=lease.kind,
+                record_id=lease.record_id,
+                worker_id=lease.worker_id,
+                lease_token=lease.lease_token,
+                attempt_count=lease.attempt_count,
+                row=lease.row,
+            ),
+            result=OralWorkResult(outcome="uncertain", message="stale result"),
+        )
+    row = conn.execute(
+        "SELECT status, lease_owner, queue_slot_acquired FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("SUBMITTING", "winner-token", 1)
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (19, 1)
+    transactions = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY created_at, id",
+        (created.task_id,),
+    ).fetchall()
+    assert [entry["type"] for entry in transactions] == ["RESERVE"]
+
+
 def test_dangling_oral_reservation_reconciles_only_known_not_charged_failure(
     tmp_path: Path, fake_source_storage: FakeSourceStorage
 ) -> None:
@@ -2169,13 +2271,11 @@ def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
 # ---------------------------------------------------------------------------
 
 
-def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
-    tmp_path: Path, fake_source_storage: FakeSourceStorage
+def test_oral_task_retry_route_is_removed_and_keeps_uncertain_reservation(
+    tmp_path: Path,
 ) -> None:
     conn = seed_scene(tmp_path, "oral-task-retry-route.db")
     avatar_id, voice_id = seed_ready_assets(conn)
-    vendor, transport = make_vendor()
-    transport.on("POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "vt-retry-1"}))
     created = create_oral_task(
         conn,
         actor=actor(),
@@ -2189,12 +2289,13 @@ def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
         subtitle=None,
         idempotency_key="oral-retry-route-key",
     )
-    # 模拟 worker 侧提交结果未知：状态进不确定闸门，队列槽仍被占用。
+    # 模拟 worker 侧提交结果未知；普通用户不得再次发起付费 POST。
     conn.execute(
         """
         UPDATE oral_tasks
         SET status = 'SUBMISSION_UNCERTAIN', provider_charge_state = 'UNKNOWN',
-            queue_slot_acquired = 1
+            submission_state = 'SUBMISSION_UNKNOWN',
+            queue_slot_acquired = 0
         WHERE id = %s
         """,
         (created.task_id,),
@@ -2219,16 +2320,12 @@ def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
     finally:
         app.dependency_overrides.clear()
 
-    assert retried.status_code == 200
-    body = retried.json()
-    assert body["status"] == "QUEUED"
-    assert body["submission_state"] == "LOCAL_PENDING"
-    assert body["billing_status"] == "RESERVED"
-    assert body["available_actions"] == []
+    assert retried.status_code == 404
     row = conn.execute(
-        "SELECT queue_slot_acquired FROM oral_tasks WHERE id = %s", (created.task_id,)
+        "SELECT status, submission_state, queue_slot_acquired FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
     ).fetchone()
-    assert row["queue_slot_acquired"] == 0
+    assert tuple(row) == ("SUBMISSION_UNCERTAIN", "SUBMISSION_UNKNOWN", 0)
     # 冻结的预留轮不动：仍然只有一笔 RESERVE，没有 SETTLE/RELEASE。
     ledger = conn.execute(
         "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY type",
@@ -2241,20 +2338,12 @@ def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
     ).fetchone()
     assert (wallet["available_credits"], wallet["reserved_credits"]) == (19, 1)
     listed = [entry for entry in listing.json() if entry["id"] == created.task_id]
-    assert listed and listed[0]["status"] == "QUEUED"
+    assert listed and listed[0]["status"] == "SUBMISSION_UNCERTAIN"
     assert listed[0]["billing_status"] == "RESERVED"
     assert listed[0]["available_actions"] == []
-    # 重新入队后 worker 正常认领并完成提交，且只重新提交这一次。
-    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
-    assert result is not None and result.outcome == "submitted"
-    after = conn.execute(
-        "SELECT status, vendor_task_id FROM oral_tasks WHERE id = %s", (created.task_id,)
-    ).fetchone()
-    assert (after["status"], after["vendor_task_id"]) == ("RUNNING", "vt-retry-1")
-    assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
 
 
-def test_oral_task_retry_rejects_non_uncertain_and_foreign_owner(tmp_path: Path) -> None:
+def test_oral_task_retry_route_is_absent_for_all_states(tmp_path: Path) -> None:
     conn = seed_scene(tmp_path, "oral-task-retry-reject.db")
     avatar_id, voice_id = seed_ready_assets(conn)
     created = create_oral_task(
@@ -2287,10 +2376,11 @@ def test_oral_task_retry_rejects_non_uncertain_and_foreign_owner(tmp_path: Path)
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "ORAL_RETRY_NOT_ALLOWED"
-    with pytest.raises(ValueError, match="submission-uncertain"):
-        request_oral_submission_retry(conn, task_id=created.task_id, owner_user_id="employee_2")
+    assert response.status_code == 404
+
+
+def test_openapi_does_not_advertise_uncertain_oral_resubmit() -> None:
+    assert "/api/oral/tasks/{task_id}/retry" not in app.openapi()["paths"]
 
 
 def test_oral_task_serialization_reports_billing_status_and_available_actions(
@@ -2353,7 +2443,7 @@ def test_oral_task_serialization_reports_billing_status_and_available_actions(
         )
         conn.commit()
         single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
-        assert single.json()["available_actions"] == ["retry"]
+        assert single.json()["available_actions"] == []
         assert single.json()["billing_status"] == "RESERVED"
 
         conn.execute(

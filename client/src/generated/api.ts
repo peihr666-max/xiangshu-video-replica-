@@ -939,23 +939,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/oral/tasks/{task_id}/retry": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Retry Oral Submission */
-    post: operations["retry_oral_submission_api_oral_tasks__task_id__retry_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/oral/tasks/{task_id}/cancel": {
     parameters: {
       query?: never;
@@ -10183,39 +10166,6 @@ export interface operations {
     };
   };
   retry_oral_archive_api_oral_tasks__task_id__archive_retry_post: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        task_id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            [key: string]: unknown;
-          };
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
-  retry_oral_submission_api_oral_tasks__task_id__retry_post: {
     parameters: {
       query?: never;
       header?: never;

@@ -44,7 +44,6 @@ const api = vi.hoisted(() => ({
   readAnalysisPayload: vi.fn(),
   cancelGenerationBatch: vi.fn(),
   cancelOralTask: vi.fn(),
-  retryOralTask: vi.fn(),
   retryOralTaskArchive: vi.fn(),
   resolveMaterials: vi.fn(),
 }));
@@ -978,8 +977,8 @@ describe("批次类型映射与取消", () => {
     ["SUBMITTING", "queued", undefined],
     ["RUNNING", "running", undefined],
     ["ARCHIVING", "running", undefined],
-    ["SUBMISSION_UNCERTAIN", "uncertain", "retry"],
-    ["ARCHIVE_FAILED", "uncertain", "archive-retry"],
+    ["SUBMISSION_UNCERTAIN", "uncertain", undefined],
+    ["ARCHIVE_FAILED", "uncertain", undefined],
   ] as const)(
     "映射口播新状态 %s",
     async (backendStatus, status, retryAction) => {
@@ -1011,7 +1010,34 @@ describe("批次类型映射与取消", () => {
     },
   );
 
-  it("口播取消和重试按 backendKind/backendId 分派", async () => {
+  it("只在后端明确允许时映射口播归档重试", async () => {
+    api.listGenerationBatches.mockResolvedValue({ ...batchPage, items: [] });
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-archive-retry",
+        status: "ARCHIVE_FAILED",
+        title: "归档失败",
+        mode: "TTS",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: "voice-1",
+        script_text: "正文",
+        audio_asset_id: null,
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        available_actions: ["archive_retry"],
+        created_at: "2026-09-06T09:00:00Z",
+        updated_at: "2026-09-06T09:01:00Z",
+      },
+    ] as OralTaskRecord[]);
+
+    const [task] = await reloadTasks(user);
+
+    expect(task.retryAction).toBe("archive-retry");
+  });
+
+  it("口播取消和归档重试按 backendKind/backendId 分派", async () => {
     const queuedOral: StudioTask = {
       id: "display-id-without-prefix",
       backendKind: "oral_task",
@@ -1034,9 +1060,7 @@ describe("批次类型映射与取消", () => {
     expect(api.cancelOralTask).toHaveBeenCalledWith("oral-real-id");
     expect(api.cancelGenerationBatch).not.toHaveBeenCalled();
 
-    await retryStudioTask({ ...queuedOral, retryAction: "retry" });
     await retryStudioTask({ ...queuedOral, retryAction: "archive-retry" });
-    expect(api.retryOralTask).toHaveBeenCalledWith("oral-real-id");
     expect(api.retryOralTaskArchive).toHaveBeenCalledWith("oral-real-id");
   });
 });

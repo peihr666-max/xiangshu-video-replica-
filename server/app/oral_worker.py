@@ -685,8 +685,11 @@ def finalize_oral_work(
                             lease.attempt_count,
                         ),
                     )
-                if cursor.rowcount == 1 and table == "oral_tasks" and not uncertain:
-                    finalize_oral_billing(conn, oral_task_id=lease.record_id)
+                if cursor.rowcount == 1 and table == "oral_tasks":
+                    if uncertain:
+                        release_oral_queue_slot(conn, oral_task_id=lease.record_id)
+                    else:
+                        finalize_oral_billing(conn, oral_task_id=lease.record_id)
             if cursor.rowcount != 1:
                 raise OralLeaseLostError("oral submission lease was lost")
             return
@@ -965,41 +968,6 @@ def request_oral_archive_retry(
             )
             if acquired.rowcount != 1:
                 raise RuntimeError("oral archive retry queue slot was lost")
-    row = conn.execute(
-        "SELECT * FROM oral_tasks WHERE id = %s AND owner_user_id = %s",
-        (task_id, owner_user_id),
-    ).fetchone()
-    return dict(row)
-
-
-def request_oral_submission_retry(
-    conn: BusinessConnection,
-    *,
-    task_id: str,
-    owner_user_id: str,
-) -> dict[str, Any]:
-    """Requeue a submission-uncertain oral task for one more worker submit.
-
-    The frozen billing round intentionally stays open: the outstanding
-    RESERVE settles or releases exactly once when the retried submission
-    reaches a terminal outcome. A queue slot still held by the uncertain
-    finalize (provider answer lost after submission) is released here so the
-    per-user cursor can dispatch the task again.
-    """
-    with conn:
-        cursor = conn.execute(
-            """
-            UPDATE oral_tasks
-            SET status = 'QUEUED', submission_state = 'LOCAL_PENDING',
-                lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-                error_message = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s AND owner_user_id = %s AND status = 'SUBMISSION_UNCERTAIN'
-            """,
-            (task_id, owner_user_id),
-        )
-        if cursor.rowcount != 1:
-            raise ValueError("only a submission-uncertain oral task can be retried")
-        release_oral_queue_slot(conn, oral_task_id=task_id)
     row = conn.execute(
         "SELECT * FROM oral_tasks WHERE id = %s AND owner_user_id = %s",
         (task_id, owner_user_id),

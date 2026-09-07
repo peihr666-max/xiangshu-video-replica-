@@ -108,7 +108,7 @@ export type StudioTask = {
   backendId?: string;
   backendStatus?: string;
   billingStatus?: string;
-  retryAction?: "retry" | "archive-retry";
+  retryAction?: "archive-retry";
   title: string;
   type: "视频复刻" | "人物置换" | "视频生成" | "数字人口播";
   status:

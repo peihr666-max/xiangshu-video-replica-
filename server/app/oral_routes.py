@@ -46,7 +46,7 @@ from app.oral import (
     start_avatar_clone,
     start_voice_clone,
 )
-from app.oral_worker import request_oral_archive_retry, request_oral_submission_retry
+from app.oral_worker import request_oral_archive_retry
 from app.permissions import require_role, write_audit
 
 router = APIRouter(prefix="/api/oral")
@@ -425,23 +425,6 @@ def retry_oral_archive(
             raise OralError(
                 "ORAL_ARCHIVE_RETRY_NOT_ALLOWED",
                 "只有保留了成片地址的归档失败任务可重试归档。",
-                status_code=409,
-            ) from exc
-        return _serialize_tasks_for_owner(conn, [row])[0]
-
-
-@router.post("/tasks/{task_id}/retry")
-def retry_oral_submission(
-    task_id: str,
-    db: BusinessDbDep,
-) -> dict[str, Any]:
-    with db.write() as (conn, actor):
-        try:
-            row = request_oral_submission_retry(conn, task_id=task_id, owner_user_id=actor.id)
-        except ValueError as exc:
-            raise OralError(
-                "ORAL_RETRY_NOT_ALLOWED",
-                "只有提交结果未知的口播任务可以重试。",
                 status_code=409,
             ) from exc
         return _serialize_tasks_for_owner(conn, [row])[0]

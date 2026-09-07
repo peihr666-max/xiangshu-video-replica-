@@ -58,7 +58,6 @@ import {
   regenerateGenerationTask,
   resolveApiBaseUrl,
   retryGenerationTask,
-  retryOralTask,
   retryOralTaskArchive,
   reviseGenerationPrompt,
   rewriteProjectScript,
@@ -341,7 +340,7 @@ describe("人物 IP 口播资产 API", () => {
     );
   });
 
-  it("调用口播任务取消与两种重试合同", async () => {
+  it("调用口播任务取消与归档重试合同", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ id: "oral-1", status: "QUEUED" }),
@@ -349,12 +348,10 @@ describe("人物 IP 口播资产 API", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await cancelOralTask("oral 1");
-    await retryOralTask("oral 1");
     await retryOralTaskArchive("oral 1");
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "http://127.0.0.1:8000/api/oral/tasks/oral%201/cancel",
-      "http://127.0.0.1:8000/api/oral/tasks/oral%201/retry",
       "http://127.0.0.1:8000/api/oral/tasks/oral%201/archive-retry",
     ]);
     for (const call of fetchMock.mock.calls) {

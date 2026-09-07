@@ -1173,10 +1173,6 @@ export function cancelOralTask(taskId: string): Promise<OralTaskRecord> {
   return mutateOralTask(taskId, "cancel", "取消口播任务失败");
 }
 
-export function retryOralTask(taskId: string): Promise<OralTaskRecord> {
-  return mutateOralTask(taskId, "retry", "重试提交口播任务失败");
-}
-
 export function retryOralTaskArchive(taskId: string): Promise<OralTaskRecord> {
   return mutateOralTask(taskId, "archive-retry", "重试归档口播成片失败");
 }
