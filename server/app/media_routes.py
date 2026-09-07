@@ -349,27 +349,87 @@ def _signed_object_response(
         asset = _validate_signed_object_request(conn, object_key=object_key, request=request)
     reference = storage_object_ref_from_uri(str(asset["storage_uri"]))
     require_storage_match(storage, reference)
-    return _read_stored_object(storage, object_key=object_key)
+    return _read_stored_object(storage, object_key=object_key, request=request)
 
 
-def _read_stored_object(storage: StorageAdapter, *, object_key: str) -> Response:
+def _byte_range(request: Request, *, object_size: int) -> tuple[int, int] | None:
+    value = request.headers.get("range")
+    if value is None:
+        return None
+    if not value.startswith("bytes=") or "," in value or object_size <= 0:
+        raise HTTPException(
+            status_code=416,
+            detail={"code": "RANGE_NOT_SATISFIABLE"},
+            headers={"Content-Range": f"bytes */{object_size}"},
+        )
+    start_text, separator, end_text = value.removeprefix("bytes=").partition("-")
+    if not separator or (not start_text and not end_text):
+        raise HTTPException(
+            status_code=416,
+            detail={"code": "RANGE_NOT_SATISFIABLE"},
+            headers={"Content-Range": f"bytes */{object_size}"},
+        )
+    try:
+        if not start_text:
+            suffix_size = int(end_text)
+            if suffix_size <= 0:
+                raise ValueError
+            start = max(0, object_size - suffix_size)
+            end = object_size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else object_size - 1
+            if start < 0 or end < start or start >= object_size:
+                raise ValueError
+            end = min(end, object_size - 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=416,
+            detail={"code": "RANGE_NOT_SATISFIABLE"},
+            headers={"Content-Range": f"bytes */{object_size}"},
+        ) from exc
+    return start, end
+
+
+def _read_stored_object(
+    storage: StorageAdapter,
+    *,
+    object_key: str,
+    request: Request,
+) -> Response:
     try:
         stored = storage.head_object(object_key)
         if stored is None:
             raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
-        content = storage.get_object(object_key)
+        requested_range = _byte_range(request, object_size=stored.size)
+        if requested_range is None:
+            content = storage.get_object(object_key)
+        else:
+            content = storage.get_object_range(
+                object_key,
+                start=requested_range[0],
+                end=requested_range[1],
+            )
+            if len(content) != requested_range[1] - requested_range[0] + 1:
+                raise StorageBackendUnavailable("storage range length mismatch")
     except StorageBackendUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
         ) from exc
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": f'attachment; filename="{Path(object_key).name}"',
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(len(content)),
+    }
+    if requested_range is not None:
+        headers["Content-Range"] = f"bytes {requested_range[0]}-{requested_range[1]}/{stored.size}"
     return Response(
         content=content,
         media_type=stored.content_type,
-        headers={
-            "X-Content-Type-Options": "nosniff",
-            "Content-Disposition": f'attachment; filename="{Path(object_key).name}"',
-        },
+        status_code=206 if requested_range is not None else 200,
+        headers=headers,
     )
 
 
@@ -606,4 +666,4 @@ def get_signed_object(
 ) -> Response:
     """Proxy a revocable signed grant for local or private cloud storage."""
     storage = _prepare_signed_object_read(object_key=object_key, request=request)
-    return _read_stored_object(storage, object_key=object_key)
+    return _read_stored_object(storage, object_key=object_key, request=request)

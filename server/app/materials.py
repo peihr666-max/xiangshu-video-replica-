@@ -127,6 +127,8 @@ class PreparedMaterialUpload:
     owner_user_id: str
     storage_uri: str
     storage_key: str
+    final_storage_key: str
+    upload_status: Literal["PENDING", "READY"]
     media_type: MaterialMediaType
     content_type: str
     requested_size_bytes: int
@@ -139,6 +141,7 @@ class ProbedMaterialUpload:
     storage_uri: str
     sha256: str
     size_bytes: int
+    content: bytes
 
 
 def material_error(status: int, code: str, message: str) -> HTTPException:
@@ -203,7 +206,10 @@ def _candidate_cte() -> str:
                 WHEN asset.content_type LIKE 'audio/%%' THEN 'audio'
                 ELSE 'video'
             END AS media_type,
-            CASE WHEN asset.size_bytes > 0 THEN 'ready' ELSE 'uploading' END AS status,
+            CASE
+                WHEN asset.size_bytes > 0 AND asset.sha256 != '' THEN 'ready'
+                ELSE 'uploading'
+            END AS status,
             'stored' AS delivery
         FROM assets AS asset
         JOIN projects AS project ON project.id = asset.project_id
@@ -428,26 +434,25 @@ def _row_title(row: Any, metadata: dict[str, Any]) -> str:
     return str(row["base_title"])
 
 
-def material_item(row: Any) -> MaterialItem:
+def material_item(row: Any, *, actor: CurrentUser) -> MaterialItem:
     metadata = _metadata(row["metadata_json"])
     ready = str(row["status"]) == "ready"
     direct = str(row["delivery"]) == "direct"
     media_type = str(row["media_type"])
+    can_write = actor.role in {"admin", "employee", "customer"}
+    owns_material = str(row["owner_user_id"] or "") == actor.id
     uses: list[str] = []
-    if ready and not direct:
-        if media_type == "image":
-            uses = ["original_frame", "first_frame", "tail_frame", "reference"]
-        elif media_type == "audio":
-            uses = ["oral_audio", "reference"]
-        elif media_type == "video":
-            uses = ["reference"]
-    actions = ["preview"] if ready else []
-    if ready and not direct:
+    # Other material uses currently only fill a draft; no backend consumes them.
+    if can_write and owns_material and ready and not direct and media_type == "audio":
+        uses = ["oral_audio"]
+    # Stored previews use the same download grant that auditors cannot request.
+    actions = ["preview"] if ready and (direct or can_write) else []
+    if can_write and ready and not direct:
         actions.append("download")
-    if direct:
+    if can_write:
+        if not direct:
+            actions.append("rename")
         actions.append("hide")
-    else:
-        actions.extend(["rename", "hide"])
     group_override = row["group_override"]
     return MaterialItem(
         id=f"{row['source_type']}:{row['source_id']}",
@@ -508,7 +513,7 @@ def list_materials(
         offset=start,
     )
     return MaterialPage(
-        items=[material_item(row) for row in rows],
+        items=[material_item(row, actor=actor) for row in rows],
         page=page,
         page_size=page_size,
         total=total,
@@ -533,7 +538,8 @@ def resolve_materials(
         limit=None,
         material_ids=parsed_ids,
     )
-    by_id = {item.id: item for item in map(material_item, rows)}
+    items = [material_item(row, actor=actor) for row in rows]
+    by_id = {item.id: item for item in items}
     items = [by_id[item_id] for item_id in deduplicated if item_id in by_id]
     return MaterialResolveResponse(
         items=items,
@@ -573,15 +579,17 @@ def create_material_upload_intent(
         size_bytes=request.size_bytes,
     )
     asset_id = str(uuid4())
-    object_key = f"materials/{actor.id}/{asset_id}/original{safe_suffix}"
+    object_key = f"materials/{actor.id}/{asset_id}/upload{safe_suffix}"
     intent = storage.create_upload_intent(
         object_key,
         content_type=request.content_type,
         expires_in=UPLOAD_INTENT_EXPIRES_IN,
     )
+    final_object_key = f"{intent.key.rsplit('/', 1)[0]}/original{safe_suffix}"
     metadata = {
         "upload_status": "PENDING",
         "object_key": intent.key,
+        "final_object_key": final_object_key,
         "original_filename": request.filename,
         "requested_size_bytes": request.size_bytes,
         "requested_content_type": request.content_type,
@@ -642,22 +650,33 @@ def prepare_material_upload(
     actor: CurrentUser,
     asset_id: str,
 ) -> PreparedMaterialUpload:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="studio.material.upload_complete",
+        entity_type="asset",
+        entity_id=asset_id,
+    )
     row = require_asset_access(
         conn,
         actor=actor,
         asset_id=asset_id,
         action="studio.material.upload_complete",
     )
+    # Managing another user's library does not authorize replacing their bytes.
+    if str(row["created_by_user_id"] or "") != actor.id:
+        raise material_error(404, "ASSET_NOT_FOUND", "素材不存在。")
     kind = str(row["kind"])
     media_by_kind = {value: key for key, value in ASSET_KIND_FOR_MEDIA.items()}
     media_type = media_by_kind.get(kind)
     if media_type is None:
         raise material_error(409, "MATERIAL_UPLOAD_INVALID", "该素材不是通用上传任务。")
     metadata = _metadata(row["metadata_json"])
+    upload_status = metadata.get("upload_status")
     requested_size: object
-    if metadata.get("upload_status") == "READY":
+    if upload_status == "READY":
         requested_size = int(row["size_bytes"])
-    elif metadata.get("upload_status") == "PENDING":
+    elif upload_status == "PENDING":
         requested_size = metadata.get("requested_size_bytes")
     else:
         raise material_error(409, "MATERIAL_UPLOAD_INVALID", "上传状态无效。")
@@ -665,11 +684,14 @@ def prepare_material_upload(
         raise material_error(409, "MATERIAL_UPLOAD_INVALID", "上传记录不完整。")
     storage_uri = str(row["storage_uri"])
     reference = storage_object_ref_from_uri(storage_uri)
+    final_storage_key = str(metadata.get("final_object_key") or reference.key)
     return PreparedMaterialUpload(
         asset_id=asset_id,
         owner_user_id=actor.id,
         storage_uri=storage_uri,
         storage_key=reference.key,
+        final_storage_key=final_storage_key,
+        upload_status=cast(Literal["PENDING", "READY"], upload_status),
         media_type=media_type,
         content_type=str(row["content_type"]),
         requested_size_bytes=requested_size,
@@ -695,6 +717,8 @@ def probe_material_upload(
         content = storage.get_object(prepared.storage_key)
     except OSError as exc:
         raise StorageBackendUnavailable("material object read failed") from exc
+    if len(content) != prepared.requested_size_bytes:
+        raise material_error(409, "MATERIAL_SIZE_MISMATCH", "上传文件大小不一致。")
     if not _content_matches(prepared.media_type, content):
         raise material_error(422, "MATERIAL_CONTENT_INVALID", "文件内容与素材类型不匹配。")
     digest = hashlib.sha256(content).hexdigest()
@@ -705,7 +729,15 @@ def probe_material_upload(
         storage_uri=stored.uri,
         sha256=digest,
         size_bytes=stored.size,
+        content=content,
     )
+
+
+def material_final_storage_key(prepared: PreparedMaterialUpload, *, sha256: str) -> str:
+    stem, separator, suffix = prepared.final_storage_key.rpartition(".")
+    if not separator:
+        return f"{prepared.final_storage_key}-{sha256}"
+    return f"{stem}-{sha256}.{suffix}"
 
 
 def persist_material_upload(
@@ -713,8 +745,13 @@ def persist_material_upload(
     *,
     actor: CurrentUser,
     probed: ProbedMaterialUpload,
-) -> MaterialItem:
+) -> tuple[MaterialItem, str]:
     prepared = prepare_material_upload(conn, actor=actor, asset_id=probed.prepared.asset_id)
+    if prepared.upload_status == "READY":
+        return (
+            require_material(conn, actor=actor, material_id=f"asset:{prepared.asset_id}"),
+            prepared.storage_uri,
+        )
     if prepared.storage_uri != probed.prepared.storage_uri:
         raise material_error(409, "MATERIAL_UPLOAD_CHANGED", "上传记录已变化。")
     row = conn.execute(
@@ -722,12 +759,13 @@ def persist_material_upload(
     ).fetchone()
     metadata = _metadata(row["metadata_json"] if row is not None else "{}")
     metadata["upload_status"] = "READY"
+    metadata["final_object_key"] = storage_object_ref_from_uri(probed.storage_uri).key
     with conn:
-        conn.execute(
+        updated = conn.execute(
             """
             UPDATE assets
             SET storage_uri = %s, sha256 = %s, size_bytes = %s, metadata_json = %s
-            WHERE id = %s
+            WHERE id = %s AND storage_uri = %s AND size_bytes = 0 AND sha256 = ''
             """,
             (
                 probed.storage_uri,
@@ -735,8 +773,17 @@ def persist_material_upload(
                 probed.size_bytes,
                 json.dumps(metadata, ensure_ascii=False, sort_keys=True),
                 prepared.asset_id,
+                prepared.storage_uri,
             ),
         )
+        if updated.rowcount != 1:
+            current = prepare_material_upload(conn, actor=actor, asset_id=prepared.asset_id)
+            if current.upload_status != "READY":
+                raise material_error(409, "MATERIAL_UPLOAD_CHANGED", "上传记录已变化。")
+            return (
+                require_material(conn, actor=actor, material_id=f"asset:{prepared.asset_id}"),
+                current.storage_uri,
+            )
         write_audit(
             conn,
             actor=actor,
@@ -747,7 +794,7 @@ def persist_material_upload(
             commit=False,
         )
         result = require_material(conn, actor=actor, material_id=f"asset:{prepared.asset_id}")
-    return result
+    return result, probed.storage_uri
 
 
 def update_material(

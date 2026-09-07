@@ -134,6 +134,8 @@ class StorageAdapter(Protocol):
 
     def get_object(self, key: str) -> bytes: ...
 
+    def get_object_range(self, key: str, *, start: int, end: int) -> bytes: ...
+
     def head_object(self, key: str) -> StoredObject | None: ...
 
     def check_readiness(self) -> None: ...
@@ -331,6 +333,9 @@ class _BaseStorageAdapter:
     def get_object(self, key: str) -> bytes:
         raise NotImplementedError
 
+    def get_object_range(self, key: str, *, start: int, end: int) -> bytes:
+        return self.get_object(key)[start : end + 1]
+
     def head_object(self, key: str) -> StoredObject | None:
         raise NotImplementedError
 
@@ -447,6 +452,14 @@ class LocalStorageAdapter(_BaseStorageAdapter):
 
     def get_object(self, key: str) -> bytes:
         return self._path_for(self._object_key(key)).read_bytes()
+
+    def get_object_range(self, key: str, *, start: int, end: int) -> bytes:
+        try:
+            with self._path_for(self._object_key(key)).open("rb") as handle:
+                handle.seek(start)
+                return handle.read(end - start + 1)
+        except OSError as exc:
+            raise StorageBackendUnavailable("local object download failed") from exc
 
     def head_object(self, key: str) -> StoredObject | None:
         object_key = self._object_key(key)
@@ -571,6 +584,18 @@ class CloudStorageAdapter(_BaseStorageAdapter):
             return bytes(response["Body"].get_raw_stream().read())
         except Exception as exc:
             raise StorageBackendUnavailable("cloud object download failed") from exc
+
+    def get_object_range(self, key: str, *, start: int, end: int) -> bytes:
+        object_key = self._object_key(key)
+        try:
+            response = self._client.get_object(
+                Bucket=self.bucket,
+                Key=object_key,
+                Range=f"bytes={start}-{end}",
+            )
+            return bytes(response["Body"].get_raw_stream().read())
+        except Exception as exc:
+            raise StorageBackendUnavailable("cloud object range download failed") from exc
 
     def head_object(self, key: str) -> StoredObject | None:
         object_key = self._object_key(key)

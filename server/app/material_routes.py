@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -22,9 +24,11 @@ from app.materials import (
     create_material_upload_intent,
     hide_material,
     list_materials,
+    material_final_storage_key,
     persist_material_upload,
     prepare_material_upload,
     probe_material_upload,
+    require_material,
     resolve_materials,
     update_material,
 )
@@ -32,6 +36,7 @@ from app.media_routes import MediaStorage, api_base_url
 from app.storage import StorageBackendUnavailable
 
 router = APIRouter(prefix="/api/studio/materials", tags=["studio-materials"])
+logger = logging.getLogger(__name__)
 
 
 class MaterialResolveRequest(BaseModel):
@@ -106,6 +111,11 @@ async def put_local_material(
     if storage.provider != "local":
         raise HTTPException(status_code=404, detail={"code": "LOCAL_UPLOAD_UNAVAILABLE"})
     prepared = prepare_material_upload(conn, actor=actor, asset_id=asset_id)
+    if prepared.upload_status != "PENDING":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "MATERIAL_UPLOAD_ALREADY_COMPLETED"},
+        )
     content_length = request.headers.get("content-length")
     if (
         content_length
@@ -137,15 +147,41 @@ def complete_upload(
 ) -> MaterialItem:
     with db.write() as (conn, actor):
         prepared = prepare_material_upload(conn, actor=actor, asset_id=asset_id)
+        if prepared.upload_status == "READY":
+            return require_material(conn, actor=actor, material_id=f"asset:{asset_id}")
     try:
         probed = probe_material_upload(prepared, storage=storage)
+        final_storage_key = material_final_storage_key(prepared, sha256=probed.sha256)
+        stored = storage.put_object(
+            final_storage_key,
+            probed.content,
+            content_type=prepared.content_type,
+        )
+        probed = replace(probed, storage_uri=stored.uri)
     except StorageBackendUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
         ) from exc
     with db.write() as (conn, actor):
-        return persist_material_upload(conn, actor=actor, probed=probed)
+        result, committed_storage_uri = persist_material_upload(
+            conn,
+            actor=actor,
+            probed=probed,
+        )
+    cleanup_keys = [prepared.storage_key]
+    if stored.uri != committed_storage_uri:
+        cleanup_keys.append(final_storage_key)
+    for cleanup_key in dict.fromkeys(cleanup_keys):
+        try:
+            storage.delete_object(cleanup_key, actor_id=prepared.owner_user_id)
+        except (OSError, StorageBackendUnavailable) as exc:
+            logger.warning(
+                "material upload object cleanup failed for asset %s: %s",
+                prepared.asset_id,
+                type(exc).__name__,
+            )
+    return result
 
 
 @router.patch("/{material_id}", response_model=MaterialItem)

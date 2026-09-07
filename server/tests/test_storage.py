@@ -40,7 +40,12 @@ class FakeCosClient:
 
     def get_object(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(("get", kwargs))
-        return {"Body": FakeCosBody(b"video")}
+        content = b"video"
+        byte_range = kwargs.get("Range")
+        if isinstance(byte_range, str):
+            start_text, end_text = byte_range.removeprefix("bytes=").split("-", 1)
+            content = content[int(start_text) : int(end_text) + 1]
+        return {"Body": FakeCosBody(content)}
 
     def head_object(self, **kwargs: object) -> dict[str, str]:
         self.calls.append(("head", kwargs))
@@ -173,6 +178,30 @@ def test_cloud_adapter_signs_and_operates_on_one_private_object() -> None:
             "Key": "tenant-a/projects/p1/source/reference.mp4",
             "Expired": 600,
             "SignHost": True,
+        },
+    )
+
+
+def test_cloud_adapter_reads_only_requested_object_range() -> None:
+    client = FakeCosClient()
+    adapter = CloudStorageAdapter(
+        CloudStorageConfig(
+            provider="cos",
+            bucket="private-bucket",
+            access_key_id="public-id",
+            secret_access_key="very-secret-key",
+            region="ap-shanghai",
+        ),
+        client=client,
+    )
+
+    assert adapter.get_object_range("videos/demo.mp4", start=2, end=4) == b"deo"
+    assert client.calls[-1] == (
+        "get",
+        {
+            "Bucket": "private-bucket",
+            "Key": "videos/demo.mp4",
+            "Range": "bytes=2-4",
         },
     )
 

@@ -29,7 +29,7 @@ from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
 from app.internal_billing import finalize_oral_billing, reserve_oral_billing
 from app.media_routes import get_media_storage, storage_for_asset
-from app.permissions import require_asset_access, write_audit
+from app.permissions import require_asset_access, require_not_auditor, write_audit
 from app.settings import SettingsRepository
 from app.storage import StorageAdapter
 
@@ -105,6 +105,17 @@ def _require_own_identity(
     return identity
 
 
+def _validate_source_asset(asset: dict[str, Any], *, media_type: str, label: str) -> dict[str, Any]:
+    size_bytes = int(asset["size_bytes"])
+    if size_bytes <= 0 or not str(asset["sha256"] or "").strip():
+        raise OralDomainError(f"{label}未完成或已失效，请重新上传")
+    if not str(asset["content_type"] or "").lower().startswith(f"{media_type}/"):
+        raise OralDomainError(f"{label}类型不匹配")
+    if size_bytes > ORAL_SOURCE_MAX_BYTES[media_type]:
+        raise OralDomainError(f"{label}超过大小限制")
+    return asset
+
+
 def _require_source_asset(
     conn: BusinessConnection,
     *,
@@ -119,15 +130,39 @@ def _require_source_asset(
         asset_id=asset_id,
         action="oral.source_asset.use",
     )
+    return _validate_source_asset(dict(row), media_type=media_type, label=label)
+
+
+def _require_owned_source_asset(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    asset_id: str,
+    media_type: str,
+    label: str,
+) -> dict[str, Any]:
+    row = require_asset_access(
+        conn,
+        actor=actor,
+        asset_id=asset_id,
+        action="oral.source_asset.use",
+    )
     asset = dict(row)
-    size_bytes = int(asset["size_bytes"])
-    if size_bytes <= 0 or not str(asset["sha256"] or "").strip():
-        raise OralDomainError(f"{label}未完成或已失效，请重新上传")
-    if not str(asset["content_type"] or "").lower().startswith(f"{media_type}/"):
-        raise OralDomainError(f"{label}类型不匹配")
-    if size_bytes > ORAL_SOURCE_MAX_BYTES[media_type]:
-        raise OralDomainError(f"{label}超过大小限制")
-    return asset
+    project_id = asset["project_id"]
+    if project_id is not None:
+        owned = conn.execute(
+            "SELECT 1 FROM projects WHERE id = %s AND owner_user_id = %s",
+            (project_id, actor.id),
+        ).fetchone()
+        is_owned = owned is not None
+    else:
+        is_owned = str(asset["created_by_user_id"] or "") == actor.id
+    if not is_owned:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ASSET_NOT_FOUND", "message": "Asset does not exist."},
+        )
+    return _validate_source_asset(asset, media_type=media_type, label=label)
 
 
 def _require_biometric_source_asset(
@@ -543,6 +578,13 @@ def create_oral_task(
     idempotency_key: str,
     vendor: HiflyClient | None = None,
 ) -> OralTaskCreated:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.task.create",
+        entity_type="oral_task",
+        entity_id=idempotency_key,
+    )
     if mode not in {"TTS", "AUDIO"}:
         raise OralDomainError("口播模式不支持")
     if not title.strip():
@@ -656,7 +698,7 @@ def create_oral_task(
         effective_voice = None
         if not audio_asset_id:
             raise OralDomainError("请上传完整的口播音频")
-        _require_source_asset(
+        _require_owned_source_asset(
             conn,
             actor=actor,
             asset_id=audio_asset_id,

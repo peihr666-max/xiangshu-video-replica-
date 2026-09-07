@@ -1463,6 +1463,154 @@ def test_create_audio_oral_task_rejects_wrong_inaccessible_or_incomplete_asset(
         )
 
 
+@pytest.mark.parametrize("project_id", [None, "foreign-project"])
+def test_admin_cannot_use_another_users_audio_for_oral_task(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    project_id: str | None,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-audio-admin-foreign-{project_id}.db")
+    avatar_id, _ = seed_ready_assets(conn)
+    if project_id is not None:
+        conn.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES (?, ?, ?)",
+            (project_id, "employee_2", "Other Project"),
+        )
+    conn.execute(
+        """
+        INSERT INTO assets (
+            id, project_id, kind, storage_uri, sha256, size_bytes,
+            content_type, created_by_user_id
+        ) VALUES ('foreign-speech', ?, 'material_audio',
+                  'local://assets/foreign-speech.mp3', 'foreign-speech-hash', 9,
+                  'audio/mpeg', 'employee_2')
+        """,
+        (project_id,),
+    )
+    conn.commit()
+    vendor, transport = make_vendor()
+
+    with pytest.raises(HTTPException) as hidden:
+        create_oral_task(
+            conn,
+            actor=actor(role="admin"),
+            identity_id="ident-1",
+            avatar_id=avatar_id,
+            voice_id=None,
+            mode="AUDIO",
+            title="不得使用他人音频",
+            script_text=None,
+            audio_asset_id="foreign-speech",
+            subtitle=None,
+            idempotency_key=f"foreign-audio-{project_id}",
+            vendor=vendor,
+        )
+
+    assert hidden.value.status_code == 404
+    assert hidden.value.detail == {
+        "code": "ASSET_NOT_FOUND",
+        "message": "Asset does not exist.",
+    }
+    assert conn.execute("SELECT COUNT(*) FROM oral_tasks").fetchone()[0] == 0
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (20, 0)
+    assert transport.calls == []
+
+
+def test_project_owner_can_use_project_audio_for_oral_task(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-audio-owned-project.db")
+    avatar_id, _ = seed_ready_assets(conn)
+    conn.execute(
+        """
+        INSERT INTO assets (
+            id, project_id, kind, storage_uri, sha256, size_bytes,
+            content_type, created_by_user_id
+        ) VALUES ('project-speech', 'oral-project', 'material_audio',
+                  'local://assets/project-speech.mp3', 'project-speech-hash', 9,
+                  'audio/mpeg', 'employee_2')
+        """
+    )
+    conn.commit()
+
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=None,
+        mode="AUDIO",
+        title="项目自有音频",
+        script_text=None,
+        audio_asset_id="project-speech",
+        subtitle=None,
+        idempotency_key="owned-project-audio",
+    )
+
+    assert created.status == "QUEUED"
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (19, 1)
+
+
+def test_auditor_cannot_create_oral_task_through_api(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-task-route-auditor.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+
+    class TestBusinessDb:
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            yield conn, actor(role="auditor")
+
+    app.dependency_overrides[get_business_db] = TestBusinessDb
+    app.dependency_overrides[get_oral_vendor] = lambda: vendor
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/oral/tasks",
+                json={
+                    "identity_id": "ident-1",
+                    "avatar_id": avatar_id,
+                    "voice_id": voice_id,
+                    "mode": "TTS",
+                    "title": "审计员不得提交",
+                    "script_text": "文案",
+                    "audio_asset_id": None,
+                    "subtitle": None,
+                    "idempotency_key": "auditor-route-key",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "ROLE_FORBIDDEN"
+    assert conn.execute("SELECT COUNT(*) FROM oral_tasks").fetchone()[0] == 0
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM wallet_transactions WHERE oral_task_id IS NOT NULL"
+        ).fetchone()[0]
+        == 0
+    )
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (20, 0)
+    assert transport.calls == []
+
+
 def test_refresh_oral_task_archives_result_asset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

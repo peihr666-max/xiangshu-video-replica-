@@ -1114,6 +1114,33 @@ def test_local_download_url_and_proxy(
         get_resp = client.get(path)
         assert get_resp.status_code == 200
         assert get_resp.content == b"mp4-content"
+        assert get_resp.headers["accept-ranges"] == "bytes"
+        assert get_resp.headers["content-length"] == "11"
+
+        range_resp = client.get(path, headers={"Range": "bytes=4-7"})
+        assert range_resp.status_code == 206
+        assert range_resp.content == b"cont"
+        assert range_resp.headers["content-range"] == "bytes 4-7/11"
+        assert range_resp.headers["content-length"] == "4"
+        assert range_resp.headers["accept-ranges"] == "bytes"
+
+        suffix_resp = client.get(path, headers={"Range": "bytes=-3"})
+        assert suffix_resp.status_code == 206
+        assert suffix_resp.content == b"ent"
+        assert suffix_resp.headers["content-range"] == "bytes 8-10/11"
+
+        invalid_range = client.get(path, headers={"Range": "bytes=20-30"})
+        assert invalid_range.status_code == 416
+        assert invalid_range.headers["content-range"] == "bytes */11"
+
+        monkeypatch.setattr(
+            LocalStorageAdapter,
+            "get_object_range",
+            lambda self, key, *, start, end: b"short",
+        )
+        truncated_range = client.get(path, headers={"Range": "bytes=0-7"})
+        assert truncated_range.status_code == 503
+        assert truncated_range.json()["detail"]["code"] == "STORAGE_PROVIDER_UNAVAILABLE"
 
         bad_resp = client.get(f"{path}x")
         assert bad_resp.status_code == 403
