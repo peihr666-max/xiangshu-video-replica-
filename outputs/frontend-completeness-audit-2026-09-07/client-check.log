@@ -1,0 +1,75 @@
+
+> @video-replica/client@0.1.16 check
+> biome check . && tsc -b && vitest run
+
+src/studio/MainPages.test.tsx:887:26 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+  
+    885 │     useStudio.mockReturnValue(studio(undefined, { review: true }));
+    886 │     const { unmount } = render(<ProfilePage />);
+  > 887 │     const reviewToggle = screen
+        │                          ^^^^^^
+  > 888 │       .getAllByRole("button", { name: "通知偏好" })
+  > 889 │       .at(-1)!;
+        │       ^^^^^^^^
+    890 │     await waitFor(() => expect(reviewToggle).toHaveTextContent("开启"));
+    891 │     fireEvent.click(reviewToggle);
+  
+
+src/studio/analytics.css:417:1 lint/style/noDescendingSpecificity ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Descending specificity selector found. This selector specificity is (0, 1, 1)
+  
+    415 │ }
+    416 │ 
+  > 417 │ .analytics-trend-legend span {
+        │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    418 │   align-items: center;
+    419 │   display: inline-flex;
+  
+  i This selector specificity is (0, 1, 2)
+  
+    101 │ }
+    102 │ 
+  > 103 │ .analytics-metric div > span,
+        │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    104 │ .analytics-metric small {
+    105 │   color: #b4b5af;
+  
+  i Descending specificity selector may not be applied. Consider rearranging the order of the selectors. See MDN web docs for more details.
+  
+
+Checked 186 files in 208ms. No fixes applied.
+Found 2 warnings.
+
+ RUN  v4.1.10 /Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client
+
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+
+ Test Files  72 passed (72)
+      Tests  945 passed (945)
+   Start at  10:03:25
+   Duration  17.74s (transform 15.72s, setup 24.41s, import 22.98s, tests 110.58s, environment 116.52s)
+
