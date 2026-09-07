@@ -14,6 +14,20 @@
 >
 > **Evidence location (M0 review M8 unification, 2026-08-21)**: per-task evidence documents live under `docs/evidence/` (T02–T06 evidence files moved from the repository root; run-fix evidence under `docs/evidence/m0-review-fixes/`). Historical self-references inside those documents to their original root paths are preserved as record snapshots.
 
+## T46 — Character Library Page-to-Provider Closure
+
+| Field | Evidence |
+| --- | --- |
+| **Task ID** | T46 |
+| **Status** | `IN_PROGRESS` |
+| **Baseline / Branch** | `7f08678` / `feat/character-library-page-closure` |
+| **Scope** | Character list, five-view and scene generation, IP rewrite, avatar/voice cloning, oral generation, task recovery, provider settings and billing price |
+| **Work Plan** | `docs/人物库页面全链路收口计划-2026-09-07.md` |
+| **Current Evidence Level** | `CODE_PRESENT`; implementation and verification are in progress |
+| **External Boundary** | Real Apilio/DeepSeek/Hifly/COS/payment validation remains T40 and requires explicit authorization |
+
+Full evidence will be recorded in `docs/evidence/T46-EVIDENCE.md`.
+
 ## T45 — Security Defense-in-Depth Closure
 
 | Field | Value |
