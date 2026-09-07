@@ -22,6 +22,7 @@ export const pageTitles: Record<StudioPage, string> = {
   materials: "素材库",
   publishing: "发布管理",
   analytics: "数据看板",
+  settings: "系统设置",
   profile: "用户档案",
 };
 

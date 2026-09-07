@@ -21,6 +21,7 @@ export type StudioPage =
   | "materials"
   | "publishing"
   | "analytics"
+  | "settings"
   | "profile";
 export type AssetKind = "image" | "video" | "audio";
 export type StudioAsset = {

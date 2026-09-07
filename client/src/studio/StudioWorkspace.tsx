@@ -22,6 +22,7 @@ import {
   type IndependentCapabilities,
   type Project,
 } from "../api";
+import { SettingsPanel } from "../SettingsPanel";
 import { AnalyticsPage } from "./AnalyticsPage";
 import {
   MaterialsPage,
@@ -886,6 +887,18 @@ export function StudioWorkspace({
   const searchPages = Object.entries(pageTitles).filter(([, title]) =>
     title.includes(search.trim()),
   );
+  const visibleNavGroups =
+    currentUser.role === "admin"
+      ? [
+          ...navGroups,
+          {
+            label: "系统",
+            pages: [
+              { id: "settings" as const, title: "系统设置", icon: "settings" },
+            ],
+          },
+        ]
+      : navGroups;
 
   return (
     <StudioContext.Provider value={context}>
@@ -915,7 +928,7 @@ export function StudioWorkspace({
             新建创作
           </Button>
           <nav aria-label="主要导航">
-            {navGroups.map((group, index) => (
+            {visibleNavGroups.map((group, index) => (
               <div
                 className="studio-nav-group"
                 key={group.label || `main-${index}`}
@@ -1237,9 +1250,30 @@ function StudioPageContent({ page }: { page: StudioPage }) {
       return <PublishPage />;
     case "analytics":
       return <AnalyticsPage />;
+    case "settings":
+      return <StudioSettingsPage />;
     case "profile":
       return <ProfilePage />;
   }
+}
+
+function StudioSettingsPage() {
+  const { user } = useStudio();
+  if (user.role !== "admin") {
+    return (
+      <Empty
+        title="无权访问系统设置"
+        description="服务密钥和运行参数仅允许管理员维护。"
+      />
+    );
+  }
+  return (
+    <section className="studio-system-settings">
+      <h1>系统设置</h1>
+      <Hint>密钥仅在本页保存，不要发送到聊天或提交到代码库。</Hint>
+      <SettingsPanel />
+    </section>
+  );
 }
 
 export function StudioDialog({

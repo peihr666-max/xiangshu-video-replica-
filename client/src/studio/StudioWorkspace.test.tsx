@@ -88,6 +88,23 @@ const api = vi.hoisted(() => ({
       estimated_price_fen: 960,
     }),
   ),
+  getSettings: vi.fn(async () => ({
+    providers: {
+      hifly: { provider: "hifly", configured: false, config: {} },
+    },
+    runtime: {
+      max_generation_count_per_batch: 5,
+      max_concurrent_h3_tasks: 2,
+      active_storage_provider: "local",
+    },
+    billing: {
+      internal_base_unit_price_fen: 1000,
+      charged_unit_price_fen: 1000,
+      oral_unit_price_fen: 1800,
+      min_recharge_fen: 10000,
+      recharge_step_fen: 1000,
+    },
+  })),
   createIndependentVideoTask: vi.fn(),
   listUserSavedPrompts: vi.fn(async (): Promise<unknown[]> => []),
   uploadMaterial: vi.fn(),
@@ -296,10 +313,32 @@ describe("V1.4 workspace integration", () => {
       screen.getByRole("button", { name: "用户档案，积分 2680" }),
     ).toBeInTheDocument();
     expect(live.loadStudioData).not.toHaveBeenCalled();
+    expect(nav.queryByRole("button", { name: "系统设置" })).toBeNull();
     fireEvent.click(nav.getByRole("button", { name: "文案工坊" }));
     fireEvent.click(screen.getByRole("button", { name: "用于数字人口播" }));
     expect(screen.getByText("张工本人音色 V1")).toBeInTheDocument();
     expect(screen.getByText(/去文案工坊修改/)).toBeInTheDocument();
+  });
+  it("管理员可以从新版工作区进入服务设置", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, role: "admin" }}
+        initialState={createReviewState("workbench")}
+      />,
+    );
+
+    const nav = within(screen.getByRole("navigation", { name: "主要导航" }));
+    fireEvent.click(nav.getByRole("button", { name: "系统设置" }));
+
+    expect(
+      await screen.findByRole("region", { name: "服务设置" }),
+    ).toBeInTheDocument();
+    expect(api.getSettings).toHaveBeenCalledTimes(1);
+    expect(window.location.hash).toBe("#studio/settings");
   });
   it("changing IP invalidates the previous person's voice and avatar", () => {
     render(

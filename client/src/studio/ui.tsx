@@ -52,6 +52,8 @@ export function Icon({ name, size = 22 }: { name: string; size?: number }) {
     copy: "M8 8h13v13H8V8ZM3 16V3h13",
     sparkles: "m12 1 3 8 8 3-8 3-3 8-3-8-8-3 8-3 3-8",
     shield: "M12 2 3 6v7c0 5 9 9 9 9s9-4 9-9V6l-9-4Zm-5 10 3 3 7-7",
+    settings:
+      "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-6 2 1 .5 2.2 2 .8 2-1 2 2-1 2 .8 2 2.2.5 1 2-1 2-2.2.5-.8 2 1 2-2-1-2 .8-2.2-1-1-2 1-2.2-.8-2-2-2 1-2-.8-2-2.2-.5-1Z",
     save: "M3 3h15l3 3v15H3V3Zm4 0v6h10V3M7 21v-7h10v7",
   };
   return (
