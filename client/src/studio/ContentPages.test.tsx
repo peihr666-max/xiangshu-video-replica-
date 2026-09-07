@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { MaterialItem } from "../api";
+import { patchStudioDraft } from "./state";
 import type { StudioContextValue, StudioState } from "./types";
 
 const {
@@ -167,6 +169,35 @@ function studio(
     confirmFinalDraft: vi.fn(),
     extractScriptFromUpload: vi.fn(),
     refresh: vi.fn(),
+    ...overrides,
+  };
+}
+
+function material(
+  id: string,
+  overrides: Partial<MaterialItem> = {},
+): MaterialItem {
+  return {
+    id: `asset:${id}`,
+    owner_user_id: "employee_1",
+    asset_id: id,
+    generation_task_id: null,
+    project_id: null,
+    person_id: null,
+    title: `${id}.png`,
+    group: "我的上传",
+    media_type: "image",
+    source: "upload",
+    status: "ready",
+    delivery: "stored",
+    content_type: "image/png",
+    size_bytes: 1024,
+    duration_seconds: null,
+    created_at: "2026-09-06 10:00:00",
+    hidden: false,
+    saved: true,
+    allowed_uses: [],
+    allowed_actions: ["preview", "download", "rename", "hide"],
     ...overrides,
   };
 }
@@ -802,7 +833,7 @@ describe("V1.4 内容与运营页面", () => {
           created_at: "2026-09-06 10:00:00",
           hidden: false,
           saved: true,
-          allowed_uses: ["oral_audio", "reference"],
+          allowed_uses: ["oral_audio"],
           allowed_actions: ["preview", "download", "rename", "hide"],
         },
       ],
@@ -830,6 +861,45 @@ describe("V1.4 内容与运营页面", () => {
     expect(value.updateData).toHaveBeenCalled();
     expect(value.navigate).toHaveBeenCalledWith("oral-audio", {
       returnTo: "materials",
+    });
+  });
+
+  it("通用口播音频带入时保留当前人物和分身", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        material("generic-audio", {
+          media_type: "audio",
+          allowed_uses: ["oral_audio"],
+        }),
+      ],
+      page: 1,
+      page_size: 6,
+      total: 1,
+    });
+    const base = studio();
+    const value = studio({
+      review: false,
+      state: {
+        ...base.state,
+        draft: {
+          ...base.state.draft,
+          ipId: "kept-person",
+          avatarId: "kept-avatar",
+        },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<MaterialsPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "选择素材 generic-audio.png" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "用于音频口播" }));
+    const patch = vi.mocked(value.patchDraft).mock.calls[0][0];
+    expect(patch).not.toHaveProperty("ipId");
+    expect(patchStudioDraft(value.state.draft, patch)).toMatchObject({
+      audioId: "generic-audio",
+      ipId: "kept-person",
+      avatarId: "kept-avatar",
     });
   });
 
@@ -874,12 +944,7 @@ describe("V1.4 内容与运营页面", () => {
       created_at: "2026-09-06 10:00:00",
       hidden: false,
       saved: true,
-      allowed_uses: [
-        "original_frame",
-        "first_frame",
-        "tail_frame",
-        "reference",
-      ],
+      allowed_uses: [],
       allowed_actions: ["preview", "download", "rename", "hide"],
     } as const;
     completeMaterialUpload.mockResolvedValue(uploaded);
@@ -905,13 +970,8 @@ describe("V1.4 内容与运营页面", () => {
       screen.getByRole("heading", { name: "庭院.png" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "用作尾帧" }));
-    expect(value.patchDraft).toHaveBeenCalledWith({
-      tailFrameId: "image-cloud-1",
-    });
-    expect(value.navigate).toHaveBeenCalledWith("video", {
-      returnTo: "materials",
-    });
+    expect(screen.queryByRole("button", { name: "用作尾帧" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "用于参考生视频" })).toBeNull();
 
     fireEvent.change(screen.getByLabelText("素材名称"), {
       target: { value: "新庭院首帧" },
@@ -960,6 +1020,209 @@ describe("V1.4 内容与运营页面", () => {
     );
   });
 
+  it("正式素材网格只加载当前页预览，失败后可重试且不重复通知", async () => {
+    const firstPage = [
+      material("image-1"),
+      material("video-2", { media_type: "video" }),
+      material("audio-3", { media_type: "audio" }),
+      material("direct-4", {
+        asset_id: null,
+        generation_task_id: "task-4",
+        media_type: "video",
+        delivery: "direct",
+        saved: false,
+        allowed_actions: ["preview"],
+        allowed_uses: [],
+      }),
+      material("broken-5"),
+      material("image-6"),
+    ];
+    listMaterials.mockImplementation(({ page }: { page: number }) =>
+      Promise.resolve({
+        items: page === 1 ? firstPage : [material("image-7")],
+        page,
+        page_size: 6,
+        total: 7,
+      }),
+    );
+    let brokenAttempts = 0;
+    getAssetDownloadUrl.mockImplementation((id: string) => {
+      if (id === "broken-5" && brokenAttempts++ === 0)
+        return Promise.reject(new Error("预览不可用"));
+      return Promise.resolve({ url: `https://storage.test/${id}` });
+    });
+    const value = studio({ review: false });
+    useStudio.mockReturnValue(value);
+    const view = render(<MaterialsPage />);
+    const media = (id: string, tag: string) =>
+      screen
+        .getByRole("button", { name: `选择素材 ${id}.png` })
+        .querySelector(tag);
+
+    await waitFor(() =>
+      expect(media("image-1", "img")).toHaveAttribute(
+        "src",
+        "https://storage.test/image-1",
+      ),
+    );
+    expect(media("video-2", "video")).toHaveAttribute(
+      "src",
+      "https://storage.test/video-2",
+    );
+    expect(media("audio-3", "audio")).toHaveAttribute(
+      "src",
+      "https://storage.test/audio-3",
+    );
+    expect(media("direct-4", "video")).toHaveAttribute(
+      "src",
+      "https://provider.test/direct-result.mp4",
+    );
+    expect(media("broken-5", "img")).toBeNull();
+    expect(getAssetDownloadUrl).toHaveBeenCalledTimes(5);
+    expect(createGenerationTaskPreviewUrl).toHaveBeenCalledOnce();
+    fireEvent.click(
+      screen.getByRole("button", { name: "选择素材 broken-5.png" }),
+    );
+    view.rerender(<MaterialsPage />);
+    await waitFor(() => expect(getAssetDownloadUrl).toHaveBeenCalledTimes(6));
+    await waitFor(() =>
+      expect(media("broken-5", "img")).toHaveAttribute(
+        "src",
+        "https://storage.test/broken-5",
+      ),
+    );
+    for (const image of screen.getAllByAltText("broken-5.png"))
+      expect(image).toHaveAttribute("src", "https://storage.test/broken-5");
+    expect(value.notify).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() =>
+      expect(media("image-7", "img")).toHaveAttribute(
+        "src",
+        "https://storage.test/image-7",
+      ),
+    );
+    expect(getAssetDownloadUrl).toHaveBeenCalledTimes(7);
+    expect(
+      screen.queryByRole("button", { name: "选择素材 image-1.png" }),
+    ).toBeNull();
+    expect(value.notify).not.toHaveBeenCalled();
+  });
+
+  it("素材预览地址失效时只自动刷新一次", async () => {
+    listMaterials.mockResolvedValue({
+      items: [material("expiring-image")],
+      page: 1,
+      page_size: 6,
+      total: 1,
+    });
+    getAssetDownloadUrl
+      .mockResolvedValueOnce({ url: "https://storage.test/expired" })
+      .mockResolvedValueOnce({ url: "https://storage.test/refreshed" });
+    useStudio.mockReturnValue(studio({ review: false }));
+    render(<MaterialsPage />);
+
+    const card = await screen.findByRole("button", {
+      name: "选择素材 expiring-image.png",
+    });
+    const firstImage = await waitFor(() => {
+      const image = card.querySelector("img");
+      expect(image).toHaveAttribute("src", "https://storage.test/expired");
+      return image as HTMLImageElement;
+    });
+    fireEvent.error(firstImage);
+    const refreshedImage = await waitFor(() => {
+      const image = card.querySelector("img");
+      expect(image).toHaveAttribute("src", "https://storage.test/refreshed");
+      return image as HTMLImageElement;
+    });
+    fireEvent.error(refreshedImage);
+
+    expect(getAssetDownloadUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it("审计员仅预览直出结果且不展示素材写入、下载和复用操作", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        material("audit-direct", {
+          asset_id: null,
+          generation_task_id: "audit-task",
+          media_type: "video",
+          delivery: "direct",
+          saved: false,
+          allowed_actions: ["preview"],
+        }),
+      ],
+      page: 1,
+      page_size: 6,
+      total: 1,
+    });
+    const value = studio({
+      review: false,
+      user: { ...studio().user, role: "auditor" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<MaterialsPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "选择素材 audit-direct.png" }),
+    );
+    await waitFor(() =>
+      expect(createGenerationTaskPreviewUrl).toHaveBeenCalledWith("audit-task"),
+    );
+    expect(getAssetDownloadUrl).not.toHaveBeenCalled();
+    for (const name of [
+      "上传素材",
+      "下载素材",
+      "保存名称",
+      "保存分组",
+      "从素材库移除",
+      "用于参考生视频",
+    ]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    expect(screen.queryByLabelText("选择上传素材")).toBeNull();
+    expect(screen.queryByLabelText("素材名称")).toBeNull();
+    expect(screen.queryByLabelText("素材分组")).toBeNull();
+    expect(value.patchDraft).not.toHaveBeenCalled();
+  });
+
+  it("隐藏末页唯一素材后回到有效页并重新读取列表", async () => {
+    const firstPage = Array.from({ length: 6 }, (_, index) =>
+      material(`item-${index + 1}`),
+    );
+    let total = 7;
+    listMaterials.mockImplementation(({ page }: { page: number }) =>
+      Promise.resolve({
+        items: page === 1 ? firstPage : [material("last-item")],
+        page,
+        page_size: 6,
+        total,
+      }),
+    );
+    hideMaterial.mockImplementation(() => {
+      total = 6;
+      return Promise.resolve();
+    });
+    useStudio.mockReturnValue(studio({ review: false }));
+    render(<MaterialsPage />);
+    await screen.findByRole("button", { name: "选择素材 item-1.png" });
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "选择素材 last-item.png" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "从素材库移除" }));
+
+    await waitFor(() =>
+      expect(hideMaterial).toHaveBeenCalledWith("asset:last-item"),
+    );
+    await screen.findByRole("button", { name: "选择素材 item-1.png" });
+    expect(listMaterials).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 1 }),
+    );
+    expect(screen.queryByText("暂无素材")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "last-item.png" })).toBeNull();
+  });
+
   it("已归档素材支持修改分组和直接下载", async () => {
     const material = {
       id: "asset:image-cloud-2",
@@ -980,7 +1243,7 @@ describe("V1.4 内容与运营页面", () => {
       created_at: "2026-09-06 10:00:00",
       hidden: false,
       saved: true,
-      allowed_uses: ["reference"],
+      allowed_uses: [],
       allowed_actions: ["preview", "download", "rename", "hide"],
     } as const;
     listMaterials.mockResolvedValue({

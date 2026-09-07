@@ -121,6 +121,7 @@ export function createReviewData(): StudioData {
       duration: "00:42",
       source: "口播录音",
       saved: true,
+      allowedUses: ["oral_audio"],
     },
     {
       id: "facade-video",

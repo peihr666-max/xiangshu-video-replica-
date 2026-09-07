@@ -8,6 +8,17 @@ import {
   routeFromHash,
   withImportedProject,
 } from "./state";
+import type { StudioAsset } from "./types";
+
+const oralAudio: StudioAsset = {
+  id: "speech",
+  name: "完整口播.mp3",
+  kind: "audio",
+  group: "我的上传",
+  source: "素材库",
+  saved: true,
+  allowedUses: ["oral_audio"],
+};
 
 describe("V1.4 交接合同", () => {
   it("同项目返回保留人物和未保存终稿，不回退到旧版本", () => {
@@ -122,13 +133,28 @@ describe("V1.4 交接合同", () => {
       voiceId: "voice",
       ipId: "ip",
     };
-    expect(buildOralInput(draft, "audio")).toEqual({
+    expect(buildOralInput(draft, "audio", [oralAudio])).toEqual({
       draftId: draft.id,
       mode: "audio",
       ipId: "ip",
       avatarId: "avatar",
       audioAssetId: "speech",
     });
+  });
+  it.each([
+    { saved: false, allowedUses: ["oral_audio"] },
+    { saved: true, allowedUses: [] },
+    { saved: true, allowedUses: undefined },
+  ])("音频提交拒绝未就绪或不允许口播的资产 %j", (patch) => {
+    const draft = {
+      ...createDraft(),
+      audioId: oralAudio.id,
+      ipId: "ip",
+      avatarId: "avatar",
+    };
+    expect(() =>
+      buildOralInput(draft, "audio", [{ ...oralAudio, ...patch }]),
+    ).toThrow("音频");
   });
   it("文案模式需要已确认终稿和声音，不提交音频", () => {
     const draft = createDraft();

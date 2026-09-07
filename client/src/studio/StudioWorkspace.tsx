@@ -56,6 +56,7 @@ import {
   buildOralInput,
   createDraft,
   createState,
+  isUsableOralAudio,
   pageTitles,
   patchStudioDraft,
   routeFromHash,
@@ -283,7 +284,7 @@ export function StudioWorkspace({
     }
     try {
       const mode = state.page === "oral-audio" ? "audio" : "text";
-      const input = buildOralInput(state.draft, mode);
+      const input = buildOralInput(state.draft, mode, data.assets);
       const result = await createOralTask({
         identityId: input.ipId,
         avatarId: input.avatarId,
@@ -534,6 +535,7 @@ export function StudioWorkspace({
         const input = buildOralInput(
           state.draft,
           state.page === "oral-audio" ? "audio" : "text",
+          data.assets,
         );
         const person = data.people.find((item) => item.id === input.ipId);
         if (
@@ -549,14 +551,6 @@ export function StudioWorkspace({
           )
         )
           throw new Error("请选择当前人物已确认的声音");
-        if (
-          input.mode === "audio" &&
-          !data.assets.some(
-            (asset) =>
-              asset.id === input.audioAssetId && asset.kind === "audio",
-          )
-        )
-          throw new Error("完整口播音频已失效，请重新选择");
       }
       setGeneration(kind);
     } catch (cause) {
@@ -1100,7 +1094,7 @@ function StudioPicker({
   };
   const assets = data.assets.filter((asset) =>
     kind === "audio"
-      ? asset.kind === "audio"
+      ? isUsableOralAudio(asset)
       : kind === "reference"
         ? true
         : asset.kind === "image" &&

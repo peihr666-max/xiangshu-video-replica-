@@ -1,4 +1,10 @@
-import type { StudioDraft, StudioPage, StudioState, StudioTask } from "./types";
+import type {
+  StudioAsset,
+  StudioDraft,
+  StudioPage,
+  StudioState,
+  StudioTask,
+} from "./types";
 
 export const pageTitles: Record<StudioPage, string> = {
   workbench: "工作台",
@@ -137,13 +143,33 @@ export function patchStudioDraft(
   return next;
 }
 
-export function buildOralInput(draft: StudioDraft, mode: "text" | "audio") {
+export function isUsableOralAudio(
+  asset: StudioAsset | undefined,
+): asset is StudioAsset {
+  return (
+    asset?.kind === "audio" &&
+    asset.saved &&
+    asset.allowedUses?.includes("oral_audio") === true
+  );
+}
+
+export function buildOralInput(
+  draft: StudioDraft,
+  mode: "text" | "audio",
+  assets: readonly StudioAsset[] = [],
+) {
   if (mode === "text" && (!draft.script.confirmed || !draft.script.text.trim()))
     throw new Error("请先在文案工坊确认终稿");
   if (!draft.ipId || !draft.avatarId)
     throw new Error("请选择人物与可用口播分身");
   if (mode === "audio") {
     if (!draft.audioId) throw new Error("请选择完整口播音频");
+    if (
+      !assets.some(
+        (asset) => asset.id === draft.audioId && isUsableOralAudio(asset),
+      )
+    )
+      throw new Error("完整口播音频未就绪或不可用于口播，请重新选择");
     return {
       draftId: draft.id,
       mode,

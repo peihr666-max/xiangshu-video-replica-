@@ -219,6 +219,66 @@ describe("V1.4 workspace integration", () => {
     );
     expect(screen.getByText("张工本人音色 V1")).toBeInTheDocument();
   });
+
+  it("口播音频选择器只展示已保存且允许口播的音频", () => {
+    const data = createReviewData();
+    const audio = data.assets.find((asset) => asset.kind === "audio");
+    if (!audio) throw new Error("审核数据缺少音频样本");
+    data.assets = [
+      {
+        ...audio,
+        id: "ready",
+        name: "就绪口播.mp3",
+        saved: true,
+        allowedUses: ["oral_audio"],
+      },
+      {
+        ...audio,
+        id: "pending",
+        name: "处理中.mp3",
+        saved: false,
+        allowedUses: ["oral_audio"],
+      },
+      {
+        ...audio,
+        id: "blocked",
+        name: "不支持口播.mp3",
+        saved: true,
+        allowedUses: [],
+      },
+    ];
+    const state = createReviewState("oral-audio");
+    state.draft.audioId = undefined;
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={data}
+        initialState={state}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "从素材库选择" }));
+    const picker = within(screen.getByRole("dialog"));
+    expect(
+      picker.getByRole("button", { name: /就绪口播/ }),
+    ).toBeInTheDocument();
+    expect(picker.queryByRole("button", { name: /处理中/ })).toBeNull();
+    expect(picker.queryByRole("button", { name: /不支持口播/ })).toBeNull();
+    fireEvent.click(picker.getByRole("button", { name: /就绪口播/ }));
+    expect(screen.getByRole("button", { name: "生成口播视频" })).toBeEnabled();
+  });
+
+  it("审核示例音频保持为可提交的口播素材", () => {
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("oral-audio")}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "生成口播视频" })).toBeEnabled();
+  });
+
   it("loads real data without falling back to review examples", async () => {
     live.loadStudioData.mockResolvedValue({
       people: [],

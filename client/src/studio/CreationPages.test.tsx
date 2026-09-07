@@ -382,6 +382,28 @@ describe("V1.4 创作页面", () => {
     expect(screen.queryByText("文字转语音")).not.toBeInTheDocument();
   });
 
+  it.each([
+    { saved: false, allowedUses: ["oral_audio"] },
+    { saved: true, allowedUses: [] },
+    { saved: true, allowedUses: undefined },
+  ])("陈旧音频引用不能启用口播生成 %j", (patch) => {
+    const base = studio();
+    useStudio.mockReturnValue(
+      studio({
+        review: false,
+        state: { ...base.state, page: "oral-audio" },
+        data: {
+          ...base.data,
+          assets: base.data.assets.map((asset) =>
+            asset.id === "audio-1" ? { ...asset, ...patch } : asset,
+          ),
+        },
+      }),
+    );
+    render(<OralPage />);
+    expect(screen.getByRole("button", { name: "生成口播视频" })).toBeDisabled();
+  });
+
   it("口播模式切换只占左侧输入栏，不下推右侧人物预览", () => {
     useStudio.mockReturnValue(studio());
 

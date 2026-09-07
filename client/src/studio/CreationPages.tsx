@@ -7,6 +7,7 @@ import {
 import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
 import { studioAssetFromMaterial } from "./live";
+import { isUsableOralAudio } from "./state";
 import type { StudioAsset, StudioPerson, StudioVideo } from "./types";
 import {
   Button,
@@ -803,7 +804,7 @@ export function OralPage() {
     (item) => item.id === state.draft.voiceId && item.confirmed,
   );
   const audio = findAsset(data.assets, state.draft.audioId);
-  const speechAudio = audio?.kind === "audio" ? audio : undefined;
+  const speechAudio = isUsableOralAudio(audio) ? audio : undefined;
   const avatarImage = findAsset(data.assets, avatar?.imageId);
   const ready = audioMode
     ? Boolean(person && avatar && speechAudio)

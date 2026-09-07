@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MaterialItem, MaterialPage, ViralVideoItem } from "../api";
 import {
   completeMaterialUpload,
@@ -17,6 +17,7 @@ import {
 } from "../api";
 import { useStudio } from "./context";
 import { studioAssetFromMaterial, studioVideoFromViral } from "./live";
+import { isUsableOralAudio } from "./state";
 import type {
   StudioAsset,
   StudioContextValue,
@@ -857,10 +858,12 @@ function AssetCard({
   asset,
   selected,
   onSelect,
+  onPreviewError,
 }: {
   asset: StudioAsset;
   selected: boolean;
   onSelect: () => void;
+  onPreviewError?: () => void;
 }) {
   return (
     <button
@@ -869,7 +872,7 @@ function AssetCard({
       onClick={onSelect}
       aria-label={`选择素材 ${asset.name}`}
     >
-      <Media asset={asset} alt={asset.name} />
+      <Media asset={asset} alt={asset.name} onError={onPreviewError} />
       <strong>{asset.name}</strong>
       <span>
         {asset.group} · {assetKindLabel(asset.kind)}
@@ -890,12 +893,14 @@ export function MaterialsPage() {
     data,
     state,
     review,
+    user,
     patchState,
     patchDraft,
     updateData,
     navigate,
     notify,
   } = useStudio();
+  const readOnly = user.role === "auditor";
   const [kind, setKind] = useState<"全部" | StudioAsset["kind"]>("全部");
   const [source, setSource] = useState<"" | MaterialItem["source"]>("");
   const [queryInput, setQueryInput] = useState("");
@@ -908,6 +913,11 @@ export function MaterialsPage() {
   const [busyAction, setBusyAction] = useState<string>();
   const [renameValue, setRenameValue] = useState("");
   const [groupValue, setGroupValue] = useState("");
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const previewRequests = useRef(
+    new Map<string, Promise<string | undefined>>(),
+  );
+  const previewRefreshes = useRef(new Set<string>());
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const reviewAssets = data.assets.filter(
     (asset) => kind === "全部" || asset.kind === kind,
@@ -936,6 +946,45 @@ export function MaterialsPage() {
   const total = review ? reviewAssets.length : (remotePage?.total ?? 0);
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const selectedAssetIdRef = useRef(state.selectedAssetId);
+  const loadPreview = useCallback((asset: StudioAsset) => {
+    if (asset.url) return Promise.resolve(asset.url);
+    if (!asset.allowedActions?.includes("preview"))
+      return Promise.resolve(undefined);
+    const existing = previewRequests.current.get(asset.id);
+    if (existing) return existing;
+    const sourceRequest = asset.assetId
+      ? getAssetDownloadUrl(asset.assetId).then((result) => result.url)
+      : asset.generationTaskId
+        ? createGenerationTaskPreviewUrl(asset.generationTaskId)
+        : Promise.resolve(undefined);
+    const request = sourceRequest
+      .catch(() => undefined)
+      .finally(() => previewRequests.current.delete(asset.id));
+    previewRequests.current.set(asset.id, request);
+    return request;
+  }, []);
+
+  const refreshPreview = useCallback(
+    (assetId: string) => {
+      const asset = remoteAssets.find((item) => item.id === assetId);
+      if (!asset || asset.url || previewRefreshes.current.has(assetId)) return;
+      previewRefreshes.current.add(assetId);
+      previewRequests.current.delete(assetId);
+      setPreviewUrls((urls) => {
+        const next = { ...urls };
+        delete next[assetId];
+        return next;
+      });
+      void loadPreview(asset).then((url) => {
+        if (!url) return;
+        setPreviewUrls((urls) => ({ ...urls, [assetId]: url }));
+        setSelectedAsset((current) =>
+          current?.id === assetId ? { ...current, url } : current,
+        );
+      });
+    },
+    [loadPreview, remoteAssets],
+  );
 
   useEffect(() => {
     if (review) return;
@@ -968,6 +1017,38 @@ export function MaterialsPage() {
   }, [kind, page, query, review, source]);
 
   useEffect(() => {
+    if (!review && remotePage?.page === page && page > pages) setPage(pages);
+  }, [page, pages, remotePage, review]);
+
+  useEffect(() => {
+    if (review) return;
+    let current = true;
+    const visibleAssets = remoteAssets.slice(0, pageSize);
+    const visibleIds = new Set(visibleAssets.map((asset) => asset.id));
+    // 仅保留当前页请求；卡片和详情共用同一次签名。
+    for (const id of previewRequests.current.keys()) {
+      if (!visibleIds.has(id)) previewRequests.current.delete(id);
+    }
+    for (const id of previewRefreshes.current) {
+      if (!visibleIds.has(id)) previewRefreshes.current.delete(id);
+    }
+    setPreviewUrls((urls) =>
+      Object.fromEntries(
+        Object.entries(urls).filter(([id]) => visibleIds.has(id)),
+      ),
+    );
+    for (const asset of visibleAssets) {
+      void loadPreview(asset).then((url) => {
+        if (current && url)
+          setPreviewUrls((urls) => ({ ...urls, [asset.id]: url }));
+      });
+    }
+    return () => {
+      current = false;
+    };
+  }, [loadPreview, remoteAssets, review]);
+
+  useEffect(() => {
     if (selectedAssetIdRef.current === state.selectedAssetId) return;
     selectedAssetIdRef.current = state.selectedAssetId;
     if (review && selectedIndex >= 0) {
@@ -983,26 +1064,18 @@ export function MaterialsPage() {
   useEffect(() => {
     if (review || !selected?.materialId || selected.url) return;
     let current = true;
-    const preview = selected.assetId
-      ? getAssetDownloadUrl(selected.assetId).then((result) => result.url)
-      : selected.generationTaskId
-        ? createGenerationTaskPreviewUrl(selected.generationTaskId)
-        : Promise.resolve(null);
-    void preview
-      .then((url) => {
-        if (current && url) {
-          setSelectedAsset((asset) =>
-            asset?.id === selected.id ? { ...asset, url } : asset,
-          );
-        }
-      })
-      .catch(() => {
-        if (current) notify("素材预览暂不可用，请稍后重试");
-      });
+    void loadPreview(selected).then((url) => {
+      if (current && url) {
+        setPreviewUrls((urls) => ({ ...urls, [selected.id]: url }));
+        setSelectedAsset((asset) =>
+          asset?.id === selected.id ? { ...asset, url } : asset,
+        );
+      }
+    });
     return () => {
       current = false;
     };
-  }, [notify, review, selected]);
+  }, [loadPreview, review, selected]);
 
   const currentAssets = review
     ? assets.slice((page - 1) * pageSize, page * pageSize)
@@ -1017,6 +1090,7 @@ export function MaterialsPage() {
   };
 
   const handleUpload = async (file: File) => {
+    if (readOnly) return;
     setBusyAction("upload");
     setUploadProgress(0);
     try {
@@ -1055,7 +1129,7 @@ export function MaterialsPage() {
   };
 
   const saveName = async () => {
-    if (!selected?.materialId || !renameValue.trim()) return;
+    if (readOnly || !selected?.materialId || !renameValue.trim()) return;
     setBusyAction("rename");
     try {
       const updated = studioAssetFromMaterial(
@@ -1085,7 +1159,7 @@ export function MaterialsPage() {
   };
 
   const removeSelected = async () => {
-    if (!selected?.materialId) return;
+    if (readOnly || !selected?.materialId) return;
     setBusyAction("hide");
     try {
       await hideMaterial(selected.materialId);
@@ -1111,7 +1185,7 @@ export function MaterialsPage() {
   };
 
   const saveGroup = async () => {
-    if (!selected?.materialId || !groupValue.trim()) return;
+    if (readOnly || !selected?.materialId || !groupValue.trim()) return;
     setBusyAction("group");
     try {
       const updated = studioAssetFromMaterial(
@@ -1141,7 +1215,7 @@ export function MaterialsPage() {
   };
 
   const downloadSelected = async () => {
-    if (!selected?.assetId) return;
+    if (readOnly || !selected?.assetId) return;
     setBusyAction("download");
     try {
       await downloadMaterialAsset(selected.assetId, selected.name);
@@ -1153,14 +1227,6 @@ export function MaterialsPage() {
     }
   };
 
-  const applyAsReference = (asset: StudioAsset) => {
-    retainForDraft(asset);
-    patchDraft({
-      referenceIds: [...new Set([...state.draft.referenceIds, asset.id])],
-    });
-    navigate("reference", { returnTo: "materials" });
-  };
-
   return (
     <section className="content-page content-materials">
       <header className="content-title">
@@ -1168,31 +1234,35 @@ export function MaterialsPage() {
           <h1>素材库</h1>
           <p>统一管理和复用乡墅创作素材</p>
         </div>
-        <input
-          accept=".jpg,.jpeg,.png,.mp3,.mp4,.mov"
-          aria-label="选择上传素材"
-          hidden
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void handleUpload(file);
-          }}
-          ref={uploadInputRef}
-          type="file"
-        />
-        <Button
-          className="content-title-action"
-          disabled={busyAction === "upload"}
-          variant="primary"
-          onClick={() =>
-            review
-              ? notify("审核模式保留示例素材，不执行真实上传")
-              : uploadInputRef.current?.click()
-          }
-        >
-          {uploadProgress === undefined
-            ? "上传素材"
-            : `上传中 ${uploadProgress}%`}
-        </Button>
+        {!readOnly && (
+          <>
+            <input
+              accept=".jpg,.jpeg,.png,.mp3,.mp4,.mov"
+              aria-label="选择上传素材"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void handleUpload(file);
+              }}
+              ref={uploadInputRef}
+              type="file"
+            />
+            <Button
+              className="content-title-action"
+              disabled={busyAction === "upload"}
+              variant="primary"
+              onClick={() =>
+                review
+                  ? notify("审核模式保留示例素材，不执行真实上传")
+                  : uploadInputRef.current?.click()
+              }
+            >
+              {uploadProgress === undefined
+                ? "上传素材"
+                : `上传中 ${uploadProgress}%`}
+            </Button>
+          </>
+        )}
       </header>
       <Tabs
         items={[
@@ -1250,12 +1320,16 @@ export function MaterialsPage() {
             {currentAssets.map((asset) => (
               <AssetCard
                 key={asset.id}
-                asset={asset}
+                asset={{ ...asset, url: asset.url ?? previewUrls[asset.id] }}
                 selected={selected?.id === asset.id}
                 onSelect={() => {
-                  setSelectedAsset(asset);
+                  setSelectedAsset({
+                    ...asset,
+                    url: asset.url ?? previewUrls[asset.id],
+                  });
                   patchState({ selectedAssetId: asset.id });
                 }}
+                onPreviewError={() => refreshPreview(asset.id)}
               />
             ))}
           </div>
@@ -1303,7 +1377,11 @@ export function MaterialsPage() {
           {selected ? (
             <>
               <h2>{selected.name}</h2>
-              <Media asset={selected} alt={selected.name} />
+              <Media
+                asset={selected}
+                alt={selected.name}
+                onError={() => refreshPreview(selected.id)}
+              />
               <dl>
                 <dt>类型</dt>
                 <dd>{assetKindLabel(selected.kind)}</dd>
@@ -1320,15 +1398,16 @@ export function MaterialsPage() {
                       : "处理中"}
                 </dd>
               </dl>
-              {selected.kind === "audio" &&
-              (review || selected.allowedUses?.includes("oral_audio")) ? (
+              {!readOnly &&
+              selected.kind === "audio" &&
+              (review || isUsableOralAudio(selected)) ? (
                 <Button
                   variant="primary"
                   onClick={() => {
                     retainForDraft(selected);
                     patchDraft({
                       audioId: selected.id,
-                      ipId: selected.personId,
+                      ...(selected.personId ? { ipId: selected.personId } : {}),
                       voiceId: undefined,
                     });
                     navigate("oral-audio", { returnTo: "materials" });
@@ -1337,57 +1416,8 @@ export function MaterialsPage() {
                   用于音频口播
                 </Button>
               ) : null}
-              {selected.kind === "image" &&
-              selected.allowedUses?.includes("original_frame") ? (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    retainForDraft(selected);
-                    patchDraft({
-                      originalImageId: selected.id,
-                      frameConfirmed: false,
-                    });
-                    navigate("replica", { returnTo: "materials" });
-                  }}
-                >
-                  用作原画面
-                </Button>
-              ) : null}
-              {selected.kind === "image" &&
-              selected.allowedUses?.includes("first_frame") ? (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    retainForDraft(selected);
-                    patchDraft({ firstFrameId: selected.id });
-                    navigate("video", { returnTo: "materials" });
-                  }}
-                >
-                  用作首帧
-                </Button>
-              ) : null}
-              {selected.kind === "image" &&
-              selected.allowedUses?.includes("tail_frame") ? (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    retainForDraft(selected);
-                    patchDraft({ tailFrameId: selected.id });
-                    navigate("video", { returnTo: "materials" });
-                  }}
-                >
-                  用作尾帧
-                </Button>
-              ) : null}
-              {selected.allowedUses?.includes("reference") ? (
-                <Button
-                  variant="outline"
-                  onClick={() => applyAsReference(selected)}
-                >
-                  用于参考生视频
-                </Button>
-              ) : null}
-              {selected.materialId &&
+              {!readOnly &&
+              selected.materialId &&
               selected.allowedActions?.includes("rename") ? (
                 <>
                   <div className="content-material-manage">
@@ -1426,7 +1456,8 @@ export function MaterialsPage() {
                   </div>
                 </>
               ) : null}
-              {selected.assetId &&
+              {!readOnly &&
+              selected.assetId &&
               selected.allowedActions?.includes("download") ? (
                 <Button
                   disabled={busyAction === "download"}
@@ -1436,7 +1467,8 @@ export function MaterialsPage() {
                   下载素材
                 </Button>
               ) : null}
-              {selected.materialId &&
+              {!readOnly &&
+              selected.materialId &&
               selected.allowedActions?.includes("hide") ? (
                 <Button
                   disabled={busyAction === "hide"}
