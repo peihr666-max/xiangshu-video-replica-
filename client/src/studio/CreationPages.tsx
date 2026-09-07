@@ -1,11 +1,20 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  type AnalysisVersion,
+  type CharacterReferenceSelection,
   customerVisibleErrorMessage,
   type GenerationRatio,
   getLatestProjectAnalysis,
   getLatestProjectFirstFrameSelection,
   getLatestProjectShotCards,
   listUserSavedPrompts,
+  type ProjectMainCharacter,
   readAnalysisPayload,
   readFirstFrameSelectionPayload,
   type SavedPromptItem,
@@ -13,9 +22,13 @@ import {
   type ShotCardPayload,
   saveGenerationPrompt,
   saveShotCards,
+  selectCharacterReferences,
   startVideoAnalysis,
   waitForAnalysisTask,
 } from "../api";
+import { CharacterSelection } from "../CharacterSelection";
+import { FirstFrameSelection } from "../FirstFrameSelection";
+import { SourceFrameSelection } from "../SourceFrameSelection";
 import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
 import {
@@ -26,6 +39,7 @@ import {
 import { buildReplicaPromptText, SUPPORTED_VIDEO_RATIOS } from "./state";
 import type {
   StudioAsset,
+  StudioDraft,
   StudioPerson,
   StudioTask,
   StudioVideo,
@@ -831,90 +845,310 @@ export function ReplicaPage() {
 }
 
 export function ReplacementPage() {
-  const { state, data, openPicker, navigate, saveDraft, requestGeneration } =
+  const { state, data, review, patchDraft, navigate, notify, saveDraft } =
     useStudio();
-  const original = findAsset(data.assets, state.draft.originalImageId);
-  const target = findAsset(data.assets, state.draft.imageId);
-  const preview = state.draft.frameConfirmed
-    ? (findAsset(data.assets, state.draft.firstFrameId) ?? target)
-    : undefined;
+  const project = data.projects.find(
+    (item) => item.id === state.draft.projectId,
+  );
+  const [characterSelection, setCharacterSelection] =
+    useState<ProjectMainCharacter | null>(null);
+  const [sourceFrameSelection, setSourceFrameSelection] =
+    useState<AnalysisVersion | null>(null);
+  const [referenceSelection, setReferenceSelection] =
+    useState<CharacterReferenceSelection | null>(null);
+  const [referenceError, setReferenceError] = useState("");
+  const [firstFrameSelection, setFirstFrameSelection] =
+    useState<AnalysisVersion | null>(null);
+  const [leafBusy, setLeafBusy] = useState(false);
+  const [sourceDurationSeconds, setSourceDurationSeconds] = useState<
+    number | null
+  >(null);
+  const autoMatchAttemptedRef = useRef(new Set<string>());
+  // patchDraft 每次壳层渲染都是新引用，effect 依赖一律走 ref，避免无限置位循环。
+  const patchDraftRef = useRef(patchDraft);
+  patchDraftRef.current = patchDraft;
+  const confirmedAssetIdRef = useRef<string | undefined>(undefined);
+
+  const firstFrameAssetId = firstFrameSelection
+    ? (readFirstFrameSelectionPayload(firstFrameSelection)
+        ?.first_frame_asset_id ?? null)
+    : null;
+
+  const clearConfirmedFirstFrame = useCallback(() => {
+    confirmedAssetIdRef.current = undefined;
+    patchDraftRef.current({
+      firstFrameId: undefined,
+      frameConfirmed: false,
+    } as Partial<StudioDraft>);
+  }, []);
+
+  // 换项目时重置全部下游状态与草稿中的旧首帧。
+  const projectId = project?.id;
+  useEffect(() => {
+    setCharacterSelection(null);
+    setSourceFrameSelection(null);
+    setReferenceSelection(null);
+    setFirstFrameSelection(null);
+    setReferenceError("");
+    autoMatchAttemptedRef.current.clear();
+    confirmedAssetIdRef.current = undefined;
+    if (projectId) {
+      patchDraftRef.current({
+        firstFrameId: undefined,
+        frameConfirmed: false,
+      } as Partial<StudioDraft>);
+    }
+  }, [projectId]);
+
+  // 载入拆解时长供源画面取帧边界使用（缺省时叶子组件退化为固定前 2.5 秒）。
+  useEffect(() => {
+    if (review || !projectId) {
+      setSourceDurationSeconds(null);
+      return;
+    }
+    let active = true;
+    void getLatestProjectAnalysis(projectId)
+      .then((version) => {
+        if (active) {
+          setSourceDurationSeconds(
+            readAnalysisPayload(version)?.duration_seconds ?? null,
+          );
+        }
+      })
+      .catch(() => {
+        if (active) setSourceDurationSeconds(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [review, projectId]);
+
+  // 首帧确认即置位草稿：同一资产只置位一次，防止依赖循环反复 patch。
+  useEffect(() => {
+    if (!firstFrameSelection) {
+      return;
+    }
+    const assetId =
+      readFirstFrameSelectionPayload(firstFrameSelection)?.first_frame_asset_id;
+    if (assetId && confirmedAssetIdRef.current !== assetId) {
+      confirmedAssetIdRef.current = assetId;
+      patchDraftRef.current({ firstFrameId: assetId, frameConfirmed: true });
+    }
+  }, [firstFrameSelection]);
+
+  // 人物参考自动匹配：角色版本 × 已确认源画面，组合只自动尝试一次。
+  useEffect(() => {
+    if (
+      review ||
+      !project ||
+      !characterSelection ||
+      !sourceFrameSelection ||
+      referenceSelection
+    ) {
+      return;
+    }
+    const characterVersionId = characterSelection.character_version_id ?? "";
+    const matchKey = `${project.id}:${characterVersionId}:${sourceFrameSelection.id}`;
+    if (autoMatchAttemptedRef.current.has(matchKey)) {
+      return;
+    }
+    autoMatchAttemptedRef.current.add(matchKey);
+    let active = true;
+    setLeafBusy(true);
+    selectCharacterReferences(project.id, {
+      character_version_id: characterVersionId,
+      source_frame_selection_version_id: sourceFrameSelection.id,
+    })
+      .then((selection) => {
+        if (active) {
+          setReferenceSelection(selection);
+          setReferenceError("");
+        }
+      })
+      .catch((cause: unknown) => {
+        if (active) {
+          setReferenceError(
+            cause instanceof Error ? cause.message : "自动匹配人物参考失败。",
+          );
+        }
+      });
+    return () => {
+      active = false;
+      setLeafBusy(false);
+    };
+  }, [
+    review,
+    project,
+    characterSelection,
+    sourceFrameSelection,
+    referenceSelection,
+  ]);
+
+  // 叶子组件的 effect 依赖回调身份：必须 useCallback 保持稳定，否则引发重取风暴。
+  const handleCharacterChange = useCallback(
+    (selection: ProjectMainCharacter | null) => {
+      setCharacterSelection(selection);
+      setReferenceSelection(null);
+      setReferenceError("");
+      setFirstFrameSelection(null);
+      clearConfirmedFirstFrame();
+    },
+    [],
+  );
+
+  const handleSourceFrameChange = useCallback(
+    (selection: AnalysisVersion | null) => {
+      setSourceFrameSelection(selection);
+      setReferenceSelection(null);
+      setReferenceError("");
+      setFirstFrameSelection(null);
+      clearConfirmedFirstFrame();
+    },
+    [],
+  );
+
+  const retryReferenceMatch = () => {
+    const characterVersionId = characterSelection?.character_version_id ?? "";
+    const matchKey = `${project?.id ?? ""}:${characterVersionId}:${
+      sourceFrameSelection?.id ?? ""
+    }`;
+    autoMatchAttemptedRef.current.delete(matchKey);
+    setReferenceError("");
+  };
+
+  const firstFrameReady = Boolean(firstFrameAssetId);
 
   return (
     <section className="creation-page">
-      <header className="creation-heading creation-heading-back">
-        <Button
-          variant="quiet"
-          onClick={() => navigate(state.returnTo ?? "replica")}
-        >
-          ← 返回
-        </Button>
-        <div>
-          <h1>人物置换</h1>
-          <p>先确认人物首帧，再继续生成视频</p>
-        </div>
+      <header className="creation-heading">
+        <h1>人物替换</h1>
       </header>
       <CreationNavigation />
-      <SourceStrip source={original} />
-      <div className="creation-replacement-grid">
-        <Panel>
-          <div className="creation-panel-title">原始画面</div>
-          <Media
-            asset={original}
-            alt="原始画面"
-            className="creation-large-media"
+      {!project ? (
+        <Panel className="creation-empty-workspace">
+          <Empty
+            title="先在视频复刻中准备好项目"
+            description="人物替换需要一个已完成 AI 拆解的项目：选择下方项目即可开始提取源画面并生成置换首帧。"
+            action={
+              data.projects.length > 0 ? (
+                <select
+                  aria-label="选择项目"
+                  className="creation-project-select"
+                  defaultValue=""
+                  onChange={(event) => {
+                    const selected = data.projects.find(
+                      (item) => item.id === event.target.value,
+                    );
+                    if (selected) {
+                      patchDraft({ projectId: selected.id });
+                      notify(`已切换到项目「${selected.name}」。`);
+                    }
+                  }}
+                >
+                  <option value="" disabled>
+                    选择已有项目
+                  </option>
+                  {data.projects
+                    .filter((item) => item.analysis_status === "READY")
+                    .map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                </select>
+              ) : undefined
+            }
           />
-          <Button
-            variant="outline"
-            onClick={() => openPicker("original-frame")}
-          >
-            更换原始画面
-          </Button>
         </Panel>
-        <Panel>
-          <div className="creation-panel-title">目标人物参考</div>
-          <Media
-            asset={target}
-            alt="目标人物参考"
-            className="creation-large-media"
+      ) : review ? (
+        <Panel className="creation-empty-workspace">
+          <Empty
+            title="人物替换（审核示例）"
+            description="真实模式将在此完成：确认源画面 → 匹配 IP 五视图参考 → 生成并确认置换首帧。"
           />
-          <Button variant="outline" onClick={() => openPicker("image")}>
-            从人物库选择
-          </Button>
-          <Hint>人物照片只填目标参考，不会覆盖原始画面。</Hint>
         </Panel>
-        <Panel className="creation-replacement-preview">
-          <div className="creation-panel-title">置换首帧预览</div>
-          <Media
-            asset={preview}
-            alt="置换首帧预览"
-            className="creation-large-media"
-          />
-          <div className="creation-preview-state">
-            <span className="creation-status-dot" />
-            {state.draft.frameConfirmed ? "静态首帧 · 已确认" : "待生成并确认"}
-          </div>
-        </Panel>
-      </div>
-      <footer className="creation-action-bar creation-action-center">
-        <Button variant="outline" onClick={() => requestGeneration("人物置换")}>
-          重新生成首帧
-        </Button>
-        <Button
-          variant="primary"
-          disabled={!preview}
-          onClick={() => {
-            saveDraft();
-            navigate(state.returnTo ?? "replica");
-          }}
-        >
-          确认并返回镜头
-        </Button>
-        <Button
-          variant="outline"
-          disabled={!preview}
-          onClick={() => navigate("video", { returnTo: "replacement" })}
-        >
-          用于文/图生视频
+      ) : (
+        <>
+          <Panel className="creation-replacement-step">
+            <div className="creation-panel-title">① 选择人物 IP</div>
+            <CharacterSelection
+              onBusyChange={setLeafBusy}
+              onVersionChange={handleCharacterChange}
+              projectId={project.id}
+              variant="inline"
+            />
+          </Panel>
+          <Panel className="creation-replacement-step">
+            <div className="creation-panel-title">② 提取并确认源画面</div>
+            <SourceFrameSelection
+              onBusyChange={setLeafBusy}
+              onSelectionChange={handleSourceFrameChange}
+              projectId={project.id}
+              referenceAssetId={project.reference_asset_id}
+              simplified
+              videoDurationSeconds={sourceDurationSeconds}
+            />
+          </Panel>
+          <Panel className="creation-replacement-step">
+            <div className="creation-panel-title">③ 生成置换首帧</div>
+            {referenceError ? (
+              <>
+                <p className="settings-error" role="alert">
+                  {referenceError}
+                </p>
+                <Button onClick={retryReferenceMatch} variant="outline">
+                  重试匹配人物参考
+                </Button>
+              </>
+            ) : null}
+            {characterSelection && sourceFrameSelection ? (
+              <FirstFrameSelection
+                onBusyChange={setLeafBusy}
+                onSelectionChange={setFirstFrameSelection}
+                projectId={project.id}
+                referenceSelection={referenceSelection}
+                simplified
+                sourceFrameSelectionId={sourceFrameSelection.id}
+              />
+            ) : (
+              <Empty
+                title="等待前置步骤"
+                description="确认人物与源画面后，即可结合 IP 五视图生成置换首帧。"
+              />
+            )}
+          </Panel>
+          <Panel className="creation-replacement-step">
+            <div className="creation-panel-title">④ 用于视频生成</div>
+            {firstFrameReady ? (
+              <>
+                <p>
+                  置换首帧已确认并写入当前创作草稿，可在「视频生成」中作为首帧图生视频。
+                </p>
+                <Button
+                  disabled={leafBusy}
+                  variant="primary"
+                  onClick={() => navigate("video")}
+                >
+                  用于文/图生视频
+                </Button>
+              </>
+            ) : (
+              <Hint>
+                完成上方置换首帧确认后，这里会提供一键跳转视频生成的入口。
+              </Hint>
+            )}
+          </Panel>
+        </>
+      )}
+      <footer className="creation-action-bar">
+        <div>
+          <strong>
+            源画面 + IP 五视图 → 置换首帧，全流程复用后端已实现链路
+          </strong>
+          <Hint>确认后的首帧可直接用于文/图生视频。</Hint>
+        </div>
+        <Button variant="outline" onClick={saveDraft}>
+          保存草稿
         </Button>
       </footer>
     </section>

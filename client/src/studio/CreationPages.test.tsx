@@ -16,10 +16,11 @@ vi.mock("./context", () => ({ useStudio }));
 
 // 复刻模块（模块①）：部分 mock api/live，其余保持原实现。
 const replicaApi = vi.hoisted(() => ({
+  selectCharacterReferences: vi.fn(),
   startVideoAnalysis: vi.fn(),
   waitForAnalysisTask: vi.fn(),
   getLatestProjectShotCards: vi.fn(),
-  getLatestProjectAnalysis: vi.fn(),
+  getLatestProjectAnalysis: vi.fn(async () => ({ id: "av-x", payload: {} })),
   getLatestProjectFirstFrameSelection: vi.fn(),
   saveGenerationPrompt: vi.fn(),
   saveShotCards: vi.fn(),
@@ -35,6 +36,52 @@ vi.mock("../api", async (importOriginal) => ({
 vi.mock("./live", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ...replicaLive,
+}));
+
+// 人物替换（模块②）：叶子组件打桩，专测组合与置位链路。
+vi.mock("../CharacterSelection", () => ({
+  CharacterSelection: (props: { onVersionChange?: (s: unknown) => void }) => (
+    <button
+      onClick={() =>
+        props.onVersionChange?.({
+          character_version_id: "cv-1",
+          character_snapshot: { identity: { id: "ident-1" } },
+        })
+      }
+    >
+      stub-选择人物
+    </button>
+  ),
+}));
+vi.mock("../SourceFrameSelection", () => ({
+  SourceFrameSelection: (props: {
+    onSelectionChange?: (s: unknown) => void;
+  }) => (
+    <button
+      onClick={() => props.onSelectionChange?.({ id: "sfv-1", payload: {} })}
+    >
+      stub-确认源画面
+    </button>
+  ),
+}));
+vi.mock("../FirstFrameSelection", () => ({
+  FirstFrameSelection: (props: {
+    onSelectionChange?: (s: unknown) => void;
+  }) => (
+    <button
+      onClick={() =>
+        props.onSelectionChange?.({
+          id: "ffv-1",
+          payload: {
+            first_frame_candidates_version_id: "cand-1",
+            first_frame_asset_id: "ff-asset-1",
+          },
+        })
+      }
+    >
+      stub-确认置换首帧
+    </button>
+  ),
 }));
 
 import {
@@ -277,34 +324,69 @@ describe("V1.4 创作页面", () => {
     expect(value.openPicker).toHaveBeenCalledWith("person");
   });
 
-  it("人物置换只选择目标人物照片，不改原始画面", () => {
-    const value = studio();
+  function replacementStudio() {
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "replacement",
+      draft: { ...value.state.draft, projectId: "project-1" },
+    };
+    value.data = {
+      ...value.data,
+      projects: [
+        {
+          id: "project-1",
+          name: "替换测试项目",
+          owner_user_id: "employee_1",
+          status: "ACTIVE",
+          reference_asset_id: "asset-1",
+          reference_upload_status: "READY",
+          analysis_status: "READY",
+        },
+      ],
+    };
+    return value;
+  }
+
+  it("人物替换：无项目时引导先准备项目", () => {
+    const value = studio({ review: false });
+    value.state = { ...value.state, page: "replacement" };
+    value.data = { ...value.data, projects: [] };
     useStudio.mockReturnValue(value);
     render(<ReplacementPage />);
-    fireEvent.click(screen.getByRole("button", { name: "从人物库选择" }));
-    expect(value.openPicker).toHaveBeenCalledWith("image");
-    expect(value.patchDraft).not.toHaveBeenCalledWith(
-      expect.objectContaining({ originalImageId: expect.anything() }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "更换原始画面" }));
-    expect(value.openPicker).toHaveBeenCalledWith("original-frame");
+    expect(screen.getByText(/先在视频复刻中准备好项目/)).toBeInTheDocument();
   });
 
-  it("历史素材选择不会持续覆盖人物置换草稿目标", () => {
-    const value = studio();
-    value.data.assets.push({
-      id: "target-2",
-      name: "张工设计室形象照",
-      kind: "image",
-      group: "人物照片",
-      personId: "person-1",
-      source: "人物库",
-      saved: true,
+  it("人物替换：确认置换首帧后置位草稿并可跳转视频生成", async () => {
+    const value = replacementStudio();
+    replicaApi.selectCharacterReferences.mockResolvedValue({
+      id: "crs-1",
+      payload: {},
     });
-    value.state = { ...value.state, selectedAssetId: "target-2" };
     useStudio.mockReturnValue(value);
     render(<ReplacementPage />);
-    expect(value.patchDraft).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "stub-选择人物" }));
+    fireEvent.click(screen.getByRole("button", { name: "stub-确认源画面" }));
+    await waitFor(() =>
+      expect(replicaApi.selectCharacterReferences).toHaveBeenCalledWith(
+        "project-1",
+        {
+          character_version_id: "cv-1",
+          source_frame_selection_version_id: "sfv-1",
+        },
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "stub-确认置换首帧" }));
+
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        firstFrameId: "ff-asset-1",
+        frameConfirmed: true,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "用于文/图生视频" }));
+    expect(value.navigate).toHaveBeenCalledWith("video");
   });
 
   it("视频生成在文图和多参考两种模式之间切换", () => {
