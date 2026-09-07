@@ -4139,6 +4139,8 @@ export interface components {
       min_recharge_fen: number;
       /** Recharge Step Fen */
       recharge_step_fen: number;
+      /** Oral Unit Price Fen */
+      oral_unit_price_fen: number;
     };
     /** BillingSettingsSnapshot */
     BillingSettingsSnapshot: {
@@ -4150,6 +4152,8 @@ export interface components {
       min_recharge_fen: number;
       /** Recharge Step Fen */
       recharge_step_fen: number;
+      /** Oral Unit Price Fen */
+      oral_unit_price_fen: number;
     };
     /** BillingSettingsUpdate */
     BillingSettingsUpdate: {
@@ -4169,6 +4173,8 @@ export interface components {
       min_recharge_fen: number;
       /** Recharge Step Fen */
       recharge_step_fen: number;
+      /** Oral Unit Price Fen */
+      oral_unit_price_fen: number;
     };
     /** Body_enqueue_global_simple_character_api_simple_characters_tasks_generate_post */
     Body_enqueue_global_simple_character_api_simple_characters_tasks_generate_post: {
