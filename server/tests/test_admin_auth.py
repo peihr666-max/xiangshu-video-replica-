@@ -989,7 +989,9 @@ def test_expired_session_rejected(
     # Rewind the whole row into the past: revision 026 guards
     # expires_at > created_at, so created_at must move back with it.
     past = datetime.now(UTC) - timedelta(hours=2)
-    expired = datetime.now(UTC) - timedelta(seconds=1)
+    # Keep a generous margin from the database clock. A one-second offset can
+    # race the PostgreSQL container clock and accidentally exercise idle expiry.
+    expired = datetime.now(UTC) - timedelta(minutes=5)
     with psycopg.connect(clean_sessions, autocommit=True) as conn:
         conn.execute(
             "UPDATE admin_sessions SET created_at = %s, last_activity_at = %s, "
