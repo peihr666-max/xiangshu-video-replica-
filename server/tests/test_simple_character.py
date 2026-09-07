@@ -52,9 +52,12 @@ from app.media_routes import get_media_storage
 from app.simple_character import (
     SIMPLE_CONTACT_SHEET_MODEL,
     _decode_png_rgb,
+    contact_sheet_placeholder_png,
     crop_contact_sheet_views,
 )
 from app.storage import FakeStorageAdapter
+
+STUB_CONTACT_SHEET = contact_sheet_placeholder_png(b"stub-contact-sheet")
 
 
 @pytest.fixture()
@@ -94,7 +97,7 @@ class StubContactSheetProvider:
 
     provider_name: str = "stub"
     calls: list[dict[str, object]] = field(default_factory=list)
-    sheet_content: bytes = b"contact-sheet-image"
+    sheet_content: bytes = STUB_CONTACT_SHEET
 
     def edit(
         self,
@@ -514,12 +517,14 @@ def test_simple_character_generation_runs_provider_work_off_the_event_loop(
 
     monkeypatch.setattr(storage, "put_object", observed_put_object)
 
+    upload_content = deterministic_png(b"threaded-character-source")
+
     class InMemoryUpload:
-        size = 5
+        size = len(upload_content)
         content_type = "image/png"
 
         async def read(self) -> bytes:
-            return b"image"
+            return upload_content
 
     async def prepare_character():
         return await simple_character_routes._prepare_simple_character_upload(
@@ -538,7 +543,7 @@ def test_simple_character_generation_runs_provider_work_off_the_event_loop(
 
     content, content_type, persona_name, prepared = asyncio.run(prepare_character())
 
-    assert content == b"image"
+    assert content == upload_content
     assert content_type == "image/png"
     assert persona_name == "荣哥"
     assert prepared.generation.contact_content == contact_sheet_provider.sheet_content
@@ -728,11 +733,11 @@ def test_generate_creates_contact_sheet_asset(
         ).fetchone()
         assert row is not None
         assert row["kind"] == "character_contact_sheet"
-        assert row["sha256"] == hashlib.sha256(b"contact-sheet-image").hexdigest()
+        assert row["sha256"] == hashlib.sha256(STUB_CONTACT_SHEET).hexdigest()
         metadata = json.loads(str(row["metadata_json"]))
         assert metadata["character_version_id"] == payload["character_version_id"]
         assert metadata["generation_source"] == "image_provider"
-        assert storage.get_object(str(metadata["object_key"])) == b"contact-sheet-image"
+        assert storage.get_object(str(metadata["object_key"])) == STUB_CONTACT_SHEET
 
         snapshot = json.loads(
             str(
@@ -844,7 +849,7 @@ def test_character_cache_downloads_once_and_serves_local_copy(
     parsed = urlsplit(second.json()["url"])
     cached = client.get(f"{parsed.path}?{parsed.query}")
     assert cached.status_code == 200
-    assert cached.content == b"contact-sheet-image"
+    assert cached.content == STUB_CONTACT_SHEET
     assert cached.headers["content-type"].startswith("image/png")
 
     invalid_signature = client.get(f"{parsed.path}?{parsed.query}x")
@@ -967,7 +972,7 @@ def test_customer_character_cache_is_shared_across_api_replicas(
     cached = client.get(f"{parsed.path}?{parsed.query}")
 
     assert cached.status_code == 200, cached.text
-    assert cached.content == b"contact-sheet-image"
+    assert cached.content == STUB_CONTACT_SHEET
     assert cached.headers["content-type"].startswith("image/png")
     assert not second_replica_home.exists()
 
@@ -2331,26 +2336,18 @@ def test_generate_crops_views_from_provider_sheet(
         )
 
 
-def test_generate_falls_back_to_placeholder_views_for_stub_payload(
+def test_generate_rejects_undecodable_provider_output_without_publishing(
     client: TestClient,
     db_path: Path,
+    storage: FakeStorageAdapter,
+    contact_sheet_provider: StubContactSheetProvider,
 ) -> None:
-    """Undecodable provider output keeps the deterministic placeholder views."""
+    contact_sheet_provider.sheet_content = b"contact-sheet-image"
+
     response = generate_global(client)
-    assert response.status_code == 201, response.text
-    payload = response.json()
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"]["code"] == "CONTACT_SHEET_PROVIDER_INVALID_OUTPUT"
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-        generated = conn.execute(
-            """
-            SELECT a.metadata_json FROM assets AS a
-            WHERE a.kind = 'character_generated_image'
-              AND json_extract(a.metadata_json, '$.character_version_id') = ?
-            """,
-            (payload["character_version_id"],),
-        ).fetchall()
-        assert len(generated) == len(REQUIRED_CHARACTER_VIEW_TYPES)
-        assert all(
-            json.loads(str(row[0]))["view_content_source"] == "local_placeholder"
-            for row in generated
-        )
+        assert conn.execute("SELECT 1 FROM person_identities").fetchone() is None
+    assert storage._objects == {}

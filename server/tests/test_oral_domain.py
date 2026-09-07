@@ -9,8 +9,10 @@ network or real buckets.
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.auth import CurrentUser, get_current_user, get_database
+from app.character_image_generation import deterministic_png
 from app.customer_fence import get_business_db
 from app.db import initialize_database
 from app.db_portable import BusinessConnection
@@ -32,6 +35,7 @@ from app.internal_billing import (
     reconcile_oral_billing_by_evidence,
 )
 from app.main import app
+from app.media_tools import resolve_media_binary
 from app.oral import (
     ORAL_CONSENT_TEXT_VERSION,
     ORAL_UNIT_PRICE_FEN_DEFAULT,
@@ -64,13 +68,26 @@ from app.storage import StoredObject
 _NOW = "2026-09-06 03:00:00"
 
 
+@dataclass(frozen=True)
+class OralTestMedia:
+    image: bytes
+    audio: bytes
+    video: bytes
+
+
 class FakeSourceStorage:
-    def __init__(self, payload: bytes = b"FAKEMEDIA") -> None:
-        self.payload = payload
+    def __init__(self, media: OralTestMedia) -> None:
+        self.media = media
         self.objects: dict[str, bytes] = {}
 
     def get_object(self, key: str) -> bytes:
-        return self.objects.get(key, self.payload)
+        if key in self.objects:
+            return self.objects[key]
+        if key.endswith(".png"):
+            return self.media.image
+        if key.endswith(".mp3"):
+            return self.media.audio
+        return self.media.video
 
     def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject:
         self.objects[key] = content
@@ -105,9 +122,63 @@ def run_oral_worker_step(
     return result
 
 
+@pytest.fixture(scope="session")
+def oral_test_media(tmp_path_factory: pytest.TempPathFactory) -> OralTestMedia:
+    directory = tmp_path_factory.mktemp("oral-media")
+    audio_path = directory / "voice.mp3"
+    video_path = directory / "avatar.mp4"
+    ffmpeg = resolve_media_binary("ffmpeg")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=16000:cl=mono",
+            "-t",
+            "6",
+            "-codec:a",
+            "mp3",
+            str(audio_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=64x64:r=10",
+            "-t",
+            "1",
+            "-codec:v",
+            "mpeg4",
+            "-pix_fmt",
+            "yuv420p",
+            str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return OralTestMedia(
+        image=deterministic_png(b"oral-source"),
+        audio=audio_path.read_bytes(),
+        video=video_path.read_bytes(),
+    )
+
+
 @pytest.fixture()
-def fake_source_storage(monkeypatch: pytest.MonkeyPatch) -> FakeSourceStorage:
-    storage = FakeSourceStorage()
+def fake_source_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    oral_test_media: OralTestMedia,
+) -> FakeSourceStorage:
+    storage = FakeSourceStorage(oral_test_media)
     monkeypatch.setattr("app.oral.storage_for_asset", lambda _conn, _uri: storage)
     return storage
 
@@ -879,7 +950,11 @@ def test_voice_clone_ready_requires_explicit_confirmation(
             }
         ),
     )
-    transport.on("GET", "https://tmp.example/voice-demo.mp3", b"MP3DEMO")
+    transport.on(
+        "GET",
+        "https://tmp.example/voice-demo.mp3",
+        fake_source_storage.media.audio,
+    )
 
     started = start_voice_clone(
         conn,
@@ -912,6 +987,39 @@ def test_voice_clone_ready_requires_explicit_confirmation(
     ).fetchone()
     assert audit is not None
     assert audit["action"] == "oral.voice.confirm"
+
+
+def test_voice_clone_rejects_undecodable_audio_before_provider_submission(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-voice-invalid-media.db")
+    vendor, transport = make_vendor()
+    fake_source_storage.objects["v.mp3"] = b"ID3-not-a-decodable-audio-file"
+    started = start_voice_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="伪音频",
+        source_asset_id="asset-audio",
+        consent_id=consent_for(conn, purpose="VOICE_CLONE", source_asset_id="asset-audio"),
+        idempotency_key="voice-invalid-media-key",
+        vendor=vendor,
+    )
+
+    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+
+    assert result is not None and result.outcome == "failed"
+    persisted = conn.execute(
+        "SELECT status, submission_state, error_message FROM oral_voices WHERE id = %s",
+        (started.task_id,),
+    ).fetchone()
+    assert tuple(persisted) == (
+        "FAILED",
+        "FAILED",
+        "声音素材需为 5 至 180 秒的有效 MP3",
+    )
+    assert transport.calls == []
 
 
 def test_voice_clone_done_without_demo_stays_running(
@@ -1475,7 +1583,9 @@ def test_create_audio_oral_task_rejects_wrong_inaccessible_or_incomplete_asset(
 
 
 def test_refresh_oral_task_archives_result_asset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_source_storage: FakeSourceStorage,
 ) -> None:
     conn = seed_scene(tmp_path, "oral-refresh.db")
     avatar_id, voice_id = seed_ready_assets(conn)
@@ -1512,7 +1622,7 @@ def test_refresh_oral_task_archives_result_asset(
         "/api/v2/hifly/video/task",
         envelope({"status": 3, "video_Url": "https://tmp.example/v.mp4", "duration": 32}),
     )
-    transport.on("GET", "https://tmp.example/v.mp4", b"MP4BYTES")
+    transport.on("GET", "https://tmp.example/v.mp4", fake_source_storage.media.video)
 
     class FakeResultStorage:
         def put_object(self, key: str, content: bytes, *, content_type: str):
@@ -1842,7 +1952,11 @@ def test_expired_voice_poll_lease_cannot_delete_winner_demo(
             }
         ),
     )
-    transport.on("GET", "https://tmp.example/lease-demo.mp3", b"LEASE-DEMO")
+    transport.on(
+        "GET",
+        "https://tmp.example/lease-demo.mp3",
+        fake_source_storage.media.audio,
+    )
     started = start_voice_clone(
         conn,
         actor=actor(),
@@ -2149,7 +2263,11 @@ def test_generation_worker_completes_oral_task_and_settles_once(
             }
         ),
     )
-    transport.on("GET", "https://tmp.example/oral-result.mp4", b"ORAL-MP4")
+    transport.on(
+        "GET",
+        "https://tmp.example/oral-result.mp4",
+        fake_source_storage.media.video,
+    )
     created = create_oral_task(
         conn,
         actor=actor(),
@@ -2201,6 +2319,67 @@ def test_generation_worker_completes_oral_task_and_settles_once(
     assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
 
 
+def test_oral_worker_rejects_invalid_provider_video_without_settlement(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-invalid-result.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    transport.on(
+        "POST",
+        "/api/v2/hifly/video/create_by_tts",
+        envelope({"task_id": "oral-invalid-result"}),
+    )
+    transport.on(
+        "GET",
+        "/api/v2/hifly/video/task",
+        envelope(
+            {
+                "status": 3,
+                "video_url": "https://tmp.example/invalid-result.mp4",
+                "duration": 12,
+            }
+        ),
+    )
+    transport.on("GET", "https://tmp.example/invalid-result.mp4", b"not-a-video")
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="伪视频结果",
+        script_text="供应商返回的内容必须先验真。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-invalid-result-key",
+        vendor=vendor,
+    )
+
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    conn.execute("UPDATE oral_tasks SET next_attempt_at = NULL WHERE id = %s", (created.task_id,))
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+
+    task = conn.execute(
+        "SELECT status, result_asset_id, error_message FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(task) == ("ARCHIVE_FAILED", None, "口播成片文件无效")
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (19, 1)
+    ledger = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY type",
+        (created.task_id,),
+    ).fetchall()
+    assert [row["type"] for row in ledger] == ["RESERVE"]
+    assert not any(key.startswith("oral/results/") for key in fake_source_storage.objects)
+
+
 def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
     tmp_path: Path, fake_source_storage: FakeSourceStorage
 ) -> None:
@@ -2213,7 +2392,11 @@ def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
         "/api/v2/hifly/video/task",
         envelope({"status": 3, "video_url": "https://tmp.example/retry.mp4"}),
     )
-    transport.on("GET", "https://tmp.example/retry.mp4", b"RETRY-MP4")
+    transport.on(
+        "GET",
+        "https://tmp.example/retry.mp4",
+        fake_source_storage.media.video,
+    )
     created = create_oral_task(
         conn,
         actor=actor(),

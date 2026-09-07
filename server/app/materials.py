@@ -20,6 +20,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
 from app.media import MAX_UPLOAD_BYTES, UPLOAD_INTENT_EXPIRES_IN
+from app.media_tools import (
+    MediaToolFailed,
+    MediaToolUnavailable,
+    MediaValidationFailed,
+    inspect_media_bytes,
+)
 from app.permissions import require_asset_access, require_not_auditor, write_audit
 from app.storage import (
     StorageAdapter,
@@ -46,6 +52,13 @@ ASSET_KIND_FOR_MEDIA: dict[MaterialMediaType, str] = {
     "image": "material_image",
     "video": "material_video",
     "audio": "material_audio",
+}
+MEDIA_SUFFIX_FOR_CONTENT_TYPE = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "audio/mpeg": ".mp3",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
 }
 
 
@@ -139,6 +152,7 @@ class ProbedMaterialUpload:
     storage_uri: str
     sha256: str
     size_bytes: int
+    duration_seconds: float | None
 
 
 def material_error(status: int, code: str, message: str) -> HTTPException:
@@ -668,8 +682,20 @@ def probe_material_upload(
         content = storage.get_object(prepared.storage_key)
     except OSError as exc:
         raise StorageBackendUnavailable("material object read failed") from exc
-    if not _content_matches(prepared.media_type, content):
+    try:
+        inspection = inspect_media_bytes(
+            content,
+            suffix=MEDIA_SUFFIX_FOR_CONTENT_TYPE[prepared.content_type],
+            expected_type=prepared.media_type,
+        )
+    except MediaValidationFailed:
         raise material_error(422, "MATERIAL_CONTENT_INVALID", "文件内容与素材类型不匹配。")
+    except (MediaToolFailed, MediaToolUnavailable) as exc:
+        raise material_error(
+            503,
+            "MATERIAL_VALIDATION_UNAVAILABLE",
+            "素材校验服务暂不可用，请稍后重试。",
+        ) from exc
     digest = hashlib.sha256(content).hexdigest()
     if prepared.expected_sha256 and digest != prepared.expected_sha256:
         raise material_error(409, "MATERIAL_HASH_MISMATCH", "上传文件校验失败。")
@@ -678,6 +704,7 @@ def probe_material_upload(
         storage_uri=stored.uri,
         sha256=digest,
         size_bytes=stored.size,
+        duration_seconds=inspection.duration_seconds,
     )
 
 
@@ -695,6 +722,9 @@ def persist_material_upload(
     ).fetchone()
     metadata = _metadata(row["metadata_json"] if row is not None else "{}")
     metadata["upload_status"] = "READY"
+    metadata["media_validated"] = True
+    if probed.duration_seconds is not None:
+        metadata["duration_seconds"] = probed.duration_seconds
     with conn:
         conn.execute(
             """
@@ -716,7 +746,11 @@ def persist_material_upload(
             action="studio.material.upload_complete",
             entity_type="asset",
             entity_id=prepared.asset_id,
-            metadata={"media_type": prepared.media_type, "size_bytes": probed.size_bytes},
+            metadata={
+                "media_type": prepared.media_type,
+                "size_bytes": probed.size_bytes,
+                "duration_seconds": probed.duration_seconds,
+            },
             commit=False,
         )
         result = require_material(conn, actor=actor, material_id=f"asset:{prepared.asset_id}")
@@ -852,13 +886,3 @@ def _upsert_preference(
         """,
         (actor_id, source_type, source_id, title, group, 1 if hidden else 0),
     )
-
-
-def _content_matches(media_type: MaterialMediaType, content: bytes) -> bool:
-    if media_type == "image":
-        return content.startswith(b"\x89PNG\r\n\x1a\n") or content.startswith(b"\xff\xd8\xff")
-    if media_type == "audio":
-        return content.startswith(b"ID3") or (
-            len(content) >= 2 and content[0] == 0xFF and content[1] & 0xE0 == 0xE0
-        )
-    return len(content) >= 12 and content[4:8] == b"ftyp"

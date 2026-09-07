@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -8,10 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import get_database
+from app.character_image_generation import deterministic_png
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.main import app
 from app.media_routes import get_media_storage
+from app.media_tools import resolve_media_binary
 from app.storage import FakeStorageAdapter, LocalStorageAdapter
 
 
@@ -26,6 +29,30 @@ def db_path(tmp_path: Path) -> Iterator[Path]:
 @pytest.fixture()
 def storage() -> FakeStorageAdapter:
     return FakeStorageAdapter(provider="fake", bucket="private-bucket")
+
+
+@pytest.fixture(scope="session")
+def valid_mp3_bytes(tmp_path_factory: pytest.TempPathFactory) -> bytes:
+    path = tmp_path_factory.mktemp("material-media") / "speech.mp3"
+    subprocess.run(
+        [
+            resolve_media_binary("ffmpeg"),
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=16000:cl=mono",
+            "-t",
+            "1",
+            "-codec:a",
+            "mp3",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path.read_bytes()
 
 
 @pytest.fixture()
@@ -160,6 +187,7 @@ def test_direct_result_is_visible_but_not_presented_as_cloud_asset(client: TestC
 def test_upload_audio_to_storage_then_complete_and_list_it(
     client: TestClient,
     storage: FakeStorageAdapter,
+    valid_mp3_bytes: bytes,
 ) -> None:
     intent = client.post(
         "/api/studio/materials/upload-intent",
@@ -167,7 +195,7 @@ def test_upload_audio_to_storage_then_complete_and_list_it(
         json={
             "filename": "讲解.mp3",
             "content_type": "audio/mpeg",
-            "size_bytes": 11,
+            "size_bytes": len(valid_mp3_bytes),
             "title": "完整口播音频",
             "group": "口播素材",
         },
@@ -177,14 +205,15 @@ def test_upload_audio_to_storage_then_complete_and_list_it(
     assert body["material_id"] == f"asset:{body['asset_id']}"
     assert body["storage_key"].startswith("materials/employee_1/")
 
-    storage.put_object(body["storage_key"], b"ID3abcdefgh", content_type="audio/mpeg")
+    storage.put_object(body["storage_key"], valid_mp3_bytes, content_type="audio/mpeg")
     completed = client.post(
         f"/api/studio/materials/uploads/{body['asset_id']}/complete",
         headers=auth_headers(),
     )
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "ready"
-    assert completed.json()["size_bytes"] == 11
+    assert completed.json()["size_bytes"] == len(valid_mp3_bytes)
+    assert completed.json()["duration_seconds"] == pytest.approx(1, abs=0.2)
 
     listed = client.get(
         "/api/studio/materials?media_type=audio",
@@ -285,10 +314,10 @@ def test_complete_rejects_bytes_that_do_not_match_declared_media(
         json={
             "filename": "voice.mp3",
             "content_type": "audio/mpeg",
-            "size_bytes": 12,
+            "size_bytes": 11,
         },
     ).json()
-    storage.put_object(intent["storage_key"], b"not an audio", content_type="audio/mpeg")
+    storage.put_object(intent["storage_key"], b"ID3abcdefgh", content_type="audio/mpeg")
 
     response = client.post(
         f"/api/studio/materials/uploads/{intent['asset_id']}/complete",
@@ -304,7 +333,7 @@ def test_local_material_upload_uses_authenticated_api_endpoint(
 ) -> None:
     local = LocalStorageAdapter(root=tmp_path / "objects", bucket="local-private")
     app.dependency_overrides[get_media_storage] = lambda: local
-    content = b"\x89PNG\r\n\x1a\nbody"
+    content = deterministic_png(b"material-image")
     intent = client.post(
         "/api/studio/materials/upload-intent",
         headers=auth_headers(),

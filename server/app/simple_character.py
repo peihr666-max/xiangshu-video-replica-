@@ -43,7 +43,7 @@ from app.character_identity import (
     required_text,
     validate_key_segment,
 )
-from app.character_image_generation import deterministic_png, png_chunk
+from app.character_image_generation import png_chunk
 from app.db_portable import BusinessConnection
 from app.first_frames import (
     FirstFrameModel,
@@ -53,6 +53,12 @@ from app.first_frames import (
     SceneContactSheetQualityResult,
 )
 from app.media import storage_key_from_uri
+from app.media_tools import (
+    MediaToolFailed,
+    MediaToolUnavailable,
+    MediaValidationFailed,
+    normalize_image_to_png,
+)
 from app.permissions import require_project_access, write_audit
 from app.storage import (
     StorageAdapter,
@@ -295,6 +301,16 @@ def store_simple_character_publication(
     persona_id = str(uuid.uuid4())
     version_id = generation.version_id
     object_keys: list[str] = []
+    cropped_views = crop_contact_sheet_views(
+        generation.contact_content,
+        generation.contact_content_type,
+    )
+    if cropped_views is None:
+        raise character_error(
+            502,
+            "CONTACT_SHEET_PROVIDER_INVALID_OUTPUT",
+            "人物五视图生成服务返回了无效图片，请稍后重试。",
+        )
     try:
         source_asset_id = str(uuid.uuid4())
         source_type = source_content_type.split(";", 1)[0].strip().lower()
@@ -326,22 +342,12 @@ def store_simple_character_publication(
         )
         object_keys.append(contact_stored.key)
 
-        cropped_views = crop_contact_sheet_views(
-            generation.contact_content,
-            generation.contact_content_type,
-        )
         prepared_views: list[PreparedSimpleCharacterViewStorage] = []
         for view_type in REQUIRED_CHARACTER_VIEW_TYPES:
             character_asset_id = str(uuid.uuid4())
             generated_asset_id = str(uuid.uuid4())
             approved_asset_id = str(uuid.uuid4())
-            content = cropped_views.get(view_type) if cropped_views else None
-            if content is None:
-                content = deterministic_png(
-                    f"{version_id}:{view_type}".encode(),
-                    width=1024,
-                    height=1536,
-                )
+            content = cropped_views[view_type]
             generated_key = generated_character_asset_key(
                 owner_user_id=actor.id,
                 persona_id=persona_id,
@@ -1791,6 +1797,28 @@ def _validate_source(content: bytes, content_type: str, display_name: str) -> No
             "SIMPLE_CHARACTER_IMAGE_TYPE_UNSUPPORTED",
             "仅支持 PNG 或 JPEG 图片。",
         )
+    if normalized_type == "image/png" and _decode_png_rgb(content) is not None:
+        return
+    try:
+        normalized = normalize_image_to_png(content)
+    except MediaValidationFailed as exc:
+        raise character_error(
+            422,
+            "SIMPLE_CHARACTER_IMAGE_INVALID",
+            "人物授权图片无法解码，请重新选择图片。",
+        ) from exc
+    except (MediaToolFailed, MediaToolUnavailable) as exc:
+        raise character_error(
+            503,
+            "SIMPLE_CHARACTER_IMAGE_VALIDATION_UNAVAILABLE",
+            "图片校验服务暂不可用，请稍后重试。",
+        ) from exc
+    if _decode_png_rgb(normalized) is None:
+        raise character_error(
+            422,
+            "SIMPLE_CHARACTER_IMAGE_INVALID",
+            "人物授权图片无法解码，请重新选择图片。",
+        )
 
 
 def _store_source_asset(
@@ -2327,12 +2355,16 @@ def _generate_and_approve_views(
 ) -> list[_ApprovedView]:
     """Store one approved per-view asset for each required view type.
 
-    Views are cropped from the real contact sheet whenever its pixels can be
-    decoded, so every published view shows the actual person. Undecodable
-    sheets (provider returned a non-PNG or unsupported PNG) keep the
-    deterministic placeholder fallback so the flow never blocks on cropping.
+    Every published view is cropped from a decodable contact sheet. Configured
+    provider failures stay visible and never turn into successful placeholders.
     """
     cropped_views = crop_contact_sheet_views(contact_content, contact_content_type)
+    if cropped_views is None:
+        raise character_error(
+            502,
+            "CONTACT_SHEET_PROVIDER_INVALID_OUTPUT",
+            "人物五视图生成服务返回了无效图片，请稍后重试。",
+        )
     prepared_by_view = (
         {view.view_type: view for view in prepared_views} if prepared_views is not None else {}
     )
@@ -2343,11 +2375,7 @@ def _generate_and_approve_views(
             character_asset_id = str(uuid.uuid4())
             generated_asset_id = str(uuid.uuid4())
             review_id = str(uuid.uuid4())
-            content = cropped_views.get(view_type) if cropped_views else None
-            if content is None:
-                content = deterministic_png(
-                    f"{version_id}:{view_type}".encode(), width=1024, height=1536
-                )
+            content = cropped_views[view_type]
             generated_key = generated_character_asset_key(
                 owner_user_id=actor.id,
                 persona_id=persona_id,
@@ -2382,9 +2410,7 @@ def _generate_and_approve_views(
                         "character_version_id": version_id,
                         "generation_mode": SIMPLE_GENERATION_MODE,
                         "view_type": view_type,
-                        "view_content_source": (
-                            "contact_sheet_crop" if cropped_views else "local_placeholder"
-                        ),
+                        "view_content_source": "contact_sheet_crop",
                     }
                 ),
             ),
@@ -2607,7 +2633,25 @@ def _generate_contact_sheet_content(
                 image = generated[0]
                 content_type = image.content_type.split(";", 1)[0].strip().lower()
                 if image.content and content_type in SIMPLE_CONTACT_SHEET_EXTENSIONS:
-                    return image.content, content_type, "image_provider"
+                    try:
+                        normalized = (
+                            image.content
+                            if content_type == "image/png"
+                            and _decode_png_rgb(image.content) is not None
+                            else normalize_image_to_png(image.content)
+                        )
+                    except (
+                        MediaToolFailed,
+                        MediaToolUnavailable,
+                        MediaValidationFailed,
+                    ) as exc:
+                        raise character_error(
+                            502,
+                            "CONTACT_SHEET_PROVIDER_INVALID_OUTPUT",
+                            "人物五视图生成服务返回了无效图片，请稍后重试。",
+                        ) from exc
+                    if crop_contact_sheet_views(normalized, "image/png") is not None:
+                        return normalized, "image/png", "image_provider"
             raise character_error(
                 502,
                 "CONTACT_SHEET_PROVIDER_INVALID_OUTPUT",

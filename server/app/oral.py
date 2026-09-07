@@ -29,6 +29,7 @@ from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
 from app.internal_billing import finalize_oral_billing, reserve_oral_billing
 from app.media_routes import get_media_storage, storage_for_asset
+from app.media_tools import inspect_media_bytes
 from app.permissions import require_asset_access, write_audit
 from app.settings import SettingsRepository
 from app.storage import StorageAdapter
@@ -40,7 +41,7 @@ MAX_ORAL_SCRIPT_CHARS = 10_000
 ORAL_SOURCE_MAX_BYTES = {
     "audio": 50 * 1024 * 1024,
     "image": 10 * 1024 * 1024,
-    "video": 500 * 1024 * 1024,
+    "video": 50 * 1024 * 1024,
 }
 ORAL_CONSENT_TEXT_VERSION = "2026-09-06-v1"
 ORAL_CONSENT_PURPOSES = {"AVATAR_CLONE", "VOICE_CLONE"}
@@ -920,6 +921,7 @@ def _archive_oral_result(
         return
     try:
         content = vendor.download(video_url)
+        inspect_media_bytes(content, suffix=".mp4", expected_type="video")
         storage: StorageAdapter = get_media_storage(conn)
         stored = storage.put_object(
             f"oral/results/{row['id']}.mp4", content, content_type="video/mp4"
@@ -1060,6 +1062,7 @@ def refresh_voice_clone(
                 if not demo_content:
                     logger.warning("oral voice demo download returned empty content")
                     return record
+                inspect_media_bytes(demo_content, suffix=".mp3", expected_type="audio")
                 storage = get_media_storage(conn)
                 stored = storage.put_object(
                     f"oral/voices/{voice_id}/demo.mp3",
