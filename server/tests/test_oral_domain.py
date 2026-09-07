@@ -56,6 +56,7 @@ from app.oral_worker import (
     perform_oral_work,
     prepare_oral_work,
     request_oral_archive_retry,
+    request_oral_submission_retry,
 )
 from app.storage import StoredObject
 
@@ -2161,3 +2162,255 @@ def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
     ).fetchall()
     assert [row["type"] for row in ledger] == ["RESERVE", "SETTLE"]
     assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Customer retry for submission-uncertain tasks + billing/action projection
+# ---------------------------------------------------------------------------
+
+
+def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-task-retry-route.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    transport.on("POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "vt-retry-1"}))
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="重试任务",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-retry-route-key",
+    )
+    # 模拟 worker 侧提交结果未知：状态进不确定闸门，队列槽仍被占用。
+    conn.execute(
+        """
+        UPDATE oral_tasks
+        SET status = 'SUBMISSION_UNCERTAIN', provider_charge_state = 'UNKNOWN',
+            queue_slot_acquired = 1
+        WHERE id = %s
+        """,
+        (created.task_id,),
+    )
+    conn.commit()
+
+    class TestBusinessDb:
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            yield conn, actor()
+
+    def database_override() -> Iterator[BusinessConnection]:
+        yield conn
+
+    app.dependency_overrides[get_business_db] = TestBusinessDb
+    app.dependency_overrides[get_database] = database_override
+    try:
+        client = TestClient(app)
+        headers = {"X-Dev-User-Id": "employee_1"}
+        retried = client.post(f"/api/oral/tasks/{created.task_id}/retry", headers=headers)
+        listing = client.get("/api/oral/tasks", headers=headers)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert retried.status_code == 200
+    body = retried.json()
+    assert body["status"] == "QUEUED"
+    assert body["submission_state"] == "LOCAL_PENDING"
+    assert body["billing_status"] == "RESERVED"
+    assert body["available_actions"] == []
+    row = conn.execute(
+        "SELECT queue_slot_acquired FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    assert row["queue_slot_acquired"] == 0
+    # 冻结的预留轮不动：仍然只有一笔 RESERVE，没有 SETTLE/RELEASE。
+    ledger = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY type",
+        (created.task_id,),
+    ).fetchall()
+    assert [entry["type"] for entry in ledger] == ["RESERVE"]
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (19, 1)
+    listed = [entry for entry in listing.json() if entry["id"] == created.task_id]
+    assert listed and listed[0]["status"] == "QUEUED"
+    assert listed[0]["billing_status"] == "RESERVED"
+    assert listed[0]["available_actions"] == []
+    # 重新入队后 worker 正常认领并完成提交，且只重新提交这一次。
+    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    assert result is not None and result.outcome == "submitted"
+    after = conn.execute(
+        "SELECT status, vendor_task_id FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    assert (after["status"], after["vendor_task_id"]) == ("RUNNING", "vt-retry-1")
+    assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
+
+
+def test_oral_task_retry_rejects_non_uncertain_and_foreign_owner(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-task-retry-reject.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="排队任务",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-retry-reject-key",
+    )
+    conn.commit()
+
+    class TestBusinessDb:
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            yield conn, actor()
+
+    app.dependency_overrides[get_business_db] = TestBusinessDb
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/oral/tasks/{created.task_id}/retry",
+            headers={"X-Dev-User-Id": "employee_1"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "ORAL_RETRY_NOT_ALLOWED"
+    with pytest.raises(ValueError, match="submission-uncertain"):
+        request_oral_submission_retry(conn, task_id=created.task_id, owner_user_id="employee_2")
+
+
+def test_oral_task_serialization_reports_billing_status_and_available_actions(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-task-serialize.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    uncertain = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="序列化任务",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-serialize-a",
+    )
+    cancelled = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="取消任务",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-serialize-b",
+    )
+    conn.commit()
+
+    class TestBusinessDb:
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            yield conn, actor()
+
+    def database_override() -> Iterator[BusinessConnection]:
+        yield conn
+
+    app.dependency_overrides[get_business_db] = TestBusinessDb
+    app.dependency_overrides[get_database] = database_override
+    try:
+        client = TestClient(app)
+        headers = {"X-Dev-User-Id": "employee_1"}
+        single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
+        assert single.status_code == 200
+        assert single.json()["billing_status"] == "RESERVED"
+        assert single.json()["available_actions"] == []
+
+        conn.execute(
+            """
+            UPDATE oral_tasks SET status = 'SUBMISSION_UNCERTAIN',
+                provider_charge_state = 'UNKNOWN' WHERE id = %s
+            """,
+            (uncertain.task_id,),
+        )
+        conn.commit()
+        single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
+        assert single.json()["available_actions"] == ["retry"]
+        assert single.json()["billing_status"] == "RESERVED"
+
+        conn.execute(
+            """
+            UPDATE oral_tasks SET status = 'ARCHIVE_FAILED',
+                provider_result_url = 'https://tmp.example/a.mp4' WHERE id = %s
+            """,
+            (uncertain.task_id,),
+        )
+        conn.commit()
+        single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
+        assert single.json()["available_actions"] == ["archive_retry"]
+
+        # 归档失败但没有成片地址：与 archive-retry 路由守卫一致，不给动作。
+        conn.execute(
+            "UPDATE oral_tasks SET provider_result_url = NULL WHERE id = %s",
+            (uncertain.task_id,),
+        )
+        conn.commit()
+        single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
+        assert single.json()["available_actions"] == []
+
+        cancel_response = client.post(f"/api/oral/tasks/{cancelled.task_id}/cancel")
+        assert cancel_response.status_code == 200
+        assert cancel_response.json()["billing_status"] == "RELEASED"
+
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id, project_id, kind, storage_uri, sha256, size_bytes,
+                content_type, created_by_user_id
+            ) VALUES (
+                'oral-final-result', NULL, 'oral_video', 'local://assets/final.mp4',
+                'final-hash', 9, 'video/mp4', 'employee_1'
+            )
+            """
+        )
+        conn.execute(
+            "UPDATE oral_tasks SET status = 'SUCCEEDED', result_asset_id = 'oral-final-result' "
+            "WHERE id = %s",
+            (uncertain.task_id,),
+        )
+        finalize_oral_billing(conn, oral_task_id=uncertain.task_id)
+        conn.commit()
+        single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
+        assert single.json()["billing_status"] == "SETTLED"
+        assert single.json()["available_actions"] == []
+
+        listing = client.get("/api/oral/tasks", headers=headers).json()
+        by_id = {entry["id"]: entry for entry in listing}
+        assert by_id[uncertain.task_id]["billing_status"] == "SETTLED"
+        assert by_id[cancelled.task_id]["billing_status"] == "RELEASED"
+    finally:
+        app.dependency_overrides.clear()
+
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert (wallet["available_credits"], wallet["reserved_credits"]) == (19, 0)

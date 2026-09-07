@@ -12,9 +12,16 @@ import type {
   SimpleLibraryEntry,
   SimpleSceneLook,
 } from "../api";
+import * as live from "./live";
 import { createDraft } from "./state";
 
 const api = vi.hoisted(() => ({
+  compileGenerationPrompt: vi.fn(),
+  createGenerationBatch: vi.fn(),
+  createScriptVersion: vi.fn(),
+  defaultBatchProvider: vi.fn(async () => "metaso"),
+  lockGenerationPrompt: vi.fn(),
+  reviseGenerationPrompt: vi.fn(),
   createGenerationResultPreviewUrl: vi.fn(),
   createGenerationTaskPreviewUrl: vi.fn(),
   downloadMaterialAsset: vi.fn(),
@@ -984,5 +991,126 @@ describe("批次类型映射与取消", () => {
     await retryStudioTask({ ...queuedOral, retryAction: "archive-retry" });
     expect(api.retryOralTask).toHaveBeenCalledWith("oral-real-id");
     expect(api.retryOralTaskArchive).toHaveBeenCalledWith("oral-real-id");
+  });
+});
+
+describe("runReplicaGeneration（复刻一键管线）", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const baseInput = {
+    promptText: "编辑后的提示词",
+    originalScriptText: "原片口播稿",
+    shotCardVersionId: "scv-1",
+    firstFrameAssetId: "ff-1",
+    outputDurationSeconds: 8,
+    resolution: "768P" as const,
+    ratio: "16:9" as const,
+    quantity: 1,
+  };
+
+  function mockHappyPath() {
+    api.createScriptVersion.mockResolvedValue({
+      id: "script-1",
+      payload: { shot_card_version_id: "scv-1" },
+    });
+    api.compileGenerationPrompt.mockResolvedValue({
+      id: "prompt-compiled",
+      payload: { prompt_text: "编译产物提示词" },
+    });
+    api.reviseGenerationPrompt.mockResolvedValue({
+      id: "prompt-revised",
+      payload: { prompt_text: "编辑后的提示词" },
+    });
+    api.lockGenerationPrompt.mockResolvedValue({
+      id: "prompt-revised",
+      payload: { prompt_text: "编辑后的提示词" },
+    });
+    api.createGenerationBatch.mockResolvedValue({ id: "batch-r1" });
+  }
+
+  it("编辑过 Prompt 时走 revise 再锁定，建批引用锁定版本", async () => {
+    mockHappyPath();
+    const batch = await live.runReplicaGeneration("project-1", baseInput);
+
+    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
+      source: "original",
+      text: "原片口播稿",
+      shot_card_version_id: "scv-1",
+    });
+    expect(api.compileGenerationPrompt).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        script_version_id: "script-1",
+        shot_card_version_id: "scv-1",
+        first_frame_asset_id: "ff-1",
+      }),
+    );
+    expect(api.reviseGenerationPrompt).toHaveBeenCalledWith("project-1", {
+      base_prompt_version_id: "prompt-compiled",
+      prompt_text: "编辑后的提示词",
+    });
+    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
+      "project-1",
+      "prompt-revised",
+    );
+    expect(batch.id).toBe("batch-r1");
+  });
+
+  it("Prompt 未编辑时跳过 revise 直接锁定编译产物", async () => {
+    mockHappyPath();
+    await live.runReplicaGeneration("project-1", {
+      ...baseInput,
+      promptText: "编译产物提示词",
+    });
+
+    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
+      "project-1",
+      "prompt-compiled",
+    );
+  });
+
+  it("原稿为空时回退纯画面叙事文案并以 custom 来源存稿", async () => {
+    mockHappyPath();
+    await live.runReplicaGeneration("project-1", {
+      ...baseInput,
+      originalScriptText: "",
+    });
+
+    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
+      source: "custom",
+      text: "",
+      shot_card_version_id: "scv-1",
+    });
+  });
+});
+
+describe("buildReplicaPromptText（拆解 Prompt 文本）", () => {
+  it("逐镜头拼接时间/景别/动作/台词并附原口播稿", async () => {
+    const { buildReplicaPromptText } = await import("./state");
+    const text = buildReplicaPromptText(
+      [
+        {
+          shot_id: "s1",
+          start_time: 0,
+          end_time: 8,
+          shot_type: "中景",
+          composition: "",
+          camera_motion: "推进",
+          subject: "院落",
+          action: "缓推",
+          scene: "庭院",
+          spoken_text: "采光设计",
+          transition: "切镜",
+        },
+      ],
+      "原片口播",
+    );
+    expect(text).toContain("【镜头 1】0.0s–8.0s");
+    expect(text).toContain("景别/构图：中景");
+    expect(text).toContain("动作：缓推");
+    expect(text).toContain("台词：采光设计");
+    expect(text).toContain("【原片口播稿】");
+    expect(text).toContain("原片口播");
   });
 });
