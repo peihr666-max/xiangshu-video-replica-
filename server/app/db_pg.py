@@ -46,6 +46,15 @@ DEFAULT_POOL_MAX = 8
 DEFAULT_POOL_MAX_LIFETIME = 3600.0
 DEFAULT_POOL_MAX_IDLE = 600.0
 DEFAULT_POOL_TIMEOUT = 30.0
+# 2026-09-07 评审 §7-0：claim 事务的提交权在外层 fenced 块，一旦有调用方把
+# 未提交事务长期搁置（实测曾持容量行锁 19 分钟拖停公平队列），必须由数据库
+# 侧护栏快速失败，而不是无限排队。单语句 5 分钟、事务内闲置 60 秒。
+PG_STATEMENT_TIMEOUT_MS = 300_000
+PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000
+PG_POOL_OPTIONS = (
+    f"-c statement_timeout={PG_STATEMENT_TIMEOUT_MS}"
+    f" -c idle_in_transaction_session_timeout={PG_IDLE_IN_TRANSACTION_TIMEOUT_MS}"
+)
 PG_URL_SCHEMES = ("postgresql://", "postgres://")
 SQLITE_URL_SCHEMES = ("sqlite:///", "sqlite://")
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -240,6 +249,7 @@ def get_pg_pool() -> ConnectionPool:
                 max_lifetime=DEFAULT_POOL_MAX_LIFETIME,
                 max_idle=DEFAULT_POOL_MAX_IDLE,
                 timeout=DEFAULT_POOL_TIMEOUT,
+                kwargs={"options": PG_POOL_OPTIONS},
             )
             _pool = pool
         return _pool

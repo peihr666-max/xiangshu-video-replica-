@@ -362,18 +362,22 @@ def test_rotation_skips_user_whose_task_is_locked(fair_state: str) -> None:
 
 def test_concurrent_workers_do_not_double_claim(fair_state: str) -> None:
     """Two workers acquiring at the same time never claim the same user's
-    task: SKIP LOCKED on the cursor row serialises the rotation."""
+    task: the shared capacity row serialises the claims, SKIP LOCKED on the
+    cursor row rotates users.
+
+    A claim transaction must never be parked open across a barrier: commit
+    authority stays with the fenced block, so a worker waiting inside its
+    uncommitted claim transaction holds the capacity row lock and deadlocks
+    the second worker (2026-09-07 review, defect A)."""
     _seed(fair_state, user_ids=["u1", "u2"], tasks_per_user=1)
     start = threading.Barrier(2)
-    done = threading.Barrier(2)
     leases: dict[str, dict[str, object] | None] = {}
 
     def worker(name: str) -> None:
         with pg_transaction() as raw:
             conn = BusinessConnection.postgres(raw)
-            start.wait()  # both workers inside their fenced transactions
+            start.wait()  # both workers race into their claim transactions
             leases[name] = acquire_generation_task_lease(conn, worker_id=name)
-            done.wait()  # hold the transactions until both have acquired
 
     threads = [threading.Thread(target=worker, args=(f"w{i}",)) for i in range(2)]
     for thread in threads:
