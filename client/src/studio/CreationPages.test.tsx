@@ -22,6 +22,7 @@ const replicaApi = vi.hoisted(() => ({
   getLatestProjectAnalysis: vi.fn(),
   getLatestProjectFirstFrameSelection: vi.fn(),
   saveGenerationPrompt: vi.fn(),
+  saveShotCards: vi.fn(),
 }));
 const replicaLive = vi.hoisted(() => ({
   uploadWorkbenchSourceVideo: vi.fn(),
@@ -552,7 +553,7 @@ describe("视频复刻（模块①）", () => {
     return value;
   }
 
-  function mockAnalysisSuccess() {
+  function mockAnalysisSuccess(options: { existingShotCards?: boolean } = {}) {
     replicaApi.startVideoAnalysis.mockResolvedValue({
       id: "task-1",
       status: "RUNNING",
@@ -561,15 +562,20 @@ describe("视频复刻（模块①）", () => {
       id: "task-1",
       status: "SUCCEEDED",
     });
-    replicaApi.getLatestProjectShotCards.mockResolvedValue({
-      id: "scv-1",
-      payload: {
-        source_analysis_version_id: "av-1",
-        duration_seconds: 8,
-        shots: [shot],
-      },
-    });
+    replicaApi.getLatestProjectShotCards.mockResolvedValue(
+      options.existingShotCards
+        ? {
+            id: "scv-existing",
+            payload: {
+              source_analysis_version_id: "av-1",
+              duration_seconds: 8,
+              shots: [shot],
+            },
+          }
+        : null,
+    );
     replicaApi.getLatestProjectAnalysis.mockResolvedValue({
+      id: "av-1",
       payload: {
         analysis: {
           summary: "庭院复刻",
@@ -579,11 +585,21 @@ describe("视频复刻（模块①）", () => {
         },
       },
     });
+    replicaApi.saveShotCards.mockResolvedValue({
+      id: "scv-1",
+      payload: {
+        source_analysis_version_id: "av-1",
+        duration_seconds: 8,
+        shots: [shot],
+      },
+    });
   }
 
-  async function openReplicaAndAnalyze() {
+  async function openReplicaAndAnalyze(
+    options: { existingShotCards?: boolean } = {},
+  ) {
     const value = replicaStudio();
-    mockAnalysisSuccess();
+    mockAnalysisSuccess(options);
     useStudio.mockReturnValue(value);
     render(<ReplicaPage />);
     fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
@@ -676,7 +692,9 @@ describe("视频复刻（模块①）", () => {
     await waitFor(() => expect(value.notify).toHaveBeenCalled());
     expect(
       vi.mocked(value.notify).mock.calls.map((call) => String(call[0])),
-    ).toContainEqual(expect.stringContaining("请先到「人物置换」完成首帧确认"));
+    ).toContainEqual(
+      expect.stringContaining("请先到「人物置换」生成并确认首帧"),
+    );
     expect(replicaLive.runReplicaGeneration).not.toHaveBeenCalled();
   });
 

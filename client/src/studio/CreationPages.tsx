@@ -12,6 +12,7 @@ import {
   type ShotCard,
   type ShotCardPayload,
   saveGenerationPrompt,
+  saveShotCards,
   startVideoAnalysis,
   waitForAnalysisTask,
 } from "../api";
@@ -299,6 +300,54 @@ export function CopyPage() {
 
 type ReplicaStage = "source" | "analyzing" | "ready";
 
+// 审核包样例分镜：仅 review 视觉演示，不参与真实拆解流程。
+const REVIEW_SAMPLE_SHOTS: ShotCard[] = [
+  {
+    shot_id: "shot-1",
+    start_time: 0,
+    end_time: 8,
+    shot_type: "中景",
+    composition: "",
+    camera_motion: "推进",
+    subject: "院落",
+    action: "镜头缓推庭院",
+    scene: "乡墅庭院",
+    spoken_text: "",
+    transition: "切镜",
+  },
+  {
+    shot_id: "shot-2",
+    start_time: 8,
+    end_time: 16,
+    shot_type: "近景",
+    composition: "",
+    camera_motion: "固定",
+    subject: "讲解人物",
+    action: "人物出镜讲解",
+    scene: "庭院",
+    spoken_text: "这栋房子的采光设计",
+    transition: "切镜",
+  },
+  {
+    shot_id: "shot-3",
+    start_time: 16,
+    end_time: 24,
+    shot_type: "特写",
+    composition: "",
+    camera_motion: "摇移",
+    subject: "外立面",
+    action: "外立面细节展示",
+    scene: "建筑外立面",
+    spoken_text: "",
+    transition: "切镜",
+  },
+];
+
+/** 客户档位归一：非 4/15 秒的时长映射到最近的客户可选档（≤9s→4s，>9s→15s）。 */
+function normalizeCustomerDuration(seconds: number): 4 | 15 {
+  return seconds === 4 || seconds === 15 ? seconds : seconds <= 9 ? 4 : 15;
+}
+
 export function ReplicaPage() {
   const {
     state,
@@ -331,6 +380,16 @@ export function ReplicaPage() {
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [generating, setGenerating] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  // 拆解完成回调用：比对发起时的项目，防止换视频后的旧结果覆盖新状态。
+  const analysisProjectRef = useRef<string | undefined>(undefined);
+  const promptTextRef = useRef(promptText);
+  promptTextRef.current = promptText;
+
+  const resetReplicaState = () => {
+    setShots([]);
+    setShotCardVersionId(undefined);
+    setOriginalScript("");
+  };
 
   const handleUpload = async (file: File) => {
     if (review) {
@@ -342,6 +401,7 @@ export function ReplicaPage() {
       const uploaded = await uploadWorkbenchSourceVideo(file, (percent) =>
         notify(`参考视频上传中 ${percent}%`),
       );
+      resetReplicaState();
       patchDraft({
         projectId: uploaded.projectId,
         sourceId: uploaded.assetId,
@@ -351,6 +411,53 @@ export function ReplicaPage() {
     } catch {
       notify("参考视频上传失败，请稍后重试。");
     }
+  };
+
+  const selectExistingProject = (selectedId: string) => {
+    const selected = data.projects.find((item) => item.id === selectedId);
+    if (!selected) {
+      return;
+    }
+    resetReplicaState();
+    patchDraft({
+      projectId: selected.id,
+      sourceId: selected.reference_asset_id ?? undefined,
+      sourceAssetId: selected.reference_asset_id ?? undefined,
+    });
+    setStage("ready");
+    // 已有拆解产物则直接载入，避免对已分析项目重复发起付费拆解。
+    void (async () => {
+      try {
+        const shotVersion = await getLatestProjectShotCards(selected.id);
+        const shotPayload = shotVersion
+          ? (shotVersion.payload as ShotCardPayload)
+          : null;
+        if (shotVersion && (shotPayload?.shots?.length ?? 0) > 0) {
+          setShots(shotPayload?.shots ?? []);
+          setShotCardVersionId(shotVersion.id);
+          const analysisVersion = await getLatestProjectAnalysis(
+            selected.id,
+          ).catch(() => undefined);
+          const script = analysisVersion
+            ? (readAnalysisPayload(analysisVersion)?.original_script ?? "")
+            : "";
+          setOriginalScript(script);
+          if (!promptTextRef.current.trim()) {
+            const text = buildReplicaPromptText(
+              shotPayload?.shots ?? [],
+              script,
+            );
+            setPromptText(text);
+            patchDraft({ prompt: text });
+          }
+          notify(
+            `已载入项目「${selected.name}」的历史分镜，可直接送生成或重新拆解。`,
+          );
+        }
+      } catch {
+        // 历史产物读取失败不打断：用户仍可手动启动拆解。
+      }
+    })();
   };
 
   const startAnalysis = async () => {
@@ -365,27 +472,49 @@ export function ReplicaPage() {
       notify("请先上传或选择来源视频。");
       return;
     }
+    analysisProjectRef.current = projectId;
     setAnalysisBusy(true);
     setStage("analyzing");
     notify("AI 拆解进行中，约需一到数分钟，请保持页面打开…");
     try {
       const task = await startVideoAnalysis(projectId, assetId);
       await waitForAnalysisTask(task.id);
-      const [shotVersion, analysisVersion] = await Promise.all([
-        getLatestProjectShotCards(projectId),
-        getLatestProjectAnalysis(projectId).catch(() => undefined),
-      ]);
-      const shotPayload = shotVersion
-        ? (shotVersion.payload as ShotCardPayload)
-        : { shots: [], shot_card_version_id: "" };
+      if (analysisProjectRef.current !== projectId) {
+        return; // 等待期间用户更换了来源视频，丢弃旧项目的拆解结果。
+      }
+      const analysisVersion = await getLatestProjectAnalysis(projectId).catch(
+        () => undefined,
+      );
+      const analysisShots: ShotCard[] = analysisVersion
+        ? (readAnalysisPayload(analysisVersion)?.shots ?? [])
+        : [];
       const script = analysisVersion
         ? (readAnalysisPayload(analysisVersion)?.original_script ?? "")
         : "";
-      setShots(shotPayload.shots ?? []);
+      // 拆解任务只写 analysis 版本；shot_card 版本由客户端落库（与成熟工作区一致）。
+      let shotVersion = await getLatestProjectShotCards(projectId).catch(
+        () => null,
+      );
+      const shotPayload = shotVersion
+        ? (shotVersion.payload as ShotCardPayload)
+        : null;
+      const shotsFresh =
+        shotPayload &&
+        shotPayload.source_analysis_version_id === analysisVersion?.id;
+      if (!shotsFresh) {
+        shotVersion = await saveShotCards(
+          analysisVersion?.id ?? "",
+          analysisShots,
+        );
+      }
+      const finalShots = shotVersion
+        ? ((shotVersion.payload as ShotCardPayload).shots ?? [])
+        : analysisShots;
+      setShots(finalShots);
       setShotCardVersionId(shotVersion?.id || undefined);
       setOriginalScript(script);
-      const text = buildReplicaPromptText(shotPayload.shots ?? [], script);
-      if (!promptText.trim()) {
+      const text = buildReplicaPromptText(finalShots, script);
+      if (!promptTextRef.current.trim()) {
         setPromptText(text);
         patchDraft({ prompt: text });
       }
@@ -444,27 +573,30 @@ export function ReplicaPage() {
     setGenerating(true);
     try {
       const selection = await getLatestProjectFirstFrameSelection(projectId);
-      const firstFrameAssetId = selection.version
-        ? (readFirstFrameSelectionPayload(selection.version)
-            ?.first_frame_asset_id ?? null)
-        : null;
+      const firstFrameAssetId =
+        selection.version && !selection.stale
+          ? (readFirstFrameSelectionPayload(selection.version)
+              ?.first_frame_asset_id ?? null)
+          : null;
       if (!firstFrameAssetId) {
-        // eslint-disable-next-line no-console
-        console.log("REPLICA_GUIDE", typeof notify, "ff:", firstFrameAssetId);
         notify(
-          "还没有确认过的置换首帧：请先到「人物置换」完成首帧确认，再回来送生成。",
+          "还没有确认过的置换首帧：请先到「人物置换」生成并确认首帧，再回来送生成。",
         );
         return;
       }
-      const batch = await runReplicaGeneration(projectId, {
+      const scriptFallback =
+        originalScript.trim() ||
+        shots
+          .map((shot) => shot.spoken_text)
+          .filter(Boolean)
+          .join(" ") ||
+        "纯画面叙事，无口播。";
+      await runReplicaGeneration(projectId, {
         promptText,
-        originalScriptText: originalScript,
+        originalScriptText: scriptFallback,
         shotCardVersionId,
         firstFrameAssetId,
-        outputDurationSeconds:
-          state.draft.duration >= 4 && state.draft.duration <= 15
-            ? Math.round(state.draft.duration)
-            : 8,
+        outputDurationSeconds: normalizeCustomerDuration(state.draft.duration),
         resolution: state.draft.resolution === "2K" ? "2K" : "768P",
         ratio: (SUPPORTED_VIDEO_RATIOS as readonly string[]).includes(
           state.draft.ratio,
@@ -485,50 +617,12 @@ export function ReplicaPage() {
     }
   };
 
-  // 审核包样例分镜：仅 review 视觉演示，不参与真实拆解流程。
-  const reviewShots: ShotCard[] = [
-    {
-      shot_id: "shot-1",
-      start_time: 0,
-      end_time: 8,
-      shot_type: "中景",
-      composition: "",
-      camera_motion: "推进",
-      subject: "院落",
-      action: "镜头缓推庭院",
-      scene: "乡墅庭院",
-      spoken_text: "",
-      transition: "切镜",
-    },
-    {
-      shot_id: "shot-2",
-      start_time: 8,
-      end_time: 16,
-      shot_type: "近景",
-      composition: "",
-      camera_motion: "固定",
-      subject: "讲解人物",
-      action: "人物出镜讲解",
-      scene: "庭院",
-      spoken_text: "这栋房子的采光设计",
-      transition: "切镜",
-    },
-    {
-      shot_id: "shot-3",
-      start_time: 16,
-      end_time: 24,
-      shot_type: "特写",
-      composition: "",
-      camera_motion: "摇移",
-      subject: "外立面",
-      action: "外立面细节展示",
-      scene: "建筑外立面",
-      spoken_text: "",
-      transition: "切镜",
-    },
-  ];
   const displayShots =
-    shots.length > 0 ? shots : review && stage === "ready" ? reviewShots : [];
+    shots.length > 0
+      ? shots
+      : review && stage === "ready"
+        ? REVIEW_SAMPLE_SHOTS
+        : [];
   const hasShots = stage === "ready" && displayShots.length > 0;
 
   return (
@@ -556,20 +650,8 @@ export function ReplicaPage() {
                     className="creation-project-select"
                     defaultValue=""
                     onChange={(event) => {
-                      const selected = data.projects.find(
-                        (item) => item.id === event.target.value,
-                      );
-                      if (selected) {
-                        patchDraft({
-                          projectId: selected.id,
-                          sourceId: selected.reference_asset_id ?? undefined,
-                          sourceAssetId:
-                            selected.reference_asset_id ?? undefined,
-                        });
-                        setStage("ready");
-                        notify(
-                          `已切换到项目「${selected.name}」，可启动 AI 拆解。`,
-                        );
+                      if (event.target.value) {
+                        selectExistingProject(event.target.value);
                       }
                     }}
                   >
@@ -596,7 +678,9 @@ export function ReplicaPage() {
                 来源视频 ·{" "}
                 {project?.name ?? state.draft.projectId ?? "未命名项目"}
               </span>
-              {shots.length > 0 && <small>已拆解 {shots.length} 个镜头</small>}
+              {displayShots.length > 0 && (
+                <small>已拆解 {displayShots.length} 个镜头</small>
+              )}
             </div>
             <div className="creation-upload-row">
               <Button
@@ -606,11 +690,12 @@ export function ReplicaPage() {
               >
                 {analysisBusy
                   ? "AI 拆解进行中…"
-                  : shots.length > 0
+                  : displayShots.length > 0
                     ? "重新拆解"
                     : "启动 AI 拆解"}
               </Button>
               <Button
+                disabled={analysisBusy}
                 variant="outline"
                 onClick={() => uploadInputRef.current?.click()}
               >
@@ -653,7 +738,7 @@ export function ReplicaPage() {
           <Panel className="creation-prompt-output">
             <div className="creation-panel-title-row">
               <span>拆解 Prompt（可编辑）</span>
-              {shots.length === 0 && <small>完成拆解后自动生成</small>}
+              {displayShots.length === 0 && <small>完成拆解后自动生成</small>}
             </div>
             <textarea
               aria-label="拆解 Prompt"
@@ -699,7 +784,9 @@ export function ReplicaPage() {
                     保存为自定义提示词
                   </Button>
                   <Button
-                    disabled={generating || shots.length === 0}
+                    disabled={
+                      generating || analysisBusy || displayShots.length === 0
+                    }
                     onClick={() => void sendToGeneration()}
                     variant="primary"
                   >
@@ -727,14 +814,6 @@ export function ReplicaPage() {
           进入分镜工作区
         </Button>
       </footer>
-      <div data-testid="replica-debug">
-        {JSON.stringify({
-          stage,
-          scv: shotCardVersionId,
-          busy: analysisBusy,
-          shots: shots.length,
-        })}
-      </div>
       <input
         accept="video/mp4,video/quicktime"
         aria-label="上传参考视频"
