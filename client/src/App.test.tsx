@@ -2053,6 +2053,13 @@ describe("App", () => {
         max_concurrent_h3_tasks: 2,
         active_storage_provider: "local",
       },
+      billing: {
+        internal_base_unit_price_fen: 1000,
+        charged_unit_price_fen: 1000,
+        oral_unit_price_fen: 1800,
+        min_recharge_fen: 10000,
+        recharge_step_fen: 1000,
+      },
     };
     const fetchMock = vi.fn((url: string) => {
       if (url.endsWith("/health")) {
@@ -2102,6 +2109,13 @@ describe("App", () => {
         max_generation_count_per_batch: 4,
         max_concurrent_h3_tasks: 2,
         active_storage_provider: "local",
+      },
+      billing: {
+        internal_base_unit_price_fen: 1000,
+        charged_unit_price_fen: 1000,
+        oral_unit_price_fen: 1800,
+        min_recharge_fen: 10000,
+        recharge_step_fen: 1000,
       },
     };
     let resolveRuntimeSave: ((response: unknown) => void) | undefined;

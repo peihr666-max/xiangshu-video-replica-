@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "076_studio_notification_preferences"
+    assert version == "077_oral_unit_price"
     assert {
         "characters",
         "project_main_characters",

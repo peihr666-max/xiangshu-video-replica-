@@ -138,7 +138,7 @@ export function createReviewData(): StudioData {
       url: photo("zhang-studio"),
       group: "人物素材",
       personId: "zhang",
-      source: "AI生成",
+      source: "人物库场景造型",
       saved: true,
     },
     {
@@ -148,7 +148,7 @@ export function createReviewData(): StudioData {
       url: photo("zhang-courtyard"),
       group: "人物素材",
       personId: "zhang",
-      source: "AI生成",
+      source: "人物库场景造型",
       saved: true,
     },
     {
@@ -168,7 +168,7 @@ export function createReviewData(): StudioData {
       url: photo("five-views"),
       group: "人物素材",
       personId: "zhang",
-      source: "AI生成",
+      source: "人物库场景造型",
       composite: true,
       saved: true,
     },

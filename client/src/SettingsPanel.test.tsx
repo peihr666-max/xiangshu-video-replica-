@@ -28,7 +28,7 @@ const settingsSnapshot = {
     hifly: {
       provider: "hifly",
       configured: true,
-      config: { api_key: "********-key" },
+      config: { api_key: "masked" },
     },
     tikhub: { provider: "tikhub", configured: false, config: {} },
     dashscope: { provider: "dashscope", configured: false, config: {} },
