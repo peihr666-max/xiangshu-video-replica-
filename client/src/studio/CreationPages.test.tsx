@@ -20,7 +20,7 @@ const replicaApi = vi.hoisted(() => ({
   startVideoAnalysis: vi.fn(),
   waitForAnalysisTask: vi.fn(),
   getLatestProjectShotCards: vi.fn(),
-  getLatestProjectAnalysis: vi.fn(),
+  getLatestProjectAnalysis: vi.fn(async () => ({ id: "av-x", payload: {} })),
   getLatestProjectFirstFrameSelection: vi.fn(),
   saveGenerationPrompt: vi.fn(),
   saveShotCards: vi.fn(),

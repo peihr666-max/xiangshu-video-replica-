@@ -1,4 +1,10 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   type AnalysisVersion,
   type CharacterReferenceSelection,
@@ -33,6 +39,7 @@ import {
 import { buildReplicaPromptText, SUPPORTED_VIDEO_RATIOS } from "./state";
 import type {
   StudioAsset,
+  StudioDraft,
   StudioPerson,
   StudioTask,
   StudioVideo,
@@ -852,24 +859,82 @@ export function ReplacementPage() {
   const [referenceError, setReferenceError] = useState("");
   const [firstFrameSelection, setFirstFrameSelection] =
     useState<AnalysisVersion | null>(null);
+  const [leafBusy, setLeafBusy] = useState(false);
+  const [sourceDurationSeconds, setSourceDurationSeconds] = useState<
+    number | null
+  >(null);
   const autoMatchAttemptedRef = useRef(new Set<string>());
+  // patchDraft 每次壳层渲染都是新引用，effect 依赖一律走 ref，避免无限置位循环。
+  const patchDraftRef = useRef(patchDraft);
+  patchDraftRef.current = patchDraft;
+  const confirmedAssetIdRef = useRef<string | undefined>(undefined);
 
   const firstFrameAssetId = firstFrameSelection
     ? (readFirstFrameSelectionPayload(firstFrameSelection)
         ?.first_frame_asset_id ?? null)
     : null;
 
-  // 首帧确认即置位草稿：补齐 frameConfirmed 的生产路径，供文/图生视频直接引用。
+  const clearConfirmedFirstFrame = useCallback(() => {
+    confirmedAssetIdRef.current = undefined;
+    patchDraftRef.current({
+      firstFrameId: undefined,
+      frameConfirmed: false,
+    } as Partial<StudioDraft>);
+  }, []);
+
+  // 换项目时重置全部下游状态与草稿中的旧首帧。
+  const projectId = project?.id;
+  useEffect(() => {
+    setCharacterSelection(null);
+    setSourceFrameSelection(null);
+    setReferenceSelection(null);
+    setFirstFrameSelection(null);
+    setReferenceError("");
+    autoMatchAttemptedRef.current.clear();
+    confirmedAssetIdRef.current = undefined;
+    if (projectId) {
+      patchDraftRef.current({
+        firstFrameId: undefined,
+        frameConfirmed: false,
+      } as Partial<StudioDraft>);
+    }
+  }, [projectId]);
+
+  // 载入拆解时长供源画面取帧边界使用（缺省时叶子组件退化为固定前 2.5 秒）。
+  useEffect(() => {
+    if (review || !projectId) {
+      setSourceDurationSeconds(null);
+      return;
+    }
+    let active = true;
+    void getLatestProjectAnalysis(projectId)
+      .then((version) => {
+        if (active) {
+          setSourceDurationSeconds(
+            readAnalysisPayload(version)?.duration_seconds ?? null,
+          );
+        }
+      })
+      .catch(() => {
+        if (active) setSourceDurationSeconds(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [review, projectId]);
+
+  // 首帧确认即置位草稿：同一资产只置位一次，防止依赖循环反复 patch。
   useEffect(() => {
     if (!firstFrameSelection) {
       return;
     }
     const assetId =
       readFirstFrameSelectionPayload(firstFrameSelection)?.first_frame_asset_id;
-    if (assetId) {
-      patchDraft({ firstFrameId: assetId, frameConfirmed: true });
+    if (assetId && confirmedAssetIdRef.current !== assetId) {
+      confirmedAssetIdRef.current = assetId;
+      patchDraftRef.current({ firstFrameId: assetId, frameConfirmed: true });
     }
-  }, [firstFrameSelection, patchDraft]);
+  }, [firstFrameSelection]);
 
   // 人物参考自动匹配：角色版本 × 已确认源画面，组合只自动尝试一次。
   useEffect(() => {
@@ -889,6 +954,7 @@ export function ReplacementPage() {
     }
     autoMatchAttemptedRef.current.add(matchKey);
     let active = true;
+    setLeafBusy(true);
     selectCharacterReferences(project.id, {
       character_version_id: characterVersionId,
       source_frame_selection_version_id: sourceFrameSelection.id,
@@ -908,6 +974,7 @@ export function ReplacementPage() {
       });
     return () => {
       active = false;
+      setLeafBusy(false);
     };
   }, [
     review,
@@ -917,16 +984,36 @@ export function ReplacementPage() {
     referenceSelection,
   ]);
 
-  const handleCharacterChange = (selection: ProjectMainCharacter | null) => {
-    setCharacterSelection(selection);
-    setReferenceSelection(null);
-    setFirstFrameSelection(null);
-  };
+  // 叶子组件的 effect 依赖回调身份：必须 useCallback 保持稳定，否则引发重取风暴。
+  const handleCharacterChange = useCallback(
+    (selection: ProjectMainCharacter | null) => {
+      setCharacterSelection(selection);
+      setReferenceSelection(null);
+      setReferenceError("");
+      setFirstFrameSelection(null);
+      clearConfirmedFirstFrame();
+    },
+    [],
+  );
 
-  const handleSourceFrameChange = (selection: AnalysisVersion | null) => {
-    setSourceFrameSelection(selection);
-    setReferenceSelection(null);
-    setFirstFrameSelection(null);
+  const handleSourceFrameChange = useCallback(
+    (selection: AnalysisVersion | null) => {
+      setSourceFrameSelection(selection);
+      setReferenceSelection(null);
+      setReferenceError("");
+      setFirstFrameSelection(null);
+      clearConfirmedFirstFrame();
+    },
+    [],
+  );
+
+  const retryReferenceMatch = () => {
+    const characterVersionId = characterSelection?.character_version_id ?? "";
+    const matchKey = `${project?.id ?? ""}:${characterVersionId}:${
+      sourceFrameSelection?.id ?? ""
+    }`;
+    autoMatchAttemptedRef.current.delete(matchKey);
+    setReferenceError("");
   };
 
   const firstFrameReady = Boolean(firstFrameAssetId);
@@ -961,11 +1048,13 @@ export function ReplacementPage() {
                   <option value="" disabled>
                     选择已有项目
                   </option>
-                  {data.projects.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
+                  {data.projects
+                    .filter((item) => item.analysis_status === "READY")
+                    .map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
                 </select>
               ) : undefined
             }
@@ -983,6 +1072,7 @@ export function ReplacementPage() {
           <Panel className="creation-replacement-step">
             <div className="creation-panel-title">① 选择人物 IP</div>
             <CharacterSelection
+              onBusyChange={setLeafBusy}
               onVersionChange={handleCharacterChange}
               projectId={project.id}
               variant="inline"
@@ -991,21 +1081,29 @@ export function ReplacementPage() {
           <Panel className="creation-replacement-step">
             <div className="creation-panel-title">② 提取并确认源画面</div>
             <SourceFrameSelection
+              onBusyChange={setLeafBusy}
               onSelectionChange={handleSourceFrameChange}
               projectId={project.id}
               referenceAssetId={project.reference_asset_id}
               simplified
+              videoDurationSeconds={sourceDurationSeconds}
             />
           </Panel>
           <Panel className="creation-replacement-step">
             <div className="creation-panel-title">③ 生成置换首帧</div>
             {referenceError ? (
-              <p className="settings-error" role="alert">
-                {referenceError}
-              </p>
+              <>
+                <p className="settings-error" role="alert">
+                  {referenceError}
+                </p>
+                <Button onClick={retryReferenceMatch} variant="outline">
+                  重试匹配人物参考
+                </Button>
+              </>
             ) : null}
             {characterSelection && sourceFrameSelection ? (
               <FirstFrameSelection
+                onBusyChange={setLeafBusy}
                 onSelectionChange={setFirstFrameSelection}
                 projectId={project.id}
                 referenceSelection={referenceSelection}
@@ -1026,7 +1124,11 @@ export function ReplacementPage() {
                 <p>
                   置换首帧已确认并写入当前创作草稿，可在「视频生成」中作为首帧图生视频。
                 </p>
-                <Button variant="primary" onClick={() => navigate("video")}>
+                <Button
+                  disabled={leafBusy}
+                  variant="primary"
+                  onClick={() => navigate("video")}
+                >
                   用于文/图生视频
                 </Button>
               </>
