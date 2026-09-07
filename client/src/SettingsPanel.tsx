@@ -251,10 +251,6 @@ function OralPriceForm({
   const [status, setStatus] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
-  useEffect(() => {
-    setPriceYuan((billing.oral_unit_price_fen / 100).toString());
-  }, [billing.oral_unit_price_fen]);
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSaving) return;
