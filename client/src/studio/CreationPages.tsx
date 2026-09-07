@@ -993,7 +993,7 @@ export function ReplacementPage() {
       setFirstFrameSelection(null);
       clearConfirmedFirstFrame();
     },
-    [],
+    [clearConfirmedFirstFrame],
   );
 
   const handleSourceFrameChange = useCallback(
@@ -1004,7 +1004,7 @@ export function ReplacementPage() {
       setFirstFrameSelection(null);
       clearConfirmedFirstFrame();
     },
-    [],
+    [clearConfirmedFirstFrame],
   );
 
   const retryReferenceMatch = () => {

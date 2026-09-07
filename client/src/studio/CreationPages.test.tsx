@@ -42,6 +42,7 @@ vi.mock("./live", async (importOriginal) => ({
 vi.mock("../CharacterSelection", () => ({
   CharacterSelection: (props: { onVersionChange?: (s: unknown) => void }) => (
     <button
+      type="button"
       onClick={() =>
         props.onVersionChange?.({
           character_version_id: "cv-1",
@@ -58,6 +59,7 @@ vi.mock("../SourceFrameSelection", () => ({
     onSelectionChange?: (s: unknown) => void;
   }) => (
     <button
+      type="button"
       onClick={() => props.onSelectionChange?.({ id: "sfv-1", payload: {} })}
     >
       stub-确认源画面
@@ -69,6 +71,7 @@ vi.mock("../FirstFrameSelection", () => ({
     onSelectionChange?: (s: unknown) => void;
   }) => (
     <button
+      type="button"
       onClick={() =>
         props.onSelectionChange?.({
           id: "ffv-1",
