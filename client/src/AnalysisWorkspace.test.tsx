@@ -63,7 +63,10 @@ const characterSelection = {
   character_version_id: "character-version-1",
   version_id: "main-character-1",
   version_number: 1,
-  character_snapshot: { name: "林夏" },
+  character_snapshot: {
+    name: "林夏",
+    identity: { id: "identity-selected", display_name: "林夏" },
+  },
 };
 
 const changedCharacterSelection = {
@@ -535,6 +538,37 @@ describe("AnalysisWorkspace workflow gates", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("完成人物参考")).toBeNull();
     expect(screen.getByText("首帧历史可查看")).toBeInTheDocument();
+  });
+
+  it("项目角色切换不覆盖从 Studio 带入的 IP 改写范围", async () => {
+    render(
+      <AnalysisWorkspace
+        currentUserId="employee_1"
+        identityId="identity-from-studio"
+        onAnalysisReady={vi.fn()}
+        onBatchCreated={vi.fn()}
+        onClose={vi.fn()}
+        project={{
+          id: "project-1",
+          owner_user_id: "employee_1",
+          name: "人物身份切换测试",
+          status: "REFERENCE_READY",
+          reference_asset_id: "reference-video-1",
+          reference_upload_status: "READY",
+          analysis_status: "READY",
+        }}
+      />,
+    );
+
+    await screen.findByText("拆解完成");
+    fireEvent.click(screen.getByRole("button", { name: "完成角色选择" }));
+
+    await waitFor(() =>
+      expect(api.getLatestScriptRewriteTask).toHaveBeenCalledWith(
+        "project-1",
+        "identity-from-studio",
+      ),
+    );
   });
 
   it("keeps first-frame history visible while the current source selection is stale", async () => {

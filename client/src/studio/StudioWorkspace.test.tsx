@@ -40,11 +40,18 @@ const live = vi.hoisted(() => ({
     }),
   ),
 }));
-vi.mock("./live", () => live);
+vi.mock("./live", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ...live,
+}));
 
 // 视频生成（C2）：只覆盖新引入的四个 api 出口，其余保持原模块行为，
 // 避免既有用例（不触发这些函数）受 mock 影响。
 const api = vi.hoisted(() => ({
+  completeMaterialUpload: vi.fn(),
+  createMaterialUploadIntent: vi.fn(),
+  createOralTask: vi.fn(),
+  getOralPrice: vi.fn(async () => ({ unit_price_fen: 100 })),
   getIndependentCapabilities: vi.fn(
     async (): Promise<{
       extended_modes_enabled: boolean;
@@ -83,6 +90,7 @@ const api = vi.hoisted(() => ({
   ),
   createIndependentVideoTask: vi.fn(),
   listUserSavedPrompts: vi.fn(async (): Promise<unknown[]> => []),
+  uploadMaterial: vi.fn(),
 }));
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -90,6 +98,7 @@ vi.mock("../api", async (importOriginal) => ({
 }));
 
 const livePanel = vi.hoisted(() => ({
+  props: vi.fn(),
   project: {
     id: "project-1",
     owner_user_id: "review-user",
@@ -107,35 +116,40 @@ vi.mock("./LiveWorkspacePanel", () => ({
     onClose: () => void;
     onHandoffConsumed?: () => void;
     onProjectSelected: (project: typeof livePanel.project) => void;
-  }) => (
-    <section aria-label="模拟已有功能工作区">
-      <button
-        type="button"
-        onClick={() => props.onProjectSelected(livePanel.project)}
-      >
-        选择测试项目
-      </button>
-      <button
-        type="button"
-        onClick={() => props.onBatchCreated({ id: "batch-1" })}
-      >
-        创建测试批次
-      </button>
-      {props.handoffBatch ? (
-        <span>存在交接批次</span>
-      ) : (
-        <span>没有交接批次</span>
-      )}
-      {props.onHandoffConsumed ? (
-        <button type="button" onClick={props.onHandoffConsumed}>
-          消费交接批次
+    characterIdentityId?: string;
+    panel?: string;
+  }) => {
+    livePanel.props(props);
+    return (
+      <section aria-label="模拟已有功能工作区">
+        <button
+          type="button"
+          onClick={() => props.onProjectSelected(livePanel.project)}
+        >
+          选择测试项目
         </button>
-      ) : null}
-      <button type="button" onClick={props.onClose}>
-        返回新工作台
-      </button>
-    </section>
-  ),
+        <button
+          type="button"
+          onClick={() => props.onBatchCreated({ id: "batch-1" })}
+        >
+          创建测试批次
+        </button>
+        {props.handoffBatch ? (
+          <span>存在交接批次</span>
+        ) : (
+          <span>没有交接批次</span>
+        )}
+        {props.onHandoffConsumed ? (
+          <button type="button" onClick={props.onHandoffConsumed}>
+            消费交接批次
+          </button>
+        ) : null}
+        <button type="button" onClick={props.onClose}>
+          返回新工作台
+        </button>
+      </section>
+    );
+  },
 }));
 
 describe("V1.4 workspace integration", () => {
@@ -212,6 +226,57 @@ describe("V1.4 workspace integration", () => {
     vi.clearAllMocks();
     live.loadPersonAssets.mockResolvedValue({ assets: [], errors: [] });
     window.history.replaceState(null, "", "/#studio/workbench");
+  });
+
+  it("按 IP 二创始终使用文案草稿当前人物而非历史人物页选择", async () => {
+    const state = createReviewState("copy");
+    state.selectedPersonId = "zhang";
+    state.draft.ipId = "li";
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    await screen.findByRole("button", { name: "按 IP 二创" });
+    fireEvent.click(screen.getByRole("button", { name: "按 IP 二创" }));
+
+    await waitFor(() =>
+      expect(livePanel.props).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          panel: "analysis",
+          characterIdentityId: "li",
+        }),
+      ),
+    );
+  });
+
+  it("场景形象进入口播分身后由真实 Studio 状态保留为照片来源", () => {
+    const state = createReviewState("person-photos");
+    state.draft.imageId = undefined;
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        initialState={state}
+        reviewData={createReviewData()}
+      />,
+    );
+
+    const sceneCard = screen.getByText("庭院讲解", {
+      selector: "strong",
+    }).parentElement;
+    if (!sceneCard) throw new Error("scene card not found");
+    fireEvent.click(
+      within(sceneCard).getByRole("button", { name: "制作口播分身" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "制作口播分身" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("已选：庭院讲解")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "开始制作照片分身" }),
+    ).toBeDisabled();
   });
   it("renders the approved navigation order and keeps review data isolated", () => {
     render(
@@ -614,6 +679,203 @@ describe("V1.4 workspace integration", () => {
       expect(live.persistCloudDraft).not.toHaveBeenCalled();
       expect(live.loadSavedScriptList).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("数字人口播提交", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "/#studio/workbench");
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    live.loadPersonAssets.mockResolvedValue({ assets: [], errors: [] });
+    live.loadCloudDraft.mockResolvedValue(undefined);
+    live.loadDraftMaterials.mockResolvedValue({
+      assets: [],
+      unavailableIds: [],
+    });
+    live.loadSavedScriptList.mockResolvedValue([]);
+    api.createOralTask.mockReset();
+    api.createMaterialUploadIntent.mockReset();
+    api.uploadMaterial.mockReset();
+    api.completeMaterialUpload.mockReset();
+  });
+
+  it("字幕参数进入请求，并发点击单飞且网络重试复用幂等键", async () => {
+    const state = createReviewState("oral");
+    state.draft.style = "standard";
+    state.draft.subtitles = true;
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    let rejectFirst!: (reason: Error) => void;
+    api.createOralTask.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectFirst = reject;
+      }),
+    );
+
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "生成口播视频" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    const submit = await screen.findByRole("button", {
+      name: "确认费用并提交",
+    });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
+    const firstRequest = api.createOralTask.mock.calls[0][0];
+    expect(firstRequest.subtitle).toEqual({ st_show: true });
+
+    await act(async () => rejectFirst(new Error("network timeout")));
+    api.createOralTask.mockResolvedValueOnce({
+      id: "oral-task-1",
+      status: "FAILED",
+      estimated_cost_fen: 100,
+      replayed: true,
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(2));
+    expect(api.createOralTask.mock.calls[1][0].idempotencyKey).toBe(
+      firstRequest.idempotencyKey,
+    );
+
+    api.createOralTask.mockResolvedValueOnce({
+      id: "oral-task-2",
+      status: "QUEUED",
+      estimated_cost_fen: 100,
+      replayed: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+
+    await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(3));
+    expect(api.createOralTask.mock.calls[2][0].idempotencyKey).not.toBe(
+      firstRequest.idempotencyKey,
+    );
+  });
+
+  it("关闭字幕时明确提交 st_show=false", async () => {
+    const state = createReviewState("oral");
+    state.draft.subtitles = false;
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    api.createOralTask.mockResolvedValue({
+      id: "oral-without-subtitles",
+      status: "QUEUED",
+      estimated_cost_fen: 100,
+      replayed: false,
+    });
+
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "生成口播视频" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+
+    await waitFor(() => expect(api.createOralTask).toHaveBeenCalledOnce());
+    expect(api.createOralTask.mock.calls[0][0].subtitle).toEqual({
+      st_show: false,
+    });
+  });
+
+  it("完整音频上传后回填真实 Studio 状态并允许提交 AUDIO", async () => {
+    const state = createReviewState("oral-audio");
+    state.draft.audioId = undefined;
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    api.createMaterialUploadIntent.mockResolvedValue({
+      asset_id: "uploaded-speech",
+      material_id: "asset:uploaded-speech",
+    });
+    api.uploadMaterial.mockResolvedValue(undefined);
+    api.completeMaterialUpload.mockResolvedValue({
+      id: "asset:uploaded-speech",
+      owner_user_id: reviewUser.id,
+      asset_id: "uploaded-speech",
+      generation_task_id: null,
+      project_id: null,
+      person_id: null,
+      title: "new-speech.mp3",
+      group: "完整口播音频",
+      media_type: "audio",
+      source: "upload",
+      status: "ready",
+      delivery: "stored",
+      content_type: "audio/mpeg",
+      size_bytes: 5,
+      duration_seconds: 42,
+      created_at: "2026-09-07T10:00:00Z",
+      hidden: false,
+      saved: true,
+      allowed_uses: ["oral_audio", "reference"],
+      allowed_actions: ["preview", "download", "rename", "hide"],
+    });
+
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    await screen.findByText("张工 · 乡墅设计师");
+    expect(screen.getByText("未选择完整口播音频")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("选择完整口播音频"), {
+      target: {
+        files: [new File(["audio"], "new-speech.mp3", { type: "audio/mpeg" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(api.createMaterialUploadIntent).toHaveBeenCalledOnce(),
+    );
+    expect(api.uploadMaterial).toHaveBeenCalledOnce();
+    expect((api.uploadMaterial.mock.calls[0][3] as AbortSignal).aborted).toBe(
+      false,
+    );
+    expect(api.completeMaterialUpload).toHaveBeenCalledWith(
+      "uploaded-speech",
+      expect.any(AbortSignal),
+    );
+    await expect(
+      api.completeMaterialUpload.mock.results[0].value,
+    ).resolves.toMatchObject({ title: "new-speech.mp3", media_type: "audio" });
+    await screen.findByText("音频已上传并选中。");
+    expect(await screen.findByText("new-speech.mp3")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成口播视频" })).toBeEnabled();
+    api.createOralTask.mockResolvedValue({
+      id: "oral-from-audio",
+      status: "QUEUED",
+      estimated_cost_fen: 100,
+      replayed: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+
+    await waitFor(() => expect(api.createOralTask).toHaveBeenCalledOnce());
+    const request = api.createOralTask.mock.calls[0][0];
+    expect(request.mode).toBe("AUDIO");
+    expect(request.audioAssetId).toBe("uploaded-speech");
+    expect(request.scriptText).toBeUndefined();
+    expect(request.voiceId).toBeUndefined();
+    expect(request.subtitle).toBeUndefined();
   });
 });
 

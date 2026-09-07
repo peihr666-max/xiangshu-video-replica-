@@ -200,8 +200,8 @@ export function buildOralInput(draft: StudioDraft, mode: "text" | "audio") {
     voiceId: draft.voiceId,
     scriptId: draft.script.id,
     scriptVersion: draft.script.version,
-    style: draft.style,
-    subtitles: draft.style === "standard" && draft.subtitles,
+    style: "standard",
+    subtitles: draft.subtitles,
   };
 }
 

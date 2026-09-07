@@ -193,7 +193,7 @@ export type StudioDraft = {
   duration: number;
   count: number;
   frameConfirmed: boolean;
-  style: "standard" | "template";
+  style: "standard";
   subtitles: boolean;
   quoteRevision: number;
   /** 最近一次独立创作提交的批次 id：预览区就地展示生成进度。 */

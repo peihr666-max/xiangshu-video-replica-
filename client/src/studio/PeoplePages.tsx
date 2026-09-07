@@ -489,7 +489,7 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
                 <Button
                   variant="outline"
                   onClick={() => {
-                    patchDraft({ ipId: person.id });
+                    patchDraft({ ipId: person.id, imageId: asset.id });
                     navigate("person-avatars", {
                       selectedPersonId: person.id,
                       selectedAssetId: asset.id,

@@ -101,6 +101,7 @@ export function LiveWorkspacePanel({
         projectView === "analysis" && selectedProject ? (
           <AnalysisWorkspace
             currentUserId={currentUser.id}
+            identityId={characterIdentityId}
             onAnalysisReady={() => onRefresh()}
             onBatchCreated={onBatchCreated}
             onClose={closeProjectView}

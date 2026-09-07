@@ -400,6 +400,19 @@ describe("PeoplePages", () => {
     });
   });
 
+  it("从场景卡制作口播分身时保留选中图片", () => {
+    currentPage = "person-photos";
+    render(<PersonPage />);
+
+    screen.getByRole("button", { name: "制作口播分身" }).click();
+
+    expect(patchDraft).toHaveBeenCalledWith({ ipId: "p1", imageId: "scene" });
+    expect(navigate).toHaveBeenCalledWith("person-avatars", {
+      selectedPersonId: "p1",
+      selectedAssetId: "scene",
+    });
+  });
+
   it("上传本地视频后提交视频分身", async () => {
     currentPage = "person-avatars";
     review = false;

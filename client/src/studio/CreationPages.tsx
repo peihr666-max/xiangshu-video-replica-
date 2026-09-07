@@ -8,6 +8,8 @@ import {
 import {
   type AnalysisVersion,
   type CharacterReferenceSelection,
+  completeMaterialUpload,
+  createMaterialUploadIntent,
   customerVisibleErrorMessage,
   type GenerationRatio,
   getAssetDownloadUrl,
@@ -28,6 +30,7 @@ import {
   saveShotCards,
   selectCharacterReferences,
   startVideoAnalysis,
+  uploadMaterial,
   waitForAnalysisTask,
 } from "../api";
 import { CharacterSelection } from "../CharacterSelection";
@@ -37,6 +40,7 @@ import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
 import {
   runReplicaGeneration,
+  studioAssetFromMaterial,
   uploadVideoMaterial,
   uploadWorkbenchSourceVideo,
 } from "./live";
@@ -2083,7 +2087,17 @@ export function OralPage() {
     saveDraft,
     requestGeneration,
     notify,
+    review,
+    updateData,
   } = useStudio();
+  const oralAudioInputRef = useRef<HTMLInputElement>(null);
+  const audioUploadOperationRef = useRef(0);
+  const audioUploadControllerRef = useRef<AbortController | undefined>(
+    undefined,
+  );
+  const [audioUploading, setAudioUploading] = useState(false);
+  const [audioUploadProgress, setAudioUploadProgress] = useState<number>();
+  const [audioUploadError, setAudioUploadError] = useState("");
   const audioMode = state.page === "oral-audio";
   const person = activePerson(data.people, state.draft.ipId);
   const avatar = person?.avatars.find(
@@ -2104,6 +2118,93 @@ export function OralPage() {
           state.draft.script.confirmed &&
           state.draft.script.text.trim(),
       );
+
+  useEffect(
+    () => () => {
+      audioUploadOperationRef.current += 1;
+      audioUploadControllerRef.current?.abort();
+    },
+    [],
+  );
+
+  const chooseOralAudio = () => {
+    audioUploadOperationRef.current += 1;
+    audioUploadControllerRef.current?.abort();
+    audioUploadControllerRef.current = undefined;
+    setAudioUploading(false);
+    setAudioUploadProgress(undefined);
+    setAudioUploadError("");
+    openPicker("audio");
+  };
+
+  const uploadOralAudio = async (file?: File) => {
+    if (!file || audioUploading || data.loading) return;
+    if (review) {
+      notify("审核示例不上传素材。");
+      return;
+    }
+    const suffix = file.name.toLowerCase().split(".").pop();
+    if (suffix !== "mp3") {
+      setAudioUploadError("仅支持 MP3 音频。");
+      return;
+    }
+    if (file.size <= 0 || file.size > 50 * 1024 * 1024) {
+      setAudioUploadError("音频文件必须大于 0 且不超过 50 MB。");
+      return;
+    }
+    setAudioUploading(true);
+    setAudioUploadError("");
+    setAudioUploadProgress(0);
+    const operation = ++audioUploadOperationRef.current;
+    audioUploadControllerRef.current?.abort();
+    const controller = new AbortController();
+    audioUploadControllerRef.current = controller;
+    try {
+      const intent = await createMaterialUploadIntent(file, {
+        group: "完整口播音频",
+        title: file.name,
+      });
+      if (audioUploadOperationRef.current !== operation) return;
+      await uploadMaterial(
+        intent,
+        file,
+        (progress) => {
+          if (audioUploadOperationRef.current === operation) {
+            setAudioUploadProgress(progress);
+          }
+        },
+        controller.signal,
+      );
+      if (audioUploadOperationRef.current !== operation) return;
+      const material = await completeMaterialUpload(
+        intent.asset_id,
+        controller.signal,
+      );
+      if (audioUploadOperationRef.current !== operation) return;
+      const asset = studioAssetFromMaterial(material);
+      updateData((current) => ({
+        ...current,
+        assets: [
+          ...current.assets.filter((item) => item.id !== asset.id),
+          asset,
+        ],
+      }));
+      patchDraft({ audioId: asset.id });
+      notify("音频已上传并选中。");
+    } catch (cause: unknown) {
+      if (audioUploadOperationRef.current !== operation) return;
+      setAudioUploadError(
+        customerVisibleErrorMessage(cause, "音频上传失败，请稍后重试。"),
+      );
+    } finally {
+      if (audioUploadOperationRef.current === operation) {
+        audioUploadControllerRef.current = undefined;
+        setAudioUploading(false);
+        setAudioUploadProgress(undefined);
+        if (oralAudioInputRef.current) oralAudioInputRef.current.value = "";
+      }
+    }
+  };
 
   return (
     <section className="creation-page creation-oral">
@@ -2155,18 +2256,32 @@ export function OralPage() {
                   />
                 )}
                 <div className="creation-inline-actions">
-                  <Button variant="outline" onClick={() => openPicker("audio")}>
+                  <Button variant="outline" onClick={chooseOralAudio}>
                     从素材库选择
                   </Button>
                   <Button
                     variant="outline"
-                    onClick={() =>
-                      notify("音频上传服务尚未接通，请先从素材库选择")
-                    }
+                    disabled={audioUploading || data.loading}
+                    onClick={() => oralAudioInputRef.current?.click()}
                   >
-                    上传音频
+                    {audioUploading ? "上传中…" : "上传音频"}
                   </Button>
+                  <input
+                    ref={oralAudioInputRef}
+                    aria-label="选择完整口播音频"
+                    accept=".mp3,audio/mpeg"
+                    disabled={data.loading}
+                    hidden
+                    type="file"
+                    onChange={(event) =>
+                      void uploadOralAudio(event.target.files?.[0])
+                    }
+                  />
                 </div>
+                {audioUploadProgress !== undefined && (
+                  <Hint>上传进度：{audioUploadProgress}%</Hint>
+                )}
+                {audioUploadError && <Hint>{audioUploadError}</Hint>}
                 <Hint>使用音频中的原声直接驱动口型，无需另选克隆声音。</Hint>
               </ControlGroup>
             ) : (
@@ -2281,29 +2396,19 @@ export function OralPage() {
             >
               标准口播
             </Button>
+            <span>字幕</span>
             <Button
-              variant={state.draft.style === "template" ? "outline" : "quiet"}
-              onClick={() => patchDraft({ style: "template" })}
+              variant={!state.draft.subtitles ? "outline" : "quiet"}
+              onClick={() => patchDraft({ subtitles: false })}
             >
-              网感模板
+              不添加
             </Button>
-            {state.draft.style === "standard" && (
-              <>
-                <span>字幕</span>
-                <Button
-                  variant={!state.draft.subtitles ? "outline" : "quiet"}
-                  onClick={() => patchDraft({ subtitles: false })}
-                >
-                  不添加
-                </Button>
-                <Button
-                  variant={state.draft.subtitles ? "outline" : "quiet"}
-                  onClick={() => patchDraft({ subtitles: true })}
-                >
-                  添加
-                </Button>
-              </>
-            )}
+            <Button
+              variant={state.draft.subtitles ? "outline" : "quiet"}
+              onClick={() => patchDraft({ subtitles: true })}
+            >
+              添加
+            </Button>
           </div>
         )}
         <Button variant="outline" onClick={saveDraft}>

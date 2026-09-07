@@ -921,6 +921,7 @@ function draftFromPayload(payload: unknown): StudioDraft | null {
             (value) => typeof value === "string" && value.length > 0,
           ),
   };
+  merged.style = "standard";
   return merged;
 }
 

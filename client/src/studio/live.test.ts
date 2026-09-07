@@ -295,6 +295,25 @@ describe("真实 Studio 只读适配器", () => {
     });
   });
 
+  it("恢复旧模板草稿时迁移到当前真实可用的标准口播", async () => {
+    api.getStudioDraft.mockResolvedValue({
+      draft_kind: "copy",
+      payload: {
+        ...createDraft(),
+        style: "template",
+        subtitles: true,
+      },
+      script_confirmed: false,
+      revision: 5,
+      updated_at: "2026-09-07T10:00:00+08:00",
+    });
+
+    const restored = await loadCloudDraft();
+
+    expect(restored?.draft.style).toBe("standard");
+    expect(restored?.draft.subtitles).toBe(true);
+  });
+
   it("恢复云端草稿时批量解析其中的素材引用", async () => {
     const material = {
       id: "asset:image-1",

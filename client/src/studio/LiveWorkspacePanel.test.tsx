@@ -3,6 +3,15 @@ import { expect, it, vi } from "vitest";
 import type { GenerationBatch } from "../api";
 import { reviewUser } from "./fixtures";
 
+const analysis = vi.hoisted(() => ({ props: vi.fn() }));
+
+vi.mock("../AnalysisWorkspace", () => ({
+  AnalysisWorkspace: (props: { identityId?: string }) => {
+    analysis.props(props);
+    return <p>analysis-workspace</p>;
+  },
+}));
+
 vi.mock("../TaskRecordsPanel", () => ({
   TaskRecordsPanel: ({
     onHandoffConsumed,
@@ -64,4 +73,26 @@ it("人物面板会带入 Studio 已选人物和场景造型页签", () => {
   );
 
   expect(screen.getByText("identity-1:scenes")).toBeInTheDocument();
+});
+
+it("分析面板会把 Studio 已选 IP 传给真实分析工作区", () => {
+  render(
+    <LiveWorkspacePanel
+      characterIdentityId="identity-1"
+      currentUser={reviewUser}
+      onBatchCreated={vi.fn()}
+      onBusyChange={vi.fn()}
+      onClose={vi.fn()}
+      onHandoffConsumed={vi.fn()}
+      onProjectSelected={vi.fn()}
+      onRefresh={vi.fn()}
+      panel="analysis"
+      project={{ id: "project-1" } as never}
+    />,
+  );
+
+  expect(screen.getByText("analysis-workspace")).toBeInTheDocument();
+  expect(analysis.props).toHaveBeenCalledWith(
+    expect.objectContaining({ identityId: "identity-1" }),
+  );
 });

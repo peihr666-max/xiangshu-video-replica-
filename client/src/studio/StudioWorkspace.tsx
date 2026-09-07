@@ -216,6 +216,12 @@ export function StudioWorkspace({
     null,
   );
   const [videoSubmitting, setVideoSubmitting] = useState(false);
+  const [oralSubmitting, setOralSubmitting] = useState(false);
+  const oralSubmissionInFlightRef = useRef(false);
+  const oralSubmissionRef = useRef<{
+    fingerprint: string;
+    idempotencyKey: string;
+  } | null>(null);
   const busyRef = useRef(false);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
@@ -348,19 +354,42 @@ export function StudioWorkspace({
       notify("当前账号为只读权限，不能提交生成。");
       return;
     }
+    if (oralSubmissionInFlightRef.current) return;
     try {
       const mode = state.page === "oral-audio" ? "audio" : "text";
       const input = buildOralInput(state.draft, mode);
+      const subtitle =
+        mode === "text" ? { st_show: input.subtitles } : undefined;
+      const fingerprint = JSON.stringify({
+        identityId: input.ipId,
+        avatarId: input.avatarId,
+        voiceId: input.voiceId,
+        mode,
+        title: state.draft.script.title,
+        scriptText: mode === "text" ? state.draft.script.text : undefined,
+        audioAssetId: input.audioAssetId,
+        subtitle,
+      });
+      const previous = oralSubmissionRef.current;
+      const idempotencyKey =
+        previous?.fingerprint === fingerprint
+          ? previous.idempotencyKey
+          : crypto.randomUUID();
+      oralSubmissionRef.current = { fingerprint, idempotencyKey };
+      oralSubmissionInFlightRef.current = true;
+      setOralSubmitting(true);
       const result = await createOralTask({
         identityId: input.ipId,
         avatarId: input.avatarId,
         voiceId: input.voiceId,
         mode: mode === "audio" ? "AUDIO" : "TTS",
         title: state.draft.script.title || "未命名口播",
-        scriptText: state.draft.script.text,
+        scriptText: mode === "text" ? state.draft.script.text : undefined,
         audioAssetId: input.audioAssetId,
-        idempotencyKey: crypto.randomUUID(),
+        subtitle,
+        idempotencyKey,
       });
+      oralSubmissionRef.current = null;
       setGeneration(undefined);
       if (result.status === "FAILED") {
         notify("口播任务提交未成功，请核对素材后重试。");
@@ -373,6 +402,9 @@ export function StudioWorkspace({
       notify(
         customerVisibleErrorMessage(cause, "口播任务提交失败，请稍后重试。"),
       );
+    } finally {
+      oralSubmissionInFlightRef.current = false;
+      setOralSubmitting(false);
     }
   };
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
@@ -980,7 +1012,11 @@ export function StudioWorkspace({
               <LiveWorkspacePanel
                 panel={livePanel}
                 currentUser={currentUser}
-                characterIdentityId={state.selectedPersonId ?? state.draft.ipId}
+                characterIdentityId={
+                  livePanel === "analysis"
+                    ? state.draft.ipId
+                    : (state.selectedPersonId ?? state.draft.ipId)
+                }
                 characterInitialTab={
                   state.page === "person-photos" ? "scenes" : "base"
                 }
@@ -1110,8 +1146,12 @@ export function StudioWorkspace({
                 确认费用并提交
               </Button>
             ) : (
-              <Button variant="primary" onClick={() => void submitOralTask()}>
-                确认费用并提交
+              <Button
+                variant="primary"
+                disabled={oralSubmitting}
+                onClick={() => void submitOralTask()}
+              >
+                {oralSubmitting ? "提交中…" : "确认费用并提交"}
               </Button>
             )}
             {!review &&

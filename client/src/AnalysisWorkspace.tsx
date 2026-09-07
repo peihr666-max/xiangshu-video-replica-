@@ -187,6 +187,7 @@ type UpstreamBusySource = "character" | "source-frame" | "reference";
 
 export function AnalysisWorkspace({
   currentUserId,
+  identityId,
   onAnalysisReady,
   onBatchCreated,
   onClose,
@@ -195,6 +196,7 @@ export function AnalysisWorkspace({
   readOnly = false,
 }: {
   currentUserId: string;
+  identityId?: string;
   onAnalysisReady: (projectId: string) => void;
   onBatchCreated: (batch: GenerationBatch) => void;
   onClose: () => void;
@@ -517,6 +519,7 @@ export function AnalysisWorkspace({
     durationSeconds,
     firstFrameAssetId: firstFramePayload?.first_frame_asset_id ?? null,
     firstFrameSelectionVersionId: firstFrameSelection?.id ?? "",
+    identityId,
     originalScript,
     projectId: project.id,
     readOnly: draftsReadOnly,

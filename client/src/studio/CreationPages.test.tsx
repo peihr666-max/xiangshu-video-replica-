@@ -17,6 +17,8 @@ vi.mock("./context", () => ({ useStudio }));
 
 // 复刻模块（模块①）：部分 mock api/live，其余保持原实现。
 const replicaApi = vi.hoisted(() => ({
+  completeMaterialUpload: vi.fn(),
+  createMaterialUploadIntent: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
   selectCharacterReferences: vi.fn(),
   startVideoAnalysis: vi.fn(),
@@ -28,6 +30,7 @@ const replicaApi = vi.hoisted(() => ({
   getLatestProjectFirstFrameSelection: vi.fn(),
   saveGenerationPrompt: vi.fn(),
   saveShotCards: vi.fn(),
+  uploadMaterial: vi.fn(),
 }));
 const replicaLive = vi.hoisted(() => ({
   uploadWorkbenchSourceVideo: vi.fn(),
@@ -265,6 +268,9 @@ describe("V1.4 创作页面", () => {
   beforeEach(() => {
     useStudio.mockReset();
     replicaApi.getAssetDownloadUrl.mockReset();
+    replicaApi.createMaterialUploadIntent.mockReset();
+    replicaApi.uploadMaterial.mockReset();
+    replicaApi.completeMaterialUpload.mockReset();
     replicaApi.getAssetDownloadUrl.mockImplementation(async (assetId) => ({
       url: `https://signed.example/${assetId}.png`,
     }));
@@ -728,8 +734,9 @@ describe("V1.4 创作页面", () => {
     ).not.toBeNull();
   });
 
-  it("音频驱动只接受audio资产，上传入口不伪装成素材选择", () => {
+  it("音频驱动上传复用素材上传链路并选中新资产", async () => {
     const value = studio({
+      review: false,
       state: {
         ...studio().state,
         page: "oral-audio",
@@ -739,11 +746,156 @@ describe("V1.4 创作页面", () => {
     useStudio.mockReturnValue(value);
     render(<OralPage />);
     expect(screen.getByRole("button", { name: "生成口播视频" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "上传音频" }));
-    expect(value.notify).toHaveBeenCalledWith(
-      "音频上传服务尚未接通，请先从素材库选择",
+    replicaApi.createMaterialUploadIntent.mockResolvedValue({
+      asset_id: "oral-audio-new",
+      material_id: "asset:oral-audio-new",
+    });
+    replicaApi.uploadMaterial.mockResolvedValue(undefined);
+    replicaApi.completeMaterialUpload.mockResolvedValue({
+      id: "asset:oral-audio-new",
+      owner_user_id: "user-1",
+      asset_id: "oral-audio-new",
+      generation_task_id: null,
+      project_id: null,
+      person_id: null,
+      title: "oral.mp3",
+      group: "完整口播音频",
+      media_type: "audio",
+      source: "upload",
+      status: "ready",
+      delivery: "stored",
+      content_type: "audio/mpeg",
+      size_bytes: 5,
+      duration_seconds: 42,
+      created_at: "2026-09-07T10:00:00Z",
+      hidden: false,
+      saved: true,
+      allowed_uses: ["oral_audio", "reference"],
+      allowed_actions: ["preview", "download", "rename", "hide"],
+    });
+
+    fireEvent.change(screen.getByLabelText("选择完整口播音频"), {
+      target: {
+        files: [new File(["audio"], "oral.mp3", { type: "audio/mpeg" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(replicaApi.createMaterialUploadIntent).toHaveBeenCalledWith(
+        expect.any(File),
+        { group: "完整口播音频", title: "oral.mp3" },
+      ),
     );
-    expect(value.openPicker).not.toHaveBeenCalled();
+    expect(replicaApi.uploadMaterial).toHaveBeenCalled();
+    expect(replicaApi.completeMaterialUpload).toHaveBeenCalledWith(
+      "oral-audio-new",
+      expect.any(AbortSignal),
+    );
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      audioId: "oral-audio-new",
+    });
+    expect(value.updateData).toHaveBeenCalled();
+  });
+
+  it("选择其他音频后忽略迟到的上传完成结果", async () => {
+    const value = studio({
+      review: false,
+      state: {
+        ...studio().state,
+        page: "oral-audio",
+        draft: { ...studio().state.draft, audioId: undefined },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    let finishUpload!: (material: Record<string, unknown>) => void;
+    let completeSignal: AbortSignal | undefined;
+    replicaApi.createMaterialUploadIntent.mockResolvedValue({
+      asset_id: "late-audio",
+      material_id: "asset:late-audio",
+    });
+    replicaApi.uploadMaterial.mockResolvedValue(undefined);
+    replicaApi.completeMaterialUpload.mockImplementation(
+      (_assetId: string, signal?: AbortSignal) => {
+        completeSignal = signal;
+        return new Promise((resolve) => {
+          finishUpload = resolve;
+        });
+      },
+    );
+    render(<OralPage />);
+
+    fireEvent.change(screen.getByLabelText("选择完整口播音频"), {
+      target: {
+        files: [new File(["audio"], "late.mp3", { type: "audio/mpeg" })],
+      },
+    });
+    await waitFor(() =>
+      expect(replicaApi.completeMaterialUpload).toHaveBeenCalledWith(
+        "late-audio",
+        expect.any(AbortSignal),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "从素材库选择" }));
+    expect(completeSignal?.aborted).toBe(true);
+    finishUpload({ asset_id: "late-audio" });
+
+    await waitFor(() => expect(value.openPicker).toHaveBeenCalledWith("audio"));
+    expect(value.patchDraft).not.toHaveBeenCalledWith({
+      audioId: "late-audio",
+    });
+    expect(value.updateData).not.toHaveBeenCalled();
+  });
+
+  it("改选素材时中止仍在上传的音频且不创建孤儿素材", async () => {
+    const value = studio({
+      review: false,
+      state: {
+        ...studio().state,
+        page: "oral-audio",
+        draft: { ...studio().state.draft, audioId: undefined },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    replicaApi.createMaterialUploadIntent.mockResolvedValue({
+      asset_id: "uploading-audio",
+      material_id: "asset:uploading-audio",
+    });
+    replicaApi.uploadMaterial.mockImplementation(
+      async (
+        _intent: unknown,
+        _file: File,
+        _onProgress: (progress: number) => void,
+        signal?: AbortSignal,
+      ) =>
+        new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    );
+    render(<OralPage />);
+
+    fireEvent.change(screen.getByLabelText("选择完整口播音频"), {
+      target: {
+        files: [new File(["audio"], "uploading.mp3", { type: "audio/mpeg" })],
+      },
+    });
+    await waitFor(() => expect(replicaApi.uploadMaterial).toHaveBeenCalled());
+    const signal = replicaApi.uploadMaterial.mock.calls[0][3] as AbortSignal;
+
+    fireEvent.click(screen.getByRole("button", { name: "从素材库选择" }));
+
+    expect(signal.aborted).toBe(true);
+    await waitFor(() => expect(value.openPicker).toHaveBeenCalledWith("audio"));
+    expect(replicaApi.completeMaterialUpload).not.toHaveBeenCalled();
+  });
+
+  it("文案口播不再把未实现的网感模板表现为可用", () => {
+    useStudio.mockReturnValue(studio());
+    render(<OralPage />);
+
+    expect(screen.queryByRole("button", { name: "网感模板" })).toBeNull();
+    expect(screen.getByText("标准口播")).toBeInTheDocument();
   });
 
   it("更换口播IP只打开人物选择器，由统一草稿层执行防串人清理", () => {

@@ -2341,11 +2341,12 @@ export function uploadMaterial(
 
 export async function completeMaterialUpload(
   assetId: string,
+  signal?: AbortSignal,
 ): Promise<MaterialItem> {
   return requestApiJson<MaterialItem>(
     `/api/studio/materials/uploads/${encodeURIComponent(assetId)}/complete`,
     "完成素材上传失败",
-    { method: "POST" },
+    { method: "POST", signal },
     CLOUD_OP_TIMEOUT_MS,
   );
 }
@@ -4318,6 +4319,10 @@ async function requestApi(
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const callerSignal = init.signal;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = new Headers(init.headers);
   const devUserId = getDevelopmentUserId();
 
@@ -4343,11 +4348,13 @@ async function requestApi(
     return response;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
+      if (callerSignal?.aborted) throw error;
       throw new Error("请求超时，请重试");
     }
     throw error;
   } finally {
     window.clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
 }
 

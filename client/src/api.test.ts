@@ -168,6 +168,26 @@ describe("素材库 API", () => {
     );
   });
 
+  it("取消完成素材请求时中止底层 fetch 而不误报超时", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    const request = completeMaterialUpload("image-1", controller.signal);
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
   it("复用带本地鉴权和进度处理的上传通道", async () => {
     class MaterialUploadRequest {
       static latest: MaterialUploadRequest | null = null;
