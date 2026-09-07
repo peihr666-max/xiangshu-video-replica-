@@ -49,6 +49,7 @@ class BillingSettingsRequest(BaseModel):
     internal_base_unit_price_fen: StrictInt
     min_recharge_fen: StrictInt
     recharge_step_fen: StrictInt
+    oral_unit_price_fen: StrictInt
 
 
 class ProviderTestResult(BaseModel):
@@ -372,6 +373,7 @@ def update_billing_settings(
             internal_base_unit_price_fen=payload.internal_base_unit_price_fen,
             min_recharge_fen=payload.min_recharge_fen,
             recharge_step_fen=payload.recharge_step_fen,
+            oral_unit_price_fen=payload.oral_unit_price_fen,
             actor_user_id=admin.id,
         )
     except ValueError as exc:

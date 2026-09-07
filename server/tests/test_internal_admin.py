@@ -592,6 +592,7 @@ def test_control_billing_settings_only_update_internal_price_rules(
             "internal_base_unit_price_fen": 500,
             "min_recharge_fen": 10000,
             "recharge_step_fen": 1000,
+            "oral_unit_price_fen": 2500,
             "confirm": True,
             "reason": "adjust internal billing settings",
         },
@@ -603,6 +604,7 @@ def test_control_billing_settings_only_update_internal_price_rules(
         "charged_unit_price_fen": 500,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
+        "oral_unit_price_fen": 2500,
     }
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         stored = SettingsRepository(conn).read_billing_settings()
@@ -615,6 +617,7 @@ def test_control_billing_settings_only_update_internal_price_rules(
             "internal_base_unit_price_fen": 500,
             "min_recharge_fen": 9900,
             "recharge_step_fen": 1000,
+            "oral_unit_price_fen": 2500,
             "confirm": True,
             "reason": "verify billing lower bound",
         },
@@ -627,6 +630,7 @@ def test_control_billing_settings_only_update_internal_price_rules(
             "charged_unit_price_fen": 1500,
             "min_recharge_fen": 10000,
             "recharge_step_fen": 1000,
+            "oral_unit_price_fen": 2500,
             "confirm": True,
             "reason": "verify customer price cannot be changed here",
         },

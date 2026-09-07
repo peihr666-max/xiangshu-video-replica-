@@ -148,7 +148,7 @@ def test_settings_migration_creates_tables_and_defaults(tmp_path: Path, settings
             """
         ).fetchone()
 
-    assert version == "066_script_rewrite_ip_profile_snapshot"
+    assert version == "067_oral_unit_price"
     assert {"provider_settings", "runtime_settings"}.issubset(tables)
     assert dict(runtime) == {
         "max_generation_count_per_batch": 4,
@@ -673,6 +673,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
             "internal_base_unit_price_fen": 1000,
             "min_recharge_fen": 20000,
             "recharge_step_fen": 2000,
+            "oral_unit_price_fen": 2500,
         },
     )
 
@@ -682,6 +683,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
         "charged_unit_price_fen": 1000,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
+        "oral_unit_price_fen": 1000,
     }
     assert updated.status_code == 200
     assert updated.json() == {
@@ -689,7 +691,59 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
         "charged_unit_price_fen": 1000,
         "min_recharge_fen": 20000,
         "recharge_step_fen": 2000,
+        "oral_unit_price_fen": 2500,
     }
+
+
+def test_billing_settings_oral_price_is_independent_of_recharge_rules(
+    client: TestClient,
+) -> None:
+    response = client.patch(
+        "/api/admin/settings/billing",
+        headers=admin_headers(),
+        json={
+            "internal_base_unit_price_fen": 2000,
+            "min_recharge_fen": 20000,
+            "recharge_step_fen": 2000,
+            "oral_unit_price_fen": 300,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["oral_unit_price_fen"] == 300
+
+
+@pytest.mark.parametrize("oral_unit_price_fen", [0, -100, 2_147_483_648])
+def test_billing_settings_reject_non_positive_oral_price(
+    client: TestClient,
+    oral_unit_price_fen: int,
+) -> None:
+    response = client.patch(
+        "/api/admin/settings/billing",
+        headers=admin_headers(),
+        json={
+            "internal_base_unit_price_fen": 1000,
+            "min_recharge_fen": 10000,
+            "recharge_step_fen": 1000,
+            "oral_unit_price_fen": oral_unit_price_fen,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_billing_settings_requires_oral_price_field(client: TestClient) -> None:
+    response = client.patch(
+        "/api/admin/settings/billing",
+        headers=admin_headers(),
+        json={
+            "internal_base_unit_price_fen": 1000,
+            "min_recharge_fen": 10000,
+            "recharge_step_fen": 1000,
+        },
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -698,6 +752,8 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
         ("internal_base_unit_price_fen", True),
         ("min_recharge_fen", "10000"),
         ("recharge_step_fen", 1000.0),
+        ("oral_unit_price_fen", True),
+        ("oral_unit_price_fen", "1000"),
     ],
 )
 def test_billing_settings_api_rejects_coerced_integer_values(
@@ -709,6 +765,7 @@ def test_billing_settings_api_rejects_coerced_integer_values(
         "internal_base_unit_price_fen": 1000,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
+        "oral_unit_price_fen": 1000,
     }
     payload[field] = value
 
@@ -1365,3 +1422,49 @@ def test_masked_secret_roundtrip_does_not_overwrite_saved_secret(
     assert saved["access_key_id"] == "AKID-real-key-id-1234"
     assert saved["secret_access_key"] == "real-secret-value-5678"
     assert saved["bucket"] == "mask-roundtrip"
+
+
+def test_dashscope_optional_fields_roundtrip_with_masked_secret(
+    client: TestClient,
+    conn: sqlite3.Connection,
+) -> None:
+    """dashscope 多字段表单：非密钥字段明文保存回显，掩码回传不覆盖密钥，
+    置空的非密钥字段删除后回落服务端默认值。"""
+    repo = SettingsRepository(conn)
+    saved = client.put(
+        "/api/admin/settings/providers/dashscope",
+        headers=admin_headers(),
+        json={
+            "config": {
+                "api_key": "sk-dashscope-secret-1",
+                "workspace_id": "ws-123",
+                "region": "cn-beijing",
+                "model": "fun-asr",
+                "flash_model": "fun-asr-flash-2026-06-15",
+                "flash_threshold_sec": "300",
+                "poll_interval_sec": "2",
+                "poll_max_attempts": "90",
+            }
+        },
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["configured"] is True
+    assert saved.json()["config"]["api_key"] == "********et-1"
+    assert saved.json()["config"]["workspace_id"] == "ws-123"
+    assert saved.json()["config"]["flash_threshold_sec"] == "300"
+
+    # 掩码回传 + 置空 flash_model：密钥保留、空字段删除
+    masked_config = saved.json()["config"]
+    masked_config["flash_model"] = ""
+    updated = client.put(
+        "/api/admin/settings/providers/dashscope",
+        headers=admin_headers(),
+        json={"config": masked_config},
+    )
+
+    assert updated.status_code == 200
+    stored = repo.load_provider_config("dashscope")
+    assert stored["api_key"] == "sk-dashscope-secret-1"
+    assert "flash_model" not in stored
+    assert stored["workspace_id"] == "ws-123"

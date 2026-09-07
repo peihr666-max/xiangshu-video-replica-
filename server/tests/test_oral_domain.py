@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -59,6 +60,7 @@ from app.oral_worker import (
     prepare_oral_work,
     request_oral_archive_retry,
 )
+from app.settings import SettingsRepository
 from app.storage import StoredObject
 
 _NOW = "2026-09-06 03:00:00"
@@ -1125,6 +1127,44 @@ def test_create_oral_task_tts_queues_reserves_and_replays_idempotently(
         "oral_task_id": created.task_id,
         "type": "RESERVE",
     }
+
+
+def test_oral_unit_price_fen_follows_billing_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
+    conn = seed_scene(tmp_path, "oral-price-settings.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    transport.on("POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "vt-price-1"}))
+
+    SettingsRepository(conn).save_billing_settings(
+        internal_base_unit_price_fen=1000,
+        min_recharge_fen=10000,
+        recharge_step_fen=1000,
+        oral_unit_price_fen=2500,
+        actor_user_id="admin_1",
+    )
+
+    assert oral_unit_price_fen(conn) == 2500
+
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="乡墅口播",
+        script_text="大家好，今天带大家看一套乡墅。",
+        audio_asset_id=None,
+        subtitle={"st_show": True},
+        idempotency_key="idem-price-0001",
+        vendor=vendor,
+    )
+    assert created.estimated_cost_fen == 2500
 
 
 def test_oral_task_same_owner_idempotency_key_rejects_changed_payload(

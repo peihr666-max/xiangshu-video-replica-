@@ -1134,6 +1134,7 @@ def test_customer_production_control_routes_keep_auditors_read_only(
                 "internal_base_unit_price_fen": 1000,
                 "min_recharge_fen": 10000,
                 "recharge_step_fen": 1000,
+                "oral_unit_price_fen": 1000,
             },
         ),
         (

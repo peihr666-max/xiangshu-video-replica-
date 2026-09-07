@@ -33,8 +33,8 @@ REQUIRED_PROVIDER_FIELDS: dict[ProviderName, tuple[str, ...]] = {
     "apilio": (),
     "metaso": ("api_key",),
     "cos": ("access_key_id", "secret_access_key", "bucket", "region"),
-    # 二创口播稿改写默认走 DeepSeek；除 API Key 外的参数（base_url/model）
-    # 由服务端固定，界面无需暴露。
+    # 二创口播稿改写走 DeepSeek；base_url/model 可在设置页覆盖，
+    # 缺省回落服务端固定值（script_rewrite.load_script_rewrite_configuration）。
     "deepseek": ("api_key",),
     # 飞影数字人（C1 数字人口播整链）：Bearer Token 即 api_key，见
     # docs/飞影数字人API-V2-集成参考.md。
@@ -58,6 +58,7 @@ DEFAULT_BILLING_SETTINGS: dict[str, int] = {
     "charged_unit_price_fen": 1000,
     "min_recharge_fen": 10000,
     "recharge_step_fen": 1000,
+    "oral_unit_price_fen": 1000,
 }
 
 
@@ -292,12 +293,14 @@ class SettingsRepository:
         internal_base_unit_price_fen: int,
         min_recharge_fen: int,
         recharge_step_fen: int,
+        oral_unit_price_fen: int,
         actor_user_id: str | None,
     ) -> dict[str, int]:
         validate_billing_settings(
             internal_base_unit_price_fen=internal_base_unit_price_fen,
             min_recharge_fen=min_recharge_fen,
             recharge_step_fen=recharge_step_fen,
+            oral_unit_price_fen=oral_unit_price_fen,
         )
         with self.conn:
             self.conn.execute(
@@ -306,6 +309,7 @@ class SettingsRepository:
                 SET internal_base_unit_price_fen = %s,
                     min_recharge_fen = %s,
                     recharge_step_fen = %s,
+                    oral_unit_price_fen = %s,
                     updated_by_user_id = %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
@@ -314,6 +318,7 @@ class SettingsRepository:
                     internal_base_unit_price_fen,
                     min_recharge_fen,
                     recharge_step_fen,
+                    oral_unit_price_fen,
                     actor_user_id,
                 ),
             )
@@ -322,7 +327,8 @@ class SettingsRepository:
     def read_billing_settings(self) -> dict[str, int]:
         row = self.conn.execute(
             """
-            SELECT internal_base_unit_price_fen, min_recharge_fen, recharge_step_fen
+            SELECT internal_base_unit_price_fen, min_recharge_fen, recharge_step_fen,
+                   oral_unit_price_fen
             FROM runtime_settings
             WHERE id = 1
             """
@@ -335,6 +341,7 @@ class SettingsRepository:
             "charged_unit_price_fen": base_price,
             "min_recharge_fen": int(row["min_recharge_fen"]),
             "recharge_step_fen": int(row["recharge_step_fen"]),
+            "oral_unit_price_fen": int(row["oral_unit_price_fen"]),
         }
 
     def read_customer_billing_settings(self, *, user_id: str) -> dict[str, int]:
@@ -437,11 +444,13 @@ def validate_billing_settings(
     internal_base_unit_price_fen: int,
     min_recharge_fen: int,
     recharge_step_fen: int,
+    oral_unit_price_fen: int,
 ) -> None:
     values = (
         internal_base_unit_price_fen,
         min_recharge_fen,
         recharge_step_fen,
+        oral_unit_price_fen,
     )
     if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
         raise ValueError("billing settings must use integer fen values")
@@ -455,6 +464,9 @@ def validate_billing_settings(
         raise ValueError("min_recharge_fen must be divisible by recharge_step_fen")
     if recharge_step_fen % internal_base_unit_price_fen != 0:
         raise ValueError("recharge_step_fen must be divisible by internal_base_unit_price_fen")
+    # 口播单价不参与充值整除规则：数字人口播按条独立计价。
+    if oral_unit_price_fen < 1 or oral_unit_price_fen > 2_147_483_647:
+        raise ValueError("oral_unit_price_fen must be between 1 and 2147483647")
 
 
 def apply_customer_unit_price(
