@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -76,6 +77,20 @@ class MixedOutcomeFakeProvider(FakeH3Provider):
             )
         quality = "missing" if outcome == "missing_audio" else "ok"
         return FakeH3Provider(audio_quality=quality).create_image_to_video(request)
+
+
+def stable_provider_request(request: dict[str, Any]) -> dict[str, Any]:
+    stable = json.loads(json.dumps(request))
+    image_url = stable["content"][1]["image_url"]
+    raw_url = image_url["url"] if isinstance(image_url, dict) else image_url
+    parts = urlsplit(raw_url)
+    query = urlencode([(key, value) for key, value in parse_qsl(parts.query) if key != "x-expires"])
+    normalized_url = urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+    if isinstance(image_url, dict):
+        image_url["url"] = normalized_url
+    else:
+        stable["content"][1]["image_url"] = normalized_url
+    return stable
 
 
 @pytest.fixture()
@@ -175,15 +190,15 @@ def test_fake_provider_e2e_from_locked_prompt_to_worker_progress(
         stored_tasks = load_batch_tasks(conn, batch_id=first_batch["id"])
 
     assert len(provider.requests) == 2
-    assert provider.requests[0] == provider.requests[1]
+    assert stable_provider_request(provider.requests[0]) == stable_provider_request(
+        provider.requests[1]
+    )
     assert provider.requests[0]["model"] == "MiniMax-H3"
     assert provider.requests[0]["ratio"] == "adaptive"
     assert provider.requests[0]["content"][0]["type"] == "text"
     assert provider.requests[0]["content"][1]["role"] == "first_frame"
     assert all(row["provider_task_id"].startswith("fake-h3-") for row in stored_tasks)
-    assert all(
-        json.loads(row["provider_request_json"]) == provider.requests[0] for row in stored_tasks
-    )
+    assert [json.loads(row["provider_request_json"]) for row in stored_tasks] == provider.requests
 
     after_worker = client.get(
         f"/api/generation-batches/{first_batch['id']}",
