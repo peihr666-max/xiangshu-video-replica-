@@ -46,6 +46,7 @@
 - PostgreSQL：`scripts/pg-fixture.sh start` 成功；门禁后 `stop` 并删除测试容器。
 - 命令：`npm run check`。
 - 密钥扫描：通过，无运行时契约硬编码密钥。
+- 生产依赖审计：`npm audit --omit=dev`，0 vulnerabilities。
 - 前端：Biome、TypeScript、Vitest 全绿，72 个文件、990 个用例通过。
 - E2E 源码：Biome 14 个文件通过。
 - Tauri：`cargo fmt --check` 与 `cargo check --locked` 通过。
