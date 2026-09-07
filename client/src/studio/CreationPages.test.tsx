@@ -17,6 +17,7 @@ vi.mock("./context", () => ({ useStudio }));
 
 // 复刻模块（模块①）：部分 mock api/live，其余保持原实现。
 const replicaApi = vi.hoisted(() => ({
+  getAssetDownloadUrl: vi.fn(),
   selectCharacterReferences: vi.fn(),
   startVideoAnalysis: vi.fn(),
   waitForAnalysisTask: vi.fn(),
@@ -73,20 +74,39 @@ vi.mock("../FirstFrameSelection", () => ({
   FirstFrameSelection: (props: {
     onSelectionChange?: (s: unknown) => void;
   }) => (
-    <button
-      type="button"
-      onClick={() =>
-        props.onSelectionChange?.({
-          id: "ffv-1",
-          payload: {
-            first_frame_candidates_version_id: "cand-1",
-            first_frame_asset_id: "ff-asset-1",
-          },
-        })
-      }
-    >
-      stub-确认置换首帧
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() =>
+          props.onSelectionChange?.({
+            id: "ffv-1",
+            payload: {
+              first_frame_candidates_version_id: "cand-1",
+              first_frame_asset_id: "ff-asset-1",
+            },
+          })
+        }
+      >
+        stub-确认置换首帧
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.onSelectionChange?.({
+            id: "ffv-2",
+            payload: {
+              first_frame_candidates_version_id: "cand-2",
+              first_frame_asset_id: "ff-asset-1",
+            },
+          })
+        }
+      >
+        stub-更新置换首帧版本
+      </button>
+      <button type="button" onClick={() => props.onSelectionChange?.(null)}>
+        stub-撤销置换首帧
+      </button>
+    </>
   ),
 }));
 
@@ -242,7 +262,13 @@ function studio(
 }
 
 describe("V1.4 创作页面", () => {
-  beforeEach(() => useStudio.mockReset());
+  beforeEach(() => {
+    useStudio.mockReset();
+    replicaApi.getAssetDownloadUrl.mockReset();
+    replicaApi.getAssetDownloadUrl.mockImplementation(async (assetId) => ({
+      url: `https://signed.example/${assetId}.png`,
+    }));
+  });
 
   it("文案终稿可带入数字人口播并保留同一草稿", () => {
     const value = studio();
@@ -388,11 +414,212 @@ describe("V1.4 创作页面", () => {
     await waitFor(() =>
       expect(value.patchDraft).toHaveBeenCalledWith({
         firstFrameId: "ff-asset-1",
+        firstFrameSelectionVersionId: "ffv-1",
         frameConfirmed: true,
       }),
     );
     fireEvent.click(screen.getByRole("button", { name: "用于文/图生视频" }));
     expect(value.navigate).toHaveBeenCalledWith("video");
+  });
+
+  it("人物替换：同资产新确认版本会更新，撤销后清空交接", async () => {
+    const value = replacementStudio();
+    replicaApi.selectCharacterReferences.mockResolvedValue({
+      id: "crs-1",
+      payload: {},
+    });
+    useStudio.mockReturnValue(value);
+    render(<ReplacementPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "stub-选择人物" }));
+    fireEvent.click(screen.getByRole("button", { name: "stub-确认源画面" }));
+    await waitFor(() =>
+      expect(replicaApi.selectCharacterReferences).toHaveBeenCalled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "stub-确认置换首帧" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "stub-更新置换首帧版本" }),
+    );
+
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        firstFrameId: "ff-asset-1",
+        firstFrameSelectionVersionId: "ffv-2",
+        frameConfirmed: true,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "stub-撤销置换首帧" }));
+    expect(value.patchDraft).toHaveBeenLastCalledWith({
+      firstFrameId: undefined,
+      firstFrameSelectionVersionId: undefined,
+      frameConfirmed: false,
+    });
+  });
+
+  it("视频页按确认首帧 ID 恢复签名预览并交给生成请求", async () => {
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "video",
+      draft: {
+        ...value.state.draft,
+        firstFrameId: "ff-asset-new",
+        firstFrameSelectionVersionId: "ffv-new",
+        frameConfirmed: true,
+      },
+    };
+    value.data = {
+      ...value.data,
+      assets: value.data.assets.filter((asset) => asset.id !== "frame-1"),
+    };
+    value.updateData = vi.fn((update) => {
+      value.data = update(value.data);
+    });
+    useStudio.mockReturnValue(value);
+
+    render(<VideoPage />);
+
+    expect(screen.getByRole("button", { name: "生成视频" })).toBeDisabled();
+    expect(
+      await screen.findByRole("img", { name: "首帧预览" }),
+    ).toHaveAttribute("src", "https://signed.example/ff-asset-new.png");
+    expect(replicaApi.getAssetDownloadUrl).toHaveBeenCalledWith("ff-asset-new");
+    expect(value.data.assets[0]).toMatchObject({
+      id: "ff-asset-new",
+      assetId: "ff-asset-new",
+      kind: "image",
+      source: "人物置换",
+    });
+
+    const generate = screen.getByRole("button", { name: "生成视频" });
+    expect(generate).toBeEnabled();
+    fireEvent.click(generate);
+    expect(value.requestGeneration).toHaveBeenCalledWith("视频生成");
+    expect(value.state.draft.firstFrameId).toBe("ff-asset-new");
+  });
+
+  it("首帧 ID 切换后忽略旧签名请求的迟到响应", async () => {
+    let resolveOld: ((value: { url: string }) => void) | undefined;
+    let resolveNew: ((value: { url: string }) => void) | undefined;
+    replicaApi.getAssetDownloadUrl.mockImplementation(
+      (assetId: string) =>
+        new Promise((resolve) => {
+          if (assetId === "ff-old") resolveOld = resolve;
+          if (assetId === "ff-new") resolveNew = resolve;
+        }),
+    );
+    const initial = studio({ review: false });
+    initial.state = {
+      ...initial.state,
+      page: "video",
+      draft: { ...initial.state.draft, firstFrameId: "ff-old" },
+    };
+    initial.data = {
+      ...initial.data,
+      assets: initial.data.assets.filter((asset) => asset.id !== "frame-1"),
+    };
+    let current = initial;
+    current.updateData = vi.fn((update) => {
+      current.data = update(current.data);
+    });
+    useStudio.mockImplementation(() => current);
+    const view = render(<VideoPage />);
+
+    current = {
+      ...current,
+      state: {
+        ...current.state,
+        draft: { ...current.state.draft, firstFrameId: "ff-new" },
+      },
+    };
+    view.rerender(<VideoPage />);
+    resolveNew?.({ url: "https://signed.example/new.png" });
+    expect(
+      await screen.findByRole("img", { name: "首帧预览" }),
+    ).toHaveAttribute("src", "https://signed.example/new.png");
+
+    resolveOld?.({ url: "https://signed.example/old.png" });
+    await Promise.resolve();
+    expect(screen.getByRole("img", { name: "首帧预览" })).toHaveAttribute(
+      "src",
+      "https://signed.example/new.png",
+    );
+    expect(current.data.assets.some((asset) => asset.id === "ff-old")).toBe(
+      false,
+    );
+  });
+
+  it("首帧签名读取失败后可重试并恢复预览", async () => {
+    replicaApi.getAssetDownloadUrl
+      .mockRejectedValueOnce(new Error("签名服务暂时不可用"))
+      .mockResolvedValueOnce({ url: "https://signed.example/retried.png" });
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "video",
+      draft: { ...value.state.draft, firstFrameId: "ff-retry" },
+    };
+    value.data = {
+      ...value.data,
+      assets: value.data.assets.filter((asset) => asset.id !== "frame-1"),
+    };
+    value.data.assets.push({
+      id: "ff-retry",
+      assetId: "ff-retry",
+      name: "待恢复的已确认首帧",
+      kind: "image",
+      group: "置换首帧",
+      source: "人物置换",
+      saved: true,
+    });
+    useStudio.mockReturnValue(value);
+
+    render(<VideoPage />);
+
+    expect(await screen.findByText("首帧预览加载失败")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试加载首帧" }));
+    expect(
+      await screen.findByRole("img", { name: "首帧预览" }),
+    ).toHaveAttribute("src", "https://signed.example/retried.png");
+    expect(replicaApi.getAssetDownloadUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it("历史视频任务不遮挡新首帧加载失败与重试", async () => {
+    replicaApi.getAssetDownloadUrl.mockRejectedValue(
+      new Error("签名服务暂时不可用"),
+    );
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "video",
+      draft: {
+        ...value.state.draft,
+        firstFrameId: "ff-after-task",
+        videoBatchId: "old-video-task",
+      },
+    };
+    value.data = {
+      ...value.data,
+      assets: value.data.assets.filter((asset) => asset.id !== "frame-1"),
+      tasks: [
+        {
+          id: "old-video-task",
+          title: "上一次视频生成",
+          type: "视频生成",
+          status: "completed",
+          submitted: "今天 10:00",
+        },
+      ],
+    };
+    useStudio.mockReturnValue(value);
+
+    render(<VideoPage />);
+
+    expect(await screen.findByText("首帧预览加载失败")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "重试加载首帧" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成视频" })).toBeDisabled();
   });
 
   it("视频生成在文图和多参考两种模式之间切换", () => {

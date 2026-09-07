@@ -175,6 +175,8 @@ export type StudioDraft = {
   originalImageId?: string;
   imageId?: string;
   firstFrameId?: string;
+  /** 人物置换流程交接的已确认首帧版本。 */
+  firstFrameSelectionVersionId?: string;
   tailFrameId?: string;
   avatarId?: string;
   voiceId?: string;

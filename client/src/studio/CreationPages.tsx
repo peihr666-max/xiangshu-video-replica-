@@ -10,6 +10,7 @@ import {
   type CharacterReferenceSelection,
   customerVisibleErrorMessage,
   type GenerationRatio,
+  getAssetDownloadUrl,
   getLatestGenerationPrompt,
   getLatestProjectAnalysis,
   getLatestProjectFirstFrameSelection,
@@ -1136,7 +1137,7 @@ export function ReplacementPage() {
   // patchDraft 每次壳层渲染都是新引用，effect 依赖一律走 ref，避免无限置位循环。
   const patchDraftRef = useRef(patchDraft);
   patchDraftRef.current = patchDraft;
-  const confirmedAssetIdRef = useRef<string | undefined>(undefined);
+  const confirmedSelectionKeyRef = useRef<string | undefined>(undefined);
 
   const firstFrameAssetId = firstFrameSelection
     ? (readFirstFrameSelectionPayload(firstFrameSelection)
@@ -1144,9 +1145,10 @@ export function ReplacementPage() {
     : null;
 
   const clearConfirmedFirstFrame = useCallback(() => {
-    confirmedAssetIdRef.current = undefined;
+    confirmedSelectionKeyRef.current = undefined;
     patchDraftRef.current({
       firstFrameId: undefined,
+      firstFrameSelectionVersionId: undefined,
       frameConfirmed: false,
     } as Partial<StudioDraft>);
   }, []);
@@ -1160,10 +1162,11 @@ export function ReplacementPage() {
     setFirstFrameSelection(null);
     setReferenceError("");
     autoMatchAttemptedRef.current.clear();
-    confirmedAssetIdRef.current = undefined;
+    confirmedSelectionKeyRef.current = undefined;
     if (projectId) {
       patchDraftRef.current({
         firstFrameId: undefined,
+        firstFrameSelectionVersionId: undefined,
         frameConfirmed: false,
       } as Partial<StudioDraft>);
     }
@@ -1191,19 +1194,6 @@ export function ReplacementPage() {
       active = false;
     };
   }, [review, projectId]);
-
-  // 首帧确认即置位草稿：同一资产只置位一次，防止依赖循环反复 patch。
-  useEffect(() => {
-    if (!firstFrameSelection) {
-      return;
-    }
-    const assetId =
-      readFirstFrameSelectionPayload(firstFrameSelection)?.first_frame_asset_id;
-    if (assetId && confirmedAssetIdRef.current !== assetId) {
-      confirmedAssetIdRef.current = assetId;
-      patchDraftRef.current({ firstFrameId: assetId, frameConfirmed: true });
-    }
-  }, [firstFrameSelection]);
 
   // 人物参考自动匹配：角色版本 × 已确认源画面，组合只自动尝试一次。
   useEffect(() => {
@@ -1272,6 +1262,31 @@ export function ReplacementPage() {
       setReferenceError("");
       setFirstFrameSelection(null);
       clearConfirmedFirstFrame();
+    },
+    [clearConfirmedFirstFrame],
+  );
+
+  const handleFirstFrameChange = useCallback(
+    (selection: AnalysisVersion | null) => {
+      setFirstFrameSelection(selection);
+      if (!selection) {
+        clearConfirmedFirstFrame();
+        return;
+      }
+      const assetId =
+        readFirstFrameSelectionPayload(selection)?.first_frame_asset_id;
+      if (!assetId) {
+        clearConfirmedFirstFrame();
+        return;
+      }
+      const selectionKey = `${selection.id}:${assetId}`;
+      if (confirmedSelectionKeyRef.current === selectionKey) return;
+      confirmedSelectionKeyRef.current = selectionKey;
+      patchDraftRef.current({
+        firstFrameId: assetId,
+        firstFrameSelectionVersionId: selection.id,
+        frameConfirmed: true,
+      });
     },
     [clearConfirmedFirstFrame],
   );
@@ -1373,7 +1388,7 @@ export function ReplacementPage() {
             {characterSelection && sourceFrameSelection ? (
               <FirstFrameSelection
                 onBusyChange={setLeafBusy}
-                onSelectionChange={setFirstFrameSelection}
+                onSelectionChange={handleFirstFrameChange}
                 projectId={project.id}
                 referenceSelection={referenceSelection}
                 simplified
@@ -1717,11 +1732,99 @@ export function VideoPage() {
     saveDraft,
     requestGeneration,
     updateData,
+    review,
   } = useStudio();
   const referenceMode = state.page === "reference";
-  const firstFrame =
+  const storedFirstFrame =
     findAsset(data.assets, state.draft.firstFrameId) ??
     findAsset(data.materials, state.draft.firstFrameId);
+  const [resolvedFirstFrame, setResolvedFirstFrame] = useState<StudioAsset>();
+  const [firstFrameLoading, setFirstFrameLoading] = useState(false);
+  const [firstFrameError, setFirstFrameError] = useState("");
+  const [firstFrameLoadAttempt, setFirstFrameLoadAttempt] = useState(0);
+  const firstFrameRequestRef = useRef(0);
+  const firstFramePromiseRef = useRef<
+    | {
+        key: string;
+        promise: ReturnType<typeof getAssetDownloadUrl>;
+      }
+    | undefined
+  >(undefined);
+  const firstFrameId = state.draft.firstFrameId;
+  const usableStoredFirstFrame =
+    storedFirstFrame?.kind === "image" && storedFirstFrame.url
+      ? storedFirstFrame
+      : undefined;
+  const firstFrame =
+    usableStoredFirstFrame ??
+    (resolvedFirstFrame?.id === firstFrameId ? resolvedFirstFrame : undefined);
+
+  useEffect(() => {
+    const requestId = ++firstFrameRequestRef.current;
+    if (referenceMode || review || !firstFrameId || usableStoredFirstFrame) {
+      setResolvedFirstFrame(undefined);
+      setFirstFrameLoading(false);
+      setFirstFrameError("");
+      return;
+    }
+
+    setResolvedFirstFrame(undefined);
+    setFirstFrameLoading(true);
+    setFirstFrameError("");
+    const key = `${firstFrameId}:${firstFrameLoadAttempt}`;
+    const existing = firstFramePromiseRef.current;
+    const promise =
+      existing?.key === key
+        ? existing.promise
+        : getAssetDownloadUrl(firstFrameId);
+    firstFramePromiseRef.current = { key, promise };
+
+    void promise
+      .then(({ url }) => {
+        if (firstFrameRequestRef.current !== requestId) return;
+        const asset: StudioAsset = {
+          ...storedFirstFrame,
+          id: firstFrameId,
+          assetId: storedFirstFrame?.assetId ?? firstFrameId,
+          name: storedFirstFrame?.name ?? "已确认置换首帧",
+          kind: "image",
+          url,
+          group: storedFirstFrame?.group ?? "置换首帧",
+          source: storedFirstFrame?.source ?? "人物置换",
+          saved: true,
+          delivery: storedFirstFrame?.delivery ?? "stored",
+        };
+        setResolvedFirstFrame(asset);
+        setFirstFrameLoading(false);
+        updateData((previous) => ({
+          ...previous,
+          assets: [
+            asset,
+            ...previous.assets.filter((item) => item.id !== asset.id),
+          ],
+        }));
+      })
+      .catch((cause: unknown) => {
+        if (firstFrameRequestRef.current !== requestId) return;
+        setFirstFrameLoading(false);
+        setFirstFrameError(
+          customerVisibleErrorMessage(cause, "首帧预览读取失败，请重试。"),
+        );
+      });
+
+    return () => {
+      if (firstFrameRequestRef.current === requestId)
+        firstFrameRequestRef.current += 1;
+    };
+  }, [
+    firstFrameId,
+    firstFrameLoadAttempt,
+    referenceMode,
+    review,
+    storedFirstFrame,
+    updateData,
+    usableStoredFirstFrame,
+  ]);
   const tailFrame =
     findAsset(data.assets, state.draft.tailFrameId) ??
     findAsset(data.materials, state.draft.tailFrameId);
@@ -1730,7 +1833,9 @@ export function VideoPage() {
     .filter((asset): asset is StudioAsset => Boolean(asset));
   const ready =
     Boolean(state.draft.prompt.trim()) &&
-    (referenceMode ? references.length > 0 : true);
+    (referenceMode
+      ? references.length > 0
+      : !firstFrameId || Boolean(firstFrame));
   const videoTask = state.draft.videoBatchId
     ? data.tasks.find((task) => task.id === state.draft.videoBatchId)
     : undefined;
@@ -1894,7 +1999,27 @@ export function VideoPage() {
           <div className="creation-panel-title">
             预览（{referenceMode ? "参考画布" : "首帧预览"}）
           </div>
-          {videoTask ? (
+          {!referenceMode && firstFrameLoading ? (
+            <Empty
+              title="正在加载首帧预览"
+              description="正在读取已确认置换首帧的签名地址。"
+            />
+          ) : !referenceMode && firstFrameError ? (
+            <Empty
+              title="首帧预览加载失败"
+              description={firstFrameError}
+              action={
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    setFirstFrameLoadAttempt((attempt) => attempt + 1)
+                  }
+                >
+                  重试加载首帧
+                </Button>
+              }
+            />
+          ) : videoTask ? (
             <VideoProgressView task={videoTask} />
           ) : referenceMode ? (
             references.length ? (

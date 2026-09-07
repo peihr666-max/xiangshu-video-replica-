@@ -123,6 +123,13 @@ export function patchStudioDraft(
 ): StudioDraft {
   const projectChanged =
     Object.hasOwn(patch, "projectId") && patch.projectId !== draft.projectId;
+  const identityChanged =
+    projectChanged ||
+    (Object.hasOwn(patch, "ipId") && patch.ipId !== draft.ipId) ||
+    (Object.hasOwn(patch, "imageId") && patch.imageId !== draft.imageId);
+  const firstFrameChanged =
+    Object.hasOwn(patch, "firstFrameId") &&
+    patch.firstFrameId !== draft.firstFrameId;
   const next = {
     ...draft,
     ...patch,
@@ -142,8 +149,12 @@ export function patchStudioDraft(
     next.avatarId = undefined;
     next.script = { ...next.script, confirmed: false };
   }
-  if (patch.imageId !== undefined && patch.imageId !== draft.imageId)
-    next.frameConfirmed = false;
+  if (identityChanged || firstFrameChanged) {
+    if (!Object.hasOwn(patch, "firstFrameId")) next.firstFrameId = undefined;
+    if (!Object.hasOwn(patch, "firstFrameSelectionVersionId"))
+      next.firstFrameSelectionVersionId = undefined;
+    if (!Object.hasOwn(patch, "frameConfirmed")) next.frameConfirmed = false;
+  }
   if (patch.script && patch.script.text !== draft.script.text)
     next.script = { ...patch.script, confirmed: false };
   if (

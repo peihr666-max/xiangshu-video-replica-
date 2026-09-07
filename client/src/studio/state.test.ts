@@ -45,6 +45,29 @@ describe("V1.4 交接合同", () => {
     expect(next.scriptEdited).toBe(false);
   });
 
+  it("项目、人物或目标图变化时使旧首帧确认与版本失效", () => {
+    const confirmed = {
+      ...createDraft(),
+      projectId: "project-a",
+      ipId: "person-a",
+      imageId: "photo-a",
+      firstFrameId: "frame-a",
+      firstFrameSelectionVersionId: "ffv-a",
+      frameConfirmed: true,
+    };
+
+    for (const patch of [
+      { projectId: "project-b" },
+      { ipId: "person-b" },
+      { imageId: "photo-b" },
+    ]) {
+      const next = patchStudioDraft(confirmed, patch);
+      expect(next.firstFrameId).toBeUndefined();
+      expect(next.firstFrameSelectionVersionId).toBeUndefined();
+      expect(next.frameConfirmed).toBe(false);
+    }
+  });
+
   it("同项目返回保留人物和未保存终稿，不回退到旧版本", () => {
     const state = createState("copy");
     state.draft = {
