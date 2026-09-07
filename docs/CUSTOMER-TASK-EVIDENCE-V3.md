@@ -19,14 +19,14 @@
 | Field | Evidence |
 | --- | --- |
 | **Task ID** | T46 |
-| **Status** | `IN_PROGRESS`（用户追加 CL-12/CL-13） |
+| **Status** | `IN_PROGRESS`（CL-13 待依赖决策，CL-11 待授权） |
 | **Baseline / Branch** | `7f08678` / `feat/character-library-page-closure` |
 | **Scope** | Character list, five-view and scene generation, IP rewrite, avatar/voice cloning, oral generation, task recovery, provider settings and billing price |
 | **Work Plan** | `docs/人物库页面全链路收口计划-2026-09-07.md` |
-| **Current Evidence Level** | CL-00–CL-12 are `AUTOMATED_VERIFIED`; CL-13 awaits the post-production renderer dependency and distribution-license decision |
+| **Current Evidence Level** | CL-00–CL-12 and CL-14 are `AUTOMATED_VERIFIED`; CL-13 awaits the post-production renderer dependency and distribution-license decision |
 | **External Boundary** | Real Apilio/DeepSeek/Hifly/COS/payment validation remains T40 and requires explicit authorization |
 
-CL-00–CL-12 are complete. Formal pages use the real API path and do not fall back to review/mock fixtures; the character list now uses actor/query-bound keyset pagination instead of returning the full library to the page. CL-13 is specified but not coded because the bundled FFmpeg is audio-only and the repository has no approved text rasterizer/CJK font distribution. CL-11 remains the authorized real-chain gate. Full evidence is recorded in `docs/evidence/T46-EVIDENCE.md`.
+CL-00–CL-12 and CL-14 are complete. Formal pages use the real API path and do not fall back to review/mock fixtures; the character list now uses actor/query-bound keyset pagination instead of returning the full library to the page. The V1.4 workspace now exposes the existing provider/settings backend to administrators and blocks non-admin users at both navigation and content layers. CL-13 is specified but not coded because the bundled FFmpeg is audio-only and the repository has no approved text rasterizer/CJK font distribution. CL-11 remains the authorized real-chain gate. Full evidence is recorded in `docs/evidence/T46-EVIDENCE.md`.
 
 ## T45 — Security Defense-in-Depth Closure
 

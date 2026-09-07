@@ -2,11 +2,11 @@
 
 ## 当前状态
 
-- 状态：`IN_PROGRESS`（CL-12 已完成；CL-13 待依赖决策；CL-11 待 T40 授权）
+- 状态：`IN_PROGRESS`（CL-12、CL-14 已完成；CL-13 待依赖决策；CL-11 待 T40 授权）
 - 基线：`7f08678`
 - 分支：`feat/character-library-page-closure`
 - 计划：`docs/人物库页面全链路收口计划-2026-09-07.md`
-- 当前证据层级：CL-00–CL-12 为 `AUTOMATED_VERIFIED`；CL-13 待后期渲染依赖和许可决策
+- 当前证据层级：CL-00–CL-12、CL-14 为 `AUTOMATED_VERIFIED`；CL-13 待后期渲染依赖和许可决策
 - 真实 Apilio、DeepSeek、Hifly、COS 和账务联合链未执行，仍归 T40。
 
 ## 工作包证据
@@ -26,6 +26,7 @@
 | CL-10 | 全仓迁移 head、设置计价、夹具来源和动态签名契约回归 | 同步迁移 head 与所有测试契约；修复口播价格初始同步竞态；动态签名按媒体身份而非过期查询参数比较 | `npm run check`：前端 990、服务端 1930、密钥/E2E/Tauri/Ruff/format/Mypy 全绿；`f0b6abc`、`89ae7c6`、`16a1c45` | 完成 |
 | CL-12 | 数组响应、缺失分页函数、跨用户/跨搜索 cursor、跨页重复和前端请求竞态先红 | 服务端先按 identity `(created_at,id)` keyset 分页再聚合完整人物；cursor 绑定 actor/role/query 且失败关闭；前端服务端搜索、追加去重与迟到响应废弃；Studio 全量读取保持兼容 | 后端人物专项 66/66；前端人物/API/Studio 183/183；全仓前端 992/992、后端 1932/1932；`869be55` | 完成 |
 | CL-13 | 依赖审计确认现有随包 FFmpeg 只支持音频，无视频编解码/文字渲染/可分发中文字体 | 已冻结“独立合成任务与版本、不改写 Hifly 原件、不二次结算、BGM 关闭”的实施边界 | 渲染器自动化待依赖选型后开始 | 待依赖决策 |
+| CL-14 | 旧 `#settings` 在 V1.4 工作区落到工作台、无管理设置入口先红 | 复用既有 `SettingsPanel`；仅管理员追加“系统设置”导航；内容层再次检查角色；兼容旧链接 | 专项 46/46；前端全量 993/993；Biome/TypeScript/密钥扫描通过；本地浏览器验证；`6f9a44a` | 完成 |
 
 ## 页面与后端联动结论
 
@@ -39,7 +40,7 @@
 | 声音克隆 | 5–180 秒音频、授权、试听、确认 | voice sample/clone/confirm、ffprobe、状态持久化 | 自动化闭环；真实 Hifly 待 T40 |
 | 数字人口播 | 文案/音频两模式、直传、字幕、单飞提交 | oral task、稳定幂等、队列、钱包 RESERVE/SETTLE/RELEASE、归档 | 自动化闭环；真实 Hifly/COS/账务对账待 T40 |
 | 任务中心 | 取消、下载、归档重试、UNKNOWN 人工核对 | 任务状态机、恢复、归档和权限路由 | 自动化闭环；真实故障演练待 T39/T40 |
-| 设置 | Hifly 密钥、连接测试、口播单价 | provider settings、掩码、管理员权限、`/api/oral/price`、迁移 077 | 自动化闭环；真实凭据连接待 T40 |
+| 设置 | V1.4 管理员导航可达；Hifly 密钥、连接测试、口播单价 | provider settings、掩码、管理员权限、`/api/oral/price`、迁移 077 | 自动化与本地浏览器闭环；真实凭据连接待 T40 |
 
 正式页面没有 API 失败后回退 mock 的路径。`review=true` 的设计评审夹具仍显式保留，不会在正式入口自动启用。未清空本机业务数据库：现有记录没有可靠的“模拟数据”标识，直接删除存在误删真实人物/任务的风险。
 
@@ -49,7 +50,7 @@
 - 命令：`npm run check`。
 - 密钥扫描：通过，无运行时契约硬编码密钥。
 - 生产依赖审计：`npm audit --omit=dev`，0 vulnerabilities。
-- 前端：Biome、TypeScript、Vitest 全绿，72 个文件、992 个用例通过。
+- 前端：Biome、TypeScript、Vitest 全绿，72 个文件、993 个用例通过。
 - E2E 源码：Biome 14 个文件通过。
 - Tauri：`cargo fmt --check` 与 `cargo check --locked` 通过。
 - 服务端：Ruff 276 个文件、Mypy 100 个源文件通过。
@@ -59,20 +60,20 @@
 ## §14 任务证据记录
 
 ```text
-任务/工作包：T46 / CL-00–CL-12
+任务/工作包：T46 / CL-00–CL-12、CL-14
 Owner / Reviewer：Codex / independent verifier
 分支 / 基线 SHA：feat/character-library-page-closure / 7f08678
 上游规格段落：客户版任务清单 V3 §12–§15；人物库页面全链路收口计划
-改动文件：CL-00–CL-10 前端人物/创作/设置/API/状态模型与后端人物/素材/媒体探测/口播/设置；迁移 077；CL-12 额外修改前后端人物列表/API/OpenAPI 及测试 9 个文件
+改动文件：CL-00–CL-10 前端人物/创作/设置/API/状态模型与后端人物/素材/媒体探测/口播/设置；迁移 077；CL-12 额外修改前后端人物列表/API/OpenAPI 及测试 9 个文件；CL-14 复用既有设置组件补齐 V1.4 管理员入口与回归测试
 失败测试或回归锁定：UNKNOWN 重提与槽位、图片/媒体伪成功、auditor 写入、删除顺序、IP/场景跨页、音频与字幕、计价迁移、第 13 人可达、输入同步竞态、动态签名跨秒、人物列表 keyset 分页/cursor 作用域/完整聚合/请求竞态
-实现结果：CL-00–CL-12 全部完成；页面与后端代码链形成单一真实入口；正式运行不回退 review/mock；人物列表不再全量返回给页面
-验证命令与通过数：`npm run check`；前端 992/992，后端 1932/1932，密钥/E2E/Tauri/Ruff/format/Mypy 全通过
+实现结果：CL-00–CL-12、CL-14 全部完成；页面与后端代码链形成单一真实入口；正式运行不回退 review/mock；人物列表不再全量返回给页面；管理员可在新版工作区安全维护服务配置
+验证命令与通过数：全仓 `npm run check`：后端 1932/1932；CL-14 后前端 `npm run check --workspace client`：993/993；密钥/E2E/Tauri/Ruff/format/Mypy 全通过
 证据层级：AUTOMATED_VERIFIED
 安全与可观测性：真实凭据不得入库、日志、测试夹具或提交
 迁移与回滚：新增可逆迁移 `077_oral_unit_price`；代码按 Lore 提交逐包 `git revert`
 外部授权记录：未授权真实付费 Provider、生产 COS、支付和发布
 未测试项：真实 Apilio/DeepSeek/Hifly/COS/钱包联合链
-Lore 提交 SHA：`40b62e7`、`50146b6`、`9d222f4`、`9fb616e`、`263c4f2`、`dfb6feb`、`754cd93`、`f0b6abc`、`3a3d51e`、`89ae7c6`、`16a1c45`、`869be55`
+Lore 提交 SHA：`40b62e7`、`50146b6`、`9d222f4`、`9fb616e`、`263c4f2`、`dfb6feb`、`754cd93`、`f0b6abc`、`3a3d51e`、`89ae7c6`、`16a1c45`、`869be55`、`6f9a44a`
 ```
 
 ## 仍未完成/未授权
