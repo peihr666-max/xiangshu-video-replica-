@@ -180,7 +180,11 @@ export type StudioDraft = {
   voiceId?: string;
   audioId?: string;
   script: StudioScript;
+  /** 当前脚本是否包含尚未发布为项目版本的本地编辑，包括主动清空。 */
+  scriptEdited?: boolean;
   prompt: string;
+  /** 当前 Prompt 是否包含尚未保存为项目版本的本地编辑，包括主动清空。 */
+  promptEdited?: boolean;
   referenceIds: string[];
   resolution: string;
   ratio: string;

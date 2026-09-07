@@ -916,6 +916,16 @@ function draftFromPayload(payload: unknown): StudioDraft | null {
       ...base.script,
       ...(script as Partial<StudioScript>),
     },
+    promptEdited:
+      typeof payload.promptEdited === "boolean"
+        ? payload.promptEdited
+        : typeof payload.prompt === "string" && payload.prompt.length > 0,
+    scriptEdited:
+      typeof payload.scriptEdited === "boolean"
+        ? payload.scriptEdited
+        : [script.title, script.original, script.text].some(
+            (value) => typeof value === "string" && value.length > 0,
+          ),
   };
   return merged;
 }

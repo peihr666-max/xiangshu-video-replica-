@@ -5,6 +5,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StudioContextValue } from "./types";
 
@@ -21,6 +22,8 @@ const replicaApi = vi.hoisted(() => ({
   waitForAnalysisTask: vi.fn(),
   getLatestProjectShotCards: vi.fn(),
   getLatestProjectAnalysis: vi.fn(async () => ({ id: "av-x", payload: {} })),
+  getLatestGenerationPrompt: vi.fn(),
+  getLatestScriptVersion: vi.fn(),
   getLatestProjectFirstFrameSelection: vi.fn(),
   saveGenerationPrompt: vi.fn(),
   saveShotCards: vi.fn(),
@@ -593,7 +596,29 @@ describe("V1.4 创作页面", () => {
 });
 
 describe("视频复刻（模块①）", () => {
-  beforeEach(() => useStudio.mockReset());
+  beforeEach(() => {
+    useStudio.mockReset();
+    replicaApi.getLatestProjectShotCards.mockReset();
+    replicaApi.getLatestProjectAnalysis.mockReset();
+    replicaApi.getLatestGenerationPrompt.mockReset();
+    replicaApi.getLatestScriptVersion.mockReset();
+    replicaApi.saveGenerationPrompt.mockReset();
+    replicaApi.getLatestProjectShotCards.mockResolvedValue(null);
+    replicaApi.getLatestProjectAnalysis.mockResolvedValue({
+      id: "av-empty",
+      payload: {},
+    });
+    replicaApi.getLatestGenerationPrompt.mockResolvedValue({
+      stale: false,
+      stale_reasons: [],
+      version: null,
+    });
+    replicaApi.getLatestScriptVersion.mockResolvedValue({
+      stale: false,
+      stale_reasons: [],
+      version: null,
+    });
+  });
 
   const shot = {
     shot_id: "s1",
@@ -680,6 +705,360 @@ describe("视频复刻（模块①）", () => {
     });
   }
 
+  function mockSavedReplicaVersions() {
+    replicaApi.getLatestProjectShotCards.mockResolvedValue({
+      id: "scv-saved",
+      payload: {
+        source_analysis_version_id: "av-saved",
+        duration_seconds: 8,
+        shots: [shot],
+      },
+    });
+    replicaApi.getLatestProjectAnalysis.mockResolvedValue({
+      id: "av-saved",
+      payload: {
+        analysis: {
+          original_script: "保存的分析原文",
+          shots: [shot],
+        },
+      },
+    });
+    replicaApi.getLatestGenerationPrompt.mockResolvedValue({
+      stale: false,
+      stale_reasons: [],
+      version: {
+        id: "prompt-saved",
+        version_number: 4,
+        payload: { prompt_text: "保存的复刻 Prompt" },
+      },
+    });
+    replicaApi.getLatestScriptVersion.mockResolvedValue({
+      stale: false,
+      stale_reasons: [],
+      version: {
+        id: "script-saved",
+        version_number: 3,
+        payload: { full_text: "保存的二创终稿" },
+      },
+    });
+  }
+
+  it("返回复刻页时自动恢复分镜、脚本与 Prompt，不重新发起拆解", async () => {
+    const value = replicaStudio();
+    value.state = {
+      ...value.state,
+      draft: {
+        ...value.state.draft,
+        prompt: "",
+        script: { ...value.state.draft.script, text: "", confirmed: false },
+      },
+    };
+    mockSavedReplicaVersions();
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    expect(await screen.findByText(/院落/)).toBeInTheDocument();
+    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue(
+      "保存的复刻 Prompt",
+    );
+    expect(value.patchDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "保存的复刻 Prompt",
+        script: expect.objectContaining({
+          id: "script-saved",
+          text: "保存的二创终稿",
+          version: 3,
+        }),
+      }),
+    );
+    expect(replicaApi.startVideoAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("返回复刻页时保留当前项目未保存的工作区草稿", async () => {
+    const value = replicaStudio();
+    value.state = {
+      ...value.state,
+      draft: {
+        ...value.state.draft,
+        prompt: "尚未保存的 Prompt 编辑",
+        promptEdited: true,
+        script: {
+          ...value.state.draft.script,
+          text: "尚未保存的文案编辑",
+          version: 7,
+        },
+        scriptEdited: true,
+      },
+    };
+    mockSavedReplicaVersions();
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue(
+      "尚未保存的 Prompt 编辑",
+    );
+    expect(value.patchDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "尚未保存的 Prompt 编辑",
+        script: expect.objectContaining({
+          text: "尚未保存的文案编辑",
+          version: 7,
+        }),
+      }),
+    );
+  });
+
+  it("StrictMode 重放 effect 后仍能完成首次版本恢复", async () => {
+    const value = replicaStudio();
+    value.state = {
+      ...value.state,
+      draft: {
+        ...value.state.draft,
+        prompt: "",
+        script: { ...value.state.draft.script, text: "", confirmed: false },
+      },
+    };
+    mockSavedReplicaVersions();
+    useStudio.mockReturnValue(value);
+    render(
+      <StrictMode>
+        <ReplicaPage />
+      </StrictMode>,
+    );
+
+    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
+    expect(replicaApi.getLatestProjectShotCards).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/正在读取已保存/)).toBeNull();
+  });
+
+  it("恢复请求等待期间主动清空 Prompt 时不被旧版本覆盖", async () => {
+    const value = replicaStudio();
+    value.state = {
+      ...value.state,
+      draft: { ...value.state.draft, prompt: "" },
+    };
+    mockSavedReplicaVersions();
+    let resolveShots:
+      | ((
+          value: Awaited<
+            ReturnType<typeof replicaApi.getLatestProjectShotCards>
+          >,
+        ) => void)
+      | undefined;
+    replicaApi.getLatestProjectShotCards.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveShots = resolve;
+        }),
+    );
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    const textarea = screen.getByLabelText("拆解 Prompt");
+    fireEvent.change(textarea, { target: { value: "加载期间的编辑" } });
+    fireEvent.change(textarea, { target: { value: "" } });
+    resolveShots?.({
+      id: "scv-delayed",
+      payload: {
+        source_analysis_version_id: "av-saved",
+        duration_seconds: 8,
+        shots: [shot],
+      },
+    });
+
+    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
+    expect(textarea).toHaveValue("");
+    expect(value.patchDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ prompt: "", promptEdited: true }),
+    );
+  });
+
+  it("主动清空 Prompt 后离页再返回仍保留空草稿", async () => {
+    const first = replicaStudio();
+    useStudio.mockReturnValue(first);
+    const firstView = render(<ReplicaPage />);
+    const textarea = screen.getByLabelText("拆解 Prompt");
+    fireEvent.change(textarea, { target: { value: "准备清空" } });
+    fireEvent.change(textarea, { target: { value: "" } });
+    expect(first.patchDraft).toHaveBeenLastCalledWith({
+      prompt: "",
+      promptEdited: true,
+    });
+    firstView.unmount();
+
+    const reopened = replicaStudio();
+    reopened.state = {
+      ...reopened.state,
+      draft: {
+        ...reopened.state.draft,
+        prompt: "",
+        promptEdited: true,
+      },
+    };
+    mockSavedReplicaVersions();
+    useStudio.mockReturnValue(reopened);
+    render(<ReplicaPage />);
+
+    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue("");
+    expect(reopened.patchDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "", promptEdited: true }),
+    );
+  });
+
+  it("同项目本地文案保留标题、来源原文和主动清空内容", async () => {
+    const value = replicaStudio();
+    value.state = {
+      ...value.state,
+      draft: {
+        ...value.state.draft,
+        script: {
+          ...value.state.draft.script,
+          title: "本地改过的作品名",
+          original: "音频提取的来源原文",
+          text: "",
+          version: 9,
+        },
+        scriptEdited: true,
+      },
+    };
+    mockSavedReplicaVersions();
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    await waitFor(() => expect(value.patchDraft).toHaveBeenCalled());
+    expect(value.patchDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        script: expect.objectContaining({
+          title: "本地改过的作品名",
+          original: "音频提取的来源原文",
+          text: "",
+          version: 9,
+        }),
+        scriptEdited: true,
+      }),
+    );
+  });
+
+  it("空态挂载后云端编辑稿迟到，版本恢复不覆盖云端 Prompt", async () => {
+    const initial = replicaStudio();
+    initial.state = {
+      ...initial.state,
+      draft: { ...initial.state.draft, prompt: "", promptEdited: false },
+    };
+    let current = initial;
+    let resolveShots:
+      | ((
+          value: Awaited<
+            ReturnType<typeof replicaApi.getLatestProjectShotCards>
+          >,
+        ) => void)
+      | undefined;
+    mockSavedReplicaVersions();
+    replicaApi.getLatestProjectShotCards.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveShots = resolve;
+        }),
+    );
+    useStudio.mockImplementation(() => current);
+    const view = render(<ReplicaPage />);
+
+    current = {
+      ...initial,
+      state: {
+        ...initial.state,
+        draft: {
+          ...initial.state.draft,
+          prompt: "云端迟到的本地编辑稿",
+          promptEdited: true,
+        },
+      },
+    };
+    view.rerender(<ReplicaPage />);
+    resolveShots?.({
+      id: "scv-cloud-late",
+      payload: {
+        source_analysis_version_id: "av-saved",
+        duration_seconds: 8,
+        shots: [shot],
+      },
+    });
+
+    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue(
+      "云端迟到的本地编辑稿",
+    );
+    expect(current.patchDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "云端迟到的本地编辑稿",
+        promptEdited: true,
+      }),
+    );
+  });
+
+  it("项目尚无分析版本时按空态恢复，不显示读取失败", async () => {
+    const value = replicaStudio();
+    const notFound = Object.assign(
+      new Error("Project has no analysis version."),
+      {
+        status: 404,
+        code: "ANALYSIS_NOT_FOUND",
+      },
+    );
+    replicaApi.getLatestProjectAnalysis.mockRejectedValue(notFound);
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    await waitFor(() =>
+      expect(replicaApi.getLatestProjectAnalysis).toHaveBeenCalledWith(
+        "project-1",
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "启动 AI 拆解" }),
+    ).toBeInTheDocument();
+  });
+
+  it("恢复失败时显示重试，重试成功后载入原版本", async () => {
+    const value = replicaStudio();
+    replicaApi.getLatestProjectShotCards
+      .mockRejectedValueOnce(new Error("读取超时"))
+      .mockResolvedValueOnce({
+        id: "scv-retry",
+        payload: {
+          source_analysis_version_id: "av-retry",
+          duration_seconds: 8,
+          shots: [shot],
+        },
+      });
+    replicaApi.getLatestProjectAnalysis.mockResolvedValue({
+      id: "av-retry",
+      payload: { analysis: { original_script: "重试恢复", shots: [shot] } },
+    });
+    replicaApi.getLatestGenerationPrompt.mockResolvedValue({
+      stale: true,
+      stale_reasons: ["shot cards changed"],
+      version: null,
+    });
+    replicaApi.getLatestScriptVersion.mockResolvedValue({
+      stale: true,
+      stale_reasons: ["analysis changed"],
+      version: null,
+    });
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    expect(await screen.findByText(/读取超时/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试读取历史分镜" }));
+
+    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
+    expect(replicaApi.getLatestProjectShotCards).toHaveBeenCalledTimes(2);
+    expect(replicaApi.startVideoAnalysis).not.toHaveBeenCalled();
+  });
+
   async function openReplicaAndAnalyze(
     options: { existingShotCards?: boolean } = {},
   ) {
@@ -737,11 +1116,15 @@ describe("视频复刻（模块①）", () => {
     fireEvent.change(input);
 
     await waitFor(() =>
-      expect(value.patchDraft).toHaveBeenCalledWith({
-        projectId: "project-upload-1",
-        sourceId: "asset-upload-1",
-        sourceAssetId: "asset-upload-1",
-      }),
+      expect(value.patchDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-upload-1",
+          sourceId: "asset-upload-1",
+          sourceAssetId: "asset-upload-1",
+          prompt: "",
+          script: expect.objectContaining({ text: "" }),
+        }),
+      ),
     );
     expect(value.updateData).toHaveBeenCalledOnce();
     const update = vi.mocked(value.updateData).mock.calls[0][0];
@@ -756,6 +1139,84 @@ describe("视频复刻（模块①）", () => {
     expect(
       screen.getByRole("button", { name: "启动 AI 拆解" }),
     ).toBeInTheDocument();
+  });
+
+  it("上传 B 项目时清空 A 项目的 Prompt，并阻止重渲染重启 A 的恢复", async () => {
+    const initial = replicaStudio();
+    initial.state = {
+      ...initial.state,
+      draft: {
+        ...initial.state.draft,
+        prompt: "A 项目的 Prompt",
+        script: { ...initial.state.draft.script, text: "A 项目的文案" },
+      },
+    };
+    let current = initial;
+    let resolveRestore:
+      | ((
+          value: Awaited<
+            ReturnType<typeof replicaApi.getLatestProjectShotCards>
+          >,
+        ) => void)
+      | undefined;
+    let resolveUpload:
+      | ((
+          value: Awaited<
+            ReturnType<typeof replicaLive.uploadWorkbenchSourceVideo>
+          >,
+        ) => void)
+      | undefined;
+    replicaApi.getLatestProjectShotCards.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRestore = resolve;
+        }),
+    );
+    replicaLive.uploadWorkbenchSourceVideo.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpload = resolve;
+        }),
+    );
+    useStudio.mockImplementation(() => current);
+    const view = render(<ReplicaPage />);
+    expect(replicaApi.getLatestProjectShotCards).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "更换来源视频" }));
+    const input = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [new File([], "b.mp4")] });
+    fireEvent.change(input);
+
+    current = { ...initial, patchDraft: vi.fn() };
+    view.rerender(<ReplicaPage />);
+    expect(replicaApi.getLatestProjectShotCards).toHaveBeenCalledTimes(1);
+
+    resolveUpload?.({ projectId: "project-b", assetId: "asset-b" });
+    await waitFor(() =>
+      expect(initial.patchDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-b",
+          prompt: "",
+          script: expect.objectContaining({ text: "" }),
+        }),
+      ),
+    );
+    resolveRestore?.({
+      id: "scv-a-late",
+      payload: {
+        source_analysis_version_id: "av-a",
+        duration_seconds: 8,
+        shots: [shot],
+      },
+    });
+    await Promise.resolve();
+
+    expect(current.patchDraft).not.toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "project-1" }),
+    );
+    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue("");
   });
 
   it("选择已有项目后忽略仍在上传的旧来源", async () => {
@@ -809,16 +1270,20 @@ describe("视频复刻（模块①）", () => {
       replicaLive.uploadWorkbenchSourceVideo.mock.calls[0]?.[2]?.aborted,
     ).toBe(true);
     await waitFor(() =>
-      expect(value.patchDraft).toHaveBeenCalledWith({
-        projectId: "project-1",
-        sourceId: "asset-1",
-        sourceAssetId: "asset-1",
-      }),
+      expect(value.patchDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          sourceId: "asset-1",
+          sourceAssetId: "asset-1",
+        }),
+      ),
     );
 
     resolveUpload?.({ projectId: "late-project", assetId: "late-asset" });
     await Promise.resolve();
-    expect(value.patchDraft).toHaveBeenCalledTimes(1);
+    expect(value.patchDraft).not.toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "late-project" }),
+    );
   });
 
   it("启动 AI 拆解后生成分镜行与逐镜头 Prompt", async () => {
@@ -830,9 +1295,12 @@ describe("视频复刻（模块①）", () => {
     ) as HTMLTextAreaElement;
     expect(textarea.value).toContain("【镜头 1】");
     expect(textarea.value).toContain("【原片口播稿】");
-    expect(value.patchDraft).toHaveBeenCalledWith({
-      prompt: expect.stringContaining("【镜头 1】"),
-    });
+    expect(value.patchDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining("【镜头 1】"),
+        promptEdited: false,
+      }),
+    );
   });
 
   it("编辑后的 Prompt 可保存为用户自定义提示词", async () => {
@@ -856,6 +1324,144 @@ describe("视频复刻（模块①）", () => {
     expect(value.notify).toHaveBeenCalledWith(
       expect.stringContaining("我的提示词"),
     );
+  });
+
+  it("保存 A 期间继续编辑 B，A 的迟到响应不清除 B 的编辑标记", async () => {
+    const value = replicaStudio();
+    let resolveSave: ((value: { id: string }) => void) | undefined;
+    replicaApi.saveGenerationPrompt.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    const textarea = screen.getByLabelText("拆解 Prompt");
+    fireEvent.change(textarea, { target: { value: "准备保存的 A" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+    fireEvent.change(textarea, { target: { value: "继续编辑的 B" } });
+    resolveSave?.({ id: "prompt-a" });
+
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "提交时的 Prompt 已保存，当前修改仍需再次保存。",
+      ),
+    );
+    expect(value.patchDraft).not.toHaveBeenCalledWith({ promptEdited: false });
+    expect(textarea).toHaveValue("继续编辑的 B");
+  });
+
+  it("新 Prompt 保存成功后，迟到的历史恢复只补分镜且不覆盖新内容", async () => {
+    const value = replicaStudio();
+    let resolveShots:
+      | ((
+          value: Awaited<
+            ReturnType<typeof replicaApi.getLatestProjectShotCards>
+          >,
+        ) => void)
+      | undefined;
+    mockSavedReplicaVersions();
+    replicaApi.getLatestProjectShotCards.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveShots = resolve;
+        }),
+    );
+    replicaApi.saveGenerationPrompt.mockResolvedValue({ id: "prompt-new" });
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    const textarea = screen.getByLabelText("拆解 Prompt");
+    fireEvent.change(textarea, { target: { value: "刚保存的新 Prompt" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({ promptEdited: false }),
+    );
+
+    resolveShots?.({
+      id: "scv-old-late",
+      payload: {
+        source_analysis_version_id: "av-saved",
+        duration_seconds: 8,
+        shots: [shot],
+      },
+    });
+
+    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
+    expect(textarea).toHaveValue("刚保存的新 Prompt");
+    expect(value.patchDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        prompt: "刚保存的新 Prompt",
+        promptEdited: false,
+      }),
+    );
+    expect(screen.queryByText(/正在读取已保存/)).toBeNull();
+  });
+
+  it("保存响应在切换项目后返回，不清除新项目编辑标记", async () => {
+    const value = replicaStudio();
+    let current = value;
+    let resolveSave: ((value: { id: string }) => void) | undefined;
+    replicaApi.saveGenerationPrompt.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    useStudio.mockImplementation(() => current);
+    const view = render(<ReplicaPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+    current = {
+      ...value,
+      state: {
+        ...value.state,
+        draft: { ...value.state.draft, projectId: "project-2" },
+      },
+      data: {
+        ...value.data,
+        projects: [
+          ...value.data.projects,
+          {
+            ...value.data.projects[0],
+            id: "project-2",
+            name: "第二项目",
+            reference_asset_id: "asset-2",
+          },
+        ],
+      },
+    };
+    view.rerender(<ReplicaPage />);
+    resolveSave?.({ id: "prompt-a" });
+    await Promise.resolve();
+
+    expect(value.patchDraft).not.toHaveBeenCalledWith({ promptEdited: false });
+  });
+
+  it("保存响应在页面卸载后返回，不再修改工作区标记", async () => {
+    const value = replicaStudio();
+    let resolveSave: ((value: { id: string }) => void) | undefined;
+    replicaApi.saveGenerationPrompt.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    useStudio.mockReturnValue(value);
+    const view = render(<ReplicaPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+    view.unmount();
+    resolveSave?.({ id: "prompt-a" });
+    await Promise.resolve();
+
+    expect(value.patchDraft).not.toHaveBeenCalledWith({ promptEdited: false });
   });
 
   it("送生成：无确认首帧时引导到人物置换", async () => {

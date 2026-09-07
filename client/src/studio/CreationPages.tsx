@@ -10,10 +10,13 @@ import {
   type CharacterReferenceSelection,
   customerVisibleErrorMessage,
   type GenerationRatio,
+  getLatestGenerationPrompt,
   getLatestProjectAnalysis,
   getLatestProjectFirstFrameSelection,
   getLatestProjectShotCards,
+  getLatestScriptVersion,
   listUserSavedPrompts,
+  type Project,
   type ProjectMainCharacter,
   readAnalysisPayload,
   readFirstFrameSelectionPayload,
@@ -36,7 +39,11 @@ import {
   uploadVideoMaterial,
   uploadWorkbenchSourceVideo,
 } from "./live";
-import { buildReplicaPromptText, SUPPORTED_VIDEO_RATIOS } from "./state";
+import {
+  buildReplicaPromptText,
+  createDraft,
+  SUPPORTED_VIDEO_RATIOS,
+} from "./state";
 import type {
   StudioAsset,
   StudioDraft,
@@ -59,6 +66,19 @@ import "./creation.css";
 
 function findAsset(assets: StudioAsset[], id?: string) {
   return id ? assets.find((asset) => asset.id === id) : undefined;
+}
+
+async function getProjectAnalysisOrNull(
+  projectId: string,
+): Promise<AnalysisVersion | null> {
+  try {
+    return await getLatestProjectAnalysis(projectId);
+  } catch (cause: unknown) {
+    const error = cause as { code?: string; status?: number };
+    if (error.status === 404 && error.code === "ANALYSIS_NOT_FOUND")
+      return null;
+    throw cause;
+  }
 }
 
 function findSource(
@@ -394,17 +414,45 @@ export function ReplicaPage() {
   const [promptName, setPromptName] = useState("");
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreError, setRestoreError] = useState("");
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const uploadOperationRef = useRef(0);
   const uploadAbortRef = useRef<AbortController | null>(null);
+  const restoreOperationRef = useRef(0);
+  const restoredProjectIdRef = useRef<string | undefined>(undefined);
+  const restoreSuppressedRef = useRef(false);
+  const promptSaveOperationRef = useRef(0);
+  const promptEditVersionRef = useRef(0);
   // 拆解完成回调用：比对发起时的项目，防止换视频后的旧结果覆盖新状态。
   const analysisProjectRef = useRef<string | undefined>(undefined);
   const promptTextRef = useRef(promptText);
-  promptTextRef.current = promptText;
+  const promptEditedRef = useRef(
+    state.draft.projectId === project?.id && state.draft.promptEdited === true,
+  );
+  const promptTypedThisMountRef = useRef(false);
+  const latestDraftRef = useRef(state.draft);
+  const patchDraftRef = useRef(patchDraft);
+  if (
+    !promptTypedThisMountRef.current &&
+    state.draft.projectId === project?.id &&
+    state.draft.promptEdited === true
+  ) {
+    promptTextRef.current = state.draft.prompt;
+    promptEditedRef.current = true;
+  } else {
+    promptTextRef.current = promptText;
+  }
+  latestDraftRef.current = state.draft;
+  patchDraftRef.current = patchDraft;
   useEffect(
     () => () => {
       uploadOperationRef.current += 1;
       uploadAbortRef.current?.abort();
+      restoreOperationRef.current += 1;
+      promptSaveOperationRef.current += 1;
+      restoredProjectIdRef.current = undefined;
+      restoreSuppressedRef.current = false;
     },
     [],
   );
@@ -415,13 +463,134 @@ export function ReplicaPage() {
     setOriginalScript("");
   };
 
+  const restoreSavedProject = useCallback(
+    async (target: Project, force = false) => {
+      if (restoreSuppressedRef.current) return;
+      if (!force && restoredProjectIdRef.current === target.id) return;
+      const operation = ++restoreOperationRef.current;
+      const promptVersionAtStart = promptEditVersionRef.current;
+      restoredProjectIdRef.current = target.id;
+      setRestoreBusy(true);
+      setRestoreError("");
+      try {
+        const [shotVersion, analysisVersion, promptState, scriptState] =
+          await Promise.all([
+            getLatestProjectShotCards(target.id),
+            getProjectAnalysisOrNull(target.id),
+            getLatestGenerationPrompt(target.id),
+            getLatestScriptVersion(target.id),
+          ]);
+        if (operation !== restoreOperationRef.current) return;
+
+        const shotPayload = shotVersion
+          ? (shotVersion.payload as ShotCardPayload)
+          : null;
+        const restoredShots = shotPayload?.shots ?? [];
+        const analysis = analysisVersion
+          ? readAnalysisPayload(analysisVersion)
+          : null;
+        const original = analysis?.original_script ?? "";
+        const savedPromptText = promptState.version?.payload.prompt_text;
+        const savedPrompt =
+          !promptState.stale && typeof savedPromptText === "string"
+            ? savedPromptText
+            : "";
+        const prompt =
+          savedPrompt || buildReplicaPromptText(restoredShots, original);
+        const savedScriptText = scriptState.version?.payload.full_text;
+        const savedScript =
+          !scriptState.stale && typeof savedScriptText === "string"
+            ? scriptState.version
+            : null;
+        const currentDraft = latestDraftRef.current;
+        const keepLocalDraft = currentDraft.projectId === target.id;
+        const keepLocalScript =
+          keepLocalDraft && currentDraft.scriptEdited === true;
+        const keepLocalPrompt =
+          keepLocalDraft &&
+          (currentDraft.promptEdited === true ||
+            promptEditedRef.current ||
+            promptEditVersionRef.current !== promptVersionAtStart);
+        const promptStillEdited =
+          keepLocalDraft &&
+          (currentDraft.promptEdited === true || promptEditedRef.current);
+        const blankScript = createDraft().script;
+        const script = keepLocalScript
+          ? currentDraft.script
+          : {
+              ...blankScript,
+              id: savedScript?.id ?? blankScript.id,
+              title: target.name,
+              original,
+              text: savedScript
+                ? (savedScript.payload.full_text as string)
+                : original,
+              version: savedScript?.version_number ?? 1,
+              confirmed: false,
+            };
+        const restoredPrompt = keepLocalPrompt ? promptTextRef.current : prompt;
+
+        setShots(restoredShots);
+        setShotCardVersionId(shotVersion?.id || undefined);
+        setOriginalScript(original);
+        setPromptText(restoredPrompt);
+        promptTextRef.current = restoredPrompt;
+        patchDraftRef.current({
+          projectId: target.id,
+          sourceId: target.reference_asset_id ?? undefined,
+          sourceAssetId: target.reference_asset_id ?? undefined,
+          prompt: restoredPrompt,
+          promptEdited: promptStillEdited,
+          script,
+          scriptEdited: keepLocalScript,
+        });
+        setStage("ready");
+      } catch (cause: unknown) {
+        if (operation !== restoreOperationRef.current) return;
+        restoredProjectIdRef.current = undefined;
+        setRestoreError(
+          customerVisibleErrorMessage(cause, "历史分镜读取失败，请重试。"),
+        );
+      } finally {
+        if (operation === restoreOperationRef.current) setRestoreBusy(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (
+      promptTypedThisMountRef.current ||
+      state.draft.projectId !== project?.id ||
+      state.draft.promptEdited !== true
+    )
+      return;
+    promptTextRef.current = state.draft.prompt;
+    promptEditedRef.current = true;
+    setPromptText(state.draft.prompt);
+  }, [
+    project?.id,
+    state.draft.projectId,
+    state.draft.prompt,
+    state.draft.promptEdited,
+  ]);
+
+  useEffect(() => {
+    if (review || !project) return;
+    void restoreSavedProject(project);
+  }, [project, restoreSavedProject, review]);
+
   const handleUpload = async (file: File) => {
     if (review) {
       notify("审核示例不上传视频。");
       return;
     }
     const operation = ++uploadOperationRef.current;
+    promptSaveOperationRef.current += 1;
+    setSavingPrompt(false);
     uploadAbortRef.current?.abort();
+    restoreSuppressedRef.current = true;
+    setRestoreError("");
     const abortController = new AbortController();
     uploadAbortRef.current = abortController;
     notify("正在上传参考视频…");
@@ -435,11 +604,25 @@ export function ReplicaPage() {
         abortController.signal,
       );
       if (operation !== uploadOperationRef.current) return;
+      restoreOperationRef.current += 1;
+      setRestoreBusy(false);
       resetReplicaState();
+      setPromptText("");
+      promptTextRef.current = "";
+      promptEditedRef.current = false;
+      promptTypedThisMountRef.current = false;
+      const blankScript = {
+        ...createDraft().script,
+        title: uploaded.project?.name ?? file.name,
+      };
       patchDraft({
         projectId: uploaded.projectId,
         sourceId: uploaded.assetId,
         sourceAssetId: uploaded.assetId,
+        prompt: "",
+        promptEdited: false,
+        script: blankScript,
+        scriptEdited: false,
       });
       if (uploaded.project || uploaded.asset) {
         updateData((current) => ({
@@ -462,10 +645,13 @@ export function ReplicaPage() {
             : current.assets,
         }));
       }
+      restoredProjectIdRef.current = uploaded.projectId;
+      restoreSuppressedRef.current = false;
       setStage("ready");
       notify("参考视频已上传，点击「启动 AI 拆解」反推分镜与提示词。");
     } catch {
       if (operation !== uploadOperationRef.current) return;
+      restoreSuppressedRef.current = false;
       notify("参考视频上传失败，请稍后重试。");
     }
   };
@@ -476,47 +662,34 @@ export function ReplicaPage() {
       return;
     }
     uploadOperationRef.current += 1;
+    promptSaveOperationRef.current += 1;
+    setSavingPrompt(false);
     uploadAbortRef.current?.abort();
+    restoreSuppressedRef.current = false;
+    restoreOperationRef.current += 1;
+    restoredProjectIdRef.current = undefined;
+    setRestoreBusy(false);
     resetReplicaState();
+    setPromptText("");
+    promptTextRef.current = "";
+    promptEditedRef.current = false;
+    promptTypedThisMountRef.current = false;
+    setRestoreError("");
+    const blankScript = { ...createDraft().script, title: selected.name };
     patchDraft({
       projectId: selected.id,
       sourceId: selected.reference_asset_id ?? undefined,
       sourceAssetId: selected.reference_asset_id ?? undefined,
+      prompt: "",
+      promptEdited: false,
+      script: blankScript,
+      scriptEdited: false,
     });
     setStage("ready");
-    // 已有拆解产物则直接载入，避免对已分析项目重复发起付费拆解。
-    void (async () => {
-      try {
-        const shotVersion = await getLatestProjectShotCards(selected.id);
-        const shotPayload = shotVersion
-          ? (shotVersion.payload as ShotCardPayload)
-          : null;
-        if (shotVersion && (shotPayload?.shots?.length ?? 0) > 0) {
-          setShots(shotPayload?.shots ?? []);
-          setShotCardVersionId(shotVersion.id);
-          const analysisVersion = await getLatestProjectAnalysis(
-            selected.id,
-          ).catch(() => undefined);
-          const script = analysisVersion
-            ? (readAnalysisPayload(analysisVersion)?.original_script ?? "")
-            : "";
-          setOriginalScript(script);
-          if (!promptTextRef.current.trim()) {
-            const text = buildReplicaPromptText(
-              shotPayload?.shots ?? [],
-              script,
-            );
-            setPromptText(text);
-            patchDraft({ prompt: text });
-          }
-          notify(
-            `已载入项目「${selected.name}」的历史分镜，可直接送生成或重新拆解。`,
-          );
-        }
-      } catch {
-        // 历史产物读取失败不打断：用户仍可手动启动拆解。
-      }
-    })();
+    void restoreSavedProject(selected, true).then(() => {
+      if (restoredProjectIdRef.current === selected.id)
+        notify(`已载入项目「${selected.name}」的历史分镜，可继续编辑。`);
+    });
   };
 
   const startAnalysis = async () => {
@@ -531,6 +704,11 @@ export function ReplicaPage() {
       notify("请先上传或选择来源视频。");
       return;
     }
+    restoreOperationRef.current += 1;
+    restoredProjectIdRef.current = projectId;
+    restoreSuppressedRef.current = false;
+    setRestoreBusy(false);
+    setRestoreError("");
     analysisProjectRef.current = projectId;
     setAnalysisBusy(true);
     setStage("analyzing");
@@ -575,7 +753,7 @@ export function ReplicaPage() {
       const text = buildReplicaPromptText(finalShots, script);
       if (!promptTextRef.current.trim()) {
         setPromptText(text);
-        patchDraft({ prompt: text });
+        patchDraft({ prompt: text, promptEdited: false });
       }
       setStage("ready");
       setAnalysisBusy(false);
@@ -598,24 +776,46 @@ export function ReplicaPage() {
       return;
     }
     setSavingPrompt(true);
+    const operation = ++promptSaveOperationRef.current;
+    const editVersion = promptEditVersionRef.current;
+    const submittedPrompt = promptTextRef.current;
     try {
       await saveGenerationPrompt(projectId, {
         name:
           promptName.trim() ||
           `复刻提示词 ${new Date().toLocaleDateString("zh-CN")}`,
-        prompt_text: promptText,
+        prompt_text: submittedPrompt,
       });
+      const stillCurrent =
+        operation === promptSaveOperationRef.current &&
+        editVersion === promptEditVersionRef.current &&
+        latestDraftRef.current.projectId === projectId &&
+        promptTextRef.current === submittedPrompt;
+      if (!stillCurrent) {
+        if (latestDraftRef.current.projectId === projectId)
+          notify("提交时的 Prompt 已保存，当前修改仍需再次保存。");
+        return;
+      }
+      promptEditVersionRef.current += 1;
+      promptEditedRef.current = false;
+      promptTypedThisMountRef.current = false;
+      latestDraftRef.current = {
+        ...latestDraftRef.current,
+        promptEdited: false,
+      };
+      patchDraftRef.current({ promptEdited: false });
       notify("已保存到我的提示词，视频生成页可直接导入。");
       setPromptNameOpen(false);
     } catch (cause: unknown) {
-      notify(
-        customerVisibleErrorMessage(
-          cause,
-          "保存自定义提示词失败，请稍后重试。",
-        ),
-      );
+      if (operation === promptSaveOperationRef.current)
+        notify(
+          customerVisibleErrorMessage(
+            cause,
+            "保存自定义提示词失败，请稍后重试。",
+          ),
+        );
     } finally {
-      setSavingPrompt(false);
+      if (operation === promptSaveOperationRef.current) setSavingPrompt(false);
     }
   };
 
@@ -764,6 +964,23 @@ export function ReplicaPage() {
             <Hint>
               拆解会反推分镜与提示词；上传新视频会创建新项目，历史任务不受影响。
             </Hint>
+            <Hint>
+              离开页面会保留当前工作区草稿；重新打开时会同时读取该项目已保存的版本。
+            </Hint>
+            {restoreBusy && <Hint>正在读取已保存的分镜、文案和 Prompt…</Hint>}
+            {restoreError && (
+              <div className="creation-inline-error" role="alert">
+                <span>{restoreError}</span>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (project) void restoreSavedProject(project, true);
+                  }}
+                >
+                  重试读取历史分镜
+                </Button>
+              </div>
+            )}
           </Panel>
           {hasShots && (
             <Panel className="creation-shot-list">
@@ -804,7 +1021,14 @@ export function ReplicaPage() {
               className="creation-textarea"
               onChange={(event) => {
                 setPromptText(event.target.value);
-                patchDraft({ prompt: event.target.value });
+                promptTextRef.current = event.target.value;
+                promptEditedRef.current = true;
+                promptTypedThisMountRef.current = true;
+                promptEditVersionRef.current += 1;
+                patchDraft({
+                  prompt: event.target.value,
+                  promptEdited: true,
+                });
               }}
               placeholder="完成 AI 拆解后，这里会生成逐镜头的反推提示词；也可手动撰写。"
               rows={10}

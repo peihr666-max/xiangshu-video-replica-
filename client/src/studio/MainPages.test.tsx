@@ -7,7 +7,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
-import { createState } from "./state";
+import { createState, patchStudioDraft } from "./state";
 import type {
   StudioAsset,
   StudioContextValue,
@@ -611,6 +611,41 @@ describe("V1.4 工作台上传与创作入口", () => {
     expect(value.notify).toHaveBeenCalledWith(
       "视频已上传云存储，来源已加入当前创作。",
     );
+  });
+
+  it("A 项目编辑后从工作台上传 B，进入复刻前清除 A 的文本归属", async () => {
+    const state = createState("workbench");
+    state.draft = {
+      ...state.draft,
+      projectId: "project-a",
+      prompt: "A Prompt",
+      promptEdited: true,
+      script: {
+        ...state.draft.script,
+        title: "A 标题",
+        original: "A 原文",
+        text: "A 文案",
+      },
+      scriptEdited: true,
+    };
+    const value = workbench({ state });
+    uploadWorkbenchSourceVideo.mockResolvedValue({
+      projectId: "project-b",
+      assetId: "asset-b",
+    });
+    useStudio.mockReturnValue(value);
+    render(<WorkbenchPage />);
+
+    changeFile("来源B.mp4");
+    await waitFor(() => expect(value.patchDraft).toHaveBeenCalledOnce());
+    const patch = vi.mocked(value.patchDraft).mock.calls[0][0];
+    const next = patchStudioDraft(state.draft, patch);
+
+    expect(next.projectId).toBe("project-b");
+    expect(next.prompt).toBe("");
+    expect(next.promptEdited).toBe(false);
+    expect(next.script).toMatchObject({ title: "", original: "", text: "" });
+    expect(next.scriptEdited).toBe(false);
   });
 
   it("忽略被后一次上传取代的迟到结果与错误", async () => {
