@@ -122,6 +122,56 @@ def test_async_mode_submits_polls_and_downloads() -> None:
     assert transport.calls[1][1].endswith("/api/v1/tasks/task-1")
 
 
+def test_async_poll_renews_lease_before_every_provider_read() -> None:
+    renewals: list[str] = []
+    transport = StubTransport(
+        [
+            (200, json.dumps({"output": {"task_id": "task-renew"}}).encode()),
+            (200, json.dumps({"output": {"task_status": "RUNNING"}}).encode()),
+            (
+                200,
+                json.dumps(
+                    {
+                        "output": {
+                            "task_status": "SUCCEEDED",
+                            "results": [
+                                {
+                                    "subtask_status": "SUCCEEDED",
+                                    "transcription_url": "https://result.example/r.json",
+                                }
+                            ],
+                        }
+                    }
+                ).encode(),
+            ),
+            (200, json.dumps({"transcripts": [{"text": "done"}]}).encode()),
+        ]
+    )
+    provider = DashScopeFunAsr(make_config(), transport=transport)
+
+    provider.transcribe(
+        "https://media.example/long.mp4",
+        duration_sec=1250.0,
+        on_poll=lambda: renewals.append("renew"),
+    )
+
+    assert renewals == ["renew", "renew"]
+
+
+def test_async_poll_stops_before_provider_read_when_lease_renewal_fails() -> None:
+    transport = StubTransport([(200, json.dumps({"output": {"task_id": "task-stale"}}).encode())])
+    provider = DashScopeFunAsr(make_config(), transport=transport)
+
+    with pytest.raises(RuntimeError, match="lease lost"):
+        provider.transcribe(
+            "https://media.example/long.mp4",
+            duration_sec=1250.0,
+            on_poll=lambda: (_ for _ in ()).throw(RuntimeError("lease lost")),
+        )
+
+    assert [method for method, _url in transport.calls] == ["POST"]
+
+
 def test_async_task_id_is_observed_before_polling() -> None:
     events: list[str] = []
 

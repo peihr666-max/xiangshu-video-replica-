@@ -79,6 +79,7 @@ class AsrProvider(Protocol):
         *,
         duration_sec: float | None = None,
         on_task_created: Callable[[str], None] | None = None,
+        on_poll: Callable[[], None] | None = None,
     ) -> TranscriptResult: ...
 
 
@@ -129,6 +130,7 @@ class FakeAsrProvider:
         *,
         duration_sec: float | None = None,
         on_task_created: Callable[[str], None] | None = None,
+        on_poll: Callable[[], None] | None = None,
     ) -> TranscriptResult:
         self.calls.append(file_url)
         return TranscriptResult(
@@ -162,6 +164,7 @@ class DashScopeFunAsr:
         *,
         duration_sec: float | None = None,
         on_task_created: Callable[[str], None] | None = None,
+        on_poll: Callable[[], None] | None = None,
     ) -> TranscriptResult:
         cfg = self._config
         if not cfg.api_key:
@@ -173,7 +176,11 @@ class DashScopeFunAsr:
                 cfg.flash_threshold_sec,
             )
             return self._transcribe_flash(file_url)
-        return self._transcribe_async(file_url, on_task_created=on_task_created)
+        return self._transcribe_async(
+            file_url,
+            on_task_created=on_task_created,
+            on_poll=on_poll,
+        )
 
     # ---------------- flash (sync) ----------------
 
@@ -216,6 +223,7 @@ class DashScopeFunAsr:
         file_url: str,
         *,
         on_task_created: Callable[[str], None] | None,
+        on_poll: Callable[[], None] | None,
     ) -> TranscriptResult:
         task_id = self._submit_async_task(file_url)
         try:
@@ -228,7 +236,7 @@ class DashScopeFunAsr:
                         submission_uncertain=True,
                         provider_task_id=task_id,
                     ) from exc
-            output = self._poll_async_task(task_id)
+            output = self._poll_async_task(task_id, on_poll=on_poll)
             return self._download_transcription(output)
         except AsrProviderError as exc:
             if exc.provider_task_id == task_id:
@@ -259,10 +267,17 @@ class DashScopeFunAsr:
             raise AsrProviderError("语音转写任务提交失败：未返回任务号")
         return str(task_id)
 
-    def _poll_async_task(self, task_id: str) -> dict[str, Any]:
+    def _poll_async_task(
+        self,
+        task_id: str,
+        *,
+        on_poll: Callable[[], None] | None,
+    ) -> dict[str, Any]:
         cfg = self._config
         for attempt in range(1, cfg.poll_max_attempts + 1):
             self._sleep(cfg.poll_interval_sec)
+            if on_poll is not None:
+                on_poll()
             status, body = self._transport(
                 "GET",
                 f"{cfg.base_url}/api/v1/tasks/{task_id}",

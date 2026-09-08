@@ -409,26 +409,99 @@ def mark_script_from_audio_submission_started(
     *,
     lease: ScriptFromAudioTaskLease,
 ) -> bool:
-    updated = conn.execute(
-        """
-        UPDATE script_from_audio_tasks
-        SET provider_started_at = %s, updated_at = %s
-        WHERE id = %s AND lease_token = %s AND attempt = %s
-          AND status = 'RUNNING' AND provider_started_at IS NULL
-        RETURNING id
-        """,
-        (
-            _time_text(datetime.now(UTC)),
-            _time_text(datetime.now(UTC)),
-            lease.id,
-            lease.lease_token,
-            lease.attempt,
-        ),
-    ).fetchone()
+    if conn.is_postgres:
+        updated = conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET provider_started_at = CURRENT_TIMESTAMP,
+                locked_until = (CURRENT_TIMESTAMP + (%s * interval '1 second'))::text,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND locked_by = %s AND lease_token = %s AND attempt = %s
+              AND status = 'RUNNING' AND provider_started_at IS NULL
+              AND locked_until::timestamptz > CURRENT_TIMESTAMP
+            RETURNING id
+            """,
+            (
+                SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES * 60,
+                lease.id,
+                lease.worker_id,
+                lease.lease_token,
+                lease.attempt,
+            ),
+        ).fetchone()
+    else:
+        updated = conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET provider_started_at = CURRENT_TIMESTAMP,
+                locked_until = datetime('now', %s),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND locked_by = %s AND lease_token = %s AND attempt = %s
+              AND status = 'RUNNING' AND provider_started_at IS NULL
+              AND datetime(locked_until) > CURRENT_TIMESTAMP
+            RETURNING id
+            """,
+            (
+                f"+{SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES} minutes",
+                lease.id,
+                lease.worker_id,
+                lease.lease_token,
+                lease.attempt,
+            ),
+        ).fetchone()
     if updated is None:
+        if not conn.is_postgres:
+            conn.rollback()
         raise script_from_audio_error(409, "SCRIPT_FROM_AUDIO_LEASE_LOST", "任务租约已失效。")
     conn.commit()
     return True
+
+
+def renew_script_from_audio_lease(
+    conn: BusinessConnection,
+    *,
+    lease: ScriptFromAudioTaskLease,
+) -> bool:
+    """续租当前付费调用；过期、换 token 或换 attempt 均不得恢复。"""
+    if conn.is_postgres:
+        updated = conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET locked_until = (CURRENT_TIMESTAMP + (%s * interval '1 second'))::text,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND locked_by = %s AND lease_token = %s AND attempt = %s
+              AND status = 'RUNNING' AND provider_started_at IS NOT NULL
+              AND locked_until::timestamptz > CURRENT_TIMESTAMP
+            RETURNING id
+            """,
+            (
+                SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES * 60,
+                lease.id,
+                lease.worker_id,
+                lease.lease_token,
+                lease.attempt,
+            ),
+        ).fetchone()
+    else:
+        updated = conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET locked_until = datetime('now', %s), updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND locked_by = %s AND lease_token = %s AND attempt = %s
+              AND status = 'RUNNING' AND provider_started_at IS NOT NULL
+              AND datetime(locked_until) > CURRENT_TIMESTAMP
+            RETURNING id
+            """,
+            (
+                f"+{SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES} minutes",
+                lease.id,
+                lease.worker_id,
+                lease.lease_token,
+                lease.attempt,
+            ),
+        ).fetchone()
+        conn.commit()
+    return updated is not None
 
 
 def prepare_script_from_audio_submission(
@@ -482,6 +555,7 @@ def perform_script_from_audio_provider_call(
     work: PreparedScriptFromAudioSubmission,
     *,
     on_task_created: Callable[[str], None] | None = None,
+    on_poll: Callable[[], None] | None = None,
 ) -> TranscriptResult:
     """ASR 是唯一可能已被上游受理的步骤；调用后无条件清理临时音频。"""
     try:
@@ -489,6 +563,7 @@ def perform_script_from_audio_provider_call(
             work.audio_url,
             duration_sec=work.duration_sec,
             on_task_created=on_task_created,
+            on_poll=on_poll,
         )
     finally:
         cleanup_script_from_audio_submission(work)

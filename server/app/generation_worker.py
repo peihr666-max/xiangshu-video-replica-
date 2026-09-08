@@ -118,6 +118,7 @@ from app.script_from_audio import (
     prepare_script_from_audio_submission,
     prepare_script_from_audio_task,
     record_script_from_audio_provider_task,
+    renew_script_from_audio_lease,
 )
 from app.script_rewrite import (
     acquire_script_rewrite_task,
@@ -438,9 +439,14 @@ def run_worker_once(
                     if result is ProviderTaskCheckpointResult.LATE_UNCERTAIN:
                         raise HTTPException(status_code=409, detail="SCRIPT_FROM_AUDIO_LEASE_LOST")
 
+                def renew_sqlite_asr_lease() -> None:
+                    if not renew_script_from_audio_lease(conn, lease=script_from_audio_lease):
+                        raise HTTPException(status_code=409, detail="SCRIPT_FROM_AUDIO_LEASE_LOST")
+
                 audio_result = perform_script_from_audio_provider_call(
                     audio_submission,
                     on_task_created=persist_sqlite_asr_task,
+                    on_poll=renew_sqlite_asr_lease,
                 )
                 complete_script_from_audio_task(
                     conn,
@@ -1106,9 +1112,19 @@ def run_pg_worker_once(
                     if result is ProviderTaskCheckpointResult.LATE_UNCERTAIN:
                         raise HTTPException(status_code=409, detail="SCRIPT_FROM_AUDIO_LEASE_LOST")
 
+                def renew_asr_lease() -> None:
+                    with pg_transaction() as raw_conn:
+                        renewed = renew_script_from_audio_lease(
+                            BusinessConnection.postgres(raw_conn),
+                            lease=script_from_audio_lease,
+                        )
+                    if not renewed:
+                        raise HTTPException(status_code=409, detail="SCRIPT_FROM_AUDIO_LEASE_LOST")
+
                 audio_result = perform_script_from_audio_provider_call(
                     audio_submission,
                     on_task_created=persist_asr_task,
+                    on_poll=renew_asr_lease,
                 )
                 with pg_transaction() as raw_conn:
                     complete_script_from_audio_task(

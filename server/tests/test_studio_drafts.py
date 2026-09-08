@@ -153,6 +153,43 @@ def test_delete_draft_then_get_404(client: TestClient) -> None:
     assert missing.status_code == 404
 
 
+def test_other_user_cannot_delete_draft(client: TestClient) -> None:
+    assert (
+        client.put(DRAFT_URL, json=draft_body(), headers=auth_headers("employee_1")).status_code
+        == 200
+    )
+
+    hidden = client.delete(DRAFT_URL, headers=auth_headers("employee_2"))
+
+    assert hidden.status_code == 404
+    assert client.get(DRAFT_URL, headers=auth_headers("employee_1")).status_code == 200
+
+
+def test_auditor_role_change_blocks_draft_delete_and_preserves_owner_row(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    assert (
+        client.put(DRAFT_URL, json=draft_body(), headers=auth_headers("employee_1")).status_code
+        == 200
+    )
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute("UPDATE users SET role = 'auditor' WHERE id = %s", ("employee_1",))
+        conn.commit()
+
+    denied = client.delete(DRAFT_URL, headers=auth_headers("employee_1"))
+
+    assert denied.status_code == 403
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM studio_drafts WHERE user_id = %s AND draft_kind = 'copy'",
+                ("employee_1",),
+            ).fetchone()
+            is not None
+        )
+
+
 def test_unknown_draft_kind_rejected(client: TestClient) -> None:
     response = client.put(
         "/api/studio/drafts/banana",
@@ -238,6 +275,35 @@ def test_saved_scripts_isolated_per_user(client: TestClient) -> None:
 
     still_there = client.get(SAVED_URL, headers=auth_headers("employee_1"))
     assert len(still_there.json()["items"]) == 1
+
+
+def test_auditor_role_change_blocks_saved_script_delete_and_preserves_owner_row(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    assert (
+        client.post(
+            SAVED_URL,
+            json=saved_script_body(),
+            headers=auth_headers("employee_1"),
+        ).status_code
+        == 200
+    )
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute("UPDATE users SET role = 'auditor' WHERE id = %s", ("employee_1",))
+        conn.commit()
+
+    denied = client.delete(f"{SAVED_URL}/script-1", headers=auth_headers("employee_1"))
+
+    assert denied.status_code == 403
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM studio_saved_scripts WHERE user_id = %s AND script_id = %s",
+                ("employee_1", "script-1"),
+            ).fetchone()
+            is not None
+        )
 
 
 def test_saved_script_requires_text(client: TestClient) -> None:

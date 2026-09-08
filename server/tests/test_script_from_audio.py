@@ -323,7 +323,13 @@ def test_ambiguous_provider_failure_preserves_reconciliation_state(
     import app.generation_worker as worker_module
     import app.script_from_audio as domain
 
-    def failing_transcribe(file_url, *, duration_sec=None, on_task_created=None):
+    def failing_transcribe(
+        file_url,
+        *,
+        duration_sec=None,
+        on_task_created=None,
+        on_poll=None,
+    ):
         assert on_task_created is not None
         on_task_created("provider-before-poll-failure")
         raise AsrProviderError("语音转写服务返回错误（HTTP 500）")
@@ -579,11 +585,18 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
         steps.append("local")
         return object()
 
-    def perform_provider(_work, *, on_task_created):
+    def perform_provider(_work, *, on_task_created, on_poll):
         assert transaction_depth == 0
         on_task_created("provider-pg-1")
+        on_poll()
+        on_poll()
         steps.append("provider")
         return TranscriptResult(text="PG transcript", duration_sec=None, language=None)
+
+    def renew(*_args, **_kwargs):
+        assert transaction_depth == 1
+        steps.append("renew")
+        return True
 
     def record(*_args, **kwargs):
         assert transaction_depth == 1
@@ -601,6 +614,7 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
     monkeypatch.setattr(worker, "mark_script_from_audio_submission_started", mark)
     monkeypatch.setattr(worker, "perform_script_from_audio_provider_call", perform_provider)
     monkeypatch.setattr(worker, "record_script_from_audio_provider_task", record)
+    monkeypatch.setattr(worker, "renew_script_from_audio_lease", renew)
     monkeypatch.setattr(worker, "complete_script_from_audio_task", complete)
 
     processed = worker.run_pg_worker_once(
@@ -609,7 +623,133 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
         max_tasks=1,
     )
     assert processed == 1
-    assert steps == ["prepare", "local", "mark", "persist", "provider", "complete"]
+    assert steps == [
+        "prepare",
+        "local",
+        "mark",
+        "persist",
+        "renew",
+        "renew",
+        "provider",
+        "complete",
+    ]
+
+
+def test_expired_lease_at_paid_boundary_never_calls_provider(
+    client: TestClient,
+    db_path: Path,
+    stub_media: StubMediaTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.generation_worker as worker
+
+    task_id = enqueue(client).json()["id"]
+    storage = FakeStorageAdapter(provider="fake", bucket="private-bucket")
+    storage.put_object(
+        "projects/project_owned/uploads/asset_video/src.mp4",
+        b"fake-video-bytes",
+        content_type="video/mp4",
+    )
+    provider_calls = 0
+
+    class MustNotRunAsr(FakeAsrProvider):
+        def transcribe(self, *args, **kwargs):
+            nonlocal provider_calls
+            provider_calls += 1
+            return super().transcribe(*args, **kwargs)
+
+    original_prepare = worker.prepare_script_from_audio_task
+
+    def prepare_and_expire(conn, *, lease, storage):
+        work = original_prepare(conn, lease=lease, storage=storage)
+        work.asr = MustNotRunAsr()
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET locked_until = datetime('now', '-1 second') "
+            "WHERE id = %s",
+            (lease.id,),
+        )
+        conn.commit()
+        return work
+
+    monkeypatch.setattr(worker, "prepare_script_from_audio_task", prepare_and_expire)
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        run_worker_once(conn, worker_id="expired-boundary", storage=storage, max_tasks=1)
+        row = conn.execute(
+            "SELECT status, provider_started_at, provider_task_id "
+            "FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+
+    assert provider_calls == 0
+    assert row["status"] == "FAILED"
+    assert row["provider_started_at"] is None
+    assert row["provider_task_id"] is None
+
+
+def test_script_from_audio_lease_renewal_rejects_expired_and_replaced_token(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    from app.script_from_audio import acquire_script_from_audio_task, renew_script_from_audio_lease
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = acquire_script_from_audio_task(conn, worker_id="renew-worker")
+        assert lease is not None
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET locked_until = datetime('now', '-1 second') "
+            "WHERE id = %s",
+            (task_id,),
+        )
+        conn.commit()
+        assert not renew_script_from_audio_lease(conn, lease=lease)
+
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET locked_until = datetime('now', '+1 minute'), "
+            "lease_token = 'replacement-token' WHERE id = %s",
+            (task_id,),
+        )
+        conn.commit()
+        assert not renew_script_from_audio_lease(conn, lease=lease)
+
+
+def test_paid_boundary_rejects_wrong_worker_with_current_token(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    from app.script_from_audio import (
+        ScriptFromAudioTaskLease,
+        acquire_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+    )
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = acquire_script_from_audio_task(conn, worker_id="current-worker")
+        assert lease is not None
+        wrong_worker = ScriptFromAudioTaskLease(
+            id=lease.id,
+            project_id=lease.project_id,
+            created_by_user_id=lease.created_by_user_id,
+            worker_id="stale-worker",
+            lease_token=lease.lease_token,
+            attempt=lease.attempt,
+        )
+
+        with pytest.raises(HTTPException) as caught:
+            mark_script_from_audio_submission_started(conn, lease=wrong_worker)
+
+        assert caught.value.status_code == 409
+        assert mark_script_from_audio_submission_started(conn, lease=lease)
+        row = conn.execute(
+            "SELECT provider_started_at, "
+            "datetime(locked_until) > datetime('now', '+19 minutes') AS renewed "
+            "FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+        assert row["provider_started_at"] is not None
+        assert row["renewed"] == 1
 
 
 def test_provider_task_id_survives_worker_crash_and_lease_expiry(
