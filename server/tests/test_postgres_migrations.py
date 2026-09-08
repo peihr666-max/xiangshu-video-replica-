@@ -216,6 +216,15 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
                 "(user_id, last_dispatched_at, running_tasks_count) VALUES ("
                 "'u1', CURRENT_TIMESTAMP, 0)"
             )
+            conn.execute(
+                "INSERT INTO wallets (user_id, available_credits, reserved_credits) "
+                "VALUES ('u1', 0, 1)"
+            )
+            conn.execute(
+                "INSERT INTO wallet_transactions (id, user_id, type, available_delta, "
+                "reserved_delta, oral_task_id, billing_round, idempotency_key) VALUES "
+                "('oral-reserve-1', 'u1', 'RESERVE', -1, 1, 'oral-1', 1, 'oral-reserve-1')"
+            )
 
         first = psycopg.connect(dsn)
         second = psycopg.connect(dsn)
@@ -252,28 +261,26 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
                 ]
                 == 1
             )
+        with pytest.raises(RuntimeError, match="oral wallet transactions exist"):
+            command.downgrade(config, "056_hifly_provider")
     finally:
         _drop_database(db_name)
 
 
 def test_viral_refresh_uses_database_lock_across_connections() -> None:
     from app.db_portable import BusinessConnection
-    from app.viral_store import viral_session_lock
+    from app.viral_store import lock_viral_scope
 
     first = psycopg.connect(_pg_dsn())
     second = psycopg.connect(_pg_dsn())
     try:
-        with viral_session_lock(BusinessConnection.postgres(first), "viral:refresh:douyin:hot"):
-            first.commit()
-            second.execute("SET LOCAL lock_timeout = '100ms'")
-            with pytest.raises(psycopg.errors.LockNotAvailable):
-                with viral_session_lock(
-                    BusinessConnection.postgres(second), "viral:refresh:douyin:hot"
-                ):
-                    pass
-            second.rollback()
-        with viral_session_lock(BusinessConnection.postgres(second), "viral:refresh:douyin:hot"):
-            pass
+        lock_viral_scope(BusinessConnection.postgres(first), "viral:refresh:douyin:hot")
+        second.execute("SET LOCAL lock_timeout = '100ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            lock_viral_scope(BusinessConnection.postgres(second), "viral:refresh:douyin:hot")
+        first.commit()
+        second.rollback()
+        lock_viral_scope(BusinessConnection.postgres(second), "viral:refresh:douyin:hot")
     finally:
         first.rollback()
         second.rollback()

@@ -134,7 +134,7 @@ class UrllibHiflyHttpTransport(HiflyHttpTransport):
             except OSError:
                 pass
             logger.warning("ORAL vendor request failed with HTTP status %s: %s", exc.code, detail)
-            raise HiflyError(f"数字人服务返回 HTTP {exc.code}") from exc
+            raise HiflyError(f"数字人服务返回 HTTP {exc.code}", vendor_code=int(exc.code)) from exc
         except (TimeoutError, URLError, OSError, RemoteBinaryError) as exc:
             logger.warning("ORAL vendor request failed: %s", type(exc).__name__)
             raise HiflyError("数字人服务网络异常，请稍后重试") from exc

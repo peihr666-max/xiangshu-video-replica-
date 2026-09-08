@@ -9,6 +9,7 @@ and retains ambiguous submissions for reconciliation without retrying them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -128,7 +129,7 @@ def start_avatar_clone(
     title: str,
     source_asset_id: str,
     source_kind: str,
-    vendor: HiflyClient,
+    vendor: HiflyClient | None = None,
 ) -> CloneStartResult:
     if source_kind not in {"VIDEO", "IMAGE"}:
         raise OralDomainError("分身素材类型不支持")
@@ -137,17 +138,21 @@ def start_avatar_clone(
         conn, actor=actor, asset_id=source_asset_id, message="素材不存在或无权使用"
     )
     clean_title = title.strip() or "口播分身"
-
-    try:
+    vendor_task_id = None
+    status = "PENDING"
+    if vendor is not None:
         content = _read_asset_bytes(conn, asset)
-        extension = _extension_for(asset, source_kind)
-        target = vendor.create_upload_url(extension)
+        target = vendor.create_upload_url(_extension_for(asset, source_kind))
         vendor.upload_file(target, content)
-        vendor_task_id = vendor.create_avatar_by_video(
+        create_avatar = (
+            vendor.create_avatar_by_image
+            if source_kind == "IMAGE"
+            else vendor.create_avatar_by_video
+        )
+        vendor_task_id = create_avatar(
             title=clean_title[:20], file_id=target.file_id, aigc_flag=True
         )
-    except HiflyError as exc:
-        raise OralDomainError(str(exc)) from exc
+        status = "RUNNING"
 
     avatar_id = str(uuid4())
     conn.execute(
@@ -155,7 +160,7 @@ def start_avatar_clone(
         INSERT INTO oral_avatars (
             id, identity_id, owner_user_id, title, vendor_task_id,
             status, source_kind, source_asset_id
-        ) VALUES (%s, %s, %s, %s, %s, 'RUNNING', %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             avatar_id,
@@ -163,11 +168,12 @@ def start_avatar_clone(
             actor.id,
             clean_title,
             vendor_task_id,
+            status,
             source_kind,
             source_asset_id,
         ),
     )
-    return CloneStartResult(task_id=avatar_id, status="RUNNING")
+    return CloneStartResult(task_id=avatar_id, status=status)
 
 
 def start_voice_clone(
@@ -177,21 +183,21 @@ def start_voice_clone(
     identity_id: str,
     title: str,
     source_asset_id: str,
-    vendor: HiflyClient,
+    vendor: HiflyClient | None = None,
 ) -> CloneStartResult:
     _require_own_identity(conn, actor, identity_id)
     asset = _require_source_asset(
         conn, actor=actor, asset_id=source_asset_id, message="音频素材不存在或无权使用"
     )
     clean_title = title.strip() or "克隆声音"
-
-    try:
+    vendor_task_id = None
+    status = "PENDING"
+    if vendor is not None:
         content = _read_asset_bytes(conn, asset)
         target = vendor.create_upload_url("mp3")
         vendor.upload_file(target, content)
         vendor_task_id = vendor.create_voice(title=clean_title[:20], file_id=target.file_id)
-    except HiflyError as exc:
-        raise OralDomainError(str(exc)) from exc
+        status = "RUNNING"
 
     voice_id = str(uuid4())
     conn.execute(
@@ -199,25 +205,32 @@ def start_voice_clone(
         INSERT INTO oral_voices (
             id, identity_id, owner_user_id, title, vendor_task_id,
             status, source_asset_id
-        ) VALUES (%s, %s, %s, %s, %s, 'RUNNING', %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (voice_id, identity_id, actor.id, clean_title, vendor_task_id, source_asset_id),
+        (voice_id, identity_id, actor.id, clean_title, vendor_task_id, status, source_asset_id),
     )
-    return CloneStartResult(task_id=voice_id, status="RUNNING")
+    return CloneStartResult(task_id=voice_id, status=status)
 
 
 def _read_asset_bytes(conn: BusinessConnection, asset: dict[str, Any]) -> bytes:
+    storage, key = _asset_storage_target(conn, asset)
+    try:
+        return storage.get_object(key)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a customer-safe message
+        logger.warning("oral source asset read failed: %s", type(exc).__name__)
+        raise OralDomainError("素材读取失败，请重新上传") from exc
+
+
+def _asset_storage_target(
+    conn: BusinessConnection, asset: dict[str, Any]
+) -> tuple[StorageAdapter, str]:
     storage = storage_for_asset(conn, str(asset["storage_uri"]))
     key = (
         str(asset["storage_uri"]).split("/", 3)[-1]
         if "://" in str(asset["storage_uri"])
         else str(asset["storage_uri"])
     )
-    try:
-        return storage.get_object(key)
-    except Exception as exc:  # noqa: BLE001 - surfaced as a customer-safe message
-        logger.warning("oral source asset read failed: %s", type(exc).__name__)
-        raise OralDomainError("素材读取失败，请重新上传") from exc
+    return storage, key
 
 
 def _extension_for(asset: dict[str, Any], source_kind: str) -> str:
@@ -227,6 +240,149 @@ def _extension_for(asset: dict[str, Any], source_kind: str) -> str:
     if content_type.endswith("webm"):
         return "webm"
     return "mp4"
+
+
+def acquire_oral_clone(conn: BusinessConnection, *, worker_id: str) -> dict[str, Any] | None:
+    locked_until = (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
+    for table, clone_kind in (("oral_avatars", "avatar"), ("oral_voices", "voice")):
+        lease_expired = (
+            "locked_until::timestamptz <= CURRENT_TIMESTAMP"
+            if conn.is_postgres
+            else "locked_until <= CURRENT_TIMESTAMP"
+        )
+        conn.execute(
+            f"UPDATE {table} SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL, "
+            "locked_until = NULL, error_message = '提交结果未知，请重新创建克隆任务', "
+            "updated_at = CURRENT_TIMESTAMP WHERE status = 'SUBMITTING' "
+            f"AND {lease_expired}"
+        )
+        row = conn.execute(
+            f"""
+            UPDATE {table} SET
+                status = CASE WHEN status = 'PENDING' THEN 'SUBMITTING' ELSE status END,
+                locked_by = %s, locked_until = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = (
+                SELECT id FROM {table}
+                WHERE status IN ('PENDING', 'RUNNING')
+                  AND (locked_until IS NULL OR {lease_expired})
+                ORDER BY created_at, id LIMIT 1
+            ) AND status IN ('PENDING', 'RUNNING') RETURNING *
+            """,
+            (worker_id, locked_until),
+        ).fetchone()
+        if row is not None:
+            result = dict(row)
+            result["clone_kind"] = clone_kind
+            return result
+    return None
+
+
+def _require_clone_lease(
+    conn: BusinessConnection, *, table: str, clone_id: str, worker_id: str
+) -> None:
+    lease_current = (
+        "locked_until::timestamptz > CURRENT_TIMESTAMP"
+        if conn.is_postgres
+        else "locked_until > CURRENT_TIMESTAMP"
+    )
+    row = conn.execute(
+        f"SELECT 1 FROM {table} WHERE id = %s AND locked_by = %s AND {lease_current}",
+        (clone_id, worker_id),
+    ).fetchone()
+    if row is None:
+        raise OralDomainError("克隆任务租约已失效")
+
+
+def run_claimed_oral_clone(
+    conn: BusinessConnection,
+    *,
+    lease: dict[str, Any],
+    worker_id: str,
+    vendor: HiflyClient | None = None,
+) -> str:
+    clone_kind = str(lease["clone_kind"])
+    table = "oral_avatars" if clone_kind == "avatar" else "oral_voices"
+    clone_id = str(lease["id"])
+    try:
+        active_vendor = vendor or hifly_client_from_settings(conn)
+    except HiflySettingsUnavailable as exc:
+        conn.execute(
+            f"UPDATE {table} SET status = 'PENDING', error_message = %s, "
+            "locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = %s AND locked_by = %s",
+            (str(exc)[:500], clone_id, worker_id),
+        )
+        conn.commit()
+        return clone_id
+    try:
+        if lease["status"] == "SUBMITTING":
+            asset = _asset(conn, str(lease["source_asset_id"]))
+            if asset is None:
+                raise OralDomainError("克隆素材已失效")
+            storage, key = _asset_storage_target(conn, asset)
+            conn.commit()
+            content = storage.get_object(key)
+            extension = (
+                _extension_for(asset, str(lease["source_kind"]))
+                if clone_kind == "avatar"
+                else "mp3"
+            )
+            target = active_vendor.create_upload_url(extension)
+            active_vendor.upload_file(target, content)
+            if clone_kind == "avatar":
+                create = (
+                    active_vendor.create_avatar_by_image
+                    if lease["source_kind"] == "IMAGE"
+                    else active_vendor.create_avatar_by_video
+                )
+                vendor_task_id = create(
+                    title=str(lease["title"])[:20], file_id=target.file_id, aigc_flag=True
+                )
+            else:
+                vendor_task_id = active_vendor.create_voice(
+                    title=str(lease["title"])[:20], file_id=target.file_id
+                )
+            _require_clone_lease(conn, table=table, clone_id=clone_id, worker_id=worker_id)
+            conn.execute(
+                f"UPDATE {table} SET status = 'RUNNING', vendor_task_id = %s, "
+                "locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = %s AND locked_by = %s",
+                (vendor_task_id, clone_id, worker_id),
+            )
+        else:
+            conn.commit()
+            snapshot: Any = (
+                active_vendor.avatar_task(str(lease["vendor_task_id"]))
+                if clone_kind == "avatar"
+                else active_vendor.voice_task(str(lease["vendor_task_id"]))
+            )
+            _require_clone_lease(conn, table=table, clone_id=clone_id, worker_id=worker_id)
+            status = _clone_status_map(snapshot.status)
+            if clone_kind == "avatar":
+                conn.execute(
+                    "UPDATE oral_avatars SET status = %s, vendor_avatar_id = COALESCE(%s, "
+                    "vendor_avatar_id), locked_by = NULL, locked_until = NULL, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND locked_by = %s",
+                    (status, snapshot.avatar_id, clone_id, worker_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE oral_voices SET status = %s, vendor_voice_id = COALESCE(%s, "
+                    "vendor_voice_id), confirmed = %s, locked_by = NULL, locked_until = NULL, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND locked_by = %s",
+                    (status, snapshot.voice, 1 if status == "READY" else 0, clone_id, worker_id),
+                )
+    except HiflyError as exc:
+        _require_clone_lease(conn, table=table, clone_id=clone_id, worker_id=worker_id)
+        status = "FAILED" if exc.vendor_code is not None else "SUBMISSION_UNCERTAIN"
+        conn.execute(
+            f"UPDATE {table} SET status = %s, error_message = %s, locked_by = NULL, "
+            "locked_until = NULL, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = %s AND locked_by = %s",
+            (status, str(exc)[:500], clone_id, worker_id),
+        )
+    conn.commit()
+    return clone_id
 
 
 # ---------------------------------------------------------------------------
@@ -299,11 +455,31 @@ def create_oral_task(
             message="口播音频不存在或无权使用",
         )
 
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "identity_id": identity_id,
+                "avatar_id": avatar_id,
+                "voice_id": effective_voice,
+                "mode": mode,
+                "title": title.strip()[:120],
+                "script_text": script_text,
+                "audio_asset_id": audio_asset_id,
+                "subtitle": subtitle,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     existing = conn.execute(
-        "SELECT id, status, estimated_cost_fen FROM oral_tasks WHERE idempotency_key = %s",
-        (idempotency_key,),
+        "SELECT id, status, estimated_cost_fen, request_hash FROM oral_tasks "
+        "WHERE owner_user_id = %s AND idempotency_key = %s",
+        (actor.id, idempotency_key),
     ).fetchone()
     if existing is not None:
+        if existing["request_hash"] != request_hash:
+            raise OralDomainError("幂等键已用于不同的口播请求")
         return OralTaskCreated(
             task_id=str(existing["id"]),
             status=str(existing["status"]),
@@ -326,8 +502,8 @@ def create_oral_task(
         INSERT INTO oral_tasks (
             id, owner_user_id, project_id, identity_id, avatar_id, voice_id, mode, title,
             script_text, audio_asset_id, subtitle_json, status,
-            estimated_cost_fen, idempotency_key
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'QUEUED', %s, %s)
+            estimated_cost_fen, idempotency_key, request_hash
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'QUEUED', %s, %s, %s)
         """,
         (
             task_id,
@@ -343,6 +519,7 @@ def create_oral_task(
             json.dumps(subtitle, ensure_ascii=False) if subtitle else None,
             price,
             idempotency_key,
+            request_hash,
         ),
     )
     _reserve_oral_billing(conn, user_id=actor.id, task_id=task_id)
@@ -363,33 +540,52 @@ def _submit_oral_task(
     vendor: HiflyClient,
 ) -> None:
     row = _oral_task_row(conn, task_id)
+    lease_owner = str(row.get("locked_by") or "")
     try:
-        audio_target = None
+        audio_content = None
         if row["mode"] == "AUDIO":
             asset = _asset(conn, str(row["audio_asset_id"]))
             if asset is None:
                 raise OralDomainError("口播音频已失效，请重新上传")
-            content = _read_asset_bytes(conn, asset)
-            audio_target = vendor.create_upload_url("mp3")
-            vendor.upload_file(audio_target, content)
+            audio_storage, audio_key = _asset_storage_target(conn, asset)
+        else:
+            audio_storage, audio_key = None, None
+        avatar_vendor_id = _vendor_avatar_id(conn, str(row["avatar_id"]))
+        voice_vendor_id = (
+            _vendor_voice_id(conn, str(row["voice_id"])) if row["mode"] == "TTS" else None
+        )
         subtitle = json.loads(str(row["subtitle_json"])) if row["subtitle_json"] else None
+        conn.commit()
+        try:
+            audio_content = (
+                audio_storage.get_object(audio_key)
+                if audio_storage is not None and audio_key is not None
+                else None
+            )
+        except Exception as exc:  # noqa: BLE001 - terminal local source failure
+            raise OralDomainError("素材读取失败，请重新上传") from exc
+        audio_target = None
+        if audio_content is not None:
+            audio_target = vendor.create_upload_url("mp3")
+            vendor.upload_file(audio_target, audio_content)
         if row["mode"] == "TTS":
             vendor_task_id = vendor.create_video_by_tts(
-                voice=_vendor_voice_id(conn, str(row["voice_id"])),
+                voice=str(voice_vendor_id),
                 text=str(row["script_text"]),
-                avatar=_vendor_avatar_id(conn, str(row["avatar_id"])),
+                avatar=avatar_vendor_id,
                 title=str(row["title"])[:20],
                 aigc_flag=True,
                 subtitle=subtitle,
             )
         else:
             vendor_task_id = vendor.create_video_by_audio(
-                avatar=_vendor_avatar_id(conn, str(row["avatar_id"])),
+                avatar=avatar_vendor_id,
                 title=str(row["title"])[:20],
                 file_id=audio_target.file_id if audio_target else None,
                 aigc_flag=True,
             )
     except OralDomainError as exc:
+        _require_oral_lease(conn, task_id=task_id, worker_id=lease_owner)
         conn.execute(
             """
             UPDATE oral_tasks
@@ -407,20 +603,22 @@ def _submit_oral_task(
         # Keep the reservation and require reconciliation instead of retrying
         # blindly and charging twice.
         status = "FAILED" if exc.vendor_code is not None else "SUBMISSION_UNCERTAIN"
+        _require_oral_lease(conn, task_id=task_id, worker_id=lease_owner)
         conn.execute(
             """
             UPDATE oral_tasks
-            SET status = %s, error_message = %s,
+            SET status = %s, error_message = %s, vendor_error_code = %s,
                 completed_at = CASE WHEN %s = 'FAILED' THEN CURRENT_TIMESTAMP ELSE NULL END,
                 locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (status, str(exc)[:500], status, task_id),
+            (status, str(exc)[:500], exc.vendor_code, status, task_id),
         )
         if status == "FAILED":
             _finalize_oral_billing(conn, task_id=task_id, outcome="release")
         _release_oral_queue_slot(conn, task_id=task_id)
         return
+    _require_oral_lease(conn, task_id=task_id, worker_id=lease_owner)
     conn.execute(
         """
         UPDATE oral_tasks
@@ -453,6 +651,16 @@ def _vendor_voice_id(conn: BusinessConnection, voice_id: str) -> str:
 
 def _oral_task_row(conn: BusinessConnection, task_id: str) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM oral_tasks WHERE id = %s", (task_id,)).fetchone()
+    if row is None:
+        raise OralDomainError("口播任务不存在")
+    return dict(row)
+
+
+def read_oral_task(conn: BusinessConnection, *, task_id: str, actor: CurrentUser) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM oral_tasks WHERE id = %s AND owner_user_id = %s",
+        (task_id, actor.id),
+    ).fetchone()
     if row is None:
         raise OralDomainError("口播任务不存在")
     return dict(row)
@@ -576,8 +784,9 @@ def run_next_oral_task(
     *,
     worker_id: str,
     vendor: HiflyClient | None = None,
+    lease: dict[str, Any] | None = None,
 ) -> str | None:
-    lease = acquire_oral_task(conn, worker_id=worker_id)
+    lease = lease or acquire_oral_task(conn, worker_id=worker_id)
     if lease is None:
         return None
     task_id = str(lease["id"])
@@ -606,6 +815,20 @@ def run_next_oral_task(
         refresh_oral_task(conn, task_id=task_id, actor=actor, vendor=active_vendor)
     conn.commit()
     return task_id
+
+
+def _require_oral_lease(conn: BusinessConnection, *, task_id: str, worker_id: str) -> None:
+    lease_current = (
+        "locked_until::timestamptz > CURRENT_TIMESTAMP"
+        if conn.is_postgres
+        else "locked_until > CURRENT_TIMESTAMP"
+    )
+    row = conn.execute(
+        f"SELECT 1 FROM oral_tasks WHERE id = %s AND locked_by = %s AND {lease_current}",
+        (task_id, worker_id),
+    ).fetchone()
+    if row is None:
+        raise OralDomainError("口播任务租约已失效，结果需人工对账")
 
 
 def _reserve_oral_billing(conn: BusinessConnection, *, user_id: str, task_id: str) -> None:
@@ -685,6 +908,34 @@ def _finalize_oral_billing(conn: BusinessConnection, *, task_id: str, outcome: s
     )
 
 
+def reconcile_uncertain_oral_task(
+    conn: BusinessConnection, *, task_id: str, outcome: str
+) -> dict[str, Any]:
+    if outcome not in {"SETTLE", "RELEASE"}:
+        raise OralDomainError("人工对账结果不支持")
+    row = _oral_task_row(conn, task_id)
+    if row["status"] != "SUBMISSION_UNCERTAIN":
+        raise OralDomainError("仅提交结果不确定的任务可人工对账")
+    _finalize_oral_billing(
+        conn,
+        task_id=task_id,
+        outcome="settle" if outcome == "SETTLE" else "release",
+    )
+    terminal_status = "FAILED" if outcome == "SETTLE" else "CANCELLED"
+    message = (
+        "人工确认供应商已受理并计费，成片需线下归档"
+        if outcome == "SETTLE"
+        else "人工确认供应商未受理，预扣已释放"
+    )
+    conn.execute(
+        "UPDATE oral_tasks SET status = %s, error_message = %s, "
+        "completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP "
+        "WHERE id = %s AND status = 'SUBMISSION_UNCERTAIN'",
+        (terminal_status, message, task_id),
+    )
+    return _oral_task_row(conn, task_id)
+
+
 # ---------------------------------------------------------------------------
 # Pull-based vendor refresh (no public webhook available)
 # ---------------------------------------------------------------------------
@@ -701,11 +952,14 @@ def refresh_oral_task(
     if row["owner_user_id"] != actor.id:
         raise OralDomainError("口播任务不存在")
     if row["status"] == "RUNNING" and row["vendor_task_id"]:
+        lease_owner = str(row.get("locked_by") or "")
+        conn.commit()
         try:
             snapshot = vendor.video_task(str(row["vendor_task_id"]))
         except HiflyError as exc:
             logger.warning("oral vendor poll failed: %s", type(exc).__name__)
             return row
+        _require_oral_lease(conn, task_id=task_id, worker_id=lease_owner)
         if snapshot.status == "DONE":
             _archive_oral_result(
                 conn,
@@ -757,15 +1011,18 @@ def _archive_oral_result(
         _finalize_oral_billing(conn, task_id=str(row["id"]), outcome="release")
         _release_oral_queue_slot(conn, task_id=str(row["id"]))
         return
+    storage: StorageAdapter = get_media_storage(conn)
+    lease_owner = str(row.get("locked_by") or "")
+    conn.commit()
     try:
         content = vendor.download(video_url)
-        storage: StorageAdapter = get_media_storage(conn)
         stored = storage.put_object(
             f"oral/results/{row['id']}.mp4", content, content_type="video/mp4"
         )
     except Exception as exc:  # noqa: BLE001 - keep the task retryable
         logger.warning("oral result archive failed: %s", type(exc).__name__)
         return
+    _require_oral_lease(conn, task_id=str(row["id"]), worker_id=lease_owner)
     conn.execute(
         """
         INSERT INTO assets (
@@ -847,6 +1104,18 @@ def refresh_avatar_clone(
     return record
 
 
+def read_avatar_clone(
+    conn: BusinessConnection, *, avatar_id: str, actor: CurrentUser
+) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM oral_avatars WHERE id = %s AND owner_user_id = %s",
+        (avatar_id, actor.id),
+    ).fetchone()
+    if row is None:
+        raise OralDomainError("口播分身任务不存在")
+    return dict(row)
+
+
 def refresh_voice_clone(
     conn: BusinessConnection,
     *,
@@ -881,6 +1150,18 @@ def refresh_voice_clone(
             conn.execute("SELECT * FROM oral_voices WHERE id = %s", (voice_id,)).fetchone()
         )
     return record
+
+
+def read_voice_clone(
+    conn: BusinessConnection, *, voice_id: str, actor: CurrentUser
+) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s",
+        (voice_id, actor.id),
+    ).fetchone()
+    if row is None:
+        raise OralDomainError("声音克隆任务不存在")
+    return dict(row)
 
 
 def list_avatars(

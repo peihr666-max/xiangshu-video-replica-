@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,19 +33,6 @@ def lock_viral_scope(conn: BusinessConnection, scope: str) -> None:
     """Serialize paid refresh and native-json RMW across PostgreSQL instances."""
     if conn.is_postgres:
         conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (scope,))
-
-
-@contextmanager
-def viral_session_lock(conn: BusinessConnection, scope: str) -> Iterator[None]:
-    """Hold a PostgreSQL lock across helpers that commit their own writes."""
-    if not conn.is_postgres:
-        yield
-        return
-    conn.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (scope,))
-    try:
-        yield
-    finally:
-        conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (scope,))
 
 
 _UPSERT_SQL = """
@@ -199,14 +184,17 @@ def _merge_cached_statistics_metadata(
     return merged
 
 
-def upsert_viral_videos(conn: BusinessConnection, videos: list[ViralVideo]) -> None:
+def upsert_viral_videos(
+    conn: BusinessConnection, videos: list[ViralVideo], *, commit: bool = True
+) -> None:
     """按 (platform, video_id) 去重写入/刷新条目."""
     with _NATIVE_JSON_RMW_LOCK:
         for platform in sorted({video.platform for video in videos}):
             lock_viral_scope(conn, f"viral:upsert:{platform}")
         for video in _merge_cached_statistics_metadata(conn, videos):
             conn.execute(_UPSERT_SQL, _video_row(video))
-        conn.commit()
+        if commit:
+            conn.commit()
 
 
 def list_viral_videos(conn: BusinessConnection, *, platform: str, sort: str) -> list[ViralVideo]:
@@ -273,7 +261,9 @@ def fetch_state_is_fresh(
     return datetime.now(UTC) - fetched_at <= max_age
 
 
-def mark_fetch_state(conn: BusinessConnection, *, platform: str, sort: str) -> None:
+def mark_fetch_state(
+    conn: BusinessConnection, *, platform: str, sort: str, commit: bool = True
+) -> None:
     now = datetime.now(UTC).isoformat()
     conn.execute(
         """
@@ -284,7 +274,8 @@ def mark_fetch_state(conn: BusinessConnection, *, platform: str, sort: str) -> N
         """,
         (platform, sort, now),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def viral_fetched_at(conn: BusinessConnection, *, platform: str, sort: str) -> str | None:
@@ -296,7 +287,12 @@ def viral_fetched_at(conn: BusinessConnection, *, platform: str, sort: str) -> s
 
 
 def update_viral_statistics(
-    conn: BusinessConnection, *, platform: str, video_id: str, detail: WechatVideoDetail
+    conn: BusinessConnection,
+    *,
+    platform: str,
+    video_id: str,
+    detail: WechatVideoDetail,
+    commit: bool = True,
 ) -> None:
     """复用媒体详情响应，仅回填实际返回的统计；搜索缺失字段不冲掉补采结果。"""
     with _NATIVE_JSON_RMW_LOCK:
@@ -331,11 +327,12 @@ def update_viral_statistics(
                 video_id,
             ),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
 
 
 def mark_viral_statistics_failure(
-    conn: BusinessConnection, *, platform: str, video_id: str
+    conn: BusinessConnection, *, platform: str, video_id: str, commit: bool = True
 ) -> None:
     """记录详情补采失败时间，供短冷却复用；不改成功时间与已有统计。"""
     with _NATIVE_JSON_RMW_LOCK:
@@ -355,4 +352,5 @@ def mark_viral_statistics_failure(
             """,
             (json.dumps(native, ensure_ascii=False), platform, video_id),
         )
-        conn.commit()
+        if commit:
+            conn.commit()

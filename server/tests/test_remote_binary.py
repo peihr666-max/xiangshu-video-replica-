@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from email.message import Message
 from types import SimpleNamespace
+from urllib.request import Request
 
 import pytest
 
-from app.remote_binary import RemoteBinaryError, request_public_binary, require_public_https_url
+from app.remote_binary import (
+    RemoteBinaryError,
+    _SafeRedirectHandler,
+    request_public_binary,
+    require_public_https_url,
+)
 
 
 def _addresses(ip: str):
@@ -18,6 +24,7 @@ class _Response:
         self._content = content
         self.headers = Message()
         self.headers["Content-Type"] = content_type
+        self.peer_ip = "93.184.216.34"
 
     def __enter__(self):
         return self
@@ -85,4 +92,42 @@ def test_remote_binary_stops_after_configured_size_limit(monkeypatch):
             headers={},
             timeout_seconds=1,
             max_bytes=10,
+        )
+
+
+def test_remote_binary_rejects_peer_not_in_final_dns(monkeypatch):
+    monkeypatch.setattr(
+        "app.remote_binary.socket.getaddrinfo",
+        lambda *_a, **_kw: _addresses("93.184.216.34"),
+    )
+    response = _Response("https://cdn.example/v.mp4", b"video")
+    response.peer_ip = "10.0.0.8"
+    monkeypatch.setattr(
+        "app.remote_binary.build_opener",
+        lambda *_a: SimpleNamespace(open=lambda *_a, **_kw: response),
+    )
+    with pytest.raises(RemoteBinaryError, match="peer"):
+        request_public_binary(
+            "GET",
+            "https://cdn.example/v.mp4",
+            headers={},
+            timeout_seconds=1,
+            max_bytes=100,
+        )
+
+
+def test_authenticated_redirect_cannot_cross_origin(monkeypatch):
+    monkeypatch.setattr(
+        "app.remote_binary.socket.getaddrinfo",
+        lambda *_a, **_kw: _addresses("93.184.216.34"),
+    )
+    handler = _SafeRedirectHandler(origin=("https", "api.example", 443), has_authorization=True)
+    with pytest.raises(RemoteBinaryError, match="origins"):
+        handler.redirect_request(
+            Request("https://api.example/start"),
+            None,
+            302,
+            "Found",
+            {},
+            "https://cdn.example/result",
         )

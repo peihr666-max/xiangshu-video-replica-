@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 
 from app.db_portable import BusinessConnection
@@ -13,9 +12,9 @@ from app.viral_store import (
     STATISTICS_CHECKED_AT_KEY,
     STATISTICS_RETRY_AT_KEY,
     get_viral_video,
+    lock_viral_scope,
     mark_viral_statistics_failure,
     update_viral_statistics,
-    viral_session_lock,
 )
 from app.viral_tikhub import PLATFORM_WECHAT, ViralSourceClient, ViralVideo, WechatVideoDetail
 
@@ -91,11 +90,9 @@ def refresh_viral_statistics(
     video_ids: list[str],
 ) -> list[ViralVideo]:
     """补采已有视频号条目的互动数，并返回数据库中的最新条目."""
-    with _refresh_lock, ExitStack() as locks:
+    with _refresh_lock:
         for video_id in sorted(set(video_ids)):
-            locks.enter_context(
-                viral_session_lock(conn, f"viral:statistics:{PLATFORM_WECHAT}:{video_id}")
-            )
+            lock_viral_scope(conn, f"viral:statistics:{PLATFORM_WECHAT}:{video_id}")
         videos = _load_wechat_videos(conn, video_ids)
         if client is None:
             return videos
@@ -107,7 +104,7 @@ def refresh_viral_statistics(
             export_id = video.native.get("export_id")
             if not isinstance(export_id, str) or not export_id:
                 mark_viral_statistics_failure(
-                    conn, platform=video.platform, video_id=video.video_id
+                    conn, platform=video.platform, video_id=video.video_id, commit=False
                 )
                 continue
             pending.append(video)
@@ -126,12 +123,12 @@ def refresh_viral_statistics(
                         type(exc).__name__,
                     )
                     mark_viral_statistics_failure(
-                        conn, platform=video.platform, video_id=video.video_id
+                        conn, platform=video.platform, video_id=video.video_id, commit=False
                     )
                     continue
                 if not _has_statistics(detail):
                     mark_viral_statistics_failure(
-                        conn, platform=video.platform, video_id=video.video_id
+                        conn, platform=video.platform, video_id=video.video_id, commit=False
                     )
                     continue
                 update_viral_statistics(
@@ -139,6 +136,8 @@ def refresh_viral_statistics(
                     platform=video.platform,
                     video_id=video.video_id,
                     detail=detail,
+                    commit=False,
                 )
 
+        conn.commit()
         return _load_wechat_videos(conn, video_ids)

@@ -58,7 +58,6 @@ from app.viral_store import (
     update_viral_statistics,
     upsert_viral_videos,
     viral_fetched_at,
-    viral_session_lock,
 )
 from app.viral_store import (
     list_viral_videos as list_stored_viral_videos,
@@ -253,7 +252,8 @@ def _collect_videos(
     allow_refresh: bool = True,
 ) -> list[ViralVideo]:
     """响应始终从库读取；同平台冷请求等待首轮落库，随后复用。"""
-    with _REFRESH_LOCKS[platform], viral_session_lock(conn, f"viral:refresh:{platform}:{sort}"):
+    with _REFRESH_LOCKS[platform]:
+        lock_viral_scope(conn, f"viral:refresh:{platform}:{sort}")
         if allow_refresh and not fetch_state_is_fresh(
             conn, platform=platform, sort=sort, max_age=max_age
         ):
@@ -303,7 +303,10 @@ def _collect_videos(
                             failure = outcome
                             failures.append(failure)
                             mark_fetch_state(
-                                conn, platform=platform, sort=f"{sort}:retry:{category}"
+                                conn,
+                                platform=platform,
+                                sort=f"{sort}:retry:{category}",
+                                commit=False,
                             )
                             logger.warning(
                                 "Viral refresh failed for %s/%s: %s",
@@ -312,14 +315,18 @@ def _collect_videos(
                                 type(failure).__name__,
                             )
                             continue
-                        upsert_viral_videos(conn, outcome)
+                        upsert_viral_videos(conn, outcome, commit=False)
                         mark_fetch_state(
-                            conn, platform=platform, sort=f"{sort}:category:{category}"
+                            conn,
+                            platform=platform,
+                            sort=f"{sort}:category:{category}",
+                            commit=False,
                         )
             if not failures:
                 mark_fetch_state(conn, platform=platform, sort=sort)
             elif not list_stored_viral_videos(conn, platform=platform, sort=sort):
                 raise failures[0]
+        conn.commit()
         videos = list_stored_viral_videos(conn, platform=platform, sort=sort)
     if enricher is not None:
         _spawn_cover_enrich(enricher, videos)
@@ -429,6 +436,10 @@ def _fetch_viral_video_media(
             status_code=400,
             detail={"code": "VIRAL_PLATFORM_INVALID", "message": "不支持的视频平台"},
         )
+    lock_viral_scope(
+        conn,
+        f"viral:media:{payload.platform}:{payload.videoId}:{payload.kind or 'auto'}",
+    )
     video = get_viral_video(conn, platform=payload.platform, video_id=payload.videoId)
     if video is None:
         # 库中暂无：回源一次（新库/视频首次被直接引用）。
@@ -462,6 +473,10 @@ def _fetch_viral_video_media(
                 "message": "该视频已不在爆款列表中，请刷新后重试",
             },
         )
+    lock_viral_scope(
+        conn,
+        f"viral:media:{payload.platform}:{payload.videoId}:{payload.kind or 'auto'}",
+    )
     storage = get_media_storage(conn)
     needs_video = payload.kind == "video" or not video.audio_url
     cached_video = (
@@ -604,7 +619,7 @@ def import_viral_video_asset(
             (asset_id, project_id, actor.id),
         ).fetchone()
         if existing is not None:
-            existing_kind = "audio" if existing["kind"] == "source_audio" else "video"
+            existing_kind = "audio" if existing["kind"] == "audio" else "video"
             return ViralImportResponse(
                 project_id=project_id,
                 asset_id=asset_id,
@@ -624,7 +639,7 @@ def import_viral_video_asset(
         stored = storage.head_object(key)
         if stored is None:
             raise HTTPException(status_code=502, detail={"code": "VIRAL_MEDIA_ARCHIVE_MISSING"})
-        asset_kind = "source_audio" if media.kind == "audio" else "source_video"
+        asset_kind = "audio" if media.kind == "audio" else "reference_video"
         conn.execute(
             """
             INSERT INTO assets (

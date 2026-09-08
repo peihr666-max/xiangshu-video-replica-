@@ -27,7 +27,6 @@ from app.oral import (
     create_oral_task,
     oral_unit_price_fen,
     refresh_avatar_clone,
-    refresh_oral_task,
     refresh_voice_clone,
     run_next_oral_task,
     start_avatar_clone,
@@ -268,6 +267,48 @@ def test_voice_clone_marks_ready_and_confirmed(
     assert refreshed["confirmed"] == 1
 
 
+def test_image_avatar_is_queued_and_worker_uses_image_api(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    from app.oral import acquire_oral_clone, run_claimed_oral_clone
+
+    conn = seed_scene(tmp_path, "oral-image-worker.db")
+    vendor, transport = make_vendor()
+    transport.on(
+        "POST",
+        "/api/v2/hifly/tool/create_upload_url",
+        envelope(
+            {
+                "upload_url": "https://up.example/i",
+                "content_type": "image/jpeg",
+                "file_id": "image-file",
+            }
+        ),
+    )
+    transport.on(
+        "POST", "/api/v2/hifly/avatar/create_by_image", envelope({"task_id": "image-task"})
+    )
+    started = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="图片分身",
+        source_asset_id="asset-src",
+        source_kind="IMAGE",
+    )
+    assert started.status == "PENDING"
+    lease = acquire_oral_clone(conn, worker_id="clone-worker")
+    assert lease is not None
+    run_claimed_oral_clone(conn, lease=lease, worker_id="clone-worker", vendor=vendor)
+    row = conn.execute(
+        "SELECT status, vendor_task_id FROM oral_avatars WHERE id = %s",
+        (started.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("RUNNING", "image-task")
+    assert any(url.endswith("/avatar/create_by_image") for _, url in transport.calls)
+    assert not any(url.endswith("/avatar/create_by_video") for _, url in transport.calls)
+
+
 def test_create_oral_task_tts_submits_and_replays_idempotently(
     tmp_path: Path, fake_source_storage: FakeSourceStorage
 ) -> None:
@@ -316,7 +357,7 @@ def test_create_oral_task_tts_submits_and_replays_idempotently(
         title="乡墅口播",
         script_text="大家好，今天带大家看一套乡墅。",
         audio_asset_id=None,
-        subtitle=None,
+        subtitle={"st_show": True},
         idempotency_key="idem-key-0001",
         vendor=vendor,
     )
@@ -324,6 +365,86 @@ def test_create_oral_task_tts_submits_and_replays_idempotently(
     assert replayed.replayed is True
     # 幂等重放不再提交供应商：创建调用只有一次。
     assert sum(1 for method, url in transport.calls if url.endswith("/video/create_by_tts")) == 0
+
+    with pytest.raises(OralDomainError, match="不同"):
+        create_oral_task(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            avatar_id=avatar_id,
+            voice_id=voice_id,
+            mode="TTS",
+            title="已改变标题",
+            script_text="大家好，今天带大家看一套乡墅。",
+            audio_asset_id=None,
+            subtitle={"st_show": True},
+            idempotency_key="idem-key-0001",
+        )
+
+
+def test_oral_idempotency_key_is_scoped_by_owner(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-owner-idempotency.db")
+    avatar_1, voice_1 = seed_ready_assets(conn)
+    conn.execute(
+        "INSERT INTO users (id, username, display_name, role) "
+        "VALUES ('employee_2', 'employee_2', 'Employee Two', 'employee')"
+    )
+    conn.execute(
+        "INSERT INTO projects (id, owner_user_id, name) VALUES ('project-2', 'employee_2', 'P2')"
+    )
+    conn.execute(
+        "INSERT INTO assets (id, kind, storage_uri, sha256, size_bytes, content_type, "
+        "created_by_user_id) VALUES ('asset-auth-2', 'identity_authorization', "
+        "'local://assets/auth-2.jpg', '', 0, 'image/jpeg', 'employee_2')"
+    )
+    conn.execute(
+        "INSERT INTO person_identities (id, owner_user_id, display_name, status, "
+        "authorization_status, authorization_asset_id, source_quality_status) VALUES "
+        "('ident-2', 'employee_2', '李工', 'ACTIVE', 'AUTHORIZED', 'asset-auth-2', 'PASSED')"
+    )
+    conn.execute(
+        "INSERT INTO wallets (user_id, available_credits, reserved_credits) "
+        "VALUES ('employee_2', 10, 0)"
+    )
+    conn.execute(
+        "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, vendor_avatar_id, "
+        "status, source_kind, source_asset_id) VALUES "
+        "('avatar-2', 'ident-2', 'employee_2', 'A2', 'vendor-a2', 'READY', 'VIDEO', 'x')"
+    )
+    conn.execute(
+        "INSERT INTO oral_voices (id, identity_id, owner_user_id, title, vendor_voice_id, "
+        "status, source_asset_id, confirmed) VALUES "
+        "('voice-2', 'ident-2', 'employee_2', 'V2', 'vendor-v2', 'READY', 'x', 1)"
+    )
+    conn.commit()
+
+    first = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_1,
+        voice_id=voice_1,
+        mode="TTS",
+        title="同键",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="shared-key-1",
+    )
+    second = create_oral_task(
+        conn,
+        actor=actor("employee_2"),
+        identity_id="ident-2",
+        avatar_id="avatar-2",
+        voice_id="voice-2",
+        mode="TTS",
+        title="同键",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="shared-key-1",
+    )
+    assert first.task_id != second.task_id
 
 
 def test_create_oral_task_rejects_unready_assets(tmp_path: Path) -> None:
@@ -401,8 +522,16 @@ def test_refresh_oral_task_archives_result_asset(
 
     storage = FakeResultStorage()
     monkeypatch.setattr("app.oral.get_media_storage", lambda _conn: storage)
+    conn.execute(
+        "UPDATE oral_tasks SET next_poll_at = '2000-01-01T00:00:00+00:00' WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
 
-    refreshed = refresh_oral_task(conn, task_id=created.task_id, actor=actor(), vendor=vendor)
+    assert run_next_oral_task(conn, worker_id="worker-1", vendor=vendor) == created.task_id
+    refreshed = conn.execute(
+        "SELECT * FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
     assert refreshed["status"] == "SUCCEEDED"
     assert refreshed["result_asset_id"]
     assert refreshed["duration_sec"] == 32
@@ -511,6 +640,16 @@ def test_transport_uncertainty_keeps_reservation_for_reconciliation(
         ("employee_1",),
     ).fetchone()
     assert tuple(wallet) == (9, 1)
+
+    from app.oral import reconcile_uncertain_oral_task
+
+    resolved = reconcile_uncertain_oral_task(conn, task_id=created.task_id, outcome="RELEASE")
+    assert resolved["status"] == "CANCELLED"
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (10, 0)
 
 
 def test_oral_sources_require_owner_current_authorization_and_non_auditor(

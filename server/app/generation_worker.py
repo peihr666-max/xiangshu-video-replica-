@@ -28,6 +28,7 @@ from app.db_pg import (
     DatabaseMode,
     check_pg_ready,
     close_pg_pool,
+    get_pg_pool,
     pg_transaction,
     resolve_database_config,
     validate_customer_production,
@@ -81,7 +82,12 @@ from app.image_tasks import (
     save_first_frame_task_checkpoint,
 )
 from app.media_routes import get_media_storage
-from app.oral import run_next_oral_task
+from app.oral import (
+    acquire_oral_clone,
+    acquire_oral_task,
+    run_claimed_oral_clone,
+    run_next_oral_task,
+)
 from app.script_from_audio import (
     acquire_script_from_audio_task,
     complete_script_from_audio_task,
@@ -410,6 +416,13 @@ def run_worker_once(
                     cause=exc,
                     submission_started=audio_submission_started,
                 )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        clone_lease = acquire_oral_clone(conn, worker_id=worker_id)
+        if clone_lease is not None:
+            run_claimed_oral_clone(conn, lease=clone_lease, worker_id=worker_id)
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
@@ -973,10 +986,32 @@ def run_pg_worker_once(
             if max_tasks is not None and processed >= max_tasks:
                 return processed
         with pg_transaction() as raw_conn:
-            oral_task_id = run_next_oral_task(
-                BusinessConnection.postgres(raw_conn),
-                worker_id=worker_id,
+            clone_lease = acquire_oral_clone(
+                BusinessConnection.postgres(raw_conn), worker_id=worker_id
             )
+        if clone_lease is not None:
+            with get_pg_pool().connection() as raw_conn:
+                run_claimed_oral_clone(
+                    BusinessConnection.postgres(raw_conn),
+                    lease=clone_lease,
+                    worker_id=worker_id,
+                )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        with pg_transaction() as raw_conn:
+            oral_lease = acquire_oral_task(
+                BusinessConnection.postgres(raw_conn), worker_id=worker_id
+            )
+        oral_task_id = None
+        if oral_lease is not None:
+            with get_pg_pool().connection() as raw_conn:
+                oral_task_id = run_next_oral_task(
+                    BusinessConnection.postgres(raw_conn),
+                    worker_id=worker_id,
+                    lease=oral_lease,
+                )
         if oral_task_id is not None:
             processed += 1
             processed_round = True

@@ -53,9 +53,12 @@ def upgrade() -> None:
         sa.Column("source_kind", sa.Text(), nullable=False),
         sa.Column("source_asset_id", sa.Text(), nullable=False),
         sa.Column("error_message", sa.Text()),
+        sa.Column("locked_by", sa.Text()),
+        sa.Column("locked_until", sa.Text()),
         *_timestamps(),
         sa.CheckConstraint(
-            "status IN ('PENDING', 'RUNNING', 'READY', 'FAILED')",
+            "status IN ('PENDING', 'SUBMITTING', 'SUBMISSION_UNCERTAIN', "
+            "'RUNNING', 'READY', 'FAILED')",
             name="ck_oral_avatars_status",
         ),
         sa.CheckConstraint(
@@ -87,9 +90,12 @@ def upgrade() -> None:
         sa.Column("demo_asset_id", sa.Text()),
         sa.Column("confirmed", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("error_message", sa.Text()),
+        sa.Column("locked_by", sa.Text()),
+        sa.Column("locked_until", sa.Text()),
         *_timestamps(),
         sa.CheckConstraint(
-            "status IN ('PENDING', 'RUNNING', 'READY', 'FAILED')",
+            "status IN ('PENDING', 'SUBMITTING', 'SUBMISSION_UNCERTAIN', "
+            "'RUNNING', 'READY', 'FAILED')",
             name="ck_oral_voices_status",
         ),
         sa.CheckConstraint("confirmed IN (0, 1)", name="ck_oral_voices_confirmed"),
@@ -138,7 +144,9 @@ def upgrade() -> None:
         sa.Column("duration_sec", sa.Integer()),
         sa.Column("estimated_cost_fen", sa.Integer(), nullable=False),
         sa.Column("error_message", sa.Text()),
+        sa.Column("vendor_error_code", sa.Integer()),
         sa.Column("idempotency_key", sa.Text(), nullable=False),
+        sa.Column("request_hash", sa.Text(), nullable=False, server_default=""),
         sa.Column("attempt", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("locked_by", sa.Text()),
         sa.Column("locked_until", sa.Text()),
@@ -146,7 +154,11 @@ def upgrade() -> None:
         sa.Column("submitted_at", sa.Text()),
         sa.Column("completed_at", sa.Text()),
         *_timestamps(),
-        sa.UniqueConstraint("idempotency_key", name="uq_oral_tasks_idempotency_key"),
+        sa.UniqueConstraint(
+            "owner_user_id",
+            "idempotency_key",
+            name="uq_oral_tasks_owner_idempotency_key",
+        ),
         sa.CheckConstraint(
             "status IN ('QUEUED', 'SUBMITTING', 'RUNNING', 'SUBMISSION_UNCERTAIN', "
             "'SUCCEEDED', 'FAILED', 'CANCELLED')",
@@ -202,6 +214,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.execute(
+        sa.text("SELECT 1 FROM wallet_transactions WHERE oral_task_id IS NOT NULL LIMIT 1")
+    ).first():
+        raise RuntimeError(
+            "cannot downgrade 057 while oral wallet transactions exist; "
+            "reconcile and export oral billing history first"
+        )
     op.drop_index("uq_wallet_transactions_oral_terminal_round", table_name="wallet_transactions")
     op.drop_index("uq_wallet_transactions_oral_reserve_round", table_name="wallet_transactions")
     with op.batch_alter_table("wallet_transactions") as batch_op:

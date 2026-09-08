@@ -644,9 +644,9 @@ def test_import_viral_media_creates_owner_project_and_is_idempotent(client, monk
     http, _ = client
     assert http.get("/api/viral/videos?platform=douyin", headers=_AUTH_HEADERS).status_code == 200
     video_id = "dy-自建房预算-0"
-    key = f"viral/douyin/{video_id}.mp3"
+    key = f"viral/douyin/{video_id}.browser.mp4"
     storage = _CoverStorage()
-    storage.put_object(key, b"ID3-audio", content_type="audio/mpeg")
+    storage.put_object(key, b"\x00\x00\x00 ftypisom", content_type="video/mp4")
 
     class StubPipeline:
         calls = 0
@@ -659,23 +659,32 @@ def test_import_viral_media_creates_owner_project_and_is_idempotent(client, monk
 
             type(self).calls += 1
             return ViralMediaResult(
-                kind="audio",
+                kind="video",
                 storage_uri=f"local://local-private/{key}",
                 url="https://storage.test/audio",
                 size=9,
-                content_type="audio/mpeg",
+                content_type="video/mp4",
                 cache_hit=True,
             )
 
     monkeypatch.setattr("app.viral_routes.get_media_storage", lambda conn: storage)
     monkeypatch.setattr("app.viral_routes.ViralMediaPipeline", StubPipeline)
     url = f"/api/viral/videos/douyin/{video_id}/import"
-    first = http.post(url, json={"kind": "audio"}, headers=_AUTH_HEADERS)
-    second = http.post(url, json={"kind": "audio"}, headers=_AUTH_HEADERS)
+    first = http.post(url, json={"kind": "video"}, headers=_AUTH_HEADERS)
+    second = http.post(url, json={"kind": "video"}, headers=_AUTH_HEADERS)
 
     assert first.status_code == 200, first.text
     assert second.json() == first.json()
     assert StubPipeline.calls == 1
+    project = http.get(f"/api/projects/{first.json()['project_id']}", headers=_AUTH_HEADERS)
+    assert project.status_code == 200, project.text
+    assert project.json()["reference_asset_id"] == first.json()["asset_id"]
+    queued = http.post(
+        f"/api/projects/{first.json()['project_id']}/analysis-tasks",
+        json={"asset_id": first.json()["asset_id"], "duration_seconds": 10},
+        headers=_AUTH_HEADERS,
+    )
+    assert queued.status_code == 202, queued.text
     conn, close = __import__(
         "app.viral_routes", fromlist=["_open_worker_connection"]
     )._open_worker_connection()
