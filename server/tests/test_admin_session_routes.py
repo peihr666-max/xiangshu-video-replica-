@@ -271,6 +271,66 @@ def _reconcile_clone(
     )
 
 
+def _seed_uncertain_oral_task(task_id: str) -> tuple[int, int]:
+    with psycopg.connect(_t34_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO projects (id, owner_user_id, name) "
+            "VALUES ('oral-project', 'customer_u', 'Oral Project') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        conn.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name) "
+            "VALUES ('oral-task-identity', 'customer_u', 'Oral Task Identity') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        conn.execute(
+            "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, status, "
+            "source_kind, source_asset_id) VALUES "
+            "('oral-task-avatar', 'oral-task-identity', 'customer_u', 'Avatar', "
+            "'READY', 'VIDEO', 'source-asset') ON CONFLICT (id) DO NOTHING"
+        )
+        conn.execute(
+            "INSERT INTO oral_tasks (id, owner_user_id, project_id, identity_id, avatar_id, "
+            "mode, title, status, estimated_cost_fen, idempotency_key, provider_started_at) "
+            "VALUES (%s, 'customer_u', 'oral-project', 'oral-task-identity', "
+            "'oral-task-avatar', 'TTS', 'Uncertain Oral Task', 'SUBMISSION_UNCERTAIN', "
+            "1000, %s, CURRENT_TIMESTAMP)",
+            (task_id, f"create-{task_id}"),
+        )
+        conn.execute(
+            "INSERT INTO wallets (user_id, available_credits, reserved_credits) "
+            "VALUES ('customer_u', 7, 3) ON CONFLICT (user_id) DO UPDATE SET "
+            "available_credits = 7, reserved_credits = 3"
+        )
+        conn.execute(
+            "INSERT INTO wallet_transactions (id, user_id, type, available_delta, "
+            "reserved_delta, oral_task_id, billing_round, idempotency_key) "
+            "VALUES (%s, 'customer_u', 'RESERVE', -1, 1, %s, 1, %s)",
+            (f"reserve-{task_id}", task_id, f"reserve-key-{task_id}"),
+        )
+        wallet = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'customer_u'"
+        ).fetchone()
+    assert wallet is not None
+    return int(wallet[0]), int(wallet[1])
+
+
+def _reconcile_oral_task(
+    client: TestClient,
+    headers: dict[str, str],
+    task_id: str,
+    *,
+    outcome: str,
+    key: str,
+    reason: str,
+):
+    return client.post(
+        f"/api/control/admin/oral/tasks/{task_id}/reconcile",
+        headers={**headers, "Idempotency-Key": key},
+        json={"outcome": outcome, "confirm": True, "reason": reason},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -527,6 +587,161 @@ def test_clone_reconcile_replay_and_concurrency_write_one_audit_without_wallet_c
     assert json.loads(str(audits[0][2]))["reason"] == "重复请求验证"
     assert json.loads(str(audits[1][2]))["reason"] == "并发请求验证"
     assert wallet_after == wallet_before
+
+
+@pytest.mark.pg
+@pytest.mark.parametrize(
+    ("outcome", "expected_status", "available_delta"),
+    [("SETTLE", "FAILED", 0), ("RELEASE", "CANCELLED", 1)],
+)
+def test_admin_session_can_reconcile_uncertain_oral_task_and_wallet(
+    client: TestClient,
+    outcome: str,
+    expected_status: str,
+    available_delta: int,
+) -> None:
+    task_id = f"oral-task-{outcome.lower()}"
+    wallet_before = _seed_uncertain_oral_task(task_id)
+    headers = _admin_session(client)
+
+    response = _reconcile_oral_task(
+        client,
+        headers,
+        task_id,
+        outcome=outcome,
+        key=f"oral-task-{outcome.lower()}-key",
+        reason="供应商后台人工核对",
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == task_id
+    assert response.json()["status"] == expected_status
+    assert response.json()["outcome"] == outcome
+    with psycopg.connect(_t34_dsn()) as conn:
+        task = conn.execute("SELECT status FROM oral_tasks WHERE id = %s", (task_id,)).fetchone()
+        terminal = conn.execute(
+            "SELECT type FROM wallet_transactions WHERE oral_task_id = %s "
+            "AND type IN ('SETTLE', 'RELEASE')",
+            (task_id,),
+        ).fetchone()
+        wallet_after = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'customer_u'"
+        ).fetchone()
+        audit = conn.execute(
+            "SELECT actor_user_id, metadata_json FROM audit_logs "
+            "WHERE action = 'oral.task.reconcile' AND entity_id = %s",
+            (task_id,),
+        ).fetchone()
+    assert task == (expected_status,)
+    assert terminal == (outcome,)
+    assert wallet_after == (wallet_before[0] + available_delta, wallet_before[1] - 1)
+    assert audit is not None and audit[0] == "admin_u"
+    metadata = json.loads(str(audit[1]))
+    assert metadata["outcome"] == outcome
+    assert metadata["reason"] == "供应商后台人工核对"
+    assert metadata["request_id"]
+    assert metadata["admin_session_id"]
+
+
+@pytest.mark.pg
+def test_customer_and_auditor_cannot_reconcile_uncertain_oral_task(
+    client: TestClient,
+) -> None:
+    task_id = "oral-task-denied"
+    wallet_before = _seed_uncertain_oral_task(task_id)
+
+    customer_attempt = _reconcile_oral_task(
+        client,
+        {"X-Dev-User-Id": "customer_u"},
+        task_id,
+        outcome="RELEASE",
+        key="customer-task-reconcile",
+        reason="客户尝试处理",
+    )
+    assert customer_attempt.status_code == 401
+
+    auditor_attempt = _reconcile_oral_task(
+        client,
+        _admin_session(client, "auditor_u"),
+        task_id,
+        outcome="RELEASE",
+        key="auditor-task-reconcile",
+        reason="审计员尝试处理",
+    )
+    assert auditor_attempt.status_code == 403
+    assert auditor_attempt.json()["detail"]["code"] == "AUDITOR_READ_ONLY"
+    with psycopg.connect(_t34_dsn()) as conn:
+        task = conn.execute("SELECT status FROM oral_tasks WHERE id = %s", (task_id,)).fetchone()
+        wallet_after = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'customer_u'"
+        ).fetchone()
+        audit_count = conn.execute(
+            "SELECT count(*) FROM audit_logs WHERE action = 'oral.task.reconcile' "
+            "AND entity_id = %s",
+            (task_id,),
+        ).fetchone()
+    assert task == ("SUBMISSION_UNCERTAIN",)
+    assert wallet_after == wallet_before
+    assert audit_count == (0,)
+
+
+@pytest.mark.pg
+def test_oral_task_reconcile_replay_and_concurrency_apply_once(client: TestClient) -> None:
+    headers = _admin_session(client)
+    replay_id = "oral-task-replay"
+    _seed_uncertain_oral_task(replay_id)
+    first = _reconcile_oral_task(
+        client,
+        headers,
+        replay_id,
+        outcome="RELEASE",
+        key="oral-task-replay-key",
+        reason="重复请求验证",
+    )
+    replay = _reconcile_oral_task(
+        client,
+        headers,
+        replay_id,
+        outcome="RELEASE",
+        key="oral-task-replay-key",
+        reason="重复请求验证",
+    )
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert replay.headers["X-Idempotent-Replay"] == "true"
+    assert replay.json() == first.json()
+
+    race_id = "oral-task-race"
+    _seed_uncertain_oral_task(race_id)
+    barrier = Barrier(2)
+
+    def race(key: str):
+        barrier.wait()
+        return _reconcile_oral_task(
+            client,
+            headers,
+            race_id,
+            outcome="SETTLE",
+            key=key,
+            reason="并发请求验证",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(race, ("oral-task-race-a", "oral-task-race-b")))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    with psycopg.connect(_t34_dsn()) as conn:
+        terminal_counts = conn.execute(
+            "SELECT type, count(*) FROM wallet_transactions WHERE oral_task_id IN (%s, %s) "
+            "AND type IN ('SETTLE', 'RELEASE') GROUP BY type ORDER BY type",
+            (replay_id, race_id),
+        ).fetchall()
+        audit_count = conn.execute(
+            "SELECT count(*) FROM audit_logs WHERE action = 'oral.task.reconcile' "
+            "AND entity_id IN (%s, %s)",
+            (replay_id, race_id),
+        ).fetchone()
+    assert terminal_counts == [("RELEASE", 1), ("SETTLE", 1)]
+    assert audit_count == (2,)
 
 
 # ---------------------------------------------------------------------------

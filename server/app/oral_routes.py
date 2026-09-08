@@ -36,7 +36,7 @@ from app.oral import (
     start_avatar_clone,
     start_voice_clone,
 )
-from app.permissions import require_not_auditor, require_role, write_audit
+from app.permissions import require_not_auditor, write_audit
 
 router = APIRouter(prefix="/api/oral")
 admin_router = APIRouter(prefix="/api/control/admin/oral", tags=["admin-oral"])
@@ -322,7 +322,7 @@ class OralTaskRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 
-class OralReconcileRequest(BaseModel):
+class OralReconcileRequest(AdminWriteContract):
     model_config = ConfigDict(extra="forbid")
 
     outcome: Literal["SETTLE", "RELEASE"]
@@ -487,33 +487,53 @@ def reconcile_voice_clone(
     )
 
 
-@router.post("/tasks/{task_id}/reconcile")
+@admin_router.post("/tasks/{task_id}/reconcile")
 def reconcile_oral_generation_task(
     task_id: str,
-    request: OralReconcileRequest,
-    db: BusinessDbDep,
-) -> dict[str, Any]:
-    with db.write() as (conn, actor):
-        require_role(
-            conn,
-            actor=actor,
-            allowed_roles={"admin"},
-            action="oral.task.reconcile",
-            entity_type="oral_task",
-            entity_id=task_id,
-        )
+    body: OralReconcileRequest,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    def business(raw_conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        conn = BusinessConnection.postgres(raw_conn)
         try:
-            row = reconcile_uncertain_oral_task(conn, task_id=task_id, outcome=request.outcome)
+            row = reconcile_uncertain_oral_task(conn, task_id=task_id, outcome=body.outcome)
         except OralDomainError as exc:
-            raise _domain_guard(exc) from exc
+            raise OralError("ORAL_TASK_NOT_UNCERTAIN", str(exc), status_code=409) from exc
         write_audit(
             conn,
-            actor=actor,
+            actor=CurrentUser(
+                id=actor.user_id,
+                username=actor.username,
+                display_name=actor.display_name,
+                role=cast(Role, actor.role),
+            ),
             action="oral.task.reconcile",
             entity_type="oral_task",
             entity_id=task_id,
-            metadata={"outcome": request.outcome},
+            metadata={
+                "outcome": body.outcome,
+                "reason": body.reason.strip(),
+                "request_id": request_id,
+                "admin_session_id": actor.session_id,
+            },
             commit=False,
         )
-        conn.commit()
-    return _serialize(row)
+        return {
+            "id": str(row["id"]),
+            "status": str(row["status"]),
+            "outcome": body.outcome,
+            "request_id": request_id,
+        }
+
+    return write_with_idempotency(
+        request,
+        response,
+        actor,
+        body,
+        business,
+        success_status=200,
+        unavailable_code="ORAL_RECONCILIATION_UNAVAILABLE",
+        unavailable_message="Oral task reconciliation requires the PostgreSQL runtime.",
+    )
