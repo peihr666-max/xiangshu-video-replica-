@@ -69,6 +69,39 @@ def test_second_based_billing_preserves_oral_shape_and_guards_downgrade(
             "SELECT 1 FROM information_schema.columns "
             "WHERE table_name='wallet_transactions' AND column_name='oral_task_id'"
         ).fetchone() == (1,)
+
+
+@pytest.mark.pg
+@pytest.mark.parametrize(
+    "starting_revision",
+    [None, "062_viral_video_library", "063_script_from_audio_reconciliation"],
+)
+def test_cost_billing_chain_reaches_head_from_supported_start(
+    migration_dsn: str,
+    starting_revision: str | None,
+) -> None:
+    config = _config(migration_dsn)
+    if starting_revision is not None:
+        command.upgrade(config, starting_revision)
+    command.upgrade(config, "head")
+    with psycopg.connect(migration_dsn) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "068_wallet_ledger_sequence",
+        )
+        assert conn.execute("SELECT to_regclass('operation_cost_rates')").fetchone()[0]
+        assert conn.execute("SELECT to_regclass('operation_cost_records')").fetchone()[0]
+        columns = {
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='generation_tasks'"
+            ).fetchall()
+        }
+        assert {"billed_seconds", "actual_output_seconds", "cost_status"} <= columns
+
+    if starting_revision is not None:
+        command.downgrade(config, starting_revision)
+        command.upgrade(config, "head")
         foreign_keys = conn.execute(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
             "WHERE conrelid='wallet_transactions'::regclass AND contype='f'"

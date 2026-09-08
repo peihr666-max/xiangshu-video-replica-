@@ -184,6 +184,36 @@ def test_reserve_moves_one_credit_and_is_idempotent(tmp_path: Path) -> None:
             assert transaction_types(conn) == [("RESERVE", 1)]
 
 
+def test_wallet_ledger_sequence_is_database_assigned_and_immutable(tmp_path: Path) -> None:
+    with initialize_database(tmp_path / "ledger-sequence.db") as raw:
+        with BusinessConnection.sqlite(raw) as conn:
+            seed_task(conn)
+            with conn:
+                reserve_internal_billing(
+                    conn,
+                    user_id="user_1",
+                    task_id="task_1",
+                    billing_round=1,
+                )
+            row = conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE task_id='task_1'"
+            ).fetchone()
+            assert row is not None and int(row["ledger_sequence"]) > 0
+
+            with pytest.raises(sqlite3.IntegrityError, match="database assigned"):
+                conn.execute(
+                    "INSERT INTO wallet_transactions "
+                    "(id,user_id,type,available_delta,reserved_delta,task_id,billing_round,"
+                    "idempotency_key,ledger_sequence) VALUES "
+                    "('manual-sequence','user_1','SETTLE',0,-1,'task_1',2,"
+                    "'manual-sequence',999)"
+                )
+            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+                conn.execute(
+                    "UPDATE wallet_transactions SET ledger_sequence=999 WHERE task_id='task_1'"
+                )
+
+
 def test_reserve_rejects_insufficient_credits_without_partial_write(tmp_path: Path) -> None:
     with initialize_database(tmp_path / "insufficient.db") as raw:
         with BusinessConnection.sqlite(raw) as conn:
