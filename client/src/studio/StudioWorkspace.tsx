@@ -146,6 +146,146 @@ function isDefiniteSubmissionRejection(cause: unknown): boolean {
   return status >= 400 && status < 500 && retryable !== true;
 }
 
+type StoredWorkspaceAttempt<T> = {
+  version: 1;
+  accountId: string;
+  resourceKey: string;
+  request: T;
+};
+
+type StoredCloneRequest = {
+  input: StudioOralCloneRequest;
+  consentId?: string;
+  idempotencyKey: string;
+};
+
+const workspaceAttemptMemory = new Map<
+  string,
+  { attempt: StoredWorkspaceAttempt<unknown>; persisted: boolean }
+>();
+const removedWorkspaceAttempts = new Set<string>();
+const cloneAttemptFlights = new Map<string, Promise<void>>();
+
+function workspaceAttemptKey(
+  kind: "oral" | "clone",
+  accountId: string,
+  resourceKey: string,
+): string {
+  return `studio.pendingAttempt:${kind}:${JSON.stringify([accountId, resourceKey])}`;
+}
+
+function readWorkspaceAttempt<T>(
+  storageKey: string,
+  accountId: string,
+  resourceKey: string,
+  isRequest: (value: unknown) => value is T,
+): StoredWorkspaceAttempt<T> | undefined {
+  if (removedWorkspaceAttempts.has(storageKey)) return undefined;
+  const memory = workspaceAttemptMemory.get(storageKey);
+  let saved: string | null;
+  try {
+    saved = window.localStorage.getItem(storageKey);
+  } catch {
+    if (memory && isRequest(memory.attempt.request)) {
+      return memory.attempt as StoredWorkspaceAttempt<T>;
+    }
+    throw new Error("无法读取待提交任务恢复状态，请检查浏览器存储权限后重试。");
+  }
+  if (!saved) {
+    if (memory && !memory.persisted && isRequest(memory.attempt.request)) {
+      return memory.attempt as StoredWorkspaceAttempt<T>;
+    }
+    workspaceAttemptMemory.delete(storageKey);
+    return undefined;
+  }
+  try {
+    const attempt = JSON.parse(saved) as Partial<StoredWorkspaceAttempt<T>>;
+    if (
+      attempt.version !== 1 ||
+      attempt.accountId !== accountId ||
+      attempt.resourceKey !== resourceKey ||
+      !isRequest(attempt.request)
+    ) {
+      removeWorkspaceAttempt(storageKey);
+      return undefined;
+    }
+    if (memory && !memory.persisted && isRequest(memory.attempt.request)) {
+      return memory.attempt as StoredWorkspaceAttempt<T>;
+    }
+    const validAttempt = attempt as StoredWorkspaceAttempt<T>;
+    workspaceAttemptMemory.set(storageKey, {
+      attempt: validAttempt,
+      persisted: true,
+    });
+    return validAttempt;
+  } catch {
+    removeWorkspaceAttempt(storageKey);
+    return undefined;
+  }
+}
+
+function writeWorkspaceAttempt<T>(
+  storageKey: string,
+  attempt: StoredWorkspaceAttempt<T>,
+): void {
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(attempt));
+  } catch {
+    throw new Error("无法保存待提交任务恢复状态，请检查浏览器存储空间后重试。");
+  }
+  removedWorkspaceAttempts.delete(storageKey);
+  workspaceAttemptMemory.set(storageKey, { attempt, persisted: true });
+}
+
+function removeWorkspaceAttempt(storageKey: string): void {
+  workspaceAttemptMemory.delete(storageKey);
+  try {
+    window.localStorage.removeItem(storageKey);
+    removedWorkspaceAttempts.delete(storageKey);
+  } catch {
+    removedWorkspaceAttempts.add(storageKey);
+  }
+}
+
+function isOralTaskRequest(value: unknown): value is OralTaskRequest {
+  if (typeof value !== "object" || value === null) return false;
+  const request = value as Partial<OralTaskRequest>;
+  const common =
+    typeof request.identityId === "string" &&
+    typeof request.avatarId === "string" &&
+    (request.mode === "TTS" || request.mode === "AUDIO") &&
+    typeof request.title === "string" &&
+    typeof request.idempotencyKey === "string" &&
+    (request.projectId === undefined || typeof request.projectId === "string");
+  if (!common) return false;
+  return request.mode === "TTS"
+    ? typeof request.voiceId === "string" &&
+        typeof request.scriptText === "string"
+    : typeof request.audioAssetId === "string";
+}
+
+function isStoredCloneRequest(value: unknown): value is StoredCloneRequest {
+  if (typeof value !== "object" || value === null) return false;
+  const request = value as Partial<StoredCloneRequest>;
+  const input = request.input;
+  const common =
+    typeof request.idempotencyKey === "string" &&
+    (request.consentId === undefined ||
+      typeof request.consentId === "string") &&
+    typeof input === "object" &&
+    input !== null &&
+    (input.kind === "avatar" || input.kind === "voice") &&
+    typeof input.identityId === "string" &&
+    typeof input.title === "string" &&
+    typeof input.sourceAssetId === "string";
+  if (!common) return false;
+  return (
+    input.kind === "voice" ||
+    input.sourceKind === "VIDEO" ||
+    input.sourceKind === "IMAGE"
+  );
+}
+
 function WorkspaceUserAvatar({
   currentUser,
   review,
@@ -208,18 +348,6 @@ function StudioWorkspaceSession({
   const [oralPriceError, setOralPriceError] = useState("");
   const [oralSubmitting, setOralSubmitting] = useState(false);
   const oralPriceRequestRef = useRef(0);
-  const oralSubmissionRef = useRef<OralTaskRequest | undefined>(undefined);
-  const pendingCloneRef = useRef(
-    new Map<
-      string,
-      {
-        request: StudioOralCloneRequest;
-        consentId?: string;
-        idempotencyKey: string;
-        flight?: Promise<void>;
-      }
-    >(),
-  );
   const cloneActiveRef = useRef(true);
   const oralSubmittingRef = useRef(false);
   const busyRef = useRef(false);
@@ -239,7 +367,6 @@ function StudioWorkspaceSession({
     cloneActiveRef.current = true;
     return () => {
       cloneActiveRef.current = false;
-      pendingCloneRef.current.clear();
     };
   }, []);
 
@@ -332,11 +459,27 @@ function StudioWorkspaceSession({
     if (oralSubmittingRef.current) return;
     oralSubmittingRef.current = true;
     setOralSubmitting(true);
+    let storageKey: string | undefined;
     try {
       const mode = state.page === "oral-audio" ? "audio" : "text";
       const input = buildOralInput(state.draft, mode);
+      const resourceKey = JSON.stringify([
+        state.draft.projectId ?? null,
+        input.ipId,
+        input.avatarId,
+        mode,
+        input.voiceId ?? null,
+        input.audioAssetId ?? null,
+      ]);
+      storageKey = workspaceAttemptKey("oral", currentUser.id, resourceKey);
+      const stored = readWorkspaceAttempt(
+        storageKey,
+        currentUser.id,
+        resourceKey,
+        isOralTaskRequest,
+      );
       const request =
-        oralSubmissionRef.current ??
+        stored?.request ??
         ({
           projectId: state.draft.projectId,
           identityId: input.ipId,
@@ -350,9 +493,18 @@ function StudioWorkspaceSession({
             "subtitles" in input ? { st_show: input.subtitles } : undefined,
           idempotencyKey: crypto.randomUUID(),
         } satisfies OralTaskRequest);
-      oralSubmissionRef.current = request;
+      if (!stored) {
+        writeWorkspaceAttempt(storageKey, {
+          version: 1,
+          accountId: currentUser.id,
+          resourceKey,
+          request,
+        });
+      }
       const result = await createOralTask(request);
-      oralSubmissionRef.current = undefined;
+      if (result.status !== "SUBMISSION_UNCERTAIN") {
+        removeWorkspaceAttempt(storageKey);
+      }
       setGeneration(undefined);
       if (result.status === "FAILED") {
         notify("口播任务提交未成功，请核对素材后重试。");
@@ -362,8 +514,8 @@ function StudioWorkspaceSession({
         refresh();
       }
     } catch (cause: unknown) {
-      if (isDefiniteSubmissionRejection(cause)) {
-        oralSubmissionRef.current = undefined;
+      if (storageKey && isDefiniteSubmissionRejection(cause)) {
+        removeWorkspaceAttempt(storageKey);
       }
       notify(
         customerVisibleErrorMessage(cause, "口播任务提交失败，请稍后重试。"),
@@ -643,65 +795,100 @@ function StudioWorkspaceSession({
           new Error("当前账号为只读权限，不能提交口播克隆任务。"),
         );
       }
-      const key = `${input.kind}:${input.identityId}`;
-      const existing = pendingCloneRef.current.get(key);
-      if (existing?.flight) return existing.flight;
-      const pending =
-        existing ??
+      const resourceKey = JSON.stringify([
+        input.kind,
+        input.identityId,
+        input.sourceAssetId,
+      ]);
+      const key = workspaceAttemptKey("clone", currentUser.id, resourceKey);
+      const existingFlight = cloneAttemptFlights.get(key);
+      if (existingFlight) return existingFlight;
+      let stored: StoredWorkspaceAttempt<StoredCloneRequest> | undefined;
+      try {
+        stored = readWorkspaceAttempt(
+          key,
+          currentUser.id,
+          resourceKey,
+          isStoredCloneRequest,
+        );
+      } catch (cause: unknown) {
+        return Promise.reject(cause);
+      }
+      let pending =
+        stored?.request ??
         ({
-          request: { ...input },
+          input: { ...input },
           idempotencyKey: crypto.randomUUID(),
-        } satisfies {
-          request: StudioOralCloneRequest;
-          idempotencyKey: string;
+        } satisfies StoredCloneRequest);
+      if (!stored) {
+        writeWorkspaceAttempt(key, {
+          version: 1,
+          accountId: currentUser.id,
+          resourceKey,
+          request: pending,
         });
+      }
       const flight = (async () => {
         try {
           if (!pending.consentId) {
             const consent = await createOralCloneConsent({
-              identityId: pending.request.identityId,
-              sourceAssetId: pending.request.sourceAssetId,
+              identityId: pending.input.identityId,
+              sourceAssetId: pending.input.sourceAssetId,
               purpose:
-                pending.request.kind === "avatar"
+                pending.input.kind === "avatar"
                   ? "oral_avatar_clone"
                   : "oral_voice_clone",
             });
-            if (!cloneActiveRef.current) return;
-            pending.consentId = consent.consent_id;
+            pending = { ...pending, consentId: consent.consent_id };
+            writeWorkspaceAttempt(key, {
+              version: 1,
+              accountId: currentUser.id,
+              resourceKey,
+              request: pending,
+            });
+            if (!cloneActiveRef.current) {
+              throw new Error("页面已切换，请重新提交以继续。");
+            }
           }
-          if (!cloneActiveRef.current) return;
-          if (pending.request.kind === "avatar") {
+          if (!cloneActiveRef.current) {
+            throw new Error("页面已切换，请重新提交以继续。");
+          }
+          const consentId = pending.consentId;
+          if (!consentId) {
+            throw new Error("克隆授权状态无效，请重新提交。");
+          }
+          if (pending.input.kind === "avatar") {
             await createOralAvatarClone({
-              identityId: pending.request.identityId,
-              title: pending.request.title,
-              sourceAssetId: pending.request.sourceAssetId,
-              sourceKind: pending.request.sourceKind,
-              consentId: pending.consentId,
+              identityId: pending.input.identityId,
+              title: pending.input.title,
+              sourceAssetId: pending.input.sourceAssetId,
+              sourceKind: pending.input.sourceKind,
+              consentId,
               idempotencyKey: pending.idempotencyKey,
             });
           } else {
             await createOralVoiceClone({
-              identityId: pending.request.identityId,
-              title: pending.request.title,
-              sourceAssetId: pending.request.sourceAssetId,
-              consentId: pending.consentId,
+              identityId: pending.input.identityId,
+              title: pending.input.title,
+              sourceAssetId: pending.input.sourceAssetId,
+              consentId,
               idempotencyKey: pending.idempotencyKey,
             });
           }
-          pendingCloneRef.current.delete(key);
+          removeWorkspaceAttempt(key);
         } catch (cause: unknown) {
-          pending.flight = undefined;
           if (isDefiniteSubmissionRejection(cause)) {
-            pendingCloneRef.current.delete(key);
+            removeWorkspaceAttempt(key);
           }
           throw cause;
+        } finally {
+          cloneAttemptFlights.delete(key);
         }
       })();
-      pending.flight = flight;
-      pendingCloneRef.current.set(key, pending);
+      cloneAttemptFlights.set(key, flight);
       return flight;
     },
-    [review, currentUser.role],
+    [review, currentUser.role, currentUser.id],
   );
   const saveDraft = () => {
     if (

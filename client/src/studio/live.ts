@@ -840,14 +840,13 @@ function writeScriptExtractionAttempt(
   storageKey: string,
   attempt: ScriptExtractionAttempt,
 ): void {
-  removedScriptExtractionAttempts.delete(storageKey);
-  scriptExtractionAttempts.set(storageKey, { attempt, persisted: false });
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(attempt));
-    scriptExtractionAttempts.set(storageKey, { attempt, persisted: true });
   } catch {
-    // The in-memory record still prevents duplicate submissions in this page.
+    throw new Error("无法保存文案提取恢复状态，请检查浏览器存储空间后重试。");
   }
+  removedScriptExtractionAttempts.delete(storageKey);
+  scriptExtractionAttempts.set(storageKey, { attempt, persisted: true });
 }
 
 function removeScriptExtractionAttempt(storageKey: string): void {

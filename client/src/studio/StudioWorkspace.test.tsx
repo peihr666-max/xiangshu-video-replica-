@@ -159,6 +159,7 @@ describe("V1.4 workspace integration", () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     live.loadPersonAssets.mockResolvedValue({ assets: [], errors: [] });
     window.history.replaceState(null, "", "/#studio/workbench");
   });
@@ -526,7 +527,7 @@ describe("V1.4 workspace integration", () => {
         },
       );
       vi.stubGlobal("fetch", fetchMock);
-      render(
+      const view = render(
         <StudioWorkspace
           currentUser={reviewUser}
           initialState={createReviewState("person-avatars")}
@@ -541,8 +542,13 @@ describe("V1.4 workspace integration", () => {
       });
       fireEvent.click(firstSubmit);
       await waitFor(() => expect(firstSubmit).toBeEnabled());
-      fireEvent.click(screen.getByRole("tab", { name: "IP 定位" }));
-      fireEvent.click(screen.getByRole("tab", { name: "口播分身" }));
+      view.unmount();
+      render(
+        <StudioWorkspace
+          currentUser={reviewUser}
+          initialState={createReviewState("person-avatars")}
+        />,
+      );
       fireEvent.click(await screen.findByRole("button", { name: "开始制作" }));
       await waitFor(() => expect(avatarCalls).toBe(2));
 
@@ -828,6 +834,288 @@ describe("V1.4 workspace integration", () => {
     vi.unstubAllGlobals();
   });
 
+  it("无项目且云草稿延迟时，口播响应丢失后 fresh state 仍复用完整请求", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    live.loadCloudDraft.mockImplementation(() => new Promise(() => {}));
+    let oralCalls = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/price")) {
+          return { ok: true, json: async () => ({ unit_price_fen: 100 }) };
+        }
+        if (url.endsWith("/api/oral/tasks")) {
+          oralCalls += 1;
+          if (oralCalls === 1) throw new TypeError("network unavailable");
+          return {
+            ok: true,
+            json: async () => ({
+              id: "oral-restored",
+              status: "QUEUED",
+              estimated_cost_fen: 100,
+              replayed: true,
+            }),
+          };
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const state = createReviewState("oral");
+    state.draft.projectId = undefined;
+    const firstView = render(
+      <StudioWorkspace currentUser={reviewUser} initialState={state} />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    const firstConfirm = await screen.findByRole("button", {
+      name: "确认费用并提交",
+    });
+    fireEvent.click(firstConfirm);
+    await waitFor(() => expect(firstConfirm).toBeEnabled());
+    firstView.unmount();
+    const reloadedState = createState("oral");
+    reloadedState.draft = {
+      ...reloadedState.draft,
+      projectId: undefined,
+      ipId: state.draft.ipId,
+      avatarId: state.draft.avatarId,
+      voiceId: state.draft.voiceId,
+      script: {
+        ...state.draft.script,
+        title: "刷新后修改的标题",
+        text: "刷新后修改的脚本不应覆盖待恢复请求",
+      },
+      subtitles: !state.draft.subtitles,
+    };
+    expect(reloadedState.draft.id).not.toBe(state.draft.id);
+    render(
+      <StudioWorkspace currentUser={reviewUser} initialState={reloadedState} />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+    await waitFor(() => expect(oralCalls).toBe(2));
+
+    const bodies = fetchMock.mock.calls
+      .filter(([input]) => String(input).endsWith("/api/oral/tasks"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[1]).toMatchObject({
+      title: state.draft.script.title,
+      script_text: state.draft.script.text,
+      subtitle: { st_show: state.draft.subtitles },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("首次恢复记录持久化失败时口播与克隆均不发送业务 POST", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("full", "QuotaExceededError");
+      });
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/price")) {
+          return { ok: true, json: async () => ({ unit_price_fen: 100 }) };
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const oralView = render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "quota-oral" }}
+        initialState={createReviewState("oral")}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+    await screen.findByText(/无法保存待提交任务恢复状态/);
+    oralView.unmount();
+    render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "quota-clone" }}
+        initialState={createReviewState("person-avatars")}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "开始制作" }));
+    await screen.findByText(/无法保存待提交任务恢复状态/);
+
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        [
+          "/api/oral/tasks",
+          "/api/oral/clone-consents",
+          "/api/oral/avatars",
+        ].some((path) => String(input).endsWith(path)),
+      ),
+    ).toHaveLength(0);
+    setItem.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("克隆授权记录更新失败时不创建克隆并用原幂等键重新授权", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    const nativeSetItem = Storage.prototype.setItem;
+    let storageWrites = 0;
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key: string, value: string) {
+        storageWrites += 1;
+        if (storageWrites === 2) {
+          throw new DOMException("full", "QuotaExceededError");
+        }
+        nativeSetItem.call(this, key, value);
+      });
+    let consentCalls = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/clone-consents")) {
+          consentCalls += 1;
+          return new Response(
+            JSON.stringify({
+              consent_id: `consent-${consentCalls}`,
+              identity_id: "zhang",
+              source_asset_id: "zhang-courtyard",
+              source_sha256: "fixture-sha256",
+              purpose: "oral_avatar_clone",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/oral/avatars")) {
+          return new Response(
+            JSON.stringify({ id: "avatar-retried", status: "PENDING" }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "consent-write-fail" }}
+        initialState={createReviewState("person-avatars")}
+      />,
+    );
+
+    const submit = await screen.findByRole("button", { name: "开始制作" });
+    fireEvent.click(submit);
+    await screen.findByText(/无法保存待提交任务恢复状态/);
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/oral/avatars"),
+      ),
+    ).toHaveLength(0);
+    const storageKey = Object.keys(window.localStorage).find((key) =>
+      key.includes("consent-write-fail"),
+    );
+    expect(storageKey).toBeDefined();
+    const persisted = JSON.parse(
+      window.localStorage.getItem(storageKey || "") || "{}",
+    );
+    expect(persisted.request.consentId).toBeUndefined();
+    setItem.mockRestore();
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([input]) =>
+          String(input).endsWith("/api/oral/avatars"),
+        ),
+      ).toHaveLength(1),
+    );
+    const cloneBody = JSON.parse(
+      String(
+        fetchMock.mock.calls.find(([input]) =>
+          String(input).endsWith("/api/oral/avatars"),
+        )?.[1]?.body,
+      ),
+    );
+    expect(cloneBody.idempotency_key).toBe(persisted.request.idempotencyKey);
+    expect(consentCalls).toBe(2);
+    vi.unstubAllGlobals();
+  });
+
+  it("fresh 页面恢复存储不可读时口播与克隆均保持零 POST", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    const getItem = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new DOMException("blocked", "SecurityError");
+      });
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/price")) {
+          return { ok: true, json: async () => ({ unit_price_fen: 100 }) };
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const oralView = render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "fresh-storage-oral" }}
+        initialState={createReviewState("oral")}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+    await screen.findByText(/无法读取待提交任务恢复状态/);
+    oralView.unmount();
+    render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "fresh-storage-clone" }}
+        initialState={createReviewState("person-avatars")}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "开始制作" }));
+    await screen.findByText(/无法读取待提交任务恢复状态/);
+
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        ["/api/oral/tasks", "/api/oral/clone-consents"].some((path) =>
+          String(input).endsWith(path),
+        ),
+      ),
+    ).toHaveLength(0);
+    getItem.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
   it("确定未受理的客户端错误允许下一次提交使用新幂等键", async () => {
     live.loadStudioData.mockResolvedValue({
       ...createReviewData(),
@@ -871,7 +1159,9 @@ describe("V1.4 workspace integration", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const state = createReviewState("oral");
-    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    const firstView = render(
+      <StudioWorkspace currentUser={reviewUser} initialState={state} />,
+    );
 
     fireEvent.click(
       await screen.findByRole("button", { name: "生成口播视频" }),
@@ -880,8 +1170,73 @@ describe("V1.4 workspace integration", () => {
       name: "确认费用并提交",
     });
     fireEvent.click(confirm);
-    await waitFor(() => expect(confirm).toBeEnabled());
+    await waitFor(() => expect(oralCalls).toBe(1));
+    firstView.unmount();
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+    await waitFor(() => expect(oralCalls).toBe(2));
+
+    const bodies = fetchMock.mock.calls
+      .filter(([input]) => String(input).endsWith("/api/oral/tasks"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies[1].idempotency_key).not.toBe(bodies[0].idempotency_key);
+    vi.unstubAllGlobals();
+  });
+
+  it("服务端明确返回 FAILED 后清理恢复记录并允许新尝试", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    let oralCalls = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/price")) {
+          return { ok: true, json: async () => ({ unit_price_fen: 100 }) };
+        }
+        if (url.endsWith("/api/oral/tasks")) {
+          oralCalls += 1;
+          return {
+            ok: true,
+            json: async () => ({
+              id: `oral-terminal-${oralCalls}`,
+              status: oralCalls === 1 ? "FAILED" : "QUEUED",
+              estimated_cost_fen: 100,
+              replayed: false,
+            }),
+          };
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const state = createReviewState("oral");
+    const firstView = render(
+      <StudioWorkspace currentUser={reviewUser} initialState={state} />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    const confirm = await screen.findByRole("button", {
+      name: "确认费用并提交",
+    });
     fireEvent.click(confirm);
+    await waitFor(() => expect(oralCalls).toBe(1));
+    firstView.unmount();
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
     await waitFor(() => expect(oralCalls).toBe(2));
 
     const bodies = fetchMock.mock.calls

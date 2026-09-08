@@ -33,6 +33,7 @@ from app.oral import (
     acquire_oral_task,
     confirm_voice_clone,
     create_oral_task,
+    fail_claimed_oral_task,
     finalize_oral_clone_work,
     finalize_oral_task_work,
     mark_oral_clone_provider_submission_started,
@@ -40,6 +41,7 @@ from app.oral import (
     oral_unit_price_fen,
     perform_oral_clone_work,
     prepare_oral_clone_work,
+    prepare_oral_task_work,
     preserve_oral_clone_outcome_for_reconciliation,
     preserve_oral_task_outcome_for_reconciliation,
     reconcile_uncertain_oral_clone,
@@ -598,6 +600,74 @@ def test_voice_clone_archives_demo_but_requires_confirmation(
     assert refreshed["vendor_voice_id"] == "vendor-voice-2"
     assert refreshed["confirmed"] == 0
     assert refreshed["demo_asset_id"]
+
+
+@pytest.mark.parametrize(
+    ("content_type", "expected_extension"),
+    [
+        ("audio/mpeg", "mp3"),
+        ("audio/mp3", "mp3"),
+        ("audio/wav", "wav"),
+        ("audio/x-wav", "wav"),
+        ("audio/mp4", "m4a"),
+        ("audio/m4a", "m4a"),
+        ("audio/x-m4a", "m4a"),
+    ],
+)
+def test_voice_clone_preserves_validated_audio_extension(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    content_type: str,
+    expected_extension: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-voice-{expected_extension}.db")
+    conn.execute("UPDATE assets SET content_type = %s WHERE id = 'asset-audio'", (content_type,))
+    created = start_voice_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="声音扩展名",
+        source_asset_id="asset-audio",
+        consent_id="asset-auth",
+        idempotency_key=f"voice-extension-{expected_extension}-{content_type}",
+    )
+    lease = acquire_oral_clone(conn, worker_id="voice-extension-worker")
+    assert lease is not None
+    vendor, transport = make_vendor()
+
+    work = prepare_oral_clone_work(conn, lease=lease, vendor=vendor)
+
+    assert work.lease["id"] == created.task_id
+    assert work.source_extension == expected_extension
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("content_type", ["audio/webm", "audio/ogg", "audio/flac"])
+def test_voice_clone_rejects_unsupported_audio_mime_before_provider_call(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    content_type: str,
+) -> None:
+    suffix = content_type.rsplit("/", 1)[-1]
+    conn = seed_scene(tmp_path, f"oral-voice-unsupported-{suffix}.db")
+    conn.execute("UPDATE assets SET content_type = %s WHERE id = 'asset-audio'", (content_type,))
+    start_voice_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="未知声音格式",
+        source_asset_id="asset-audio",
+        consent_id="asset-auth",
+        idempotency_key="voice-extension-unknown",
+    )
+    lease = acquire_oral_clone(conn, worker_id="voice-extension-worker")
+    assert lease is not None
+    vendor, transport = make_vendor()
+
+    with pytest.raises(OralDomainError, match="声音素材格式不支持"):
+        prepare_oral_clone_work(conn, lease=lease, vendor=vendor)
+
+    assert transport.calls == []
 
 
 @pytest.mark.parametrize(
@@ -1780,6 +1850,58 @@ def test_old_oral_lease_token_cannot_finalize_or_release_wallet(tmp_path: Path) 
         "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
     ).fetchone()
     assert tuple(wallet) == (9, 1)
+
+
+@pytest.mark.parametrize("finalizer", ["complete", "fail"])
+def test_expired_sqlite_oral_lease_cannot_finalize_or_release_wallet(
+    tmp_path: Path,
+    finalizer: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-expired-{finalizer}.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="过期租约",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key=f"oral-expired-{finalizer}",
+    )
+    lease = acquire_oral_task(conn, worker_id="expired-worker")
+    assert lease is not None
+    vendor, _ = make_vendor()
+    work = prepare_oral_task_work(conn, lease=lease, vendor=vendor)
+    conn.execute(
+        "UPDATE oral_tasks SET locked_until = '2020-01-01T00:00:00+00:00' WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+
+    if finalizer == "complete":
+        with pytest.raises(OralDomainError, match="租约"):
+            finalize_oral_task_work(conn, work=work, outcome=OralOutcome(status="SUCCEEDED"))
+    else:
+        assert not fail_claimed_oral_task(conn, lease=lease, cause=RuntimeError("local failure"))
+
+    task = conn.execute(
+        "SELECT status, lease_token FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    ledger = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY type",
+        (created.task_id,),
+    ).fetchall()
+    assert tuple(task) == ("SUBMITTING", str(lease["lease_token"]))
+    assert tuple(wallet) == (9, 1)
+    assert [row["type"] for row in ledger] == ["RESERVE"]
 
 
 def test_old_clone_lease_token_cannot_overwrite_new_claim(

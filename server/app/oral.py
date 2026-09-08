@@ -536,6 +536,22 @@ def _verified_image_extension(content: bytes) -> str:
     raise OralDomainError("图片素材格式无法验证，请重新上传 JPEG、PNG 或 WebP 图片")
 
 
+def _voice_extension_for(asset: dict[str, Any]) -> str:
+    extensions = {
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+        "audio/mp4": "m4a",
+        "audio/m4a": "m4a",
+        "audio/x-m4a": "m4a",
+    }
+    try:
+        return extensions[str(asset.get("content_type") or "")]
+    except KeyError as exc:
+        raise OralDomainError("声音素材格式不支持，请上传 MP3、M4A 或 WAV 音频") from exc
+
+
 def acquire_oral_clone(conn: BusinessConnection, *, worker_id: str) -> dict[str, Any] | None:
     locked_until = (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
     for table, clone_kind in (("oral_avatars", "avatar"), ("oral_voices", "voice")):
@@ -726,7 +742,7 @@ def prepare_oral_clone_work(
     extension = (
         _extension_for(asset, str(lease["source_kind"]))
         if lease["clone_kind"] == "avatar"
-        else "mp3"
+        else _voice_extension_for(asset)
     )
     return PreparedCloneWork(
         lease=dict(lease),
@@ -1656,7 +1672,7 @@ def finalize_oral_task_work(
     lease_current = (
         "locked_until::timestamptz > CURRENT_TIMESTAMP"
         if conn.is_postgres
-        else "locked_until > CURRENT_TIMESTAMP"
+        else "datetime(locked_until) > CURRENT_TIMESTAMP"
     )
     if outcome.status in {"SUCCEEDED", "FAILED"}:
         reservation = conn.execute(
@@ -1735,7 +1751,7 @@ def fail_claimed_oral_task(
     lease_current = (
         "locked_until::timestamptz > CURRENT_TIMESTAMP"
         if conn.is_postgres
-        else "locked_until > CURRENT_TIMESTAMP"
+        else "datetime(locked_until) > CURRENT_TIMESTAMP"
     )
     updated = conn.execute(
         "UPDATE oral_tasks SET status = 'FAILED', error_message = %s, "

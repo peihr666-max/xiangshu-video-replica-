@@ -1043,95 +1043,16 @@ describe("文案提取任务身份绑定", () => {
     expect(api.createScriptFromAudioTask).not.toHaveBeenCalled();
   });
 
-  it("仅 setItem 容量失败时提交响应丢失仍复用同一幂等键", async () => {
+  it("首次恢复记录持久化失败时不创建音频转文案任务", async () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("full", "QuotaExceededError");
     });
-    api.createScriptFromAudioTask
-      .mockRejectedValueOnce(new TypeError("network unavailable"))
-      .mockResolvedValueOnce(scriptFromAudioTask());
-    api.getScriptFromAudioTask.mockResolvedValue(
-      scriptFromAudioTask({
-        status: "SUCCEEDED",
-        result: { text: "容量失败恢复文案", duration_sec: 8, language: "zh" },
-      }),
-    );
 
     await expect(
-      extractScriptFromUpload("user-quota-response", "project-1", "asset-1"),
-    ).rejects.toThrow("network unavailable");
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new DOMException("blocked", "SecurityError");
-    });
-    await expect(
-      extractScriptFromUpload("user-quota-response", "project-1", "asset-1"),
-    ).resolves.toEqual({ text: "容量失败恢复文案" });
-
-    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).toBe(
-      api.createScriptFromAudioTask.mock.calls[0]?.[2],
-    );
-  });
-
-  it("仅 setItem 容量失败时轮询超时仍复用原任务 ID", async () => {
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new DOMException("full", "QuotaExceededError");
-    });
-    api.createScriptFromAudioTask.mockResolvedValue(scriptFromAudioTask());
-    api.getScriptFromAudioTask.mockResolvedValue(
-      scriptFromAudioTask({ status: "RUNNING" }),
-    );
-
-    await expect(
-      extractScriptFromUpload("user-quota-timeout", "project-1", "asset-1"),
-    ).rejects.toThrow("超时");
-    api.getScriptFromAudioTask.mockResolvedValue(
-      scriptFromAudioTask({
-        status: "SUCCEEDED",
-        result: { text: "容量失败超时恢复", duration_sec: 8, language: "zh" },
-      }),
-    );
-    await expect(
-      extractScriptFromUpload("user-quota-timeout", "project-1", "asset-1"),
-    ).resolves.toEqual({ text: "容量失败超时恢复" });
-
-    expect(api.createScriptFromAudioTask).toHaveBeenCalledTimes(1);
-    expect(api.getScriptFromAudioTask).toHaveBeenLastCalledWith(
-      "script-task-own",
-    );
-  });
-
-  it("localStorage 删除失败不覆盖明确任务失败且下一次使用新键", async () => {
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new DOMException("full", "QuotaExceededError");
-    });
-    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
-      throw new DOMException("blocked", "SecurityError");
-    });
-    api.createScriptFromAudioTask
-      .mockResolvedValueOnce(scriptFromAudioTask())
-      .mockResolvedValueOnce(scriptFromAudioTask({ id: "memory-task-new" }));
-    api.getScriptFromAudioTask
-      .mockResolvedValueOnce(
-        scriptFromAudioTask({ status: "FAILED", error_message: "音频无效" }),
-      )
-      .mockResolvedValueOnce(
-        scriptFromAudioTask({
-          id: "memory-task-new",
-          status: "SUCCEEDED",
-          result: { text: "新内存尝试", duration_sec: 8, language: "zh" },
-        }),
-      );
-
-    await expect(
-      extractScriptFromUpload("user-memory-fail", "project-1", "asset-1"),
-    ).rejects.toThrow("音频无效");
-    await expect(
-      extractScriptFromUpload("user-memory-fail", "project-1", "asset-1"),
-    ).resolves.toEqual({ text: "新内存尝试" });
-
-    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).not.toBe(
-      api.createScriptFromAudioTask.mock.calls[0]?.[2],
-    );
+      extractScriptFromUpload("user-quota-first", "project-1", "asset-1"),
+    ).rejects.toThrow("无法保存文案提取恢复状态");
+    expect(api.createScriptFromAudioTask).not.toHaveBeenCalled();
+    expect(api.getScriptFromAudioTask).not.toHaveBeenCalled();
   });
 
   it("仅 removeItem 失败时终态仍允许下一次新建", async () => {
