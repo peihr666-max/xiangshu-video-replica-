@@ -8,6 +8,7 @@ import psycopg
 import pytest
 
 from app.db_portable import BusinessConnection
+from app.internal_billing import finalize_internal_billing, reserve_internal_billing
 from app.operation_costs import (
     begin_operation_cost,
     complete_operation_cost,
@@ -74,15 +75,20 @@ def _seed_generation_task(conn: psycopg.Connection) -> None:
         "INSERT INTO generation_tasks (id, batch_id, provider, model, billed_seconds) "
         "VALUES ('t1', 'b1', 'metaso', 'MiniMax-H3', 15)"
     )
+    conn.execute(
+        "INSERT INTO wallets (user_id, available_credits, reserved_credits) VALUES ('u1', 100, 0)"
+    )
 
 
 def test_generation_cost_uses_submission_rate_and_real_output_seconds(cost_dsn: str) -> None:
     with psycopg.connect(cost_dsn, autocommit=True, row_factory=psycopg.rows.dict_row) as raw:
         _seed_generation_task(raw)
         conn = BusinessConnection.postgres(raw)
+        reserve_internal_billing(conn, user_id="u1", task_id="t1", billing_round=1, seconds=15)
         snapshot = snapshot_generation_rates(
             conn,
             task_id="t1",
+            billing_round=1,
             resolution="768P",
             billed_seconds=15,
         )
@@ -105,8 +111,8 @@ def test_generation_cost_uses_submission_rate_and_real_output_seconds(cost_dsn: 
 
         record = raw.execute(
             "SELECT usage_amount, unit_price_fen, cost_fen, status "
-            "FROM operation_cost_records WHERE source_type = 'generation_task' "
-            "AND source_id = 't1' AND subject = 'video_generation_768p'"
+            "FROM operation_cost_records WHERE source_type = 'generation_billing_round' "
+            "AND source_id = 't1:billing:1' AND subject = 'video_generation_768p'"
         ).fetchone()
         assert float(record["usage_amount"]) == 12.5
         assert record["unit_price_fen"] == 9
@@ -114,7 +120,8 @@ def test_generation_cost_uses_submission_rate_and_real_output_seconds(cost_dsn: 
         assert record["status"] == "ACTUAL"
         context_ir = raw.execute(
             "SELECT status, usage_amount FROM operation_cost_records "
-            "WHERE source_type = 'generation_task' AND source_id = 't1' "
+            "WHERE source_type = 'generation_billing_round' "
+            "AND source_id = 't1:billing:1' "
             "AND subject = 'context_ir'"
         ).fetchone()
         assert context_ir["status"] == "UNKNOWN"
@@ -128,7 +135,10 @@ def test_missing_provider_usage_is_recorded_as_unknown(cost_dsn: str) -> None:
             "VALUES ('t2', 'b1', 'metaso', 'MiniMax-H3', 4)"
         )
         conn = BusinessConnection.postgres(raw)
-        snapshot_generation_rates(conn, task_id="t2", resolution="2K", billed_seconds=4)
+        reserve_internal_billing(conn, user_id="u1", task_id="t2", billing_round=1, seconds=4)
+        snapshot_generation_rates(
+            conn, task_id="t2", billing_round=1, resolution="2K", billed_seconds=4
+        )
         record_video_generation_cost(conn, task_id="t2", output_seconds=None)
 
         task = raw.execute(
@@ -147,7 +157,16 @@ def test_provider_not_called_closes_snapshots_as_known_zero(cost_dsn: str) -> No
             "VALUES ('t_not_called', 'b1', 'metaso', 'MiniMax-H3', 4)"
         )
         conn = BusinessConnection.postgres(raw)
-        snapshot_generation_rates(conn, task_id="t_not_called", resolution="768P", billed_seconds=4)
+        reserve_internal_billing(
+            conn, user_id="u1", task_id="t_not_called", billing_round=1, seconds=4
+        )
+        snapshot_generation_rates(
+            conn,
+            task_id="t_not_called",
+            billing_round=1,
+            resolution="768P",
+            billed_seconds=4,
+        )
 
         record_video_generation_not_called(conn, task_id="t_not_called")
         record_video_generation_not_called(conn, task_id="t_not_called")
@@ -158,7 +177,8 @@ def test_provider_not_called_closes_snapshots_as_known_zero(cost_dsn: str) -> No
         ).fetchone()
         records = raw.execute(
             "SELECT subject, usage_amount, cost_fen, status "
-            "FROM operation_cost_records WHERE source_id = 't_not_called' ORDER BY subject"
+            "FROM operation_cost_records WHERE source_id = 't_not_called:billing:1' "
+            "ORDER BY subject"
         ).fetchall()
         assert dict(task) == {
             "actual_output_seconds": 0,
@@ -169,6 +189,63 @@ def test_provider_not_called_closes_snapshots_as_known_zero(cost_dsn: str) -> No
         assert all(row["usage_amount"] == 0 for row in records)
         assert all(row["cost_fen"] == 0 for row in records)
         assert all(row["status"] == "ACTUAL" for row in records)
+
+
+def test_generation_cost_isolated_by_billing_round(cost_dsn: str) -> None:
+    with psycopg.connect(cost_dsn, autocommit=True, row_factory=psycopg.rows.dict_row) as raw:
+        raw.execute(
+            "INSERT INTO generation_tasks (id, batch_id, provider, model, billed_seconds) "
+            "VALUES ('t_rounds', 'b1', 'metaso', 'MiniMax-H3', 4)"
+        )
+        conn = BusinessConnection.postgres(raw)
+        first_round = reserve_internal_billing(
+            conn, user_id="u1", task_id="t_rounds", billing_round=1, seconds=4
+        )
+        snapshot_generation_rates(
+            conn,
+            task_id="t_rounds",
+            billing_round=first_round,
+            resolution="768P",
+            billed_seconds=4,
+        )
+        record_video_generation_cost(conn, task_id="t_rounds", output_seconds=None)
+        raw.execute("UPDATE generation_tasks SET status='FAILED' WHERE id='t_rounds'")
+        finalize_internal_billing(conn, task_id="t_rounds", outcome="failed")
+        raw.execute("UPDATE generation_tasks SET status='PENDING' WHERE id='t_rounds'")
+
+        second_round = reserve_internal_billing(
+            conn, user_id="u1", task_id="t_rounds", billing_round=None, seconds=4
+        )
+        assert second_round == 2
+        snapshot_generation_rates(
+            conn,
+            task_id="t_rounds",
+            billing_round=second_round,
+            resolution="768P",
+            billed_seconds=4,
+        )
+        record_video_generation_not_called(conn, task_id="t_rounds")
+
+        rows = raw.execute(
+            "SELECT source_id, subject, status, usage_amount "
+            "FROM operation_cost_records WHERE generation_task_id='t_rounds' "
+            "ORDER BY source_id, subject"
+        ).fetchall()
+        assert len(rows) == 4
+        assert {row["source_id"] for row in rows} == {
+            "t_rounds:billing:1",
+            "t_rounds:billing:2",
+        }
+        assert all(
+            row["status"] == "UNKNOWN" and row["usage_amount"] is None
+            for row in rows
+            if row["source_id"] == "t_rounds:billing:1"
+        )
+        assert all(
+            row["status"] == "ACTUAL" and row["usage_amount"] == 0
+            for row in rows
+            if row["source_id"] == "t_rounds:billing:2"
+        )
 
 
 def test_pre_migration_task_without_snapshot_is_not_priced_at_current_rate(
@@ -257,6 +334,7 @@ def test_operation_cost_migration_downgrade_roundtrip(cost_dsn: str) -> None:
             ]
             is not None
         )
+        raw.execute("DELETE FROM wallet_transactions")
     with pytest.raises(RuntimeError, match="cannot downgrade 066"):
         command.downgrade(config, "065_second_based_billing")
     with psycopg.connect(cost_dsn, autocommit=True) as raw:

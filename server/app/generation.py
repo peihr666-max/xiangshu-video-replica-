@@ -1840,17 +1840,18 @@ def create_generation_batch(
                     billed_seconds,
                 ),
             )
-            snapshot_generation_rates(
-                conn,
-                task_id=task_id,
-                resolution=request.resolution,
-                billed_seconds=billed_seconds,
-            )
-            _reserve_generation_credit(
+            billing_round = _reserve_generation_credit(
                 conn,
                 user_id=actor.id,
                 task_id=task_id,
                 seconds=billed_seconds,
+            )
+            snapshot_generation_rates(
+                conn,
+                task_id=task_id,
+                billing_round=billing_round,
+                resolution=request.resolution,
+                billed_seconds=billed_seconds,
             )
         # Pattern D: this batch makes the user a queue participant; the cursor
         # row is upserted in the same transaction so rotation can serve them.
@@ -2037,17 +2038,18 @@ def regenerate_generation_batch(
                 ),
             )
             replacement_snapshot = json.loads(prompt_snapshot)
-            snapshot_generation_rates(
-                conn,
-                task_id=replacement_task_id,
-                resolution=str(replacement_snapshot.get("resolution", "768P")),
-                billed_seconds=billed_seconds,
-            )
-            _reserve_generation_credit(
+            billing_round = _reserve_generation_credit(
                 conn,
                 user_id=billed_user_id,
                 task_id=replacement_task_id,
                 seconds=billed_seconds,
+            )
+            snapshot_generation_rates(
+                conn,
+                task_id=replacement_task_id,
+                billing_round=billing_round,
+                resolution=str(replacement_snapshot.get("resolution", "768P")),
+                billed_seconds=billed_seconds,
             )
         insert_audit(
             conn,
@@ -2227,17 +2229,18 @@ def regenerate_generation_task(
             ),
         )
         replacement_snapshot = json.loads(prompt_snapshot)
-        snapshot_generation_rates(
-            conn,
-            task_id=replacement_task_id,
-            resolution=str(replacement_snapshot.get("resolution", "768P")),
-            billed_seconds=billed_seconds,
-        )
-        _reserve_generation_credit(
+        billing_round = _reserve_generation_credit(
             conn,
             user_id=billed_user_id,
             task_id=replacement_task_id,
             seconds=billed_seconds,
+        )
+        snapshot_generation_rates(
+            conn,
+            task_id=replacement_task_id,
+            billing_round=billing_round,
+            resolution=str(replacement_snapshot.get("resolution", "768P")),
+            billed_seconds=billed_seconds,
         )
         cursor = conn.execute(
             """
@@ -3013,12 +3016,20 @@ def retry_generation_task(
             retry_path = "PRE_PROVIDER"
             audit_action = "generation_task.retry_queued"
             billed_seconds = _seconds_from_prompt_snapshot(row["prompt_snapshot_json"])
-            _reserve_generation_credit(
+            billing_round = _reserve_generation_credit(
                 conn,
                 user_id=str(row["created_by_user_id"]),
                 task_id=task_id,
                 billing_round=None,
                 seconds=billed_seconds,
+            )
+            prompt_snapshot = json.loads(str(row["prompt_snapshot_json"]))
+            snapshot_generation_rates(
+                conn,
+                task_id=task_id,
+                billing_round=billing_round,
+                resolution=str(prompt_snapshot.get("resolution", "768P")),
+                billed_seconds=billed_seconds,
             )
             conn.execute(
                 """

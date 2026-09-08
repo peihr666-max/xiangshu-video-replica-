@@ -33,10 +33,35 @@ def _rate(conn: BusinessConnection, subject: str) -> tuple[str, int]:
     return str(row["unit"]), int(row["unit_price_fen"])
 
 
+def generation_cost_source_id(task_id: str, billing_round: int) -> str:
+    if billing_round < 1:
+        raise ValueError("billing_round must be positive")
+    return f"{task_id}:billing:{billing_round}"
+
+
+def analysis_cost_source_id(task_id: str, attempt: int, phase: str) -> str:
+    if attempt < 1 or phase not in {"main", "repair"}:
+        raise ValueError("invalid analysis cost source")
+    return f"{task_id}:attempt:{attempt}:{phase}"
+
+
+def first_frame_cost_source_id(task_id: str, attempt: int, call_no: int) -> str:
+    if attempt < 1 or call_no < 1:
+        raise ValueError("invalid first-frame cost source")
+    return f"{task_id}:attempt:{attempt}:call:{call_no}"
+
+
+def character_cost_source_id(task_id: str, attempt: int) -> str:
+    if attempt < 1:
+        raise ValueError("attempt must be positive")
+    return f"{task_id}:attempt:{attempt}"
+
+
 def snapshot_generation_rates(
     conn: BusinessConnection,
     *,
     task_id: str,
+    billing_round: int,
     resolution: str,
     billed_seconds: int,
 ) -> GenerationRateSnapshot:
@@ -65,22 +90,22 @@ def snapshot_generation_rates(
         raise RuntimeError("generation task disappeared before rate snapshot")
     begin_operation_cost(
         conn,
-        source_type="generation_task",
-        source_id=task_id,
+        source_type="generation_billing_round",
+        source_id=generation_cost_source_id(task_id, billing_round),
         subject=cost_subject,
         generation_task_id=task_id,
         resolution=resolution.upper(),
         unit_price_fen=cost_price,
-        metadata={"billed_seconds": billed_seconds},
+        metadata={"billed_seconds": billed_seconds, "billing_round": billing_round},
     )
     begin_operation_cost(
         conn,
-        source_type="generation_task",
-        source_id=task_id,
+        source_type="generation_billing_round",
+        source_id=generation_cost_source_id(task_id, billing_round),
         subject="context_ir",
         generation_task_id=task_id,
         resolution=resolution.upper(),
-        metadata={"usage_source": "provider_response"},
+        metadata={"usage_source": "provider_response", "billing_round": billing_round},
     )
     return GenerationRateSnapshot(cost_subject, cost_price, external_price, billed_seconds)
 
@@ -184,8 +209,15 @@ def record_video_generation_cost(
         return
     row = conn.execute(
         """
-        SELECT cost_rate_subject_snapshot, cost_unit_price_fen_snapshot
-        FROM generation_tasks WHERE id = %s
+        SELECT task.cost_rate_subject_snapshot, task.cost_unit_price_fen_snapshot,
+               latest.billing_round
+        FROM generation_tasks AS task
+        LEFT JOIN LATERAL (
+            SELECT billing_round FROM wallet_transactions
+            WHERE task_id = task.id AND type = 'RESERVE'
+            ORDER BY billing_round DESC LIMIT 1
+        ) AS latest ON TRUE
+        WHERE task.id = %s
         """,
         (task_id,),
     ).fetchone()
@@ -193,7 +225,8 @@ def record_video_generation_cost(
         raise RuntimeError("generation task does not exist")
     subject = row["cost_rate_subject_snapshot"]
     price = row["cost_unit_price_fen_snapshot"]
-    if subject is None or price is None:
+    billing_round = row["billing_round"]
+    if subject is None or price is None or billing_round is None:
         # Tasks already in flight when 059 is deployed have no truthful
         # submission-time rate. Preserve any reported usage, but do not price it
         # with today's mutable rate.
@@ -208,22 +241,26 @@ def record_video_generation_cost(
             (output_seconds, task_id),
         )
         return
-    record_id = begin_operation_cost(
-        conn,
-        source_type="generation_task",
-        source_id=task_id,
-        subject=str(subject),
-        generation_task_id=task_id,
-        unit_price_fen=int(price),
-    )
+    source_id = generation_cost_source_id(task_id, int(billing_round))
+    record = conn.execute(
+        """
+        SELECT id FROM operation_cost_records
+        WHERE source_type = 'generation_billing_round' AND source_id = %s
+          AND subject = %s
+        """,
+        (source_id, subject),
+    ).fetchone()
+    if record is None:
+        raise RuntimeError("generation cost snapshot is missing for the active billing round")
+    record_id = str(record["id"])
     complete_operation_cost(conn, record_id=record_id, usage_amount=output_seconds)
     context_ir = conn.execute(
         """
         SELECT id FROM operation_cost_records
-        WHERE source_type = 'generation_task' AND source_id = %s
+        WHERE source_type = 'generation_billing_round' AND source_id = %s
           AND subject = 'context_ir'
         """,
-        (task_id,),
+        (source_id,),
     ).fetchone()
     if context_ir is not None:
         # The verified H3 response exposes output seconds but no Context IR
@@ -259,12 +296,23 @@ def record_video_generation_not_called(
     """Close submission snapshots at zero when no provider call was made."""
     if not getattr(conn, "is_postgres", False):
         return
+    latest = conn.execute(
+        """
+        SELECT billing_round FROM wallet_transactions
+        WHERE task_id = %s AND type = 'RESERVE'
+        ORDER BY billing_round DESC LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if latest is None:
+        return
+    source_id = generation_cost_source_id(task_id, int(latest["billing_round"]))
     records = conn.execute(
         """
         SELECT id FROM operation_cost_records
-        WHERE source_type = 'generation_task' AND source_id = %s
+        WHERE source_type = 'generation_billing_round' AND source_id = %s
         """,
-        (task_id,),
+        (source_id,),
     ).fetchall()
     for record in records:
         complete_operation_cost(conn, record_id=str(record["id"]), usage_amount=0)
