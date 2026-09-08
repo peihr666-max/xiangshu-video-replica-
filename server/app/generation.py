@@ -1497,20 +1497,32 @@ def _find_idempotent_batch(
     )
 
 
-def _seconds_from_prompt_snapshot(snapshot: object) -> int:
-    if snapshot is None:
-        return 1
+def _generation_parameters_from_prompt_snapshot(snapshot: object) -> tuple[int, str]:
     try:
         payload = json.loads(str(snapshot))
     except (TypeError, ValueError, json.JSONDecodeError):
-        return 1
+        payload = None
     if not isinstance(payload, dict):
-        return 1
-    value = payload.get("output_duration_seconds")
-    try:
-        return max(1, int(value)) if value is not None else 1
-    except (TypeError, ValueError):
-        return 1
+        raise generation_error(
+            409,
+            "GENERATION_SNAPSHOT_INVALID",
+            "Historical generation parameters are incomplete; create a new locked prompt.",
+        )
+    duration = payload.get("output_duration_seconds")
+    resolution = payload.get("resolution")
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, int)
+        or duration < 4
+        or duration > 15
+        or resolution not in SUPPORTED_RESOLUTIONS
+    ):
+        raise generation_error(
+            409,
+            "GENERATION_SNAPSHOT_INVALID",
+            "Historical generation parameters are incomplete; create a new locked prompt.",
+        )
+    return duration, str(resolution)
 
 
 def _reserve_generation_credit(
@@ -1805,7 +1817,12 @@ def create_generation_batch(
                 "QUEUED",
             ),
         )
-        billed_seconds = max(1, int(prompt_snapshot.get("output_duration_seconds") or 1))
+        task_prompt_snapshot = {
+            **prompt_snapshot,
+            "output_duration_seconds": request.output_duration_seconds,
+            "resolution": request.resolution,
+        }
+        billed_seconds = request.output_duration_seconds
         for _ in range(request.quantity):
             task_id = str(uuid4())
             conn.execute(
@@ -1836,7 +1853,7 @@ def create_generation_batch(
                     "PENDING",
                     "PENDING",
                     request.prompt_version_id,
-                    json.dumps(prompt_snapshot, ensure_ascii=True, sort_keys=True),
+                    json.dumps(task_prompt_snapshot, ensure_ascii=True, sort_keys=True),
                     billed_seconds,
                 ),
             )
@@ -2009,7 +2026,9 @@ def regenerate_generation_batch(
         )
         for source_task, prompt_snapshot in zip(source_tasks, prompt_snapshots, strict=True):
             replacement_task_id = str(uuid4())
-            billed_seconds = _seconds_from_prompt_snapshot(prompt_snapshot)
+            billed_seconds, resolution = _generation_parameters_from_prompt_snapshot(
+                prompt_snapshot
+            )
             conn.execute(
                 """
                 INSERT INTO generation_tasks (
@@ -2037,7 +2056,6 @@ def regenerate_generation_batch(
                     actor.id,
                 ),
             )
-            replacement_snapshot = json.loads(prompt_snapshot)
             billing_round = _reserve_generation_credit(
                 conn,
                 user_id=billed_user_id,
@@ -2048,7 +2066,7 @@ def regenerate_generation_batch(
                 conn,
                 task_id=replacement_task_id,
                 billing_round=billing_round,
-                resolution=str(replacement_snapshot.get("resolution", "768P")),
+                resolution=resolution,
                 billed_seconds=billed_seconds,
             )
         insert_audit(
@@ -2200,7 +2218,7 @@ def regenerate_generation_task(
                 request.generation_reason,
             ),
         )
-        billed_seconds = _seconds_from_prompt_snapshot(prompt_snapshot)
+        billed_seconds, resolution = _generation_parameters_from_prompt_snapshot(prompt_snapshot)
         conn.execute(
             """
             INSERT INTO generation_tasks (
@@ -2228,7 +2246,6 @@ def regenerate_generation_task(
                 actor.id,
             ),
         )
-        replacement_snapshot = json.loads(prompt_snapshot)
         billing_round = _reserve_generation_credit(
             conn,
             user_id=billed_user_id,
@@ -2239,7 +2256,7 @@ def regenerate_generation_task(
             conn,
             task_id=replacement_task_id,
             billing_round=billing_round,
-            resolution=str(replacement_snapshot.get("resolution", "768P")),
+            resolution=resolution,
             billed_seconds=billed_seconds,
         )
         cursor = conn.execute(
@@ -3015,7 +3032,9 @@ def retry_generation_task(
                 )
             retry_path = "PRE_PROVIDER"
             audit_action = "generation_task.retry_queued"
-            billed_seconds = _seconds_from_prompt_snapshot(row["prompt_snapshot_json"])
+            billed_seconds, resolution = _generation_parameters_from_prompt_snapshot(
+                row["prompt_snapshot_json"]
+            )
             billing_round = _reserve_generation_credit(
                 conn,
                 user_id=str(row["created_by_user_id"]),
@@ -3023,12 +3042,11 @@ def retry_generation_task(
                 billing_round=None,
                 seconds=billed_seconds,
             )
-            prompt_snapshot = json.loads(str(row["prompt_snapshot_json"]))
             snapshot_generation_rates(
                 conn,
                 task_id=task_id,
                 billing_round=billing_round,
-                resolution=str(prompt_snapshot.get("resolution", "768P")),
+                resolution=resolution,
                 billed_seconds=billed_seconds,
             )
             conn.execute(

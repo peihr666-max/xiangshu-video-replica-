@@ -685,6 +685,8 @@ def insert_generation_history(
                 {
                     "prompt_text": "test prompt",
                     "first_frame_uri": "fake://generation-results/first-frame.png",
+                    "output_duration_seconds": 10,
+                    "resolution": "768P",
                 },
                 sort_keys=True,
             ),
@@ -1635,6 +1637,60 @@ def test_retry_pre_provider_failure_requeues_once_and_records_lineage(
     assert result.attempt == 3
     assert no_duplicate is None
     assert provider.create_calls == 1
+
+
+@pytest.mark.parametrize(
+    "invalid_patch",
+    [
+        {"output_duration_seconds": 1},
+        {"output_duration_seconds": "10"},
+        {"resolution": "4K"},
+        {"resolution": None},
+    ],
+)
+def test_retry_rejects_invalid_historical_generation_parameters_before_reserve(
+    db_path: Path,
+    client: TestClient,
+    invalid_patch: dict[str, object],
+) -> None:
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        insert_generation_history(
+            conn,
+            batch_id="invalid-snapshot-retry",
+            batch_status="FAILED",
+            task_status="FAILED",
+            error_code="FIRST_FRAME_URL_SIGN_FAILED",
+        )
+        row = conn.execute(
+            "SELECT prompt_snapshot_json FROM generation_tasks WHERE id = ?",
+            ("invalid-snapshot-retry-task",),
+        ).fetchone()
+        payload = json.loads(str(row["prompt_snapshot_json"]))
+        payload.update(invalid_patch)
+        conn.execute(
+            "UPDATE generation_tasks SET prompt_snapshot_json = ? WHERE id = ?",
+            (json.dumps(payload, sort_keys=True), "invalid-snapshot-retry-task"),
+        )
+        before = conn.execute(
+            "SELECT COUNT(*) FROM wallet_transactions WHERE task_id = ?",
+            ("invalid-snapshot-retry-task",),
+        ).fetchone()[0]
+        conn.commit()
+
+    response = client.post(
+        "/api/generation-tasks/invalid-snapshot-retry-task/retry",
+        headers=auth_headers("employee_1"),
+        json={"idempotency_key": "invalid-snapshot", "retry_reason": "安全重试"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "GENERATION_SNAPSHOT_INVALID"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        after = conn.execute(
+            "SELECT COUNT(*) FROM wallet_transactions WHERE task_id = ?",
+            ("invalid-snapshot-retry-task",),
+        ).fetchone()[0]
+    assert after == before
 
 
 @pytest.mark.parametrize(
