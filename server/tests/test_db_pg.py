@@ -26,6 +26,8 @@ from psycopg_pool import ConnectionPool
 
 from app.db_pg import (
     DATABASE_URL_ENV,
+    PG_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+    PG_STATEMENT_TIMEOUT_MS,
     DatabaseMode,
     MissingDatabaseConfigError,
     check_pg_ready,
@@ -479,6 +481,28 @@ def test_pg_transaction_rolls_back_on_error() -> None:
 
 
 @pytestmark_pg
+def test_statement_timeout_rolls_back_and_reused_connection_stays_healthy() -> None:
+    from app.db_pg import POOL_MAX_ENV, POOL_MIN_ENV
+
+    with _env(
+        **{
+            DATABASE_URL_ENV: PG_DSN,
+            POOL_MIN_ENV: "1",
+            POOL_MAX_ENV: "1",
+        }
+    ):
+        with pytest.raises(psycopg.errors.QueryCanceled):
+            with pg_transaction() as conn:
+                backend_pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+                conn.execute("SET LOCAL statement_timeout = '25ms'")
+                conn.execute("SELECT pg_sleep(0.2)")
+
+        with pg_transaction() as conn:
+            assert conn.execute("SELECT pg_backend_pid()").fetchone()[0] == backend_pid
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+@pytestmark_pg
 def test_pg_transaction_serializable_write_conflict() -> None:
     """SERIALIZABLE replaces SQLite BEGIN IMMEDIATE: a transaction whose snapshot
     is invalidated by a committed concurrent write to the same key must fail
@@ -547,6 +571,20 @@ def test_pool_applies_hygiene_parameters() -> None:
         assert pool.max_lifetime == DEFAULT_POOL_MAX_LIFETIME
         assert pool.max_idle == DEFAULT_POOL_MAX_IDLE
         assert pool.timeout == DEFAULT_POOL_TIMEOUT
+        with pool.connection() as conn:
+            settings = dict(
+                conn.execute(
+                    "SELECT name, setting FROM pg_settings "
+                    "WHERE name IN ('statement_timeout', "
+                    "'idle_in_transaction_session_timeout')"
+                ).fetchall()
+            )
+
+        assert int(settings["statement_timeout"]) == PG_STATEMENT_TIMEOUT_MS
+        assert (
+            int(settings["idle_in_transaction_session_timeout"])
+            == PG_IDLE_IN_TRANSACTION_TIMEOUT_MS
+        )
 
 
 def test_pg_transaction_rejects_unknown_isolation_level() -> None:
