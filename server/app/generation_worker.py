@@ -83,6 +83,7 @@ from app.image_tasks import (
 from app.media_routes import get_media_storage
 from app.oral import (
     CloneOutcome,
+    OralCloneLeaseLost,
     OralOutcome,
     OralTaskLeaseLost,
     PreparedCloneWork,
@@ -93,6 +94,7 @@ from app.oral import (
     fail_claimed_oral_task,
     finalize_oral_clone_work,
     finalize_oral_task_work,
+    mark_oral_clone_provider_submission_started,
     mark_oral_provider_submission_started,
     perform_oral_clone_work,
     perform_oral_task_work,
@@ -100,6 +102,7 @@ from app.oral import (
     prepare_oral_task_work,
     preserve_oral_clone_outcome_for_reconciliation,
     preserve_oral_task_outcome_for_reconciliation,
+    renew_oral_clone_lease,
     renew_oral_task_lease,
     run_claimed_oral_clone,
     run_next_oral_task,
@@ -1156,8 +1159,29 @@ def run_pg_worker_once(
                             )
             else:
                 clone_outcome = None
+
+                def renew_clone_lease() -> bool:
+                    with pg_transaction() as raw_conn:
+                        return renew_oral_clone_lease(
+                            BusinessConnection.postgres(raw_conn), lease=clone_lease
+                        )
+
+                def mark_clone_submit_started() -> bool:
+                    with pg_transaction() as raw_conn:
+                        return mark_oral_clone_provider_submission_started(
+                            BusinessConnection.postgres(raw_conn), lease=clone_lease
+                        )
+
                 try:
-                    clone_outcome = perform_oral_clone_work(clone_work)
+                    clone_outcome = perform_oral_clone_work(
+                        clone_work,
+                        renew_lease=renew_clone_lease,
+                        mark_submission_started=mark_clone_submit_started,
+                    )
+                except OralCloneLeaseLost:
+                    logger.warning(
+                        "oral clone lease lost between external steps; stale worker stopped"
+                    )
                 except Exception as exc:
                     _preserve_pg_oral_clone(lease=clone_lease, outcome=None, cause=exc)
                 else:

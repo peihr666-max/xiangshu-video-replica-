@@ -176,8 +176,11 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
 
     from app.db_portable import BusinessConnection
     from app.oral import (
+        acquire_oral_clone,
         acquire_oral_task,
+        mark_oral_clone_provider_submission_started,
         mark_oral_provider_submission_started,
+        renew_oral_clone_lease,
         renew_oral_task_lease,
     )
 
@@ -205,7 +208,14 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
             conn.execute(
                 "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, "
                 "status, source_kind, source_asset_id) VALUES "
-                "('avatar-1', 'identity-1', 'u1', 'Avatar', 'READY', 'VIDEO', 'asset')"
+                "('avatar-1', 'identity-1', 'u1', 'Avatar', 'READY', 'VIDEO', 'asset'), "
+                "('avatar-clone-1', 'identity-1', 'u1', 'Avatar Clone', "
+                "'PENDING', 'VIDEO', 'asset')"
+            )
+            conn.execute(
+                "INSERT INTO oral_voices (id, identity_id, owner_user_id, title, "
+                "status, source_asset_id) VALUES "
+                "('voice-clone-1', 'identity-1', 'u1', 'Voice Clone', 'PENDING', 'asset')"
             )
             conn.execute(
                 "INSERT INTO oral_tasks (id, owner_user_id, project_id, identity_id, "
@@ -258,6 +268,37 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
             assert not mark_oral_provider_submission_started(first_business, lease=first_lease)
             first.execute("UPDATE oral_tasks SET provider_started_at = NULL WHERE id = 'oral-1'")
             first.commit()
+
+            for clone_kind, clone_id, table in (
+                ("avatar", "avatar-clone-1", "oral_avatars"),
+                ("voice", "voice-clone-1", "oral_voices"),
+            ):
+                clone_lease = acquire_oral_clone(first_business, worker_id="clone-worker-1")
+                assert clone_lease is not None
+                assert clone_lease["clone_kind"] == clone_kind
+                assert clone_lease["id"] == clone_id
+                first.commit()
+                assert renew_oral_clone_lease(first_business, lease=clone_lease)
+                first.commit()
+                assert mark_oral_clone_provider_submission_started(
+                    first_business, lease=clone_lease
+                )
+                first.commit()
+                first.execute(
+                    f"UPDATE {table} SET lease_token = 'replacement-token' WHERE id = %s",
+                    (clone_id,),
+                )
+                first.commit()
+                assert not renew_oral_clone_lease(first_business, lease=clone_lease)
+                assert not mark_oral_clone_provider_submission_started(
+                    first_business, lease=clone_lease
+                )
+                first.execute(
+                    f"UPDATE {table} SET status = 'FAILED', provider_started_at = NULL "
+                    "WHERE id = %s",
+                    (clone_id,),
+                )
+                first.commit()
         finally:
             first.close()
             second.close()
@@ -567,6 +608,8 @@ def test_pg_reconciliation_upgrade_and_lossy_downgrade_guard() -> None:
                 "SELECT table_name, column_name FROM information_schema.columns "
                 "WHERE (table_name, column_name) IN "
                 "(('script_from_audio_tasks', 'provider_task_id'), "
+                "('oral_avatars', 'provider_started_at'), "
+                "('oral_voices', 'provider_started_at'), "
                 "('oral_tasks', 'provider_started_at'))"
             ).fetchall()
             assert before == []
@@ -578,11 +621,15 @@ def test_pg_reconciliation_upgrade_and_lossy_downgrade_guard() -> None:
                     "SELECT table_name, column_name FROM information_schema.columns "
                     "WHERE (table_name, column_name) IN "
                     "(('script_from_audio_tasks', 'provider_task_id'), "
+                    "('oral_avatars', 'provider_started_at'), "
+                    "('oral_voices', 'provider_started_at'), "
                     "('oral_tasks', 'provider_started_at'))"
                 ).fetchall()
             )
             assert columns == {
                 ("script_from_audio_tasks", "provider_task_id"),
+                ("oral_avatars", "provider_started_at"),
+                ("oral_voices", "provider_started_at"),
                 ("oral_tasks", "provider_started_at"),
             }
             conn.execute(
@@ -592,10 +639,24 @@ def test_pg_reconciliation_upgrade_and_lossy_downgrade_guard() -> None:
                 "INSERT INTO projects (id, owner_user_id, name) VALUES ('p1', 'u1', 'Project')"
             )
             conn.execute(
+                "INSERT INTO person_identities (id, owner_user_id, display_name) "
+                "VALUES ('i1', 'u1', 'Identity')"
+            )
+            conn.execute(
                 "INSERT INTO script_from_audio_tasks "
                 "(id, project_id, source_asset_id, created_by_user_id, idempotency_key, "
                 "request_hash, request_json, provider_task_id) VALUES "
                 "('s1', 'p1', 'a1', 'u1', 'key', 'hash', '{}', 'provider-pg-1')"
+            )
+            conn.execute(
+                "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, status, "
+                "source_kind, source_asset_id, provider_started_at) VALUES "
+                "('oa1', 'i1', 'u1', 'Avatar', 'SUBMITTING', 'VIDEO', 'a1', CURRENT_TIMESTAMP)"
+            )
+            conn.execute(
+                "INSERT INTO oral_voices (id, identity_id, owner_user_id, title, status, "
+                "source_asset_id, provider_started_at) VALUES "
+                "('ov1', 'i1', 'u1', 'Voice', 'SUBMITTING', 'a1', CURRENT_TIMESTAMP)"
             )
 
         with pytest.raises(RuntimeError, match="reconciliation data exists"):
@@ -611,12 +672,26 @@ def test_pg_reconciliation_upgrade_and_lossy_downgrade_guard() -> None:
             conn.execute(
                 "UPDATE script_from_audio_tasks SET provider_task_id = NULL WHERE id = 's1'"
             )
+            conn.execute("UPDATE oral_voices SET provider_started_at = NULL WHERE id = 'ov1'")
+        with pytest.raises(RuntimeError, match="reconciliation data exists"):
+            command.downgrade(config, "062_viral_video_library")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("UPDATE oral_avatars SET provider_started_at = NULL WHERE id = 'oa1'")
+            conn.execute(
+                "UPDATE oral_voices SET provider_started_at = CURRENT_TIMESTAMP WHERE id = 'ov1'"
+            )
+        with pytest.raises(RuntimeError, match="reconciliation data exists"):
+            command.downgrade(config, "062_viral_video_library")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("UPDATE oral_voices SET provider_started_at = NULL WHERE id = 'ov1'")
         command.downgrade(config, "062_viral_video_library")
         with psycopg.connect(dsn) as conn:
             after = conn.execute(
                 "SELECT table_name, column_name FROM information_schema.columns "
                 "WHERE (table_name, column_name) IN "
                 "(('script_from_audio_tasks', 'provider_task_id'), "
+                "('oral_avatars', 'provider_started_at'), "
+                "('oral_voices', 'provider_started_at'), "
                 "('oral_tasks', 'provider_started_at'))"
             ).fetchall()
             assert after == []

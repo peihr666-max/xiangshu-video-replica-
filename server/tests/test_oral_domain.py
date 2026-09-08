@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ from app.hifly import HiflyClient
 from app.oral import (
     ORAL_UNIT_PRICE_FEN_DEFAULT,
     CloneOutcome,
+    OralCloneLeaseLost,
     OralDomainError,
     OralOutcome,
     acquire_oral_clone,
@@ -33,14 +34,20 @@ from app.oral import (
     create_oral_task,
     finalize_oral_clone_work,
     finalize_oral_task_work,
+    mark_oral_clone_provider_submission_started,
     mark_oral_provider_submission_started,
     oral_unit_price_fen,
+    perform_oral_clone_work,
+    prepare_oral_clone_work,
     preserve_oral_clone_outcome_for_reconciliation,
     preserve_oral_task_outcome_for_reconciliation,
+    reconcile_uncertain_oral_clone,
     record_oral_clone_consent,
     refresh_avatar_clone,
     refresh_voice_clone,
+    renew_oral_clone_lease,
     renew_oral_task_lease,
+    run_claimed_oral_clone,
     run_next_oral_task,
     start_avatar_clone,
     start_voice_clone,
@@ -402,6 +409,361 @@ def test_image_avatar_is_queued_and_worker_uses_image_api(
     assert tuple(row) == ("RUNNING", "image-task")
     assert any(url.endswith("/avatar/create_by_image") for _, url in transport.calls)
     assert not any(url.endswith("/avatar/create_by_video") for _, url in transport.calls)
+
+
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_clone_pre_submit_storage_failure_is_terminal_not_uncertain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_source_storage: FakeSourceStorage,
+    clone_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-{clone_kind}-prepare-failure.db")
+    vendor, transport = make_vendor()
+
+    def fail_read(_key: str) -> bytes:
+        assert not conn.raw.in_transaction
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(fake_source_storage, "get_object", fail_read)
+    if clone_kind == "avatar":
+        created = start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="分身准备失败",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="avatar-prepare-failure",
+        )
+        table = "oral_avatars"
+    else:
+        created = start_voice_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="声音准备失败",
+            source_asset_id="asset-audio",
+            consent_id="asset-auth",
+            idempotency_key="voice-prepare-failure",
+        )
+        table = "oral_voices"
+    lease = acquire_oral_clone(conn, worker_id="clone-prepare-worker")
+    assert lease is not None
+    run_claimed_oral_clone(conn, lease=lease, worker_id="clone-prepare-worker", vendor=vendor)
+
+    row = conn.execute(
+        f"SELECT status, provider_started_at FROM {table} WHERE id = %s",  # noqa: S608
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("FAILED", None)
+    assert not any(
+        "/avatar/create_" in url or url.endswith("/voice/create") for _, url in transport.calls
+    )
+
+
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_sqlite_clone_lease_fences_same_day_expiry_and_replaced_token(
+    tmp_path: Path,
+    clone_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-{clone_kind}-lease-fence.db")
+    if clone_kind == "avatar":
+        created = start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="分身租约",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="avatar-lease-fence",
+        )
+        table = "oral_avatars"
+    else:
+        created = start_voice_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="声音租约",
+            source_asset_id="asset-audio",
+            consent_id="asset-auth",
+            idempotency_key="voice-lease-fence",
+        )
+        table = "oral_voices"
+    lease = acquire_oral_clone(conn, worker_id="clone-old-worker")
+    assert lease is not None
+    assert renew_oral_clone_lease(conn, lease=lease)
+    assert not conn.raw.in_transaction
+
+    expired = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    conn.execute(
+        f"UPDATE {table} SET locked_until = %s WHERE id = %s",  # noqa: S608
+        (expired, created.task_id),
+    )
+    conn.commit()
+    assert not renew_oral_clone_lease(conn, lease=lease)
+    assert not mark_oral_clone_provider_submission_started(conn, lease=lease)
+    assert not conn.raw.in_transaction
+
+    future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    conn.execute(
+        f"UPDATE {table} SET locked_until = %s WHERE id = %s",  # noqa: S608
+        (future, created.task_id),
+    )
+    conn.commit()
+    assert mark_oral_clone_provider_submission_started(conn, lease=lease)
+    assert not conn.raw.in_transaction
+    conn.execute(
+        f"UPDATE {table} SET lease_token = 'replacement-token' WHERE id = %s",  # noqa: S608
+        (created.task_id,),
+    )
+    conn.commit()
+    assert not renew_oral_clone_lease(conn, lease=lease)
+    assert not mark_oral_clone_provider_submission_started(conn, lease=lease)
+
+
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_clone_stops_between_external_steps_when_lease_is_replaced(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    clone_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-{clone_kind}-step-fence.db")
+    vendor, transport = make_vendor()
+    transport.on(
+        "POST",
+        "/api/v2/hifly/tool/create_upload_url",
+        envelope(
+            {
+                "upload_url": "https://up.example/clone",
+                "content_type": "application/octet-stream",
+                "file_id": "clone-file",
+            }
+        ),
+    )
+    if clone_kind == "avatar":
+        start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="失效分身",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="avatar-step-fence",
+        )
+    else:
+        start_voice_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="失效声音",
+            source_asset_id="asset-audio",
+            consent_id="asset-auth",
+            idempotency_key="voice-step-fence",
+        )
+    lease = acquire_oral_clone(conn, worker_id="clone-step-worker")
+    assert lease is not None
+    work = prepare_oral_clone_work(conn, lease=lease, vendor=vendor)
+    conn.commit()
+    renewals = iter((True, True, False))
+
+    with pytest.raises(OralCloneLeaseLost, match="租约已失效"):
+        perform_oral_clone_work(
+            work,
+            renew_lease=lambda: next(renewals),
+            mark_submission_started=lambda: pytest.fail("provider boundary must not be reached"),
+        )
+
+    assert any(url.endswith("/tool/create_upload_url") for _, url in transport.calls)
+    assert not any(method == "PUT" for method, _ in transport.calls)
+    assert not any(
+        "/avatar/create_" in url or url.endswith("/voice/create") for _, url in transport.calls
+    )
+
+
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_sqlite_clone_provider_boundary_survives_crash_without_paid_replay(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    clone_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-{clone_kind}-provider-crash.db")
+    vendor, transport = make_vendor()
+    endpoint = (
+        "/api/v2/hifly/avatar/create_by_video"
+        if clone_kind == "avatar"
+        else "/api/v2/hifly/voice/create"
+    )
+    transport.on(
+        "POST",
+        "/api/v2/hifly/tool/create_upload_url",
+        envelope(
+            {
+                "upload_url": "https://up.example/clone",
+                "content_type": "application/octet-stream",
+                "file_id": "clone-file",
+            }
+        ),
+    )
+
+    def crash_during_create(_body: bytes | None) -> bytes:
+        assert not conn.raw.in_transaction
+        raise KeyboardInterrupt("clone worker crashed")
+
+    transport.on("POST", endpoint, crash_during_create)
+    if clone_kind == "avatar":
+        created = start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="崩溃分身",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="avatar-provider-crash",
+        )
+        table = "oral_avatars"
+    else:
+        created = start_voice_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="崩溃声音",
+            source_asset_id="asset-audio",
+            consent_id="asset-auth",
+            idempotency_key="voice-provider-crash",
+        )
+        table = "oral_voices"
+    lease = acquire_oral_clone(conn, worker_id="clone-crash-worker")
+    assert lease is not None
+    with pytest.raises(KeyboardInterrupt, match="clone worker crashed"):
+        run_claimed_oral_clone(conn, lease=lease, worker_id="clone-crash-worker", vendor=vendor)
+    assert not conn.raw.in_transaction
+    row = conn.execute(
+        f"SELECT status, provider_started_at FROM {table} WHERE id = %s",  # noqa: S608
+        (created.task_id,),
+    ).fetchone()
+    assert row["status"] == "SUBMITTING"
+    assert row["provider_started_at"] is not None
+
+    conn.execute(
+        f"UPDATE {table} SET locked_until = %s WHERE id = %s",  # noqa: S608
+        ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), created.task_id),
+    )
+    conn.commit()
+    assert acquire_oral_clone(conn, worker_id="clone-replacement-worker") is None
+    recovered = conn.execute(
+        f"SELECT status, lease_token FROM {table} WHERE id = %s",  # noqa: S608
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(recovered) == ("SUBMISSION_UNCERTAIN", None)
+    assert (
+        sum(1 for method, url in transport.calls if method == "POST" and url.endswith(endpoint))
+        == 1
+    )
+
+
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_uncertain_clone_can_be_discarded_for_safe_manual_recovery(
+    tmp_path: Path,
+    clone_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-{clone_kind}-reconcile.db")
+    if clone_kind == "avatar":
+        created = start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="待人工处理分身",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="avatar-manual-reconcile",
+        )
+        table = "oral_avatars"
+    else:
+        created = start_voice_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="待人工处理声音",
+            source_asset_id="asset-audio",
+            consent_id="asset-auth",
+            idempotency_key="voice-manual-reconcile",
+        )
+        table = "oral_voices"
+    conn.execute(
+        f"UPDATE {table} SET status = 'SUBMISSION_UNCERTAIN' WHERE id = %s",  # noqa: S608
+        (created.task_id,),
+    )
+    conn.commit()
+
+    resolved = reconcile_uncertain_oral_clone(
+        conn,
+        clone_kind=clone_kind,
+        clone_id=created.task_id,
+        outcome="DISCARD",
+    )
+    conn.commit()
+
+    assert resolved["status"] == "FAILED"
+    with pytest.raises(OralDomainError, match="仅提交结果不确定"):
+        reconcile_uncertain_oral_clone(
+            conn,
+            clone_kind=clone_kind,
+            clone_id=created.task_id,
+            outcome="DISCARD",
+        )
+
+
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_pre_submit_failed_outcome_stays_terminal_when_finalize_must_be_retried(
+    tmp_path: Path,
+    clone_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-{clone_kind}-failed-preserve.db")
+    if clone_kind == "avatar":
+        created = start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="分身失败",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="avatar-failed-preserve",
+        )
+        table = "oral_avatars"
+    else:
+        created = start_voice_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="声音失败",
+            source_asset_id="asset-audio",
+            consent_id="asset-auth",
+            idempotency_key="voice-failed-preserve",
+        )
+        table = "oral_voices"
+    lease = acquire_oral_clone(conn, worker_id="clone-failed-worker")
+    assert lease is not None
+
+    assert preserve_oral_clone_outcome_for_reconciliation(
+        conn,
+        lease=lease,
+        outcome=CloneOutcome(status="FAILED", error_message="提交前素材读取失败"),
+        cause=RuntimeError("first finalize failed"),
+    )
+    conn.commit()
+
+    row = conn.execute(
+        f"SELECT status, provider_started_at FROM {table} WHERE id = %s",  # noqa: S608
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("FAILED", None)
 
 
 def test_create_oral_task_tts_submits_and_replays_idempotently(

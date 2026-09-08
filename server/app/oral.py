@@ -51,6 +51,10 @@ class OralTaskLeaseLost(RuntimeError):
     """The claimed task may no longer be changed by this worker."""
 
 
+class OralCloneLeaseLost(RuntimeError):
+    """The claimed clone may no longer be changed by this worker."""
+
+
 ORAL_CLONE_PURPOSES = {"oral_avatar_clone", "oral_voice_clone"}
 
 
@@ -459,19 +463,30 @@ def acquire_oral_clone(conn: BusinessConnection, *, worker_id: str) -> dict[str,
         lease_expired = (
             "locked_until::timestamptz <= CURRENT_TIMESTAMP"
             if conn.is_postgres
-            else "locked_until <= CURRENT_TIMESTAMP"
+            else "datetime(locked_until) <= CURRENT_TIMESTAMP"
+        )
+        conn.execute(
+            f"UPDATE {table} SET status = 'PENDING', locked_by = NULL, "
+            "lease_token = NULL, locked_until = NULL, "
+            "error_message = '提交前处理超时，等待自动重试', "
+            "updated_at = CURRENT_TIMESTAMP WHERE status = 'SUBMITTING' "
+            "AND provider_started_at IS NULL "
+            f"AND {lease_expired}"
         )
         conn.execute(
             f"UPDATE {table} SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL, "
             "lease_token = NULL, locked_until = NULL, "
-            "error_message = '提交结果未知，请重新创建克隆任务', "
+            "error_message = '提交结果未知，等待人工处理', "
             "updated_at = CURRENT_TIMESTAMP WHERE status = 'SUBMITTING' "
+            "AND provider_started_at IS NOT NULL "
             f"AND {lease_expired}"
         )
         row = conn.execute(
             f"""
             UPDATE {table} SET
                 status = CASE WHEN status = 'PENDING' THEN 'SUBMITTING' ELSE status END,
+                provider_started_at = CASE WHEN status = 'PENDING' THEN NULL
+                    ELSE provider_started_at END,
                 locked_by = %s, lease_token = %s, locked_until = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = (
@@ -488,6 +503,70 @@ def acquire_oral_clone(conn: BusinessConnection, *, worker_id: str) -> dict[str,
             result["clone_kind"] = clone_kind
             return result
     return None
+
+
+def _clone_table(lease: dict[str, Any]) -> str:
+    return "oral_avatars" if lease["clone_kind"] == "avatar" else "oral_voices"
+
+
+def renew_oral_clone_lease(conn: BusinessConnection, *, lease: dict[str, Any]) -> bool:
+    """Extend only the exact current avatar/voice clone lease."""
+    table = _clone_table(lease)
+    if conn.is_postgres:
+        updated = conn.execute(
+            f"UPDATE {table} SET locked_until = "
+            "(CURRENT_TIMESTAMP + (%s * interval '1 second'))::text, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND lease_token = %s "
+            "AND status = %s AND locked_until::timestamptz > CURRENT_TIMESTAMP RETURNING id",
+            (
+                ORAL_TASK_LEASE_SECONDS,
+                str(lease["id"]),
+                str(lease["lease_token"]),
+                str(lease["status"]),
+            ),
+        ).fetchone()
+    else:
+        locked_until = (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
+        updated = conn.execute(
+            f"UPDATE {table} SET locked_until = %s, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = %s AND lease_token = %s AND status = %s "
+            "AND datetime(locked_until) > CURRENT_TIMESTAMP RETURNING id",
+            (
+                locked_until,
+                str(lease["id"]),
+                str(lease["lease_token"]),
+                str(lease["status"]),
+            ),
+        ).fetchone()
+        conn.commit()
+    return updated is not None
+
+
+def mark_oral_clone_provider_submission_started(
+    conn: BusinessConnection, *, lease: dict[str, Any]
+) -> bool:
+    """Persist the boundary immediately before the paid clone-create call."""
+    table = _clone_table(lease)
+    if conn.is_postgres:
+        updated = conn.execute(
+            f"UPDATE {table} SET provider_started_at = CURRENT_TIMESTAMP, locked_until = "
+            "(CURRENT_TIMESTAMP + (%s * interval '1 second'))::text, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND lease_token = %s "
+            "AND status = 'SUBMITTING' AND locked_until::timestamptz > CURRENT_TIMESTAMP "
+            "RETURNING id",
+            (ORAL_TASK_LEASE_SECONDS, str(lease["id"]), str(lease["lease_token"])),
+        ).fetchone()
+    else:
+        locked_until = (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
+        updated = conn.execute(
+            f"UPDATE {table} SET provider_started_at = CURRENT_TIMESTAMP, locked_until = %s, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND lease_token = %s "
+            "AND status = 'SUBMITTING' AND datetime(locked_until) > CURRENT_TIMESTAMP "
+            "RETURNING id",
+            (locked_until, str(lease["id"]), str(lease["lease_token"])),
+        ).fetchone()
+        conn.commit()
+    return updated is not None
 
 
 @dataclass(frozen=True)
@@ -579,8 +658,25 @@ def prepare_oral_clone_work(
     )
 
 
-def perform_oral_clone_work(work: PreparedCloneWork) -> CloneOutcome:
+def _require_clone_lease_step(check: Callable[[], bool] | None) -> None:
+    if check is None:
+        return
+    try:
+        current = check()
+    except Exception as exc:  # noqa: BLE001 - a failed fence is a lost lease
+        raise OralCloneLeaseLost("克隆任务租约续期失败") from exc
+    if not current:
+        raise OralCloneLeaseLost("克隆任务租约已失效")
+
+
+def perform_oral_clone_work(
+    work: PreparedCloneWork,
+    *,
+    renew_lease: Callable[[], bool] | None = None,
+    mark_submission_started: Callable[[], bool] | None = None,
+) -> CloneOutcome:
     lease = work.lease
+    provider_submission_started = False
     try:
         if str(lease["status"]) == "SUBMITTING":
             if (
@@ -589,9 +685,15 @@ def perform_oral_clone_work(work: PreparedCloneWork) -> CloneOutcome:
                 or work.source_extension is None
             ):
                 raise OralDomainError("克隆素材已失效")
+            _require_clone_lease_step(renew_lease)
             content = work.source_storage.get_object(work.source_key)
+            _require_clone_lease_step(renew_lease)
             target = work.vendor.create_upload_url(work.source_extension)
+            _require_clone_lease_step(renew_lease)
             work.vendor.upload_file(target, content)
+            _require_clone_lease_step(renew_lease)
+            _require_clone_lease_step(mark_submission_started)
+            provider_submission_started = True
             if lease["clone_kind"] == "avatar":
                 create = (
                     work.vendor.create_avatar_by_image
@@ -606,11 +708,13 @@ def perform_oral_clone_work(work: PreparedCloneWork) -> CloneOutcome:
                     title=str(lease["title"])[:20], file_id=target.file_id
                 )
             return CloneOutcome(status="RUNNING", vendor_task_id=task_id)
+        _require_clone_lease_step(renew_lease)
         snapshot: Any = (
             work.vendor.avatar_task(str(lease["vendor_task_id"]))
             if lease["clone_kind"] == "avatar"
             else work.vendor.voice_task(str(lease["vendor_task_id"]))
         )
+        _require_clone_lease_step(renew_lease)
         status = _clone_status_map(snapshot.status)
         if lease["clone_kind"] == "avatar":
             return CloneOutcome(status=status, vendor_resource_id=snapshot.avatar_id)
@@ -619,25 +723,44 @@ def perform_oral_clone_work(work: PreparedCloneWork) -> CloneOutcome:
             if not snapshot.demo_url or work.result_storage is None:
                 return CloneOutcome(status="FAILED", error_message="声音试听文件缺失，请重新克隆")
             content = work.vendor.download(snapshot.demo_url)
+            _require_clone_lease_step(renew_lease)
             demo = work.result_storage.put_object(
                 f"oral/voice-demos/{lease['id']}.mp3", content, content_type="audio/mpeg"
             )
+            _require_clone_lease_step(renew_lease)
         return CloneOutcome(status=status, vendor_resource_id=snapshot.voice, demo=demo)
+    except OralCloneLeaseLost:
+        raise
     except HiflyError as exc:
         if str(lease["status"]) == "SUBMITTING":
-            status = "FAILED" if exc.business_rejection else "SUBMISSION_UNCERTAIN"
+            status = (
+                "SUBMISSION_UNCERTAIN"
+                if provider_submission_started and not exc.business_rejection
+                else "FAILED"
+            )
         else:
             status = "RUNNING"
         return CloneOutcome(status=status, error_message=str(exc)[:500])
     except OralDomainError as exc:
-        status = "SUBMISSION_UNCERTAIN" if str(lease["status"]) == "SUBMITTING" else "RUNNING"
+        status = (
+            "SUBMISSION_UNCERTAIN"
+            if str(lease["status"]) == "SUBMITTING" and provider_submission_started
+            else "FAILED"
+            if str(lease["status"]) == "SUBMITTING"
+            else "RUNNING"
+        )
         return CloneOutcome(status=status, error_message=str(exc)[:500])
     except Exception as exc:  # noqa: BLE001 - storage failures are explicit clone outcomes
         logger.warning("oral clone external work failed: %s", type(exc).__name__)
         if str(lease["status"]) == "RUNNING":
             return CloneOutcome(status="RUNNING", error_message="克隆结果归档失败，等待自动重试")
         return CloneOutcome(
-            status="SUBMISSION_UNCERTAIN", error_message="克隆提交结果未知，等待人工对账"
+            status="SUBMISSION_UNCERTAIN" if provider_submission_started else "FAILED",
+            error_message=(
+                "克隆提交结果未知，等待人工对账"
+                if provider_submission_started
+                else "克隆提交前处理失败，请重新创建"
+            ),
         )
 
 
@@ -650,7 +773,7 @@ def finalize_oral_clone_work(
     lease_current = (
         "locked_until::timestamptz > CURRENT_TIMESTAMP"
         if conn.is_postgres
-        else "locked_until > CURRENT_TIMESTAMP"
+        else "datetime(locked_until) > CURRENT_TIMESTAMP"
     )
     demo_asset_id = None
     if outcome.demo is not None:
@@ -723,7 +846,7 @@ def fail_claimed_oral_clone(
     lease_current = (
         "locked_until::timestamptz > CURRENT_TIMESTAMP"
         if conn.is_postgres
-        else "locked_until > CURRENT_TIMESTAMP"
+        else "datetime(locked_until) > CURRENT_TIMESTAMP"
     )
     updated = conn.execute(
         f"UPDATE {table} SET status = 'FAILED', error_message = %s, locked_by = NULL, "
@@ -747,6 +870,22 @@ def preserve_oral_clone_outcome_for_reconciliation(
     cause: Exception,
 ) -> bool:
     table = "oral_avatars" if lease["clone_kind"] == "avatar" else "oral_voices"
+    if outcome is not None and outcome.status == "FAILED":
+        updated = conn.execute(
+            f"UPDATE {table} SET status = 'FAILED', error_message = %s, "
+            "reconciliation_json = COALESCE(%s, reconciliation_json), "
+            "locked_by = NULL, lease_token = NULL, locked_until = NULL, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND lease_token = %s "
+            "AND status = %s RETURNING id",
+            (
+                outcome.error_message or f"克隆终态写入重试：{type(cause).__name__}",
+                _clone_outcome_snapshot(outcome),
+                str(lease["id"]),
+                str(lease["lease_token"]),
+                str(lease["status"]),
+            ),
+        ).fetchone()
+        return updated is not None
     resource_column = "vendor_avatar_id" if lease["clone_kind"] == "avatar" else "vendor_voice_id"
     failure_message = (
         f"供应商结果已返回但本地终结失败：{type(cause).__name__}"
@@ -785,7 +924,13 @@ def run_claimed_oral_clone(
         raise OralDomainError("PostgreSQL 口播 worker 必须使用分段短事务执行")
     work = prepare_oral_clone_work(conn, lease=lease, vendor=vendor)
     conn.commit()
-    outcome = perform_oral_clone_work(work)
+    outcome = perform_oral_clone_work(
+        work,
+        renew_lease=lambda: renew_oral_clone_lease(conn, lease=lease),
+        mark_submission_started=lambda: mark_oral_clone_provider_submission_started(
+            conn, lease=lease
+        ),
+    )
     finalize_oral_clone_work(conn, work=work, outcome=outcome)
     conn.commit()
     return str(lease["id"])
@@ -1686,6 +1831,27 @@ def reconcile_uncertain_oral_task(
         outcome="settle" if outcome == "SETTLE" else "release",
     )
     return _oral_task_row(conn, task_id)
+
+
+def reconcile_uncertain_oral_clone(
+    conn: BusinessConnection, *, clone_kind: str, clone_id: str, outcome: str
+) -> dict[str, Any]:
+    if clone_kind not in {"avatar", "voice"}:
+        raise OralDomainError("克隆类型不支持")
+    if outcome != "DISCARD":
+        raise OralDomainError("人工处理结果不支持")
+    table = "oral_avatars" if clone_kind == "avatar" else "oral_voices"
+    updated = conn.execute(
+        f"UPDATE {table} SET status = 'FAILED', "
+        "error_message = '人工确认不再等待供应商结果，请重新创建', "
+        "locked_by = NULL, lease_token = NULL, locked_until = NULL, "
+        "updated_at = CURRENT_TIMESTAMP "
+        "WHERE id = %s AND status = 'SUBMISSION_UNCERTAIN' RETURNING *",
+        (clone_id,),
+    ).fetchone()
+    if updated is None:
+        raise OralDomainError("仅提交结果不确定的克隆任务可人工处理")
+    return dict(updated)
 
 
 # ---------------------------------------------------------------------------

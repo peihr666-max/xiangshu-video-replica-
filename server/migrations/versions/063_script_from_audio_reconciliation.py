@@ -16,6 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.add_column("oral_avatars", sa.Column("provider_started_at", sa.Text()))
+    op.add_column("oral_voices", sa.Column("provider_started_at", sa.Text()))
     op.add_column("oral_tasks", sa.Column("provider_started_at", sa.Text()))
     op.add_column("script_from_audio_tasks", sa.Column("provider_task_id", sa.Text()))
 
@@ -28,7 +30,13 @@ def downgrade() -> None:
     oral_task = bind.execute(
         sa.text("SELECT 1 FROM oral_tasks WHERE provider_started_at IS NOT NULL LIMIT 1")
     ).first()
-    if script_task or oral_task:
+    avatar_task = bind.execute(
+        sa.text("SELECT 1 FROM oral_avatars WHERE provider_started_at IS NOT NULL LIMIT 1")
+    ).first()
+    voice_task = bind.execute(
+        sa.text("SELECT 1 FROM oral_voices WHERE provider_started_at IS NOT NULL LIMIT 1")
+    ).first()
+    if script_task or oral_task or avatar_task or voice_task:
         raise RuntimeError(
             "cannot downgrade 063 while provider reconciliation data exists; "
             "reconcile active submissions first"
@@ -36,4 +44,8 @@ def downgrade() -> None:
     with op.batch_alter_table("script_from_audio_tasks") as batch_op:
         batch_op.drop_column("provider_task_id")
     with op.batch_alter_table("oral_tasks") as batch_op:
+        batch_op.drop_column("provider_started_at")
+    with op.batch_alter_table("oral_voices") as batch_op:
+        batch_op.drop_column("provider_started_at")
+    with op.batch_alter_table("oral_avatars") as batch_op:
         batch_op.drop_column("provider_started_at")

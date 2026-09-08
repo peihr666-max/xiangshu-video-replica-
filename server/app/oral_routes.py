@@ -26,6 +26,7 @@ from app.oral import (
     read_avatar_clone,
     read_oral_task,
     read_voice_clone,
+    reconcile_uncertain_oral_clone,
     reconcile_uncertain_oral_task,
     record_oral_clone_consent,
     start_avatar_clone,
@@ -218,6 +219,12 @@ class VoiceCloneRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 
+class OralCloneReconcileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: Literal["DISCARD"]
+
+
 @router.post("/voices", status_code=status.HTTP_202_ACCEPTED)
 def create_voice_clone(
     request: VoiceCloneRequest,
@@ -285,6 +292,80 @@ def confirm_voice(
             action="oral.voice.confirm",
             entity_type="oral_voice",
             entity_id=voice_id,
+        )
+        conn.commit()
+    return _serialize(row)
+
+
+def _reconcile_clone(
+    conn: Database,
+    *,
+    actor: AuthenticatedUser,
+    clone_kind: Literal["avatar", "voice"],
+    clone_id: str,
+    outcome: str,
+) -> dict[str, Any]:
+    entity_type = "oral_avatar" if clone_kind == "avatar" else "oral_voice"
+    require_role(
+        conn,
+        actor=actor,
+        allowed_roles={"admin"},
+        action=f"oral.{clone_kind}.reconcile",
+        entity_type=entity_type,
+        entity_id=clone_id,
+    )
+    try:
+        row = reconcile_uncertain_oral_clone(
+            conn,
+            clone_kind=clone_kind,
+            clone_id=clone_id,
+            outcome=outcome,
+        )
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
+    write_audit(
+        conn,
+        actor=actor,
+        action=f"oral.{clone_kind}.reconcile",
+        entity_type=entity_type,
+        entity_id=clone_id,
+        metadata={"outcome": outcome},
+        commit=False,
+    )
+    return row
+
+
+@router.post("/avatars/{avatar_id}/reconcile")
+def reconcile_avatar_clone(
+    avatar_id: str,
+    request: OralCloneReconcileRequest,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        row = _reconcile_clone(
+            conn,
+            actor=actor,
+            clone_kind="avatar",
+            clone_id=avatar_id,
+            outcome=request.outcome,
+        )
+        conn.commit()
+    return _serialize(row)
+
+
+@router.post("/voices/{voice_id}/reconcile")
+def reconcile_voice_clone(
+    voice_id: str,
+    request: OralCloneReconcileRequest,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        row = _reconcile_clone(
+            conn,
+            actor=actor,
+            clone_kind="voice",
+            clone_id=voice_id,
+            outcome=request.outcome,
         )
         conn.commit()
     return _serialize(row)
