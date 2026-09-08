@@ -48,7 +48,10 @@ def test_viral_work_claim_replaces_only_expired_token(tmp_path: Path) -> None:
         assert claim_viral_work(conn, "viral:media:douyin:1:video") is None
         conn.execute(
             "UPDATE viral_work_claims SET locked_until = %s WHERE scope = %s",
-            ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), "viral:media:douyin:1:video"),
+            (
+                (datetime.now(UTC) - timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                "viral:media:douyin:1:video",
+            ),
         )
         assert not viral_work_is_owned(conn, scope="viral:media:douyin:1:video", lease_token=first)
         replacement = claim_viral_work(conn, "viral:media:douyin:1:video")

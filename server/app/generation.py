@@ -5560,7 +5560,6 @@ def cancel_generation_batch(
         SELECT id, project_id, created_by_user_id, status
         FROM generation_batches
         WHERE id = %s
-        FOR UPDATE
         """,
         (batch_id,),
     ).fetchone()

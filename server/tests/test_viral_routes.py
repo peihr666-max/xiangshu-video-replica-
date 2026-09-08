@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -322,6 +323,86 @@ def test_media_external_work_has_no_business_transaction_and_session_switch_bloc
             None,  # type: ignore[arg-type]
         )
     assert getattr(error.value, "status_code", None) == 409
+
+
+def test_statistics_provider_work_runs_between_short_business_transactions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.viral_routes import ViralStatisticsRequest, fetch_viral_video_statistics
+
+    class FakeConn:
+        def commit(self) -> None:
+            pass
+
+    class FakeDb:
+        active = 0
+
+        @contextmanager
+        def write(self):
+            self.active += 1
+            try:
+                yield FakeConn(), SimpleNamespace(id="user-1")
+            finally:
+                self.active -= 1
+
+    db = FakeDb()
+    video = _video(platform="wechat_channels", video_id="stats-1", category="庭院案例")
+    monkeypatch.setattr("app.viral_routes.require_not_auditor", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "app.viral_routes.plan_viral_statistics_refresh",
+        lambda *_args: ([video], [video], []),
+    )
+    monkeypatch.setattr("app.viral_routes.claim_viral_work", lambda *_args: "token")
+    monkeypatch.setattr("app.viral_routes.viral_work_is_owned", lambda *args, **kwargs: True)
+    monkeypatch.setattr("app.viral_routes.release_viral_work", lambda *args, **kwargs: True)
+
+    def fetch_without_database(_client, _pending):
+        assert db.active == 0
+        return {}
+
+    monkeypatch.setattr(
+        "app.viral_routes.fetch_viral_statistics_without_database", fetch_without_database
+    )
+    monkeypatch.setattr(
+        "app.viral_routes.apply_viral_statistics_refresh",
+        lambda *_args: [video],
+    )
+    response = fetch_viral_video_statistics(
+        ViralStatisticsRequest(videoIds=[video.video_id]),
+        db,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+    )
+    assert response.items[0].videoId == video.video_id
+
+
+def test_media_storage_failure_releases_durable_claim_without_masking_error(
+    client: tuple[TestClient, StubViralClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    http, _ = client
+    assert http.get("/api/viral/videos?platform=douyin", headers=_AUTH_HEADERS).status_code == 200
+    video_id = "dy-自建房预算-0"
+
+    class FailingStorage:
+        def head_object(self, _key):
+            raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr("app.viral_routes.get_media_storage", lambda _conn: FailingStorage())
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        http.post(
+            "/api/viral/videos/media",
+            json={"platform": "douyin", "videoId": video_id, "kind": "video"},
+            headers=_AUTH_HEADERS,
+        )
+    with BusinessConnection.sqlite(
+        connect_database(Path(os.environ["VIDEO_REPLICA_DB_PATH"]))
+    ) as conn:
+        claim = conn.execute(
+            "SELECT 1 FROM viral_work_claims WHERE scope = %s",
+            (f"viral:media:douyin:{video_id}:video",),
+        ).fetchone()
+    assert claim is None
 
 
 def test_media_unknown_video_returns_404(client: tuple[TestClient, StubViralClient]) -> None:

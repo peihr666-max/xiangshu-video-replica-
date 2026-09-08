@@ -37,20 +37,25 @@ def lock_viral_scope(conn: BusinessConnection, scope: str) -> None:
 
 
 def claim_viral_work(conn: BusinessConnection, scope: str) -> str | None:
-    now = datetime.now(UTC)
     token = str(uuid4())
+    if conn.is_postgres:
+        lease_value = "(CURRENT_TIMESTAMP + interval '20 minutes')::text"
+        expiry_check = "viral_work_claims.locked_until::timestamptz <= CURRENT_TIMESTAMP"
+    else:
+        lease_value = "datetime('now', '+20 minutes')"
+        expiry_check = "viral_work_claims.locked_until <= datetime('now')"
     row = conn.execute(
-        """
+        f"""
         INSERT INTO viral_work_claims (scope, lease_token, locked_until)
-        VALUES (%s, %s, %s)
+        VALUES (%s, %s, {lease_value})
         ON CONFLICT (scope) DO UPDATE SET
             lease_token = excluded.lease_token,
             locked_until = excluded.locked_until,
             created_at = CURRENT_TIMESTAMP
-        WHERE viral_work_claims.locked_until <= %s
+        WHERE {expiry_check}
         RETURNING lease_token
         """,
-        (scope, token, (now + timedelta(minutes=20)).isoformat(), now.isoformat()),
+        (scope, token),
     ).fetchone()
     return token if row is not None else None
 
@@ -64,10 +69,14 @@ def release_viral_work(conn: BusinessConnection, *, scope: str, lease_token: str
 
 
 def viral_work_is_owned(conn: BusinessConnection, *, scope: str, lease_token: str) -> bool:
+    expiry_check = (
+        "locked_until::timestamptz > CURRENT_TIMESTAMP"
+        if conn.is_postgres
+        else "locked_until > datetime('now')"
+    )
     row = conn.execute(
-        "SELECT 1 FROM viral_work_claims "
-        "WHERE scope = %s AND lease_token = %s AND locked_until > %s",
-        (scope, lease_token, datetime.now(UTC).isoformat()),
+        f"SELECT 1 FROM viral_work_claims WHERE scope = %s AND lease_token = %s AND {expiry_check}",
+        (scope, lease_token),
     ).fetchone()
     return row is not None
 

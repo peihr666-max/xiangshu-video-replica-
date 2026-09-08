@@ -57,6 +57,7 @@ from app.generation import (
     acquire_generation_task_lease,
     cancel_generation_batch,
     mark_expired_active_leases_needing_attention,
+    mark_generation_task_running,
     mark_task_submission_uncertain,
     reconcile_submission_uncertain_task,
     reschedule_generation_poll,
@@ -269,6 +270,86 @@ def test_cancel_batch_row_lock_prevents_concurrent_worker_claim(fair_state: str)
             "SELECT status FROM generation_tasks WHERE id = 'task-u1-0'"
         ).fetchone()[0]
     assert (batch_status, task_status) == ("CANCELLED", "CANCELLED")
+
+
+def test_cancel_waits_for_provider_finalize_without_deadlock_or_release(fair_state: str) -> None:
+    _seed(fair_state, user_ids=["u1"], tasks_per_user=1)
+    lease = _acquire(fair_state, "provider-worker")
+    assert lease is not None
+    task_locked = threading.Event()
+    allow_finalize = threading.Event()
+    worker_failures: list[BaseException] = []
+    cancel_failures: list[BaseException] = []
+
+    class PausingConnection:
+        def __init__(self, inner: BusinessConnection) -> None:
+            self.inner = inner
+
+        def __getattr__(self, name: str):
+            return getattr(self.inner, name)
+
+        def execute(self, sql: str, parameters=()):
+            cursor = self.inner.execute(sql, parameters)
+            if "UPDATE generation_tasks" in sql and "provider_task_id" in sql:
+                task_locked.set()
+                assert allow_finalize.wait(timeout=5)
+            return cursor
+
+    def finalize() -> None:
+        try:
+            with pg_transaction() as raw:
+                conn = PausingConnection(BusinessConnection.postgres(raw))
+                mark_generation_task_running(
+                    cast(BusinessConnection, conn),
+                    lease=lease,
+                    provider_task_id="provider-task-1",
+                    provider_request={"prompt": "test"},
+                    request_hash="request-hash",
+                )
+        except BaseException as exc:
+            worker_failures.append(exc)
+
+    def cancel() -> None:
+        try:
+            with pg_transaction() as raw:
+                cancel_generation_batch(
+                    BusinessConnection.postgres(raw),
+                    actor=CurrentUser(
+                        id="proj-owner",
+                        username="admin",
+                        display_name="Admin",
+                        role="admin",
+                    ),
+                    batch_id="batch-u1",
+                )
+        except BaseException as exc:
+            cancel_failures.append(exc)
+
+    worker = threading.Thread(target=finalize)
+    worker.start()
+    assert task_locked.wait(timeout=5)
+    canceller = threading.Thread(target=cancel)
+    canceller.start()
+    threading.Event().wait(0.1)
+    allow_finalize.set()
+    worker.join(timeout=5)
+    canceller.join(timeout=5)
+
+    assert not worker_failures
+    assert len(cancel_failures) == 1
+    assert isinstance(cancel_failures[0], HTTPException)
+    assert cancel_failures[0].status_code == 409
+    assert cancel_failures[0].detail["code"] == "BATCH_ALREADY_ACTIVE"
+    with psycopg.connect(fair_state) as pg:
+        task_status = pg.execute(
+            "SELECT status FROM generation_tasks WHERE id = 'task-u1-0'"
+        ).fetchone()[0]
+        releases = pg.execute(
+            "SELECT count(*) FROM wallet_transactions "
+            "WHERE task_id = 'task-u1-0' AND type = 'RELEASE'"
+        ).fetchone()[0]
+    assert task_status == "RUNNING"
+    assert releases == 0
 
 
 def _cursor_count(dsn: str, user_id: str) -> int:

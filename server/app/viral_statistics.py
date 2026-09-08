@@ -12,7 +12,6 @@ from app.viral_store import (
     STATISTICS_CHECKED_AT_KEY,
     STATISTICS_RETRY_AT_KEY,
     get_viral_video,
-    lock_viral_scope,
     mark_viral_statistics_failure,
     update_viral_statistics,
 )
@@ -84,60 +83,69 @@ def _has_statistics(detail: WechatVideoDetail) -> bool:
     )
 
 
-def refresh_viral_statistics(
+def plan_viral_statistics_refresh(
     conn: BusinessConnection,
-    client: ViralSourceClient | None,
     video_ids: list[str],
-) -> list[ViralVideo]:
-    """补采已有视频号条目的互动数，并返回数据库中的最新条目."""
-    with _refresh_lock:
-        for video_id in sorted(set(video_ids)):
-            lock_viral_scope(conn, f"viral:statistics:{PLATFORM_WECHAT}:{video_id}")
-        videos = _load_wechat_videos(conn, video_ids)
-        if client is None:
-            return videos
-
-        pending: list[ViralVideo] = []
-        for video in videos:
-            if not _needs_refresh(video):
-                continue
-            export_id = video.native.get("export_id")
-            if not isinstance(export_id, str) or not export_id:
-                mark_viral_statistics_failure(
-                    conn, platform=video.platform, video_id=video.video_id, commit=False
-                )
-                continue
+) -> tuple[list[ViralVideo], list[ViralVideo], list[ViralVideo]]:
+    videos = _load_wechat_videos(conn, video_ids)
+    pending: list[ViralVideo] = []
+    invalid: list[ViralVideo] = []
+    for video in videos:
+        if not _needs_refresh(video):
+            continue
+        export_id = video.native.get("export_id")
+        if isinstance(export_id, str) and export_id:
             pending.append(video)
+        else:
+            invalid.append(video)
+    return videos, pending, invalid
 
-        futures: dict[Future[WechatVideoDetail], ViralVideo] = {}
-        with ThreadPoolExecutor(max_workers=STATISTICS_MAX_WORKERS) as pool:
-            for video in pending:
-                futures[pool.submit(_fetch_detail, client, video)] = video
-            for future, video in futures.items():
-                try:
-                    detail = future.result()
-                except Exception as exc:  # noqa: BLE001 - 失败须降级为已有库值
-                    logger.warning(
-                        "Viral statistics refresh failed for %s (%s)",
-                        video.video_id,
-                        type(exc).__name__,
-                    )
-                    mark_viral_statistics_failure(
-                        conn, platform=video.platform, video_id=video.video_id, commit=False
-                    )
-                    continue
-                if not _has_statistics(detail):
-                    mark_viral_statistics_failure(
-                        conn, platform=video.platform, video_id=video.video_id, commit=False
-                    )
-                    continue
-                update_viral_statistics(
-                    conn,
-                    platform=video.platform,
-                    video_id=video.video_id,
-                    detail=detail,
-                    commit=False,
+
+def fetch_viral_statistics_without_database(
+    client: ViralSourceClient,
+    pending: list[ViralVideo],
+) -> dict[str, WechatVideoDetail | Exception]:
+    outcomes: dict[str, WechatVideoDetail | Exception] = {}
+    futures: dict[Future[WechatVideoDetail], ViralVideo] = {}
+    with _refresh_lock, ThreadPoolExecutor(max_workers=STATISTICS_MAX_WORKERS) as pool:
+        for video in pending:
+            futures[pool.submit(_fetch_detail, client, video)] = video
+        for future, video in futures.items():
+            try:
+                outcomes[video.video_id] = future.result()
+            except Exception as exc:  # noqa: BLE001 - 调用方会持久化冷却状态
+                logger.warning(
+                    "Viral statistics refresh failed for %s (%s)",
+                    video.video_id,
+                    type(exc).__name__,
                 )
+                outcomes[video.video_id] = exc
+    return outcomes
 
-        conn.commit()
-        return _load_wechat_videos(conn, video_ids)
+
+def apply_viral_statistics_refresh(
+    conn: BusinessConnection,
+    video_ids: list[str],
+    pending: list[ViralVideo],
+    invalid: list[ViralVideo],
+    outcomes: dict[str, WechatVideoDetail | Exception],
+) -> list[ViralVideo]:
+    for video in invalid:
+        mark_viral_statistics_failure(
+            conn, platform=video.platform, video_id=video.video_id, commit=False
+        )
+    for video in pending:
+        detail = outcomes.get(video.video_id)
+        if not isinstance(detail, WechatVideoDetail) or not _has_statistics(detail):
+            mark_viral_statistics_failure(
+                conn, platform=video.platform, video_id=video.video_id, commit=False
+            )
+            continue
+        update_viral_statistics(
+            conn,
+            platform=video.platform,
+            video_id=video.video_id,
+            detail=detail,
+            commit=False,
+        )
+    return _load_wechat_videos(conn, video_ids)

@@ -47,12 +47,15 @@ from app.viral_media import (
     viral_cover_key,
     viral_media_key,
 )
-from app.viral_statistics import refresh_viral_statistics
+from app.viral_statistics import (
+    apply_viral_statistics_refresh,
+    fetch_viral_statistics_without_database,
+    plan_viral_statistics_refresh,
+)
 from app.viral_store import (
     claim_viral_work,
     fetch_state_is_fresh,
     get_viral_video,
-    lock_viral_scope,
     mark_fetch_state,
     release_viral_work,
     update_viral_cover,
@@ -220,22 +223,22 @@ def _spawn_cover_enrich(enricher: CoverEnricher, videos: list[ViralVideo]) -> No
 
     def worker() -> None:
         try:
-            conn, close = _open_worker_connection()
-            try:
-                with ThreadPoolExecutor(max_workers=10) as pool:
-                    futures = [pool.submit(enricher.enrich, video) for video in pending]
-                    # 单张下载完即串行回写，避免慢封面阻塞整批可用副本。
-                    for future in as_completed(futures):
-                        result = future.result()
-                        if result.cover_key:
-                            update_viral_cover(
-                                conn,
-                                platform=result.platform,
-                                video_id=result.video_id,
-                                cover_key=result.cover_key,
-                            )
-            finally:
-                close()
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                futures = [pool.submit(enricher.enrich, video) for video in pending]
+                for future in as_completed(futures):
+                    result = future.result()
+                    if not result.cover_key:
+                        continue
+                    conn, close = _open_worker_connection()
+                    try:
+                        update_viral_cover(
+                            conn,
+                            platform=result.platform,
+                            video_id=result.video_id,
+                            cover_key=result.cover_key,
+                        )
+                    finally:
+                        close()
         except Exception as exc:
             logger.warning("Viral cover enrichment failed: %s", type(exc).__name__)
         finally:
@@ -244,96 +247,27 @@ def _spawn_cover_enrich(enricher: CoverEnricher, videos: list[ViralVideo]) -> No
     threading.Thread(target=worker, name="viral-cover-enrich", daemon=True).start()
 
 
-def _collect_videos(
-    conn: BusinessConnection,
-    client: ViralSourceClient | None,
-    *,
+def _fetch_list_jobs_without_database(
+    client: ViralSourceClient,
     platform: str,
     sort: str,
-    max_age: timedelta,
-    enricher: CoverEnricher | None = None,
-    allow_refresh: bool = True,
-) -> list[ViralVideo]:
-    """响应始终从库读取；同平台冷请求等待首轮落库，随后复用。"""
-    with _REFRESH_LOCKS[platform]:
-        lock_viral_scope(conn, f"viral:refresh:{platform}:{sort}")
-        if allow_refresh and not fetch_state_is_fresh(
-            conn, platform=platform, sort=sort, max_age=max_age
-        ):
-            failures: list[ViralSourceError] = []
-            jobs: list[tuple[str, str]] = []
-            for category in viral_categories():
-                keyword = viral_keyword(category, platform)
-                if not keyword or fetch_state_is_fresh(
-                    conn, platform=platform, sort=f"{sort}:category:{category}", max_age=max_age
-                ):
-                    continue
-                if fetch_state_is_fresh(
-                    conn,
-                    platform=platform,
-                    sort=f"{sort}:retry:{category}",
-                    max_age=timedelta(minutes=1),
-                ):
-                    failures.append(ViralSourceError("爆款数据源暂时不可用，请稍后重试"))
-                else:
-                    jobs.append((category, keyword))
-            if client is None:
-                failures.append(ViralSourceUnavailable("爆款数据源尚未配置"))
-            else:
-                # 分类独立回源并分别记成功状态；一类失败不丢掉已付费取得的数据。
-                with ThreadPoolExecutor(max_workers=4) as pool:
-                    futures = {
-                        pool.submit(
-                            _fetch_videos, client, platform, category, keyword, sort
-                        ): category
-                        for category, keyword in jobs
-                    }
-                    outcomes: dict[str, list[ViralVideo] | ViralSourceError] = {}
-                    for future in as_completed(futures):
-                        category = futures[future]
-                        try:
-                            outcomes[category] = future.result()
-                        except ViralSourceError as exc:
-                            outcomes[category] = exc
-                        except (ValueError, TypeError):
-                            outcomes[category] = ViralSourceError("爆款数据源返回异常，请稍后重试")
-
-                    # HTTP 保持并行，数据库按配置顺序串行写入；跨分类同 video_id
-                    # 时，最终归属不受 future 完成先后影响。
-                    for category, _keyword in jobs:
-                        outcome = outcomes[category]
-                        if isinstance(outcome, ViralSourceError):
-                            failure = outcome
-                            failures.append(failure)
-                            mark_fetch_state(
-                                conn,
-                                platform=platform,
-                                sort=f"{sort}:retry:{category}",
-                                commit=False,
-                            )
-                            logger.warning(
-                                "Viral refresh failed for %s/%s: %s",
-                                platform,
-                                category,
-                                type(failure).__name__,
-                            )
-                            continue
-                        upsert_viral_videos(conn, outcome, commit=False)
-                        mark_fetch_state(
-                            conn,
-                            platform=platform,
-                            sort=f"{sort}:category:{category}",
-                            commit=False,
-                        )
-            if not failures:
-                mark_fetch_state(conn, platform=platform, sort=sort)
-            elif not list_stored_viral_videos(conn, platform=platform, sort=sort):
-                raise failures[0]
-        conn.commit()
-        videos = list_stored_viral_videos(conn, platform=platform, sort=sort)
-    if enricher is not None:
-        _spawn_cover_enrich(enricher, videos)
-    return videos
+    jobs: list[tuple[str, str]],
+) -> dict[str, list[ViralVideo] | ViralSourceError]:
+    outcomes: dict[str, list[ViralVideo] | ViralSourceError] = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            pool.submit(_fetch_videos, client, platform, category, keyword, sort): category
+            for category, keyword in jobs
+        }
+        for future in as_completed(futures):
+            category = futures[future]
+            try:
+                outcomes[category] = future.result()
+            except ViralSourceError as exc:
+                outcomes[category] = exc
+            except (ValueError, TypeError):
+                outcomes[category] = ViralSourceError("爆款数据源返回异常，请稍后重试")
+    return outcomes
 
 
 def _item(video: ViralVideo) -> ViralVideoItem:
@@ -360,37 +294,114 @@ def list_viral_videos(
         raise HTTPException(
             status_code=400, detail={"code": "VIRAL_SORT_INVALID", "message": "不支持的排序方式"}
         )
+    with _REFRESH_LOCKS[platform]:
+        return _list_viral_videos_unlocked(db, client, platform=platform, sort=sort)
+
+
+def _list_viral_videos_unlocked(
+    db: BusinessDbDep,
+    client: ViralSourceClient | None,
+    *,
+    platform: str,
+    sort: str,
+) -> ViralListResponse:
+    claim: tuple[str, str] | None = None
+    jobs: list[tuple[str, str]] = []
+    failures: list[ViralSourceError] = []
     with db.write() as (conn, actor):
-        try:
-            videos = _collect_videos(
-                conn,
-                client,
-                platform=platform,
-                sort=sort,
-                max_age=VIRAL_LIST_CACHE_TTL,
-                enricher=_cover_enricher_or_none(conn) if actor.role != "auditor" else None,
-                allow_refresh=actor.role != "auditor",
-            )
-        except ViralSourceUnavailable as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={"code": "VIRAL_SOURCE_UNAVAILABLE", "message": str(exc)},
-            ) from exc
-        except ViralSourceError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail={"code": "VIRAL_SOURCE_UPSTREAM", "message": str(exc)},
-            ) from exc
-        return ViralListResponse(
-            platform=platform,
-            sort=sort,
-            categories=viral_categories(),
-            items=[_item(video) for video in videos],
-            fetchedAt=viral_fetched_at(conn, platform=platform, sort=sort),
-            stale=not fetch_state_is_fresh(
-                conn, platform=platform, sort=sort, max_age=VIRAL_LIST_CACHE_TTL
-            ),
+        enricher = _cover_enricher_or_none(conn) if actor.role != "auditor" else None
+        if actor.role != "auditor" and not fetch_state_is_fresh(
+            conn, platform=platform, sort=sort, max_age=VIRAL_LIST_CACHE_TTL
+        ):
+            for category in viral_categories():
+                keyword = viral_keyword(category, platform)
+                if not keyword or fetch_state_is_fresh(
+                    conn,
+                    platform=platform,
+                    sort=f"{sort}:category:{category}",
+                    max_age=VIRAL_LIST_CACHE_TTL,
+                ):
+                    continue
+                if fetch_state_is_fresh(
+                    conn,
+                    platform=platform,
+                    sort=f"{sort}:retry:{category}",
+                    max_age=timedelta(minutes=1),
+                ):
+                    failures.append(ViralSourceError("爆款数据源暂时不可用，请稍后重试"))
+                else:
+                    jobs.append((category, keyword))
+            scope = f"viral:refresh:{platform}:{sort}"
+            token = claim_viral_work(conn, scope)
+            if token is not None:
+                claim = (scope, token)
+                actor_id = actor.id
+                conn.commit()
+        videos = list_stored_viral_videos(conn, platform=platform, sort=sort)
+        fetched_at = viral_fetched_at(conn, platform=platform, sort=sort)
+        stale = not fetch_state_is_fresh(
+            conn, platform=platform, sort=sort, max_age=VIRAL_LIST_CACHE_TTL
         )
+
+    if claim is not None:
+        scope, token = claim
+        try:
+            if client is None:
+                failures.append(ViralSourceUnavailable("爆款数据源尚未配置"))
+                outcomes: dict[str, list[ViralVideo] | ViralSourceError] = {}
+            else:
+                outcomes = _fetch_list_jobs_without_database(client, platform, sort, jobs)
+            with db.write() as (conn, current_actor):
+                if current_actor.id != actor_id or not viral_work_is_owned(
+                    conn, scope=scope, lease_token=token
+                ):
+                    raise HTTPException(
+                        status_code=409, detail={"code": "VIRAL_REFRESH_CLAIM_LOST"}
+                    )
+                for category, _keyword in jobs:
+                    outcome = outcomes.get(category)
+                    if isinstance(outcome, ViralSourceError):
+                        failures.append(outcome)
+                        mark_fetch_state(
+                            conn,
+                            platform=platform,
+                            sort=f"{sort}:retry:{category}",
+                            commit=False,
+                        )
+                    elif outcome is not None:
+                        upsert_viral_videos(conn, outcome, commit=False)
+                        mark_fetch_state(
+                            conn,
+                            platform=platform,
+                            sort=f"{sort}:category:{category}",
+                            commit=False,
+                        )
+                if not failures:
+                    mark_fetch_state(conn, platform=platform, sort=sort, commit=False)
+                release_viral_work(conn, scope=scope, lease_token=token)
+                videos = list_stored_viral_videos(conn, platform=platform, sort=sort)
+                fetched_at = viral_fetched_at(conn, platform=platform, sort=sort)
+                stale = not fetch_state_is_fresh(
+                    conn, platform=platform, sort=sort, max_age=VIRAL_LIST_CACHE_TTL
+                )
+                conn.commit()
+        finally:
+            _release_media_claim(db, actor_id, scope, token)
+    if failures and not videos:
+        failure = failures[0]
+        status = 503 if isinstance(failure, ViralSourceUnavailable) else 502
+        code = "VIRAL_SOURCE_UNAVAILABLE" if status == 503 else "VIRAL_SOURCE_UPSTREAM"
+        raise HTTPException(status_code=status, detail={"code": code, "message": str(failure)})
+    if enricher is not None:
+        _spawn_cover_enrich(enricher, videos)
+    return ViralListResponse(
+        platform=platform,
+        sort=sort,
+        categories=viral_categories(),
+        items=[_item(video) for video in videos],
+        fetchedAt=fetched_at,
+        stale=stale,
+    )
 
 
 @router.post("/videos/statistics", response_model=ViralStatisticsResponse)
@@ -399,6 +410,7 @@ def fetch_viral_video_statistics(
     db: BusinessDbDep,
     client: ViralSourceClientDep,
 ) -> ViralStatisticsResponse:
+    claims: list[tuple[str, str]] = []
     with db.write() as (conn, actor):
         require_not_auditor(
             conn,
@@ -407,8 +419,43 @@ def fetch_viral_video_statistics(
             entity_type="viral_video",
             entity_id=payload.videoIds[0],
         )
-        videos = refresh_viral_statistics(conn, client, payload.videoIds)
+        videos, pending, invalid = plan_viral_statistics_refresh(conn, payload.videoIds)
+        if invalid:
+            videos = apply_viral_statistics_refresh(conn, payload.videoIds, [], invalid, {})
+            invalid = []
+        actor_id = actor.id
+        claimed: list[ViralVideo] = []
+        if client is not None:
+            for video in pending:
+                scope = f"viral:statistics:{video.platform}:{video.video_id}"
+                token = claim_viral_work(conn, scope)
+                if token is not None:
+                    claims.append((scope, token))
+                    claimed.append(video)
+        conn.commit()
+    if client is None or not claimed:
         return ViralStatisticsResponse(items=[_item(video) for video in videos])
+    try:
+        outcomes = fetch_viral_statistics_without_database(client, claimed)
+        with db.write() as (conn, current_actor):
+            if current_actor.id != actor_id:
+                raise HTTPException(
+                    status_code=409, detail={"code": "VIRAL_STATISTICS_SESSION_CHANGED"}
+                )
+            owned: list[ViralVideo] = []
+            for video, (scope, token) in zip(claimed, claims, strict=True):
+                if viral_work_is_owned(conn, scope=scope, lease_token=token):
+                    owned.append(video)
+            videos = apply_viral_statistics_refresh(
+                conn, payload.videoIds, owned, invalid, outcomes
+            )
+            for scope, token in claims:
+                release_viral_work(conn, scope=scope, lease_token=token)
+            conn.commit()
+        return ViralStatisticsResponse(items=[_item(video) for video in videos])
+    finally:
+        for scope, token in claims:
+            _release_media_claim(db, actor_id, scope, token)
 
 
 @router.post("/videos/media", response_model=ViralMediaResponse)
@@ -462,33 +509,34 @@ def _fetch_viral_video_media_unlocked(
     if catalog_claim is not None:
         actor_id, catalog_scope, catalog_token = catalog_claim
         try:
-            refreshed = _fetch_catalog_without_database(client, payload.platform)
-        except ViralSourceUnavailable as exc:
+            try:
+                refreshed = _fetch_catalog_without_database(client, payload.platform)
+            except ViralSourceUnavailable as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "VIRAL_SOURCE_UNAVAILABLE", "message": str(exc)},
+                ) from exc
+            except ViralSourceError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail={"code": "VIRAL_SOURCE_UPSTREAM", "message": str(exc)},
+                ) from exc
+            with db.write() as (conn, current_actor):
+                if current_actor.id != actor_id or not viral_work_is_owned(
+                    conn, scope=catalog_scope, lease_token=catalog_token
+                ):
+                    raise HTTPException(status_code=409, detail={"code": "VIRAL_MEDIA_CLAIM_LOST"})
+                upsert_viral_videos(conn, refreshed, commit=False)
+                video = get_viral_video(conn, platform=payload.platform, video_id=payload.videoId)
+                release_viral_work(conn, scope=catalog_scope, lease_token=catalog_token)
+                conn.commit()
+            if video is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "VIRAL_VIDEO_NOT_FOUND", "message": "该视频已不在爆款列表中"},
+                )
+        finally:
             _release_media_claim(db, actor_id, catalog_scope, catalog_token)
-            raise HTTPException(
-                status_code=503,
-                detail={"code": "VIRAL_SOURCE_UNAVAILABLE", "message": str(exc)},
-            ) from exc
-        except ViralSourceError as exc:
-            _release_media_claim(db, actor_id, catalog_scope, catalog_token)
-            raise HTTPException(
-                status_code=502,
-                detail={"code": "VIRAL_SOURCE_UPSTREAM", "message": str(exc)},
-            ) from exc
-        with db.write() as (conn, current_actor):
-            if current_actor.id != actor_id or not viral_work_is_owned(
-                conn, scope=catalog_scope, lease_token=catalog_token
-            ):
-                raise HTTPException(status_code=409, detail={"code": "VIRAL_MEDIA_CLAIM_LOST"})
-            upsert_viral_videos(conn, refreshed, commit=False)
-            video = get_viral_video(conn, platform=payload.platform, video_id=payload.videoId)
-            release_viral_work(conn, scope=catalog_scope, lease_token=catalog_token)
-            conn.commit()
-        if video is None:
-            raise HTTPException(
-                status_code=404,
-                detail={"code": "VIRAL_VIDEO_NOT_FOUND", "message": "该视频已不在爆款列表中"},
-            )
     assert video is not None
 
     with db.write() as (conn, current_actor):
@@ -505,65 +553,19 @@ def _fetch_viral_video_media_unlocked(
         storage = get_media_storage(conn)
         conn.commit()
 
-    needs_video = payload.kind == "video" or not video.audio_url
-    cached_video = (
-        storage.head_object(viral_media_key(video.platform, video.video_id, "video"))
-        if video.platform == PLATFORM_DOUYIN and needs_video
-        else None
-    )
-    if (
-        video.platform == PLATFORM_DOUYIN
-        and needs_video
-        and cached_video is None
-        and video.native.get("_playback_version") != 1
-    ):
-        video = _repair_douyin_playback_without_long_transaction(
+    try:
+        return _perform_claimed_media(
             db,
             client=client,
             actor_id=actor_id,
             claim_scope=claim_scope,
             claim_token=claim_token,
+            storage=storage,
             video=video,
+            payload=payload,
         )
-
-    pipeline = ViralMediaPipeline(client=client, storage=storage)
-    try:
-        result = pipeline.fetch(video, prefer=payload.kind)
-    except ViralSourceUnavailable as exc:
+    finally:
         _release_media_claim(db, actor_id, claim_scope, claim_token)
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "VIRAL_SOURCE_UNAVAILABLE", "message": str(exc)},
-        ) from exc
-    except ViralSourceError as exc:
-        _persist_media_detail_and_release_claim(
-            db,
-            actor_id=actor_id,
-            claim_scope=claim_scope,
-            claim_token=claim_token,
-            video=video,
-            detail=getattr(pipeline, "detail", None),
-        )
-        raise HTTPException(
-            status_code=502,
-            detail={"code": "VIRAL_MEDIA_UPSTREAM", "message": str(exc)},
-        ) from exc
-
-    video = _persist_media_detail_and_release_claim(
-        db,
-        actor_id=actor_id,
-        claim_scope=claim_scope,
-        claim_token=claim_token,
-        video=video,
-        detail=getattr(pipeline, "detail", None),
-    )
-    return ViralMediaResponse(
-        video=_item(video),
-        kind=result.kind,
-        url=_browser_playable_url(result.url, actor_id),
-        contentType=result.content_type,
-        cacheHit=result.cache_hit,
-    )
 
 
 def _fetch_catalog_without_database(
@@ -979,4 +981,76 @@ def download_viral_media_file(
         content=content,
         media_type=stored.content_type,
         headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+def _perform_claimed_media(
+    db: BusinessDbDep,
+    *,
+    client: ViralSourceClient | None,
+    actor_id: str,
+    claim_scope: str,
+    claim_token: str,
+    storage: Any,
+    video: ViralVideo,
+    payload: ViralMediaRequest,
+) -> ViralMediaResponse:
+    needs_video = payload.kind == "video" or not video.audio_url
+    cached_video = (
+        storage.head_object(viral_media_key(video.platform, video.video_id, "video"))
+        if video.platform == PLATFORM_DOUYIN and needs_video
+        else None
+    )
+    if (
+        video.platform == PLATFORM_DOUYIN
+        and needs_video
+        and cached_video is None
+        and video.native.get("_playback_version") != 1
+    ):
+        video = _repair_douyin_playback_without_long_transaction(
+            db,
+            client=client,
+            actor_id=actor_id,
+            claim_scope=claim_scope,
+            claim_token=claim_token,
+            video=video,
+        )
+
+    pipeline = ViralMediaPipeline(client=client, storage=storage)
+    try:
+        result = pipeline.fetch(video, prefer=payload.kind)
+    except ViralSourceUnavailable as exc:
+        _release_media_claim(db, actor_id, claim_scope, claim_token)
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "VIRAL_SOURCE_UNAVAILABLE", "message": str(exc)},
+        ) from exc
+    except ViralSourceError as exc:
+        _persist_media_detail_and_release_claim(
+            db,
+            actor_id=actor_id,
+            claim_scope=claim_scope,
+            claim_token=claim_token,
+            video=video,
+            detail=getattr(pipeline, "detail", None),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "VIRAL_MEDIA_UPSTREAM", "message": str(exc)},
+        ) from exc
+
+    video = _persist_media_detail_and_release_claim(
+        db,
+        actor_id=actor_id,
+        claim_scope=claim_scope,
+        claim_token=claim_token,
+        video=video,
+        detail=getattr(pipeline, "detail", None),
+    )
+    return ViralMediaResponse(
+        video=_item(video),
+        kind=result.kind,
+        url=_browser_playable_url(result.url, actor_id),
+        contentType=result.content_type,
+        cacheHit=result.cache_hit,
     )

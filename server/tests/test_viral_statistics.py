@@ -14,7 +14,11 @@ import pytest
 
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
-from app.viral_statistics import refresh_viral_statistics
+from app.viral_statistics import (
+    apply_viral_statistics_refresh,
+    fetch_viral_statistics_without_database,
+    plan_viral_statistics_refresh,
+)
 from app.viral_store import get_viral_video, upsert_viral_videos
 from app.viral_tikhub import (
     PLATFORM_DOUYIN,
@@ -28,6 +32,20 @@ from app.viral_tikhub import (
 
 def _open(path: Path) -> BusinessConnection:
     return BusinessConnection.sqlite(connect_database(path))
+
+
+_test_refresh_lock = threading.Lock()
+
+
+def refresh_viral_statistics(conn, client, video_ids):
+    with _test_refresh_lock:
+        videos, pending, invalid = plan_viral_statistics_refresh(conn, video_ids)
+        if client is None:
+            return videos
+        outcomes = fetch_viral_statistics_without_database(client, pending)
+        refreshed = apply_viral_statistics_refresh(conn, video_ids, pending, invalid, outcomes)
+        conn.commit()
+        return refreshed
 
 
 def _video(
