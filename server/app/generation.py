@@ -1486,12 +1486,29 @@ def _find_idempotent_batch(
     )
 
 
+def _seconds_from_prompt_snapshot(snapshot: object) -> int:
+    if snapshot is None:
+        return 1
+    try:
+        payload = json.loads(str(snapshot))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 1
+    if not isinstance(payload, dict):
+        return 1
+    value = payload.get("output_duration_seconds")
+    try:
+        return max(1, int(value)) if value is not None else 1
+    except (TypeError, ValueError):
+        return 1
+
+
 def _reserve_generation_credit(
     conn: BusinessConnection,
     *,
     user_id: str,
     task_id: str,
     billing_round: int | None = 1,
+    seconds: int = 1,
 ) -> int:
     try:
         return reserve_internal_billing(
@@ -1499,6 +1516,7 @@ def _reserve_generation_credit(
             user_id=user_id,
             task_id=task_id,
             billing_round=billing_round,
+            seconds=seconds,
         )
     except InsufficientCreditsError as exc:
         raise generation_error(
@@ -1776,6 +1794,7 @@ def create_generation_batch(
                 "QUEUED",
             ),
         )
+        billed_seconds = max(1, int(prompt_snapshot.get("output_duration_seconds") or 1))
         for _ in range(request.quantity):
             task_id = str(uuid4())
             conn.execute(
@@ -1791,9 +1810,10 @@ def create_generation_batch(
                     quality_status,
                     prompt_version_id,
                     prompt_snapshot_json,
+                    billed_seconds,
                     next_poll_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 """,
                 (
                     task_id,
@@ -1806,12 +1826,14 @@ def create_generation_batch(
                     "PENDING",
                     request.prompt_version_id,
                     json.dumps(prompt_snapshot, ensure_ascii=True, sort_keys=True),
+                    billed_seconds,
                 ),
             )
             _reserve_generation_credit(
                 conn,
                 user_id=actor.id,
                 task_id=task_id,
+                seconds=billed_seconds,
             )
         # Pattern D: this batch makes the user a queue participant; the cursor
         # row is upserted in the same transaction so rotation can serve them.
@@ -1969,17 +1991,18 @@ def regenerate_generation_batch(
         )
         for source_task, prompt_snapshot in zip(source_tasks, prompt_snapshots, strict=True):
             replacement_task_id = str(uuid4())
+            billed_seconds = _seconds_from_prompt_snapshot(prompt_snapshot)
             conn.execute(
                 """
                 INSERT INTO generation_tasks (
                     id, batch_id, generation_mode, provider, model,
                     status, archive_status, quality_status,
                     prompt_version_id, prompt_snapshot_json, next_poll_at,
-                    estimated_cost, retry_of_task_id, retry_reason,
+                    billed_seconds, estimated_cost, retry_of_task_id, retry_reason,
                     retry_requested_by_user_id, retry_requested_at
                 )
                 VALUES (%s, %s, %s, %s, %s, 'PENDING', 'PENDING', 'PENDING',
-                        %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 """,
                 (
                     replacement_task_id,
@@ -1989,6 +2012,7 @@ def regenerate_generation_batch(
                     str(source_task["model"]),
                     source_task["prompt_version_id"],
                     prompt_snapshot,
+                    billed_seconds,
                     estimated_cost,
                     str(source_task["id"]),
                     request.generation_reason,
@@ -1999,6 +2023,7 @@ def regenerate_generation_batch(
                 conn,
                 user_id=billed_user_id,
                 task_id=replacement_task_id,
+                seconds=billed_seconds,
             )
         insert_audit(
             conn,
@@ -2155,11 +2180,11 @@ def regenerate_generation_task(
                 id, batch_id, generation_mode, provider, model,
                 status, archive_status, quality_status,
                 prompt_version_id, prompt_snapshot_json, next_poll_at,
-                estimated_cost, retry_of_task_id, retry_reason,
+                billed_seconds, estimated_cost, retry_of_task_id, retry_reason,
                 retry_requested_by_user_id, retry_requested_at
             )
             VALUES (%s, %s, %s, %s, %s, 'PENDING', 'PENDING', 'PENDING',
-                    %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             """,
             (
                 replacement_task_id,
@@ -2169,6 +2194,7 @@ def regenerate_generation_task(
                 str(source["model"]),
                 source["prompt_version_id"],
                 prompt_snapshot,
+                _seconds_from_prompt_snapshot(prompt_snapshot),
                 request.estimated_cost_snapshot,
                 task_id,
                 request.generation_reason,
@@ -2179,6 +2205,7 @@ def regenerate_generation_task(
             conn,
             user_id=billed_user_id,
             task_id=replacement_task_id,
+            seconds=_seconds_from_prompt_snapshot(prompt_snapshot),
         )
         cursor = conn.execute(
             """
@@ -2866,6 +2893,7 @@ def retry_generation_task(
                 task.archive_retry_count,
                 task.error_code,
                 task.submitted_at,
+                task.prompt_snapshot_json,
                 task.superseded_by_task_id
             FROM generation_tasks AS task
             JOIN generation_batches AS batch ON batch.id = task.batch_id
@@ -2951,16 +2979,19 @@ def retry_generation_task(
                 )
             retry_path = "PRE_PROVIDER"
             audit_action = "generation_task.retry_queued"
+            billed_seconds = _seconds_from_prompt_snapshot(row["prompt_snapshot_json"])
             _reserve_generation_credit(
                 conn,
                 user_id=str(row["created_by_user_id"]),
                 task_id=task_id,
                 billing_round=None,
+                seconds=billed_seconds,
             )
             conn.execute(
                 """
                 UPDATE generation_tasks
                 SET
+                    billed_seconds = COALESCE(billed_seconds, %s),
                     status = 'PENDING',
                     archive_status = 'PENDING',
                     quality_status = 'PENDING',
@@ -2979,7 +3010,7 @@ def retry_generation_task(
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                 """,
-                (request.retry_reason, actor.id, task_id),
+                (billed_seconds, request.retry_reason, actor.id, task_id),
             )
         else:
             raise generation_error(

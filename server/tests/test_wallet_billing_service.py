@@ -73,6 +73,94 @@ def transaction_types(conn: sqlite3.Connection) -> list[tuple[str, int]]:
     ]
 
 
+def test_reserve_and_finalize_support_multiple_seconds_per_round(tmp_path: Path) -> None:
+    with initialize_database(tmp_path / "seconds.db") as raw:
+        with BusinessConnection.sqlite(raw) as conn:
+            seed_task(conn, available_credits=20)
+            with conn:
+                reserve_internal_billing(
+                    conn,
+                    user_id="user_1",
+                    task_id="task_1",
+                    billing_round=1,
+                    seconds=15,
+                )
+            assert wallet_state(conn) == (5, 15)
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE generation_tasks
+                    SET status = 'SUCCEEDED', archive_status = 'DIRECT',
+                        provider_result_url = 'https://cdn.example/video.mp4'
+                    WHERE id = 'task_1'
+                    """
+                )
+                result = finalize_internal_billing(conn, task_id="task_1", outcome="success")
+            assert result.seconds == 15
+            assert wallet_state(conn) == (5, 0)
+            deltas = conn.execute(
+                """
+                SELECT type, available_delta, reserved_delta
+                FROM wallet_transactions WHERE task_id = 'task_1'
+                ORDER BY created_at
+                """
+            ).fetchall()
+            assert [tuple(row) for row in deltas] == [
+                ("RESERVE", -15, 15),
+                ("SETTLE", 0, -15),
+            ]
+
+
+def test_release_returns_all_reserved_seconds(tmp_path: Path) -> None:
+    with initialize_database(tmp_path / "release-seconds.db") as raw:
+        with BusinessConnection.sqlite(raw) as conn:
+            seed_task(conn, available_credits=20)
+            with conn:
+                reserve_internal_billing(
+                    conn,
+                    user_id="user_1",
+                    task_id="task_1",
+                    billing_round=1,
+                    seconds=15,
+                )
+                conn.execute("UPDATE generation_tasks SET status = 'FAILED' WHERE id = 'task_1'")
+                result = finalize_internal_billing(conn, task_id="task_1", outcome="failed")
+            assert result.seconds == 15
+            assert wallet_state(conn) == (20, 0)
+
+
+def test_reserve_rejects_invalid_or_conflicting_seconds(tmp_path: Path) -> None:
+    with initialize_database(tmp_path / "invalid-seconds.db") as raw:
+        with BusinessConnection.sqlite(raw) as conn:
+            seed_task(conn, available_credits=20)
+            with pytest.raises(BillingInvariantError):
+                with conn:
+                    reserve_internal_billing(
+                        conn,
+                        user_id="user_1",
+                        task_id="task_1",
+                        billing_round=1,
+                        seconds=0,
+                    )
+            with conn:
+                reserve_internal_billing(
+                    conn,
+                    user_id="user_1",
+                    task_id="task_1",
+                    billing_round=1,
+                    seconds=15,
+                )
+            with pytest.raises(BillingInvariantError):
+                with conn:
+                    reserve_internal_billing(
+                        conn,
+                        user_id="user_1",
+                        task_id="task_1",
+                        billing_round=1,
+                        seconds=10,
+                    )
+
+
 def test_reserve_moves_one_credit_and_is_idempotent(tmp_path: Path) -> None:
     with initialize_database(tmp_path / "reserve.db") as raw:
         with BusinessConnection.sqlite(raw) as conn:

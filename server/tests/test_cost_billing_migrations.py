@@ -57,6 +57,86 @@ def test_operation_cost_rates_upgrade_from_063_and_downgrade(migration_dsn: str)
     with psycopg.connect(migration_dsn) as conn:
         assert conn.execute("SELECT to_regclass('operation_cost_rates')").fetchone() == (None,)
 
+
+@pytest.mark.pg
+def test_second_based_billing_preserves_oral_shape_and_guards_downgrade(
+    migration_dsn: str,
+) -> None:
+    config = _config(migration_dsn)
+    command.upgrade(config, "065_second_based_billing")
+    with psycopg.connect(migration_dsn) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='wallet_transactions' AND column_name='oral_task_id'"
+        ).fetchone() == (1,)
+        foreign_keys = conn.execute(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid='wallet_transactions'::regclass AND contype='f'"
+        ).fetchall()
+        assert any("oral_task_id" in str(row[0]) for row in foreign_keys)
+        indexes = conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE tablename='wallet_transactions'"
+        ).fetchall()
+        assert any(
+            "oral_task_id" in str(row[0]) and "billing_round" in str(row[0]) for row in indexes
+        )
+
+        conn.execute(
+            "INSERT INTO users (id, username, display_name) "
+            "VALUES ('seconds-user','seconds-user','Seconds User')"
+        )
+        conn.execute(
+            "INSERT INTO projects (id, owner_user_id, name) "
+            "VALUES ('seconds-project','seconds-user','Seconds Project')"
+        )
+        conn.execute(
+            "INSERT INTO generation_batches "
+            "(id,project_id,created_by_user_id,idempotency_key,request_hash,request_snapshot_json) "
+            "VALUES ('seconds-batch','seconds-project','seconds-user','seconds-key','hash','{}')"
+        )
+        conn.execute(
+            "INSERT INTO generation_tasks "
+            "(id,batch_id,generation_mode,provider,model,status,billed_seconds) "
+            "VALUES ('seconds-task','seconds-batch','I2V','fake_h3','MiniMax-H3','PENDING',15)"
+        )
+        conn.execute(
+            "INSERT INTO wallets (user_id,available_credits,reserved_credits) "
+            "VALUES ('seconds-user',5,15)"
+        )
+        conn.execute(
+            "INSERT INTO wallet_transactions "
+            "(id,user_id,type,available_delta,reserved_delta,task_id,billing_round,"
+            "idempotency_key) VALUES "
+            "('seconds-reserve','seconds-user','RESERVE',-15,15,'seconds-task',1,"
+            "'seconds-reserve')"
+        )
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="cannot downgrade 065"):
+        command.downgrade(config, "064_operation_cost_rates")
+
+    with psycopg.connect(migration_dsn) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "065_second_based_billing",
+        )
+        conn.execute("DELETE FROM wallet_transactions WHERE id='seconds-reserve'")
+        conn.execute("UPDATE generation_tasks SET billed_seconds=NULL WHERE id='seconds-task'")
+        conn.commit()
+
+    command.downgrade(config, "064_operation_cost_rates")
+    with psycopg.connect(migration_dsn) as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='generation_tasks' AND column_name='billed_seconds'"
+            ).fetchone()
+            is None
+        )
+        assert conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='wallet_transactions' AND column_name='oral_task_id'"
+        ).fetchone() == (1,)
+
     command.upgrade(config, "064_operation_cost_rates")
     with psycopg.connect(migration_dsn) as conn:
         rows = conn.execute(

@@ -27,6 +27,7 @@ class BillingFinalization:
     task_id: str
     billing_round: int | None
     transaction_type: TerminalTransactionType | None
+    seconds: int = 1
 
 
 @dataclass(frozen=True)
@@ -111,8 +112,11 @@ def reserve_internal_billing(
     user_id: str,
     task_id: str,
     billing_round: int | None = None,
+    seconds: int = 1,
 ) -> int:
-    """Reserve one credit inside the caller's existing database transaction."""
+    """Reserve the requested generation seconds in the caller's transaction."""
+    if seconds < 1:
+        raise BillingInvariantError("reserved seconds must be positive")
     task = conn.execute(
         """
         SELECT batch.created_by_user_id
@@ -129,7 +133,7 @@ def reserve_internal_billing(
 
     latest = conn.execute(
         """
-        SELECT billing_round
+        SELECT billing_round, reserved_delta
         FROM wallet_transactions
         WHERE task_id = %s AND type = 'RESERVE'
         ORDER BY billing_round DESC
@@ -153,6 +157,8 @@ def reserve_internal_billing(
                 (task_id, latest_round),
             ).fetchone()
             if terminal is None:
+                if int(latest["reserved_delta"]) != seconds:
+                    raise BillingInvariantError("existing reservation seconds do not match")
                 return latest_round
             billing_round = latest_round + 1
     if billing_round < 1:
@@ -160,7 +166,7 @@ def reserve_internal_billing(
 
     existing = conn.execute(
         """
-        SELECT user_id
+        SELECT user_id, reserved_delta
         FROM wallet_transactions
         WHERE task_id = %s AND billing_round = %s AND type = 'RESERVE'
         """,
@@ -169,6 +175,8 @@ def reserve_internal_billing(
     if existing is not None:
         if str(existing["user_id"]) != user_id:
             raise BillingInvariantError("existing reservation belongs to another wallet")
+        if int(existing["reserved_delta"]) != seconds:
+            raise BillingInvariantError("existing reservation seconds do not match")
         return billing_round
     if latest_round is not None and billing_round <= latest_round:
         raise BillingInvariantError("billing round cannot move backwards")
@@ -191,12 +199,12 @@ def reserve_internal_billing(
         """
         UPDATE wallets
         SET
-            available_credits = available_credits - 1,
-            reserved_credits = reserved_credits + 1,
+            available_credits = available_credits - %s,
+            reserved_credits = reserved_credits + %s,
             updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = %s AND available_credits >= 1
+        WHERE user_id = %s AND available_credits >= %s
         """,
-        (user_id,),
+        (seconds, seconds, user_id, seconds),
     )
     if cursor.rowcount != 1:
         wallet = conn.execute(
@@ -205,18 +213,22 @@ def reserve_internal_billing(
         ).fetchone()
         if wallet is None:
             raise BillingInvariantError("wallet does not exist")
-        raise InsufficientCreditsError("available credits are insufficient")
+        raise InsufficientCreditsError(
+            f"available credits are insufficient: need {seconds} seconds"
+        )
 
     conn.execute(
         """
         INSERT INTO wallet_transactions (
             id, user_id, type, available_delta, reserved_delta,
             task_id, billing_round, idempotency_key
-        ) VALUES (%s, %s, 'RESERVE', -1, 1, %s, %s, %s)
+        ) VALUES (%s, %s, 'RESERVE', %s, %s, %s, %s, %s)
         """,
         (
             str(uuid4()),
             user_id,
+            -seconds,
+            seconds,
             task_id,
             billing_round,
             f"reserve:{task_id}:{billing_round}",
@@ -254,7 +266,7 @@ def finalize_internal_billing(
 
     reservation = conn.execute(
         """
-        SELECT user_id, billing_round
+        SELECT user_id, billing_round, reserved_delta
         FROM wallet_transactions
         WHERE task_id = %s AND type = 'RESERVE'
         ORDER BY billing_round DESC
@@ -269,6 +281,7 @@ def finalize_internal_billing(
 
     user_id = str(reservation["user_id"])
     billing_round = int(reservation["billing_round"])
+    seconds = max(1, int(reservation["reserved_delta"]))
     if user_id != str(task["created_by_user_id"]):
         raise BillingInvariantError("reservation owner does not match generation task owner")
 
@@ -286,6 +299,7 @@ def finalize_internal_billing(
             task_id=task_id,
             billing_round=billing_round,
             transaction_type=cast(TerminalTransactionType, str(existing["type"])),
+            seconds=seconds,
         )
 
     if outcome == "success":
@@ -310,18 +324,18 @@ def finalize_internal_billing(
         if str(task["status"]) not in {"FAILED", "CANCELLED"}:
             raise BillingInvariantError("released billing requires a failed or cancelled task")
         transaction_type = "RELEASE"
-        available_delta = 1
+        available_delta = seconds
 
     cursor = conn.execute(
         """
         UPDATE wallets
         SET
             available_credits = available_credits + %s,
-            reserved_credits = reserved_credits - 1,
+            reserved_credits = reserved_credits - %s,
             updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = %s AND reserved_credits >= 1
+        WHERE user_id = %s AND reserved_credits >= %s
         """,
-        (available_delta, user_id),
+        (available_delta, seconds, user_id, seconds),
     )
     if cursor.rowcount != 1:
         raise BillingInvariantError("reserved wallet credit is missing")
@@ -331,13 +345,14 @@ def finalize_internal_billing(
         INSERT INTO wallet_transactions (
             id, user_id, type, available_delta, reserved_delta,
             task_id, billing_round, idempotency_key
-        ) VALUES (%s, %s, %s, %s, -1, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid4()),
             user_id,
             transaction_type,
             available_delta,
+            -seconds,
             task_id,
             billing_round,
             f"{transaction_type.lower()}:{task_id}:{billing_round}",
@@ -347,6 +362,7 @@ def finalize_internal_billing(
         task_id=task_id,
         billing_round=billing_round,
         transaction_type=transaction_type,
+        seconds=seconds,
     )
 
 
