@@ -7,13 +7,17 @@ fields so the customer UI cannot leak the upstream provider name.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import psycopg
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.auth import AuthenticatedUser, Database
+from app.admin_auth_routes import AdminWriter
+from app.admin_write_contract import AdminWriteContract, write_with_idempotency
+from app.auth import AuthenticatedUser, CurrentUser, Database, Role
 from app.customer_fence import BusinessDbDep
+from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, hifly_client_from_settings
 from app.oral import (
     OralDomainError,
@@ -35,6 +39,7 @@ from app.oral import (
 from app.permissions import require_not_auditor, require_role, write_audit
 
 router = APIRouter(prefix="/api/oral")
+admin_router = APIRouter(prefix="/api/control/admin/oral", tags=["admin-oral"])
 
 
 def get_oral_vendor(conn: Database) -> HiflyClient:
@@ -219,7 +224,7 @@ class VoiceCloneRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 
-class OralCloneReconcileRequest(BaseModel):
+class OralCloneReconcileRequest(AdminWriteContract):
     model_config = ConfigDict(extra="forbid")
 
     outcome: Literal["DISCARD"]
@@ -292,80 +297,6 @@ def confirm_voice(
             action="oral.voice.confirm",
             entity_type="oral_voice",
             entity_id=voice_id,
-        )
-        conn.commit()
-    return _serialize(row)
-
-
-def _reconcile_clone(
-    conn: Database,
-    *,
-    actor: AuthenticatedUser,
-    clone_kind: Literal["avatar", "voice"],
-    clone_id: str,
-    outcome: str,
-) -> dict[str, Any]:
-    entity_type = "oral_avatar" if clone_kind == "avatar" else "oral_voice"
-    require_role(
-        conn,
-        actor=actor,
-        allowed_roles={"admin"},
-        action=f"oral.{clone_kind}.reconcile",
-        entity_type=entity_type,
-        entity_id=clone_id,
-    )
-    try:
-        row = reconcile_uncertain_oral_clone(
-            conn,
-            clone_kind=clone_kind,
-            clone_id=clone_id,
-            outcome=outcome,
-        )
-    except OralDomainError as exc:
-        raise _domain_guard(exc) from exc
-    write_audit(
-        conn,
-        actor=actor,
-        action=f"oral.{clone_kind}.reconcile",
-        entity_type=entity_type,
-        entity_id=clone_id,
-        metadata={"outcome": outcome},
-        commit=False,
-    )
-    return row
-
-
-@router.post("/avatars/{avatar_id}/reconcile")
-def reconcile_avatar_clone(
-    avatar_id: str,
-    request: OralCloneReconcileRequest,
-    db: BusinessDbDep,
-) -> dict[str, Any]:
-    with db.write() as (conn, actor):
-        row = _reconcile_clone(
-            conn,
-            actor=actor,
-            clone_kind="avatar",
-            clone_id=avatar_id,
-            outcome=request.outcome,
-        )
-        conn.commit()
-    return _serialize(row)
-
-
-@router.post("/voices/{voice_id}/reconcile")
-def reconcile_voice_clone(
-    voice_id: str,
-    request: OralCloneReconcileRequest,
-    db: BusinessDbDep,
-) -> dict[str, Any]:
-    with db.write() as (conn, actor):
-        row = _reconcile_clone(
-            conn,
-            actor=actor,
-            clone_kind="voice",
-            clone_id=voice_id,
-            outcome=request.outcome,
         )
         conn.commit()
     return _serialize(row)
@@ -458,6 +389,102 @@ def read_oral_generation_task(
     except OralDomainError as exc:
         raise _domain_guard(exc) from exc
     return _serialize(row)
+
+
+def _reconcile_admin_clone(
+    *,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+    body: OralCloneReconcileRequest,
+    clone_kind: Literal["avatar", "voice"],
+    clone_id: str,
+) -> dict[str, object]:
+    entity_type = "oral_avatar" if clone_kind == "avatar" else "oral_voice"
+
+    def business(raw_conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        conn = BusinessConnection.postgres(raw_conn)
+        try:
+            row = reconcile_uncertain_oral_clone(
+                conn,
+                clone_kind=clone_kind,
+                clone_id=clone_id,
+                outcome=body.outcome,
+            )
+        except OralDomainError as exc:
+            raise OralError("ORAL_CLONE_NOT_UNCERTAIN", str(exc), status_code=409) from exc
+        write_audit(
+            conn,
+            actor=CurrentUser(
+                id=actor.user_id,
+                username=actor.username,
+                display_name=actor.display_name,
+                role=cast(Role, actor.role),
+            ),
+            action=f"oral.{clone_kind}.reconcile",
+            entity_type=entity_type,
+            entity_id=clone_id,
+            metadata={
+                "outcome": body.outcome,
+                "reason": body.reason.strip(),
+                "request_id": request_id,
+                "admin_session_id": actor.session_id,
+            },
+            commit=False,
+        )
+        return {
+            "id": str(row["id"]),
+            "kind": clone_kind,
+            "status": str(row["status"]),
+            "request_id": request_id,
+        }
+
+    return write_with_idempotency(
+        request,
+        response,
+        actor,
+        body,
+        business,
+        success_status=200,
+        unavailable_code="ORAL_RECONCILIATION_UNAVAILABLE",
+        unavailable_message="Oral clone reconciliation requires the PostgreSQL runtime.",
+    )
+
+
+@admin_router.post("/avatars/{avatar_id}/reconcile")
+def reconcile_avatar_clone(
+    avatar_id: str,
+    body: OralCloneReconcileRequest,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    return _reconcile_admin_clone(
+        request=request,
+        response=response,
+        actor=actor,
+        body=body,
+        clone_kind="avatar",
+        clone_id=avatar_id,
+    )
+
+
+@admin_router.post("/voices/{voice_id}/reconcile")
+def reconcile_voice_clone(
+    voice_id: str,
+    body: OralCloneReconcileRequest,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    return _reconcile_admin_clone(
+        request=request,
+        response=response,
+        actor=actor,
+        body=body,
+        clone_kind="voice",
+        clone_id=voice_id,
+    )
 
 
 @router.post("/tasks/{task_id}/reconcile")

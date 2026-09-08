@@ -12,10 +12,13 @@ precedent): the 029 model keeps exactly one live session row per user in
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 # Set HMAC key before importing app modules
 os.environ.setdefault(
@@ -182,11 +185,13 @@ def admin_app(monkeypatch: pytest.MonkeyPatch, route_state: str) -> Iterator[Fas
     from app.admin_auth_routes import router as admin_auth_router
     from app.admin_runtime_routes import router as admin_runtime_router
     from app.admin_session_routes import router as admin_session_router
+    from app.oral_routes import admin_router as admin_oral_router
 
     app = FastAPI()
     app.include_router(admin_auth_router)
     app.include_router(admin_session_router)
     app.include_router(admin_runtime_router)
+    app.include_router(admin_oral_router)
     monkeypatch.setenv(DATABASE_URL_ENV, route_state)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
     monkeypatch.setenv(ADMIN_SESSION_HMAC_KEY_ENV, TEST_ADMIN_SESSION_KEY)
@@ -211,6 +216,59 @@ def _admin_session(client: TestClient, actor: str = "admin_u") -> dict[str, str]
     )
     assert response.status_code == 201, response.text
     return {ADMIN_CSRF_HEADER: response.json()["csrf_token"]}
+
+
+def _seed_uncertain_clone(clone_kind: str, clone_id: str) -> tuple[str, tuple[int, int]]:
+    table = "oral_avatars" if clone_kind == "avatar" else "oral_voices"
+    with psycopg.connect(_t34_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name) "
+            "VALUES ('oral-identity', 'customer_u', 'Oral Identity') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        if clone_kind == "avatar":
+            conn.execute(
+                "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, status, "
+                "source_kind, source_asset_id, provider_started_at) VALUES "
+                "(%s, 'oral-identity', 'customer_u', 'Avatar', "
+                "'SUBMISSION_UNCERTAIN', 'VIDEO', 'source-asset', CURRENT_TIMESTAMP)",
+                (clone_id,),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO oral_voices (id, identity_id, owner_user_id, title, status, "
+                "source_asset_id, provider_started_at) VALUES "
+                "(%s, 'oral-identity', 'customer_u', 'Voice', "
+                "'SUBMISSION_UNCERTAIN', 'source-asset', CURRENT_TIMESTAMP)",
+                (clone_id,),
+            )
+        conn.execute(
+            "INSERT INTO wallets (user_id, available_credits, reserved_credits) "
+            "VALUES ('customer_u', 7, 3) ON CONFLICT (user_id) DO UPDATE SET "
+            "available_credits = 7, reserved_credits = 3"
+        )
+        wallet = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'customer_u'"
+        ).fetchone()
+    assert wallet is not None
+    return table, (int(wallet[0]), int(wallet[1]))
+
+
+def _reconcile_clone(
+    client: TestClient,
+    headers: dict[str, str],
+    clone_kind: str,
+    clone_id: str,
+    *,
+    key: str,
+    reason: str,
+):
+    collection = "avatars" if clone_kind == "avatar" else "voices"
+    return client.post(
+        f"/api/control/admin/oral/{collection}/{clone_id}/reconcile",
+        headers={**headers, "Idempotency-Key": key},
+        json={"outcome": "DISCARD", "confirm": True, "reason": reason},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +363,170 @@ def test_list_customer_sessions_filters_out_expired_lease(client: TestClient):
     data = response.json()
     assert data["items"] == []
     assert data["total"] == 0
+
+
+@pytest.mark.pg
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_admin_session_can_discard_uncertain_clone_with_complete_audit(
+    client: TestClient,
+    clone_kind: str,
+) -> None:
+    clone_id = f"{clone_kind}-admin-reconcile"
+    table, wallet_before = _seed_uncertain_clone(clone_kind, clone_id)
+    headers = _admin_session(client)
+
+    response = _reconcile_clone(
+        client,
+        headers,
+        clone_kind,
+        clone_id,
+        key=f"{clone_kind}-admin-reconcile-key",
+        reason="供应商后台确认未创建资源",
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == clone_id
+    assert response.json()["kind"] == clone_kind
+    assert response.json()["status"] == "FAILED"
+    with psycopg.connect(_t34_dsn()) as conn:
+        clone = conn.execute(
+            f"SELECT status FROM {table} WHERE id = %s",  # noqa: S608
+            (clone_id,),
+        ).fetchone()
+        audit = conn.execute(
+            "SELECT actor_user_id, action, entity_type, entity_id, metadata_json "
+            "FROM audit_logs WHERE action = %s AND entity_id = %s",
+            (f"oral.{clone_kind}.reconcile", clone_id),
+        ).fetchone()
+        wallet_after = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'customer_u'"
+        ).fetchone()
+    assert clone == ("FAILED",)
+    assert audit is not None
+    assert audit[0:4] == (
+        "admin_u",
+        f"oral.{clone_kind}.reconcile",
+        f"oral_{clone_kind}",
+        clone_id,
+    )
+    audit_metadata = json.loads(str(audit[4]))
+    assert audit_metadata["reason"] == "供应商后台确认未创建资源"
+    assert audit_metadata["admin_session_id"]
+    assert wallet_after == wallet_before
+
+
+@pytest.mark.pg
+def test_customer_and_auditor_cannot_discard_uncertain_clone(client: TestClient) -> None:
+    clone_id = "avatar-denied-reconcile"
+    table, wallet_before = _seed_uncertain_clone("avatar", clone_id)
+
+    customer_exchange = client.post(
+        "/api/control/admin/session/exchange",
+        json={"credential": issue_exchange_credential("customer_u", ttl_seconds=3600)},
+    )
+    assert customer_exchange.status_code == 403
+    assert customer_exchange.json()["detail"]["code"] == "ADMIN_ROLE_REQUIRED"
+    customer_attempt = _reconcile_clone(
+        client,
+        {"X-Dev-User-Id": "customer_u"},
+        "avatar",
+        clone_id,
+        key="customer-clone-reconcile",
+        reason="客户尝试处理",
+    )
+    assert customer_attempt.status_code == 401
+
+    auditor_headers = _admin_session(client, "auditor_u")
+    auditor_attempt = _reconcile_clone(
+        client,
+        auditor_headers,
+        "avatar",
+        clone_id,
+        key="auditor-clone-reconcile",
+        reason="审计员尝试处理",
+    )
+    assert auditor_attempt.status_code == 403
+    assert auditor_attempt.json()["detail"]["code"] == "AUDITOR_READ_ONLY"
+    with psycopg.connect(_t34_dsn()) as conn:
+        clone = conn.execute(
+            f"SELECT status FROM {table} WHERE id = %s",  # noqa: S608
+            (clone_id,),
+        ).fetchone()
+        audit_count = conn.execute(
+            "SELECT count(*) FROM audit_logs WHERE action = 'oral.avatar.reconcile' "
+            "AND entity_id = %s",
+            (clone_id,),
+        ).fetchone()
+        wallet_after = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'customer_u'"
+        ).fetchone()
+    assert clone == ("SUBMISSION_UNCERTAIN",)
+    assert audit_count == (0,)
+    assert wallet_after == wallet_before
+
+
+@pytest.mark.pg
+def test_clone_reconcile_replay_and_concurrency_write_one_audit_without_wallet_change(
+    client: TestClient,
+) -> None:
+    headers = _admin_session(client)
+    replay_id = "avatar-reconcile-replay"
+    _table, wallet_before = _seed_uncertain_clone("avatar", replay_id)
+    first = _reconcile_clone(
+        client,
+        headers,
+        "avatar",
+        replay_id,
+        key="clone-reconcile-replay-key",
+        reason="重复请求验证",
+    )
+    replay = _reconcile_clone(
+        client,
+        headers,
+        "avatar",
+        replay_id,
+        key="clone-reconcile-replay-key",
+        reason="重复请求验证",
+    )
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert replay.headers["X-Idempotent-Replay"] == "true"
+    assert replay.json() == first.json()
+
+    race_id = "voice-reconcile-race"
+    _seed_uncertain_clone("voice", race_id)
+    barrier = Barrier(2)
+
+    def race(key: str):
+        barrier.wait()
+        return _reconcile_clone(
+            client,
+            headers,
+            "voice",
+            race_id,
+            key=key,
+            reason="并发请求验证",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(race, ("clone-race-a", "clone-race-b")))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+
+    with psycopg.connect(_t34_dsn()) as conn:
+        audits = conn.execute(
+            "SELECT action, actor_user_id, metadata_json FROM audit_logs "
+            "WHERE entity_id IN (%s, %s) ORDER BY entity_id",
+            (replay_id, race_id),
+        ).fetchall()
+        wallet_after = conn.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'customer_u'"
+        ).fetchone()
+    assert len(audits) == 2
+    assert [row[0] for row in audits] == ["oral.avatar.reconcile", "oral.voice.reconcile"]
+    assert all(row[1] == "admin_u" for row in audits)
+    assert json.loads(str(audits[0][2]))["reason"] == "重复请求验证"
+    assert json.loads(str(audits[1][2]))["reason"] == "并发请求验证"
+    assert wallet_after == wallet_before
 
 
 # ---------------------------------------------------------------------------
