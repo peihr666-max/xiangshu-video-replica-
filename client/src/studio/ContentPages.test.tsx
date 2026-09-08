@@ -39,6 +39,7 @@ import {
   ViralDetailPage,
   ViralPage,
 } from "./ContentPages";
+import { ReplicaPage } from "./CreationPages";
 
 function studio(
   overrides: Partial<StudioContextValue> = {},
@@ -152,6 +153,7 @@ describe("V1.4 内容与运营页面", () => {
     useStudio.mockReset();
     fetchViralVideoMedia.mockReset();
     fetchViralVideoStatistics.mockReset();
+    fetchViralVideoStatistics.mockResolvedValue({ items: [] });
     importViralVideoToProject.mockReset();
     listViralVideos.mockReset();
     listViralVideos.mockResolvedValue({
@@ -169,12 +171,12 @@ describe("V1.4 内容与运营页面", () => {
       assetId: "viral-asset-1",
       kind: "video",
     });
-    const value = studio();
+    const value = studio({ review: false });
     useStudio.mockReturnValue(value);
-    render(<ViralPage />);
-    fireEvent.click(screen.getByRole("tab", { name: "视频号 30" }));
+    const view = render(<ViralPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "视频号 1" }));
     expect(screen.getByText("新中式庭院的三个细节")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "抖音 20" }));
+    fireEvent.click(screen.getByRole("tab", { name: "抖音 1" }));
     fireEvent.click(
       screen.getByRole("button", { name: "收藏 农村建房预算，别只盯着主体" }),
     );
@@ -191,13 +193,85 @@ describe("V1.4 内容与运营页面", () => {
     });
     expect(value.patchDraft).toHaveBeenCalledWith({
       projectId: "viral-project-1",
-      sourceId: "viral-project-1",
+      sourceId: "viral-asset-1",
       sourceAssetId: "viral-asset-1",
     });
     expect(value.navigate).toHaveBeenCalledWith("replica", {
       selectedVideoId: "dy-1",
       returnTo: "viral",
     });
+    const data = vi
+      .mocked(value.updateData)
+      .mock.calls.reduce((current, [update]) => update(current), value.data);
+    expect(data.projects[0]).toMatchObject({
+      id: "viral-project-1",
+      reference_asset_id: "viral-asset-1",
+    });
+    expect(data.assets[0]).toMatchObject({
+      id: "viral-asset-1",
+      kind: "video",
+      source: "爆款视频导入",
+    });
+
+    view.unmount();
+    useStudio.mockReturnValue(
+      studio({
+        review: false,
+        data,
+        state: {
+          ...value.state,
+          page: "replica",
+          draft: {
+            ...value.state.draft,
+            projectId: "viral-project-1",
+            sourceId: "viral-asset-1",
+            sourceAssetId: "viral-asset-1",
+          },
+        },
+      }),
+    );
+    render(<ReplicaPage />);
+    expect(
+      screen.getByText(/农村建房预算，别只盯着主体 · 来源视频 · 爆款视频导入/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("先导入参考视频")).toBeNull();
+  });
+
+  it("示例审核只做本地跳转，不调用素材导入接口", () => {
+    const value = studio({ review: true });
+    useStudio.mockReturnValue(value);
+    render(<ViralPage />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "复刻 农村建房预算，别只盯着主体" }),
+    );
+
+    expect(importViralVideoToProject).not.toHaveBeenCalled();
+    expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "dy-1" });
+    expect(value.navigate).toHaveBeenCalledWith("replica", {
+      selectedVideoId: "dy-1",
+      returnTo: "viral",
+    });
+  });
+
+  it("示例审核详情按钮也不调用素材导入接口", () => {
+    const base = studio();
+    const value = studio({
+      review: true,
+      state: {
+        ...base.state,
+        page: "viral-detail",
+        selectedVideoId: "dy-1",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralDetailPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
+
+    expect(importViralVideoToProject).not.toHaveBeenCalled();
+    expect(value.patchDraft).toHaveBeenCalledTimes(2);
   });
 
   it("爆款冷拉取独立显示，不把空列表冒充最终空态", () => {
@@ -223,6 +297,7 @@ describe("V1.4 内容与运营页面", () => {
       kind: "audio",
     });
     const value = studio({
+      review: false,
       state: {
         ...studio().state,
         page: "viral-detail",
@@ -250,7 +325,7 @@ describe("V1.4 内容与运营页面", () => {
     await waitFor(() => {
       expect(value.patchDraft).toHaveBeenCalledWith({
         projectId: "viral-project-2",
-        sourceId: "viral-project-2",
+        sourceId: "viral-audio-2",
         sourceAssetId: "viral-audio-2",
       });
     });
@@ -264,6 +339,7 @@ describe("V1.4 内容与运营页面", () => {
   it("爆款备料失败时保持详情页并展示错误", async () => {
     importViralVideoToProject.mockRejectedValue(new Error("素材暂时无法获取"));
     const value = studio({
+      review: false,
       state: {
         ...studio().state,
         page: "viral-detail",
@@ -280,6 +356,103 @@ describe("V1.4 内容与运营页面", () => {
     await waitFor(() => {
       expect(screen.getByText(/素材准备失败/)).toBeInTheDocument();
     });
+    expect(value.navigate).not.toHaveBeenCalled();
+  });
+
+  it("素材导入进行中重复点击只提交一次", () => {
+    importViralVideoToProject.mockReturnValue(new Promise(() => {}));
+    const base = studio();
+    const value = studio({
+      review: false,
+      state: {
+        ...base.state,
+        page: "viral-detail",
+        selectedVideoId: "dy-1",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralDetailPage />);
+
+    const button = screen.getByRole("button", { name: "视频复刻" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(importViralVideoToProject).toHaveBeenCalledOnce();
+  });
+
+  it("切换账号后忽略旧账号未完成的素材导入", async () => {
+    let resolveImport:
+      | ((value: { projectId: string; assetId: string; kind: "video" }) => void)
+      | undefined;
+    importViralVideoToProject.mockReturnValue(
+      new Promise((resolve) => {
+        resolveImport = resolve;
+      }),
+    );
+    const base = studio();
+    let value = studio({
+      review: false,
+      user: { id: "user-1" } as StudioContextValue["user"],
+      state: {
+        ...base.state,
+        page: "viral-detail",
+        selectedVideoId: "dy-1",
+      },
+    });
+    useStudio.mockImplementation(() => value);
+    const view = render(<ViralDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
+
+    value = {
+      ...value,
+      user: { id: "user-2" } as StudioContextValue["user"],
+    };
+    view.rerender(<ViralDetailPage />);
+    resolveImport?.({
+      projectId: "old-project",
+      assetId: "old-asset",
+      kind: "video",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(value.updateData).not.toHaveBeenCalled();
+    expect(value.patchDraft).not.toHaveBeenCalled();
+    expect(value.navigate).not.toHaveBeenCalled();
+  });
+
+  it("退出详情页后忽略迟到的素材导入响应", async () => {
+    let resolveImport:
+      | ((value: { projectId: string; assetId: string; kind: "audio" }) => void)
+      | undefined;
+    importViralVideoToProject.mockReturnValue(
+      new Promise((resolve) => {
+        resolveImport = resolve;
+      }),
+    );
+    const base = studio();
+    const value = studio({
+      review: false,
+      state: {
+        ...base.state,
+        page: "viral-detail",
+        selectedVideoId: "dy-1",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    const view = render(<ViralDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    view.unmount();
+    resolveImport?.({
+      projectId: "late-project",
+      assetId: "late-asset",
+      kind: "audio",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(value.updateData).not.toHaveBeenCalled();
+    expect(value.patchDraft).not.toHaveBeenCalled();
     expect(value.navigate).not.toHaveBeenCalled();
   });
 
@@ -700,6 +873,68 @@ describe("V1.4 内容与运营页面", () => {
     await waitFor(() =>
       expect(listViralVideos).toHaveBeenCalledWith("douyin", "latest"),
     );
+  });
+
+  it("排序切换后忽略先发后到的旧列表响应", async () => {
+    const resolvers = new Map<string, (value: unknown) => void>();
+    listViralVideos.mockImplementation(
+      (_platform: string, sort: string) =>
+        new Promise((resolve) => {
+          resolvers.set(sort, resolve);
+        }),
+    );
+    const base = studio();
+    const value = studio({
+      review: false,
+      data: { ...base.data, videos: [] },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralPage />);
+    fireEvent.change(screen.getByLabelText("排序方式"), {
+      target: { value: "最新" },
+    });
+    const item = {
+      platform: "douyin",
+      videoId: "latest-1",
+      category: "建房预算",
+      title: "最新视频",
+      author: "张工",
+      authorAvatar: null,
+      verified: false,
+      coverUrl: null,
+      durationMs: 30_000,
+      likes: 100,
+      comments: 10,
+      shares: 5,
+      collects: 8,
+      publishedAt: null,
+      publishedDisplay: null,
+      likeDisplay: null,
+      tags: [],
+      hasPlayableAudio: true,
+      playUrl: null,
+    };
+    resolvers.get("latest")?.({
+      platform: "douyin",
+      sort: "latest",
+      categories: [],
+      items: [item],
+      fetchedAt: null,
+    });
+    await waitFor(() => expect(value.updateData).toHaveBeenCalledOnce());
+    resolvers.get("hot")?.({
+      platform: "douyin",
+      sort: "hot",
+      categories: [],
+      items: [{ ...item, videoId: "stale-hot", title: "旧热榜" }],
+      fetchedAt: null,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(value.updateData).toHaveBeenCalledOnce();
+    const update = vi.mocked(value.updateData).mock.calls[0][0];
+    expect(update(value.data).videos[0]?.nativeId).toBe("latest-1");
   });
 
   it("非审核工作区不把示例三十条当作真实采集数据", async () => {

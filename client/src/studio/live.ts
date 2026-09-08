@@ -24,7 +24,6 @@ import {
   listProjects,
   listSimpleCharacterLibrary,
   listStudioSavedScripts,
-  listViralVideos,
   type OralTaskRecord,
   type Project,
   readAnalysisPayload,
@@ -423,29 +422,6 @@ export function studioVideoFromViral(item: ViralVideoItem): StudioVideo {
     hasPlayableAudio: item.hasPlayableAudio,
     playUrl: item.playUrl,
   };
-}
-
-/** 爆款视频（C4 重启）：两个平台各自聚合；数据源未配置或失败时保持
- * 空态，不打断工作台其余数据的加载（与统计指标同一容错口径）。 */
-export async function loadViralVideoData(): Promise<{
-  videos: StudioVideo[];
-  errors: string[];
-}> {
-  const results = await Promise.allSettled([
-    listViralVideos("douyin"),
-    listViralVideos("wechat_channels"),
-  ]);
-  const labels = ["抖音", "视频号"];
-  const videos: StudioVideo[] = [];
-  const errors: string[] = [];
-  results.forEach((result, index) => {
-    if (result.status === "fulfilled") {
-      videos.push(...result.value.items.map(studioVideoFromViral));
-    } else {
-      errors.push(`读取${labels[index]}爆款失败：${errorText(result.reason)}`);
-    }
-  });
-  return { videos, errors };
 }
 
 export async function loadStudioData(

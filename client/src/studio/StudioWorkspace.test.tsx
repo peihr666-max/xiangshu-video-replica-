@@ -13,7 +13,6 @@ import { createState } from "./state";
 
 const live = vi.hoisted(() => ({
   loadStudioData: vi.fn(),
-  loadViralVideoData: vi.fn(async () => ({ videos: [], errors: [] })),
   loadPersonAssets: vi.fn(),
   loadProjectDraft: vi.fn(),
   reloadTasks: vi.fn(async (): Promise<unknown[]> => []),
@@ -161,7 +160,6 @@ describe("V1.4 workspace integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     live.loadPersonAssets.mockResolvedValue({ assets: [], errors: [] });
-    live.loadViralVideoData.mockResolvedValue({ videos: [], errors: [] });
     window.history.replaceState(null, "", "/#studio/workbench");
   });
   it("renders the approved navigation order and keeps review data isolated", () => {
@@ -235,25 +233,79 @@ describe("V1.4 workspace integration", () => {
     expect(screen.queryByText(/示例审核/)).not.toBeInTheDocument();
   });
 
-  it("爆款冷拉取未完成时基础工作区已经可用", async () => {
+  it("父组件传入同账号的新对象时不重复加载基础数据", async () => {
     live.loadStudioData.mockResolvedValue({
       people: [],
       assets: [],
       videos: [],
       tasks: [],
       projects: [],
-      errors: [],
+      errors: [] as string[],
       loading: false,
       stats: null,
     });
-    live.loadViralVideoData.mockReturnValue(new Promise(() => {}));
+    const firstUser = { ...reviewUser };
+    const view = render(<StudioWorkspace currentUser={firstUser} />);
+    await waitFor(() => expect(live.loadStudioData).toHaveBeenCalledOnce());
 
-    render(<StudioWorkspace currentUser={reviewUser} />);
+    view.rerender(<StudioWorkspace currentUser={{ ...firstUser }} />);
+    await Promise.resolve();
 
-    expect(
-      await screen.findByText("提取文案进入文案工坊，开始复刻进入分镜工作区。"),
-    ).toBeInTheDocument();
-    expect(live.loadViralVideoData).toHaveBeenCalledOnce();
+    expect(live.loadStudioData).toHaveBeenCalledOnce();
+  });
+
+  it("账号切换立即清空旧数据并忽略旧账号迟到响应", async () => {
+    const oldData = {
+      ...createReviewData(),
+      videos: [
+        {
+          ...createReviewData().videos[0],
+          id: "old-video",
+          title: "旧账号私有爆款",
+        },
+      ],
+      loading: false,
+    };
+    const emptyResult = {
+      people: [],
+      assets: [],
+      videos: [],
+      tasks: [],
+      projects: [],
+      errors: [] as string[],
+      loading: false,
+      stats: null,
+    };
+    const resolvers = new Map<string, (value: typeof emptyResult) => void>();
+    live.loadStudioData.mockImplementation(
+      (user: { id: string }) =>
+        new Promise((resolve) => {
+          resolvers.set(user.id, resolve);
+        }),
+    );
+    const user1 = { ...reviewUser, id: "account-1" };
+    const user2 = { ...reviewUser, id: "account-2" };
+    const user3 = { ...reviewUser, id: "account-3" };
+    const view = render(<StudioWorkspace currentUser={user1} />);
+    resolvers.get("account-1")?.(oldData as typeof emptyResult);
+    expect(await screen.findByText("旧账号私有爆款")).toBeInTheDocument();
+
+    view.rerender(<StudioWorkspace currentUser={user2} />);
+    await waitFor(() =>
+      expect(screen.queryByText("旧账号私有爆款")).not.toBeInTheDocument(),
+    );
+    view.rerender(<StudioWorkspace currentUser={user3} />);
+    resolvers.get("account-2")?.({
+      ...emptyResult,
+      errors: ["旧账号迟到数据"],
+    });
+    resolvers.get("account-3")?.({
+      ...emptyResult,
+      errors: ["新账号数据"],
+    });
+
+    expect(await screen.findByText(/新账号数据/)).toBeInTheDocument();
+    expect(screen.queryByText(/旧账号迟到数据/)).toBeNull();
   });
 
   it("关闭已有项目工作区不会再次导入并覆盖当前草稿", async () => {

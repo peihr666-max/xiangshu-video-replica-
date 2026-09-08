@@ -38,7 +38,6 @@ import {
   loadProjectDraft,
   loadSavedScriptList,
   loadStudioData,
-  loadViralVideoData,
   persistCloudDraft,
   persistSavedScript,
   publishScriptVersion,
@@ -182,6 +181,15 @@ export function StudioWorkspace({
   const busyRef = useRef(false);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
+  const loadedUserIdRef = useRef(currentUser.id);
+  const loadUserRef = useRef(currentUser);
+  if (
+    loadUserRef.current.id !== currentUser.id ||
+    loadUserRef.current.role !== currentUser.role
+  ) {
+    loadUserRef.current = currentUser;
+  }
+  const loadUser = loadUserRef.current;
   const notify = useCallback((message: string) => setNotice(message), []);
 
   // ---- 云端草稿（C7）----
@@ -200,8 +208,9 @@ export function StudioWorkspace({
     }, DRAFT_AUTOSAVE_DELAY_MS);
   }, [review, notify]);
   // 挂载时恢复云端草稿与我的文案；失败静默（只读路径，不阻塞工作区）。
+  const cloudUser = loadUser;
   useEffect(() => {
-    if (review) return;
+    if (review || !cloudUser.id) return;
     let active = true;
     void loadCloudDraft()
       .then(async (restore) => {
@@ -220,7 +229,7 @@ export function StudioWorkspace({
       active = false;
       window.clearTimeout(draftSaveTimerRef.current);
     };
-  }, [review, notify]);
+  }, [review, cloudUser, notify]);
   // 自动保存始终跟随最新草稿：导入项目、任务快照回填等不经 patchDraft 的
   // 路径也在这里并入追踪。
   useEffect(() => {
@@ -284,30 +293,27 @@ export function StudioWorkspace({
     // The explicit refresh key intentionally reruns the same read-only requests.
     if (revision > 0) loadedPeopleRef.current.clear();
     let active = true;
-    setData((previous) => ({ ...previous, loading: true }));
-    void loadStudioData(currentUser)
+    if (loadedUserIdRef.current !== loadUser.id) {
+      loadedUserIdRef.current = loadUser.id;
+      loadedPeopleRef.current.clear();
+      const resetState = createState(routeFromHash(window.location.hash));
+      latestDraftRef.current = resetState.draft;
+      draftTouchedRef.current = false;
+      setState(resetState);
+      setData(emptyData);
+      setNotice("");
+      setPicker(undefined);
+      setLivePanel(undefined);
+      setLiveProject(undefined);
+      setHandoffBatch(null);
+      setGeneration(undefined);
+    } else {
+      setData((previous) => ({ ...previous, loading: true }));
+    }
+    void loadStudioData(loadUser)
       .then((result) => {
         if (!active) return;
         setData(result);
-        void loadViralVideoData()
-          .then((viral) => {
-            if (!active) return;
-            setData((previous) => ({
-              ...previous,
-              videos: viral.videos,
-              errors: [...previous.errors, ...viral.errors],
-            }));
-          })
-          .catch((cause: unknown) => {
-            if (!active) return;
-            setData((previous) => ({
-              ...previous,
-              errors: [
-                ...previous.errors,
-                customerVisibleErrorMessage(cause, "爆款视频暂不可用。"),
-              ],
-            }));
-          });
       })
       .catch((cause: unknown) => {
         if (active)
@@ -322,7 +328,7 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [review, currentUser, revision]);
+  }, [review, loadUser, revision]);
 
   // Silent tasks poll: the shell reads everything once on entry, so a batch
   // that finishes while the customer watches would otherwise stay "running"
@@ -333,7 +339,7 @@ export function StudioWorkspace({
     if (review) return;
     const timer = window.setInterval(() => {
       if (document.hidden || busyRef.current) return;
-      void reloadTasks(currentUser)
+      void reloadTasks(loadUser)
         .then((tasks) => {
           setData((previous) => ({ ...previous, tasks }));
         })
@@ -345,7 +351,7 @@ export function StudioWorkspace({
     return () => {
       window.clearInterval(timer);
     };
-  }, [review, currentUser]);
+  }, [review, loadUser]);
 
   const personToLoad = state.page.startsWith("person-")
     ? state.selectedPersonId

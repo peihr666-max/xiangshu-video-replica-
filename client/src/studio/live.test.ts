@@ -36,7 +36,6 @@ import {
   loadProjectDraft,
   loadStudioData,
   loadTaskPreview,
-  loadViralVideoData,
 } from "./live";
 import type { StudioTask } from "./types";
 
@@ -419,49 +418,6 @@ describe("真实 Studio 只读适配器", () => {
     expect(data.loading).toBe(false);
     expect(data.videos).toEqual([]);
     expect(api.listViralVideos).not.toHaveBeenCalled();
-  });
-
-  it("一个爆款平台失败时保留另一平台并上报错误", async () => {
-    api.listViralVideos.mockImplementation((platform: string) => {
-      if (platform === "wechat_channels") {
-        return Promise.reject(new Error("channels timeout"));
-      }
-      return Promise.resolve({
-        platform,
-        sort: "hot",
-        categories: ["建房预算"],
-        fetchedAt: "2026-09-06T10:00:00Z",
-        items: [
-          {
-            platform: "douyin",
-            videoId: "douyin-1",
-            category: "建房预算",
-            title: "预算拆解",
-            author: "张工",
-            authorAvatar: null,
-            verified: false,
-            coverUrl: null,
-            durationMs: 30_000,
-            likes: 100,
-            comments: 10,
-            shares: 5,
-            collects: 8,
-            publishedAt: null,
-            publishedDisplay: null,
-            likeDisplay: null,
-            tags: [],
-            hasPlayableAudio: true,
-            playUrl: null,
-          },
-        ],
-      });
-    });
-
-    const data = await loadViralVideoData();
-
-    expect(data.videos).toHaveLength(1);
-    expect(data.videos[0]?.nativeId).toBe("douyin-1");
-    expect(data.errors).toContain("读取视频号爆款失败：channels timeout");
   });
 
   it("部分成功且仍需处理的批次不会冒充已完成", async () => {

@@ -5,6 +5,7 @@ import {
   fetchViralVideoStatistics,
   importViralVideoToProject,
   listViralVideos,
+  type Project,
   type ViralVideoItem,
 } from "../api";
 import { useStudio } from "./context";
@@ -133,8 +134,13 @@ function updateViralStatistics(
 }
 
 function useViralStatistics(videos: StudioVideo[], enabled: boolean) {
-  const { updateData } = useStudio();
+  const { updateData, user } = useStudio();
   const attemptedIds = useRef(new Set<string>());
+  const attemptedUserIdRef = useRef(user.id);
+  if (attemptedUserIdRef.current !== user.id) {
+    attemptedUserIdRef.current = user.id;
+    attemptedIds.current.clear();
+  }
   const [error, setError] = useState<string>();
   const pendingIds = videos
     .filter(
@@ -357,7 +363,8 @@ function ViralCard({
   active: boolean;
   onActivate: () => void;
 }) {
-  const { state, navigate, patchDraft, patchState } = useStudio();
+  const { state, navigate, patchDraft, patchState, review, notify } =
+    useStudio();
   const { media, prepare } = useViralMedia();
   const playerRef = useRef<HTMLVideoElement | null>(null);
   const { playback, play, retry, markFailed, activate } = useViralPlayback(
@@ -418,19 +425,28 @@ function ViralCard({
             variant="outline"
             aria-label={`复刻 ${video.title}`}
             disabled={media.status === "loading"}
-            onClick={() =>
-              prepare(video, "video", ({ projectId, assetId }) => {
+            onClick={() => {
+              if (review) {
+                patchDraft({ sourceId: video.id });
+                navigate("replica", {
+                  selectedVideoId: video.id,
+                  returnTo: "viral",
+                });
+                notify("当前为示例审核，仅演示页面跳转，不会导入真实素材。");
+                return;
+              }
+              void prepare(video, "video", ({ projectId, assetId }) => {
                 patchDraft({
                   projectId,
-                  sourceId: projectId,
+                  sourceId: assetId,
                   sourceAssetId: assetId,
                 });
                 navigate("replica", {
                   selectedVideoId: video.id,
                   returnTo: "viral",
                 });
-              })
-            }
+              });
+            }}
           >
             {media.status === "loading" ? "导入中…" : "复刻"}
           </Button>
@@ -446,7 +462,7 @@ function ViralCard({
 }
 
 export function ViralPage() {
-  const { data, review, updateData } = useStudio();
+  const { data, review, updateData, user } = useStudio();
   const [platform, setPlatform] = useState<"抖音" | "视频号">("抖音");
   const [category, setCategory] = useState("全部");
   const [query, setQuery] = useState("");
@@ -455,6 +471,7 @@ export function ViralPage() {
   const [activeVideoId, setActiveVideoId] = useState<string>();
   const [listError, setListError] = useState<string>();
   const [listLoading, setListLoading] = useState(!review);
+  const listRequestRef = useRef<object | undefined>(undefined);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   const shown = useMemo(
@@ -507,12 +524,14 @@ export function ViralPage() {
     if (review) return;
     const platformKey = platform === "抖音" ? "douyin" : "wechat_channels";
     const sortKey = sort === "最新" ? "latest" : "hot";
-    let cancelled = false;
+    const requestKey = { userId: user.id, platformKey, sortKey };
+    listRequestRef.current = requestKey;
+    const isCurrent = () => requestKey === listRequestRef.current;
     setListError(undefined);
     setListLoading(true);
     void listViralVideos(platformKey, sortKey)
       .then((result) => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         const incoming = result.items.map(studioVideoFromViral);
         updateData((currentData) => ({
           ...currentData,
@@ -525,15 +544,15 @@ export function ViralPage() {
         }));
       })
       .catch(() => {
-        if (!cancelled) setListError("视频列表暂时无法更新，已保留当前内容");
+        if (isCurrent()) setListError("视频列表暂时无法更新，已保留当前内容");
       })
       .finally(() => {
-        if (!cancelled) setListLoading(false);
+        if (isCurrent()) setListLoading(false);
       });
     return () => {
-      cancelled = true;
+      if (isCurrent()) listRequestRef.current = undefined;
     };
-  }, [platform, review, sort, updateData]);
+  }, [platform, review, sort, updateData, user.id]);
   const platformTabs = (["抖音", "视频号"] as const).map((item) => ({
     id: item,
     label: `${item} ${
@@ -653,12 +672,34 @@ export function ViralPage() {
 type ViralMediaState = {
   status: "idle" | "loading" | "ready" | "error";
   message?: string;
+  userId?: string;
 };
 
 function useViralMedia() {
+  const { updateData, user } = useStudio();
   const [media, setMedia] = useState<ViralMediaState>({ status: "idle" });
+  const mountedRef = useRef(true);
+  const loadingRef = useRef(false);
+  const requestRef = useRef(0);
+  const activeUserIdRef = useRef(user.id);
+  const userId = user.id;
+  if (activeUserIdRef.current !== userId) {
+    activeUserIdRef.current = userId;
+    loadingRef.current = false;
+    requestRef.current += 1;
+  }
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadingRef.current = false;
+      requestRef.current += 1;
+    };
+  }, []);
+  const currentMedia: ViralMediaState =
+    media.userId === userId ? media : { status: "idle", userId };
   return {
-    media,
+    media: currentMedia,
     prepare: async (
       video: StudioVideo,
       kind: "audio" | "video",
@@ -668,28 +709,74 @@ function useViralMedia() {
         kind: "audio" | "video";
       }) => void,
     ) => {
+      if (loadingRef.current) return;
       if (!video.platformKey || !video.nativeId) {
-        setMedia({ status: "error", message: "来源视频缺少平台标识" });
+        setMedia({
+          status: "error",
+          message: "来源视频缺少平台标识",
+          userId,
+        });
         return;
       }
-      setMedia({ status: "loading" });
+      loadingRef.current = true;
+      const requestId = ++requestRef.current;
+      const isCurrent = () =>
+        mountedRef.current &&
+        requestId === requestRef.current &&
+        activeUserIdRef.current === userId;
+      setMedia({ status: "loading", userId });
       try {
         const result = await importViralVideoToProject(
           video.platformKey,
           video.nativeId,
           kind,
         );
+        if (!isCurrent()) return;
+        const asset: StudioAsset = {
+          id: result.assetId,
+          name: `${video.title} · 来源${result.kind === "audio" ? "音频" : "视频"}`,
+          kind: result.kind,
+          group: video.title,
+          source: "爆款视频导入",
+          saved: true,
+        };
+        updateData((data) => ({
+          ...data,
+          projects: data.projects.some((item) => item.id === result.projectId)
+            ? data.projects
+            : [
+                {
+                  id: result.projectId,
+                  owner_user_id: user.id,
+                  name: video.title,
+                  status: "ACTIVE",
+                  reference_asset_id: result.assetId,
+                  reference_upload_status: "READY",
+                  analysis_status: "NOT_READY",
+                } satisfies Project,
+                ...data.projects,
+              ],
+          assets: [
+            asset,
+            ...data.assets.filter((item) => item.id !== asset.id),
+          ],
+        }));
         setMedia({
           status: "ready",
           message:
             result.kind === "audio" ? "原声音频已就绪" : "低清视频已就绪",
+          userId,
         });
         onReady(result);
       } catch (error) {
+        if (!isCurrent()) return;
         setMedia({
           status: "error",
           message: error instanceof Error ? error.message : "素材准备失败",
+          userId,
         });
+      } finally {
+        if (isCurrent()) loadingRef.current = false;
       }
     },
   };
@@ -736,7 +823,7 @@ export function ViralDetailPage() {
     projectId: string;
     assetId: string;
   }) => {
-    patchDraft({ projectId, sourceId: projectId, sourceAssetId: assetId });
+    patchDraft({ projectId, sourceId: assetId, sourceAssetId: assetId });
     navigate("copy", {
       selectedVideoId: video.id,
       returnTo: "viral-detail",
@@ -749,7 +836,7 @@ export function ViralDetailPage() {
     projectId: string;
     assetId: string;
   }) => {
-    patchDraft({ projectId, sourceId: projectId, sourceAssetId: assetId });
+    patchDraft({ projectId, sourceId: assetId, sourceAssetId: assetId });
     navigate("replica", {
       selectedVideoId: video.id,
       returnTo: "viral-detail",
@@ -863,7 +950,17 @@ export function ViralDetailPage() {
               <Button
                 disabled={media.status === "loading"}
                 variant="outline"
-                onClick={() => prepare(video, "audio", goExtract)}
+                onClick={() => {
+                  if (review) {
+                    patchDraft({ sourceId: video.id });
+                    navigate("copy", {
+                      selectedVideoId: video.id,
+                      returnTo: "viral-detail",
+                    });
+                    return;
+                  }
+                  void prepare(video, "audio", goExtract);
+                }}
               >
                 提取文案
               </Button>
@@ -872,7 +969,17 @@ export function ViralDetailPage() {
               <Button
                 disabled={media.status === "loading"}
                 variant="outline"
-                onClick={() => prepare(video, "video", goReplica)}
+                onClick={() => {
+                  if (review) {
+                    patchDraft({ sourceId: video.id });
+                    navigate("replica", {
+                      selectedVideoId: video.id,
+                      returnTo: "viral-detail",
+                    });
+                    return;
+                  }
+                  void prepare(video, "video", goReplica);
+                }}
               >
                 视频复刻
               </Button>
