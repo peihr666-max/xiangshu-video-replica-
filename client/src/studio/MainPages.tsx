@@ -666,7 +666,7 @@ export function TasksPage() {
                 </td>
                 <td>{formatTaskTime(task.submitted)}</td>
                 <td>
-                  {task.status === "queued" ? (
+                  {task.status === "queued" && task.cancelAllowed !== false ? (
                     <Button
                       variant="quiet"
                       disabled={cancellingId === task.id}

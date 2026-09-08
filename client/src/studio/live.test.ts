@@ -4,6 +4,7 @@ import type {
   GenerationBatch,
   GenerationBatchListPage,
   GenerationTask,
+  OralTaskRecord,
   Project,
   SimpleLibraryEntry,
   SimpleSceneLook,
@@ -20,7 +21,7 @@ const api = vi.hoisted(() => ({
   getLatestScriptVersion: vi.fn(),
   listCharacterSceneLooks: vi.fn(),
   listGenerationBatches: vi.fn(),
-  listOralTasks: vi.fn(async () => []),
+  listOralTasks: vi.fn(async (): Promise<OralTaskRecord[]> => []),
   listViralVideos: vi.fn(),
   listProjects: vi.fn(),
   listSimpleCharacterLibrary: vi.fn(),
@@ -648,5 +649,73 @@ describe("批次类型映射与取消", () => {
       submitted: "2026-09-06T09:32:00",
     });
     expect(api.cancelGenerationBatch).toHaveBeenCalledWith("batch-1");
+  });
+
+  it("口播排队任务明确不可取消且提交不确定映射为待确认", async () => {
+    api.listGenerationBatches.mockResolvedValue({ ...batchPage, items: [] });
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-queued",
+        status: "QUEUED",
+        title: "排队口播",
+        mode: "TTS",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: "voice-1",
+        script_text: "建房预算讲解",
+        audio_asset_id: null,
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        created_at: "2026-09-06T09:32:00",
+        updated_at: "2026-09-06T09:32:00",
+      },
+      {
+        id: "oral-uncertain",
+        status: "SUBMISSION_UNCERTAIN",
+        title: "待核对口播",
+        mode: "AUDIO",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: null,
+        script_text: null,
+        audio_asset_id: "audio-1",
+        status_message: "供应商提交结果待核对",
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        created_at: "2026-09-06T09:33:00",
+        updated_at: "2026-09-06T09:33:00",
+      },
+    ]);
+
+    const data = await loadStudioData(user);
+
+    expect(data.tasks).toEqual([
+      expect.objectContaining({
+        id: "oral-oral-queued",
+        status: "queued",
+        cancelAllowed: false,
+      }),
+      expect.objectContaining({
+        id: "oral-oral-uncertain",
+        status: "uncertain",
+        cancelAllowed: false,
+      }),
+    ]);
+  });
+
+  it("口播任务即使误触取消适配器也不会调用批次取消接口", async () => {
+    await expect(
+      cancelStudioTask({
+        id: "oral-1",
+        title: "排队口播",
+        type: "数字人口播",
+        status: "queued",
+        cancelAllowed: false,
+        submitted: "2026-09-06T09:32:00",
+      }),
+    ).rejects.toThrow("当前任务不支持取消");
+    expect(api.cancelGenerationBatch).not.toHaveBeenCalled();
   });
 });

@@ -306,13 +306,15 @@ const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
 };
 
 function studioTask(batch: GenerationBatchListItem): StudioTask {
+  const status = studioTaskStatus(batch);
   return {
     id: batch.id,
     batchId: batch.id,
     projectId: batch.project_id,
     title: batch.display_name?.trim() || batch.project_name || batch.id,
     type: CREATION_KIND_LABELS[batch.creation_kind] ?? "视频生成",
-    status: studioTaskStatus(batch),
+    status,
+    cancelAllowed: status === "queued",
     progress: batch.progress.progress_percent,
     submitted: batch.created_at,
     resultId:
@@ -324,7 +326,10 @@ function studioTask(batch: GenerationBatchListItem): StudioTask {
 /** 任务中心"取消任务"：仅服务端判定为仍可取消（全部任务未认领）的
  * 排队批次会成功，其余状态返回明确错误由调用方提示。 */
 export async function cancelStudioTask(task: StudioTask): Promise<void> {
-  await cancelGenerationBatch(task.batchId || task.id);
+  if (task.cancelAllowed === false || !task.batchId) {
+    throw new Error("当前任务不支持取消。");
+  }
+  await cancelGenerationBatch(task.batchId);
 }
 
 async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {
@@ -368,6 +373,7 @@ function oralTask(row: OralTaskRecord): StudioTask {
     SUCCEEDED: "completed",
     FAILED: "failed",
     CANCELLED: "cancelled",
+    SUBMISSION_UNCERTAIN: "uncertain",
   };
   return {
     id: `oral-${row.id}`,
@@ -375,6 +381,7 @@ function oralTask(row: OralTaskRecord): StudioTask {
     title: row.title,
     type: "数字人口播",
     status: statusMap[row.status] ?? "running",
+    cancelAllowed: false,
     submitted: row.created_at,
     resultId: row.result_asset_id ?? undefined,
     driverMode: row.mode === "AUDIO" ? "audio" : "text",

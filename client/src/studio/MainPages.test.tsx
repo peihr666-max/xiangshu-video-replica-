@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createState } from "./state";
 import type {
@@ -651,6 +657,53 @@ describe("V1.4 任务中心列表", () => {
       screen.getByRole("button", { name: "查看结果" }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "查看详情" })).toHaveLength(2);
+  });
+
+  it("口播排队行不提供无效取消入口", () => {
+    const oralQueued: StudioTask = {
+      ...queuedTask,
+      id: "oral-1",
+      batchId: undefined,
+      title: "排队口播",
+      type: "数字人口播",
+      cancelAllowed: false,
+    };
+    useStudio.mockReturnValue(
+      tasksPage({ data: data([queuedTask, oralQueued]) }),
+    );
+    render(<TasksPage />);
+
+    const oralRow = screen.getByText("排队口播").closest("tr");
+    expect(oralRow).not.toBeNull();
+    expect(
+      within(oralRow as HTMLTableRowElement).queryByRole("button", {
+        name: "取消任务",
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "取消任务" })).toHaveLength(1);
+  });
+
+  it("口播提交结果待确认归入待处理并显示独立状态文案", () => {
+    const uncertainOral: StudioTask = {
+      id: "oral-uncertain",
+      title: "待核对口播",
+      type: "数字人口播",
+      status: "uncertain",
+      cancelAllowed: false,
+      submitted: "2026-09-06T09:32:00",
+    };
+    useStudio.mockReturnValue(tasksPage({ data: data([uncertainOral]) }));
+    render(<TasksPage />);
+
+    expect(screen.getByRole("tab", { name: "进行中 0" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "待处理 1" })).toBeInTheDocument();
+    expect(
+      screen.getByText("状态待确认", { selector: "span" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("状态待确认", { selector: "small" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("生成中")).not.toBeInTheDocument();
   });
 
   it("类型筛选收进单行下拉，菜单项计数与状态筛选联动", () => {

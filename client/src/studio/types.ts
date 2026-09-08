@@ -108,6 +108,7 @@ export type StudioTask = {
   poster?: string;
   resultId?: string;
   batchId?: string;
+  cancelAllowed?: boolean;
   projectId?: string;
   driverMode?: "text" | "audio";
   ipId?: string;

@@ -877,7 +877,13 @@ export async function createOralTask(
 
 export type OralTaskRecord = {
   id: string;
-  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  status:
+    | "QUEUED"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "CANCELLED"
+    | "SUBMISSION_UNCERTAIN";
   title: string;
   mode: "TTS" | "AUDIO";
   identity_id: string;
