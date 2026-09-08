@@ -5164,7 +5164,7 @@ button.regenerate-button {
   list-style: none;
 }
 
-/* 单张五视角拼合图（灯箱内）：宽幅大图 + 底部操作条 */
+/* 单张五视图拼合图（灯箱内）：宽幅大图 + 底部操作条 */
 .character-contact-sheet {
   display: grid;
   gap: 10px;
@@ -7261,26 +7261,26 @@ button.activation-generator__submit {
   --admin-text: #ece8df;
   --admin-muted: #a49e95;
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
-  grid-template-rows: 64px minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-rows: 70px minmax(0, 1fr);
   min-height: 100dvh;
   padding: 0;
   overflow: clip;
   color: var(--admin-text);
   background: var(--admin-canvas);
   font-family:
-    Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui,
-    sans-serif;
+    "Avenir Next", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 }
 
 .admin-shell--control .admin-header--workspace {
   grid-column: 2;
   grid-row: 1;
   min-width: 0;
-  min-height: 64px;
+  min-height: 70px;
+  align-items: center;
   margin: 0;
   border-bottom: 1px solid var(--admin-line-soft);
-  padding: 0 34px;
+  padding: 0 20px;
   background: rgba(19, 19, 19, 0.96);
 }
 
@@ -7294,7 +7294,7 @@ button.activation-generator__submit {
 .admin-breadcrumb {
   overflow: hidden;
   color: #a49f97;
-  font-size: 12px;
+  font-size: 16px;
   letter-spacing: 0.03em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7309,7 +7309,7 @@ button.activation-generator__submit {
 
 .admin-shell--control .admin-session time {
   color: #77736d;
-  font-size: 11px;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -7324,7 +7324,7 @@ button.activation-generator__submit {
 
 .admin-session__identity span:last-child {
   color: #77736d;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .admin-shell--control .admin-session button,
@@ -7338,7 +7338,7 @@ button.activation-generator__submit {
 .admin-shell--control .admin-session button {
   margin-left: 0;
   padding: 7px 11px;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .admin-stage {
@@ -7366,20 +7366,22 @@ button.activation-generator__submit {
 }
 
 .admin-sidebar__top {
-  padding: 0 18px 14px;
+  flex-direction: column;
+  padding: 0 20px 14px;
 }
 
 .admin-brand {
   display: flex;
-  min-height: 70px;
+  width: 100%;
+  min-height: 128px;
   align-items: center;
   gap: 11px;
   border-bottom: 1px solid var(--admin-line-soft);
 }
 
 .admin-brand img {
-  width: 31px;
-  height: 31px;
+  width: 42px;
+  height: 42px;
   object-fit: contain;
 }
 
@@ -7390,63 +7392,92 @@ button.activation-generator__submit {
 
 .admin-brand strong {
   color: var(--admin-gold-bright);
-  font-family: Georgia, "Songti SC", serif;
-  font-size: 15px;
+  font-family: inherit;
+  font-size: 23px;
   font-weight: 600;
   letter-spacing: 0.04em;
 }
 
 .admin-brand span {
-  color: #5f5b55;
-  font-size: 8px;
+  color: var(--admin-gold);
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.02em;
 }
 
 .admin-sidebar__context {
-  display: none;
+  display: grid;
+  gap: 9px;
+  padding: 16px 8px 4px;
+}
+
+.admin-sidebar__context h2 {
+  color: var(--admin-gold-bright);
+  font-size: 22px;
+  margin: 0;
+}
+
+.admin-sidebar__context p {
+  margin: 0;
 }
 
 .admin-nav-groups {
   display: grid;
   flex: 1;
   align-content: start;
-  gap: 20px;
+  gap: 18px;
   overflow-y: auto;
-  padding: 12px 14px 24px;
+  padding: 12px 20px 22px;
   scrollbar-width: thin;
 }
 
 .admin-nav-group h3 {
   margin: 0 0 7px 9px;
-  color: #5d5953;
-  font-size: 9px;
+  color: var(--admin-gold);
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.03em;
 }
 
 .admin-nav-group__items {
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .admin-shell--control button.admin-tab {
   display: flex;
   width: 100%;
-  min-height: 39px;
+  min-height: 64px;
   align-items: center;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 0 12px;
+  border: 1px solid var(--admin-line-soft);
+  border-radius: 10px;
+  padding: 10px 14px;
+  gap: 14px;
   color: #8f8a82;
   background: transparent;
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 520;
   text-align: left;
 }
 
 .admin-shell--control button.admin-tab small {
-  display: none;
+  display: block;
+  color: var(--admin-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.admin-navigation-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.admin-navigation-icon {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  filter: invert(72%) sepia(16%) saturate(560%) hue-rotate(2deg) brightness(94%);
 }
 
 .admin-shell--control button.admin-tab:not(:disabled):hover {
@@ -7465,27 +7496,27 @@ button.activation-generator__submit {
 .admin-sidebar__footer {
   display: grid;
   gap: 3px;
-  margin: auto 14px 14px;
+  margin: auto 20px 24px;
   border-top: 1px solid var(--admin-line-soft);
   padding: 14px 10px 2px;
   color: #b0aaa0;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .admin-sidebar__footer small {
   color: #66625c;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .admin-workspace {
-  display: grid;
+  display: block;
   grid-column: 2;
   grid-row: 2;
   gap: 0;
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 19px 34px 42px;
+  padding: 0 16px 32px;
   background:
     radial-gradient(
       circle at 72% 0%,
@@ -7496,14 +7527,19 @@ button.activation-generator__submit {
 }
 
 .admin-page-heading {
-  display: grid;
-  gap: 5px;
-  margin-bottom: 15px;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .admin-page-heading > span {
   color: var(--admin-gold);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.15em;
 }
@@ -7521,7 +7557,7 @@ button.activation-generator__submit {
 .admin-page-header p {
   margin: 0;
   color: var(--admin-muted);
-  font-size: 12px;
+  font-size: 16px;
   line-height: 1.6;
 }
 
@@ -7538,13 +7574,13 @@ button.activation-generator__submit {
 }
 
 .admin-toolbar {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(150px, 190px) auto auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: end;
   gap: 9px;
   border: 1px solid var(--admin-line-soft);
   border-radius: 7px;
-  padding: 10px;
+  padding: 18px;
   background: #161615;
   box-shadow: none;
 }
@@ -7552,10 +7588,19 @@ button.activation-generator__submit {
 .admin-toolbar__field {
   display: grid;
   gap: 5px;
-  color: #7f7b74;
-  font-size: 9px;
+  color: #b6afa5;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
+}
+
+.admin-toolbar > label {
+  flex: 1 1 130px;
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  color: #b6afa5;
+  font-size: 12px;
 }
 
 .admin-toolbar input,
@@ -7568,7 +7613,7 @@ button.activation-generator__submit {
   color: #d8d2c8;
   outline: none;
   background: #111110;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .admin-toolbar button {
@@ -7577,7 +7622,7 @@ button.activation-generator__submit {
   padding: 0 15px;
   color: #18140c;
   background: var(--admin-gold);
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 700;
 }
 
@@ -7642,7 +7687,7 @@ button.activation-generator__submit {
   width: 100%;
   border-collapse: collapse;
   color: #c9c2b8;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .admin-data-table {
@@ -7661,9 +7706,9 @@ button.activation-generator__submit {
 
 .admin-data-table th,
 .admin-shell--control .internal-table th {
-  color: #807a72;
-  background: #121211;
-  font-size: 9px;
+  color: #b6afa5;
+  background: #242321;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.08em;
   white-space: nowrap;
@@ -7683,9 +7728,9 @@ button.activation-generator__submit {
 }
 
 .admin-data-table code {
-  color: #938d84;
+  color: #c9c2b8;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .admin-data-table .status-badge {
@@ -7693,11 +7738,12 @@ button.activation-generator__submit {
   align-items: center;
   min-height: 22px;
   border: 1px solid rgba(92, 151, 112, 0.28);
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 0 8px;
   color: #92bd9e;
   background: rgba(54, 103, 69, 0.12);
-  font-size: 9px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .admin-data-table .status-suspended,
@@ -7721,7 +7767,7 @@ button.activation-generator__submit {
   padding: 7px 10px;
   color: #d9bd82;
   background: rgba(198, 164, 95, 0.08);
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .admin-data-table button:not(:disabled):hover,
@@ -7924,6 +7970,144 @@ button.activation-generator__submit {
 
 .admin-shell--control .admin-panel {
   gap: 16px;
+  border-radius: 12px;
+  padding: 22px;
+  background: #1d1d1b;
+  box-shadow: none;
+}
+
+.admin-shell--control .admin-form {
+  border-radius: 10px;
+  background: #22211f;
+}
+
+.admin-shell--control .admin-filter-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+  align-items: end;
+}
+
+.admin-orders-page > .admin-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.admin-orders-page > .admin-metrics > span {
+  display: grid;
+  gap: 12px;
+  min-height: 112px;
+  padding: 20px;
+  background: #181816;
+  border-radius: 10px;
+}
+
+.admin-orders-page .admin-metrics small {
+  color: #b6afa5;
+  font-size: 14px;
+}
+
+.admin-orders-page .admin-metrics strong {
+  color: var(--admin-gold-bright);
+  font-size: 30px;
+  font-weight: 600;
+}
+
+.admin-shell--control .admin-actions > button {
+  background: transparent;
+  color: var(--admin-gold-bright);
+  border: 1px solid var(--admin-line);
+}
+
+.customers-page > .admin-table-card .admin-data-table td {
+  padding: 18px 10px;
+  font-size: 12px;
+}
+
+.admin-devices-sessions-layout > .devices-page {
+  min-width: 0;
+  border: 1px solid var(--admin-line-soft);
+  border-radius: 12px;
+  padding: 20px;
+  background: #1b1b19;
+  align-content: start;
+}
+
+.admin-devices-sessions-layout .devices-page .admin-page-header p {
+  display: none;
+}
+
+.admin-devices-sessions-layout .admin-data-table {
+  min-width: 0;
+  table-layout: fixed;
+  width: 100%;
+  height: auto;
+}
+
+.admin-devices-sessions-layout .admin-data-table td {
+  padding: 17px 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.admin-devices-sessions-layout th {
+  padding: 12px 6px;
+  font-size: 12px;
+}
+.admin-devices-sessions-layout th:nth-child(1) {
+  width: 10%;
+}
+.admin-devices-sessions-layout th:nth-child(2) {
+  width: 15%;
+}
+.admin-devices-sessions-layout th:nth-child(3) {
+  width: 15%;
+}
+.admin-devices-sessions-layout th:nth-child(4) {
+  width: 5%;
+}
+.admin-devices-sessions-layout th:nth-child(5) {
+  width: 9%;
+}
+.admin-devices-sessions-layout th:nth-child(6),
+.admin-devices-sessions-layout th:nth-child(7) {
+  width: 12%;
+}
+.admin-devices-sessions-layout th:nth-child(8) {
+  width: 8%;
+}
+.admin-devices-sessions-layout th:nth-child(9) {
+  width: 14%;
+}
+.admin-devices-sessions-layout .admin-data-table td:nth-child(2),
+.admin-devices-sessions-layout .admin-data-table td:nth-child(3) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #dfb765;
+}
+.admin-devices-sessions-layout .admin-data-table .admin-actions button {
+  padding: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 1000px) {
+  .admin-shell--control .admin-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-orders-page > .admin-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.admin-shell--control .activation-management {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.admin-shell--control .activation-management .activation-device-page {
+  margin-top: 0;
 }
 
 .admin-workspace > .devices-page > .admin-page-header {
@@ -7987,13 +8171,9 @@ button.activation-generator__submit {
 
 @media (min-width: 761px) {
   .admin-toolbar__field > span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    clip-path: inset(50%);
-    white-space: nowrap;
+    position: static;
+    width: auto;
+    height: auto;
   }
 }
 
@@ -8367,8 +8547,7 @@ button.activation-generator__submit {
   }
 }
 
-/* ==========================================================================
-   Admin shared components (2026-09-02 admin-console remediation)
+/* ===================================================================   Admin shared components (2026-09-02 admin-console remediation)
    ConfirmDialog / StatusBadge tones / PlatformBadge / DataTable sticky head
    ========================================================================== */
 
@@ -8475,6 +8654,285 @@ button.activation-generator__submit {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* v4 导航合并：合并式页面的页签行 */
+.admin-page-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--admin-line, #2e2c29);
+  margin-bottom: 18px;
+}
+
+.admin-page-tabs__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.admin-shell--control .admin-page-tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--admin-muted, #a49e95);
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 18px 24px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.admin-shell--control .admin-page-tab:not(:disabled):hover {
+  color: var(--admin-text, #ece8df);
+  background: transparent;
+}
+
+.admin-shell--control .admin-page-tab.is-active {
+  border-bottom-color: var(--admin-gold, #c6a45f);
+  color: var(--admin-gold-bright, #e0c17c);
+}
+
+.admin-page-tabs__actions {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.admin-devices-sessions-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(330px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.admin-placeholder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+}
+
+@media (max-width: 1280px) {
+  .admin-devices-sessions-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* W15 — 总览仪表盘 */
+.dashboard-page {
+  display: grid;
+  gap: 18px;
+}
+
+.dashboard-trend {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  min-height: 160px;
+}
+
+.dashboard-trend__col {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  align-items: end;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.dashboard-trend__bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  height: 120px;
+}
+
+.dashboard-trend__bar {
+  width: 12px;
+  border-radius: 4px 4px 0 0;
+  min-height: 2px;
+}
+
+.dashboard-trend__bar--ok {
+  background: linear-gradient(180deg, #91deb4, #4e8a68);
+}
+
+.dashboard-trend__bar--bad {
+  background: linear-gradient(180deg, #e0a0a0, #8a4e4e);
+}
+
+.dashboard-trend__col > span {
+  color: var(--admin-muted, #a49e95);
+  font-size: 11px;
+  text-align: center;
+}
+
+.dashboard-todos {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-todos li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--admin-line-soft, #242321);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 14px;
+}
+
+.dashboard-todos li > span:first-child {
+  flex: 1;
+}
+
+.dashboard-todos li button {
+  border: 1px solid var(--admin-line, #2e2c29);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--admin-gold-bright, #e0c17c);
+  cursor: pointer;
+  padding: 4px 10px;
+}
+
+.dashboard-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.dashboard-quick-actions button {
+  border: 1px solid var(--admin-line, #2e2c29);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--admin-text, #ece8df);
+  cursor: pointer;
+  padding: 16px;
+}
+
+.dashboard-quick-actions button:hover {
+  border-color: var(--admin-gold, #c6a45f);
+  color: var(--admin-gold-bright, #e0c17c);
+}
+
+/* 费率页与原图保持紧凑行高，历史记录在同一屏可查。 */
+.admin-shell--control .rates-manager {
+  display: grid;
+  gap: 12px;
+}
+.admin-shell--control .rates-manager .admin-panel {
+  padding: 16px 20px;
+}
+.admin-shell--control .rates-manager .panel-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.admin-shell--control .rates-manager .admin-data-table th,
+.admin-shell--control .rates-manager .admin-data-table td {
+  padding: 9px 14px;
+  font-size: 14px;
+}
+.admin-shell--control .rates-manager .admin-data-table button {
+  padding: 3px 18px;
+  border: 1px solid #947539;
+  color: #e4b453;
+  background: transparent;
+  border-radius: 4px;
+}
+.admin-shell--control .rates-manager .rate-current-price {
+  color: #e4b453;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+.admin-shell--control .rates-manager .rates-manager__notice {
+  padding: 12px 18px;
+  background: #342914;
+  border-color: #715626;
+}
+.admin-shell--control .rates-manager__notice p {
+  margin: 0;
+  color: #e4b453;
+  font-size: 14px;
+}
+.admin-shell--control .admin-payment-settings {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.admin-shell--control .admin-payment-settings > .page-banner {
+  grid-column: 1 / -1;
+}
+.admin-shell--control .admin-payment-settings .admin-form {
+  align-content: start;
+  margin: 0;
+}
+.admin-shell--control .admin-generation-records {
+  padding-top: 0;
+  background: transparent;
+  border: 0;
+}
+.admin-shell--control .admin-generation-records .admin-page-tabs {
+  margin-bottom: 18px;
+}
+.admin-shell--control .pagination {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #39362f;
+  justify-content: flex-end;
+  color: #b8b2a8;
+}
+@media (max-width: 1000px) {
+  .admin-shell--control .admin-payment-settings {
+    grid-template-columns: 1fr;
+  }
+}
+
+.admin-shell--control .admin-button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #9b7b39;
+  color: #e0b75f;
+  border-radius: 6px;
+  padding: 9px 14px;
+  text-decoration: none;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.admin-shell--control .economics-kpis article span {
+  font-size: 14px;
+}
+.admin-shell--control .economics-kpis article strong {
+  font-size: 30px;
+}
+.admin-shell--control .cost-bars__stack {
+  width: min(38px, 80%);
+  margin-inline: auto;
+}
+.admin-shell--control .cost-bars__column {
+  font-size: 12px;
+}
+.profit-mini-chart svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.admin-shell--control .ledger-delta-negative {
+  color: #e77b69;
+}
+.admin-shell--control .ledger-delta-positive {
+  color: #9cbc80;
+}
+.admin-shell--control .pagination {
+  font-size: 13px;
 }
 
 /* ---------------------------------------------------------------------------

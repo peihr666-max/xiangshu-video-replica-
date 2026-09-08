@@ -19,14 +19,18 @@ vi.mock("./api", async (importOriginal) => {
     compileGenerationPrompt: vi.fn(),
     createGenerationBatch: vi.fn(),
     createScriptVersion: vi.fn(),
+    getGenerationPriceQuote: vi.fn(),
     getGenerationRuntimeLimits: vi.fn(),
     getLatestGenerationPrompt: vi.fn(),
     getLatestScriptRewriteTask: vi.fn(),
     getLatestScriptVersion: vi.fn(),
+    listSavedGenerationPrompts: vi.fn(),
     lockGenerationPrompt: vi.fn(),
     reviseGenerationPrompt: vi.fn(),
     rewriteProjectScript: vi.fn(),
     waitForScriptRewriteTask: vi.fn(),
+    applySavedGenerationPrompt: vi.fn(),
+    saveGenerationPrompt: vi.fn(),
   };
 });
 
@@ -64,11 +68,13 @@ function WorkspaceHost({
   currentUserId = props.currentUserId,
   durationSeconds = props.durationSeconds,
   firstFrameAssetId = props.firstFrameAssetId,
+  identityId,
   projectId = props.projectId,
 }: {
   currentUserId?: string;
   durationSeconds?: number;
   firstFrameAssetId?: string;
+  identityId?: string;
   projectId?: string;
 }) {
   const drafts = useGenerationDrafts({
@@ -77,6 +83,7 @@ function WorkspaceHost({
     durationSeconds,
     firstFrameAssetId,
     firstFrameSelectionVersionId: props.firstFrameSelectionVersionId,
+    identityId,
     originalScript: props.originalScript,
     projectId,
     readOnly: props.readOnly,
@@ -150,15 +157,18 @@ function promptVersion(status: "SAVED" | "LOCKED" | "USED" = "SAVED") {
       character_reference_selection_id: "reference-selection-1",
       template_version: "h3.prompt.v1",
       template_hash: "template-hash",
-      output_duration_seconds: 10,
+      output_duration_seconds: 15,
       resolution: "768P",
+      ratio: "adaptive",
     },
   };
 }
 
 describe("GenerationComposer", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // Reset queued mockImplementationOnce values as well as calls. A failed
+    // assertion must not leave the next recovery test consuming its response.
+    vi.resetAllMocks();
     window.localStorage.clear();
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: null,
@@ -176,12 +186,34 @@ describe("GenerationComposer", () => {
       max_quantity: 4,
       estimated_cost_per_task: null,
     });
+    vi.mocked(api.getGenerationPriceQuote).mockRejectedValue(
+      new Error("quote unavailable"),
+    );
+    vi.mocked(api.listSavedGenerationPrompts).mockResolvedValue([]);
+    vi.mocked(api.saveGenerationPrompt).mockRejectedValue(
+      new Error("library unavailable"),
+    );
+  });
+
+  it("shows a saved prompt library load failure instead of an empty library", async () => {
+    vi.mocked(api.listSavedGenerationPrompts).mockRejectedValue(
+      new Error("我的提示词暂时无法读取"),
+    );
+
+    render(<WorkspaceHost />);
+
+    expect(
+      await screen.findByText("我的提示词暂时无法读取"),
+    ).toBeInTheDocument();
   });
 
   it("AI 改写入队后立即释放页面 busy，并在后台完成后回填结果", async () => {
     const pendingTask: api.ScriptRewriteTask = {
       id: "rewrite-task-1",
       project_id: "project-1",
+      identity_id: null,
+      ip_profile_hash: null,
+      ip_profile_snapshot: null,
       status: "PENDING",
       attempt: 0,
       result: null,
@@ -238,10 +270,91 @@ describe("GenerationComposer", () => {
     expect(screen.getByRole("radio", { name: "自定义稿" })).toBeChecked();
   });
 
+  it("切换人物后不回填旧人物的异步改写结果", async () => {
+    const pendingTask: api.ScriptRewriteTask = {
+      id: "rewrite-person-a",
+      project_id: "project-1",
+      identity_id: "person-a",
+      ip_profile_hash: "profile-a",
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "设计师",
+        service_scope: "乡墅设计",
+        target_audience: "返乡建房家庭",
+        expression_style: "专业直白",
+        profile_version: 1,
+      },
+      status: "PENDING",
+      attempt: 0,
+      result: null,
+      error_code: null,
+      error_message: null,
+      retryable: false,
+      created_at: "2030-01-01T00:00:00Z",
+      updated_at: "2030-01-01T00:00:00Z",
+      started_at: null,
+      completed_at: null,
+    };
+    let resolveRewrite: ((task: api.ScriptRewriteTask) => void) | undefined;
+    vi.mocked(api.rewriteProjectScript).mockResolvedValue(pendingTask);
+    vi.mocked(api.waitForScriptRewriteTask).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRewrite = resolve;
+        }),
+    );
+    const view = render(<WorkspaceHost identityId="person-a" />);
+    await waitFor(() =>
+      expect(api.getLatestScriptRewriteTask).toHaveBeenCalledWith(
+        "project-1",
+        "person-a",
+      ),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "AI 改写" }));
+    await waitFor(() =>
+      expect(api.rewriteProjectScript).toHaveBeenCalledWith(
+        "project-1",
+        "原稿第一句。原稿第二句。",
+        "person-a",
+      ),
+    );
+    expect(
+      screen.getByText(/AI 改写正在后台执行（人物：张工）/),
+    ).toBeInTheDocument();
+
+    view.rerender(<WorkspaceHost identityId="person-b" />);
+    await waitFor(() =>
+      expect(api.getLatestScriptRewriteTask).toHaveBeenCalledWith(
+        "project-1",
+        "person-b",
+      ),
+    );
+    await act(async () => {
+      resolveRewrite?.({
+        ...pendingTask,
+        status: "SUCCEEDED",
+        result: {
+          rewritten_text: "张工的旧人物改写结果。",
+          provider: "deepseek",
+          model: "deepseek-chat",
+        },
+        completed_at: "2030-01-01T00:00:05Z",
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("口播稿内容")).not.toHaveValue(
+      "张工的旧人物改写结果。",
+    );
+  });
+
   it("重新进入项目时恢复仍在执行的 AI 改写任务", async () => {
     const pendingTask: api.ScriptRewriteTask = {
       id: "rewrite-task-recovered",
       project_id: "project-1",
+      identity_id: null,
+      ip_profile_hash: null,
+      ip_profile_snapshot: null,
       status: "RUNNING",
       attempt: 1,
       result: null,
@@ -271,6 +384,10 @@ describe("GenerationComposer", () => {
       expect(api.waitForScriptRewriteTask).toHaveBeenCalledWith(
         "rewrite-task-recovered",
       ),
+    );
+    expect(api.getLatestScriptRewriteTask).toHaveBeenCalledWith(
+      "project-1",
+      undefined,
     );
     await waitFor(() =>
       expect(screen.getByLabelText("口播稿内容")).toHaveValue(
@@ -338,7 +455,10 @@ describe("GenerationComposer", () => {
         ],
       },
     });
-    vi.mocked(api.compileGenerationPrompt).mockResolvedValue(promptVersion());
+    vi.mocked(api.compileGenerationPrompt).mockResolvedValue({
+      ...promptVersion(),
+      payload: { ...promptVersion().payload, ratio: "16:9" },
+    });
     vi.mocked(api.reviseGenerationPrompt).mockResolvedValue({
       ...promptVersion(),
       id: "prompt-2",
@@ -346,6 +466,7 @@ describe("GenerationComposer", () => {
       payload: {
         ...promptVersion().payload,
         prompt_text: "人工修订 Prompt",
+        ratio: "16:9",
       },
     });
     vi.mocked(api.lockGenerationPrompt).mockResolvedValue({
@@ -355,6 +476,7 @@ describe("GenerationComposer", () => {
       payload: {
         ...promptVersion("LOCKED").payload,
         prompt_text: "人工修订 Prompt",
+        ratio: "16:9",
       },
     });
     const batch = {
@@ -398,7 +520,18 @@ describe("GenerationComposer", () => {
     );
     expect(await screen.findByText("S01：自定义口播稿")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByLabelText("16:9"));
     fireEvent.click(screen.getByRole("button", { name: "编译视频生成提示词" }));
+    await waitFor(() =>
+      expect(api.compileGenerationPrompt).toHaveBeenCalledWith("project-1", {
+        script_version_id: "script-1",
+        shot_card_version_id: "shot-card-1",
+        first_frame_asset_id: "first-frame-1",
+        output_duration_seconds: 15,
+        resolution: "768P",
+        ratio: "16:9",
+      }),
+    );
     expect(
       await screen.findByDisplayValue("编译后的 Prompt"),
     ).toBeInTheDocument();
@@ -418,7 +551,9 @@ describe("GenerationComposer", () => {
       }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "锁定 Prompt" }));
+    const lockButton = screen.getByRole("button", { name: "锁定 Prompt" });
+    await waitFor(() => expect(lockButton).toBeEnabled());
+    fireEvent.click(lockButton);
     await waitFor(() =>
       expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
         "project-1",
@@ -429,7 +564,7 @@ describe("GenerationComposer", () => {
     const quantity = screen.getByLabelText("生成数量");
     fireEvent.change(quantity, { target: { value: "4" } });
     expect(screen.getByText("将创建 4 个付费生成任务")).toBeInTheDocument();
-    expect(screen.getByText("预计费用暂不可用")).toBeInTheDocument();
+    expect(screen.getByText("预计消耗 60 秒额度")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "创建 4 个生成任务" }));
 
     await waitFor(() =>
@@ -447,7 +582,7 @@ describe("GenerationComposer", () => {
     expect(props.onBatchCreated).toHaveBeenCalledWith(batch);
   });
 
-  it("rejects decimal and out-of-range quantities while allowing one and the maximum", async () => {
+  it("offers only the supported 1, 2, and 4 task quantities", async () => {
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: {
         ...baseVersion,
@@ -475,13 +610,11 @@ describe("GenerationComposer", () => {
     expect(button).toBeEnabled();
 
     const quantity = screen.getByLabelText("生成数量");
-    fireEvent.change(quantity, { target: { value: "1.5" } });
-    expect(screen.getByText("生成数量必须是整数")).toBeInTheDocument();
-    expect(button).toBeDisabled();
-
-    fireEvent.change(quantity, { target: { value: "5" } });
-    expect(screen.getByText("生成数量必须在 1–4 之间")).toBeInTheDocument();
-    expect(button).toBeDisabled();
+    expect(
+      Array.from((quantity as HTMLSelectElement).options).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["1", "2", "4"]);
 
     fireEvent.change(quantity, { target: { value: "4" } });
     expect(
@@ -517,7 +650,7 @@ describe("GenerationComposer", () => {
     expect(createButton).toBeEnabled();
 
     fireEvent.change(screen.getByLabelText("成片时长"), {
-      target: { value: "15" },
+      target: { value: "4" },
     });
 
     expect(createButton).toBeDisabled();
@@ -531,17 +664,74 @@ describe("GenerationComposer", () => {
 
     await screen.findByRole("button", { name: "创建 1 个生成任务" });
     // 拆解时长未就位时用钳制下限，不能固化 0 或 NaN（评审 Major 1）。
-    expect(screen.getByLabelText("成片时长")).toHaveValue(4);
+    expect(screen.getByLabelText("成片时长")).toHaveValue("4");
 
     rerender(<WorkspaceHost durationSeconds={12} />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText("成片时长")).toHaveValue(12),
+      expect(screen.getByLabelText("成片时长")).toHaveValue("15"),
     );
     // 默认 mock 无锁定 Prompt，创建按钮保持禁用属正常；确认面板加载完成即可。
     expect(
       await screen.findByRole("button", { name: "创建 1 个生成任务" }),
     ).toBeInTheDocument();
+  });
+
+  it("normalizes an old arbitrary prompt duration to the conservative 4-second option", async () => {
+    vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
+      version: {
+        ...promptVersion(),
+        payload: { ...promptVersion().payload, output_duration_seconds: 8 },
+      },
+      stale: false,
+      stale_reasons: [],
+    });
+
+    render(<WorkspaceHost />);
+
+    expect(await screen.findByLabelText("成片时长")).toHaveValue("4");
+    expect(
+      screen.getByText("生成参数已变化，请重新编译 Prompt"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/4–15 秒的整数/)).toBeNull();
+  });
+
+  it("clears a stale price quote as soon as generation parameters change", async () => {
+    let resolveQuote: ((quote: api.GenerationPriceQuote) => void) | undefined;
+    vi.mocked(api.getGenerationPriceQuote)
+      .mockResolvedValueOnce({
+        resolution: "768P",
+        duration_seconds: 15,
+        quantity: 1,
+        unit_price_fen_per_second: 9,
+        estimated_seconds: 15,
+        estimated_price_fen: 135,
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveQuote = resolve;
+        }),
+      );
+
+    render(<WorkspaceHost />);
+
+    expect(await screen.findByText(/约 ¥1\.35/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("成片时长"), {
+      target: { value: "4" },
+    });
+    expect(screen.queryByText(/约 ¥1\.35/)).toBeNull();
+    expect(screen.getByText("预计消耗 4 秒额度")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveQuote?.({
+        resolution: "768P",
+        duration_seconds: 4,
+        quantity: 1,
+        unit_price_fen_per_second: 9,
+        estimated_seconds: 4,
+        estimated_price_fen: 36,
+      });
+    });
   });
 
   it("keeps a legacy locked prompt without frozen parameters usable", async () => {
@@ -673,7 +863,7 @@ describe("GenerationComposer", () => {
       await Promise.resolve();
     });
 
-    expect(prompt).not.toHaveAttribute("readonly");
+    await waitFor(() => expect(prompt).not.toHaveAttribute("readonly"));
     expect(prompt).toHaveValue("等待保存的修订");
   });
 
@@ -825,7 +1015,9 @@ describe("GenerationComposer", () => {
       new Error("创建视频生成批次失败：网络连接失败，请检查本地服务"),
     );
     expect(await screen.findByText(/网络连接失败/)).toBeInTheDocument();
-    expect(props.onBusyChange).toHaveBeenLastCalledWith(false);
+    await waitFor(() =>
+      expect(props.onBusyChange).toHaveBeenLastCalledWith(false),
+    );
     fireEvent.click(screen.getByRole("button", { name: "创建 1 个生成任务" }));
     await waitFor(() =>
       expect(api.createGenerationBatch).toHaveBeenCalledTimes(2),

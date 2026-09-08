@@ -145,6 +145,11 @@ def route_state(chain_dsn: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str
 
     close_pg_pool()
     with psycopg.connect(_chain_dsn(), autocommit=True) as conn:
+        # TRUNCATE users CASCADE also clears its rate-configuration dependants.
+        # Keep the migrated defaults so this chain exercises real cost snapshots.
+        default_rates = conn.execute(
+            "SELECT subject, kind, unit, resolution, unit_price_fen FROM operation_cost_rates"
+        ).fetchall()
         conn.execute("SET session_replication_role = replica")
         conn.execute(
             "TRUNCATE customer_session_events, customer_session_state, "
@@ -159,6 +164,12 @@ def route_state(chain_dsn: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str
             "security_rate_limit_counters, security_auth_failures CASCADE"
         )
         conn.execute("SET session_replication_role = DEFAULT")
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO operation_cost_rates "
+                "(subject, kind, unit, resolution, unit_price_fen) VALUES (%s, %s, %s, %s, %s)",
+                default_rates,
+            )
         conn.execute(
             "INSERT INTO users (id, username, display_name, role) "
             "VALUES ('admin_u', 'admin_u', 'Admin User', 'admin')"
@@ -423,7 +434,7 @@ def _create_locked_prompt(
             "script_version_id": script_version_id,
             "shot_card_version_id": shot_card_version_id,
             "first_frame_asset_id": first_frame_asset_id,
-            "output_duration_seconds": 10,
+            "output_duration_seconds": 4,
             "resolution": "768P",
         },
     )
@@ -550,7 +561,7 @@ def test_customer_chain_activation_to_direct_task(client: TestClient, chain_dsn:
             "quantity": 1,
             "prompt_version_id": prompt_version_id,
             "first_frame_asset_id": first_frame_id,
-            "output_duration_seconds": 10,
+            "output_duration_seconds": 4,
             "resolution": "768P",
             "idempotency_key": "e2e-batch-chain-a",
             "provider": "fake_h3",
@@ -587,6 +598,13 @@ def test_customer_chain_activation_to_direct_task(client: TestClient, chain_dsn:
         assert task[0] == "SUCCEEDED" and task[1] == "DIRECT", task
         assert task[2] is None, "direct success must not copy the result into an asset"
         assert task[3] is None, "lease must be cleared after completion"
+        billing = conn.execute(
+            "SELECT type, available_delta, reserved_delta FROM wallet_transactions "
+            "WHERE task_id = (SELECT id FROM generation_tasks WHERE batch_id = %s) "
+            "ORDER BY ledger_sequence",
+            (batch_id,),
+        ).fetchall()
+        assert billing == [("RESERVE", -4, 4), ("SETTLE", 0, -4)]
         batch_row = conn.execute(
             "SELECT status FROM generation_batches WHERE id = %s", (batch_id,)
         ).fetchone()

@@ -20,21 +20,41 @@ const {
   loadTaskPreview,
   uploadWorkbenchSourceVideo,
   cancelStudioTask,
+  downloadStudioTaskResult,
+  retryStudioTask,
+  getStudioNotificationPreferences,
+  updateStudioNotificationPreferences,
 } = vi.hoisted(() => ({
   useStudio: vi.fn<() => StudioContextValue>(),
   loadTaskPreview: vi.fn(),
   uploadWorkbenchSourceVideo: vi.fn(),
   cancelStudioTask: vi.fn(),
+  downloadStudioTaskResult: vi.fn(),
+  retryStudioTask: vi.fn(),
+  getStudioNotificationPreferences: vi.fn(),
+  updateStudioNotificationPreferences: vi.fn(),
 }));
 
 vi.mock("./context", () => ({ useStudio }));
+vi.mock("../api", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getStudioNotificationPreferences,
+  updateStudioNotificationPreferences,
+}));
 vi.mock("./live", () => ({
   loadTaskPreview,
   uploadWorkbenchSourceVideo,
   cancelStudioTask,
+  downloadStudioTaskResult,
+  retryStudioTask,
 }));
 
-import { TaskDetailPage, TasksPage, WorkbenchPage } from "./MainPages";
+import {
+  ProfilePage,
+  TaskDetailPage,
+  TasksPage,
+  WorkbenchPage,
+} from "./MainPages";
 import { formatTaskTime } from "./ui";
 
 const taskA: StudioTask = {
@@ -74,8 +94,11 @@ function data(
     tasks,
     projects: [],
     errors: [],
+    materials: [],
     loading: false,
     stats: null,
+    analytics7: null,
+    analytics30: null,
   };
 }
 
@@ -118,6 +141,8 @@ describe("V1.4 任务详情真实成片预览", () => {
   beforeEach(() => {
     useStudio.mockReset();
     loadTaskPreview.mockReset();
+    downloadStudioTaskResult.mockReset();
+    retryStudioTask.mockReset();
   });
 
   it("仅在用户点击后按需加载，并只回填发起任务的结果", async () => {
@@ -228,6 +253,55 @@ describe("V1.4 任务详情真实成片预览", () => {
       screen.queryByRole("button", { name: "预览成片" }),
     ).not.toBeInTheDocument();
     expect(loadTaskPreview).not.toHaveBeenCalled();
+  });
+
+  it("口播成片下载直接使用结果资产，不再打开旧任务面板", async () => {
+    const oralTask: StudioTask = {
+      ...taskA,
+      id: "oral-visible-id",
+      backendKind: "oral_task",
+      backendId: "oral-backend-id",
+      resultId: "oral-result-asset",
+      batchId: undefined,
+    };
+    const value = studio(oralTask.id, { data: data([oralTask]) });
+    useStudio.mockReturnValue(value);
+    downloadStudioTaskResult.mockResolvedValue(undefined);
+    render(<TaskDetailPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "下载成片" }));
+
+    await waitFor(() =>
+      expect(downloadStudioTaskResult).toHaveBeenCalledWith(oralTask),
+    );
+    expect(value.openLive).not.toHaveBeenCalled();
+  });
+
+  it("只对后端允许的口播异常状态展示真实重试动作", async () => {
+    const retryable: StudioTask = {
+      ...taskA,
+      id: "oral-uncertain",
+      backendKind: "oral_task",
+      backendId: "oral-uncertain",
+      backendStatus: "SUBMISSION_UNCERTAIN",
+      status: "uncertain",
+      retryAction: "retry",
+      resultId: undefined,
+    };
+    const value = studio(retryable.id, { data: data([retryable]) });
+    useStudio.mockReturnValue(value);
+    retryStudioTask.mockResolvedValue(undefined);
+    render(<TaskDetailPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "重试提交" }));
+
+    await waitFor(() =>
+      expect(retryStudioTask).toHaveBeenCalledWith(retryable),
+    );
+    expect(value.refresh).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "重试归档" }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -614,13 +688,15 @@ describe("V1.4 任务中心列表", () => {
   it("排队行提供取消任务：成功后提示并刷新列表", async () => {
     const value = tasksPage();
     useStudio.mockReturnValue(value);
-    cancelStudioTask.mockResolvedValue(undefined);
+    cancelStudioTask.mockResolvedValue({ billingStatus: "PENDING" });
     render(<TasksPage />);
 
     fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
     expect(cancelStudioTask).toHaveBeenCalledWith(queuedTask);
     await waitFor(() =>
-      expect(value.notify).toHaveBeenCalledWith("任务已取消，预扣积分已退回。"),
+      expect(value.notify).toHaveBeenCalledWith(
+        "任务已取消，计费状态处理中，请稍后刷新核对。",
+      ),
     );
     expect(value.refresh).toHaveBeenCalledOnce();
   });
@@ -659,6 +735,25 @@ describe("V1.4 任务中心列表", () => {
     expect(screen.getAllByRole("button", { name: "查看详情" })).toHaveLength(2);
   });
 
+<<<<<<< main
+  it("口播任务只有后端 QUEUED 状态可取消", () => {
+    const submittingOral: StudioTask = {
+      ...queuedTask,
+      id: "oral-submitting",
+      backendKind: "oral_task",
+      backendId: "oral-submitting",
+      backendStatus: "SUBMITTING",
+      type: "数字人口播",
+    };
+    useStudio.mockReturnValue(
+      tasksPage({ data: data([submittingOral, queuedTask]) }),
+    );
+    render(<TasksPage />);
+
+    expect(screen.getAllByRole("button", { name: "取消任务" })).toHaveLength(1);
+  });
+
+=======
   it("口播排队行不提供无效取消入口", () => {
     const oralQueued: StudioTask = {
       ...queuedTask,
@@ -706,6 +801,7 @@ describe("V1.4 任务中心列表", () => {
     expect(screen.queryByText("生成中")).not.toBeInTheDocument();
   });
 
+>>>>>>> codex/local-main-cost-billing-20260908
   it("类型筛选收进单行下拉，菜单项计数与状态筛选联动", () => {
     useStudio.mockReturnValue(tasksPage());
     render(<TasksPage />);
@@ -791,5 +887,65 @@ describe("V1.4 任务中心列表", () => {
     expect(
       screen.queryByRole("listbox", { name: "类型" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("V1.4 个人中心通知偏好（C10b）", () => {
+  beforeEach(() => {
+    useStudio.mockReset();
+    getStudioNotificationPreferences.mockReset();
+    updateStudioNotificationPreferences.mockReset();
+  });
+
+  it("生产模式拉取偏好并保存开关状态", async () => {
+    getStudioNotificationPreferences.mockResolvedValue({ enabled: true });
+    updateStudioNotificationPreferences.mockResolvedValue({ enabled: false });
+    useStudio.mockReturnValue(studio());
+    render(<ProfilePage />);
+
+    const toggle = await screen.findByRole("button", { name: "通知偏好" });
+    await waitFor(() => expect(toggle).toHaveTextContent("开启"));
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(updateStudioNotificationPreferences).toHaveBeenCalledWith(false),
+    );
+    await waitFor(() => expect(toggle).toHaveTextContent("关闭"));
+  });
+
+  it("保存失败时回退开关状态并提示", async () => {
+    getStudioNotificationPreferences.mockResolvedValue({ enabled: true });
+    updateStudioNotificationPreferences.mockRejectedValue(
+      new Error("保存通知偏好失败"),
+    );
+    const value = studio();
+    useStudio.mockReturnValue(value);
+    render(<ProfilePage />);
+
+    const toggle = await screen.findByRole("button", { name: "通知偏好" });
+    await waitFor(() => expect(toggle).toHaveTextContent("开启"));
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(value.notify).toHaveBeenCalled());
+    expect(toggle).toHaveTextContent("开启");
+  });
+
+  it("加载失败时开关置灰为 —，审核模式点击只提示不保存", async () => {
+    getStudioNotificationPreferences.mockRejectedValue(new Error("网络错误"));
+    useStudio.mockReturnValue(studio());
+    render(<ProfilePage />);
+    const toggle = await screen.findByRole("button", { name: "通知偏好" });
+    await waitFor(() => expect(toggle).toHaveTextContent("—"));
+    expect(toggle).toBeDisabled();
+
+    useStudio.mockReturnValue(studio(undefined, { review: true }));
+    const { unmount } = render(<ProfilePage />);
+    const reviewToggle = screen
+      .getAllByRole("button", { name: "通知偏好" })
+      .at(-1)!;
+    await waitFor(() => expect(reviewToggle).toHaveTextContent("开启"));
+    fireEvent.click(reviewToggle);
+    expect(updateStudioNotificationPreferences).not.toHaveBeenCalled();
+    unmount();
   });
 });

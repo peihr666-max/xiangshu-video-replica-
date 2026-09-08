@@ -1623,6 +1623,7 @@ def perform_first_frame_generation(
     resumed_candidates: list[GeneratedImage] | None = None,
     archive_generated: Callable[[list[GeneratedImage], int], list[GeneratedImage]] | None = None,
     checkpoint_candidates: Callable[[list[GeneratedImage]], None] | None = None,
+    on_generated_images: Callable[[int], None] | None = None,
 ) -> list[GeneratedImage]:
     """Generate candidates outside the DB fence and label them with quality verdicts.
 
@@ -1687,6 +1688,8 @@ def perform_first_frame_generation(
                 before_provider_call=before_paid_call,
                 after_provider_call=after_provider_call,
             )
+            if on_generated_images is not None:
+                on_generated_images(len(generated))
             if len(generated) != remaining or any(
                 not item.content or item.content_type not in FIRST_FRAME_IMAGE_CONTENT_TYPES
                 for item in generated

@@ -283,6 +283,49 @@ def test_list_customer_sessions_requires_admin(client: TestClient):
     assert response.status_code == 401
 
 
+def test_revoke_session_keeps_device_and_replays_once(client: TestClient, route_state: str):
+    headers = {**_admin_session(client), "Idempotency-Key": "session-revoke-once"}
+    body = {"confirm": True, "reason": "客户要求结束会话", "session_epoch": 3}
+    first = client.post(
+        "/api/control/customer-sessions/session-1/revoke", headers=headers, json=body
+    )
+    assert first.status_code == 200, first.text
+    replay = client.post(
+        "/api/control/customer-sessions/session-1/revoke", headers=headers, json=body
+    )
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+    with psycopg.connect(route_state) as conn:
+        assert conn.execute(
+            "SELECT status FROM customer_devices WHERE id='device-1'"
+        ).fetchone() == ("BOUND",)
+        assert conn.execute(
+            "SELECT session_epoch FROM customer_session_state WHERE user_id='customer_u'"
+        ).fetchone() == (4,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM customer_session_events WHERE event='LOGOUT'"
+        ).fetchone() == (1,)
+
+
+def test_revoke_session_rejects_stale_epoch_and_auditor(client: TestClient):
+    headers = {**_admin_session(client), "Idempotency-Key": "session-stale"}
+    body = {"confirm": True, "reason": "会话核对", "session_epoch": 2}
+    assert (
+        client.post(
+            "/api/control/customer-sessions/session-1/revoke", headers=headers, json=body
+        ).status_code
+        == 409
+    )
+    headers = {**_admin_session(client, "auditor_u"), "Idempotency-Key": "session-auditor"}
+    body["session_epoch"] = 3
+    assert (
+        client.post(
+            "/api/control/customer-sessions/session-1/revoke", headers=headers, json=body
+        ).status_code
+        == 403
+    )
+
+
 @pytest.mark.pg
 def test_list_customer_sessions_returns_live_session(client: TestClient):
     """The 029 model: one live session row per user with its device columns."""
@@ -366,6 +409,26 @@ def test_list_customer_sessions_filters_out_expired_lease(client: TestClient):
 
 
 @pytest.mark.pg
+<<<<<<< main
+def test_list_customer_sessions_filters_out_non_bound_device(
+    client: TestClient, route_state: str
+) -> None:
+    _admin_session(client)
+    with psycopg.connect(route_state, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE customer_devices SET status='UNBOUND', unbound_at=now() WHERE id='device-1'"
+        )
+
+    customer = client.get(SESSIONS_PATH.format(user_id="customer_u"))
+    live = client.get("/api/control/customer-sessions/live")
+
+    assert customer.status_code == 200, customer.text
+    assert customer.json()["items"] == []
+    assert customer.json()["total"] == 0
+    assert live.status_code == 200, live.text
+    assert live.json()["items"] == []
+    assert live.json()["total"] == 0
+=======
 @pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
 def test_admin_session_can_discard_uncertain_clone_with_complete_audit(
     client: TestClient,
@@ -527,6 +590,7 @@ def test_clone_reconcile_replay_and_concurrency_write_one_audit_without_wallet_c
     assert json.loads(str(audits[0][2]))["reason"] == "重复请求验证"
     assert json.loads(str(audits[1][2]))["reason"] == "并发请求验证"
     assert wallet_after == wallet_before
+>>>>>>> codex/local-main-cost-billing-20260908
 
 
 # ---------------------------------------------------------------------------

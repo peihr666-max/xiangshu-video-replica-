@@ -2,7 +2,7 @@
 //
 // 规则（2026-09-02 管理端评估 §交互规范）：
 // 1. 页面不得再写字面量状态映射表；新状态先在这里登记。
-// 2. credits 统一叫"条数"，不再出现"积分/额度"。
+// 2. credits 统一按秒数额度展示，任务计数仍用条。
 // 3. 金额一律 `¥xx.xx`（分位保留）——此前的 `Math.floor` 会把 100.50 元
 //    显示成 100 元，属数据失真，已修复。
 // 4. REVOKED 按域区分动词：激活码"已撤销"、设备"已强制退出"（沿用操作
@@ -20,6 +20,8 @@ export const ACTIVATION_CODE_STATUS_LABELS: LabelMap = {
 };
 
 export const DEVICE_STATUS_LABELS: LabelMap = {
+  ONLINE: "在线",
+  OFFLINE: "离线",
   BOUND: "已绑定",
   UNBOUND: "已解绑",
   REVOKED: "已强制退出",
@@ -57,7 +59,7 @@ export const ADJUSTMENT_SOURCE_LABELS: LabelMap = {
   REFUND_APPROVAL: "退款审批",
   COMPENSATION_APPROVAL: "补偿审批",
   LEDGER_CORRECTION: "账本更正",
-  FREE_GRANT: "免费条数发放",
+  FREE_GRANT: "免费秒数发放",
 };
 
 export const PLATFORM_LABELS: LabelMap = {
@@ -75,6 +77,21 @@ export const GENERATION_RECORD_TYPE_LABELS: LabelMap = {
   CHARACTER_VIEW_IMAGE: "人物单视图",
   SOURCE_FRAME_AI_SCORE: "源画面 AI 评分",
   SOURCE_FRAME_PROCESS: "源画面处理",
+};
+
+export const GENERATION_STATUS_LABELS: LabelMap = {
+  CREATED: "已创建",
+  QUEUED: "排队中",
+  PENDING: "待处理",
+  SUBMITTING: "提交中",
+  SUBMITTED: "已提交",
+  RUNNING: "生成中",
+  SUCCEEDED: "成功",
+  FAILED: "失败",
+  CANCELED: "已取消",
+  CANCELLED: "已取消",
+  RETRYING: "重试中",
+  UNKNOWN: "待核对",
 };
 
 /** 查词典并回退到原始值——未知状态原样展示，便于发现新枚举。 */
@@ -125,14 +142,23 @@ export function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return "—";
   }
-  const date = new Date(value);
+  // 服务端旧时间列不带时区，但存储契约是 UTC，不能当作浏览器本地时间。
+  const timestamp = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(
+    value,
+  )
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) {
     return "—";
   }
-  return date.toLocaleString("zh-CN", { hour12: false });
+  return date.toLocaleString("zh-CN", {
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  });
 }
 
-/** 条数展示统一后缀。 */
+/** 钱包额度展示统一后缀。 */
 export function formatCredits(count: number | null | undefined): string {
-  return `${count ?? 0} 条`;
+  return `${count ?? 0} 秒`;
 }

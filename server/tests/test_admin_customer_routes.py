@@ -1339,12 +1339,49 @@ def test_list_adjustments_returns_audit_trail(client: TestClient) -> None:
     assert len(paged.json()["items"]) == 1
     assert paged.json()["items"][0]["source_document_ref"] == "COMP-B"
 
+    newest_first = client.get(
+        _adjustment_path(CUSTOMER_USER_ID),
+        params={"sort": "desc", "limit": 1},
+        headers=admin,
+    )
+    assert newest_first.status_code == 200, newest_first.text
+    assert newest_first.json()["items"][0]["source_document_ref"] == "COMP-B"
+
 
 def test_list_adjustments_for_unknown_user_is_empty(client: TestClient) -> None:
     admin = _admin_session(client)
     listing = client.get(_adjustment_path("ghost_u"), headers=admin)
     assert listing.status_code == 200
     assert listing.json()["items"] == []
+
+
+def test_list_all_adjustments_includes_users_filters_and_balances(client: TestClient) -> None:
+    admin = _admin_session(client)
+    created = _create_adjustment(client, admin, credits=5, source_document_ref="GLOBAL-LOOKUP")
+    assert created.status_code == 201, created.text
+
+    listing = client.get(
+        "/api/control/adjustments",
+        params={
+            "actor_username": "admin",
+            "target_username": "customer",
+            "source_document_type": "CS_TICKET",
+        },
+        headers=admin,
+    )
+    assert listing.status_code == 200, listing.text
+    item = next(i for i in listing.json()["items"] if i["source_document_ref"] == "GLOBAL-LOOKUP")
+    assert item["admin_username"] == "admin_u"
+    assert item["target_username"] == "customer_u"
+    assert item["balance_after"] == item["balance_before"] + 5
+
+    with psycopg.connect(_t23_dsn(), autocommit=True) as conn:
+        with pytest.raises(psycopg.Error, match="immutable"):
+            conn.execute(
+                "UPDATE wallet_transactions SET ledger_sequence = NULL "
+                "WHERE recharge_order_id = %s",
+                (item["order_id"],),
+            )
 
 
 def test_list_customers_returns_activated_customers(client: TestClient) -> None:
@@ -1359,6 +1396,10 @@ def test_list_customers_returns_activated_customers(client: TestClient) -> None:
     customer = payload["items"][0]
     assert customer["user_id"] == CUSTOMER_USER_ID
     assert customer["username"] == "customer_u"
+    assert customer["display_name"] == "Customer User"
+    assert customer["available_credits"] == 50
+    assert customer["reserved_credits"] == 0
+    assert customer["device_slots_used"] == 0
     assert customer["activation_code"] == "XS04-****"
     assert customer["status"] == "ACTIVE"
     assert customer["created_at"]
@@ -1368,6 +1409,31 @@ def test_list_customers_returns_activated_customers(client: TestClient) -> None:
     assert customer["generation_in_progress"] == 0
     assert customer["generation_attention"] == 0
     assert customer["credits_spent"] == 0
+
+
+def test_list_customers_filters_status_time_and_balance(client: TestClient) -> None:
+    admin = _admin_session(client)
+    matched = client.get(
+        "/api/control/customers",
+        params={
+            "status": "ACTIVE",
+            "created_from": "2020-01-01",
+            "created_to": "2099-12-31",
+            "balance_min": 50,
+            "balance_max": 50,
+        },
+        headers=admin,
+    )
+    assert matched.status_code == 200, matched.text
+    assert matched.json()["total"] == 1
+
+    excluded = client.get(
+        "/api/control/customers",
+        params={"status": "SUSPENDED", "balance_min": 51},
+        headers=admin,
+    )
+    assert excluded.status_code == 200, excluded.text
+    assert excluded.json()["items"] == []
 
 
 def test_list_customers_aggregates_generation_usage_and_settled_credits(
@@ -1672,3 +1738,21 @@ def test_customers_csv_export_normalizes_status_casing(client: TestClient) -> No
     )
     assert suspended.status_code == 200, suspended.text
     assert "customer_u" not in suspended.text
+
+
+def test_customers_csv_export_uses_the_same_date_and_balance_filters(
+    client: TestClient,
+) -> None:
+    admin = _admin_session(client)
+    response = client.get(
+        "/api/control/customers.csv",
+        params={
+            "created_from": "2099-01-01",
+            "created_to": "2099-12-31",
+            "balance_min": 0,
+            "balance_max": 999999,
+        },
+        headers=admin,
+    )
+    assert response.status_code == 200, response.text
+    assert "customer_u" not in response.text

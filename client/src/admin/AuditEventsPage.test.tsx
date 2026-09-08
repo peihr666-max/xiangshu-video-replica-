@@ -25,6 +25,9 @@ function auditItem(partial: Partial<AuditLogItem> = {}): AuditLogItem {
     reason: "客户电话反馈补发",
     request_id: "req-audit-1",
     created_at: "2026-09-01T10:00:00+00:00",
+    change_subject: null,
+    old_unit_price_fen: null,
+    new_unit_price_fen: null,
     ...partial,
   };
 }
@@ -85,7 +88,7 @@ describe("AuditEventsPage", () => {
     installFetch();
     render(<AuditEventsPage />);
 
-    expect(await screen.findByText("ADMIN_ADJUSTMENT")).toBeInTheDocument();
+    expect(await screen.findByText("管理员调账")).toBeInTheDocument();
     expect(screen.getByText("admin_op")).toBeInTheDocument();
     expect(screen.getByText("customer-1")).toBeInTheDocument();
     expect(screen.getByText("客户电话反馈补发")).toBeInTheDocument();
@@ -104,10 +107,10 @@ describe("AuditEventsPage", () => {
     const fetchMock = installFetch();
     render(<AuditEventsPage />);
 
-    await screen.findByText("ADMIN_ADJUSTMENT");
+    await screen.findByText("管理员调账");
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
 
-    await screen.findByText("CODE_REVEAL");
+    await screen.findByText("查看激活码明文");
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.some(([url]) =>
@@ -125,26 +128,185 @@ describe("AuditEventsPage", () => {
     const fetchMock = installFetch();
     render(<AuditEventsPage />);
 
-    await screen.findByText("ADMIN_ADJUSTMENT");
+    await screen.findByText("管理员调账");
     const requestsAfterLoad = fetchMock.mock.calls.length;
 
-    fireEvent.change(screen.getByLabelText("操作人 ID"), {
+    fireEvent.change(screen.getByLabelText("操作人用户名"), {
       target: { value: "admin_u" },
     });
     expect(fetchMock.mock.calls.length).toBe(requestsAfterLoad);
 
     fireEvent.click(screen.getByRole("button", { name: "筛选" }));
 
-    await screen.findAllByText("admin_u");
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.some(
           ([url]) =>
             String(url).includes("/api/control/audit-log?") &&
-            String(url).includes("actor_user_id=admin_u"),
+            String(url).includes("actor_username=admin_u"),
         ),
       ).toBe(true);
     });
+  });
+
+  it("keeps dotted event filters exact and renders a known price change", async () => {
+    const fetchMock = installFetch();
+    render(<AuditEventsPage />);
+
+    await screen.findByText("管理员调账");
+    fireEvent.change(screen.getByLabelText("事件类型"), {
+      target: { value: "operation_rate.update" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes("event_type=operation_rate.update"),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("does not invent an old price for historical events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        jsonResponse({
+          items: [
+            auditItem({
+              event_type: "customer_unit_price.update",
+              change_subject: "customer_unit_price",
+              old_unit_price_fen: null,
+              new_unit_price_fen: 15,
+            }),
+          ],
+          total: 1,
+          limit: 20,
+          offset: 0,
+        }),
+      ),
+    );
+    render(<AuditEventsPage />);
+
+    expect(await screen.findByText("设置为 15 分/秒")).toBeInTheDocument();
+    expect(screen.queryByText(/0 分\/秒/)).toBeNull();
+  });
+
+  it("shows a price transition and keeps full audit references in titles", async () => {
+    const sourceRef = "source-document-reference-20260905-0001";
+    const requestId = "request-id-audit-operation-rate-update-0001";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        jsonResponse({
+          items: [
+            auditItem({
+              event_type: "operation_rate.update",
+              change_subject: "video_generation_768p",
+              old_unit_price_fen: 9,
+              new_unit_price_fen: 12,
+              source_document_ref: sourceRef,
+              request_id: requestId,
+            }),
+          ],
+          total: 1,
+          limit: 20,
+          offset: 0,
+        }),
+      ),
+    );
+    render(<AuditEventsPage />);
+
+    expect(await screen.findByText("9 → 12 分/秒")).toBeInTheDocument();
+    expect(screen.getByTitle(`CS_TICKET / ${sourceRef}`)).toBeInTheDocument();
+    expect(screen.getByTitle(requestId)).toBeInTheDocument();
+  });
+
+  it("shows the rate unit that matches each changed subject", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        jsonResponse({
+          items: [
+            auditItem({
+              event_id: "image-rate",
+              event_type: "operation_rate.update",
+              change_subject: "first_frame_image",
+              old_unit_price_fen: 1,
+              new_unit_price_fen: 2,
+            }),
+            auditItem({
+              event_id: "sheet-rate",
+              event_type: "operation_rate.update",
+              change_subject: "character_sheet_image",
+              old_unit_price_fen: 3,
+              new_unit_price_fen: 4,
+            }),
+            auditItem({
+              event_id: "view-rate",
+              event_type: "operation_rate.update",
+              change_subject: "character_view",
+              old_unit_price_fen: 5,
+              new_unit_price_fen: 6,
+            }),
+            auditItem({
+              event_id: "context-rate",
+              event_type: "operation_rate.update",
+              change_subject: "context_ir",
+              old_unit_price_fen: 7,
+              new_unit_price_fen: 8,
+            }),
+            auditItem({
+              event_id: "unknown-rate",
+              event_type: "operation_rate.update",
+              change_subject: "future_subject",
+              old_unit_price_fen: 9,
+              new_unit_price_fen: 10,
+            }),
+            auditItem({
+              event_id: "customer-rate",
+              event_type: "customer_unit_price.update",
+              change_subject: "customer_unit_price",
+              old_unit_price_fen: 11,
+              new_unit_price_fen: 12,
+            }),
+          ],
+          total: 6,
+          limit: 20,
+          offset: 0,
+        }),
+      ),
+    );
+    render(<AuditEventsPage />);
+
+    expect(await screen.findByText("1 → 2 分/张")).toBeInTheDocument();
+    expect(screen.getByText("3 → 4 分/张")).toBeInTheDocument();
+    expect(screen.getByText("5 → 6 分/张")).toBeInTheDocument();
+    expect(screen.getByText("7 → 8 分/次")).toBeInTheDocument();
+    expect(screen.getByText("9 → 10 分")).toBeInTheDocument();
+    expect(screen.getByText("11 → 12 分/秒")).toBeInTheDocument();
+  });
+
+  it("resets all submitted filters", async () => {
+    const fetchMock = installFetch();
+    render(<AuditEventsPage />);
+
+    await screen.findByText("管理员调账");
+    fireEvent.change(screen.getByLabelText("操作人用户名"), {
+      target: { value: "admin_u" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("admin_u")),
+      ).toBe(true),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "重置" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("操作人用户名")).toHaveValue(""),
+    );
   });
 
   it("shows the load failure as an alert", async () => {

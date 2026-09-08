@@ -1,3 +1,4 @@
+import type { ShotCard } from "./../api";
 import type { StudioDraft, StudioPage, StudioState, StudioTask } from "./types";
 
 export const pageTitles: Record<StudioPage, string> = {
@@ -164,4 +165,54 @@ export function buildOralInput(draft: StudioDraft, mode: "text" | "audio") {
     style: draft.style,
     subtitles: draft.style === "standard" && draft.subtitles,
   };
+}
+
+// ---- C2 独立创作（视频生成页）----
+
+export const SUPPORTED_VIDEO_RATIOS = [
+  "adaptive",
+  "21:9",
+  "16:9",
+  "4:3",
+  "1:1",
+  "3:4",
+  "9:16",
+] as const;
+
+/** 文图生页签有首帧即 I2V（可选尾帧），无首帧为 T2V；参考生页签为 R2V。 */
+export function resolveVideoMode(
+  page: StudioPage,
+  hasFirstFrame = false,
+): "t2v" | "i2v" | "r2v" {
+  if (page === "reference") return "r2v";
+  return hasFirstFrame ? "i2v" : "t2v";
+}
+
+/** 把分镜卡拼成可读的反推提示词文本（可编辑、可另存为自定义提示词）。 */
+export function buildReplicaPromptText(
+  shots: ShotCard[],
+  originalScript: string,
+): string {
+  const lines: string[] = [];
+  shots.forEach((shot, index) => {
+    lines.push(
+      `【镜头 ${index + 1}】${shot.start_time.toFixed(1)}s–${shot.end_time.toFixed(1)}s`,
+    );
+    if (shot.shot_type) {
+      lines.push(
+        `景别/构图：${shot.shot_type}${shot.composition ? ` · ${shot.composition}` : ""}`,
+      );
+    }
+    if (shot.camera_motion) lines.push(`运镜：${shot.camera_motion}`);
+    if (shot.subject) lines.push(`主体：${shot.subject}`);
+    if (shot.action) lines.push(`动作：${shot.action}`);
+    if (shot.scene) lines.push(`场景：${shot.scene}`);
+    if (shot.spoken_text) lines.push(`台词：${shot.spoken_text}`);
+    if (shot.transition) lines.push(`转场：${shot.transition}`);
+    lines.push("");
+  });
+  if (originalScript.trim()) {
+    lines.push("【原片口播稿】", originalScript.trim());
+  }
+  return lines.join("\n").trim();
 }

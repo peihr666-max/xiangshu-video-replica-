@@ -153,13 +153,13 @@ async function requestControl(
   }
 }
 
-async function adminWrite<T>(
+export async function adminWrite<T>(
   path: string,
   fields: Record<string, unknown>,
   reason: string,
   fallback: string,
   idempotencyKey?: string,
-  method: "POST" | "PATCH" = "POST",
+  method: "POST" | "PATCH" | "PUT" = "POST",
 ): Promise<T> {
   const csrf = requireCsrfToken();
   const response = await requestControl(path, {
@@ -174,6 +174,105 @@ async function adminWrite<T>(
     throw await parseActivationError(response, fallback);
   }
   return (await response.json()) as T;
+}
+
+export async function adminRead<T>(path: string, fallback: string): Promise<T> {
+  const response = await requestControl(path, { method: "GET" });
+  if (!response.ok) {
+    throw await parseActivationError(response, fallback);
+  }
+  return response.json() as Promise<T>;
+}
+
+export interface AdminRechargeOrder {
+  id: string;
+  user_id: string;
+  username: string;
+  display_name?: string;
+  order_no: string;
+  status: "PENDING" | "PAID" | "FAILED" | "CLOSED";
+  amount_fen: number;
+  credits: number;
+  channel: string;
+  provider_trade_no: string | null;
+  created_at: string;
+  paid_at: string | null;
+}
+
+export interface AdminWalletTransaction {
+  id: string;
+  user_id: string;
+  username: string;
+  type: "CHARGE" | "RESERVE" | "SETTLE" | "RELEASE";
+  available_delta: number;
+  reserved_delta: number;
+  available_balance_after: number | null;
+  reserved_balance_after: number | null;
+  recharge_order_id: string | null;
+  task_id: string | null;
+  billing_round: number | null;
+  created_at: string;
+}
+
+interface AdminListPage<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function listAdminRechargeOrders(
+  options: {
+    status?: string;
+    userId?: string;
+    username?: string;
+    channel?: string;
+    createdFrom?: string;
+    createdTo?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<AdminListPage<AdminRechargeOrder>> {
+  const params = new URLSearchParams({
+    limit: String(options.limit ?? 50),
+    offset: String(options.offset ?? 0),
+  });
+  if (options.status) params.set("status", options.status);
+  if (options.userId) params.set("user_id", options.userId);
+  if (options.username) params.set("username", options.username);
+  if (options.channel) params.set("channel", options.channel);
+  if (options.createdFrom) params.set("created_from", options.createdFrom);
+  if (options.createdTo) params.set("created_to", options.createdTo);
+  return adminRead(
+    `/api/control/recharge-orders?${params}`,
+    "读取充值订单失败",
+  );
+}
+
+export async function listAdminWalletTransactions(
+  options: {
+    userId?: string;
+    username?: string;
+    type?: string;
+    createdFrom?: string;
+    createdTo?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<AdminListPage<AdminWalletTransaction>> {
+  const params = new URLSearchParams({
+    limit: String(options.limit ?? 50),
+    offset: String(options.offset ?? 0),
+  });
+  if (options.userId) params.set("user_id", options.userId);
+  if (options.username) params.set("username", options.username);
+  if (options.type) params.set("type", options.type);
+  if (options.createdFrom) params.set("created_from", options.createdFrom);
+  if (options.createdTo) params.set("created_to", options.createdTo);
+  return adminRead(
+    `/api/control/wallet-transactions?${params}`,
+    "读取额度流水失败",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +386,8 @@ export type ActivationCodeListItem = {
   bound_user_id: string | null;
   bound_username: string | null;
   issued_at: string | null;
+  expires_at?: string;
+  created_at?: string;
   archived_at: string | null;
   devices: ActivationCodeDevice[];
   pending_pairings: ActivationCodePendingPairing[];
@@ -390,6 +491,7 @@ export async function createActivationCodeBatch(
     credits: number;
     quantity: number;
     activation_expires_at: string;
+    confirm_grant?: boolean;
     reason: string;
   },
   idempotencyKey?: string,
@@ -402,6 +504,7 @@ export async function createActivationCodeBatch(
       credits: input.credits,
       quantity: input.quantity,
       activation_expires_at: input.activation_expires_at,
+      confirm_grant: input.confirm_grant ?? false,
     },
     input.reason,
     "创建激活码批次失败",
@@ -670,9 +773,15 @@ export const AdminCustomerError = AdminControlError;
 export interface CustomerListItem {
   user_id: string;
   username: string;
+  display_name?: string;
   created_at: string;
+  activation_code_id?: string;
   activation_code: string;
   status: string;
+  available_credits?: number;
+  reserved_credits?: number;
+  device_slots_used?: number;
+  device_slots_total?: number;
   generation_total?: number;
   generation_succeeded?: number;
   generation_failed?: number;
@@ -692,6 +801,11 @@ export interface CustomerListOptions {
   limit?: number;
   offset?: number;
   username_filter?: string;
+  status?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  balanceMin?: number;
+  balanceMax?: number;
 }
 
 /**
@@ -707,6 +821,13 @@ export async function listCustomers(
   if (options.offset !== undefined)
     params.set("offset", String(options.offset));
   if (options.username_filter) params.set("username", options.username_filter);
+  if (options.status) params.set("status", options.status);
+  if (options.createdFrom) params.set("created_from", options.createdFrom);
+  if (options.createdTo) params.set("created_to", options.createdTo);
+  if (options.balanceMin !== undefined)
+    params.set("balance_min", String(options.balanceMin));
+  if (options.balanceMax !== undefined)
+    params.set("balance_max", String(options.balanceMax));
 
   const response = await requestControl(
     `/api/control/customers?${params.toString()}`,
@@ -794,6 +915,17 @@ export interface DeviceListItem {
   bound_at: string | null;
   unbound_at: string | null;
   revoked_at: string | null;
+  username?: string;
+  activation_code?: string;
+  last_heartbeat_at?: string | null;
+  online?: boolean;
+}
+
+export interface DeviceSummary {
+  bound: number;
+  online: number;
+  revoked_today: number;
+  unbound: number;
 }
 
 export interface DeviceListResponse {
@@ -801,10 +933,13 @@ export interface DeviceListResponse {
   total: number;
   limit: number;
   offset: number;
+  summary?: DeviceSummary;
 }
 
 export interface DeviceListOptions {
   status?: string;
+  platform?: string;
+  userId?: string;
   limit?: number;
   offset?: number;
 }
@@ -819,6 +954,8 @@ export async function listDevices(
 ): Promise<DeviceListResponse> {
   const params = new URLSearchParams();
   if (options.status) params.set("status", options.status);
+  if (options.platform) params.set("platform", options.platform);
+  if (options.userId) params.set("user_id", options.userId);
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.offset !== undefined)
     params.set("offset", String(options.offset));
@@ -885,6 +1022,40 @@ export interface AdjustmentListItem {
   credits: number;
   pricing_scope: string;
   status: string;
+  admin_username?: string;
+  target_user_id?: string;
+  target_username?: string;
+  balance_before?: number | null;
+  balance_after?: number | null;
+}
+
+export interface GlobalAdjustmentListOptions extends AdjustmentListOptions {
+  actorUsername?: string;
+  targetUsername?: string;
+  sourceDocumentType?: string;
+  createdFrom?: string;
+  createdTo?: string;
+}
+
+export async function listAllAdminAdjustments(
+  options: GlobalAdjustmentListOptions = {},
+): Promise<AdjustmentListResponse> {
+  const params = new URLSearchParams();
+  if (options.actorUsername)
+    params.set("actor_username", options.actorUsername);
+  if (options.targetUsername)
+    params.set("target_username", options.targetUsername);
+  if (options.sourceDocumentType)
+    params.set("source_document_type", options.sourceDocumentType);
+  if (options.createdFrom) params.set("created_from", options.createdFrom);
+  if (options.createdTo) params.set("created_to", options.createdTo);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined)
+    params.set("offset", String(options.offset));
+  return adminRead<AdjustmentListResponse>(
+    `/api/control/adjustments?${params.toString()}`,
+    "读取调账记录失败",
+  );
 }
 
 export interface AdjustmentListResponse {
@@ -897,6 +1068,7 @@ export interface AdjustmentListResponse {
 export interface AdjustmentListOptions {
   limit?: number;
   offset?: number;
+  sort?: "asc" | "desc";
 }
 
 /**
@@ -912,6 +1084,7 @@ export async function listAdminAdjustments(
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.offset !== undefined)
     params.set("offset", String(options.offset));
+  if (options.sort !== undefined) params.set("sort", options.sort);
 
   const response = await requestControl(
     `/api/control/customers/${encodeURIComponent(userId)}/adjustments?${params.toString()}`,
@@ -1027,6 +1200,28 @@ export async function listCustomerSessions(
   return response.json() as Promise<CustomerSessionListResponse>;
 }
 
+export async function revokeCustomerSession(
+  sessionId: string,
+  sessionEpoch: number,
+  reason: string,
+  idempotencyKey: string,
+): Promise<{ request_id: string }> {
+  const response = await requestControl(
+    `/api/control/customer-sessions/${encodeURIComponent(sessionId)}/revoke`,
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({
+        confirm: true,
+        reason,
+        session_epoch: sessionEpoch,
+      }),
+    },
+  );
+  if (!response.ok) throw await parseActivationError(response, "结束会话失败");
+  return response.json() as Promise<{ request_id: string }>;
+}
+
 // ---------------------------------------------------------------------------
 // T34 — Audit log API (ADM-02)
 // ---------------------------------------------------------------------------
@@ -1039,11 +1234,15 @@ export interface AuditLogItem {
   actor_user_id: string;
   actor_username: string;
   target_user_id: string;
+  target_username?: string;
   source_document_type: string;
   source_document_ref: string;
   reason: string;
   request_id: string;
   created_at: string;
+  change_subject?: string | null;
+  old_unit_price_fen?: number | null;
+  new_unit_price_fen?: number | null;
 }
 
 export interface AuditLogResponse {
@@ -1057,6 +1256,8 @@ export interface AuditLogOptions {
   eventType?: string;
   actorUserId?: string;
   targetUserId?: string;
+  actorUsername?: string;
+  targetUsername?: string;
   createdFrom?: string;
   createdTo?: string;
   limit?: number;
@@ -1077,6 +1278,10 @@ export async function listAuditLog(
   if (options.eventType) params.set("event_type", options.eventType);
   if (options.actorUserId) params.set("actor_user_id", options.actorUserId);
   if (options.targetUserId) params.set("target_user_id", options.targetUserId);
+  if (options.actorUsername)
+    params.set("actor_username", options.actorUsername);
+  if (options.targetUsername)
+    params.set("target_username", options.targetUsername);
   if (options.createdFrom) params.set("created_from", options.createdFrom);
   if (options.createdTo) params.set("created_to", options.createdTo);
   if (options.limit !== undefined) params.set("limit", String(options.limit));
@@ -1105,13 +1310,25 @@ export type AdminGenerationRecordPage =
   components["schemas"]["ControlGenerationRecordPage"];
 
 export async function getAdminGenerationRecords(
-  limit = 50,
-  offset = 0,
+  options: {
+    limit?: number;
+    offset?: number;
+    username?: string;
+    status?: string;
+    recordType?: string;
+    createdFrom?: string;
+    createdTo?: string;
+  } = {},
 ): Promise<AdminGenerationRecordPage> {
   const params = new URLSearchParams({
-    limit: String(limit),
-    offset: String(offset),
+    limit: String(options.limit ?? 50),
+    offset: String(options.offset ?? 0),
   });
+  if (options.username) params.set("username", options.username);
+  if (options.status) params.set("status", options.status);
+  if (options.recordType) params.set("record_type", options.recordType);
+  if (options.createdFrom) params.set("created_from", options.createdFrom);
+  if (options.createdTo) params.set("created_to", options.createdTo);
   const response = await requestControl(
     `/api/control/generation-records?${params.toString()}`,
     { method: "GET" },
@@ -1200,4 +1417,166 @@ export async function updateQueueMode(
     "PATCH",
   );
   return payload.fair_queue_enabled;
+}
+
+// ---------------------------------------------------------------------------
+// Operation rates (W10 — 费率管理：上游成本费率与对外售价)
+// ---------------------------------------------------------------------------
+
+export type OperationRate = {
+  subject: string;
+  kind: "upstream_cost" | "external_price";
+  unit: "second" | "image" | "call";
+  resolution: string | null;
+  unit_price_fen: number;
+  updated_at: string;
+  updated_by_username: string | null;
+};
+
+export type OperationRateHistory = {
+  subject: string;
+  old_unit_price_fen: number | null;
+  new_unit_price_fen: number;
+  reason: string;
+  actor_username: string | null;
+  created_at: string;
+};
+
+export type OperationRatesResponse = {
+  rates: OperationRate[];
+  history: OperationRateHistory[];
+};
+
+export async function listOperationRates(): Promise<OperationRatesResponse> {
+  const response = await requestControl("/api/control/settings/rates", {});
+  if (!response.ok) {
+    throw await parseActivationError(response, "读取费率失败");
+  }
+  return (await response.json()) as OperationRatesResponse;
+}
+
+export async function updateOperationRates(
+  updates: Array<{ subject: string; unit_price_fen: number }>,
+  reason: string,
+  idempotencyKey?: string,
+): Promise<OperationRatesResponse> {
+  return adminWrite<OperationRatesResponse>(
+    "/api/control/settings/rates",
+    { updates },
+    reason,
+    "费率调整失败",
+    idempotencyKey,
+    "PUT",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Profit overview (W8 — 经营分析：每日对外售价与日利润)
+// ---------------------------------------------------------------------------
+
+export type DailyPriceRow = {
+  price_date: string;
+  price_768p_fen: number;
+  price_2k_fen: number;
+  note: string | null;
+  created_by_username: string | null;
+};
+
+export type ProfitDayRow = {
+  day: string;
+  video_count: number;
+  settled_seconds: number;
+  revenue_fen: number;
+  cost_fen: number | null;
+  gross_fen: number | null;
+  margin_pct: number | null;
+};
+
+export type ProfitOverviewResponse = {
+  prices: DailyPriceRow[];
+  days: ProfitDayRow[];
+  cost_coverage_note: string;
+};
+
+export async function listProfitOverview(
+  lookbackDays = 30,
+): Promise<ProfitOverviewResponse> {
+  const response = await requestControl(
+    `/api/control/profit/overview?lookback_days=${lookbackDays}`,
+    {},
+  );
+  if (!response.ok) {
+    throw await parseActivationError(response, "读取经营分析失败");
+  }
+  return (await response.json()) as ProfitOverviewResponse;
+}
+
+export async function upsertDailyPrice(
+  input: {
+    price_date: string;
+    price_768p_fen: number;
+    price_2k_fen: number;
+    note?: string;
+  },
+  reason: string,
+  idempotencyKey?: string,
+): Promise<DailyPriceRow[]> {
+  return adminWrite<DailyPriceRow[]>(
+    "/api/control/profit/daily-price",
+    {
+      price_date: input.price_date,
+      price_768p_fen: input.price_768p_fen,
+      price_2k_fen: input.price_2k_fen,
+      note: input.note ?? "",
+    },
+    reason,
+    "保存每日售价失败",
+    idempotencyKey,
+    "PUT",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard summary (W15 — 总览仪表盘)
+// ---------------------------------------------------------------------------
+
+export type DashboardTrendPoint = {
+  day: string;
+  succeeded: number;
+  failed: number;
+};
+
+export type DashboardSummary = {
+  today: {
+    generation_count: number;
+    succeeded: number;
+    success_rate_pct?: number | null;
+    output_seconds?: number;
+    cost_fen?: number;
+    revenue_fen?: number;
+    gross_fen?: number | null;
+    margin_pct?: number | null;
+    online_devices: number;
+    active_customers: number;
+    recharge_fen: number;
+    recharge_orders?: number;
+  };
+  trend: Array<DashboardTrendPoint & { cost_fen?: number }>;
+  todos: {
+    pending_pairings: number;
+    failed_tasks_7d: number;
+    reconciliation_problems: number;
+    expiring_codes_7d: number;
+    unconfigured_rates?: number;
+    unknown_cost_records?: number;
+  };
+  device_slots: { bound: number; total: number };
+};
+
+export async function getDashboardSummary(): Promise<DashboardSummary> {
+  const response = await requestControl("/api/control/dashboard/summary", {});
+  if (!response.ok) {
+    throw await parseActivationError(response, "读取仪表盘失败");
+  }
+  return (await response.json()) as DashboardSummary;
 }

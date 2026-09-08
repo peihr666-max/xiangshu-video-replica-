@@ -74,6 +74,29 @@ describe("DevicesPage (ADM-02 / T33)", () => {
     expect(screen.getByText("加载中...")).toBeInTheDocument();
   });
 
+  it("keeps customer context when opened from customer details", async () => {
+    vi.mocked(adminApi.listDevices).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+    });
+
+    render(<DevicesPage userId="user-1" />);
+
+    await waitFor(() => {
+      expect(adminApi.listDevices).toHaveBeenCalledWith({
+        limit: 20,
+        offset: 0,
+        platform: undefined,
+        status: undefined,
+        userId: "user-1",
+      });
+    });
+    expect(screen.getByText("当前客户：user-1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("设备概览")).toBeNull();
+  });
+
   it("hides device mutations for auditors", async () => {
     vi.mocked(adminApi.listDevices).mockResolvedValue({
       items: [

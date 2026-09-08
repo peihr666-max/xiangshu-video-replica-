@@ -66,20 +66,23 @@ def _http(status: int, code: str, message: str) -> HTTPException:
 _UNION_SQL = """
     SELECT aa.id, 'ADMIN_ADJUSTMENT', aa.admin_user_id, u.username,
            aa.target_user_id, aa.source_document_type, aa.source_document_ref,
-           aa.reason, aa.request_id, aa.created_at::timestamptz
+           aa.reason, aa.request_id, aa.created_at::timestamptz,
+           ''::text, NULL::integer, NULL::integer
     FROM admin_adjustments aa
     JOIN users u ON u.id = aa.admin_user_id
     UNION ALL
     SELECT de.id, 'ADMIN_DEVICE_' || de.event, de.admin_user_id, u.username,
            de.target_user_id, 'DEVICE', COALESCE(de.device_id, ''),
-           de.reason, de.request_id, de.created_at::timestamptz
+           de.reason, de.request_id, de.created_at::timestamptz,
+           ''::text, NULL::integer, NULL::integer
     FROM admin_device_events de
     JOIN users u ON u.id = de.admin_user_id
     UNION ALL
     SELECT ae.id, 'ACTIVATION_CODE_' || ae.event,
            COALESCE(ae.actor_user_id, ''), COALESCE(u2.username, ''),
            COALESCE(code.bound_user_id, ''), 'ACTIVATION_CODE', ae.code_id,
-           COALESCE(ae.reason, ''), COALESCE(ae.request_id, ''), ae.created_at::timestamptz
+           COALESCE(ae.reason, ''), COALESCE(ae.request_id, ''), ae.created_at::timestamptz,
+           ''::text, NULL::integer, NULL::integer
     FROM activation_code_events ae
     LEFT JOIN users u2 ON u2.id = ae.actor_user_id
     LEFT JOIN activation_codes code ON code.id = ae.code_id
@@ -87,7 +90,8 @@ _UNION_SQL = """
     SELECT d.id, 'ACTIVATION_CODE_DELIVERED', d.delivered_by_user_id, u3.username,
            COALESCE(code.bound_user_id, ''), 'ACTIVATION_CODE_DELIVERY',
            COALESCE(d.external_order_ref, ''), COALESCE(d.note, ''),
-           '', d.delivered_at::timestamptz
+           '', d.delivered_at::timestamptz,
+           ''::text, NULL::integer, NULL::integer
     FROM activation_code_deliveries d
     JOIN users u3 ON u3.id = d.delivered_by_user_id
     LEFT JOIN activation_codes code ON code.id = d.code_id
@@ -99,7 +103,32 @@ _UNION_SQL = """
            al.entity_type, al.entity_id,
            COALESCE(al.metadata_json::json ->> 'reason', ''),
            COALESCE(al.metadata_json::json ->> 'request_id', ''),
-           al.created_at::timestamptz
+           al.created_at::timestamptz,
+           CASE
+               WHEN al.action = 'operation_rate.update'
+                   THEN COALESCE(al.metadata_json::jsonb ->> 'subject', al.entity_id)
+               WHEN al.action IN ('customer_unit_price.update', 'customer_unit_price.reset')
+                   THEN 'customer_unit_price'
+               ELSE ''
+           END,
+           CASE
+               WHEN al.action IN (
+                   'operation_rate.update',
+                   'customer_unit_price.update',
+                   'customer_unit_price.reset'
+               ) AND jsonb_typeof(al.metadata_json::jsonb -> 'old_unit_price_fen') = 'number'
+                   THEN (al.metadata_json::jsonb ->> 'old_unit_price_fen')::integer
+               ELSE NULL
+           END,
+           CASE
+               WHEN al.action IN (
+                   'operation_rate.update',
+                   'customer_unit_price.update',
+                   'customer_unit_price.reset'
+               ) AND jsonb_typeof(al.metadata_json::jsonb -> 'new_unit_price_fen') = 'number'
+                   THEN (al.metadata_json::jsonb ->> 'new_unit_price_fen')::integer
+               ELSE NULL
+           END
     FROM audit_logs al
     LEFT JOIN users u4 ON u4.id = al.actor_user_id
 """
@@ -111,6 +140,8 @@ def list_audit_log(
     event_type: str | None = None,
     actor_user_id: str | None = None,
     target_user_id: str | None = None,
+    actor_username: str | None = None,
+    target_username: str | None = None,
     created_from: str | None = None,
     created_to: str | None = None,
     limit: int = DEFAULT_LIST_LIMIT,
@@ -134,6 +165,12 @@ def list_audit_log(
     if target_user_id:
         clauses.append("ev.target_user_id = %s")
         params.append(target_user_id)
+    if actor_username:
+        clauses.append("ev.actor_username ILIKE %s")
+        params.append(f"%{actor_username}%")
+    if target_username:
+        clauses.append("tu.username ILIKE %s")
+        params.append(f"%{target_username}%")
     if created_from:
         clauses.append("ev.created_at >= %s")
         params.append(created_from)
@@ -148,13 +185,19 @@ def list_audit_log(
                 f"""
                 SELECT ev.event_id, ev.event_type, ev.actor_user_id,
                        ev.actor_username, ev.target_user_id,
+                       COALESCE(tu.username, '') AS target_username,
                        ev.source_document_type, ev.source_document_ref,
-                       ev.reason, ev.request_id, ev.created_at
+                       ev.reason, ev.request_id, ev.created_at,
+                       ev.change_subject, ev.old_unit_price_fen,
+                       ev.new_unit_price_fen
                 FROM ({_UNION_SQL}) AS ev(event_id, event_type, actor_user_id,
                                           actor_username, target_user_id,
                                           source_document_type,
                                           source_document_ref, reason,
-                                          request_id, created_at)
+                                          request_id, created_at,
+                                          change_subject, old_unit_price_fen,
+                                          new_unit_price_fen)
+                LEFT JOIN users tu ON tu.id = ev.target_user_id
                 {where}
                 ORDER BY ev.created_at DESC, ev.event_id
                 LIMIT %s OFFSET %s
@@ -167,7 +210,9 @@ def list_audit_log(
                 SELECT COUNT(*) FROM ({_UNION_SQL}) AS ev(
                     event_id, event_type, actor_user_id, actor_username,
                     target_user_id, source_document_type, source_document_ref,
-                    reason, request_id, created_at)
+                    reason, request_id, created_at, change_subject,
+                    old_unit_price_fen, new_unit_price_fen)
+                LEFT JOIN users tu ON tu.id = ev.target_user_id
                 {where}
                 """,
                 tuple(params),
@@ -186,11 +231,15 @@ def list_audit_log(
             "actor_user_id": str(row[2]),
             "actor_username": str(row[3]),
             "target_user_id": str(row[4]),
-            "source_document_type": str(row[5]),
-            "source_document_ref": str(row[6]),
-            "reason": str(row[7]),
-            "request_id": str(row[8]),
-            "created_at": _format_created_at(row[9]),
+            "target_username": str(row[5]),
+            "source_document_type": str(row[6]),
+            "source_document_ref": str(row[7]),
+            "reason": str(row[8]),
+            "request_id": str(row[9]),
+            "created_at": _format_created_at(row[10]),
+            "change_subject": str(row[11]) if row[11] else None,
+            "old_unit_price_fen": int(row[12]) if row[12] is not None else None,
+            "new_unit_price_fen": int(row[13]) if row[13] is not None else None,
         }
         for row in rows
     ]

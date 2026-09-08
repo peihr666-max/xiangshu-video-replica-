@@ -11,7 +11,11 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository
 
+<<<<<<< main
+HEAD_REVISION = "076_studio_notification_preferences"
+=======
 HEAD_REVISION = "068_wallet_ledger_sequence"
+>>>>>>> codex/local-main-cost-billing-20260908
 
 
 def seed_subjects(conn: sqlite3.Connection) -> None:

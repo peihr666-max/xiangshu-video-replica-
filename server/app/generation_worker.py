@@ -66,6 +66,7 @@ from app.generation import (
     reschedule_generation_poll,
     run_next_generation_task,
 )
+from app.hifly import HiflyClient, HiflySettingsUnavailable, hifly_client_from_settings
 from app.image_tasks import (
     acquire_character_sheet_task,
     acquire_first_frame_task,
@@ -82,6 +83,17 @@ from app.image_tasks import (
 )
 from app.media_routes import get_media_storage
 from app.operation_costs import begin_operation_cost, complete_operation_cost
+<<<<<<< main
+from app.oral_worker import (
+    OralLeaseLostError,
+    OralWorkKind,
+    OralWorkResult,
+    claim_oral_work,
+    discard_uncommitted_oral_asset,
+    finalize_oral_work,
+    perform_oral_work,
+    prepare_oral_work,
+=======
 from app.oral import (
     CloneOutcome,
     OralCloneLeaseLost,
@@ -107,6 +119,7 @@ from app.oral import (
     renew_oral_task_lease,
     run_claimed_oral_clone,
     run_next_oral_task,
+>>>>>>> codex/local-main-cost-billing-20260908
 )
 from app.script_from_audio import (
     ProviderTaskCheckpointResult,
@@ -304,6 +317,43 @@ def _is_quality_settings_failure(exc: HTTPException) -> bool:
     return str(detail.get("code", "")).startswith("FIRST_FRAME_QUALITY_SETTINGS_")
 
 
+def _oral_settings_failure(kind: OralWorkKind) -> OralWorkResult:
+    if kind.endswith("submit"):
+        return OralWorkResult("failed", message="数字人服务未配置，任务未提交")
+    if kind == "task_archive":
+        return OralWorkResult("failed", message="数字人服务暂不可用，成片归档失败")
+    return OralWorkResult("waiting", message="数字人服务暂不可用")
+
+
+def _run_sqlite_oral_step(
+    conn: BusinessConnection,
+    *,
+    worker_id: str,
+    storage: StorageAdapter,
+    vendor_override: HiflyClient | None,
+) -> bool:
+    lease = claim_oral_work(conn, worker_id=worker_id)
+    if lease is None:
+        return False
+    prepared = prepare_oral_work(conn, lease)
+    try:
+        vendor = vendor_override or hifly_client_from_settings(conn)
+    except HiflySettingsUnavailable:
+        result = _oral_settings_failure(prepared.kind)
+    else:
+        result = perform_oral_work(prepared, vendor=vendor, storage=storage)
+    try:
+        finalize_oral_work(conn, lease=prepared, result=result)
+    except OralLeaseLostError:
+        discard_uncommitted_oral_asset(
+            storage,
+            result=result,
+            actor_id=str(prepared.row.get("owner_user_id") or "") or None,
+        )
+        logger.warning("oral worker finalize discarded after lease loss: kind=%s", prepared.kind)
+    return True
+
+
 def run_worker_once(
     conn: BusinessConnection,
     *,
@@ -319,6 +369,7 @@ def run_worker_once(
     source_frame_quality_inspector: SourceFrameQualityInspector | None = None,
     video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
     reconcile_provider: H3Provider | None = None,
+    oral_vendor: HiflyClient | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks, then return so SQLite connections stay short-lived."""
@@ -327,6 +378,16 @@ def run_worker_once(
     processed = 0
     while True:
         processed_round = False
+        if _run_sqlite_oral_step(
+            conn,
+            worker_id=worker_id,
+            storage=storage,
+            vendor_override=oral_vendor,
+        ):
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
         generation_handled = False
         try:
             generation_handled = (
@@ -661,7 +722,6 @@ def _run_pg_generation_step(
     """
 
     task_id = str(lease["id"])
-    batch_id = str(lease["batch_id"])
     status = str(lease["status"])
 
     # Legacy archive-retry rows are claimed as SUBMITTING by the shared queue
@@ -673,12 +733,19 @@ def _run_pg_generation_step(
         and lease.get("provider_result_url")
     ):
         with pg_transaction() as raw_conn:
+            conn = BusinessConnection.postgres(raw_conn)
             mark_generation_task_archiving(
-                BusinessConnection.postgres(raw_conn),
+                conn,
                 lease=lease,
                 result_url=str(lease["provider_result_url"]),
             )
-        status = "ARCHIVING"
+            finalize_generation_direct_result(
+                conn,
+                lease=lease,
+                quality_status="NOT_REQUIRED",
+                quality_issue_codes=[],
+            )
+        return
     elif status == "SUBMITTING":
         try:
             with pg_transaction() as raw_conn:
@@ -693,16 +760,14 @@ def _run_pg_generation_step(
             with pg_transaction() as raw_conn:
                 mark_task_provider_settings_unavailable(
                     BusinessConnection.postgres(raw_conn),
-                    task_id=task_id,
-                    batch_id=batch_id,
+                    lease=lease,
                 )
             return
         except (StorageBackendUnavailable, StoragePermissionError, ValueError):
             with pg_transaction() as raw_conn:
                 mark_task_first_frame_url_sign_failed(
                     BusinessConnection.postgres(raw_conn),
-                    task_id=task_id,
-                    batch_id=batch_id,
+                    lease=lease,
                 )
             return
 
@@ -744,8 +809,7 @@ def _run_pg_generation_step(
                     else:
                         mark_task_provider_failed(
                             conn,
-                            task_id=task_id,
-                            batch_id=batch_id,
+                            lease=lease,
                             provider_task_id=exc.provider_task_id,
                         )
             except Exception:
@@ -778,10 +842,10 @@ def _run_pg_generation_step(
             return
         except H3ProviderFailed as exc:
             with pg_transaction() as raw_conn:
+                conn = BusinessConnection.postgres(raw_conn)
                 mark_task_provider_failed(
-                    BusinessConnection.postgres(raw_conn),
-                    task_id=task_id,
-                    batch_id=batch_id,
+                    conn,
+                    lease=lease,
                     provider_task_id=exc.provider_task_id,
                 )
             return
@@ -793,15 +857,15 @@ def _run_pg_generation_step(
                 provider_task_id=result.provider_task_id,
                 provider_request=work.provider_request,
                 request_hash=work.request_hash,
+                release_lease=False,
             )
             mark_generation_task_archiving(
                 conn,
                 lease=lease,
                 result_url=result.result_url,
             )
-        with pg_transaction() as raw_conn:
             finalize_generation_direct_result(
-                BusinessConnection.postgres(raw_conn),
+                conn,
                 lease=lease,
                 quality_status="NOT_REQUIRED",
                 quality_issue_codes=[],
@@ -831,8 +895,7 @@ def _run_pg_generation_step(
                 if exc.terminal:
                     mark_task_provider_failed(
                         conn,
-                        task_id=task_id,
-                        batch_id=batch_id,
+                        lease=lease,
                         provider_task_id=provider_task_id,
                     )
                 else:
@@ -844,10 +907,10 @@ def _run_pg_generation_step(
             return
         if query.status in {"FAILED", "CANCELLED"}:
             with pg_transaction() as raw_conn:
+                conn = BusinessConnection.postgres(raw_conn)
                 mark_task_provider_failed(
-                    BusinessConnection.postgres(raw_conn),
-                    task_id=task_id,
-                    batch_id=batch_id,
+                    conn,
+                    lease=lease,
                     provider_task_id=provider_task_id,
                 )
             return
@@ -947,6 +1010,7 @@ def run_pg_worker_once(
     source_frame_extractor: SourceFrameExtractor | None = None,
     source_frame_quality_inspector: SourceFrameQualityInspector | None = None,
     video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
+    oral_vendor: HiflyClient | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks on the PostgreSQL lane.
@@ -962,6 +1026,45 @@ def run_pg_worker_once(
     processed = 0
     while True:
         processed_round = False
+        with pg_transaction() as raw_conn:
+            oral_lease = claim_oral_work(BusinessConnection.postgres(raw_conn), worker_id=worker_id)
+        if oral_lease is not None:
+            with pg_transaction() as raw_conn:
+                conn = BusinessConnection.postgres(raw_conn)
+                prepared_oral = prepare_oral_work(conn, oral_lease)
+                try:
+                    resolved_oral_vendor = oral_vendor or hifly_client_from_settings(conn)
+                except HiflySettingsUnavailable:
+                    resolved_oral_vendor = None
+            if resolved_oral_vendor is None:
+                oral_result = _oral_settings_failure(prepared_oral.kind)
+            else:
+                oral_result = perform_oral_work(
+                    prepared_oral,
+                    vendor=resolved_oral_vendor,
+                    storage=storage,
+                )
+            try:
+                with pg_transaction() as raw_conn:
+                    finalize_oral_work(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=prepared_oral,
+                        result=oral_result,
+                    )
+            except OralLeaseLostError:
+                discard_uncommitted_oral_asset(
+                    storage,
+                    result=oral_result,
+                    actor_id=(str(prepared_oral.row.get("owner_user_id") or "") or None),
+                )
+                logger.warning(
+                    "oral worker finalize discarded after lease loss: kind=%s",
+                    prepared_oral.kind,
+                )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
         with pg_transaction() as raw_conn:
             conn = BusinessConnection.postgres(raw_conn)
             lease = acquire_generation_continuation_lease(conn, worker_id=worker_id)
@@ -1014,6 +1117,10 @@ def run_pg_worker_once(
             analysis_lease = acquire_analysis_task(conn, worker_id=worker_id)
         if analysis_lease is not None:
             analysis_cost_id = ""
+<<<<<<< main
+            analysis_cost_usage: float | None = None
+=======
+>>>>>>> codex/local-main-cost-billing-20260908
             try:
                 # Preparation only reads settings/asset state and creates the
                 # short-lived signed URL.  The paid provider call below runs
@@ -1028,12 +1135,22 @@ def run_pg_worker_once(
                     )
                     analysis_cost_id = begin_operation_cost(
                         conn,
+<<<<<<< main
+                        source_type="analysis_task",
+                        source_id=analysis_lease.id,
+                        subject="video_analysis_768p",
+                        user_id=analysis_lease.created_by_user_id,
+                        resolution="768P",
+                        metadata={"resolution_basis": "default_generation_tier"},
+=======
                         source_type="analysis_task_attempt",
                         source_id=f"{analysis_lease.id}:{analysis_lease.attempt}",
                         subject="video_analysis_768p",
                         user_id=analysis_lease.created_by_user_id,
+>>>>>>> codex/local-main-cost-billing-20260908
                     )
                 analysis_result = perform_analysis_task(analysis_work)
+                analysis_cost_usage = analysis_lease.duration_seconds
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
                     complete_operation_cost(
@@ -1049,8 +1166,14 @@ def run_pg_worker_once(
             except Exception as exc:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
+<<<<<<< main
+                    complete_operation_cost(
+                        conn, record_id=analysis_cost_id, usage_amount=analysis_cost_usage
+                    )
+=======
                     if analysis_cost_id:
                         complete_operation_cost(conn, record_id=analysis_cost_id, usage_amount=None)
+>>>>>>> codex/local-main-cost-billing-20260908
                     fail_analysis_task(conn, lease=analysis_lease, cause=exc)
             processed += 1
             processed_round = True
@@ -1335,10 +1458,32 @@ def run_pg_worker_once(
             stored = None
             work = None
             first_frame_cost_id = ""
+<<<<<<< main
+            first_frame_call_number = 0
+
+            def mark_pg_submission_started() -> None:
+                nonlocal submission_started, first_frame_cost_id, first_frame_call_number
+                with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
+                    # A retried transport response has no proven output count.
+                    if first_frame_cost_id:
+                        complete_operation_cost(
+                            conn, record_id=first_frame_cost_id, usage_amount=None
+                        )
+                    first_frame_call_number += 1
+                    first_frame_cost_id = begin_operation_cost(
+                        conn,
+                        source_type="first_frame_task",
+                        source_id=f"{first_frame_lease.id}:{first_frame_lease.attempt}:{first_frame_call_number}",
+                        subject="first_frame_image",
+                        user_id=first_frame_lease.created_by_user_id,
+                    )
+=======
             first_frame_call = 0
 
             def mark_pg_submission_started() -> None:
                 nonlocal first_frame_call, first_frame_cost_id, submission_started
+>>>>>>> codex/local-main-cost-billing-20260908
                 submission_started = True
                 first_frame_call += 1
                 with pg_transaction() as raw_conn:
@@ -1352,13 +1497,24 @@ def run_pg_worker_once(
                         user_id=first_frame_lease.created_by_user_id,
                     )
 
+<<<<<<< main
+            def record_pg_generated_images(count: int) -> None:
+                nonlocal first_frame_cost_id
+                # Record paid output before storage/QC, which can fail or resume
+                # entirely from checkpoints without another provider call.
+=======
             def mark_pg_submission_completed() -> None:
                 nonlocal first_frame_cost_id
+>>>>>>> codex/local-main-cost-billing-20260908
                 with pg_transaction() as raw_conn:
                     complete_operation_cost(
                         BusinessConnection.postgres(raw_conn),
                         record_id=first_frame_cost_id,
+<<<<<<< main
+                        usage_amount=count,
+=======
                         usage_amount=1,
+>>>>>>> codex/local-main-cost-billing-20260908
                     )
                 first_frame_cost_id = ""
 
@@ -1400,13 +1556,14 @@ def run_pg_worker_once(
                     prepared,
                     storage=first_frame_storage or storage,
                     before_provider_call=mark_pg_submission_started,
-                    after_provider_call=mark_pg_submission_completed,
+                    on_generated_images=record_pg_generated_images,
                     heartbeat=renew_pg_first_frame_lease,
                     checkpoint_candidates=persist_pg_first_frame_checkpoint,
                 )
                 with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
                     complete_first_frame_task(
-                        BusinessConnection.postgres(raw_conn),
+                        conn,
                         prepared=prepared,
                         work=work,
                         stored=stored,
@@ -1428,8 +1585,10 @@ def run_pg_worker_once(
                         actor_id=work.actor.id,
                     )
                 with pg_transaction() as raw_conn:
+                    conn = BusinessConnection.postgres(raw_conn)
+                    complete_operation_cost(conn, record_id=first_frame_cost_id, usage_amount=None)
                     fail_image_task(
-                        BusinessConnection.postgres(raw_conn),
+                        conn,
                         table="first_frame_tasks",
                         lease=first_frame_lease,
                         cause=exc,
@@ -1445,7 +1604,12 @@ def run_pg_worker_once(
             )
         if character_sheet_lease is not None:
             submission_started = False
+<<<<<<< main
+            character_sheet_cost_id = ""
+            character_sheet_cost_usage: int | None = None
+=======
             sheet_cost_id = ""
+>>>>>>> codex/local-main-cost-billing-20260908
             try:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
@@ -1462,19 +1626,31 @@ def run_pg_worker_once(
                         provider=prepared_sheet.provider.provider_name,
                         model=SIMPLE_CONTACT_SHEET_MODEL,
                     )
+<<<<<<< main
+                    character_sheet_cost_id = begin_operation_cost(
+                        conn,
+                        source_type="character_sheet_task",
+                        source_id=character_sheet_lease.id,
+=======
                 with pg_transaction() as raw_conn:
                     sheet_cost_id = begin_operation_cost(
                         BusinessConnection.postgres(raw_conn),
                         source_type="character_sheet_task_attempt",
                         source_id=(f"{character_sheet_lease.id}:{character_sheet_lease.attempt}"),
+>>>>>>> codex/local-main-cost-billing-20260908
                         subject="character_sheet_image",
                         user_id=character_sheet_lease.created_by_user_id,
                     )
                 submission_started = True
                 sheet_generation = perform_character_sheet_task(prepared_sheet)
+                character_sheet_cost_usage = 1
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
+<<<<<<< main
+                    complete_operation_cost(conn, record_id=character_sheet_cost_id, usage_amount=1)
+=======
                     complete_operation_cost(conn, record_id=sheet_cost_id, usage_amount=1)
+>>>>>>> codex/local-main-cost-billing-20260908
                     complete_character_sheet_task(
                         conn,
                         prepared=prepared_sheet,
@@ -1484,8 +1660,16 @@ def run_pg_worker_once(
             except Exception as exc:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
+<<<<<<< main
+                    complete_operation_cost(
+                        conn,
+                        record_id=character_sheet_cost_id,
+                        usage_amount=character_sheet_cost_usage,
+                    )
+=======
                     if sheet_cost_id:
                         complete_operation_cost(conn, record_id=sheet_cost_id, usage_amount=None)
+>>>>>>> codex/local-main-cost-billing-20260908
                     fail_image_task(
                         conn,
                         table="character_sheet_tasks",

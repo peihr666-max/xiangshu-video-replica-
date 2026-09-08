@@ -1,4 +1,4 @@
-import type { CurrentUser, Project } from "../api";
+import type { CurrentUser, Project, StudioAnalytics } from "../api";
 
 export type StudioPage =
   | "workbench"
@@ -25,6 +25,9 @@ export type StudioPage =
 export type AssetKind = "image" | "video" | "audio";
 export type StudioAsset = {
   id: string;
+  materialId?: string;
+  assetId?: string;
+  generationTaskId?: string;
   name: string;
   kind: AssetKind;
   url?: string;
@@ -35,12 +38,17 @@ export type StudioAsset = {
   composite?: boolean;
   source: string;
   saved: boolean;
+  delivery?: "stored" | "direct";
+  allowedUses?: string[];
+  allowedActions?: string[];
 };
 export type StudioAvatar = {
   id: string;
   name: string;
   imageId: string;
   ready: boolean;
+  status?: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  error?: string;
   origin: "视频制作" | "照片制作";
   duration: string;
 };
@@ -49,6 +57,8 @@ export type StudioVoice = {
   name: string;
   confirmed: boolean;
   isDefault: boolean;
+  status?: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  error?: string;
   url?: string;
 };
 export type StudioPerson = {
@@ -94,6 +104,11 @@ export type StudioVideo = {
 export type StudioTask = {
   draftSnapshot?: StudioDraft;
   id: string;
+  backendKind?: "generation_batch" | "oral_task";
+  backendId?: string;
+  backendStatus?: string;
+  billingStatus?: string;
+  retryAction?: "retry" | "archive-retry";
   title: string;
   type: "视频复刻" | "人物置换" | "视频生成" | "数字人口播";
   status:
@@ -108,8 +123,13 @@ export type StudioTask = {
   poster?: string;
   resultId?: string;
   batchId?: string;
+<<<<<<< main
+  /** 独立创作批次无项目归属（null）。 */
+  projectId?: string | null;
+=======
   cancelAllowed?: boolean;
   projectId?: string;
+>>>>>>> codex/local-main-cost-billing-20260908
   driverMode?: "text" | "audio";
   ipId?: string;
   avatarId?: string;
@@ -127,6 +147,8 @@ export type StudioStats = {
 export type StudioData = {
   people: StudioPerson[];
   assets: StudioAsset[];
+  /** 素材库图片（视频生成页首帧/尾帧/参考素材的素材库选择来源）。 */
+  materials: StudioAsset[];
   videos: StudioVideo[];
   tasks: StudioTask[];
   projects: Project[];
@@ -134,6 +156,10 @@ export type StudioData = {
   loading: boolean;
   /** 平台侧真实统计（/api/studio/stats）；加载失败或审核模式为 null。 */
   stats: StudioStats | null;
+  /** 平台侧真实成片聚合（/api/studio/analytics，C6 数据看板），7/30 天双窗口；
+   * 加载失败为 null，看板页回退"尚未就绪"空态。 */
+  analytics7: StudioAnalytics | null;
+  analytics30: StudioAnalytics | null;
 };
 export type StudioScript = {
   id: string;
@@ -169,6 +195,8 @@ export type StudioDraft = {
   style: "standard" | "template";
   subtitles: boolean;
   quoteRevision: number;
+  /** 最近一次独立创作提交的批次 id：预览区就地展示生成进度。 */
+  videoBatchId?: string;
 };
 export type PickerKind =
   | "person"

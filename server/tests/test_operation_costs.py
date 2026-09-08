@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+<<<<<<< main
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+=======
+from pathlib import Path
+>>>>>>> codex/local-main-cost-billing-20260908
 
 import psycopg
 import pytest
@@ -15,17 +21,161 @@ from app.operation_costs import (
     record_video_generation_not_called,
     snapshot_generation_rates,
 )
+<<<<<<< main
+from app.storage import FakeStorageAdapter
+=======
+>>>>>>> codex/local-main-cost-billing-20260908
 
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 DB_NAME = "operation_costs_test"
 
 
+<<<<<<< main
+@pytest.mark.parametrize(
+    "mode", ["success", "quality_failure", "checkpoint_resume", "provider_retry"]
+)
+def test_first_frame_worker_cost_tracks_provider_output_before_checkpoint(
+    cost_dsn: str, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from app import generation_worker as worker
+
+    task_id = f"frame-cost-{uuid.uuid4()}"
+    user_id = f"frame-owner-{uuid.uuid4()}"
+    with psycopg.connect(cost_dsn) as conn:
+        conn.execute(
+            "INSERT INTO users (id, username, display_name) VALUES (%s,%s,'QA')", (user_id, user_id)
+        )
+
+    @contextmanager
+    def transaction():
+        with psycopg.connect(cost_dsn) as conn:
+            yield conn
+
+    monkeypatch.setattr(worker, "pg_transaction", transaction)
+    for name in (
+        "acquire_generation_continuation_lease",
+        "acquire_generation_task_lease",
+        "acquire_character_generation_task",
+        "acquire_analysis_task",
+        "acquire_script_rewrite_task",
+        "acquire_generation_reconcile_operation",
+        "_run_pg_source_frame_once",
+    ):
+        monkeypatch.setattr(worker, name, lambda *args, **kwargs: None)
+    lease = SimpleNamespace(id=task_id, attempt=2, created_by_user_id=user_id)
+    monkeypatch.setattr(worker, "acquire_first_frame_task", lambda *args, **kwargs: lease)
+    provider = SimpleNamespace(provider_name="fake")
+    prepared = SimpleNamespace(provider=provider, plan=SimpleNamespace(model="gpt-image-2"))
+    monkeypatch.setattr(worker, "prepare_first_frame_task", lambda *args, **kwargs: prepared)
+    for name in ("record_image_task_provider", "complete_first_frame_task", "fail_image_task"):
+        monkeypatch.setattr(worker, name, lambda *args, **kwargs: None)
+
+    def generate(*args, **kwargs):
+        if mode != "checkpoint_resume":
+            kwargs["before_provider_call"]()
+            if mode == "provider_retry":
+                kwargs["before_provider_call"]()
+            kwargs["on_generated_images"](2)
+            if mode == "quality_failure":
+                raise RuntimeError("quality inspection failed after paid images were archived")
+        # Checkpointed images are already stored: new file count is zero.
+        return SimpleNamespace(), SimpleNamespace(created_assets=[])
+
+    monkeypatch.setattr(worker, "run_first_frame_task_outside_transaction", generate)
+    assert (
+        worker.run_pg_worker_once(
+            worker_id="cost-qa",
+            storage=FakeStorageAdapter(provider="cos", bucket="qa"),
+            image_provider=provider,
+            first_frame_quality_inspector=SimpleNamespace(),
+            max_tasks=1,
+        )
+        == 1
+    )
+    with psycopg.connect(cost_dsn) as conn:
+        rows = conn.execute(
+            "SELECT status, usage_amount, cost_fen FROM operation_cost_records "
+            "WHERE source_type='first_frame_task' AND source_id LIKE %s ORDER BY source_id",
+            (f"{task_id}%",),
+        ).fetchall()
+    expected = [] if mode == "checkpoint_resume" else [("ACTUAL", 2, 10)]
+    if mode == "provider_retry":
+        expected.insert(0, ("UNKNOWN", None, None))
+    assert rows == expected
+
+
+=======
+>>>>>>> codex/local-main-cost-billing-20260908
 def _dsn() -> str:
     import os
 
     return os.environ.get("TEST_POSTGRESQL_URL", DEFAULT_DSN)
 
 
+<<<<<<< main
+@pytest.mark.parametrize("kind", ["analysis", "character_sheet"])
+def test_worker_keeps_known_cost_when_local_publication_fails(
+    cost_dsn: str, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from app import generation_worker as worker
+
+    task_id = f"publication-cost-{uuid.uuid4()}"
+    user_id = f"publication-owner-{uuid.uuid4()}"
+    with psycopg.connect(cost_dsn) as conn:
+        conn.execute(
+            "INSERT INTO users (id, username, display_name) VALUES (%s,%s,'QA')", (user_id, user_id)
+        )
+
+    @contextmanager
+    def transaction():
+        with psycopg.connect(cost_dsn) as conn:
+            yield conn
+
+    monkeypatch.setattr(worker, "pg_transaction", transaction)
+    for name in (
+        "acquire_generation_continuation_lease",
+        "acquire_generation_task_lease",
+        "acquire_character_generation_task",
+        "acquire_analysis_task",
+        "acquire_script_rewrite_task",
+        "acquire_generation_reconcile_operation",
+        "acquire_first_frame_task",
+        "_run_pg_source_frame_once",
+    ):
+        monkeypatch.setattr(worker, name, lambda *args, **kwargs: None)
+    lease = SimpleNamespace(id=task_id, created_by_user_id=user_id, duration_seconds=4)
+    monkeypatch.setattr(worker, f"acquire_{kind}_task", lambda *args, **kwargs: lease)
+    provider = SimpleNamespace(provider_name="fake")
+    prepared = SimpleNamespace(provider=provider)
+    monkeypatch.setattr(worker, f"prepare_{kind}_task", lambda *args, **kwargs: prepared)
+    monkeypatch.setattr(worker, f"perform_{kind}_task", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(worker, "record_image_task_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "fail_analysis_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "fail_image_task", lambda *args, **kwargs: None)
+
+    def fail_publication(*args, **kwargs):
+        raise RuntimeError("local publication failed after the provider returned")
+
+    monkeypatch.setattr(worker, f"complete_{kind}_task", fail_publication)
+    assert (
+        worker.run_pg_worker_once(
+            worker_id="publication-qa",
+            storage=FakeStorageAdapter(provider="cos", bucket="qa"),
+            image_provider=provider,
+            max_tasks=1,
+        )
+        == 1
+    )
+    with psycopg.connect(cost_dsn) as conn:
+        row = conn.execute(
+            "SELECT status, usage_amount, cost_fen FROM operation_cost_records WHERE source_id=%s",
+            (task_id,),
+        ).fetchone()
+    assert row == (("ACTUAL", 4, 36) if kind == "analysis" else ("ACTUAL", 1, 5))
+
+
+=======
+>>>>>>> codex/local-main-cost-billing-20260908
 def _database_dsn(name: str) -> str:
     return _dsn().rsplit("/", 1)[0] + f"/{name}"
 
@@ -257,6 +407,9 @@ def test_operation_cost_migration_downgrade_roundtrip(cost_dsn: str) -> None:
             ]
             is not None
         )
+<<<<<<< main
+    command.downgrade(config, "058_daily_external_prices")
+=======
     with pytest.raises(RuntimeError, match="cannot downgrade 066"):
         command.downgrade(config, "065_second_based_billing")
     with psycopg.connect(cost_dsn, autocommit=True) as raw:
@@ -267,6 +420,7 @@ def test_operation_cost_migration_downgrade_roundtrip(cost_dsn: str) -> None:
             "actual_output_seconds=NULL, cost_status=NULL"
         )
     command.downgrade(config, "065_second_based_billing")
+>>>>>>> codex/local-main-cost-billing-20260908
     try:
         with psycopg.connect(cost_dsn, autocommit=True) as raw:
             assert raw.execute("SELECT to_regclass('operation_cost_records')").fetchone()[0] is None

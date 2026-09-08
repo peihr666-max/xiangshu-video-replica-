@@ -1,17 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  applySavedGenerationPrompt,
   attachCustomerSessionToken,
   CUSTOMER_SESSION_REPLACED_EVENT,
   CUSTOMER_SESSION_REVOKED_EVENT,
+  cancelOralTask,
   cancelSourceFrameTask,
   chooseProjectMainCharacterVersion,
   compileGenerationPrompt,
+  completeMaterialUpload,
   completeVideoUpload,
+  confirmOralVoice,
   confirmSourceFrame,
   createGenerationBatch,
   createGenerationResultPreviewUrl,
+<<<<<<< main
+  createMaterialUploadIntent,
+  createOralAvatarClone,
+  createOralConsent,
+  createOralVoiceClone,
+=======
   createOralTask,
+>>>>>>> codex/local-main-cost-billing-20260908
   createProject,
   createScriptVersion,
   createVideoUploadIntent,
@@ -19,24 +30,35 @@ import {
   downloadCharacterAsset,
   downloadGenerationResult,
   downloadGenerationTaskResult,
+  downloadMaterialAsset,
   extractSourceFrames,
   generateFirstFrames,
   getCachedCharacterAssetUrl,
   getCharacterReferenceRecommendation,
   getCurrentUser,
   getGenerationBatch,
+  getGenerationPriceQuote,
   getGenerationResultDownloadUrl,
   getGenerationRuntimeLimits,
   getHealth,
   getLatestGenerationPrompt,
   getLatestProjectFirstFrames,
+  getLatestScriptRewriteTask,
   getLatestScriptVersion,
   getScriptFromAudioTask,
   getSettings,
+<<<<<<< main
+  hideMaterial,
+=======
   importViralVideoToProject,
+>>>>>>> codex/local-main-cost-billing-20260908
   listGenerationBatches,
+  listMaterials,
+  listOralAvatars,
+  listOralVoices,
   listProjectCharacterVersions,
   listProjects,
+  listSavedGenerationPrompts,
   lockGenerationPrompt,
   readAnalysisPayload,
   readFirstFrameCandidates,
@@ -45,13 +67,19 @@ import {
   regenerateGenerationTask,
   resolveApiBaseUrl,
   retryGenerationTask,
+  retryOralTask,
+  retryOralTaskArchive,
   reviseGenerationPrompt,
   rewriteProjectScript,
   SESSION_EXPIRED_EVENT,
+  saveGenerationPrompt,
   selectCharacterReferences,
   setCustomerSessionToken,
   setInternalAccessToken,
   startVideoAnalysis,
+  updateMaterial,
+  updateSimpleCharacterProfile,
+  uploadMaterial,
   uploadReferenceVideo,
   waitForAnalysisTask,
   waitForCharacterSheetTask,
@@ -61,7 +89,362 @@ import {
   waitForSourceFrameTask,
 } from "./api";
 
+describe("素材库 API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("使用服务端分页筛选并提交素材管理动作", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], page: 2, page_size: 6, total: 8 }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listMaterials({ mediaType: "audio", page: 2, pageSize: 6 });
+    await updateMaterial("asset:audio 1", { title: "新名称" });
+    await hideMaterial("asset:audio 1");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/studio/materials?media_type=audio&page=2&page_size=6",
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/studio/materials/asset%3Aaudio%201",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ method: "PATCH", body: '{"title":"新名称"}' }),
+    );
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("通过授权下载地址启动素材下载且不把文件整体读入内存", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ url: "http://127.0.0.1:8000/api/assets/signed" }),
+    });
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await downloadMaterialAsset("asset 1", "庭院.png");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/assets/asset%201/download-url",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(click).toHaveBeenCalledOnce();
+    click.mockRestore();
+  });
+
+  it("按扩展名规范化上传类型并完成素材上传", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          material_id: "asset:image-1",
+          asset_id: "image-1",
+          storage_key: "materials/user/image-1/original.jpg",
+          method: "PUT",
+          url: "https://storage.test/upload",
+          headers: { "Content-Type": "image/jpeg" },
+          expires_at: "2030-01-01T00:00:00Z",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "asset:image-1", status: "ready" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const file = new File(["image"], "房屋.JPEG", {
+      type: "application/octet-stream",
+    });
+
+    const intent = await createMaterialUploadIntent(file);
+    await completeMaterialUpload(intent.asset_id);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        filename: "房屋.JPEG",
+        content_type: "image/jpeg",
+        size_bytes: 5,
+      }),
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/studio/materials/uploads/image-1/complete",
+    );
+  });
+
+  it("复用带本地鉴权和进度处理的上传通道", async () => {
+    class MaterialUploadRequest {
+      static latest: MaterialUploadRequest | null = null;
+      headers = new Map<string, string>();
+      onerror: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      ontimeout: (() => void) | null = null;
+      status = 204;
+      timeout = 0;
+      upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
+        onprogress: null,
+      };
+
+      constructor() {
+        MaterialUploadRequest.latest = this;
+      }
+      open() {}
+      setRequestHeader(name: string, value: string) {
+        this.headers.set(name, value);
+      }
+      send() {
+        this.upload.onprogress?.({
+          lengthComputable: true,
+          loaded: 3,
+          total: 3,
+        } as ProgressEvent);
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", MaterialUploadRequest);
+    const progress = vi.fn();
+
+    await uploadMaterial(
+      {
+        material_id: "asset:audio-1",
+        asset_id: "audio-1",
+        storage_key: null,
+        method: "PUT",
+        url: "http://127.0.0.1:8000/api/studio/materials/uploads/audio-1/content",
+        headers: { "Content-Type": "audio/mpeg" },
+        expires_at: "2030-01-01T00:00:00Z",
+      },
+      new File(["ID3"], "voice.mp3", { type: "audio/mpeg" }),
+      progress,
+    );
+
+    expect(progress).toHaveBeenLastCalledWith(100);
+    expect(MaterialUploadRequest.latest?.headers.get("Content-Type")).toBe(
+      "audio/mpeg",
+    );
+  });
+});
+
+describe("人物 IP 口播资产 API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("按人物读取分身和声音记录", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [] })
+      .mockResolvedValueOnce({ ok: true, json: async () => [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listOralAvatars("person 1");
+    await listOralVoices("person 1");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/oral/avatars?identity_id=person%201",
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/oral/voices?identity_id=person%201",
+    );
+  });
+
+  it("先存证授权，再带 consent_id 提交分身和声音克隆", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "consent-avatar" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "avatar-1", status: "RUNNING" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "consent-voice" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "voice-1", status: "RUNNING" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const avatarConsent = await createOralConsent({
+      identityId: "person-1",
+      sourceAssetId: "scene-1",
+      purpose: "AVATAR",
+    });
+    await createOralAvatarClone({
+      identityId: "person-1",
+      title: "庭院讲解分身",
+      sourceAssetId: "scene-1",
+      sourceKind: "IMAGE",
+      consentId: avatarConsent.id,
+      idempotencyKey: "avatar-clone-key",
+    });
+    const voiceConsent = await createOralConsent({
+      identityId: "person-1",
+      sourceAssetId: "audio-1",
+      purpose: "VOICE",
+    });
+    await createOralVoiceClone({
+      identityId: "person-1",
+      title: "张工音色",
+      sourceAssetId: "audio-1",
+      consentId: voiceConsent.id,
+      idempotencyKey: "voice-clone-key",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/oral/consents",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      identity_id: "person-1",
+      source_asset_id: "scene-1",
+      purpose: "AVATAR",
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/oral/avatars",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      identity_id: "person-1",
+      title: "庭院讲解分身",
+      source_asset_id: "scene-1",
+      source_kind: "IMAGE",
+      consent_id: "consent-avatar",
+      idempotency_key: "avatar-clone-key",
+    });
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/oral/consents",
+    );
+    expect(fetchMock.mock.calls[3]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/oral/voices",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      identity_id: "person-1",
+      title: "张工音色",
+      source_asset_id: "audio-1",
+      consent_id: "consent-voice",
+      idempotency_key: "voice-clone-key",
+    });
+  });
+
+  it("显式确认 READY 声音", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "voice-1", status: "READY", confirmed: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await confirmOralVoice("voice 1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/oral/voices/voice%201/confirm",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("调用口播任务取消与两种重试合同", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "oral-1", status: "QUEUED" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await cancelOralTask("oral 1");
+    await retryOralTask("oral 1");
+    await retryOralTaskArchive("oral 1");
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:8000/api/oral/tasks/oral%201/cancel",
+      "http://127.0.0.1:8000/api/oral/tasks/oral%201/retry",
+      "http://127.0.0.1:8000/api/oral/tasks/oral%201/archive-retry",
+    ]);
+    for (const call of fetchMock.mock.calls) {
+      expect(call[1]).toEqual(expect.objectContaining({ method: "POST" }));
+    }
+  });
+
+  it("保存人物 IP 定位合同", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ identity_id: "person-1" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const profile = {
+      display_name: "张工",
+      role: "乡墅项目经理",
+      service_scope: "建房全流程",
+      target_audience: "返乡建房家庭",
+      expression_style: "专业直白",
+    };
+
+    await updateSimpleCharacterProfile("person-1", profile);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/simple-characters/identities/person-1/profile",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(
+      profile,
+    );
+  });
+});
+
 describe("generation payload readers", () => {
+  it("uses owner-scoped saved prompt and external quote endpoints", async () => {
+    const version = { id: "saved-1" };
+    const quote = {
+      resolution: "2K",
+      duration_seconds: 15,
+      quantity: 4,
+      unit_price_fen_per_second: 25,
+      estimated_seconds: 60,
+      estimated_price_fen: 1500,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => version })
+      .mockResolvedValueOnce({ ok: true, json: async () => [version] })
+      .mockResolvedValueOnce({ ok: true, json: async () => version })
+      .mockResolvedValueOnce({ ok: true, json: async () => quote });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await saveGenerationPrompt("project 1", {
+      name: "庭院推镜",
+      prompt_text: "庭院日景，镜头缓慢推进。",
+      base_prompt_version_id: "prompt-1",
+    });
+    await listSavedGenerationPrompts("project 1");
+    await applySavedGenerationPrompt("project 1", "saved 1", "prompt-1");
+    await expect(
+      getGenerationPriceQuote({
+        resolution: "2K",
+        duration_seconds: 15,
+        quantity: 4,
+      }),
+    ).resolves.toEqual(quote);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://127.0.0.1:8000/api/projects/project%201/saved-prompts/saved%201/apply",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ base_prompt_version_id: "prompt-1" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "http://127.0.0.1:8000/api/generation/price-quote?resolution=2K&duration_seconds=15&quantity=4",
+      expect.any(Object),
+    );
+  });
+
   it("reads project appearance and reconstruction metadata compatibly", () => {
     const parsed = readFirstFrameCandidates({
       id: "first-frame-v1",
@@ -739,6 +1122,7 @@ describe("generation workflow API", () => {
       first_frame_asset_id: "frame-1",
       output_duration_seconds: 10,
       resolution: "768P",
+      ratio: "adaptive",
     });
     await reviseGenerationPrompt("project 1", {
       base_prompt_version_id: "prompt-1",
@@ -753,6 +1137,7 @@ describe("generation workflow API", () => {
       first_frame_asset_id: "frame-1",
       output_duration_seconds: 10,
       resolution: "768P",
+      ratio: "adaptive",
       idempotency_key: "key-1",
       provider: "fake_h3",
       fake_audio_quality: "ok",
@@ -908,6 +1293,7 @@ describe("generation workflow API", () => {
       first_frame_asset_id: "frame-1",
       output_duration_seconds: 10,
       resolution: "768P",
+      ratio: "adaptive",
       idempotency_key: "key-1",
       provider: "fake_h3",
       fake_audio_quality: "ok",
@@ -1560,7 +1946,11 @@ describe("startVideoAnalysis", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
     vi.stubGlobal("fetch", fetchMock);
 
-    const task = await rewriteProjectScript("project-1", "待改写原稿。");
+    const task = await rewriteProjectScript(
+      "project-1",
+      "待改写原稿。",
+      "identity-1",
+    );
     const first = waitForScriptRewriteTask(task.id);
     const recovered = waitForScriptRewriteTask(task.id);
     await vi.advanceTimersByTimeAsync(1_500);
@@ -1573,8 +1963,24 @@ describe("startVideoAnalysis", () => {
     const enqueueBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(enqueueBody).toEqual({
       text: "待改写原稿。",
+      identity_id: "identity-1",
       idempotency_key: expect.any(String),
     });
+  });
+
+  it("按人物或无人物作用域读取最新改写任务", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => null });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getLatestScriptRewriteTask("project-1", "identity 1");
+    await getLatestScriptRewriteTask("project-1");
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:8000/api/projects/project-1/script-rewrite-tasks/latest?identity_scope=identity&identity_id=identity+1",
+      "http://127.0.0.1:8000/api/projects/project-1/script-rewrite-tasks/latest?identity_scope=none",
+    ]);
   });
 
   it("enqueues H3 reconciliation and shares its durable recovery poller", async () => {

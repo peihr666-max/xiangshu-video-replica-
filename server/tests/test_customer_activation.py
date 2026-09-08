@@ -294,6 +294,23 @@ def test_initial_free_seconds_keep_zero_revenue_and_one_audited_grant(
     assert response.status_code == 201, response.text
     again = _post_activate(client, plaintext, "fp-free-seconds", "idem-free-seconds")
     assert again.status_code == 201, again.text
+<<<<<<< main
+    uid = response.json()["user_id"]
+    with psycopg.connect(clean_state) as conn:
+        assert (
+            conn.execute(
+                "SELECT available_credits FROM wallets WHERE user_id=%s", (uid,)
+            ).fetchone()[0]
+            == 600
+        )
+        order = conn.execute(
+            "SELECT id,provider,amount_fen,credits FROM recharge_orders WHERE user_id=%s", (uid,)
+        ).fetchall()
+        assert len(order) == 1
+        assert order[0][1:] == ("admin_adjustment", 0, 600)
+        assert conn.execute(
+            "SELECT count(*),sum(available_delta) FROM wallet_transactions WHERE user_id=%s", (uid,)
+=======
     user_id = response.json()["user_id"]
     with psycopg.connect(clean_state) as conn:
         assert (
@@ -311,11 +328,16 @@ def test_initial_free_seconds_keep_zero_revenue_and_one_audited_grant(
         assert conn.execute(
             "SELECT count(*),sum(available_delta) FROM wallet_transactions WHERE user_id=%s",
             (user_id,),
+>>>>>>> codex/local-main-cost-billing-20260908
         ).fetchone() == (1, 600)
         assert conn.execute(
             "SELECT admin_user_id,source_document_type,reason FROM admin_adjustments "
             "WHERE target_user_id=%s",
+<<<<<<< main
+            (uid,),
+=======
             (user_id,),
+>>>>>>> codex/local-main-cost-billing-20260908
         ).fetchone() == ("admin_u", "FREE_GRANT", "活动免费赠送")
 
 

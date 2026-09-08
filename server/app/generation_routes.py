@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import logging
 import sqlite3
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -12,6 +14,7 @@ from pydantic import BaseModel
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
 from app.generation import (
+    ApplySavedPromptRequest,
     BatchResult,
     BatchStatusFilter,
     ConfirmNotChargedRequest,
@@ -19,6 +22,7 @@ from app.generation import (
     GenerationBatchListPage,
     GenerationBatchRenameRequest,
     GenerationBatchRequest,
+    GenerationPriceQuote,
     GenerationRuntimeLimits,
     GenerationTaskRetryRequest,
     H3Provider,
@@ -29,29 +33,35 @@ from app.generation import (
     PromptPreviewResult,
     PromptRevisionRequest,
     ReconcileGenerationTaskRequest,
+    SavedPromptRequest,
     ScriptRequest,
     TaskResult,
     VersionResult,
     VersionState,
+    apply_saved_prompt,
     cancel_generation_batch,
     compile_prompt_version,
     confirm_generation_task_not_charged,
     create_generation_batch,
     create_script_version,
     enqueue_generation_reconcile_operation,
+    generation_price_quote,
     generation_runtime_limits,
     get_generation_batch,
     h3_provider_for_task,
     latest_generation_reconcile_operation,
     list_generation_batches,
+    list_saved_prompts,
     load_generation_reconcile_operation,
     lock_prompt_version,
     preview_prompt_text,
     regenerate_generation_batch,
     regenerate_generation_task,
     rename_generation_batch,
+    require_batch_access,
     retry_generation_task,
     revise_prompt_version,
+    save_prompt_to_library,
     version_result,
     version_state,
 )
@@ -64,9 +74,12 @@ from app.permissions import (
 from app.script_rewrite import (
     ScriptRewriteRequest,
     ScriptRewriteResult,
+    _canonical_json,
+    _validated_ip_profile_snapshot,
     enqueue_script_rewrite_task,
     latest_script_rewrite_task,
     load_script_rewrite_task,
+    require_owned_script_rewrite_identity,
     script_rewrite_task_result,
 )
 
@@ -74,9 +87,21 @@ router = APIRouter(prefix="/api", tags=["generation"])
 logger = logging.getLogger(__name__)
 
 
+class ScriptRewriteIpProfileSummary(BaseModel):
+    display_name: str
+    role: str
+    service_scope: str
+    target_audience: str
+    expression_style: str
+    profile_version: int
+
+
 class ScriptRewriteTaskResponse(BaseModel):
     id: str
     project_id: str
+    identity_id: str | None
+    ip_profile_hash: str | None
+    ip_profile_snapshot: ScriptRewriteIpProfileSummary | None
     status: str
     attempt: int
     result: ScriptRewriteResult | None
@@ -139,6 +164,7 @@ def rewrite_project_script(
             project_id=project_id,
             source_text=request.text,
             idempotency_key=request.idempotency_key or str(uuid4()),
+            identity_id=request.identity_id,
         )
         return script_rewrite_task_response(row)
 
@@ -170,6 +196,8 @@ def read_latest_script_rewrite_task(
     project_id: str,
     conn: Database,
     actor: AuthenticatedUser,
+    identity_scope: Literal["all", "identity", "none"] = Query(default="all"),
+    identity_id: str | None = Query(default=None, min_length=1, max_length=128),
 ) -> ScriptRewriteTaskResponse | None:
     require_project_access(
         conn,
@@ -177,14 +205,51 @@ def read_latest_script_rewrite_task(
         project_id=project_id,
         action="project.script_rewrite_read",
     )
-    row = latest_script_rewrite_task(conn, project_id=project_id)
+    if identity_scope == "identity" and identity_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SCRIPT_REWRITE_IDENTITY_REQUIRED",
+                "message": "按人物查询时必须提供 identity_id。",
+            },
+        )
+    if identity_scope != "identity" and identity_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SCRIPT_REWRITE_IDENTITY_SCOPE_INVALID",
+                "message": "identity_id 仅可用于 identity 查询范围。",
+            },
+        )
+    if identity_scope == "identity":
+        assert identity_id is not None
+        require_owned_script_rewrite_identity(
+            conn,
+            actor=actor,
+            identity_id=identity_id,
+        )
+    row = latest_script_rewrite_task(
+        conn,
+        project_id=project_id,
+        identity_id=identity_id,
+        identity_scope=identity_scope,
+    )
     return None if row is None else script_rewrite_task_response(row)
 
 
 def script_rewrite_task_response(row: sqlite3.Row) -> ScriptRewriteTaskResponse:
+    snapshot = _script_rewrite_profile_summary(
+        row["ip_profile_snapshot_json"],
+        task_id=str(row["id"]),
+        identity_id=None if row["identity_id"] is None else str(row["identity_id"]),
+        expected_hash=None if row["ip_profile_hash"] is None else str(row["ip_profile_hash"]),
+    )
     return ScriptRewriteTaskResponse(
         id=str(row["id"]),
         project_id=str(row["project_id"]),
+        identity_id=None if row["identity_id"] is None else str(row["identity_id"]),
+        ip_profile_hash=(None if row["ip_profile_hash"] is None else str(row["ip_profile_hash"])),
+        ip_profile_snapshot=snapshot,
         status=str(row["status"]),
         attempt=int(row["attempt"]),
         result=script_rewrite_task_result(row),
@@ -198,6 +263,33 @@ def script_rewrite_task_response(row: sqlite3.Row) -> ScriptRewriteTaskResponse:
         started_at=None if row["started_at"] is None else str(row["started_at"]),
         completed_at=(None if row["completed_at"] is None else str(row["completed_at"])),
     )
+
+
+def _script_rewrite_profile_summary(
+    value: object,
+    *,
+    task_id: str,
+    identity_id: str | None,
+    expected_hash: str | None,
+) -> ScriptRewriteIpProfileSummary | None:
+    if value is None and identity_id is None and expected_hash is None:
+        return None
+    try:
+        snapshot = json.loads(str(value))
+        validated = _validated_ip_profile_snapshot(snapshot)
+        actual_hash = hashlib.sha256(_canonical_json(validated).encode("utf-8")).hexdigest()
+        if validated["identity_id"] != identity_id or actual_hash != expected_hash:
+            raise ValueError("snapshot identity or hash mismatch")
+        return ScriptRewriteIpProfileSummary.model_validate(validated)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        logger.error("Script rewrite task %s has an invalid IP profile snapshot", task_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "SCRIPT_REWRITE_SNAPSHOT_INTEGRITY_ERROR",
+                "message": "改写任务的人物档案快照完整性校验失败。",
+            },
+        ) from None
 
 
 @router.get("/projects/{project_id}/scripts/latest", response_model=VersionState)
@@ -250,6 +342,54 @@ def revise_project_prompt(
         row = revise_prompt_version(
             conn,
             project_id=project_id,
+            actor=actor,
+            request=request,
+        )
+    return version_result(row)
+
+
+@router.post("/projects/{project_id}/saved-prompts", response_model=VersionResult)
+def create_saved_prompt(
+    project_id: str,
+    request: SavedPromptRequest,
+    db: BusinessDbDep,
+) -> VersionResult:
+    with db.write() as (conn, actor):
+        row = save_prompt_to_library(
+            conn,
+            project_id=project_id,
+            actor=actor,
+            request=request,
+        )
+    return version_result(row)
+
+
+@router.get("/projects/{project_id}/saved-prompts", response_model=list[VersionResult])
+def read_saved_prompts(
+    project_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> list[VersionResult]:
+    return [
+        version_result(row) for row in list_saved_prompts(conn, project_id=project_id, actor=actor)
+    ]
+
+
+@router.post(
+    "/projects/{project_id}/saved-prompts/{saved_prompt_id}/apply",
+    response_model=VersionResult,
+)
+def apply_project_saved_prompt(
+    project_id: str,
+    saved_prompt_id: str,
+    request: ApplySavedPromptRequest,
+    db: BusinessDbDep,
+) -> VersionResult:
+    with db.write() as (conn, actor):
+        row = apply_saved_prompt(
+            conn,
+            project_id=project_id,
+            saved_prompt_id=saved_prompt_id,
             actor=actor,
             request=request,
         )
@@ -397,8 +537,12 @@ def delete_generation_batch_record(
             entity_type="generation_batch",
             entity_id=batch_id,
         )
-        require_project_access(
-            conn, actor=actor, project_id=str(batch["project_id"]), action="generation_batch.hide"
+        require_batch_access(
+            conn,
+            actor=actor,
+            project_id=None if batch["project_id"] is None else str(batch["project_id"]),
+            created_by_user_id=str(batch["created_by_user_id"]),
+            action="generation_batch.hide",
         )
         # List removal is an account preference, never cancellation or data erasure.
         with conn:
@@ -437,7 +581,7 @@ def regenerate_batch(
 ) -> BatchResult:
     with db.write() as (conn, actor):
         row = conn.execute(
-            "SELECT project_id FROM generation_batches WHERE id = %s",
+            "SELECT project_id, created_by_user_id FROM generation_batches WHERE id = %s",
             (batch_id,),
         ).fetchone()
         if row is None:
@@ -449,10 +593,11 @@ def regenerate_batch(
             entity_type="generation_batch",
             entity_id=batch_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_batch.regenerate",
         )
         if request is None:
@@ -474,6 +619,23 @@ def read_generation_runtime_limits(
     _actor: AuthenticatedUser,
 ) -> GenerationRuntimeLimits:
     return generation_runtime_limits(conn)
+
+
+@router.get("/generation/price-quote", response_model=GenerationPriceQuote)
+def read_generation_price_quote(
+    conn: Database,
+    actor: AuthenticatedUser,
+    resolution: Literal["768P", "2K"] = Query(default="768P"),
+    duration_seconds: int = Query(default=8, ge=4, le=15),
+    quantity: int = Query(default=1, ge=1),
+) -> GenerationPriceQuote:
+    del actor
+    return generation_price_quote(
+        conn,
+        resolution=resolution,
+        duration_seconds=duration_seconds,
+        quantity=quantity,
+    )
 
 
 def _generation_task_context(conn: Database, task_id: str) -> sqlite3.Row:
@@ -506,7 +668,8 @@ def read_generation_task_preview_url(
 ) -> GenerationTaskPreviewUrlResponse:
     task = conn.execute(
         """
-        SELECT batch.project_id, task.provider, task.provider_result_url
+        SELECT batch.project_id, batch.created_by_user_id,
+               task.provider, task.provider_result_url
         FROM generation_tasks AS task
         JOIN generation_batches AS batch ON batch.id = task.batch_id
         WHERE task.id = %s
@@ -516,10 +679,11 @@ def read_generation_task_preview_url(
     ).fetchone()
     if task is None:
         raise HTTPException(status_code=404, detail={"code": "TASK_NOT_FOUND"})
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
-        project_id=str(task["project_id"]),
+        project_id=None if task["project_id"] is None else str(task["project_id"]),
+        created_by_user_id=str(task["created_by_user_id"]),
         action="generation_task.preview",
     )
     result_url = task["provider_result_url"]
@@ -555,10 +719,11 @@ def retry_task(
             entity_type="generation_task",
             entity_id=task_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_task.retry",
         )
         if request is None:
@@ -584,10 +749,11 @@ def regenerate_task(
             entity_type="generation_task",
             entity_id=task_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_task.regenerate",
         )
         if request is None:
@@ -622,10 +788,11 @@ def confirm_task_not_charged(
             entity_type="generation_task",
             entity_id=task_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_task.confirm_not_charged",
         )
         if request is None:
@@ -660,10 +827,11 @@ def reconcile_uncertain_task(
             entity_type="generation_task",
             entity_id=task_id,
         )
-        require_project_access(
+        require_batch_access(
             conn,
             actor=actor,
-            project_id=str(row["project_id"]),
+            project_id=None if row["project_id"] is None else str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
             action="generation_task.reconcile",
         )
         if request is None:
@@ -690,10 +858,11 @@ def read_generation_reconcile_operation(
     actor: AuthenticatedUser,
 ) -> GenerationReconcileOperationResponse:
     row = load_generation_reconcile_operation(conn, operation_id)
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
-        project_id=str(row["project_id"]),
+        project_id=None if row["project_id"] is None else str(row["project_id"]),
+        created_by_user_id=str(row["actor_user_id"]),
         action="generation_task.reconcile_read",
     )
     return generation_reconcile_operation_response(row)
@@ -709,10 +878,11 @@ def read_latest_generation_reconcile_operation(
     actor: AuthenticatedUser,
 ) -> GenerationReconcileOperationResponse | None:
     task = _generation_task_context(conn, task_id)
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
-        project_id=str(task["project_id"]),
+        project_id=(None if task["project_id"] is None else str(task["project_id"])),
+        created_by_user_id=str(task["created_by_user_id"]),
         action="generation_task.reconcile_read",
     )
     row = latest_generation_reconcile_operation(conn, task_id=task_id)

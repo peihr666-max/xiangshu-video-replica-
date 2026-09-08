@@ -4,21 +4,41 @@ import type {
   GenerationBatch,
   GenerationBatchListPage,
   GenerationTask,
+<<<<<<< main
+  MaterialItem,
+  OralAvatarRecord,
   OralTaskRecord,
+  OralVoiceRecord,
+=======
+  OralTaskRecord,
+>>>>>>> codex/local-main-cost-billing-20260908
   Project,
   ScriptFromAudioTask,
   SimpleLibraryEntry,
   SimpleSceneLook,
 } from "../api";
+import * as live from "./live";
+import { createDraft } from "./state";
 
 const api = vi.hoisted(() => ({
+<<<<<<< main
+  compileGenerationPrompt: vi.fn(),
+  createGenerationBatch: vi.fn(),
+  createScriptVersion: vi.fn(),
+  defaultBatchProvider: vi.fn(async () => "metaso"),
+  lockGenerationPrompt: vi.fn(),
+  reviseGenerationPrompt: vi.fn(),
+=======
   createScriptFromAudioTask: vi.fn<() => Promise<ScriptFromAudioTask>>(),
+>>>>>>> codex/local-main-cost-billing-20260908
   createGenerationResultPreviewUrl: vi.fn(),
   createGenerationTaskPreviewUrl: vi.fn(),
+  downloadMaterialAsset: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
   getCachedCharacterAssetUrl: vi.fn(),
   getGenerationBatch: vi.fn(),
   getLatestProjectAnalysis: vi.fn(),
+  getStudioAnalytics: vi.fn(async () => null),
   getStudioStats: vi.fn(async () => null),
   getLatestScriptVersion: vi.fn(),
   getLatestScriptFromAudioTask:
@@ -26,24 +46,43 @@ const api = vi.hoisted(() => ({
   getScriptFromAudioTask: vi.fn<() => Promise<ScriptFromAudioTask>>(),
   listCharacterSceneLooks: vi.fn(),
   listGenerationBatches: vi.fn(),
+<<<<<<< main
+  listOralAvatars: vi.fn<() => Promise<OralAvatarRecord[]>>(async () => []),
+  listOralTasks: vi.fn<() => Promise<OralTaskRecord[]>>(async () => []),
+  listOralVoices: vi.fn<() => Promise<OralVoiceRecord[]>>(async () => []),
+=======
   listOralTasks: vi.fn(async (): Promise<OralTaskRecord[]> => []),
+>>>>>>> codex/local-main-cost-billing-20260908
   listViralVideos: vi.fn(),
   listProjects: vi.fn(),
   listSimpleCharacterLibrary: vi.fn(),
   readAnalysisPayload: vi.fn(),
   cancelGenerationBatch: vi.fn(),
+  cancelOralTask: vi.fn(),
+  retryOralTask: vi.fn(),
+  retryOralTaskArchive: vi.fn(),
+  resolveMaterials: vi.fn(),
 }));
 
 vi.mock("../api", () => api);
 
 import {
   cancelStudioTask,
+<<<<<<< main
+  downloadStudioTaskResult,
+  loadDraftMaterials,
+=======
   extractScriptFromUpload,
+>>>>>>> codex/local-main-cost-billing-20260908
   loadPersonAssets,
   loadProjectDraft,
   loadStudioData,
   loadTaskPreview,
   reloadTasks,
+<<<<<<< main
+  retryStudioTask,
+=======
+>>>>>>> codex/local-main-cost-billing-20260908
 } from "./live";
 import type { StudioTask } from "./types";
 
@@ -66,7 +105,13 @@ const project: Project = {
 
 const person: SimpleLibraryEntry = {
   identity_id: "person-1",
+  persona_id: "persona-1",
+  version_number: 1,
   display_name: "张工",
+  role: "乡墅设计师",
+  service_scope: "乡墅设计",
+  target_audience: "准备建房家庭",
+  expression_style: "专业直白",
   owner_user_id: "user-1",
   status: "PUBLISHED",
   contact_sheet_asset_id: "sheet-1",
@@ -198,6 +243,8 @@ describe("真实 Studio 只读适配器", () => {
     vi.resetAllMocks();
     api.listProjects.mockResolvedValue([project]);
     api.listSimpleCharacterLibrary.mockResolvedValue([person]);
+    api.listOralAvatars.mockResolvedValue([]);
+    api.listOralVoices.mockResolvedValue([]);
     api.listViralVideos.mockImplementation((platform: string) =>
       Promise.resolve({
         platform,
@@ -239,6 +286,58 @@ describe("真实 Studio 只读适配器", () => {
         created_at: "2026-09-05T09:00:00+08:00",
       },
     });
+  });
+
+  it("恢复云端草稿时批量解析其中的素材引用", async () => {
+    const material = {
+      id: "asset:image-1",
+      owner_user_id: "user-1",
+      asset_id: "image-1",
+      generation_task_id: null,
+      project_id: null,
+      person_id: null,
+      title: "云端首帧.png",
+      group: "我的上传",
+      media_type: "image",
+      source: "upload",
+      status: "ready",
+      delivery: "stored",
+      content_type: "image/png",
+      size_bytes: 128,
+      duration_seconds: null,
+      created_at: "2026-09-06 10:00:00",
+      hidden: false,
+      saved: true,
+      allowed_uses: ["first_frame", "tail_frame", "reference"],
+      allowed_actions: ["preview", "download", "rename", "hide"],
+    } satisfies MaterialItem;
+    api.resolveMaterials.mockResolvedValue({
+      items: [material],
+      unavailable_ids: ["asset:missing-audio"],
+    });
+    const draft = createDraft();
+    draft.firstFrameId = "image-1";
+    draft.tailFrameId = "image-1";
+    draft.audioId = "missing-audio";
+    draft.referenceIds = ["image-1"];
+
+    const result = await loadDraftMaterials(draft);
+
+    expect(api.resolveMaterials).toHaveBeenCalledWith([
+      "asset:image-1",
+      "asset:missing-audio",
+    ]);
+    expect(result.assets).toEqual([
+      expect.objectContaining({
+        id: "image-1",
+        materialId: "asset:image-1",
+        name: "云端首帧.png",
+        kind: "image",
+        saved: true,
+        url: "https://signed/source",
+      }),
+    ]);
+    expect(result.unavailableIds).toEqual(["missing-audio"]);
   });
 
   it("详情按需读取批次并优先预览成功的直出结果", async () => {
@@ -312,6 +411,35 @@ describe("真实 Studio 只读适配器", () => {
     await expect(loadTaskPreview(studioTask)).resolves.toBeUndefined();
     expect(api.createGenerationResultPreviewUrl).not.toHaveBeenCalled();
     expect(api.createGenerationTaskPreviewUrl).not.toHaveBeenCalled();
+  });
+
+  it("口播成片预览和下载都直接签发 result_asset_id", async () => {
+    const oralResult: StudioTask = {
+      id: "oral-visible",
+      backendKind: "oral_task",
+      backendId: "oral-backend",
+      backendStatus: "SUCCEEDED",
+      title: "张工口播",
+      type: "数字人口播",
+      status: "completed",
+      submitted: "2026-09-06T09:00:00Z",
+      resultId: "oral-result-asset",
+    };
+    api.getAssetDownloadUrl.mockResolvedValue({
+      url: "https://signed/oral-result",
+    });
+    await expect(loadTaskPreview(oralResult)).resolves.toMatchObject({
+      id: "oral-result-asset",
+      url: "https://signed/oral-result",
+    });
+    await downloadStudioTaskResult(oralResult);
+
+    expect(api.getAssetDownloadUrl).toHaveBeenCalledWith("oral-result-asset");
+    expect(api.downloadMaterialAsset).toHaveBeenCalledWith(
+      "oral-result-asset",
+      "张工口播.mp4",
+    );
+    expect(api.getGenerationBatch).not.toHaveBeenCalled();
   });
 
   it("批次或签名请求失败时向上抛出以便界面明确重试", async () => {
@@ -442,6 +570,72 @@ describe("真实 Studio 只读适配器", () => {
     expect(data.loading).toBe(false);
     expect(data.videos).toEqual([]);
     expect(api.listViralVideos).not.toHaveBeenCalled();
+  });
+
+  it("把真实声音和分身按人物绑定并加载可预览素材", async () => {
+    api.listOralAvatars.mockResolvedValue([
+      {
+        id: "avatar-1",
+        identity_id: "person-1",
+        title: "张工照片分身",
+        status: "READY",
+        source_kind: "IMAGE",
+        source_asset_id: "scene-asset-1",
+        error_message: null,
+        created_at: "2026-09-06T10:00:00Z",
+        updated_at: "2026-09-06T10:03:00Z",
+      },
+    ] as OralAvatarRecord[]);
+    api.listOralVoices.mockResolvedValue([
+      {
+        id: "voice-1",
+        identity_id: "person-1",
+        title: "张工本人音色",
+        status: "READY",
+        source_asset_id: "voice-source-1",
+        demo_asset_id: null,
+        confirmed: 1,
+        error_message: null,
+        created_at: "2026-09-06T10:00:00Z",
+        updated_at: "2026-09-06T10:02:00Z",
+      },
+    ] as OralVoiceRecord[]);
+
+    const data = await loadStudioData(user);
+
+    expect(api.listOralAvatars).toHaveBeenCalledWith("person-1");
+    expect(api.listOralVoices).toHaveBeenCalledWith("person-1");
+    expect(data.people[0]?.avatars).toEqual([
+      expect.objectContaining({
+        id: "avatar-1",
+        imageId: "scene-asset-1",
+        origin: "照片制作",
+        ready: true,
+        status: "READY",
+      }),
+    ]);
+    expect(data.people[0]?.voices).toEqual([
+      expect.objectContaining({
+        id: "voice-1",
+        confirmed: false,
+        status: "READY",
+        url: undefined,
+      }),
+    ]);
+    expect(data.assets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "scene-asset-1",
+          kind: "image",
+          personId: "person-1",
+        }),
+        expect.objectContaining({
+          id: "voice-source-1",
+          kind: "audio",
+          personId: "person-1",
+        }),
+      ]),
+    );
   });
 
   it("部分成功且仍需处理的批次不会冒充已完成", async () => {
@@ -636,6 +830,7 @@ describe("批次类型映射与取消", () => {
     api.listProjects.mockResolvedValue([]);
     api.listSimpleCharacterLibrary.mockResolvedValue([]);
     api.listOralTasks.mockResolvedValue([]);
+    api.listGenerationBatches.mockResolvedValue(batchPage);
     api.getStudioStats.mockResolvedValue(null);
   });
 
@@ -674,6 +869,14 @@ describe("批次类型映射与取消", () => {
     expect(api.cancelGenerationBatch).toHaveBeenCalledWith("batch-1");
   });
 
+<<<<<<< main
+  it("任务标识明确区分生成批次与口播任务", async () => {
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-1",
+        status: "QUEUED",
+        title: "张工口播",
+=======
   it("口播排队任务明确不可取消且提交不确定映射为待确认", async () => {
     api.listGenerationBatches.mockResolvedValue({ ...batchPage, items: [] });
     api.listOralTasks.mockResolvedValue([
@@ -681,15 +884,50 @@ describe("批次类型映射与取消", () => {
         id: "oral-queued",
         status: "QUEUED",
         title: "排队口播",
+>>>>>>> codex/local-main-cost-billing-20260908
         mode: "TTS",
         identity_id: "person-1",
         avatar_id: "avatar-1",
         voice_id: "voice-1",
+<<<<<<< main
+        script_text: "正文",
+=======
         script_text: "建房预算讲解",
+>>>>>>> codex/local-main-cost-billing-20260908
         audio_asset_id: null,
         result_asset_id: null,
         duration_sec: null,
         estimated_cost_fen: 100,
+<<<<<<< main
+        created_at: "2026-09-06T09:00:00Z",
+        updated_at: "2026-09-06T09:00:00Z",
+      },
+    ] satisfies OralTaskRecord[]);
+
+    const tasks = await reloadTasks(user);
+
+    expect(tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          backendKind: "generation_batch",
+          backendId: "batch-1",
+        }),
+        expect.objectContaining({
+          backendKind: "oral_task",
+          backendId: "oral-1",
+        }),
+      ]),
+    );
+  });
+
+  it("轮询时某类任务失败仍保留另一类", async () => {
+    api.listGenerationBatches.mockRejectedValue(new Error("generation down"));
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-keep",
+        status: "RUNNING",
+        title: "保留口播",
+=======
         created_at: "2026-09-06T09:32:00",
         updated_at: "2026-09-06T09:32:00",
       },
@@ -697,12 +935,27 @@ describe("批次类型映射与取消", () => {
         id: "oral-uncertain",
         status: "SUBMISSION_UNCERTAIN",
         title: "待核对口播",
+>>>>>>> codex/local-main-cost-billing-20260908
         mode: "AUDIO",
         identity_id: "person-1",
         avatar_id: "avatar-1",
         voice_id: null,
         script_text: null,
         audio_asset_id: "audio-1",
+<<<<<<< main
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        created_at: "2026-09-06T09:00:00Z",
+        updated_at: "2026-09-06T09:01:00Z",
+      },
+    ] satisfies OralTaskRecord[]);
+
+    await expect(reloadTasks(user)).resolves.toEqual([
+      expect.objectContaining({
+        backendKind: "oral_task",
+        backendId: "oral-keep",
+=======
         status_message: "供应商提交结果待核对",
         result_asset_id: null,
         duration_sec: null,
@@ -724,10 +977,198 @@ describe("批次类型映射与取消", () => {
         id: "oral-oral-uncertain",
         status: "uncertain",
         cancelAllowed: false,
+>>>>>>> codex/local-main-cost-billing-20260908
       }),
     ]);
   });
 
+<<<<<<< main
+  it.each([
+    ["SUBMITTING", "queued", undefined],
+    ["RUNNING", "running", undefined],
+    ["ARCHIVING", "running", undefined],
+    ["SUBMISSION_UNCERTAIN", "uncertain", "retry"],
+    ["ARCHIVE_FAILED", "uncertain", "archive-retry"],
+  ] as const)(
+    "映射口播新状态 %s",
+    async (backendStatus, status, retryAction) => {
+      api.listGenerationBatches.mockResolvedValue({ ...batchPage, items: [] });
+      api.listOralTasks.mockResolvedValue([
+        {
+          id: `oral-${backendStatus}`,
+          status: backendStatus,
+          title: backendStatus,
+          mode: "TTS",
+          identity_id: "person-1",
+          avatar_id: "avatar-1",
+          voice_id: "voice-1",
+          script_text: "正文",
+          audio_asset_id: null,
+          result_asset_id: null,
+          duration_sec: null,
+          estimated_cost_fen: 100,
+          created_at: "2026-09-06T09:00:00Z",
+          updated_at: "2026-09-06T09:01:00Z",
+        },
+      ] as OralTaskRecord[]);
+
+      const [task] = await reloadTasks(user);
+
+      expect(task).toEqual(
+        expect.objectContaining({ status, backendStatus, retryAction }),
+      );
+    },
+  );
+
+  it("口播取消和重试按 backendKind/backendId 分派", async () => {
+    const queuedOral: StudioTask = {
+      id: "display-id-without-prefix",
+      backendKind: "oral_task",
+      backendId: "oral-real-id",
+      backendStatus: "QUEUED",
+      title: "排队口播",
+      type: "数字人口播",
+      status: "queued",
+      submitted: "2026-09-06T09:00:00Z",
+    };
+    api.cancelOralTask.mockResolvedValue({
+      id: "oral-real-id",
+      status: "CANCELLED",
+      billing_status: "RELEASED",
+    });
+
+    await expect(cancelStudioTask(queuedOral)).resolves.toEqual({
+      billingStatus: "RELEASED",
+    });
+    expect(api.cancelOralTask).toHaveBeenCalledWith("oral-real-id");
+    expect(api.cancelGenerationBatch).not.toHaveBeenCalled();
+
+    await retryStudioTask({ ...queuedOral, retryAction: "retry" });
+    await retryStudioTask({ ...queuedOral, retryAction: "archive-retry" });
+    expect(api.retryOralTask).toHaveBeenCalledWith("oral-real-id");
+    expect(api.retryOralTaskArchive).toHaveBeenCalledWith("oral-real-id");
+  });
+});
+
+describe("runReplicaGeneration（复刻一键管线）", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const baseInput = {
+    promptText: "编辑后的提示词",
+    originalScriptText: "原片口播稿",
+    shotCardVersionId: "scv-1",
+    firstFrameAssetId: "ff-1",
+    outputDurationSeconds: 8,
+    resolution: "768P" as const,
+    ratio: "16:9" as const,
+    quantity: 1,
+  };
+
+  function mockHappyPath() {
+    api.createScriptVersion.mockResolvedValue({
+      id: "script-1",
+      payload: { shot_card_version_id: "scv-1" },
+    });
+    api.compileGenerationPrompt.mockResolvedValue({
+      id: "prompt-compiled",
+      payload: { prompt_text: "编译产物提示词" },
+    });
+    api.reviseGenerationPrompt.mockResolvedValue({
+      id: "prompt-revised",
+      payload: { prompt_text: "编辑后的提示词" },
+    });
+    api.lockGenerationPrompt.mockResolvedValue({
+      id: "prompt-revised",
+      payload: { prompt_text: "编辑后的提示词" },
+    });
+    api.createGenerationBatch.mockResolvedValue({ id: "batch-r1" });
+  }
+
+  it("编辑过 Prompt 时走 revise 再锁定，建批引用锁定版本", async () => {
+    mockHappyPath();
+    const batch = await live.runReplicaGeneration("project-1", baseInput);
+
+    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
+      source: "original",
+      text: "原片口播稿",
+      shot_card_version_id: "scv-1",
+    });
+    expect(api.compileGenerationPrompt).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        script_version_id: "script-1",
+        shot_card_version_id: "scv-1",
+        first_frame_asset_id: "ff-1",
+      }),
+    );
+    expect(api.reviseGenerationPrompt).toHaveBeenCalledWith("project-1", {
+      base_prompt_version_id: "prompt-compiled",
+      prompt_text: "编辑后的提示词",
+    });
+    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
+      "project-1",
+      "prompt-revised",
+    );
+    expect(batch.id).toBe("batch-r1");
+  });
+
+  it("Prompt 未编辑时跳过 revise 直接锁定编译产物", async () => {
+    mockHappyPath();
+    await live.runReplicaGeneration("project-1", {
+      ...baseInput,
+      promptText: "编译产物提示词",
+    });
+
+    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
+      "project-1",
+      "prompt-compiled",
+    );
+  });
+
+  it("原稿为空时回退纯画面叙事文案并以 custom 来源存稿", async () => {
+    mockHappyPath();
+    await live.runReplicaGeneration("project-1", {
+      ...baseInput,
+      originalScriptText: "",
+    });
+
+    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
+      source: "custom",
+      text: "",
+      shot_card_version_id: "scv-1",
+    });
+  });
+});
+
+describe("buildReplicaPromptText（拆解 Prompt 文本）", () => {
+  it("逐镜头拼接时间/景别/动作/台词并附原口播稿", async () => {
+    const { buildReplicaPromptText } = await import("./state");
+    const text = buildReplicaPromptText(
+      [
+        {
+          shot_id: "s1",
+          start_time: 0,
+          end_time: 8,
+          shot_type: "中景",
+          composition: "",
+          camera_motion: "推进",
+          subject: "院落",
+          action: "缓推",
+          scene: "庭院",
+          spoken_text: "采光设计",
+          transition: "切镜",
+        },
+      ],
+      "原片口播",
+    );
+    expect(text).toContain("【镜头 1】0.0s–8.0s");
+    expect(text).toContain("景别/构图：中景");
+    expect(text).toContain("动作：缓推");
+    expect(text).toContain("台词：采光设计");
+    expect(text).toContain("【原片口播稿】");
+    expect(text).toContain("原片口播");
+=======
   it("口播任务即使误触取消适配器也不会调用批次取消接口", async () => {
     await expect(
       cancelStudioTask({
@@ -838,5 +1279,6 @@ describe("文案提取任务身份绑定", () => {
     ).rejects.toThrow("本次任务失败");
     expect(api.getScriptFromAudioTask).toHaveBeenCalledWith("script-task-own");
     expect(api.getLatestScriptFromAudioTask).not.toHaveBeenCalled();
+>>>>>>> codex/local-main-cost-billing-20260908
   });
 });

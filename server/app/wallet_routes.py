@@ -33,6 +33,7 @@ class WalletTransactionResponse(BaseModel):
     task_id: str | None
     billing_round: int | None
     created_at: str
+    oral_task_id: str | None = None
 
 
 class WalletTransactionPage(BaseModel):
@@ -104,7 +105,7 @@ def list_wallet_transactions(
         """
         SELECT
             id, user_id, type, available_delta, reserved_delta,
-            recharge_order_id, task_id, billing_round, created_at
+            recharge_order_id, task_id, oral_task_id, billing_round, created_at
         FROM wallet_transactions
         WHERE user_id = %s
         ORDER BY created_at DESC, id DESC

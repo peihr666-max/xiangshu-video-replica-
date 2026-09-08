@@ -1,43 +1,72 @@
 import {
   type CurrentUser,
   cancelGenerationBatch,
+  cancelOralTask,
+  compileGenerationPrompt,
+  completeMaterialUpload,
   completeVideoUpload,
+  createGenerationBatch,
   createGenerationResultPreviewUrl,
   createGenerationTaskPreviewUrl,
+  createMaterialUploadIntent,
   createProject,
   createScriptFromAudioTask,
   createScriptVersion,
   createVideoUploadIntent,
+  defaultBatchProvider,
+  downloadMaterialAsset,
+  type GenerationBatch,
   type GenerationBatchListItem,
+  type GenerationRatio,
   getAssetDownloadUrl,
   getCachedCharacterAssetUrl,
   getGenerationBatch,
   getLatestProjectAnalysis,
   getLatestProjectShotCards,
   getLatestScriptVersion,
+<<<<<<< main
+  getStudioAnalytics,
+=======
   getScriptFromAudioTask,
+>>>>>>> codex/local-main-cost-billing-20260908
   getStudioDraft,
   getStudioStats,
   listCharacterSceneLooks,
   listGenerationBatches,
+  listMaterials,
+  listOralAvatars,
   listOralTasks,
+  listOralVoices,
   listProjects,
   listSimpleCharacterLibrary,
   listStudioSavedScripts,
+<<<<<<< main
+  listViralVideos,
+  lockGenerationPrompt,
+  type MaterialItem,
+  type OralAvatarRecord,
+=======
+>>>>>>> codex/local-main-cost-billing-20260908
   type OralTaskRecord,
   type Project,
   readAnalysisPayload,
+  resolveMaterials,
+  retryOralTask,
+  retryOralTaskArchive,
+  reviseGenerationPrompt,
   type SimpleLibraryEntry,
   type StudioDraftKind,
   type StudioSavedScriptInput,
   saveStudioDraft,
   saveStudioSavedScript,
+  uploadMaterial,
   uploadReferenceVideo,
   type ViralVideoItem,
 } from "../api";
 import { createDraft } from "./state";
 import type {
   StudioAsset,
+  StudioAvatar,
   StudioData,
   StudioDraft,
   StudioPerson,
@@ -45,6 +74,7 @@ import type {
   StudioStats,
   StudioTask,
   StudioVideo,
+  StudioVoice,
 } from "./types";
 
 const projectLimit = 24;
@@ -58,11 +88,93 @@ function errorText(error: unknown) {
     : "未知错误";
 }
 
+const materialSourceLabels: Record<MaterialItem["source"], string> = {
+  upload: "我的上传",
+  project: "项目素材",
+  character: "人物库",
+  oral: "口播成片",
+  generation: "生成结果",
+};
+
+function materialDuration(seconds: number | null) {
+  if (seconds === null) return undefined;
+  const rounded = Math.max(0, Math.round(seconds));
+  return `${String(Math.floor(rounded / 60)).padStart(2, "0")}:${String(
+    rounded % 60,
+  ).padStart(2, "0")}`;
+}
+
+export function studioAssetFromMaterial(item: MaterialItem): StudioAsset {
+  return {
+    id: item.asset_id ?? item.id,
+    materialId: item.id,
+    assetId: item.asset_id ?? undefined,
+    generationTaskId: item.generation_task_id ?? undefined,
+    name: item.title,
+    kind: item.media_type,
+    duration: materialDuration(item.duration_seconds),
+    group: item.group,
+    personId: item.person_id ?? undefined,
+    source: materialSourceLabels[item.source],
+    saved: item.saved,
+    delivery: item.delivery,
+    allowedUses: item.allowed_uses,
+    allowedActions: item.allowed_actions,
+  };
+}
+
+function draftAssetIds(draft: StudioDraft): string[] {
+  return [
+    draft.sourceAssetId,
+    draft.originalImageId,
+    draft.imageId,
+    draft.firstFrameId,
+    draft.tailFrameId,
+    draft.audioId,
+    ...draft.referenceIds,
+  ].filter((id): id is string => Boolean(id));
+}
+
+/** 草稿只保存物理资产 ID；恢复时由服务端重新校验归属并补齐元数据。 */
+export async function loadDraftMaterials(draft: StudioDraft): Promise<{
+  assets: StudioAsset[];
+  unavailableIds: string[];
+}> {
+  const assetIds = [...new Set(draftAssetIds(draft))];
+  if (!assetIds.length) return { assets: [], unavailableIds: [] };
+  const materialIds = assetIds.map((id) =>
+    id.startsWith("asset:") ? id : `asset:${id}`,
+  );
+  const resolved = await resolveMaterials(materialIds);
+  const assets = resolved.items.map(studioAssetFromMaterial);
+  const previewResults = await Promise.allSettled(
+    assets.map((asset) =>
+      asset.assetId
+        ? getAssetDownloadUrl(asset.assetId).then((result) => result.url)
+        : asset.generationTaskId
+          ? createGenerationTaskPreviewUrl(asset.generationTaskId)
+          : Promise.resolve(undefined),
+    ),
+  );
+  return {
+    assets: assets.map((asset, index) => ({
+      ...asset,
+      url:
+        previewResults[index]?.status === "fulfilled"
+          ? previewResults[index].value
+          : undefined,
+    })),
+    unavailableIds: resolved.unavailable_ids.map((id) =>
+      id.startsWith("asset:") ? id.slice("asset:".length) : id,
+    ),
+  };
+}
+
 export async function loadTaskPreview(
   task: StudioTask,
 ): Promise<StudioAsset | undefined> {
   // 数字人口播任务没有生成批次：成片按平台资产直取签名地址。
-  if (!task.batchId && task.resultId) {
+  if (task.backendKind === "oral_task" && task.resultId) {
     const url = (await getAssetDownloadUrl(task.resultId)).url;
     return {
       id: task.resultId,
@@ -74,6 +186,7 @@ export async function loadTaskPreview(
       saved: true,
     };
   }
+  if (task.backendKind === "oral_task") return undefined;
   if (!task.batchId) return undefined;
 
   const batch = await getGenerationBatch(task.batchId);
@@ -211,20 +324,134 @@ async function loadProjects(): Promise<{
 function basePerson(
   entry: SimpleLibraryEntry,
   portrait?: string,
+  avatars: StudioAvatar[] = [],
+  voices: StudioVoice[] = [],
 ): StudioPerson {
   return {
     id: entry.identity_id,
     name: entry.display_name,
-    role: "",
+    role: entry.role,
     portrait,
-    version: 0,
-    scope: "",
-    audience: "",
-    expression: "",
+    version: entry.version_number ?? 0,
+    scope: entry.service_scope,
+    audience: entry.target_audience,
+    expression: entry.expression_style,
     sheetId: entry.contact_sheet_asset_id ?? undefined,
     photoIds: [],
-    avatars: [],
-    voices: [],
+    avatars,
+    voices,
+  };
+}
+
+type OralIdentityAssets = {
+  avatars: StudioAvatar[];
+  voices: StudioVoice[];
+  assets: StudioAsset[];
+  errors: string[];
+};
+
+function oralStatusLabel(status: OralAvatarRecord["status"]): string {
+  if (status === "READY") return "已就绪";
+  if (status === "FAILED") return "制作失败";
+  return "制作中";
+}
+
+async function loadOralIdentityAssets(
+  identityId: string,
+): Promise<OralIdentityAssets> {
+  const [avatarResult, voiceResult] = await Promise.allSettled([
+    listOralAvatars(identityId),
+    listOralVoices(identityId),
+  ]);
+  const errors: string[] = [];
+  const avatarRows =
+    avatarResult.status === "fulfilled" ? avatarResult.value : [];
+  const voiceRows = voiceResult.status === "fulfilled" ? voiceResult.value : [];
+  if (avatarResult.status === "rejected") {
+    errors.push(`读取口播分身失败：${errorText(avatarResult.reason)}`);
+  }
+  if (voiceResult.status === "rejected") {
+    errors.push(`读取声音档案失败：${errorText(voiceResult.reason)}`);
+  }
+
+  const sourceAssets = new Map<
+    string,
+    { name: string; kind: "image" | "video" | "audio"; source: string }
+  >();
+  for (const avatar of avatarRows) {
+    sourceAssets.set(avatar.source_asset_id, {
+      name: `${avatar.title} · 制作素材`,
+      kind: avatar.source_kind === "IMAGE" ? "image" : "video",
+      source: "口播分身",
+    });
+  }
+  for (const voice of voiceRows) {
+    sourceAssets.set(voice.source_asset_id, {
+      name: `${voice.title} · 声音样本`,
+      kind: "audio",
+      source: "声音档案",
+    });
+    if (voice.demo_asset_id) {
+      sourceAssets.set(voice.demo_asset_id, {
+        name: `${voice.title} · 试听`,
+        kind: "audio",
+        source: "声音档案",
+      });
+    }
+  }
+  const sourceEntries = [...sourceAssets.entries()];
+  const previews = await Promise.allSettled(
+    sourceEntries.map(([assetId]) => signedUrl(assetId, getAssetDownloadUrl)),
+  );
+  const previewUrls = new Map<string, string>();
+  sourceEntries.forEach(([assetId, descriptor], index) => {
+    const preview = previews[index];
+    if (preview?.status === "fulfilled" && preview.value) {
+      previewUrls.set(assetId, preview.value);
+    } else if (preview?.status === "rejected") {
+      errors.push(`读取“${descriptor.name}”失败：${errorText(preview.reason)}`);
+    }
+  });
+
+  return {
+    avatars: avatarRows.map((avatar) => ({
+      id: avatar.id,
+      name: avatar.title,
+      imageId: avatar.source_asset_id,
+      ready: avatar.status === "READY",
+      status: avatar.status,
+      error: avatar.error_message ?? undefined,
+      origin: avatar.source_kind === "IMAGE" ? "照片制作" : "视频制作",
+      duration: oralStatusLabel(avatar.status),
+    })),
+    voices: voiceRows.map((voice) => {
+      const demoUrl = voice.demo_asset_id
+        ? previewUrls.get(voice.demo_asset_id)
+        : undefined;
+      return {
+        id: voice.id,
+        name: voice.title,
+        confirmed:
+          voice.status === "READY" &&
+          Boolean(voice.confirmed) &&
+          Boolean(demoUrl),
+        isDefault: false,
+        status: voice.status,
+        error: voice.error_message ?? undefined,
+        url: demoUrl,
+      };
+    }),
+    assets: sourceEntries.map(([id, descriptor]) => ({
+      id,
+      name: descriptor.name,
+      kind: descriptor.kind,
+      url: previewUrls.get(id),
+      group: descriptor.source,
+      personId: identityId,
+      source: descriptor.source,
+      saved: true,
+    })),
+    errors,
   };
 }
 
@@ -249,6 +476,7 @@ async function loadPeople(): Promise<{
       entry.contact_sheet_asset_id
         ? signedUrl(entry.contact_sheet_asset_id, getCachedCharacterAssetUrl)
         : Promise.resolve(undefined),
+      loadOralIdentityAssets(entry.identity_id),
     ]);
     const portrait =
       requests[0].status === "fulfilled" ? requests[0].value : undefined;
@@ -264,7 +492,18 @@ async function loadPeople(): Promise<{
         `读取人物五视图“${entry.display_name}”失败：${errorText(requests[1].reason)}`,
       );
     }
-    people.push(basePerson(entry, portrait));
+    const oral =
+      requests[2].status === "fulfilled"
+        ? requests[2].value
+        : { avatars: [], voices: [], assets: [], errors: [] };
+    if (requests[2].status === "rejected") {
+      errors.push(
+        `读取人物口播资产“${entry.display_name}”失败：${errorText(requests[2].reason)}`,
+      );
+    }
+    errors.push(...oral.errors);
+    people.push(basePerson(entry, portrait, oral.avatars, oral.voices));
+    assets.push(...oral.assets);
     if (entry.contact_sheet_asset_id) {
       assets.push({
         id: entry.contact_sheet_asset_id,
@@ -299,7 +538,7 @@ function studioTaskStatus(
 /** 批次创作通道 → 任务中心类型页签文案（I13 类型保真）。
  * 服务端 058 起在 generation_batches.creation_kind 记录创建通道；
  * 未知通道回退到"视频生成"保持旧数据可见。 */
-const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
+export const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
   replica: "视频复刻",
   independent: "视频生成",
   replacement: "人物置换",
@@ -309,6 +548,9 @@ function studioTask(batch: GenerationBatchListItem): StudioTask {
   const status = studioTaskStatus(batch);
   return {
     id: batch.id,
+    backendKind: "generation_batch",
+    backendId: batch.id,
+    backendStatus: batch.status,
     batchId: batch.id,
     projectId: batch.project_id,
     title: batch.display_name?.trim() || batch.project_name || batch.id,
@@ -325,11 +567,26 @@ function studioTask(batch: GenerationBatchListItem): StudioTask {
 
 /** 任务中心"取消任务"：仅服务端判定为仍可取消（全部任务未认领）的
  * 排队批次会成功，其余状态返回明确错误由调用方提示。 */
+<<<<<<< main
+export async function cancelStudioTask(
+  task: StudioTask,
+): Promise<{ billingStatus?: string }> {
+  if (task.backendKind === "oral_task") {
+    if (task.backendStatus !== "QUEUED") {
+      throw new Error("只有仍在排队的口播任务可以取消。");
+    }
+    const result = await cancelOralTask(task.backendId || task.id);
+    return { billingStatus: result.billing_status ?? undefined };
+  }
+  await cancelGenerationBatch(task.backendId || task.batchId || task.id);
+  return {};
+=======
 export async function cancelStudioTask(task: StudioTask): Promise<void> {
   if (task.cancelAllowed === false || !task.batchId) {
     throw new Error("当前任务不支持取消。");
   }
   await cancelGenerationBatch(task.batchId);
+>>>>>>> codex/local-main-cost-billing-20260908
 }
 
 async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {
@@ -339,6 +596,26 @@ async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {
   return page.items.map(studioTask);
 }
 
+<<<<<<< main
+/** 每轮同时刷新生成批次和口播任务；单边失败不丢弃另一边的有效结果。 */
+export async function reloadTasks(
+  currentUser: CurrentUser,
+): Promise<StudioTask[]> {
+  const [generationResult, oralResult] = await Promise.allSettled([
+    loadTasks(currentUser),
+    loadOralTasks(),
+  ]);
+  if (
+    generationResult.status === "rejected" &&
+    oralResult.status === "rejected"
+  ) {
+    throw generationResult.reason;
+  }
+  return [
+    ...(generationResult.status === "fulfilled" ? generationResult.value : []),
+    ...(oralResult.status === "fulfilled" ? oralResult.value : []),
+  ];
+=======
 /** Re-read every task source used by the task center. Returning one complete
  * snapshot lets the shell replace stale rows, including oral tasks that have
  * completed or disappeared, without a full project/people reload. */
@@ -350,6 +627,7 @@ export async function reloadTasks(
     loadOralTasks(),
   ]);
   return [...generationTasks, ...oralTasks];
+>>>>>>> codex/local-main-cost-billing-20260908
 }
 
 /** Workbench quick upload: create a project, PUT the raw video to cloud
@@ -375,14 +653,32 @@ export async function uploadWorkbenchSourceVideo(
 function oralTask(row: OralTaskRecord): StudioTask {
   const statusMap: Record<OralTaskRecord["status"], StudioTask["status"]> = {
     QUEUED: "queued",
+    SUBMITTING: "queued",
     RUNNING: "running",
+    ARCHIVING: "running",
+    SUBMISSION_UNCERTAIN: "uncertain",
+    ARCHIVE_FAILED: "uncertain",
     SUCCEEDED: "completed",
     FAILED: "failed",
     CANCELLED: "cancelled",
     SUBMISSION_UNCERTAIN: "uncertain",
   };
+  const availableActions = row.available_actions ?? [];
+  const retryAction =
+    row.status === "ARCHIVE_FAILED" ||
+    availableActions.includes("archive_retry")
+      ? "archive-retry"
+      : row.status === "SUBMISSION_UNCERTAIN" ||
+          availableActions.includes("retry")
+        ? "retry"
+        : undefined;
   return {
     id: `oral-${row.id}`,
+    backendKind: "oral_task",
+    backendId: row.id,
+    backendStatus: row.status,
+    billingStatus: row.billing_status ?? undefined,
+    retryAction,
     batchId: undefined,
     title: row.title,
     type: "数字人口播",
@@ -401,6 +697,27 @@ function oralTask(row: OralTaskRecord): StudioTask {
 async function loadOralTasks(): Promise<StudioTask[]> {
   const rows = await listOralTasks(20);
   return rows.map(oralTask);
+}
+
+export async function retryStudioTask(task: StudioTask): Promise<void> {
+  if (task.backendKind !== "oral_task" || !task.retryAction) {
+    throw new Error("当前任务状态不支持重试。");
+  }
+  const taskId = task.backendId || task.id;
+  if (task.retryAction === "archive-retry") {
+    await retryOralTaskArchive(taskId);
+    return;
+  }
+  await retryOralTask(taskId);
+}
+
+export async function downloadStudioTaskResult(
+  task: StudioTask,
+): Promise<void> {
+  if (task.backendKind !== "oral_task" || !task.resultId) {
+    throw new Error("当前任务没有可下载的口播成片。");
+  }
+  await downloadMaterialAsset(task.resultId, `${task.title}.mp4`);
 }
 
 function formatViralDuration(durationMs: number): string {
@@ -440,6 +757,29 @@ export function studioVideoFromViral(item: ViralVideoItem): StudioVideo {
 export async function loadStudioData(
   currentUser: CurrentUser,
 ): Promise<StudioData> {
+<<<<<<< main
+  const [
+    projectsResult,
+    peopleResult,
+    tasksResult,
+    statsResult,
+    analytics7Result,
+    analytics30Result,
+    oralResult,
+    viralResult,
+    materialsResult,
+  ] = await Promise.allSettled([
+    loadProjects(),
+    loadPeople(),
+    loadTasks(currentUser),
+    getStudioStats(),
+    getStudioAnalytics(7),
+    getStudioAnalytics(30),
+    loadOralTasks(),
+    loadViralVideos(),
+    loadVideoMaterials(),
+  ]);
+=======
   const [projectsResult, peopleResult, tasksResult, statsResult, oralResult] =
     await Promise.allSettled([
       loadProjects(),
@@ -448,6 +788,7 @@ export async function loadStudioData(
       getStudioStats(),
       loadOralTasks(),
     ]);
+>>>>>>> codex/local-main-cost-billing-20260908
   const errors: string[] = [];
   const projectData =
     projectsResult.status === "fulfilled"
@@ -463,6 +804,11 @@ export async function loadStudioData(
   ];
   // 统计加载失败不打断工作区：指标卡回退为 "—"，重试路径会再次拉取。
   const stats = statsResult.status === "fulfilled" ? statsResult.value : null;
+  // 数据看板聚合同理：失败回退 null，看板页展示"尚未就绪"空态。
+  const analytics7 =
+    analytics7Result.status === "fulfilled" ? analytics7Result.value : null;
+  const analytics30 =
+    analytics30Result.status === "fulfilled" ? analytics30Result.value : null;
 
   if (projectsResult.status === "rejected") {
     errors.push(`读取项目失败：${errorText(projectsResult.reason)}`);
@@ -478,16 +824,76 @@ export async function loadStudioData(
   if (oralResult.status === "rejected") {
     errors.push(`读取口播任务失败：${errorText(oralResult.reason)}`);
   }
+<<<<<<< main
+  if (viralResult.status === "rejected") {
+    errors.push(`读取爆款视频失败：${errorText(viralResult.reason)}`);
+  } else {
+    errors.push(...viralResult.value.errors);
+  }
+  // 素材库加载失败不打断工作区：视频生成页的选择器退化为仅已加载资产。
+  const materials =
+    materialsResult.status === "fulfilled" ? materialsResult.value : [];
+
+  return {
+    people: peopleData.people,
+    assets: [...projectData.assets, ...peopleData.assets],
+    materials,
+    videos: viralResult.status === "fulfilled" ? viralResult.value.videos : [],
+=======
   return {
     people: peopleData.people,
     assets: [...projectData.assets, ...peopleData.assets],
     videos: [],
+>>>>>>> codex/local-main-cost-billing-20260908
     tasks,
     projects: projectData.projects,
     errors,
     loading: false,
     stats,
+    analytics7,
+    analytics30,
   };
+}
+
+/** 素材库图片（视频生成页的首帧/尾帧/参考素材选择来源），签名后返回。 */
+export async function loadVideoMaterials(): Promise<StudioAsset[]> {
+  const page = await listMaterials({ mediaType: "image", pageSize: 60 });
+  const assets = page.items.map(studioAssetFromMaterial);
+  const previewResults = await Promise.allSettled(
+    assets.map((asset) =>
+      asset.assetId
+        ? getAssetDownloadUrl(asset.assetId).then((result) => result.url)
+        : Promise.resolve(undefined),
+    ),
+  );
+  return assets.map((asset, index) => ({
+    ...asset,
+    url:
+      previewResults[index]?.status === "fulfilled"
+        ? previewResults[index].value
+        : undefined,
+  }));
+}
+
+/** 视频生成页本机上传图片：素材三步通道，返回可直接引用的签名资产。 */
+export async function uploadVideoMaterial(
+  file: File,
+  group: string,
+  onProgress: (progress: number) => void,
+): Promise<StudioAsset> {
+  const intent = await createMaterialUploadIntent(file, {
+    title: file.name,
+    group,
+  });
+  await uploadMaterial(intent, file, onProgress);
+  const material = await completeMaterialUpload(intent.asset_id);
+  const asset = studioAssetFromMaterial(material);
+  const url = material.asset_id
+    ? await getAssetDownloadUrl(material.asset_id)
+        .then((result) => result.url)
+        .catch(() => undefined)
+    : undefined;
+  return { ...asset, url };
 }
 
 /** 静默轮询用的统计刷新：失败返回 null，由调用方保留旧值。 */
@@ -701,4 +1107,55 @@ export async function extractScriptFromUpload(
     }
   }
   throw new Error("文案提取超时，请稍后在任务中心重试。");
+}
+
+/** 复刻一键生成：存稿 → 编译 →（编辑过则存修订）→ 锁定 → 建批。 */
+export async function runReplicaGeneration(
+  projectId: string,
+  input: {
+    promptText: string;
+    originalScriptText: string;
+    shotCardVersionId: string;
+    firstFrameAssetId: string;
+    outputDurationSeconds: number;
+    resolution: "768P" | "2K";
+    ratio: GenerationRatio;
+    quantity: number;
+  },
+): Promise<GenerationBatch> {
+  const script = await createScriptVersion(projectId, {
+    source: input.originalScriptText.trim() ? "original" : "custom",
+    text: input.originalScriptText,
+    shot_card_version_id: input.shotCardVersionId,
+  });
+  const compiled = await compileGenerationPrompt(projectId, {
+    script_version_id: script.id,
+    shot_card_version_id: input.shotCardVersionId,
+    first_frame_asset_id: input.firstFrameAssetId,
+    output_duration_seconds: input.outputDurationSeconds,
+    resolution: input.resolution,
+    ratio: input.ratio,
+  });
+  const compiledText = String(
+    (compiled.payload as Record<string, unknown>).prompt_text ?? "",
+  );
+  const finalPrompt =
+    input.promptText.trim() && input.promptText !== compiledText
+      ? await reviseGenerationPrompt(projectId, {
+          base_prompt_version_id: compiled.id,
+          prompt_text: input.promptText.trim(),
+        })
+      : compiled;
+  const locked = await lockGenerationPrompt(projectId, finalPrompt.id);
+  return createGenerationBatch(projectId, {
+    quantity: input.quantity,
+    prompt_version_id: locked.id,
+    first_frame_asset_id: input.firstFrameAssetId,
+    output_duration_seconds: input.outputDurationSeconds,
+    resolution: input.resolution,
+    ratio: input.ratio,
+    idempotency_key: crypto.randomUUID(),
+    provider: defaultBatchProvider(),
+    fake_audio_quality: "ok",
+  });
 }

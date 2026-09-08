@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -167,6 +168,21 @@ def test_control_accounts_and_orders_are_proxy_only_and_paginated(
     assert orders.json()["items"][0]["order_no"].endswith("2")
     assert orders.json()["items"][0]["username"] == "operator-1"
 
+    filtered_orders = client.get(
+        "/api/control/recharge-orders?username=operator&channel=wxpay&created_from=2020-01-01",
+        headers=control_headers,
+    )
+    assert filtered_orders.status_code == 200
+    assert filtered_orders.json()["total"] == 1
+
+    transactions = client.get(
+        "/api/control/wallet-transactions?username=operator&created_from=2020-01-01",
+        headers=control_headers,
+    )
+    assert transactions.status_code == 200
+    assert transactions.json()["items"][0]["available_balance_after"] == 10
+    assert transactions.json()["items"][0]["reserved_balance_after"] == 0
+
     assert client.get("/api/control/accounts", headers=business_headers).status_code == 401
     assert client.get("/api/control/accounts", headers={}).status_code == 401
     assert (
@@ -183,6 +199,195 @@ def test_control_accounts_and_orders_are_proxy_only_and_paginated(
         ).status_code
         == 422
     )
+
+
+def test_control_date_only_end_filter_includes_the_whole_day() -> None:
+    from app.control_routes import (
+        _generation_record_filters,
+        _order_filters,
+        _transaction_filters,
+    )
+
+    expected_end = "2026-09-05 23:59:59.999999+00:00"
+    assert _order_filters(
+        status=None,
+        user_id=None,
+        created_to="2026-09-05",
+    )[1] == (expected_end,)
+    assert _transaction_filters(
+        user_id=None,
+        transaction_type=None,
+        created_to="2026-09-05",
+    )[1] == (expected_end,)
+    assert _generation_record_filters(
+        record_types=("VIDEO",),
+        username=None,
+        status=None,
+        record_type=None,
+        created_from=None,
+        created_to="2026-09-05",
+    )[1] == (expected_end,)
+
+
+def test_wallet_balances_follow_ledger_sequence_for_same_timestamp(
+    internal_admin_context: tuple[TestClient, Path, dict[str, str], dict[str, str]],
+) -> None:
+    client, db_path, control_headers, _ = internal_admin_context
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, %s, %s)",
+            ("project-sequenced", "user_1", "钱包顺序回归"),
+        )
+        conn.execute(
+            """
+            INSERT INTO generation_batches (
+                id, project_id, created_by_user_id, idempotency_key,
+                request_hash, request_snapshot_json, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'RUNNING')
+            """,
+            (
+                "batch-sequenced",
+                "project-sequenced",
+                "user_1",
+                "batch-sequenced-key",
+                "batch-sequenced-hash",
+                "{}",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO generation_tasks (
+                id, batch_id, generation_mode, provider, model, status
+            ) VALUES (%s, %s, 'I2V', 'minimax', 'Hailuo-02', 'RUNNING')
+            """,
+            ("task-sequenced", "batch-sequenced"),
+        )
+        conn.execute(
+            """
+            INSERT INTO wallet_transactions (
+                id, user_id, type, available_delta, reserved_delta,
+                task_id, billing_round, idempotency_key, created_at
+            ) VALUES (%s, 'user_1', 'RESERVE', -5, 5, %s, 1, %s, %s)
+            """,
+            ("z-reserve", "task-sequenced", "reserve:sequenced", "2026-09-05 12:00:00"),
+        )
+        conn.execute(
+            """
+            INSERT INTO wallet_transactions (
+                id, user_id, type, available_delta, reserved_delta,
+                task_id, billing_round, idempotency_key, created_at
+            ) VALUES (%s, 'user_1', 'SETTLE', 0, -5, %s, 1, %s, %s)
+            """,
+            ("a-settle", "task-sequenced", "settle:sequenced", "2026-09-05 12:00:00"),
+        )
+        conn.commit()
+
+    response = client.get(
+        "/api/control/wallet-transactions?user_id=user_1&limit=20",
+        headers=control_headers,
+    )
+    assert response.status_code == 200, response.text
+    by_id = {item["id"]: item for item in response.json()["items"]}
+    assert by_id["z-reserve"]["available_balance_after"] == 5
+    assert by_id["z-reserve"]["reserved_balance_after"] == 5
+    assert by_id["a-settle"]["available_balance_after"] == 5
+    assert by_id["a-settle"]["reserved_balance_after"] == 0
+    assert by_id["charge_paid"]["available_balance_after"] == 10
+    assert by_id["charge_paid"]["reserved_balance_after"] == 0
+
+
+def test_wallet_ledger_sequence_migration_is_reversible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    monkeypatch.delenv("VIDEO_REPLICA_DATABASE_URL", raising=False)
+    db_path = tmp_path / "wallet-sequence-migration.db"
+    server_dir = Path(__file__).resolve().parent.parent
+    config = Config(str(server_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(server_dir / "migrations"))
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{db_path.as_posix()}")
+
+    command.upgrade(config, "head")
+    with connect_database(db_path) as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(wallet_transactions)")}
+        trigger_count = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ("
+            "'trg_wallet_transactions_assign_ledger_sequence', "
+            "'trg_wallet_transactions_reject_explicit_ledger_sequence', "
+            "'trg_wallet_transactions_reject_ledger_sequence_update')"
+        ).fetchone()[0]
+        index_names = {
+            str(row[1]) for row in conn.execute("PRAGMA index_list(wallet_transactions)")
+        }
+    assert "ledger_sequence" in columns
+    assert trigger_count == 3
+    assert "idx_wallet_transactions_user_ledger_sequence" in index_names
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        create_user(
+            conn,
+            user_id="ledger-user",
+            username="ledger-user",
+            display_name="Ledger User",
+        )
+        conn.execute(
+            "INSERT INTO recharge_orders ("
+            "id, user_id, merchant_order_no, provider, channel, status, pricing_scope, "
+            "base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+            "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits"
+            ") VALUES ('ledger-order', 'ledger-user', 'ledger-merchant', 'zpay', 'alipay', "
+            "'PAID', 'INTERNAL', 1000, 1000, 10000, 1000, 10000, 10)"
+        )
+        conn.execute(
+            "INSERT INTO recharge_orders ("
+            "id, user_id, merchant_order_no, provider, channel, status, pricing_scope, "
+            "base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+            "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits"
+            ") VALUES ('ledger-order-explicit', 'ledger-user', 'ledger-merchant-explicit', "
+            "'zpay', 'alipay', 'PAID', 'INTERNAL', 1000, 1000, 10000, 1000, 10000, 10)"
+        )
+        conn.execute(
+            "INSERT INTO wallet_transactions ("
+            "id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+            "idempotency_key) VALUES ('ledger-tx', 'ledger-user', 'CHARGE', 10, 0, "
+            "'ledger-order', 'ledger-key')"
+        )
+        sequence = conn.execute(
+            "SELECT ledger_sequence FROM wallet_transactions WHERE id='ledger-tx'"
+        ).fetchone()[0]
+        assert sequence is not None
+        with pytest.raises(sqlite3.IntegrityError, match="database assigned"):
+            conn.execute(
+                "INSERT INTO wallet_transactions ("
+                "id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+                "idempotency_key, ledger_sequence) VALUES ("
+                "'ledger-tx-explicit', 'ledger-user', 'CHARGE', 10, 0, "
+                "'ledger-order-explicit', 'ledger-key-explicit', 999999)"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "UPDATE wallet_transactions SET ledger_sequence=%s WHERE id='ledger-tx'",
+                (int(sequence) + 1,),
+            )
+
+    command.downgrade(config, "062_activation_initial_free_seconds")
+    with connect_database(db_path) as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(wallet_transactions)")}
+        trigger_count = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ("
+            "'trg_wallet_transactions_assign_ledger_sequence', "
+            "'trg_wallet_transactions_reject_explicit_ledger_sequence', "
+            "'trg_wallet_transactions_reject_ledger_sequence_update')"
+        ).fetchone()[0]
+    assert "ledger_sequence" not in columns
+    assert trigger_count == 0
+
+    command.upgrade(config, "head")
+    with connect_database(db_path) as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(wallet_transactions)")}
+    assert "ledger_sequence" in columns
 
 
 def test_control_generation_records_include_paid_images_and_ai_scoring(
@@ -405,6 +610,22 @@ def test_control_generation_records_include_paid_images_and_ai_scoring(
     assert by_id["source-local-record"]["record_type"] == "SOURCE_FRAME_AI_SCORE"
     assert by_id["source-local-record"]["provider"] == "apilio_gemini"
     assert by_id["source-local-record"]["provider_cost_status"] == "UNAVAILABLE"
+
+    videos = client.get(
+        "/api/control/generation-records?record_type=VIDEO&username=operator&status=RUNNING",
+        headers=control_headers,
+    )
+    assert videos.status_code == 200, videos.text
+    assert videos.json()["total"] == 1
+    assert [item["record_id"] for item in videos.json()["items"]] == ["video-estimated-record"]
+
+    process_records = client.get(
+        "/api/control/generation-records?record_type=SOURCE_FRAME_PROCESS",
+        headers=control_headers,
+    )
+    assert process_records.status_code == 200, process_records.text
+    assert process_records.json()["total"] == 0
+    assert process_records.json()["items"] == []
 
     deep_offset = client.get(
         "/api/control/generation-records?limit=20&offset=1001",

@@ -1,7 +1,49 @@
-import { type ReactNode, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  type AnalysisVersion,
+  type CharacterReferenceSelection,
+  customerVisibleErrorMessage,
+  type GenerationRatio,
+  getLatestProjectAnalysis,
+  getLatestProjectFirstFrameSelection,
+  getLatestProjectShotCards,
+  listUserSavedPrompts,
+  type ProjectMainCharacter,
+  readAnalysisPayload,
+  readFirstFrameSelectionPayload,
+  type SavedPromptItem,
+  type ShotCard,
+  type ShotCardPayload,
+  saveGenerationPrompt,
+  saveShotCards,
+  selectCharacterReferences,
+  startVideoAnalysis,
+  waitForAnalysisTask,
+} from "../api";
+import { CharacterSelection } from "../CharacterSelection";
+import { FirstFrameSelection } from "../FirstFrameSelection";
+import { SourceFrameSelection } from "../SourceFrameSelection";
 import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
-import type { StudioAsset, StudioPerson, StudioVideo } from "./types";
+import {
+  runReplicaGeneration,
+  uploadVideoMaterial,
+  uploadWorkbenchSourceVideo,
+} from "./live";
+import { buildReplicaPromptText, SUPPORTED_VIDEO_RATIOS } from "./state";
+import type {
+  StudioAsset,
+  StudioDraft,
+  StudioPerson,
+  StudioTask,
+  StudioVideo,
+} from "./types";
 import {
   Button,
   Empty,
@@ -270,65 +312,332 @@ export function CopyPage() {
   );
 }
 
+type ReplicaStage = "source" | "analyzing" | "ready";
+
+// 审核包样例分镜：仅 review 视觉演示，不参与真实拆解流程。
+const REVIEW_SAMPLE_SHOTS: ShotCard[] = [
+  {
+    shot_id: "shot-1",
+    start_time: 0,
+    end_time: 8,
+    shot_type: "中景",
+    composition: "",
+    camera_motion: "推进",
+    subject: "院落",
+    action: "镜头缓推庭院",
+    scene: "乡墅庭院",
+    spoken_text: "",
+    transition: "切镜",
+  },
+  {
+    shot_id: "shot-2",
+    start_time: 8,
+    end_time: 16,
+    shot_type: "近景",
+    composition: "",
+    camera_motion: "固定",
+    subject: "讲解人物",
+    action: "人物出镜讲解",
+    scene: "庭院",
+    spoken_text: "这栋房子的采光设计",
+    transition: "切镜",
+  },
+  {
+    shot_id: "shot-3",
+    start_time: 16,
+    end_time: 24,
+    shot_type: "特写",
+    composition: "",
+    camera_motion: "摇移",
+    subject: "外立面",
+    action: "外立面细节展示",
+    scene: "建筑外立面",
+    spoken_text: "",
+    transition: "切镜",
+  },
+];
+
+/** 客户档位归一：非 4/15 秒的时长映射到最近的客户可选档（≤9s→4s，>9s→15s）。 */
+function normalizeCustomerDuration(seconds: number): 4 | 15 {
+  return seconds === 4 || seconds === 15 ? seconds : seconds <= 9 ? 4 : 15;
+}
+
 export function ReplicaPage() {
-  const { state, data, review, patchDraft, openLive, openPicker, saveDraft } =
-    useStudio();
+  const {
+    state,
+    data,
+    review,
+    patchDraft,
+    navigate,
+    notify,
+    saveDraft,
+    openLive,
+  } = useStudio();
+  const project = data.projects.find(
+    (item) => item.id === state.draft.projectId,
+  );
   const source = findSource(
     data.assets,
     data.videos,
     state.draft.sourceId ?? state.selectedVideoId,
   );
-  const original = findAsset(data.assets, state.draft.originalImageId);
-  const selectedTarget = findAsset(data.assets, state.draft.firstFrameId);
-  const target =
-    review && selectedTarget?.personId !== state.draft.ipId
-      ? (data.assets.find(
-          (asset) =>
-            asset.kind === "image" &&
-            asset.personId === state.draft.ipId &&
-            !asset.composite,
-        ) ?? selectedTarget)
-      : selectedTarget;
-  const person = activePerson(data.people, state.draft.ipId);
-  const reviewShots = [
-    {
-      id: "shot-1",
-      title: "院落推进",
-      time: "00:00–00:08",
-      asset:
-        data.assets.find(
-          (asset) => asset.kind === "image" && !asset.personId,
-        ) ?? source,
-    },
-    {
-      id: "shot-2",
-      title: "人物讲解",
-      time: "00:08–00:16",
-      asset: original ?? source,
-    },
-    {
-      id: "shot-3",
-      title: "外立面特写",
-      time: "00:16–00:24",
-      asset:
-        data.assets.find(
-          (asset) =>
-            asset.kind === "video" &&
-            !asset.personId &&
-            asset.id !== source?.id,
-        ) ?? source,
-    },
-  ];
-  const shots = review
-    ? reviewShots
-    : [
-        {
-          id: state.draft.selectedShotId || "待选择镜头",
-          title: "当前镜头",
-          time: "",
-          asset: original ?? source,
-        },
-      ];
+  const [stage, setStage] = useState<ReplicaStage>(() =>
+    state.draft.projectId ? "ready" : "source",
+  );
+  const [shots, setShots] = useState<ShotCard[]>([]);
+  const [shotCardVersionId, setShotCardVersionId] = useState<string>();
+  const [originalScript, setOriginalScript] = useState("");
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [promptText, setPromptText] = useState(state.draft.prompt);
+  const [promptNameOpen, setPromptNameOpen] = useState(false);
+  const [promptName, setPromptName] = useState("");
+  const [savingPrompt, setSavingPrompt] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  // 拆解完成回调用：比对发起时的项目，防止换视频后的旧结果覆盖新状态。
+  const analysisProjectRef = useRef<string | undefined>(undefined);
+  const promptTextRef = useRef(promptText);
+  promptTextRef.current = promptText;
+
+  const resetReplicaState = () => {
+    setShots([]);
+    setShotCardVersionId(undefined);
+    setOriginalScript("");
+  };
+
+  const handleUpload = async (file: File) => {
+    if (review) {
+      notify("审核示例不上传视频。");
+      return;
+    }
+    notify("正在上传参考视频…");
+    try {
+      const uploaded = await uploadWorkbenchSourceVideo(file, (percent) =>
+        notify(`参考视频上传中 ${percent}%`),
+      );
+      resetReplicaState();
+      patchDraft({
+        projectId: uploaded.projectId,
+        sourceId: uploaded.assetId,
+        sourceAssetId: uploaded.assetId,
+      });
+      notify("参考视频已上传，点击「启动 AI 拆解」反推分镜与提示词。");
+    } catch {
+      notify("参考视频上传失败，请稍后重试。");
+    }
+  };
+
+  const selectExistingProject = (selectedId: string) => {
+    const selected = data.projects.find((item) => item.id === selectedId);
+    if (!selected) {
+      return;
+    }
+    resetReplicaState();
+    patchDraft({
+      projectId: selected.id,
+      sourceId: selected.reference_asset_id ?? undefined,
+      sourceAssetId: selected.reference_asset_id ?? undefined,
+    });
+    setStage("ready");
+    // 已有拆解产物则直接载入，避免对已分析项目重复发起付费拆解。
+    void (async () => {
+      try {
+        const shotVersion = await getLatestProjectShotCards(selected.id);
+        const shotPayload = shotVersion
+          ? (shotVersion.payload as ShotCardPayload)
+          : null;
+        if (shotVersion && (shotPayload?.shots?.length ?? 0) > 0) {
+          setShots(shotPayload?.shots ?? []);
+          setShotCardVersionId(shotVersion.id);
+          const analysisVersion = await getLatestProjectAnalysis(
+            selected.id,
+          ).catch(() => undefined);
+          const script = analysisVersion
+            ? (readAnalysisPayload(analysisVersion)?.original_script ?? "")
+            : "";
+          setOriginalScript(script);
+          if (!promptTextRef.current.trim()) {
+            const text = buildReplicaPromptText(
+              shotPayload?.shots ?? [],
+              script,
+            );
+            setPromptText(text);
+            patchDraft({ prompt: text });
+          }
+          notify(
+            `已载入项目「${selected.name}」的历史分镜，可直接送生成或重新拆解。`,
+          );
+        }
+      } catch {
+        // 历史产物读取失败不打断：用户仍可手动启动拆解。
+      }
+    })();
+  };
+
+  const startAnalysis = async () => {
+    if (review) {
+      notify("审核示例不调用真实接口。");
+      return;
+    }
+    const projectId = state.draft.projectId;
+    const assetId =
+      state.draft.sourceAssetId ?? project?.reference_asset_id ?? null;
+    if (!projectId || !assetId) {
+      notify("请先上传或选择来源视频。");
+      return;
+    }
+    analysisProjectRef.current = projectId;
+    setAnalysisBusy(true);
+    setStage("analyzing");
+    notify("AI 拆解进行中，约需一到数分钟，请保持页面打开…");
+    try {
+      const task = await startVideoAnalysis(projectId, assetId);
+      await waitForAnalysisTask(task.id);
+      if (analysisProjectRef.current !== projectId) {
+        return; // 等待期间用户更换了来源视频，丢弃旧项目的拆解结果。
+      }
+      const analysisVersion = await getLatestProjectAnalysis(projectId).catch(
+        () => undefined,
+      );
+      const analysisShots: ShotCard[] = analysisVersion
+        ? (readAnalysisPayload(analysisVersion)?.shots ?? [])
+        : [];
+      const script = analysisVersion
+        ? (readAnalysisPayload(analysisVersion)?.original_script ?? "")
+        : "";
+      // 拆解任务只写 analysis 版本；shot_card 版本由客户端落库（与成熟工作区一致）。
+      let shotVersion = await getLatestProjectShotCards(projectId).catch(
+        () => null,
+      );
+      const shotPayload = shotVersion
+        ? (shotVersion.payload as ShotCardPayload)
+        : null;
+      const shotsFresh =
+        shotPayload &&
+        shotPayload.source_analysis_version_id === analysisVersion?.id;
+      if (!shotsFresh) {
+        shotVersion = await saveShotCards(
+          analysisVersion?.id ?? "",
+          analysisShots,
+        );
+      }
+      const finalShots = shotVersion
+        ? ((shotVersion.payload as ShotCardPayload).shots ?? [])
+        : analysisShots;
+      setShots(finalShots);
+      setShotCardVersionId(shotVersion?.id || undefined);
+      setOriginalScript(script);
+      const text = buildReplicaPromptText(finalShots, script);
+      if (!promptTextRef.current.trim()) {
+        setPromptText(text);
+        patchDraft({ prompt: text });
+      }
+      setStage("ready");
+      setAnalysisBusy(false);
+      notify("拆解完成：分镜与 Prompt 已生成，可编辑后保存或送生成。");
+    } catch (cause: unknown) {
+      setAnalysisBusy(false);
+      setStage("ready");
+      notify(customerVisibleErrorMessage(cause, "AI 拆解失败，请稍后重试。"));
+    }
+  };
+
+  const saveAsCustomPrompt = async () => {
+    if (review) {
+      notify("审核示例不调用真实接口。");
+      return;
+    }
+    const projectId = state.draft.projectId;
+    if (!projectId) {
+      notify("请先上传或选择来源视频。");
+      return;
+    }
+    setSavingPrompt(true);
+    try {
+      await saveGenerationPrompt(projectId, {
+        name:
+          promptName.trim() ||
+          `复刻提示词 ${new Date().toLocaleDateString("zh-CN")}`,
+        prompt_text: promptText,
+      });
+      notify("已保存到我的提示词，视频生成页可直接导入。");
+      setPromptNameOpen(false);
+    } catch (cause: unknown) {
+      notify(
+        customerVisibleErrorMessage(
+          cause,
+          "保存自定义提示词失败，请稍后重试。",
+        ),
+      );
+    } finally {
+      setSavingPrompt(false);
+    }
+  };
+
+  const sendToGeneration = async () => {
+    if (review) {
+      notify("审核示例不调用真实接口。");
+      return;
+    }
+    const projectId = state.draft.projectId;
+    if (!projectId || !shotCardVersionId) {
+      notify("请先完成 AI 拆解。");
+      return;
+    }
+    setGenerating(true);
+    try {
+      const selection = await getLatestProjectFirstFrameSelection(projectId);
+      const firstFrameAssetId =
+        selection.version && !selection.stale
+          ? (readFirstFrameSelectionPayload(selection.version)
+              ?.first_frame_asset_id ?? null)
+          : null;
+      if (!firstFrameAssetId) {
+        notify(
+          "还没有确认过的置换首帧：请先到「人物置换」生成并确认首帧，再回来送生成。",
+        );
+        return;
+      }
+      const scriptFallback =
+        originalScript.trim() ||
+        shots
+          .map((shot) => shot.spoken_text)
+          .filter(Boolean)
+          .join(" ") ||
+        "纯画面叙事，无口播。";
+      await runReplicaGeneration(projectId, {
+        promptText,
+        originalScriptText: scriptFallback,
+        shotCardVersionId,
+        firstFrameAssetId,
+        outputDurationSeconds: normalizeCustomerDuration(state.draft.duration),
+        resolution: state.draft.resolution === "2K" ? "2K" : "768P",
+        ratio: (SUPPORTED_VIDEO_RATIOS as readonly string[]).includes(
+          state.draft.ratio,
+        )
+          ? (state.draft.ratio as GenerationRatio)
+          : "adaptive",
+        quantity:
+          state.draft.count === 2 || state.draft.count === 4
+            ? state.draft.count
+            : 1,
+      });
+      notify("复刻任务已提交，可在任务中心查看进度。");
+      navigate("tasks");
+    } catch (cause: unknown) {
+      notify(customerVisibleErrorMessage(cause, "送生成失败，请稍后重试。"));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const displayShots =
+    shots.length > 0
+      ? shots
+      : review && stage === "ready"
+        ? REVIEW_SAMPLE_SHOTS
+        : [];
+  const hasShots = stage === "ready" && displayShots.length > 0;
 
   return (
     <section className="creation-page creation-replica">
@@ -336,190 +645,510 @@ export function ReplicaPage() {
         <h1>视频复刻</h1>
       </header>
       <CreationNavigation />
-      <SourceStrip source={source} />
-      {!source ? (
+      {stage === "source" && !project ? (
         <Panel className="creation-empty-workspace">
           <Empty
             title="先导入参考视频"
-            description="当前链接解析尚未接通，可上传本地视频后进入成熟分镜工作区。"
+            description="上传本地视频后由 AI 拆解分镜并反推提示词；也可以选择已有项目直接续作。"
             action={
-              <Button variant="primary" onClick={() => openPicker("reference")}>
-                上传参考视频
-              </Button>
+              <div className="creation-upload-row">
+                <Button
+                  variant="primary"
+                  onClick={() => uploadInputRef.current?.click()}
+                >
+                  上传参考视频
+                </Button>
+                {data.projects.length > 0 && (
+                  <select
+                    aria-label="选择已有项目"
+                    className="creation-project-select"
+                    defaultValue=""
+                    onChange={(event) => {
+                      if (event.target.value) {
+                        selectExistingProject(event.target.value);
+                      }
+                    }}
+                  >
+                    <option value="" disabled>
+                      选择已有项目
+                    </option>
+                    {data.projects.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
             }
           />
         </Panel>
       ) : (
-        <div className="creation-replica-grid">
-          <Panel className="creation-shot-list">
-            <div className="creation-panel-title">
-              分镜（共 {shots.length} 个）
+        <>
+          <SourceStrip source={source} />
+          <Panel className="creation-replica-analyze">
+            <div className="creation-panel-title-row">
+              <span>
+                来源视频 ·{" "}
+                {project?.name ?? state.draft.projectId ?? "未命名项目"}
+              </span>
+              {displayShots.length > 0 && (
+                <small>已拆解 {displayShots.length} 个镜头</small>
+              )}
             </div>
-            {shots.map((shot, index) => (
-              <button
-                className={`creation-shot ${state.draft.selectedShotId === shot.id ? "active" : ""}`}
-                key={shot.id}
-                onClick={() => patchDraft({ selectedShotId: shot.id })}
-                type="button"
+            <div className="creation-upload-row">
+              <Button
+                variant="primary"
+                disabled={analysisBusy}
+                onClick={() => void startAnalysis()}
               >
-                <Media asset={shot.asset} alt={`镜头 ${index + 1}`} />
-                <span>
-                  <strong>
-                    {String(index + 1).padStart(2, "0")} · {shot.title}
-                  </strong>
-                  <small>{shot.time || "已从成熟分镜工作区带入"}</small>
-                </span>
-              </button>
-            ))}
-          </Panel>
-          <Panel className="creation-frame-compare">
-            <div className="creation-panel-title-row">
-              <span>镜头 {state.draft.selectedShotId} · 首帧确认</span>
-              <small>已确认</small>
-            </div>
-            <div className="creation-frame-stack">
-              <div>
-                <span>原视频首帧</span>
-                <Media
-                  asset={original ?? source}
-                  alt="原视频首帧"
-                  className="creation-frame-source"
-                />
-              </div>
-              <Icon name="down" />
-              <div className="creation-frame-target">
-                <span>目标首帧</span>
-                <Media asset={target} alt="目标首帧" />
-              </div>
-            </div>
-          </Panel>
-          <Panel className="creation-shot-notes">
-            <div className="creation-panel-title-row">
-              <span>镜头描述</span>
-              <Button variant="outline" onClick={() => openLive("analysis")}>
-                调整人物首帧
+                {analysisBusy
+                  ? "AI 拆解进行中…"
+                  : displayShots.length > 0
+                    ? "重新拆解"
+                    : "启动 AI 拆解"}
+              </Button>
+              <Button
+                disabled={analysisBusy}
+                variant="outline"
+                onClick={() => uploadInputRef.current?.click()}
+              >
+                更换来源视频
               </Button>
             </div>
-            <p>
-              {state.draft.prompt || "进入分镜工作区后查看和调整镜头提示。"}
-            </p>
-            {person && (
-              <div className="creation-shot-person">
-                <Media
-                  asset={target}
-                  alt={person.name}
-                  className="creation-avatar"
-                />
-                <span>
-                  <strong>{person.name}</strong>
-                  <small>{person.role}</small>
-                </span>
-              </div>
-            )}
+            <Hint>
+              拆解会反推分镜与提示词；上传新视频会创建新项目，历史任务不受影响。
+            </Hint>
           </Panel>
-        </div>
+          {hasShots && (
+            <Panel className="creation-shot-list">
+              <div className="creation-panel-title">
+                分镜（共 {displayShots.length} 个）
+              </div>
+              {displayShots.map((shot, index) => (
+                <div className="creation-shot-row" key={shot.shot_id}>
+                  <span className="creation-shot-index">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <span className="creation-shot-body">
+                    <strong>
+                      {shot.start_time.toFixed(1)}s–{shot.end_time.toFixed(1)}s
+                      · {shot.shot_type || "未标注景别"}
+                    </strong>
+                    <small>
+                      {[
+                        shot.subject && `主体：${shot.subject}`,
+                        shot.action && `动作：${shot.action}`,
+                        shot.spoken_text && `台词：${shot.spoken_text}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" ｜ ")}
+                    </small>
+                  </span>
+                </div>
+              ))}
+            </Panel>
+          )}
+          <Panel className="creation-prompt-output">
+            <div className="creation-panel-title-row">
+              <span>拆解 Prompt（可编辑）</span>
+              {displayShots.length === 0 && <small>完成拆解后自动生成</small>}
+            </div>
+            <textarea
+              aria-label="拆解 Prompt"
+              className="creation-textarea"
+              onChange={(event) => {
+                setPromptText(event.target.value);
+                patchDraft({ prompt: event.target.value });
+              }}
+              placeholder="完成 AI 拆解后，这里会生成逐镜头的反推提示词；也可手动撰写。"
+              rows={10}
+              value={promptText}
+            />
+            <div className="creation-upload-row">
+              {promptNameOpen ? (
+                <>
+                  <input
+                    aria-label="自定义提示词名称"
+                    className="creation-project-select"
+                    onChange={(event) => setPromptName(event.target.value)}
+                    placeholder="提示词名称"
+                    value={promptName}
+                  />
+                  <Button
+                    disabled={savingPrompt}
+                    onClick={() => void saveAsCustomPrompt()}
+                    variant="primary"
+                  >
+                    {savingPrompt ? "保存中…" : "确认保存"}
+                  </Button>
+                  <Button
+                    onClick={() => setPromptNameOpen(false)}
+                    variant="quiet"
+                  >
+                    取消
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    onClick={() => setPromptNameOpen(true)}
+                    variant="outline"
+                  >
+                    保存为自定义提示词
+                  </Button>
+                  <Button
+                    disabled={
+                      generating || analysisBusy || displayShots.length === 0
+                    }
+                    onClick={() => void sendToGeneration()}
+                    variant="primary"
+                  >
+                    {generating ? "提交中…" : "送生成"}
+                  </Button>
+                </>
+              )}
+            </div>
+            <Hint>
+              编辑后的 Prompt
+              可保存为自定义提示词（视频生成页可导入）；「送生成」需要项目已有确认首帧，未确认时请先到人物置换页完成。
+            </Hint>
+          </Panel>
+        </>
       )}
       <footer className="creation-action-bar">
         <div>
-          <strong>复刻任务使用现有分镜、首帧与生成批次能力</strong>
-          <Hint>进入成熟工作区后再确认费用并提交。</Hint>
+          <strong>分镜、Prompt 与生成批次能力已在本页打通</strong>
+          <Hint>需要逐镜头精修可进入成熟分镜工作区。</Hint>
         </div>
         <Button variant="outline" onClick={saveDraft}>
           保存草稿
         </Button>
-        <Button variant="primary" onClick={() => openLive("analysis")}>
+        <Button variant="outline" onClick={() => openLive("analysis")}>
           进入分镜工作区
         </Button>
       </footer>
+      <input
+        accept="video/mp4,video/quicktime"
+        aria-label="上传参考视频"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) void handleUpload(file);
+          event.target.value = "";
+        }}
+        ref={uploadInputRef}
+        type="file"
+      />
     </section>
   );
 }
 
 export function ReplacementPage() {
-  const { state, data, openPicker, navigate, saveDraft, requestGeneration } =
+  const { state, data, review, patchDraft, navigate, notify, saveDraft } =
     useStudio();
-  const original = findAsset(data.assets, state.draft.originalImageId);
-  const target = findAsset(data.assets, state.draft.imageId);
-  const preview = state.draft.frameConfirmed
-    ? (findAsset(data.assets, state.draft.firstFrameId) ?? target)
-    : undefined;
+  const project = data.projects.find(
+    (item) => item.id === state.draft.projectId,
+  );
+  const [characterSelection, setCharacterSelection] =
+    useState<ProjectMainCharacter | null>(null);
+  const [sourceFrameSelection, setSourceFrameSelection] =
+    useState<AnalysisVersion | null>(null);
+  const [referenceSelection, setReferenceSelection] =
+    useState<CharacterReferenceSelection | null>(null);
+  const [referenceError, setReferenceError] = useState("");
+  const [firstFrameSelection, setFirstFrameSelection] =
+    useState<AnalysisVersion | null>(null);
+  const [leafBusy, setLeafBusy] = useState(false);
+  const [sourceDurationSeconds, setSourceDurationSeconds] = useState<
+    number | null
+  >(null);
+  const autoMatchAttemptedRef = useRef(new Set<string>());
+  // patchDraft 每次壳层渲染都是新引用，effect 依赖一律走 ref，避免无限置位循环。
+  const patchDraftRef = useRef(patchDraft);
+  patchDraftRef.current = patchDraft;
+  const confirmedAssetIdRef = useRef<string | undefined>(undefined);
+
+  const firstFrameAssetId = firstFrameSelection
+    ? (readFirstFrameSelectionPayload(firstFrameSelection)
+        ?.first_frame_asset_id ?? null)
+    : null;
+
+  const clearConfirmedFirstFrame = useCallback(() => {
+    confirmedAssetIdRef.current = undefined;
+    patchDraftRef.current({
+      firstFrameId: undefined,
+      frameConfirmed: false,
+    } as Partial<StudioDraft>);
+  }, []);
+
+  // 换项目时重置全部下游状态与草稿中的旧首帧。
+  const projectId = project?.id;
+  useEffect(() => {
+    setCharacterSelection(null);
+    setSourceFrameSelection(null);
+    setReferenceSelection(null);
+    setFirstFrameSelection(null);
+    setReferenceError("");
+    autoMatchAttemptedRef.current.clear();
+    confirmedAssetIdRef.current = undefined;
+    if (projectId) {
+      patchDraftRef.current({
+        firstFrameId: undefined,
+        frameConfirmed: false,
+      } as Partial<StudioDraft>);
+    }
+  }, [projectId]);
+
+  // 载入拆解时长供源画面取帧边界使用（缺省时叶子组件退化为固定前 2.5 秒）。
+  useEffect(() => {
+    if (review || !projectId) {
+      setSourceDurationSeconds(null);
+      return;
+    }
+    let active = true;
+    void getLatestProjectAnalysis(projectId)
+      .then((version) => {
+        if (active) {
+          setSourceDurationSeconds(
+            readAnalysisPayload(version)?.duration_seconds ?? null,
+          );
+        }
+      })
+      .catch(() => {
+        if (active) setSourceDurationSeconds(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [review, projectId]);
+
+  // 首帧确认即置位草稿：同一资产只置位一次，防止依赖循环反复 patch。
+  useEffect(() => {
+    if (!firstFrameSelection) {
+      return;
+    }
+    const assetId =
+      readFirstFrameSelectionPayload(firstFrameSelection)?.first_frame_asset_id;
+    if (assetId && confirmedAssetIdRef.current !== assetId) {
+      confirmedAssetIdRef.current = assetId;
+      patchDraftRef.current({ firstFrameId: assetId, frameConfirmed: true });
+    }
+  }, [firstFrameSelection]);
+
+  // 人物参考自动匹配：角色版本 × 已确认源画面，组合只自动尝试一次。
+  useEffect(() => {
+    if (
+      review ||
+      !project ||
+      !characterSelection ||
+      !sourceFrameSelection ||
+      referenceSelection
+    ) {
+      return;
+    }
+    const characterVersionId = characterSelection.character_version_id ?? "";
+    const matchKey = `${project.id}:${characterVersionId}:${sourceFrameSelection.id}`;
+    if (autoMatchAttemptedRef.current.has(matchKey)) {
+      return;
+    }
+    autoMatchAttemptedRef.current.add(matchKey);
+    let active = true;
+    setLeafBusy(true);
+    selectCharacterReferences(project.id, {
+      character_version_id: characterVersionId,
+      source_frame_selection_version_id: sourceFrameSelection.id,
+    })
+      .then((selection) => {
+        if (active) {
+          setReferenceSelection(selection);
+          setReferenceError("");
+        }
+      })
+      .catch((cause: unknown) => {
+        if (active) {
+          setReferenceError(
+            cause instanceof Error ? cause.message : "自动匹配人物参考失败。",
+          );
+        }
+      });
+    return () => {
+      active = false;
+      setLeafBusy(false);
+    };
+  }, [
+    review,
+    project,
+    characterSelection,
+    sourceFrameSelection,
+    referenceSelection,
+  ]);
+
+  // 叶子组件的 effect 依赖回调身份：必须 useCallback 保持稳定，否则引发重取风暴。
+  const handleCharacterChange = useCallback(
+    (selection: ProjectMainCharacter | null) => {
+      setCharacterSelection(selection);
+      setReferenceSelection(null);
+      setReferenceError("");
+      setFirstFrameSelection(null);
+      clearConfirmedFirstFrame();
+    },
+    [clearConfirmedFirstFrame],
+  );
+
+  const handleSourceFrameChange = useCallback(
+    (selection: AnalysisVersion | null) => {
+      setSourceFrameSelection(selection);
+      setReferenceSelection(null);
+      setReferenceError("");
+      setFirstFrameSelection(null);
+      clearConfirmedFirstFrame();
+    },
+    [clearConfirmedFirstFrame],
+  );
+
+  const retryReferenceMatch = () => {
+    const characterVersionId = characterSelection?.character_version_id ?? "";
+    const matchKey = `${project?.id ?? ""}:${characterVersionId}:${
+      sourceFrameSelection?.id ?? ""
+    }`;
+    autoMatchAttemptedRef.current.delete(matchKey);
+    setReferenceError("");
+  };
+
+  const firstFrameReady = Boolean(firstFrameAssetId);
 
   return (
     <section className="creation-page">
-      <header className="creation-heading creation-heading-back">
-        <Button
-          variant="quiet"
-          onClick={() => navigate(state.returnTo ?? "replica")}
-        >
-          ← 返回
-        </Button>
-        <div>
-          <h1>人物置换</h1>
-          <p>先确认人物首帧，再继续生成视频</p>
-        </div>
+      <header className="creation-heading">
+        <h1>人物替换</h1>
       </header>
       <CreationNavigation />
-      <SourceStrip source={original} />
-      <div className="creation-replacement-grid">
-        <Panel>
-          <div className="creation-panel-title">原始画面</div>
-          <Media
-            asset={original}
-            alt="原始画面"
-            className="creation-large-media"
+      {!project ? (
+        <Panel className="creation-empty-workspace">
+          <Empty
+            title="先在视频复刻中准备好项目"
+            description="人物替换需要一个已完成 AI 拆解的项目：选择下方项目即可开始提取源画面并生成置换首帧。"
+            action={
+              data.projects.length > 0 ? (
+                <select
+                  aria-label="选择项目"
+                  className="creation-project-select"
+                  defaultValue=""
+                  onChange={(event) => {
+                    const selected = data.projects.find(
+                      (item) => item.id === event.target.value,
+                    );
+                    if (selected) {
+                      patchDraft({ projectId: selected.id });
+                      notify(`已切换到项目「${selected.name}」。`);
+                    }
+                  }}
+                >
+                  <option value="" disabled>
+                    选择已有项目
+                  </option>
+                  {data.projects
+                    .filter((item) => item.analysis_status === "READY")
+                    .map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                </select>
+              ) : undefined
+            }
           />
-          <Button
-            variant="outline"
-            onClick={() => openPicker("original-frame")}
-          >
-            更换原始画面
-          </Button>
         </Panel>
-        <Panel>
-          <div className="creation-panel-title">目标人物参考</div>
-          <Media
-            asset={target}
-            alt="目标人物参考"
-            className="creation-large-media"
+      ) : review ? (
+        <Panel className="creation-empty-workspace">
+          <Empty
+            title="人物替换（审核示例）"
+            description="真实模式将在此完成：确认源画面 → 匹配 IP 五视图参考 → 生成并确认置换首帧。"
           />
-          <Button variant="outline" onClick={() => openPicker("image")}>
-            从人物库选择
-          </Button>
-          <Hint>人物照片只填目标参考，不会覆盖原始画面。</Hint>
         </Panel>
-        <Panel className="creation-replacement-preview">
-          <div className="creation-panel-title">置换首帧预览</div>
-          <Media
-            asset={preview}
-            alt="置换首帧预览"
-            className="creation-large-media"
-          />
-          <div className="creation-preview-state">
-            <span className="creation-status-dot" />
-            {state.draft.frameConfirmed ? "静态首帧 · 已确认" : "待生成并确认"}
-          </div>
-        </Panel>
-      </div>
-      <footer className="creation-action-bar creation-action-center">
-        <Button variant="outline" onClick={() => requestGeneration("人物置换")}>
-          重新生成首帧
-        </Button>
-        <Button
-          variant="primary"
-          disabled={!preview}
-          onClick={() => {
-            saveDraft();
-            navigate(state.returnTo ?? "replica");
-          }}
-        >
-          确认并返回镜头
-        </Button>
-        <Button
-          variant="outline"
-          disabled={!preview}
-          onClick={() => navigate("video", { returnTo: "replacement" })}
-        >
-          用于文/图生视频
+      ) : (
+        <>
+          <Panel className="creation-replacement-step">
+            <div className="creation-panel-title">① 选择人物 IP</div>
+            <CharacterSelection
+              onBusyChange={setLeafBusy}
+              onVersionChange={handleCharacterChange}
+              projectId={project.id}
+              variant="inline"
+            />
+          </Panel>
+          <Panel className="creation-replacement-step">
+            <div className="creation-panel-title">② 提取并确认源画面</div>
+            <SourceFrameSelection
+              onBusyChange={setLeafBusy}
+              onSelectionChange={handleSourceFrameChange}
+              projectId={project.id}
+              referenceAssetId={project.reference_asset_id}
+              simplified
+              videoDurationSeconds={sourceDurationSeconds}
+            />
+          </Panel>
+          <Panel className="creation-replacement-step">
+            <div className="creation-panel-title">③ 生成置换首帧</div>
+            {referenceError ? (
+              <>
+                <p className="settings-error" role="alert">
+                  {referenceError}
+                </p>
+                <Button onClick={retryReferenceMatch} variant="outline">
+                  重试匹配人物参考
+                </Button>
+              </>
+            ) : null}
+            {characterSelection && sourceFrameSelection ? (
+              <FirstFrameSelection
+                onBusyChange={setLeafBusy}
+                onSelectionChange={setFirstFrameSelection}
+                projectId={project.id}
+                referenceSelection={referenceSelection}
+                simplified
+                sourceFrameSelectionId={sourceFrameSelection.id}
+              />
+            ) : (
+              <Empty
+                title="等待前置步骤"
+                description="确认人物与源画面后，即可结合 IP 五视图生成置换首帧。"
+              />
+            )}
+          </Panel>
+          <Panel className="creation-replacement-step">
+            <div className="creation-panel-title">④ 用于视频生成</div>
+            {firstFrameReady ? (
+              <>
+                <p>
+                  置换首帧已确认并写入当前创作草稿，可在「视频生成」中作为首帧图生视频。
+                </p>
+                <Button
+                  disabled={leafBusy}
+                  variant="primary"
+                  onClick={() => navigate("video")}
+                >
+                  用于文/图生视频
+                </Button>
+              </>
+            ) : (
+              <Hint>
+                完成上方置换首帧确认后，这里会提供一键跳转视频生成的入口。
+              </Hint>
+            )}
+          </Panel>
+        </>
+      )}
+      <footer className="creation-action-bar">
+        <div>
+          <strong>
+            源画面 + IP 五视图 → 置换首帧，全流程复用后端已实现链路
+          </strong>
+          <Hint>确认后的首帧可直接用于文/图生视频。</Hint>
+        </div>
+        <Button variant="outline" onClick={saveDraft}>
+          保存草稿
         </Button>
       </footer>
     </section>
@@ -596,6 +1225,219 @@ function ParameterControls() {
   );
 }
 
+// 生成等待期的安抚文案：按阶段轮换，降低等待焦虑（不伪造进度）。
+const REASSURANCE_COPY = [
+  "AI 正在理解你的提示词与画面结构…",
+  "视频生成通常需要 1–3 分钟，可以先去处理其他创作。",
+  "任务已进入公平队列，关掉页面也不会丢失进度。",
+  "生成完成后可以直接在下方预览成片。",
+];
+
+const VIDEO_STAGE_LABELS = ["已提交", "排队中", "生成中", "完成"] as const;
+
+function videoStageIndex(status: StudioTask["status"]): number {
+  if (status === "queued") return 1;
+  if (status === "running") return 2;
+  if (status === "completed") return 3;
+  return 0;
+}
+
+function formatElapsed(from: string): string {
+  // 服务端 CURRENT_TIMESTAMP 是 UTC 文本；补 Z 防止按本地时区解析出巨幅偏差。
+  const started = new Date(`${from.replace(" ", "T")}Z`).getTime();
+  if (Number.isNaN(started)) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
+}
+
+/** 生成等待视图：阶段时间线 + 进度百分比 + 轮换安抚文案。 */
+function VideoProgressView({ task }: { task: StudioTask }) {
+  const [copyIndex, setCopyIndex] = useState(0);
+  const [, setTick] = useState(0);
+  const failed = task.status === "failed" || task.status === "uncertain";
+
+  useEffect(() => {
+    if (failed) return;
+    const timer = window.setInterval(() => {
+      setCopyIndex((value) => (value + 1) % REASSURANCE_COPY.length);
+      setTick((value) => value + 1);
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [failed]);
+
+  if (failed) {
+    return (
+      <div className="creation-progress failed" role="alert">
+        <div className="creation-progress-headline">
+          生成未完成{task.status === "uncertain" ? "（状态待确认）" : ""}
+        </div>
+        <p className="creation-progress-copy">
+          积分未结算的失败不会扣费；可在任务中心重试或对账。
+        </p>
+        <Empty
+          title="这条视频没有生成成功"
+          description="可回到上方调整提示词或素材后重新生成。"
+        />
+      </div>
+    );
+  }
+
+  const stageIndex = videoStageIndex(task.status);
+  const progress = task.progress ?? 0;
+
+  return (
+    <div className="creation-progress" aria-live="polite">
+      <ol className="creation-progress-stages">
+        {VIDEO_STAGE_LABELS.map((label, index) => (
+          <li
+            key={label}
+            className={
+              index === stageIndex
+                ? "is-active"
+                : index < stageIndex
+                  ? "is-done"
+                  : ""
+            }
+          >
+            {label}
+          </li>
+        ))}
+      </ol>
+      <progress
+        aria-label="生成进度"
+        className="creation-progress-bar"
+        max={100}
+        value={task.status === "completed" ? 100 : progress}
+      />
+      <div className="creation-progress-meta">
+        <span>{task.status === "completed" ? "生成完成" : `${progress}%`}</span>
+        <span>已等待 {formatElapsed(task.submitted)}</span>
+      </div>
+      <p className="creation-progress-copy">{REASSURANCE_COPY[copyIndex]}</p>
+    </div>
+  );
+}
+
+function SavedPromptImporter({
+  onImport,
+}: {
+  onImport: (promptText: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [prompts, setPrompts] = useState<SavedPromptItem[]>();
+  const [error, setError] = useState<string>();
+  const { review, notify } = useStudio();
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && prompts === undefined && !error && !review) {
+      void listUserSavedPrompts()
+        .then(setPrompts)
+        .catch(() => setError("我的提示词暂时读取失败，请稍后重试。"));
+    }
+  };
+
+  return (
+    <div className="creation-prompt-import">
+      <Button variant="quiet" onClick={toggle}>
+        <Icon name="arrow" size={16} /> 导入提示词
+      </Button>
+      {open && (
+        <div
+          className="creation-prompt-list"
+          role="listbox"
+          aria-label="我的提示词"
+        >
+          {review ? (
+            <p>审核示例不提供提示词库。</p>
+          ) : error ? (
+            <p>{error}</p>
+          ) : prompts === undefined ? (
+            <p>正在读取我的提示词…</p>
+          ) : prompts.length === 0 ? (
+            <p>
+              还没有保存过提示词。在项目拆解中修订反推提示词并保存后会出现在这里。
+            </p>
+          ) : (
+            prompts.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  onImport(item.prompt_text);
+                  notify(`已导入「${item.name}」，可继续修改。`);
+                  setOpen(false);
+                }}
+              >
+                <strong>{item.name}</strong>
+                <small>{item.prompt_text.slice(0, 60)}</small>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VideoMaterialUpload({
+  group,
+  label,
+  onUploaded,
+}: {
+  group: string;
+  label: string;
+  onUploaded: (asset: StudioAsset) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [progress, setProgress] = useState<number>();
+  const { review, notify } = useStudio();
+
+  const upload = async (file: File) => {
+    if (review) {
+      notify("审核示例不上传素材。");
+      return;
+    }
+    setProgress(0);
+    try {
+      const asset = await uploadVideoMaterial(file, group, setProgress);
+      onUploaded(asset);
+      notify(`${label}「${file.name}」已上传到素材库。`);
+    } catch {
+      notify("素材上传失败，请稍后重试。");
+    } finally {
+      setProgress(undefined);
+    }
+  };
+
+  return (
+    <>
+      <button
+        className="creation-upload-mini"
+        disabled={progress !== undefined}
+        onClick={() => inputRef.current?.click()}
+        type="button"
+      >
+        {progress !== undefined ? `上传中 ${progress}%` : "本机上传"}
+      </button>
+      <input
+        accept="image/png,image/jpeg"
+        aria-label={`上传${label}`}
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) void upload(file);
+          event.target.value = "";
+        }}
+        ref={inputRef}
+        type="file"
+      />
+    </>
+  );
+}
+
 export function VideoPage() {
   const {
     state,
@@ -605,16 +1447,34 @@ export function VideoPage() {
     openPicker,
     saveDraft,
     requestGeneration,
+    updateData,
   } = useStudio();
   const referenceMode = state.page === "reference";
-  const firstFrame = findAsset(data.assets, state.draft.firstFrameId);
-  const tailFrame = findAsset(data.assets, state.draft.tailFrameId);
+  const firstFrame =
+    findAsset(data.assets, state.draft.firstFrameId) ??
+    findAsset(data.materials, state.draft.firstFrameId);
+  const tailFrame =
+    findAsset(data.assets, state.draft.tailFrameId) ??
+    findAsset(data.materials, state.draft.tailFrameId);
   const references = state.draft.referenceIds
-    .map((id) => findAsset(data.assets, id))
+    .map((id) => findAsset(data.assets, id) ?? findAsset(data.materials, id))
     .filter((asset): asset is StudioAsset => Boolean(asset));
   const ready =
     Boolean(state.draft.prompt.trim()) &&
     (referenceMode ? references.length > 0 : true);
+  const videoTask = state.draft.videoBatchId
+    ? data.tasks.find((task) => task.id === state.draft.videoBatchId)
+    : undefined;
+
+  const appendMaterial = (asset: StudioAsset) => {
+    updateData((previous) => ({
+      ...previous,
+      materials: [
+        asset,
+        ...previous.materials.filter((item) => item.id !== asset.id),
+      ],
+    }));
+  };
 
   return (
     <section className="creation-page">
@@ -644,18 +1504,33 @@ export function VideoPage() {
               placeholder="描述镜头、场景、运动与光线"
               value={state.draft.prompt}
             />
+            <SavedPromptImporter
+              onImport={(promptText) => patchDraft({ prompt: promptText })}
+            />
           </Field>
           {referenceMode ? (
             <ControlGroup label="参考素材">
-              <button
-                className="creation-upload"
-                onClick={() => openPicker("reference")}
-                type="button"
-              >
-                <Icon name="upload" />
-                <span>点击上传，或从素材库选择</span>
-                <small>支持图片、视频、音频</small>
-              </button>
+              <div className="creation-upload-row">
+                <button
+                  className="creation-upload"
+                  onClick={() => openPicker("reference")}
+                  type="button"
+                >
+                  <Icon name="upload" />
+                  <span>从素材库选择</span>
+                  <small>本批生成最多 4 张参考图</small>
+                </button>
+                <VideoMaterialUpload
+                  group="参考素材"
+                  label="参考图"
+                  onUploaded={(asset) => {
+                    appendMaterial(asset);
+                    patchDraft({
+                      referenceIds: [...state.draft.referenceIds, asset.id],
+                    });
+                  }}
+                />
+              </div>
               <div className="creation-reference-list">
                 {references.map((asset, index) => (
                   <div className="creation-reference-row" key={asset.id}>
@@ -690,15 +1565,41 @@ export function VideoPage() {
             <ControlGroup label="首尾帧">
               <Hint>无首帧时文生视频；添加首帧后图生视频。</Hint>
               <div className="creation-frame-row">
-                <button onClick={() => openPicker("first-frame")} type="button">
-                  <Media asset={firstFrame} alt="首帧" />
-                  <span>首帧（选填）</span>
-                </button>
+                <div className="creation-frame-slot">
+                  <button
+                    onClick={() => openPicker("first-frame")}
+                    type="button"
+                  >
+                    <Media asset={firstFrame} alt="首帧" />
+                    <span>首帧（选填）</span>
+                  </button>
+                  <VideoMaterialUpload
+                    group="首帧素材"
+                    label="首帧"
+                    onUploaded={(asset) => {
+                      appendMaterial(asset);
+                      patchDraft({ firstFrameId: asset.id });
+                    }}
+                  />
+                </div>
                 <Icon name="arrow" />
-                <button onClick={() => openPicker("tail-frame")} type="button">
-                  <Media asset={tailFrame} alt="尾帧" />
-                  <span>尾帧（可选）</span>
-                </button>
+                <div className="creation-frame-slot">
+                  <button
+                    onClick={() => openPicker("tail-frame")}
+                    type="button"
+                  >
+                    <Media asset={tailFrame} alt="尾帧" />
+                    <span>尾帧（可选）</span>
+                  </button>
+                  <VideoMaterialUpload
+                    group="尾帧素材"
+                    label="尾帧"
+                    onUploaded={(asset) => {
+                      appendMaterial(asset);
+                      patchDraft({ tailFrameId: asset.id });
+                    }}
+                  />
+                </div>
               </div>
             </ControlGroup>
           )}
@@ -724,7 +1625,9 @@ export function VideoPage() {
           <div className="creation-panel-title">
             预览（{referenceMode ? "参考画布" : "首帧预览"}）
           </div>
-          {referenceMode ? (
+          {videoTask ? (
+            <VideoProgressView task={videoTask} />
+          ) : referenceMode ? (
             references.length ? (
               <Media
                 asset={references[0]}
@@ -748,6 +1651,9 @@ export function VideoPage() {
               title="当前为文生视频"
               description="添加首帧后会在这里显示图生预览。"
             />
+          )}
+          {videoTask && (
+            <Hint>成片与历史进度可在任务中心查看，任务记录不会丢失。</Hint>
           )}
         </Panel>
       </div>
@@ -1017,7 +1923,9 @@ export function OralPage() {
           生成口播视频
         </Button>
       </footer>
-      <Hint>确认费用后提交；当前供应商接口未接通时不会创建正式任务。</Hint>
+      <Hint>
+        确认费用后提交；数字人服务未配置时会明确提示，不会生成伪造成片。
+      </Hint>
     </section>
   );
 }

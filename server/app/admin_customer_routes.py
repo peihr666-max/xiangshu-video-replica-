@@ -40,7 +40,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Callable
-from typing import Never, cast
+from typing import Literal, Never, cast
 
 import psycopg
 from fastapi import APIRouter, Request, Response
@@ -639,15 +639,17 @@ def list_admin_adjustments(
     actor: AdminReader,
     limit: int = DEFAULT_LIST_LIMIT,
     offset: int = 0,
+    sort: Literal["asc", "desc"] = "asc",
 ) -> dict[str, object]:
     """List all adjustments for a target user (audit trail for operators and auditors)."""
     bounded_limit = max(0, min(limit, MAX_LIST_LIMIT))
     bounded_offset = max(0, offset)
+    order_by = "aa.created_at DESC, aa.id DESC" if sort == "desc" else "aa.created_at, aa.id"
 
     try:
         with pg_transaction() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT aa.id, aa.recharge_order_id, aa.admin_user_id,
                        aa.source_document_type, aa.source_document_ref,
                        aa.reason, aa.request_id, aa.created_at,
@@ -655,9 +657,9 @@ def list_admin_adjustments(
                 FROM admin_adjustments aa
                 JOIN recharge_orders ro ON ro.id = aa.recharge_order_id
                 WHERE aa.target_user_id = %s
-                ORDER BY aa.created_at, aa.id
+                ORDER BY {order_by}
                 LIMIT %s OFFSET %s
-                """,
+                """,  # noqa: S608 -- direction is selected from the Literal above.
                 (user_id, bounded_limit, bounded_offset),
             ).fetchall()
             total_row = conn.execute(
@@ -693,6 +695,114 @@ def list_admin_adjustments(
     return {"items": items, "total": total, "limit": bounded_limit, "offset": bounded_offset}
 
 
+@router.get("/adjustments")
+def list_all_admin_adjustments(
+    actor: AdminReader,
+    actor_username: str = "",
+    target_username: str = "",
+    source_document_type: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    limit: int = DEFAULT_LIST_LIMIT,
+    offset: int = 0,
+) -> dict[str, object]:
+    """List adjustment records across customers with deterministic ledger balances."""
+    del actor
+    bounded_limit = max(0, min(limit, MAX_LIST_LIMIT))
+    bounded_offset = max(0, offset)
+    clauses: list[str] = []
+    params: list[object] = []
+    if actor_username.strip():
+        clauses.append("admin_user.username ILIKE %s")
+        params.append(f"%{actor_username.strip()}%")
+    if target_username.strip():
+        clauses.append("target_user.username ILIKE %s")
+        params.append(f"%{target_username.strip()}%")
+    if source_document_type.strip():
+        clauses.append("aa.source_document_type = %s")
+        params.append(source_document_type.strip())
+    if created_from.strip():
+        clauses.append("aa.created_at::timestamptz >= %s::date")
+        params.append(created_from.strip())
+    if created_to.strip():
+        clauses.append("aa.created_at::timestamptz < (%s::date + INTERVAL '1 day')")
+        params.append(created_to.strip())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    joins = """
+        FROM admin_adjustments aa
+        JOIN recharge_orders ro ON ro.id = aa.recharge_order_id
+        JOIN users admin_user ON admin_user.id = aa.admin_user_id
+        JOIN users target_user ON target_user.id = aa.target_user_id
+        LEFT JOIN wallet_transactions tx
+          ON tx.recharge_order_id = aa.recharge_order_id AND tx.type = 'CHARGE'
+    """
+    try:
+        with pg_transaction() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT aa.id, aa.recharge_order_id, aa.admin_user_id,
+                       admin_user.username, aa.target_user_id, target_user.username,
+                       aa.source_document_type, aa.source_document_ref, aa.reason,
+                       aa.request_id, aa.created_at, ro.amount_fen, ro.credits,
+                       ro.pricing_scope, ro.status,
+                       CASE WHEN tx.ledger_sequence IS NULL THEN NULL
+                            ELSE ledger_balance.balance_after END AS balance_after,
+                       CASE WHEN tx.ledger_sequence IS NULL THEN NULL ELSE
+                         ledger_balance.balance_after - tx.available_delta
+                       END AS balance_before
+                {joins}
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(prev.available_delta), 0) AS balance_after
+                    FROM wallet_transactions prev
+                    WHERE tx.ledger_sequence IS NOT NULL
+                      AND prev.user_id = aa.target_user_id
+                      AND (prev.ledger_sequence IS NULL OR
+                           prev.ledger_sequence <= tx.ledger_sequence)
+                ) ledger_balance ON TRUE
+                {where}
+                ORDER BY aa.created_at DESC, aa.id DESC LIMIT %s OFFSET %s
+                """,  # noqa: S608
+                (*params, bounded_limit, bounded_offset),
+            ).fetchall()
+            total_row = conn.execute(
+                f"SELECT COUNT(*) {joins} {where}",  # noqa: S608
+                params,
+            ).fetchone()
+    except (RuntimeError, MissingDatabaseConfigError) as exc:
+        raise _http(
+            503,
+            "ADJUSTMENT_SERVICE_UNAVAILABLE",
+            "Admin adjustments require the PostgreSQL runtime.",
+        ) from exc
+    return {
+        "items": [
+            {
+                "adjustment_id": str(row[0]),
+                "order_id": str(row[1]),
+                "admin_user_id": str(row[2]),
+                "admin_username": str(row[3]),
+                "target_user_id": str(row[4]),
+                "target_username": str(row[5]),
+                "source_document_type": str(row[6]),
+                "source_document_ref": str(row[7]),
+                "reason": str(row[8]),
+                "request_id": str(row[9]),
+                "created_at": str(row[10]),
+                "amount_fen": int(row[11]),
+                "credits": int(row[12]),
+                "pricing_scope": str(row[13]),
+                "status": str(row[14]),
+                "balance_after": None if row[15] is None else int(row[15]),
+                "balance_before": None if row[16] is None else int(row[16]),
+            }
+            for row in rows
+        ],
+        "total": int(total_row[0]) if total_row else 0,
+        "limit": bounded_limit,
+        "offset": bounded_offset,
+    }
+
+
 DEFAULT_CUSTOMER_PAGE_SIZE = 20
 MAX_CUSTOMER_PAGE_SIZE = 100
 
@@ -703,6 +813,11 @@ def list_customers(
     limit: int = DEFAULT_CUSTOMER_PAGE_SIZE,
     offset: int = 0,
     username: str = "",
+    status: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    balance_min: int | None = None,
+    balance_max: int | None = None,
 ) -> dict[str, object]:
     """Every activated customer for operators and auditors (ADM-02 read path).
 
@@ -726,13 +841,30 @@ def list_customers(
         # literally (PostgreSQL LIKE treats backslash as the default escape).
         literal = username.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         params.append(f"%{literal}%")
+    if status.strip():
+        clauses.append("ac.status = %s")
+        params.append(status.strip().upper())
+    if created_from.strip():
+        clauses.append("aca.activated_at::timestamptz >= %s::date")
+        params.append(created_from.strip())
+    if created_to.strip():
+        clauses.append("aca.activated_at::timestamptz < (%s::date + INTERVAL '1 day')")
+        params.append(created_to.strip())
+    if balance_min is not None:
+        clauses.append("COALESCE(w.available_credits, 0) >= %s")
+        params.append(max(0, balance_min))
+    if balance_max is not None:
+        clauses.append("COALESCE(w.available_credits, 0) <= %s")
+        params.append(max(0, balance_max))
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     try:
         with pg_transaction() as conn:
             rows = conn.execute(
-                "SELECT aca.user_id, u.username, aca.activated_at, "
+                "SELECT aca.user_id, u.username, u.display_name, aca.activated_at, "
                 "ac.id, ac.masked_code, ac.status, "
+                "COALESCE(w.available_credits, 0), COALESCE(w.reserved_credits, 0), "
+                "COALESCE(devices.slots_used, 0), "
                 "COALESCE(usage.generation_total, 0), "
                 "COALESCE(usage.generation_succeeded, 0), "
                 "COALESCE(usage.generation_failed, 0), "
@@ -742,6 +874,10 @@ def list_customers(
                 "FROM activation_code_activations aca "
                 "JOIN users u ON u.id = aca.user_id "
                 "JOIN activation_codes ac ON ac.id = aca.code_id "
+                "LEFT JOIN wallets w ON w.user_id = aca.user_id "
+                "LEFT JOIN (SELECT user_id, COUNT(*) AS slots_used FROM customer_devices "
+                "  WHERE status = 'BOUND' GROUP BY user_id) devices "
+                "  ON devices.user_id = aca.user_id "
                 "LEFT JOIN ("
                 "  SELECT gb.created_by_user_id AS user_id, "
                 "    COUNT(*) AS generation_total, "
@@ -767,7 +903,7 @@ def list_customers(
                 "  GROUP BY gb.created_by_user_id"
                 ") usage ON usage.user_id = aca.user_id "
                 "LEFT JOIN ("
-                "  SELECT user_id, COUNT(*) AS credits_spent "
+                "  SELECT user_id, COALESCE(SUM(-reserved_delta), 0) AS credits_spent "
                 "  FROM wallet_transactions WHERE type = 'SETTLE' GROUP BY user_id"
                 ") spend ON spend.user_id = aca.user_id "
                 f"{where} "
@@ -779,6 +915,7 @@ def list_customers(
                 "SELECT COUNT(*) FROM activation_code_activations aca "
                 "JOIN users u ON u.id = aca.user_id "
                 "JOIN activation_codes ac ON ac.id = aca.code_id "
+                "LEFT JOIN wallets w ON w.user_id = aca.user_id "
                 f"{where}",
                 params,
             ).fetchone()
@@ -793,15 +930,21 @@ def list_customers(
         {
             "user_id": str(row[0]),
             "username": str(row[1]),
-            "created_at": str(row[2]) if row[2] is not None else "",
-            "activation_code": str(row[4]),
-            "status": str(row[5]),
-            "generation_total": int(row[6]),
-            "generation_succeeded": int(row[7]),
-            "generation_failed": int(row[8]),
-            "generation_in_progress": int(row[9]),
-            "generation_attention": int(row[10]),
-            "credits_spent": int(row[11]),
+            "display_name": str(row[2]),
+            "created_at": str(row[3]) if row[3] is not None else "",
+            "activation_code_id": str(row[4]),
+            "activation_code": str(row[5]),
+            "status": str(row[6]),
+            "available_credits": int(row[7]),
+            "reserved_credits": int(row[8]),
+            "device_slots_used": int(row[9]),
+            "device_slots_total": 2,
+            "generation_total": int(row[10]),
+            "generation_succeeded": int(row[11]),
+            "generation_failed": int(row[12]),
+            "generation_in_progress": int(row[13]),
+            "generation_attention": int(row[14]),
+            "credits_spent": int(row[15]),
         }
         for row in rows
     ]
@@ -819,6 +962,10 @@ def export_customers_csv(
     actor: AdminWriter,
     status: str | None = None,
     username: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    balance_min: int | None = None,
+    balance_max: int | None = None,
     limit: int = 5000,
 ) -> HttpResponse:
     """Export the customer list as CSV (C6) — audited + rate limited (A2).
@@ -857,7 +1004,7 @@ def export_customers_csv(
             params: list[object] = []
             if username.strip():
                 literal = (
-                    username.strip().replace("\\", "\\\\").replace("%", "\%").replace("_", "\_")
+                    username.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 )
                 clauses.append("u.username ILIKE %s")
                 params.append(f"%{literal}%")
@@ -869,12 +1016,25 @@ def export_customers_csv(
             if normalized_status:
                 clauses.append("ac.status = %s")
                 params.append(normalized_status)
+            if created_from.strip():
+                clauses.append("aca.activated_at::timestamptz >= %s::date")
+                params.append(created_from.strip())
+            if created_to.strip():
+                clauses.append("aca.activated_at::timestamptz < (%s::date + INTERVAL '1 day')")
+                params.append(created_to.strip())
+            if balance_min is not None:
+                clauses.append("COALESCE(w.available_credits, 0) >= %s")
+                params.append(max(0, balance_min))
+            if balance_max is not None:
+                clauses.append("COALESCE(w.available_credits, 0) <= %s")
+                params.append(max(0, balance_max))
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             rows = conn.execute(
                 "SELECT u.username, ac.masked_code, aca.activated_at, ac.status "
                 "FROM activation_code_activations aca "
                 "JOIN users u ON u.id = aca.user_id "
                 "JOIN activation_codes ac ON ac.id = aca.code_id "
+                "LEFT JOIN wallets w ON w.user_id = aca.user_id "
                 f"{where} ORDER BY aca.activated_at, aca.id LIMIT %s",
                 (*params, max(1, min(limit, 5000))),
             ).fetchall()
@@ -890,7 +1050,14 @@ def export_customers_csv(
                 entity_type="control_ledger",
                 entity_id="customers",
                 metadata={
-                    "filters": {"status": normalized_status, "username": username},
+                    "filters": {
+                        "status": normalized_status,
+                        "username": username,
+                        "created_from": created_from,
+                        "created_to": created_to,
+                        "balance_min": balance_min,
+                        "balance_max": balance_max,
+                    },
                     "limit": limit,
                 },
             )

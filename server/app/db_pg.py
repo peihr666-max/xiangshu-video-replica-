@@ -38,6 +38,9 @@ POOL_MAX_ENV = "VIDEO_REPLICA_PG_POOL_MAX"
 # A misconfigured POOL_MAX must not drain the server's connection budget
 # (shared by the multi-instance API/Worker fleet, M1 review LOW).
 POOL_MAX_CEILING = 64
+# 空闲事务护栏（2026-09-07 梳理）：业务侧纪律是短事务，一个连接停留在
+# "事务开着但不发语句"超过阈值即是缺陷（持锁泄漏会串住整个容量/队列路径）。
+# 默认 5 分钟——高于最长的合法请求内外呼窗口，仍能把真实泄漏变成快速失败。
 
 DEFAULT_POOL_MIN = 1
 DEFAULT_POOL_MAX = 8
@@ -46,6 +49,15 @@ DEFAULT_POOL_MAX = 8
 DEFAULT_POOL_MAX_LIFETIME = 3600.0
 DEFAULT_POOL_MAX_IDLE = 600.0
 DEFAULT_POOL_TIMEOUT = 30.0
+# 2026-09-07 评审 §7-0：claim 事务的提交权在外层 fenced 块，一旦有调用方把
+# 未提交事务长期搁置（实测曾持容量行锁 19 分钟拖停公平队列），必须由数据库
+# 侧护栏快速失败，而不是无限排队。单语句 5 分钟、事务内闲置 60 秒。
+PG_STATEMENT_TIMEOUT_MS = 300_000
+PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000
+PG_POOL_OPTIONS = (
+    f"-c statement_timeout={PG_STATEMENT_TIMEOUT_MS}"
+    f" -c idle_in_transaction_session_timeout={PG_IDLE_IN_TRANSACTION_TIMEOUT_MS}"
+)
 PG_URL_SCHEMES = ("postgresql://", "postgres://")
 SQLITE_URL_SCHEMES = ("sqlite:///", "sqlite://")
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -240,6 +252,7 @@ def get_pg_pool() -> ConnectionPool:
                 max_lifetime=DEFAULT_POOL_MAX_LIFETIME,
                 max_idle=DEFAULT_POOL_MAX_IDLE,
                 timeout=DEFAULT_POOL_TIMEOUT,
+                kwargs={"options": PG_POOL_OPTIONS},
             )
             _pool = pool
         return _pool

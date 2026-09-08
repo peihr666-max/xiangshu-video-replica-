@@ -3,16 +3,16 @@ import { type FormEvent, useState } from "react";
 import { type CustomerApiError, customerVisibleErrorMessage } from "../api";
 import activationDeviceIcon from "../assets/brand/activation-device.png";
 import activationLockIcon from "../assets/brand/activation-lock.png";
-import jingxuLogoMark from "../assets/brand/jingxu-logo-mark.png";
+import zhongshuLogoMark from "../assets/brand/zhongshu-logo-mark.svg";
 import type { CustomerActivationFormInput } from "./useCustomerSession";
 
 export function CustomerAccessBrand() {
   return (
     <div className="customer-access-brand">
-      <img alt="镜序 Studio" src={jingxuLogoMark} />
+      <img alt="众墅之家" src={zhongshuLogoMark} />
       <span className="customer-access-brand__name">
-        <strong>镜序</strong>
-        <small>Studio</small>
+        <strong>众墅之家</strong>
+        <small>AI 即创</small>
       </span>
     </div>
   );
@@ -57,7 +57,7 @@ export function ActivationPage({
       >
         <CustomerAccessBrand />
         <div className="customer-access-body">
-          <h1 id="activation-title">激活短视频复刻工作台</h1>
+          <h1 id="activation-title">激活众墅之家 · AI 即创</h1>
           <p className="customer-access-lead">
             输入有效激活码即可进入，本机会自动识别并关联您的账号。
           </p>

@@ -675,9 +675,13 @@ def _run_activation(
         grant_reason = str(code_row[8] or "").strip()
         if is_free_grant and not grant_reason:
             raise _http(
+<<<<<<< main
+                503, "ACTIVATION_SERVICE_UNAVAILABLE", "Initial grant authorization is incomplete."
+=======
                 503,
                 "ACTIVATION_SERVICE_UNAVAILABLE",
                 "Initial grant authorization is incomplete.",
+>>>>>>> codex/local-main-cost-billing-20260908
             )
         order_id = str(uuid.uuid4())
         merchant_order_no = f"ACT-{uuid.uuid4().hex}"
@@ -735,8 +739,13 @@ def _run_activation(
                 ),
             )
             logger.warning(
+<<<<<<< main
+                "activation initial grant recorded: user=%s order=%s "
+                "credits=%s actor=%s request=%s",
+=======
                 "activation initial grant recorded: user=%s order=%s credits=%s "
                 "actor=%s request=%s",
+>>>>>>> codex/local-main-cost-billing-20260908
                 user_id,
                 order_id,
                 credits,

@@ -75,18 +75,22 @@ function coverAsset(
     return { assetId: view.asset_id, label: VIEW_LABELS[view.view_type] };
   }
   return entry.contact_sheet_asset_id
-    ? { assetId: entry.contact_sheet_asset_id, label: "五视角拼合图" }
+    ? { assetId: entry.contact_sheet_asset_id, label: "五视图拼合图" }
     : null;
 }
 
-// 人物库 = 「上传 → 五视角拼合图预览 → 下载」的主动线：上方一键上传，
+// 人物库 = 「上传 → 五视图拼合图预览 → 下载」的主动线：上方一键上传，
 // 下方 4 列人物卡（正脸近景封面）；点封面开灯箱看拼合大图并下载。
 export function CharacterLibrary({
   userRole,
   userId,
+  initialIdentityId,
+  initialTab = "base",
 }: {
   userRole: UserRole;
   userId: string;
+  initialIdentityId?: string;
+  initialTab?: "base" | "scenes";
 }) {
   const canManage = userRole !== "auditor";
   const [entries, setEntries] = useState<SimpleLibraryEntry[]>([]);
@@ -199,6 +203,15 @@ export function CharacterLibrary({
   }, [loadLibrary]);
 
   useEffect(() => {
+    if (
+      initialIdentityId &&
+      entries.some((entry) => entry.identity_id === initialIdentityId)
+    ) {
+      setLightboxId(initialIdentityId);
+    }
+  }, [entries, initialIdentityId]);
+
+  useEffect(() => {
     let active = true;
     void (async () => {
       try {
@@ -207,14 +220,14 @@ export function CharacterLibrary({
           return;
         }
         // 恢复接口不区分任务类型：场景造型任务产出的是场景五视图，
-        // 文案不能冒充人物基准多视图。
-        const taskNoun = task.operation === "SCENE" ? "场景造型" : "人物多视图";
+        // 场景五视图不能冒充人物基准五视图。
+        const taskNoun = task.operation === "SCENE" ? "场景造型" : "人物五视图";
         if (task.status === "SUCCEEDED") {
           clearPendingGeneration();
           setMessage(
             task.operation === "SCENE"
               ? `场景造型“${task.display_name}”已生成，请在人物卡片的“场景造型”页查看。`
-              : `人物“${task.display_name}”多视图已生成。`,
+              : `人物“${task.display_name}”五视图已生成。`,
           );
           // The first load may race the worker's final commit. Always reload after
           // observing SUCCEEDED so a completed character cannot stay invisible.
@@ -244,7 +257,7 @@ export function CharacterLibrary({
             task.status === "RUNNING"
               ? task.operation === "SCENE"
                 ? "正在云端生成场景造型五视图"
-                : "正在云端生成多视角拼合图"
+                : "正在云端生成五视图拼合图"
               : "已进入云端生成队列",
           status: "working",
         });
@@ -256,7 +269,7 @@ export function CharacterLibrary({
         setMessage(
           task.operation === "SCENE"
             ? `场景造型“${task.display_name}”已生成，请在人物卡片的“场景造型”页查看。`
-            : `人物“${task.display_name}”多视图已生成。`,
+            : `人物“${task.display_name}”五视图已生成。`,
         );
         await loadLibrary();
       } catch (recoveryError) {
@@ -323,9 +336,9 @@ export function CharacterLibrary({
     try {
       await downloadCharacterAsset(
         entry.contact_sheet_asset_id,
-        `${entry.display_name}-五视角拼合图.png`,
+        `${entry.display_name}-五视图拼合图.png`,
       );
-      setMessage(`人物“${entry.display_name}”的五视角拼合图已开始下载。`);
+      setMessage(`人物“${entry.display_name}”的五视图拼合图已开始下载。`);
     } catch (downloadError) {
       setError(errorMessage(downloadError, "下载拼合图失败，请稍后重试。"));
     } finally {
@@ -385,7 +398,7 @@ export function CharacterLibrary({
     return userRole === "admin" || entry.owner_user_id === userId;
   }
 
-  // 重新生成多视图 = 用授权原图重跑单图版 identity-preserve 生成；
+  // 重新生成五视图 = 用授权原图重跑单图版 identity-preserve 生成；
   // 新结果作为新版本发布并自动成为人物库预览，已选用旧版本的项目不受影响。
   async function handleRegenerate(entry: SimpleLibraryEntry) {
     setBusyRegenerateId(entry.identity_id);
@@ -394,12 +407,12 @@ export function CharacterLibrary({
     try {
       const result = await regenerateContactSheet(entry.identity_id);
       setMessage(
-        `人物“${entry.display_name}”的多视图已重新生成（V${result.version_number}）。`,
+        `人物“${entry.display_name}”的五视图已重新生成（V${result.version_number}）。`,
       );
       await loadLibrary();
     } catch (regenerateError) {
       setError(
-        errorMessage(regenerateError, "重新生成多视图失败，请稍后重试。"),
+        errorMessage(regenerateError, "重新生成五视图失败，请稍后重试。"),
       );
     } finally {
       setBusyRegenerateId("");
@@ -408,7 +421,7 @@ export function CharacterLibrary({
 
   async function handleDelete(entry: SimpleLibraryEntry) {
     const confirmed = window.confirm(
-      `删除“${entry.display_name}”？该人物的授权图片、五视角拼合图与全部视角图将一并删除，且无法恢复。`,
+      `删除“${entry.display_name}”？该人物的授权图片、五视图拼合图与全部视角图将一并删除，且无法恢复。`,
     );
     if (!confirmed) {
       return;
@@ -484,7 +497,13 @@ export function CharacterLibrary({
           onCreated={(result, displayName) =>
             handleCreated({
               identity_id: result.identity_id,
+              persona_id: result.persona_id,
+              version_number: 1,
               display_name: displayName,
+              role: "",
+              service_scope: "",
+              target_audience: "",
+              expression_style: "",
               owner_user_id: userId,
               status: "ACTIVE",
               contact_sheet_asset_id: result.contact_sheet_asset_id,
@@ -619,7 +638,7 @@ export function CharacterLibrary({
                         ) : null}
                         {canRename(entry) ? (
                           <button
-                            aria-label={`重新生成人物 ${entry.display_name} 的多视图`}
+                            aria-label={`重新生成人物 ${entry.display_name} 的五视图`}
                             className="secondary-button"
                             disabled={busyRegenerateId !== ""}
                             onClick={() => void handleRegenerate(entry)}
@@ -627,7 +646,7 @@ export function CharacterLibrary({
                           >
                             {busyRegenerateId === entry.identity_id
                               ? "正在重新生成…"
-                              : "重新生成多视图"}
+                              : "重新生成五视图"}
                           </button>
                         ) : null}
                         {canDelete(entry) ? (
@@ -657,6 +676,7 @@ export function CharacterLibrary({
           busyDownloadKey={busyDownloadKey}
           canManage={canManage}
           entry={lightboxEntry}
+          initialTab={initialTab}
           onClose={() => setLightboxId("")}
           onDownloadSheet={handleDownloadSheet}
           onDownloadView={handleDownloadView}
@@ -735,6 +755,7 @@ function CharacterLightbox({
   busyDownloadKey,
   canManage,
   entry,
+  initialTab,
   onClose,
   onDownloadSheet,
   onDownloadView,
@@ -745,6 +766,7 @@ function CharacterLightbox({
   busyDownloadKey: string;
   canManage: boolean;
   entry: SimpleLibraryEntry;
+  initialTab: "base" | "scenes";
   onClose: () => void;
   onDownloadSheet: (entry: SimpleLibraryEntry) => Promise<void>;
   onDownloadView: (
@@ -755,7 +777,7 @@ function CharacterLightbox({
   onLoadPreviewUrls: (assetIds: string[]) => Promise<void>;
   previewUrls: Record<string, string>;
 }) {
-  const [activeTab, setActiveTab] = useState<"base" | "scenes">("base");
+  const [activeTab, setActiveTab] = useState<"base" | "scenes">(initialTab);
   const [sceneLooks, setSceneLooks] = useState<SimpleSceneLook[]>([]);
   const [sceneError, setSceneError] = useState("");
   const [sceneLoading, setSceneLoading] = useState(true);
@@ -1098,14 +1120,14 @@ function CharacterLightbox({
         ) : entry.contact_sheet_asset_id ? (
           <div className="character-contact-sheet">
             {sheetUrl ? (
-              <img alt={`${entry.display_name} 五视角拼合图`} src={sheetUrl} />
+              <img alt={`${entry.display_name} 五视图拼合图`} src={sheetUrl} />
             ) : (
               <span className="source-frame-placeholder">拼合图加载中…</span>
             )}
             {canManage ? (
               <div className="character-contact-sheet__bar">
                 <span className="character-contact-sheet__label">
-                  五视角拼合图
+                  五视图拼合图
                 </span>
                 <button
                   className="secondary-button"

@@ -100,9 +100,9 @@ export function App() {
     return (
       <main className="centered-shell">
         <section className="login-card" aria-labelledby="app-title">
-          <span className="eyebrow">JINGXU STUDIO</span>
-          <h1 id="app-title">镜序 Studio</h1>
-          <p>短视频复刻工作台</p>
+          <span className="eyebrow">众墅之家 · AI 即创</span>
+          <h1 id="app-title">众墅之家</h1>
+          <p>AI 视频创作平台</p>
           {sessionMessage ? (
             <p className="settings-error" role="alert">
               {sessionMessage}
@@ -583,8 +583,8 @@ function AppSidebar({
           </svg>
         </span>
         <span>
-          <strong>镜序 Studio</strong>
-          <small className="app-brand__subtitle">AI 视频复刻</small>
+          <strong>众墅之家</strong>
+          <small className="app-brand__subtitle">AI 即创</small>
         </span>
       </div>
       <nav className="sidebar-nav" aria-label="主导航">
@@ -799,12 +799,12 @@ function pageTitle(page: WorkspacePage): string {
 // 一级页面的引导副标题：随页头一次性说明该页做什么，页面内部不再重复标题。
 function pageSubtitle(page: WorkspacePage): string {
   return {
-    characters: "上传一张图片一键生成五视角拼合图，供项目选用。",
+    characters: "上传一张图片一键生成五视图拼合图，供项目选用。",
     profile: "查看账号、激活凭证、余额和已绑定设备。",
     projects: "上传参考视频，拆解提示词，配首帧生成新视频。",
     settings: "管理各服务连接凭据与运行参数。",
     tasks: "查看生成批次，播放结果并处理异常任务。",
-    wallet: "查看内部计费条数、充值记录与支付状态。",
+    wallet: "查看秒数额度、充值记录与支付状态。",
   }[page];
 }
 

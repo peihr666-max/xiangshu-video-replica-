@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import "./prompt-markdown.css";
+
 type PromptMarkdownProps = {
   meta?: string | null;
   onSave?: (text: string) => Promise<void>;
@@ -71,6 +73,10 @@ export function PromptMarkdown({
       setError("提示词不能为空。");
       return;
     }
+    if (next.length > 7000) {
+      setError("提示词不能超过 7000 字。");
+      return;
+    }
     setIsSaving(true);
     setError("");
     try {
@@ -122,17 +128,19 @@ export function PromptMarkdown({
         <div className="prompt-md__editor">
           <textarea
             aria-label="提示词源码"
+            maxLength={7000}
             onChange={(event) => setDraft(event.target.value)}
             spellCheck={false}
             value={draft}
           />
+          <p className="status-note">{draft.length}/7000 字</p>
           <div className="prompt-md__editor-actions">
             <button
               disabled={isSaving}
               onClick={() => void handleSave()}
               type="button"
             >
-              {isSaving ? "正在保存" : "另存 Prompt 新版本"}
+              {isSaving ? "正在保存" : "另存到我的提示词"}
             </button>
             <button
               className="secondary-button"
@@ -143,9 +151,7 @@ export function PromptMarkdown({
               取消
             </button>
           </div>
-          <p className="status-note">
-            保存会基于当前编译版本另存一个 Prompt 新版本，原版本不变。
-          </p>
+          <p className="status-note">另存到我的提示词，原始拆解内容保留。</p>
         </div>
       ) : (
         <div className="prompt-md__preview">

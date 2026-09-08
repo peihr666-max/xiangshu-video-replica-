@@ -100,6 +100,12 @@ def fair_dsn() -> Iterator[str]:
     with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
         conn.execute(f'DROP DATABASE IF EXISTS "{T25_DB_NAME}" WITH (FORCE)')
         conn.execute(f'CREATE DATABASE "{T25_DB_NAME}"')
+        # 门禁护栏：本文件任意残留的持锁事务必须在秒级快速失败，而不是把
+        # 整个全量 pytest 挂死到人工 terminate（2026-09-07 梳理实测教训）。
+        conn.execute(f"ALTER DATABASE \"{T25_DB_NAME}\" SET lock_timeout = '10s'")
+        conn.execute(
+            f"ALTER DATABASE \"{T25_DB_NAME}\" SET idle_in_transaction_session_timeout = '30s'"
+        )
     server_dir = Path(__file__).resolve().parent.parent
     config = Config(str(server_dir / "alembic.ini"))
     config.set_main_option("script_location", str(server_dir / "migrations"))
@@ -362,18 +368,26 @@ def test_rotation_skips_user_whose_task_is_locked(fair_state: str) -> None:
 
 def test_concurrent_workers_do_not_double_claim(fair_state: str) -> None:
     """Two workers acquiring at the same time never claim the same user's
-    task: SKIP LOCKED on the cursor row serialises the rotation."""
+    task: the shared capacity row serialises the claims, SKIP LOCKED on the
+    cursor row rotates users.
+
+    A claim transaction must never be parked open across a barrier: commit
+    authority stays with the fenced block, so a worker waiting inside its
+    uncommitted claim transaction holds the capacity row lock and deadlocks
+    the second worker (2026-09-07 review, defect A)."""
     _seed(fair_state, user_ids=["u1", "u2"], tasks_per_user=1)
     start = threading.Barrier(2)
-    done = threading.Barrier(2)
     leases: dict[str, dict[str, object] | None] = {}
 
     def worker(name: str) -> None:
+        start.wait()  # both workers primed to acquire concurrently
+        # 容量行锁（lock_shared_generation_capacity）随外层事务提交才释放，
+        # 因此两个获取必须在各自事务提交后才会合——在事务内等待对方会构造
+        # 出自死锁（先提交者持锁，后到者在 runtime FOR UPDATE 上排队）。
         with pg_transaction() as raw:
             conn = BusinessConnection.postgres(raw)
-            start.wait()  # both workers inside their fenced transactions
+            start.wait()  # both workers race into their claim transactions
             leases[name] = acquire_generation_task_lease(conn, worker_id=name)
-            done.wait()  # hold the transactions until both have acquired
 
     threads = [threading.Thread(target=worker, args=(f"w{i}",)) for i in range(2)]
     for thread in threads:
@@ -400,8 +414,7 @@ def test_failed_task_releases_slot(fair_state: str) -> None:
         conn = BusinessConnection.postgres(raw)
         mark_task_provider_failed(
             conn,
-            task_id=str(lease["id"]),
-            batch_id=str(lease["batch_id"]),
+            lease=lease,
             provider_task_id="pt-1",
         )
     assert _cursor_count(fair_state, "u1") == 0

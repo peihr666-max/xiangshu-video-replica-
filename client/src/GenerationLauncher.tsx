@@ -1,10 +1,16 @@
-import type { GenerationRuntimeLimits, GenerationVersion } from "./api";
+import type {
+  GenerationPriceQuote,
+  GenerationRatio,
+  GenerationRuntimeLimits,
+  GenerationVersion,
+} from "./api";
 import {
   type GenerationBusyAction,
   type IdempotencyRecord,
   RECOVERY_CONFLICT_MESSAGE,
   readPayloadString,
 } from "./useGenerationDrafts";
+import "./generation-controls.css";
 
 type GenerationLauncherProps = {
   analysisVersionId: string;
@@ -21,16 +27,19 @@ type GenerationLauncherProps = {
   onDurationChange: (value: string) => void;
   onLockPrompt: () => void;
   onPromptTextChange: (text: string) => void;
+  onRatioChange?: (value: GenerationRatio) => void;
   onQuantityChange: (value: string) => void;
   onRecoverBatch: () => void;
   onResolutionChange: (value: "768P" | "2K") => void;
   onSavePromptRevision: () => void;
+  onApplySavedPrompt?: (savedPromptId: string) => void;
   outputDuration: string;
   promptDirty: boolean;
   promptParametersMatch: boolean;
   promptStale: boolean;
   promptText: string;
   promptVersion: GenerationVersion | null;
+  priceQuote?: GenerationPriceQuote | null;
   quantity: number | null;
   quantityError: string;
   quantityInput: string;
@@ -39,6 +48,8 @@ type GenerationLauncherProps = {
   recoveryRecordConflicts: boolean;
   referenceSelectionId: string | null;
   resolution: "768P" | "2K";
+  ratio?: GenerationRatio;
+  savedPrompts?: GenerationVersion[];
   savedPromptText: string;
   scriptStale: boolean;
   shotCardVersionId: string;
@@ -59,16 +70,19 @@ export function GenerationLauncher({
   onDurationChange,
   onLockPrompt,
   onPromptTextChange,
+  onRatioChange,
   onQuantityChange,
   onRecoverBatch,
   onResolutionChange,
   onSavePromptRevision,
+  onApplySavedPrompt,
   outputDuration,
   promptDirty,
   promptParametersMatch,
   promptStale,
   promptText,
   promptVersion,
+  priceQuote = null,
   quantity,
   quantityError,
   quantityInput,
@@ -77,6 +91,8 @@ export function GenerationLauncher({
   recoveryRecordConflicts,
   referenceSelectionId,
   resolution,
+  ratio = "adaptive",
+  savedPrompts = [],
   savedPromptText,
   scriptStale,
   shotCardVersionId,
@@ -121,19 +137,44 @@ export function GenerationLauncher({
 
       <fieldset className="generation-block">
         <legend>2. 编译、修订并锁定 Prompt</legend>
+        <fieldset className="generation-ratio-options">
+          <legend>画面比例</legend>
+          {(
+            [
+              ["adaptive", "自动"],
+              ["21:9", "21:9"],
+              ["16:9", "16:9"],
+              ["4:3", "4:3"],
+              ["1:1", "1:1"],
+              ["3:4", "3:4"],
+              ["9:16", "9:16"],
+            ] as const
+          ).map(([value, label]) => (
+            <label key={value}>
+              <input
+                checked={ratio === value}
+                disabled={readOnly || busy}
+                name="generation-ratio"
+                onChange={() => onRatioChange?.(value)}
+                type="radio"
+                value={value}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </fieldset>
         <div className="generation-parameter-grid">
           <label>
             <span>成片时长（秒）</span>
-            <input
+            <select
               aria-label="成片时长"
               disabled={readOnly || busy}
-              max="15"
-              min="4"
               onChange={(event) => onDurationChange(event.target.value)}
-              step="1"
-              type="number"
               value={outputDuration}
-            />
+            >
+              <option value="4">4 秒</option>
+              <option value="15">15 秒</option>
+            </select>
           </label>
           <label>
             <span>分辨率</span>
@@ -151,7 +192,7 @@ export function GenerationLauncher({
           </label>
         </div>
         {!durationValid ? (
-          <p className="settings-error">成片时长必须是 4–15 秒的整数。</p>
+          <p className="settings-error">成片时长请选择 4 秒或 15 秒。</p>
         ) : null}
         <button disabled={!canCompile} onClick={onCompilePrompt} type="button">
           {busyAction === "compile" ? "正在编译" : "编译视频生成提示词"}
@@ -171,8 +212,10 @@ export function GenerationLauncher({
                   promptStatus === "USED"
                 }
                 rows={10}
+                maxLength={7000}
                 value={promptText}
               />
+              <small>{promptText.length}/7000 字</small>
             </label>
             <fieldset className="prompt-diff">
               <legend>Prompt 差异</legend>
@@ -214,6 +257,28 @@ export function GenerationLauncher({
                 当前状态：{promptStatus ?? "未知"}
               </span>
             </div>
+            {savedPrompts.length ? (
+              <section
+                className="saved-prompt-library"
+                aria-label="我的提示词库"
+              >
+                <strong>我的提示词</strong>
+                {savedPrompts.map((saved) => (
+                  <button
+                    className="secondary-button"
+                    disabled={readOnly || busy}
+                    key={saved.id}
+                    onClick={() => onApplySavedPrompt?.(saved.id)}
+                    type="button"
+                  >
+                    应用{" "}
+                    {String(
+                      saved.payload.name ?? `版本 #${saved.version_number}`,
+                    )}
+                  </button>
+                ))}
+              </section>
+            ) : null}
           </>
         ) : null}
       </fieldset>
@@ -222,16 +287,20 @@ export function GenerationLauncher({
         <legend>3. 设置数量并生成</legend>
         <label className="generation-field generation-quantity-field">
           <span>生成数量</span>
-          <input
+          <select
             aria-label="生成数量"
             disabled={readOnly || busy}
-            max={limits.max_quantity}
-            min={limits.min_quantity}
             onChange={(event) => onQuantityChange(event.target.value)}
-            step="1"
-            type="number"
             value={quantityInput}
-          />
+          >
+            {[1, 2, 4]
+              .filter((value) => value <= limits.max_quantity)
+              .map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+          </select>
         </label>
         {quantityError ? (
           <p className="settings-error">{quantityError}</p>
@@ -240,11 +309,11 @@ export function GenerationLauncher({
           <div className="paid-task-warning">
             <strong>将创建 {quantity} 个付费生成任务</strong>
             <span>
-              {limits.estimated_cost_per_task == null
-                ? "预计费用暂不可用"
-                : `预计费用：¥${(
-                    limits.estimated_cost_per_task * quantity
-                  ).toFixed(2)}`}
+              {priceQuote
+                ? `预计消耗 ${priceQuote.estimated_seconds} 秒额度，约 ¥${(
+                    priceQuote.estimated_price_fen / 100
+                  ).toFixed(2)}`
+                : `预计消耗 ${Number(outputDuration) * quantity} 秒额度`}
             </span>
           </div>
         ) : null}

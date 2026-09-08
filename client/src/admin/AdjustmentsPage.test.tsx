@@ -6,6 +6,7 @@ import { AdjustmentsPage } from "./AdjustmentsPage";
 // Mock the admin API module
 vi.mock("../api.admin", () => ({
   listAdminAdjustments: vi.fn(),
+  listAllAdminAdjustments: vi.fn(),
   AdminAdjustmentError: class extends Error {
     constructor(message: string) {
       super(message);
@@ -65,8 +66,7 @@ describe("AdjustmentsPage (ADM-02 / T33)", () => {
       expect(screen.getByText("退款")).toBeInTheDocument();
     });
 
-    // 单页数据不渲染分页条。
-    expect(screen.queryByRole("navigation")).toBeNull();
+    expect(screen.getByText("第 1 / 1 页（共 2 条）")).toBeInTheDocument();
   });
 
   it("shows loading state while fetching adjustments", () => {
@@ -189,6 +189,39 @@ describe("AdjustmentsPage (ADM-02 / T33)", () => {
     await waitFor(() => {
       expect(screen.getByText("暂无调账记录")).toBeInTheDocument();
     });
+  });
+
+  it("marks missing historical balance snapshots instead of guessing", async () => {
+    vi.mocked(adminApi.listAllAdminAdjustments).mockResolvedValue({
+      items: [
+        {
+          adjustment_id: "adj-history",
+          order_id: "order-history",
+          admin_user_id: "admin-1",
+          source_document_type: "CS_TICKET",
+          source_document_ref: "HISTORY-1",
+          reason: "历史调账",
+          request_id: "req-history",
+          created_at: "2026-08-20T10:00:00Z",
+          amount_fen: 1000,
+          credits: 10,
+          pricing_scope: "CUSTOMER_STANDARD",
+          status: "PAID",
+          admin_username: "admin-1",
+          target_user_id: "user-history",
+          target_username: "customer-history",
+          balance_before: null,
+          balance_after: null,
+        },
+      ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+
+    render(<AdjustmentsPage />);
+
+    expect(await screen.findByText("历史未记录")).toBeInTheDocument();
   });
 
   it("formats amount in yuan correctly", async () => {

@@ -1,32 +1,36 @@
 import type { RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { MaterialItem, MaterialPage, ViralVideoItem } from "../api";
 import {
+  completeMaterialUpload,
+  createGenerationTaskPreviewUrl,
+  createMaterialUploadIntent,
+  downloadMaterialAsset,
   fetchViralVideoMedia,
   fetchViralVideoStatistics,
+<<<<<<< main
+  getAssetDownloadUrl,
+  hideMaterial,
+  listMaterials,
+  listViralVideos,
+  updateMaterial,
+  uploadMaterial,
+=======
   importViralVideoToProject,
   listViralVideos,
   type Project,
   type ViralVideoItem,
+>>>>>>> codex/local-main-cost-billing-20260908
 } from "../api";
 import { useStudio } from "./context";
-import { studioVideoFromViral } from "./live";
+import { studioAssetFromMaterial, studioVideoFromViral } from "./live";
 import type {
   StudioAsset,
   StudioContextValue,
   StudioPublishDraft,
   StudioVideo,
 } from "./types";
-import {
-  Button,
-  Empty,
-  Field,
-  Hint,
-  Icon,
-  Media,
-  Panel,
-  Tabs,
-  Waveform,
-} from "./ui";
+import { Button, Empty, Field, Hint, Icon, Media, Panel, Tabs } from "./ui";
 import "./content.css";
 
 const pageSize = 6;
@@ -1075,36 +1079,293 @@ function AssetCard({
       <span>
         {asset.group} · {assetKindLabel(asset.kind)}
       </span>
-      <i>{asset.saved ? "已保存" : "处理中"}</i>
+      <i>
+        {asset.delivery === "direct"
+          ? "供应商直出"
+          : asset.saved
+            ? "永久保存"
+            : "处理中"}
+      </i>
     </button>
   );
 }
 
 export function MaterialsPage() {
-  const { data, state, patchState, patchDraft, navigate, notify } = useStudio();
+  const {
+    data,
+    state,
+    review,
+    patchState,
+    patchDraft,
+    updateData,
+    navigate,
+    notify,
+  } = useStudio();
   const [kind, setKind] = useState<"全部" | StudioAsset["kind"]>("全部");
-  const assets = data.assets.filter(
+  const [source, setSource] = useState<"" | MaterialItem["source"]>("");
+  const [queryInput, setQueryInput] = useState("");
+  const [query, setQuery] = useState("");
+  const [remotePage, setRemotePage] = useState<MaterialPage | null>(null);
+  const [remoteError, setRemoteError] = useState<string>();
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [selectedAsset, setSelectedAsset] = useState<StudioAsset>();
+  const [uploadProgress, setUploadProgress] = useState<number>();
+  const [busyAction, setBusyAction] = useState<string>();
+  const [renameValue, setRenameValue] = useState("");
+  const [groupValue, setGroupValue] = useState("");
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const reviewAssets = data.assets.filter(
     (asset) => kind === "全部" || asset.kind === kind,
   );
-  const selected = data.assets.find(
+  const remoteAssets = useMemo(
+    () => remotePage?.items.map(studioAssetFromMaterial) ?? [],
+    [remotePage],
+  );
+  const assets = review ? reviewAssets : remoteAssets;
+  const visibleSelected = assets.find(
     (asset) => asset.id === state.selectedAssetId,
   );
-  const selectedIndex = assets.findIndex(
+  const selected =
+    selectedAsset &&
+    (state.selectedAssetId === undefined ||
+      selectedAsset.id === state.selectedAssetId)
+      ? selectedAsset
+      : (visibleSelected ??
+        data.assets.find((asset) => asset.id === state.selectedAssetId));
+  const selectedIndex = reviewAssets.findIndex(
     (asset) => asset.id === state.selectedAssetId,
   );
-  const pages = Math.max(1, Math.ceil(assets.length / pageSize));
   const [page, setPage] = useState(() =>
     selectedIndex >= 0 ? Math.floor(selectedIndex / pageSize) + 1 : 1,
   );
+  const total = review ? reviewAssets.length : (remotePage?.total ?? 0);
+  const pages = Math.max(1, Math.ceil(total / pageSize));
   const selectedAssetIdRef = useRef(state.selectedAssetId);
+
+  useEffect(() => {
+    if (review) return;
+    let current = true;
+    setRemoteLoading(true);
+    setRemoteError(undefined);
+    void listMaterials({
+      mediaType: kind === "全部" ? undefined : kind,
+      source: source || undefined,
+      query: query || undefined,
+      page,
+      pageSize,
+    })
+      .then((result) => {
+        if (current) setRemotePage(result);
+      })
+      .catch((error: unknown) => {
+        if (current) {
+          setRemoteError(
+            error instanceof Error ? error.message : "读取素材库失败",
+          );
+        }
+      })
+      .finally(() => {
+        if (current) setRemoteLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [kind, page, query, review, source]);
+
   useEffect(() => {
     if (selectedAssetIdRef.current === state.selectedAssetId) return;
     selectedAssetIdRef.current = state.selectedAssetId;
-    if (selectedIndex >= 0) {
+    if (review && selectedIndex >= 0) {
       setPage(Math.floor(selectedIndex / pageSize) + 1);
     }
-  }, [selectedIndex, state.selectedAssetId]);
-  const currentAssets = assets.slice((page - 1) * pageSize, page * pageSize);
+  }, [review, selectedIndex, state.selectedAssetId]);
+
+  useEffect(() => {
+    setRenameValue(selected?.name ?? "");
+    setGroupValue(selected?.group ?? "");
+  }, [selected?.group, selected?.name]);
+
+  useEffect(() => {
+    if (review || !selected?.materialId || selected.url) return;
+    let current = true;
+    const preview = selected.assetId
+      ? getAssetDownloadUrl(selected.assetId).then((result) => result.url)
+      : selected.generationTaskId
+        ? createGenerationTaskPreviewUrl(selected.generationTaskId)
+        : Promise.resolve(null);
+    void preview
+      .then((url) => {
+        if (current && url) {
+          setSelectedAsset((asset) =>
+            asset?.id === selected.id ? { ...asset, url } : asset,
+          );
+        }
+      })
+      .catch(() => {
+        if (current) notify("素材预览暂不可用，请稍后重试");
+      });
+    return () => {
+      current = false;
+    };
+  }, [notify, review, selected]);
+
+  const currentAssets = review
+    ? assets.slice((page - 1) * pageSize, page * pageSize)
+    : assets;
+
+  const retainForDraft = (asset: StudioAsset) => {
+    updateData((current) =>
+      current.assets.some((item) => item.id === asset.id)
+        ? current
+        : { ...current, assets: [asset, ...current.assets] },
+    );
+  };
+
+  const handleUpload = async (file: File) => {
+    setBusyAction("upload");
+    setUploadProgress(0);
+    try {
+      const intent = await createMaterialUploadIntent(file, {
+        title: file.name,
+        group: "我的上传",
+      });
+      await uploadMaterial(intent, file, setUploadProgress);
+      const completed = await completeMaterialUpload(intent.asset_id);
+      const asset = studioAssetFromMaterial(completed);
+      retainForDraft(asset);
+      setSelectedAsset(asset);
+      patchState({ selectedAssetId: asset.id });
+      setKind(completed.media_type);
+      setPage(1);
+      setRemotePage((current) => ({
+        items: [completed, ...(current?.items ?? [])]
+          .filter(
+            (item, index, items) =>
+              items.findIndex((candidate) => candidate.id === item.id) ===
+              index,
+          )
+          .slice(0, pageSize),
+        page: 1,
+        page_size: pageSize,
+        total: (current?.total ?? 0) + 1,
+      }));
+      notify(`素材“${completed.title}”已上传并永久保存`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "上传素材失败");
+    } finally {
+      setBusyAction(undefined);
+      setUploadProgress(undefined);
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+    }
+  };
+
+  const saveName = async () => {
+    if (!selected?.materialId || !renameValue.trim()) return;
+    setBusyAction("rename");
+    try {
+      const updated = studioAssetFromMaterial(
+        await updateMaterial(selected.materialId, {
+          title: renameValue.trim(),
+        }),
+      );
+      setSelectedAsset({ ...updated, url: selected.url });
+      setRemotePage((current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.map((item) =>
+                item.id === updated.materialId
+                  ? { ...item, title: updated.name }
+                  : item,
+              ),
+            }
+          : current,
+      );
+      notify("素材名称已保存");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "更新素材失败");
+    } finally {
+      setBusyAction(undefined);
+    }
+  };
+
+  const removeSelected = async () => {
+    if (!selected?.materialId) return;
+    setBusyAction("hide");
+    try {
+      await hideMaterial(selected.materialId);
+      setSelectedAsset(undefined);
+      patchState({ selectedAssetId: undefined });
+      setRemotePage((current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.filter(
+                (item) => item.id !== selected.materialId,
+              ),
+              total: Math.max(0, current.total - 1),
+            }
+          : current,
+      );
+      notify("素材已从素材库移除，原业务记录仍保留");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "移除素材失败");
+    } finally {
+      setBusyAction(undefined);
+    }
+  };
+
+  const saveGroup = async () => {
+    if (!selected?.materialId || !groupValue.trim()) return;
+    setBusyAction("group");
+    try {
+      const updated = studioAssetFromMaterial(
+        await updateMaterial(selected.materialId, {
+          group: groupValue.trim(),
+        }),
+      );
+      setSelectedAsset({ ...updated, url: selected.url });
+      setRemotePage((current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.map((item) =>
+                item.id === updated.materialId
+                  ? { ...item, group: updated.group }
+                  : item,
+              ),
+            }
+          : current,
+      );
+      notify("素材分组已保存");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "更新素材分组失败");
+    } finally {
+      setBusyAction(undefined);
+    }
+  };
+
+  const downloadSelected = async () => {
+    if (!selected?.assetId) return;
+    setBusyAction("download");
+    try {
+      await downloadMaterialAsset(selected.assetId, selected.name);
+      notify("素材下载已开始");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "下载素材失败");
+    } finally {
+      setBusyAction(undefined);
+    }
+  };
+
+  const applyAsReference = (asset: StudioAsset) => {
+    retainForDraft(asset);
+    patchDraft({
+      referenceIds: [...new Set([...state.draft.referenceIds, asset.id])],
+    });
+    navigate("reference", { returnTo: "materials" });
+  };
+
   return (
     <section className="content-page content-materials">
       <header className="content-title">
@@ -1112,12 +1373,30 @@ export function MaterialsPage() {
           <h1>素材库</h1>
           <p>统一管理和复用乡墅创作素材</p>
         </div>
+        <input
+          accept=".jpg,.jpeg,.png,.mp3,.mp4,.mov"
+          aria-label="选择上传素材"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void handleUpload(file);
+          }}
+          ref={uploadInputRef}
+          type="file"
+        />
         <Button
           className="content-title-action"
+          disabled={busyAction === "upload"}
           variant="primary"
-          onClick={() => notify("上传能力将在素材服务接通后启用")}
+          onClick={() =>
+            review
+              ? notify("审核模式保留示例素材，不执行真实上传")
+              : uploadInputRef.current?.click()
+          }
         >
-          上传素材
+          {uploadProgress === undefined
+            ? "上传素材"
+            : `上传中 ${uploadProgress}%`}
         </Button>
       </header>
       <Tabs
@@ -1133,6 +1412,43 @@ export function MaterialsPage() {
           setPage(1);
         }}
       />
+      {!review ? (
+        <form
+          aria-label="素材筛选"
+          className="content-material-filters"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setPage(1);
+            setQuery(queryInput.trim());
+          }}
+        >
+          <input
+            aria-label="搜索素材"
+            maxLength={120}
+            placeholder="搜索素材名称"
+            value={queryInput}
+            onChange={(event) => setQueryInput(event.target.value)}
+          />
+          <select
+            aria-label="素材来源"
+            value={source}
+            onChange={(event) => {
+              setSource(event.target.value as typeof source);
+              setPage(1);
+            }}
+          >
+            <option value="">全部来源</option>
+            <option value="upload">我的上传</option>
+            <option value="project">项目素材</option>
+            <option value="character">人物素材</option>
+            <option value="oral">口播成片</option>
+            <option value="generation">视频成片</option>
+          </select>
+          <Button type="submit" variant="outline">
+            搜索
+          </Button>
+        </form>
+      ) : null}
       <section className="content-material-layout">
         <div className="content-material-list">
           <div className="content-asset-grid">
@@ -1141,14 +1457,22 @@ export function MaterialsPage() {
                 key={asset.id}
                 asset={asset}
                 selected={selected?.id === asset.id}
-                onSelect={() => patchState({ selectedAssetId: asset.id })}
+                onSelect={() => {
+                  setSelectedAsset(asset);
+                  patchState({ selectedAssetId: asset.id });
+                }}
               />
             ))}
           </div>
-          {assets.length > pageSize ? (
+          {remoteLoading ? <Hint>正在读取云端素材…</Hint> : null}
+          {remoteError ? <Hint>{remoteError}</Hint> : null}
+          {!remoteLoading && !remoteError && currentAssets.length === 0 ? (
+            <Empty title="暂无素材" description="上传后即可跨项目复用。" />
+          ) : null}
+          {total > pageSize ? (
             <nav className="content-pagination" aria-label="素材分页">
               <span>
-                共 {assets.length} 条 · 每页 {pageSize} 条
+                共 {total} 条 · 每页 {pageSize} 条
               </span>
               <Button
                 aria-label="上一页"
@@ -1184,7 +1508,7 @@ export function MaterialsPage() {
           {selected ? (
             <>
               <h2>{selected.name}</h2>
-              {selected.kind === "audio" && <Waveform />}
+              <Media asset={selected} alt={selected.name} />
               <dl>
                 <dt>类型</dt>
                 <dd>{assetKindLabel(selected.kind)}</dd>
@@ -1193,12 +1517,20 @@ export function MaterialsPage() {
                 <dt>归属</dt>
                 <dd>{selected.personId ? "人物库" : selected.group}</dd>
                 <dt>状态</dt>
-                <dd>{selected.saved ? "已保存" : "处理中"}</dd>
+                <dd>
+                  {selected.delivery === "direct"
+                    ? "供应商直出，尚未归档"
+                    : selected.saved
+                      ? "云端永久保存"
+                      : "处理中"}
+                </dd>
               </dl>
-              {selected.kind === "audio" ? (
+              {selected.kind === "audio" &&
+              (review || selected.allowedUses?.includes("oral_audio")) ? (
                 <Button
                   variant="primary"
                   onClick={() => {
+                    retainForDraft(selected);
                     patchDraft({
                       audioId: selected.id,
                       ipId: selected.personId,
@@ -1209,9 +1541,121 @@ export function MaterialsPage() {
                 >
                   用于音频口播
                 </Button>
-              ) : (
-                <Hint>选择后可在当前创作草稿中引用此素材。</Hint>
-              )}
+              ) : null}
+              {selected.kind === "image" &&
+              selected.allowedUses?.includes("original_frame") ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    retainForDraft(selected);
+                    patchDraft({
+                      originalImageId: selected.id,
+                      frameConfirmed: false,
+                    });
+                    navigate("replica", { returnTo: "materials" });
+                  }}
+                >
+                  用作原画面
+                </Button>
+              ) : null}
+              {selected.kind === "image" &&
+              selected.allowedUses?.includes("first_frame") ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    retainForDraft(selected);
+                    patchDraft({ firstFrameId: selected.id });
+                    navigate("video", { returnTo: "materials" });
+                  }}
+                >
+                  用作首帧
+                </Button>
+              ) : null}
+              {selected.kind === "image" &&
+              selected.allowedUses?.includes("tail_frame") ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    retainForDraft(selected);
+                    patchDraft({ tailFrameId: selected.id });
+                    navigate("video", { returnTo: "materials" });
+                  }}
+                >
+                  用作尾帧
+                </Button>
+              ) : null}
+              {selected.allowedUses?.includes("reference") ? (
+                <Button
+                  variant="outline"
+                  onClick={() => applyAsReference(selected)}
+                >
+                  用于参考生视频
+                </Button>
+              ) : null}
+              {selected.materialId &&
+              selected.allowedActions?.includes("rename") ? (
+                <>
+                  <div className="content-material-manage">
+                    <Field label="素材名称">
+                      <input
+                        aria-label="素材名称"
+                        maxLength={120}
+                        onChange={(event) => setRenameValue(event.target.value)}
+                        value={renameValue}
+                      />
+                    </Field>
+                    <Button
+                      disabled={busyAction === "rename" || !renameValue.trim()}
+                      onClick={() => void saveName()}
+                      variant="outline"
+                    >
+                      保存名称
+                    </Button>
+                  </div>
+                  <div className="content-material-manage">
+                    <Field label="素材分组">
+                      <input
+                        aria-label="素材分组"
+                        maxLength={80}
+                        onChange={(event) => setGroupValue(event.target.value)}
+                        value={groupValue}
+                      />
+                    </Field>
+                    <Button
+                      disabled={busyAction === "group" || !groupValue.trim()}
+                      onClick={() => void saveGroup()}
+                      variant="outline"
+                    >
+                      保存分组
+                    </Button>
+                  </div>
+                </>
+              ) : null}
+              {selected.assetId &&
+              selected.allowedActions?.includes("download") ? (
+                <Button
+                  disabled={busyAction === "download"}
+                  onClick={() => void downloadSelected()}
+                  variant="outline"
+                >
+                  下载素材
+                </Button>
+              ) : null}
+              {selected.materialId &&
+              selected.allowedActions?.includes("hide") ? (
+                <Button
+                  disabled={busyAction === "hide"}
+                  onClick={() => void removeSelected()}
+                  variant="quiet"
+                >
+                  从素材库移除
+                </Button>
+              ) : null}
+              {selected.delivery === "direct" ? (
+                <Hint>
+                  该结果仍由供应商托管，可预览；归档后才可作为云端素材复用。
+                </Hint>
+              ) : null}
             </>
           ) : (
             <Empty

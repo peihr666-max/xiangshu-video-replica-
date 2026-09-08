@@ -70,6 +70,10 @@ def test_zero_price_initial_seconds_require_explicit_grant_confirmation() -> Non
         confirm_grant=True,
     )
     _validate_batch_payload(payload)
+<<<<<<< main
+    from fastapi import HTTPException
+=======
+>>>>>>> codex/local-main-cost-billing-20260908
 
     with pytest.raises(HTTPException, match="400"):
         _validate_batch_payload(payload.model_copy(update={"confirm_grant": False}))
@@ -297,6 +301,18 @@ def test_initial_grant_response_matches_frozen_price(
     client: TestClient, admin_headers: dict[str, str], clean_state: str
 ) -> None:
     response = _create_batch(
+<<<<<<< main
+        client, admin_headers, face_value_fen=0, credits=600, confirm_grant=True
+    )
+    assert response.status_code == 201, response.text
+    with psycopg.connect(clean_state) as conn:
+        row = conn.execute(
+            "SELECT unit_price_fen_snapshot FROM activation_code_batches WHERE id=%s",
+            (response.json()["batch_id"],),
+        ).fetchone()
+    assert response.json()["unit_price_fen_snapshot"] == row[0]
+    assert row[0] > 0
+=======
         client,
         admin_headers,
         face_value_fen=0,
@@ -312,6 +328,7 @@ def test_initial_grant_response_matches_frozen_price(
     assert response.json()["face_value_fen"] == 0
     assert response.json()["unit_price_fen_snapshot"] == configured
     assert response.json()["credits_snapshot"] == 600
+>>>>>>> codex/local-main-cost-billing-20260908
 
 
 def test_write_rejects_missing_csrf_header(
@@ -1349,6 +1366,8 @@ def test_list_codes_returns_bound_account_and_related_devices(
     item = response.json()["items"][0]
     assert item["code_id"] == code_id
     assert item["bound_username"] == "customer_u"
+    assert item["expires_at"] == "2099-01-01T00:00:00+00:00"
+    assert item["created_at"]
     assert item["devices"] == [
         {
             "device_id": "device-unified-1",
@@ -1364,6 +1383,50 @@ def test_list_codes_returns_bound_account_and_related_devices(
     ]
     assert "fingerprint_hmac" not in str(item)
     assert "token_digest" not in str(item)
+
+
+def test_list_codes_derives_expired_status_without_mutating_code(
+    client: TestClient, admin_headers: dict[str, str], clean_state: str
+) -> None:
+    code_id = _generated_code_id(client, admin_headers)
+    with psycopg.connect(clean_state) as conn:
+        conn.execute(
+            "UPDATE activation_code_batches SET created_at='2000-01-01T00:00:00+00:00', "
+            "activation_expires_at='2000-01-02T00:00:00+00:00' "
+            "WHERE id=(SELECT batch_id FROM activation_codes WHERE id=%s)",
+            (code_id,),
+        )
+    response = client.get("/api/control/activation-codes?status=EXPIRED", headers=admin_headers)
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["status"] == "EXPIRED"
+    with psycopg.connect(clean_state) as conn:
+        assert conn.execute(
+            "SELECT status FROM activation_codes WHERE id=%s", (code_id,)
+        ).fetchone() == ("GENERATED",)
+
+
+def test_list_codes_keeps_active_code_active_after_activation_deadline(
+    client: TestClient, admin_headers: dict[str, str], clean_state: str
+) -> None:
+    code_id = _generated_code_id(client, admin_headers)
+    _activate_code_directly(clean_state, code_id)
+    with psycopg.connect(clean_state) as conn:
+        conn.execute(
+            "UPDATE activation_code_batches "
+            "SET created_at=%s, activation_expires_at=%s "
+            "WHERE id=(SELECT batch_id FROM activation_codes WHERE id=%s)",
+            ("2000-01-01T00:00:00+00:00", "2000-01-02T00:00:00+00:00", code_id),
+        )
+
+    active = client.get("/api/control/activation-codes?status=ACTIVE", headers=admin_headers)
+    expired = client.get("/api/control/activation-codes?status=EXPIRED", headers=admin_headers)
+
+    assert active.status_code == 200, active.text
+    assert active.json()["total"] == 1
+    assert active.json()["items"][0]["status"] == "ACTIVE"
+    assert expired.status_code == 200, expired.text
+    assert expired.json()["total"] == 0
 
 
 def test_list_codes_does_not_expose_bearer_code_to_auditor(

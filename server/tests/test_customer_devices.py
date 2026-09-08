@@ -2277,6 +2277,11 @@ def test_admin_device_list_gates_and_hides_secrets(client: TestClient) -> None:
     assert item["device_id"] == customer["device_id"]
     assert item["status"] == "BOUND"
     assert item["slot_no"] == 1
+    assert item["username"]
+    assert item["activation_code"] == "XS04-****"
+    assert item["online"] is True
+    assert listed.json()["summary"]["bound"] == 1
+    assert listed.json()["summary"]["online"] == 1
     serialized = str(listed.json())
     assert "fingerprint" not in serialized
     assert "token_digest" not in serialized
@@ -2286,6 +2291,23 @@ def test_admin_device_list_gates_and_hides_secrets(client: TestClient) -> None:
     auditor_view = client.get(ADMIN_DEVICES_PATH, headers=_admin_session(client, "auditor_u"))
     assert auditor_view.status_code == 200
     assert len(auditor_view.json()["items"]) == 1
+
+
+def test_admin_device_list_does_not_report_unbound_device_online(client: TestClient) -> None:
+    customer = _activated_customer(
+        client, code=FIRST_CODE, fingerprint="fp-admin-offline", suffix="aoffline"
+    )
+    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE customer_devices SET status='UNBOUND', unbound_at=now() WHERE id=%s",
+            (customer["device_id"],),
+        )
+
+    listed = client.get(ADMIN_DEVICES_PATH, headers=_admin_session(client))
+
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["items"][0]["online"] is False
+    assert listed.json()["summary"]["online"] == 0
 
 
 def test_admin_approve_rejects_live_first_device(client: TestClient) -> None:
@@ -2850,7 +2872,11 @@ def test_admin_device_events_downgrade_guard(route_state: str) -> None:
         command.downgrade(config, "037_device_pairing_requests")
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+    assert version == "076_studio_notification_preferences"
+=======
     assert version == "068_wallet_ledger_sequence"
+>>>>>>> codex/local-main-cost-billing-20260908
 
 
 # ---------------------------------------------------------------------------
@@ -2892,7 +2918,11 @@ def test_pairing_downgrade_refuses_once_rows_exist(route_state: str) -> None:
     # the version stays at the current head.
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+    assert version == "076_studio_notification_preferences"
+=======
     assert version == "068_wallet_ledger_sequence"
+>>>>>>> codex/local-main-cost-billing-20260908
 
     # An emptied table downgrades symmetrically, and upgrading back restores
     # the schema for any rerun of this module. Revision 038 added the

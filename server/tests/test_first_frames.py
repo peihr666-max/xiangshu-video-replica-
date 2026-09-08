@@ -857,7 +857,17 @@ def test_first_frame_task_reuses_checkpoint_after_quality_service_recovers(
     db_path: Path,
     provider: RecordingImageProvider,
     storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app import generation_worker as worker
+
+    generated_counts: list[int] = []
+    original_generate = worker.run_first_frame_task_outside_transaction
+
+    def record_actual_images(*args, **kwargs):
+        return original_generate(*args, **kwargs, on_generated_images=generated_counts.append)
+
+    monkeypatch.setattr(worker, "run_first_frame_task_outside_transaction", record_actual_images)
     prepare_inputs(client)
     created = client.post(
         "/api/projects/project_owned/first-frame-tasks",
@@ -928,6 +938,7 @@ def test_first_frame_task_reuses_checkpoint_after_quality_service_recovers(
 
     assert unavailable.candidate_calls == 1
     assert len(provider.calls) == 1
+    assert generated_counts == [1], "checkpoint recovery must not report another paid image"
     assert completed is not None
     assert completed["status"] == "SUCCEEDED"
     assert completed["result_version_id"] is not None
