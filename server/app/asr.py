@@ -82,6 +82,13 @@ class AsrProvider(Protocol):
         on_poll: Callable[[], None] | None = None,
     ) -> TranscriptResult: ...
 
+    def resume_transcription(
+        self,
+        provider_task_id: str,
+        *,
+        on_poll: Callable[[], None] | None = None,
+    ) -> TranscriptResult: ...
+
 
 class AsrTransport(Protocol):
     """Injectable HTTP boundary: (method, url, headers, body_bytes, timeout) → (status, body)."""
@@ -123,6 +130,7 @@ class FakeAsrProvider:
     def __init__(self, text: str = "（测试转写）这是语音转写服务返回的原始文案。") -> None:
         self._text = text
         self.calls: list[str] = []
+        self.resumed_tasks: list[str] = []
 
     def transcribe(
         self,
@@ -138,6 +146,17 @@ class FakeAsrProvider:
             duration_sec=duration_sec if duration_sec is not None else 12.0,
             language="zh",
         )
+
+    def resume_transcription(
+        self,
+        provider_task_id: str,
+        *,
+        on_poll: Callable[[], None] | None = None,
+    ) -> TranscriptResult:
+        self.resumed_tasks.append(provider_task_id)
+        if on_poll is not None:
+            on_poll()
+        return TranscriptResult(text=self._text, duration_sec=12.0, language="zh")
 
 
 class DashScopeFunAsr:
@@ -181,6 +200,30 @@ class DashScopeFunAsr:
             on_task_created=on_task_created,
             on_poll=on_poll,
         )
+
+    def resume_transcription(
+        self,
+        provider_task_id: str,
+        *,
+        on_poll: Callable[[], None] | None = None,
+    ) -> TranscriptResult:
+        """Resume an accepted async task without issuing another paid submission."""
+        if not self._config.api_key:
+            raise AsrProviderError(
+                "语音转写服务未配置",
+                provider_task_id=provider_task_id,
+            )
+        try:
+            output = self._poll_async_task(provider_task_id, on_poll=on_poll)
+            return self._download_transcription(output)
+        except AsrProviderError as exc:
+            if exc.provider_task_id == provider_task_id:
+                raise
+            raise AsrProviderError(
+                str(exc),
+                submission_uncertain=exc.submission_uncertain,
+                provider_task_id=provider_task_id,
+            ) from exc
 
     # ---------------- flash (sync) ----------------
 

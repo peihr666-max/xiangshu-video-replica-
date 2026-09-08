@@ -880,6 +880,17 @@ export async function listOralVoices(
   );
 }
 
+/** 确认已完成试听归档的克隆声音。 */
+export async function confirmOralVoice(
+  voiceId: string,
+): Promise<OralVoiceRecord> {
+  return requestApiJson<OralVoiceRecord>(
+    `/api/oral/voices/${encodeURIComponent(voiceId)}/confirm`,
+    "确认口播声音失败",
+    { method: "POST" },
+  );
+}
+
 export type OralTaskRequest = {
   projectId?: string;
   identityId: string;

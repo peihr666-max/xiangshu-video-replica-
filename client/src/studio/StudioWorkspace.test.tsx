@@ -406,10 +406,17 @@ describe("V1.4 workspace integration", () => {
         return JSON.parse(String(init?.body)).project_id === "project-old";
       }),
     ).toBe(false);
+    const newAccountCall = fetchMock.mock.calls.find(([input, init]) => {
+      if (!String(input).endsWith("/api/oral/tasks")) return false;
+      return JSON.parse(String(init?.body)).project_id === "project-new";
+    });
+    expect(JSON.parse(String(newAccountCall?.[1]?.body)).subtitle).toEqual({
+      st_show: false,
+    });
     vi.unstubAllGlobals();
   });
 
-  it("同一次口播提交阻止并发双击并在不确定失败后复用幂等键", async () => {
+  it("同一次口播提交阻止并发双击并在所有不确定响应后完整复用请求", async () => {
     live.loadStudioData.mockResolvedValue({
       ...createReviewData(),
       loading: false,
@@ -418,6 +425,7 @@ describe("V1.4 workspace integration", () => {
     const firstSubmission = new Promise<Response>((_resolve, reject) => {
       rejectFirst = reject;
     });
+    const uncertainStatuses = [408, 425, 429, 502, 503, 504];
     let oralCalls = 0;
     const fetchMock = vi.fn(
       (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
@@ -431,11 +439,26 @@ describe("V1.4 workspace integration", () => {
         if (url.endsWith("/api/oral/tasks")) {
           oralCalls += 1;
           if (oralCalls === 1) return firstSubmission;
+          const uncertainStatus = uncertainStatuses[oralCalls - 2];
+          if (uncertainStatus !== undefined) {
+            return Promise.resolve({
+              ok: false,
+              status: uncertainStatus,
+              headers: new Headers(),
+              json: async () => ({
+                detail: {
+                  code: "UPSTREAM_UNAVAILABLE",
+                  message: "gateway unavailable",
+                  retryable: false,
+                },
+              }),
+            } as Response);
+          }
           return Promise.resolve({
             ok: true,
             json: async () => ({
               id: `oral-${oralCalls}`,
-              status: oralCalls === 2 ? "FAILED" : "QUEUED",
+              status: "QUEUED",
               estimated_cost_fen: 100,
               replayed: false,
             }),
@@ -447,6 +470,7 @@ describe("V1.4 workspace integration", () => {
     vi.stubGlobal("fetch", fetchMock);
     const state = createReviewState("oral");
     state.draft.projectId = "project-oral";
+    state.draft.subtitles = true;
     render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
 
     fireEvent.click(
@@ -463,7 +487,16 @@ describe("V1.4 workspace integration", () => {
     rejectFirst?.(new TypeError("network unavailable"));
     await waitFor(() => expect(confirm).toBeEnabled());
 
+    for (const expectedCalls of [2, 3, 4, 5, 6, 7]) {
+      fireEvent.click(confirm);
+      await waitFor(() => expect(oralCalls).toBe(expectedCalls));
+      await waitFor(() => expect(confirm).toBeEnabled());
+    }
     fireEvent.click(confirm);
+    await waitFor(() => expect(oralCalls).toBe(8));
+
+    fireEvent.click(screen.getByRole("button", { name: "新建创作" }));
+    fireEvent.click(await screen.findByRole("button", { name: "数字人口播" }));
     const generateAgain = await screen.findByRole("button", {
       name: "生成口播视频",
     });
@@ -471,13 +504,85 @@ describe("V1.4 workspace integration", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "确认费用并提交" }),
     );
-    await waitFor(() => expect(oralCalls).toBe(3));
+    await waitFor(() => expect(oralCalls).toBe(9));
 
     const bodies = fetchMock.mock.calls
       .filter(([input]) => String(input).endsWith("/api/oral/tasks"))
       .map(([, init]) => JSON.parse(String(init?.body)));
-    expect(bodies[0].idempotency_key).toBe(bodies[1].idempotency_key);
-    expect(bodies[2].idempotency_key).not.toBe(bodies[1].idempotency_key);
+    expect(bodies.slice(0, 8)).toEqual(Array(8).fill(bodies[0]));
+    expect(bodies[8].idempotency_key).not.toBe(bodies[0].idempotency_key);
+    expect(bodies[0]).toMatchObject({
+      project_id: "project-oral",
+      identity_id: state.draft.ipId,
+      avatar_id: state.draft.avatarId,
+      voice_id: state.draft.voiceId,
+      mode: "TTS",
+      script_text: state.draft.script.text,
+      subtitle: { st_show: true },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("确定未受理的客户端错误允许下一次提交使用新幂等键", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    let oralCalls = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/price")) {
+          return { ok: true, json: async () => ({ unit_price_fen: 100 }) };
+        }
+        if (url.endsWith("/api/oral/tasks")) {
+          oralCalls += 1;
+          if (oralCalls === 1) {
+            return {
+              ok: false,
+              status: 422,
+              headers: new Headers(),
+              json: async () => ({
+                detail: {
+                  code: "ORAL_INPUT_INVALID",
+                  message: "invalid input",
+                  retryable: false,
+                },
+              }),
+            };
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              id: "oral-valid",
+              status: "QUEUED",
+              estimated_cost_fen: 100,
+              replayed: false,
+            }),
+          };
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const state = createReviewState("oral");
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    const confirm = await screen.findByRole("button", {
+      name: "确认费用并提交",
+    });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(confirm).toBeEnabled());
+    fireEvent.click(confirm);
+    await waitFor(() => expect(oralCalls).toBe(2));
+
+    const bodies = fetchMock.mock.calls
+      .filter(([input]) => String(input).endsWith("/api/oral/tasks"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies[1].idempotency_key).not.toBe(bodies[0].idempotency_key);
     vi.unstubAllGlobals();
   });
 

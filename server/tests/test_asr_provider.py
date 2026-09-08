@@ -316,6 +316,37 @@ def test_async_poll_transport_error_keeps_provider_task_id_for_reconciliation() 
     assert caught.value.provider_task_id == "task-poll"
 
 
+def test_resume_async_task_polls_existing_id_without_posting_again() -> None:
+    transport = StubTransport(
+        [
+            (
+                200,
+                json.dumps(
+                    {
+                        "output": {
+                            "task_status": "SUCCEEDED",
+                            "results": [
+                                {
+                                    "subtask_status": "SUCCEEDED",
+                                    "transcription_url": "https://result.example/resumed.json",
+                                }
+                            ],
+                        }
+                    }
+                ).encode(),
+            ),
+            (200, b'{"transcripts":[{"text":"resumed"}]}'),
+        ]
+    )
+    provider = DashScopeFunAsr(make_config(), transport=transport)
+
+    result = provider.resume_transcription("task-existing", on_poll=lambda: None)
+
+    assert result.text == "resumed"
+    assert [method for method, _url in transport.calls] == ["GET", "GET"]
+    assert transport.calls[0][1].endswith("/api/v1/tasks/task-existing")
+
+
 def test_async_submit_rejection_is_definite() -> None:
     provider = DashScopeFunAsr(
         make_config(),

@@ -8,6 +8,7 @@ import {
   chooseProjectMainCharacterVersion,
   compileGenerationPrompt,
   completeVideoUpload,
+  confirmOralVoice,
   confirmSourceFrame,
   createGenerationBatch,
   createGenerationResultPreviewUrl,
@@ -347,7 +348,7 @@ describe("generation workflow API", () => {
     );
   });
 
-  it("口播创建请求携带当前选择项目", async () => {
+  it("TTS 口播请求精确携带关闭的字幕配置", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -367,13 +368,57 @@ describe("generation workflow API", () => {
       mode: "TTS",
       title: "建房预算",
       scriptText: "预算说明",
+      subtitle: { st_show: false },
       idempotencyKey: "idem-1",
     });
 
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
       project_id: "project/current",
       identity_id: "person-1",
+      avatar_id: "avatar-1",
+      voice_id: "voice-1",
       mode: "TTS",
+      title: "建房预算",
+      script_text: "预算说明",
+      audio_asset_id: null,
+      subtitle: { st_show: false },
+      idempotency_key: "idem-1",
+    });
+  });
+
+  it("AUDIO 口播请求不伪造声音、文案或字幕", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: "oral-audio-1",
+        status: "QUEUED",
+        estimated_cost_fen: 100,
+        replayed: false,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createOralTask({
+      projectId: "project/current",
+      identityId: "person-1",
+      avatarId: "avatar-1",
+      mode: "AUDIO",
+      title: "完整口播音频",
+      audioAssetId: "audio-1",
+      idempotencyKey: "idem-audio-1",
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      project_id: "project/current",
+      identity_id: "person-1",
+      avatar_id: "avatar-1",
+      voice_id: null,
+      mode: "AUDIO",
+      title: "完整口播音频",
+      script_text: null,
+      audio_asset_id: "audio-1",
+      subtitle: null,
+      idempotency_key: "idem-audio-1",
     });
   });
 
@@ -391,6 +436,28 @@ describe("generation workflow API", () => {
       "http://127.0.0.1:8000/api/oral/avatars?identity_id=person%2Fa%20b",
       "http://127.0.0.1:8000/api/oral/voices?identity_id=person%2Fa%20b",
     ]);
+  });
+
+  it("通过当前会话确认已归档的克隆声音", async () => {
+    const confirmed = {
+      id: "voice/a b",
+      identity_id: "person-1",
+      title: "张工声音",
+      status: "READY",
+      demo_asset_id: "demo-1",
+      confirmed: true,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => confirmed,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(confirmOralVoice("voice/a b")).resolves.toEqual(confirmed);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/oral/voices/voice%2Fa%20b/confirm",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("downloads a direct result using task authorization without forwarding credentials", async () => {

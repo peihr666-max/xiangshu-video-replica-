@@ -708,6 +708,7 @@ def test_pg_sweeper_allows_one_late_provider_id_checkpoint() -> None:
     from app.script_from_audio import (
         ProviderTaskCheckpointResult,
         acquire_script_from_audio_task,
+        fail_script_from_audio_task,
         mark_script_from_audio_submission_started,
         record_script_from_audio_provider_task,
     )
@@ -755,6 +756,25 @@ def test_pg_sweeper_allows_one_late_provider_id_checkpoint() -> None:
                     provider_task_id="provider-pg-late",
                 )
             assert result is ProviderTaskCheckpointResult.LATE_UNCERTAIN
+            with raw_conn.transaction():
+                assert acquire_script_from_audio_task(conn, worker_id="pg-too-soon") is None
+            with raw_conn.transaction():
+                raw_conn.execute(
+                    "UPDATE script_from_audio_tasks "
+                    "SET updated_at = CURRENT_TIMESTAMP - interval '31 seconds' WHERE id = 's1'"
+                )
+            with raw_conn.transaction():
+                recovery = acquire_script_from_audio_task(conn, worker_id="pg-recovery")
+            assert recovery is not None
+            assert recovery.attempt == lease.attempt
+            assert recovery.provider_task_id == "provider-pg-late"
+            with raw_conn.transaction():
+                assert fail_script_from_audio_task(
+                    conn,
+                    lease=recovery,
+                    cause=RuntimeError("provider settings unavailable"),
+                    submission_started=False,
+                )
 
         with psycopg.connect(dsn) as verify_conn:
             row = verify_conn.execute(

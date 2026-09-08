@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { confirmOralVoice } from "../api";
 import { useStudio } from "./context";
 import type { StudioPage, StudioPerson } from "./types";
 import { Button, Empty, Field, Hint, Media, Panel, Tabs } from "./ui";
@@ -470,7 +471,56 @@ function VoicePanel({ person }: { person: StudioPerson }) {
     patchDraft,
     updateData,
     notify,
+    refresh,
   } = useStudio();
+  const [confirmingVoiceId, setConfirmingVoiceId] = useState<string>();
+
+  function selectVoice(voiceId: string) {
+    patchDraft({ ipId: person.id, voiceId });
+    navigate(state.returnTo ?? "oral", {
+      selectedPersonId: person.id,
+      returnTo: undefined,
+    });
+  }
+
+  async function confirmVoice(voiceId: string) {
+    if (review) {
+      updateData((data) => ({
+        ...data,
+        people: data.people.map((item) =>
+          item.id !== person.id
+            ? item
+            : {
+                ...item,
+                voices: item.voices.map((candidate) =>
+                  candidate.id === voiceId
+                    ? { ...candidate, confirmed: true }
+                    : candidate,
+                ),
+              },
+        ),
+      }));
+      selectVoice(voiceId);
+      return;
+    }
+    if (confirmingVoiceId) return;
+    setConfirmingVoiceId(voiceId);
+    try {
+      await confirmOralVoice(voiceId);
+      notify("声音已确认，可用于文案口播。");
+      refresh();
+      selectVoice(voiceId);
+    } catch (error) {
+      refresh();
+      notify(
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "确认声音失败，请稍后重试。",
+      );
+    } finally {
+      setConfirmingVoiceId(undefined);
+    }
+  }
   return (
     <div className="voice-layout">
       <Panel>
@@ -516,13 +566,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
                   ) : null}
                   <Button
                     variant="primary"
-                    onClick={() => {
-                      patchDraft({ ipId: person.id, voiceId: voice.id });
-                      navigate(state.returnTo ?? "oral", {
-                        selectedPersonId: person.id,
-                        returnTo: undefined,
-                      });
-                    }}
+                    onClick={() => selectVoice(voice.id)}
                   >
                     使用此声音
                   </Button>
@@ -531,31 +575,12 @@ function VoicePanel({ person }: { person: StudioPerson }) {
               {!voice.confirmed ? (
                 <Button
                   variant="primary"
-                  disabled={!review}
-                  onClick={() => {
-                    if (!review) return;
-                    updateData((data) => ({
-                      ...data,
-                      people: data.people.map((item) =>
-                        item.id !== person.id
-                          ? item
-                          : {
-                              ...item,
-                              voices: item.voices.map((candidate) =>
-                                candidate.id === voice.id
-                                  ? { ...candidate, confirmed: true }
-                                  : candidate,
-                              ),
-                            },
-                      ),
-                    }));
-                    patchDraft({ ipId: person.id, voiceId: voice.id });
-                    navigate(state.returnTo ?? "oral", {
-                      selectedPersonId: person.id,
-                    });
-                  }}
+                  disabled={Boolean(confirmingVoiceId)}
+                  onClick={() => void confirmVoice(voice.id)}
                 >
-                  确认使用此声音
+                  {confirmingVoiceId === voice.id
+                    ? "正在确认"
+                    : "确认使用此声音"}
                 </Button>
               ) : null}
             </div>

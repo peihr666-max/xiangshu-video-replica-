@@ -1,13 +1,20 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PeoplePage, PersonPage } from "./PeoplePages";
 
 const navigate = vi.fn();
 const patchDraft = vi.fn();
 const notify = vi.fn();
+const updateData = vi.fn();
+const refresh = vi.fn();
+const api = vi.hoisted(() => ({
+  confirmOralVoice: vi.fn(),
+}));
+vi.mock("../api", () => api);
 let currentPage = "people";
 let selectedPersonId: string | undefined = "p1";
 let returnTo: string | undefined;
+let review = true;
 
 vi.mock("./context", () => ({
   useStudio: () => ({
@@ -88,18 +95,18 @@ vi.mock("./context", () => ({
       tasks: [],
       projects: [],
     },
-    review: true,
+    review,
     user: {},
     navigate,
     patchDraft,
     patchState: vi.fn(),
-    updateData: vi.fn(),
+    updateData,
     notify,
     openPicker: vi.fn(),
     openLive: vi.fn(),
     requestGeneration: vi.fn(),
     saveDraft: vi.fn(),
-    refresh: vi.fn(),
+    refresh,
   }),
 }));
 
@@ -108,9 +115,13 @@ describe("PeoplePages", () => {
     currentPage = "people";
     selectedPersonId = "p1";
     returnTo = undefined;
+    review = true;
     navigate.mockClear();
     patchDraft.mockClear();
     notify.mockClear();
+    updateData.mockClear();
+    refresh.mockClear();
+    api.confirmOralVoice.mockReset();
   });
 
   it("renders the people library and its primary empty-safe actions", () => {
@@ -158,6 +169,62 @@ describe("PeoplePages", () => {
     expect(
       screen.queryByRole("button", { name: "用于数字人口播" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("生产工作区确认声音后选择该声音并返回原创作页", async () => {
+    currentPage = "person-voices";
+    returnTo = "oral-audio";
+    review = false;
+    api.confirmOralVoice.mockResolvedValue({
+      id: "voice-pending",
+      identity_id: "p1",
+      title: "待确认音色",
+      status: "READY",
+      demo_asset_id: "demo-1",
+      confirmed: true,
+    });
+    render(<PersonPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "确认使用此声音" }));
+
+    await waitFor(() =>
+      expect(api.confirmOralVoice).toHaveBeenCalledWith("voice-pending"),
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(patchDraft).toHaveBeenCalledWith({
+      ipId: "p1",
+      voiceId: "voice-pending",
+    });
+    expect(navigate).toHaveBeenCalledWith("oral-audio", {
+      selectedPersonId: "p1",
+      returnTo: undefined,
+    });
+  });
+
+  it("确认声音响应失败时刷新服务端状态并保持重复点击保护", async () => {
+    currentPage = "person-voices";
+    review = false;
+    let rejectConfirmation: ((reason?: unknown) => void) | undefined;
+    api.confirmOralVoice.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectConfirmation = reject;
+        }),
+    );
+    render(<PersonPage />);
+
+    const confirm = screen.getByRole("button", {
+      name: "确认使用此声音",
+    });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(api.confirmOralVoice).toHaveBeenCalledTimes(1));
+    expect(confirm).toBeDisabled();
+    rejectConfirmation?.(new TypeError("network unavailable"));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(notify).toHaveBeenCalledWith("network unavailable");
   });
 
   it("试听 does not select a confirmed voice, while 使用此声音 does", () => {

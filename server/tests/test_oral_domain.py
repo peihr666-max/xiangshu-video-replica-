@@ -365,25 +365,42 @@ def test_voice_clone_archives_demo_but_requires_confirmation(
     assert refreshed["demo_asset_id"]
 
 
-def test_image_avatar_is_queued_and_worker_uses_image_api(
-    tmp_path: Path, fake_source_storage: FakeSourceStorage
+@pytest.mark.parametrize(
+    ("payload", "expected_extension"),
+    [
+        (b"\xff\xd8\xff\xe0jpeg-avatar", "jpg"),
+        (b"\x89PNG\r\n\x1a\npng-avatar", "png"),
+        (b"RIFF\x10\x00\x00\x00WEBPwebp-avatar", "webp"),
+    ],
+)
+def test_image_avatar_uses_verified_mime_extension(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    payload: bytes,
+    expected_extension: str,
 ) -> None:
     from app.oral import acquire_oral_clone, run_claimed_oral_clone
 
     conn = seed_scene(tmp_path, "oral-image-worker.db")
     conn.execute("UPDATE assets SET content_type = 'image/jpeg' WHERE id = 'asset-src'")
     conn.commit()
+    fake_source_storage.payload = payload
     vendor, transport = make_vendor()
-    transport.on(
-        "POST",
-        "/api/v2/hifly/tool/create_upload_url",
-        envelope(
+
+    def upload_target(body: bytes | None) -> bytes:
+        assert json.loads(body or b"{}")["file_extension"] == expected_extension
+        return envelope(
             {
                 "upload_url": "https://up.example/i",
                 "content_type": "image/jpeg",
                 "file_id": "image-file",
             }
-        ),
+        )
+
+    transport.on(
+        "POST",
+        "/api/v2/hifly/tool/create_upload_url",
+        upload_target,
     )
     transport.on(
         "POST", "/api/v2/hifly/avatar/create_by_image", envelope({"task_id": "image-task"})
@@ -409,6 +426,37 @@ def test_image_avatar_is_queued_and_worker_uses_image_api(
     assert tuple(row) == ("RUNNING", "image-task")
     assert any(url.endswith("/avatar/create_by_image") for _, url in transport.calls)
     assert not any(url.endswith("/avatar/create_by_video") for _, url in transport.calls)
+
+
+def test_image_avatar_rejects_invalid_magic_before_any_provider_call(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-invalid-image-worker.db")
+    conn.execute("UPDATE assets SET content_type = 'image/jpeg' WHERE id = 'asset-src'")
+    conn.commit()
+    fake_source_storage.payload = b"not-an-image"
+    vendor, transport = make_vendor()
+    started = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="损坏图片分身",
+        source_asset_id="asset-src",
+        source_kind="IMAGE",
+        consent_id="asset-auth",
+        idempotency_key="avatar-invalid-image",
+    )
+    lease = acquire_oral_clone(conn, worker_id="clone-worker")
+    assert lease is not None
+
+    run_claimed_oral_clone(conn, lease=lease, worker_id="clone-worker", vendor=vendor)
+
+    row = conn.execute(
+        "SELECT status, vendor_task_id FROM oral_avatars WHERE id = %s",
+        (started.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("FAILED", None)
+    assert transport.calls == []
 
 
 @pytest.mark.parametrize("clone_kind", ["avatar", "voice"])

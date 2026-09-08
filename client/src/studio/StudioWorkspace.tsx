@@ -131,6 +131,17 @@ const navGroups: {
   },
 ];
 
+function isDefiniteOralSubmissionRejection(cause: unknown): boolean {
+  if (typeof cause !== "object" || cause === null) return false;
+  const { status, retryable } = cause as {
+    status?: unknown;
+    retryable?: unknown;
+  };
+  if (typeof status !== "number") return false;
+  if (status === 408 || status === 425 || status === 429) return false;
+  return status >= 400 && status < 500 && retryable !== true;
+}
+
 function WorkspaceUserAvatar({
   currentUser,
   review,
@@ -289,6 +300,8 @@ function StudioWorkspaceSession({
           title: state.draft.script.title || "未命名口播",
           scriptText: state.draft.script.text,
           audioAssetId: input.audioAssetId,
+          subtitle:
+            "subtitles" in input ? { st_show: input.subtitles } : undefined,
           idempotencyKey: crypto.randomUUID(),
         } satisfies OralTaskRequest);
       oralSubmissionRef.current = request;
@@ -303,11 +316,7 @@ function StudioWorkspaceSession({
         refresh();
       }
     } catch (cause: unknown) {
-      if (
-        typeof cause === "object" &&
-        cause !== null &&
-        typeof (cause as { status?: unknown }).status === "number"
-      ) {
+      if (isDefiniteOralSubmissionRejection(cause)) {
         oralSubmissionRef.current = undefined;
       }
       notify(

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -375,6 +376,86 @@ def test_ambiguous_provider_failure_preserves_reconciliation_state(
     assert leftovers == []
 
 
+def test_worker_resumes_persisted_provider_task_without_resubmitting(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.script_from_audio as domain
+    from app.script_from_audio import (
+        acquire_script_from_audio_task,
+        fail_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+        record_script_from_audio_provider_task,
+    )
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        original = acquire_script_from_audio_task(conn, worker_id="failed-poll-worker")
+        assert original is not None
+        mark_script_from_audio_submission_started(conn, lease=original)
+        record_script_from_audio_provider_task(
+            conn, lease=original, provider_task_id="provider-resume-1"
+        )
+        assert fail_script_from_audio_task(
+            conn,
+            lease=original,
+            cause=AsrProviderError(
+                "poll network unavailable",
+                submission_uncertain=True,
+                provider_task_id="provider-resume-1",
+            ),
+            submission_started=True,
+        )
+        uncertain = conn.execute(
+            "SELECT status, provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+        assert tuple(uncertain) == ("SUBMISSION_UNCERTAIN", "provider-resume-1")
+        assert acquire_script_from_audio_task(conn, worker_id="too-early-worker") is None
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET updated_at = datetime('now', '-1 minute') "
+            "WHERE id = %s",
+            (task_id,),
+        )
+        conn.commit()
+
+    class RecoveringAsr:
+        name = "recovering-asr"
+        submit_calls = 0
+        poll_calls: list[str] = []
+
+        def transcribe(self, *_args, **_kwargs):
+            self.submit_calls += 1
+            raise AssertionError("recovery must not submit a second paid task")
+
+        def resume_transcription(self, provider_task_id: str, *, on_poll):
+            self.poll_calls.append(provider_task_id)
+            assert on_poll is not None
+            on_poll()
+            return TranscriptResult(text="已恢复的文案", duration_sec=15.0, language="zh")
+
+    provider = RecoveringAsr()
+    monkeypatch.setattr(domain, "get_asr_provider", lambda _conn: provider)
+    storage = FakeStorageAdapter(provider="fake", bucket="private-bucket")
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        run_worker_once(conn, worker_id="resume-worker", storage=storage, max_tasks=1)
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT status, attempt, provider_task_id, result_json "
+            "FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+    assert row["status"] == "SUCCEEDED"
+    assert row["attempt"] == 1
+    assert row["provider_task_id"] == "provider-resume-1"
+    assert json.loads(row["result_json"])["text"] == "已恢复的文案"
+    assert provider.submit_calls == 0
+    assert provider.poll_calls == ["provider-resume-1"]
+
+
 def test_definite_provider_rejection_fails_without_allowing_ambiguous_replay(
     client: TestClient,
     db_path: Path,
@@ -516,6 +597,78 @@ def test_local_preparation_failure_does_not_mark_provider_started(
     assert row["status"] == "FAILED"
     assert row["provider_started_at"] is None
     assert row["retryable"] == 1
+
+
+def test_recovery_provider_resolution_failure_returns_to_uncertain_with_backoff(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.script_from_audio as domain
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET status = 'SUBMISSION_UNCERTAIN', attempt = 1,
+                provider_started_at = CURRENT_TIMESTAMP,
+                provider_task_id = 'provider-prepare-failure',
+                updated_at = datetime('now', '-1 minute')
+            WHERE id = %s
+            """,
+            (task_id,),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(
+        domain,
+        "get_asr_provider",
+        lambda _conn: (_ for _ in ()).throw(RuntimeError("settings unavailable")),
+    )
+    storage = FakeStorageAdapter(provider="fake", bucket="private-bucket")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        run_worker_once(conn, worker_id="recovery-prepare-failure", storage=storage, max_tasks=1)
+        row = conn.execute(
+            "SELECT status, attempt, provider_task_id, locked_by, lease_token, locked_until "
+            "FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+        assert tuple(row) == (
+            "SUBMISSION_UNCERTAIN",
+            1,
+            "provider-prepare-failure",
+            None,
+            None,
+            None,
+        )
+        assert domain.acquire_script_from_audio_task(conn, worker_id="too-soon") is None
+
+
+def test_sqlite_claim_uses_database_clock_even_if_application_clock_is_skewed(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.script_from_audio as domain
+
+    enqueue(client)
+
+    class SkewedClock:
+        @staticmethod
+        def now(*_args, **_kwargs):
+            raise AssertionError("task timestamps must use the database clock")
+
+    monkeypatch.setattr(domain, "datetime", SkewedClock, raising=False)
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = domain.acquire_script_from_audio_task(conn, worker_id="db-clock-worker")
+        assert lease is not None
+        seconds = conn.execute(
+            "SELECT (julianday(locked_until) - julianday(CURRENT_TIMESTAMP)) * 86400 "
+            "AS seconds FROM script_from_audio_tasks WHERE id = %s",
+            (lease.id,),
+        ).fetchone()["seconds"]
+    assert 1190 <= float(seconds) <= 1210
 
 
 def test_transcript_result_dataclass_defaults() -> None:
@@ -779,15 +932,25 @@ def test_provider_task_id_survives_worker_crash_and_lease_expiry(
         conn.commit()
 
         assert acquire_script_from_audio_task(conn, worker_id="replacement-worker") is None
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET updated_at = datetime('now', '-1 minute') "
+            "WHERE id = %s",
+            (task_id,),
+        )
+        conn.commit()
+        replacement = acquire_script_from_audio_task(conn, worker_id="replacement-worker")
+        assert replacement is not None
+        assert replacement.attempt == lease.attempt
+        assert replacement.lease_token != lease.lease_token
         row = conn.execute(
             "SELECT status, provider_task_id, lease_token "
             "FROM script_from_audio_tasks WHERE id = %s",
             (task_id,),
         ).fetchone()
 
-    assert row["status"] == "SUBMISSION_UNCERTAIN"
+    assert row["status"] == "RUNNING"
     assert row["provider_task_id"] == "provider-survives-crash"
-    assert row["lease_token"] is None
+    assert row["lease_token"] == replacement.lease_token
 
 
 def test_sweeper_then_observer_backfills_id_once_but_old_attempt_cannot_overwrite(
@@ -818,12 +981,16 @@ def test_sweeper_then_observer_backfills_id_once_but_old_attempt_cannot_overwrit
             provider_task_id="provider-after-sweep",
         )
         assert result is ProviderTaskCheckpointResult.LATE_UNCERTAIN
+        assert acquire_script_from_audio_task(conn, worker_id="late-observer-too-soon") is None
         row = conn.execute(
-            "SELECT status, attempt, provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+            "SELECT status, attempt, provider_task_id, "
+            "(julianday(CURRENT_TIMESTAMP) - julianday(updated_at)) * 86400 AS age_seconds "
+            "FROM script_from_audio_tasks WHERE id = %s",
             (task_id,),
         ).fetchone()
         assert row["status"] == "SUBMISSION_UNCERTAIN"
         assert row["provider_task_id"] == "provider-after-sweep"
+        assert 0 <= float(row["age_seconds"]) < 5
 
         with pytest.raises(HTTPException):
             record_script_from_audio_provider_task(

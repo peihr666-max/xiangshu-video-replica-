@@ -450,10 +450,20 @@ def _asset_storage_target(
 def _extension_for(asset: dict[str, Any], source_kind: str) -> str:
     content_type = str(asset.get("content_type") or "")
     if source_kind == "IMAGE" or content_type.startswith("image/"):
-        return "png"
+        return "image"
     if content_type.endswith("webm"):
         return "webm"
     return "mp4"
+
+
+def _verified_image_extension(content: bytes) -> str:
+    if content.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if len(content) >= 12 and content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "webp"
+    raise OralDomainError("图片素材格式无法验证，请重新上传 JPEG、PNG 或 WebP 图片")
 
 
 def acquire_oral_clone(conn: BusinessConnection, *, worker_id: str) -> dict[str, Any] | None:
@@ -688,7 +698,12 @@ def perform_oral_clone_work(
             _require_clone_lease_step(renew_lease)
             content = work.source_storage.get_object(work.source_key)
             _require_clone_lease_step(renew_lease)
-            target = work.vendor.create_upload_url(work.source_extension)
+            source_extension = (
+                _verified_image_extension(content)
+                if lease["clone_kind"] == "avatar" and lease["source_kind"] == "IMAGE"
+                else work.source_extension
+            )
+            target = work.vendor.create_upload_url(source_extension)
             _require_clone_lease_step(renew_lease)
             work.vendor.upload_file(target, content)
             _require_clone_lease_step(renew_lease)

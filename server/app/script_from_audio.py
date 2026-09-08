@@ -17,7 +17,7 @@ import sqlite3
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import cast
@@ -45,6 +45,7 @@ from app.storage import StorageAdapter
 logger = logging.getLogger("app.script_from_audio")
 
 SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES = 20
+SCRIPT_FROM_AUDIO_RECOVERY_BACKOFF_SECONDS = 30
 SCRIPT_FROM_AUDIO_MAX_SOURCE_BYTES = 2_000_000_000
 _DOWNLOAD_INTENT_EXPIRES = timedelta(minutes=30)
 
@@ -119,6 +120,7 @@ class ScriptFromAudioTaskLease:
     worker_id: str
     lease_token: str
     attempt: int
+    provider_task_id: str | None = None
 
 
 class ProviderTaskCheckpointResult(StrEnum):
@@ -136,25 +138,23 @@ class PreparedScriptFromAudio:
     asr: AsrProvider
     ffmpeg_path: str
     ffprobe_path: str | None
+    provider_task_id: str | None = None
 
 
 @dataclass(frozen=True)
 class PreparedScriptFromAudioSubmission:
     storage: StorageAdapter
     asr: AsrProvider
-    temporary_object_key: str
-    audio_url: str
+    temporary_object_key: str | None
+    audio_url: str | None
     duration_sec: float | None
+    provider_task_id: str | None = None
 
 
 def script_from_audio_error(status_code: int, code: str, message: str) -> Exception:
     from fastapi import HTTPException
 
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
-
-
-def _time_text(value: datetime) -> str:
-    return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def enqueue_script_from_audio_task(
@@ -288,46 +288,125 @@ def acquire_script_from_audio_task(
     *,
     worker_id: str,
 ) -> ScriptFromAudioTaskLease | None:
-    now = _time_text(datetime.now(UTC))
-    locked_until = _time_text(
-        datetime.now(UTC) + timedelta(minutes=SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES)
-    )
-    conn.execute(
-        """
+    lease_seconds = SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES * 60
+    if conn.is_postgres:
+        conn.execute(
+            """
         UPDATE script_from_audio_tasks
         SET status = 'PENDING', locked_by = NULL, lease_token = NULL, locked_until = NULL,
             error_code = NULL, error_message_redacted = NULL, retryable = 0,
-            updated_at = %s
+            updated_at = CURRENT_TIMESTAMP
         WHERE status = 'RUNNING' AND provider_started_at IS NULL
-          AND locked_until IS NOT NULL AND locked_until <= %s
-        """,
-        (now, now),
-    )
-    conn.execute(
-        """
+          AND locked_until IS NOT NULL
+          AND locked_until::timestamptz <= CURRENT_TIMESTAMP
+            """
+        )
+        conn.execute(
+            """
         UPDATE script_from_audio_tasks
         SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL, lease_token = NULL,
             locked_until = NULL,
             error_code = 'SCRIPT_FROM_AUDIO_SUBMISSION_UNCERTAIN',
             error_message_redacted = %s, retryable = 0,
-            completed_at = %s, updated_at = %s
+            completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
         WHERE status = 'RUNNING' AND provider_started_at IS NOT NULL
-          AND locked_until IS NOT NULL AND locked_until <= %s
-        """,
-        (
-            "语音转写请求可能已经送达服务商，请人工确认后再决定是否重试。",
-            now,
-            now,
-            now,
-        ),
-    )
+          AND locked_until IS NOT NULL
+          AND locked_until::timestamptz <= CURRENT_TIMESTAMP
+            """,
+            ("语音转写请求可能已经送达服务商，请人工确认后再决定是否重试。",),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET status = 'PENDING', locked_by = NULL, lease_token = NULL, locked_until = NULL,
+                error_code = NULL, error_message_redacted = NULL, retryable = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'RUNNING' AND provider_started_at IS NULL
+              AND locked_until IS NOT NULL AND datetime(locked_until) <= CURRENT_TIMESTAMP
+            """
+        )
+        conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL, lease_token = NULL,
+                locked_until = NULL,
+                error_code = 'SCRIPT_FROM_AUDIO_SUBMISSION_UNCERTAIN',
+                error_message_redacted = %s, retryable = 0,
+                completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'RUNNING' AND provider_started_at IS NOT NULL
+              AND locked_until IS NOT NULL AND datetime(locked_until) <= CURRENT_TIMESTAMP
+            """,
+            ("语音转写请求可能已经送达服务商，请人工确认后再决定是否重试。",),
+        )
     lease_token = str(uuid4())
-    row = conn.execute(
-        """
+    if conn.is_postgres:
+        row = conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET status = 'RUNNING', locked_by = %s, lease_token = %s,
+                locked_until = (CURRENT_TIMESTAMP + (%s * interval '1 second'))::text,
+                completed_at = NULL, updated_at = CURRENT_TIMESTAMP,
+                error_code = NULL, error_message_redacted = NULL, retryable = 0
+            WHERE id = (
+                SELECT id FROM script_from_audio_tasks
+                WHERE status = 'SUBMISSION_UNCERTAIN' AND provider_task_id IS NOT NULL
+                  AND updated_at::timestamptz <= CURRENT_TIMESTAMP
+                      - (%s * interval '1 second')
+                ORDER BY updated_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
+            ) AND status = 'SUBMISSION_UNCERTAIN' AND provider_task_id IS NOT NULL
+            RETURNING *
+            """,
+            (
+                worker_id,
+                lease_token,
+                lease_seconds,
+                SCRIPT_FROM_AUDIO_RECOVERY_BACKOFF_SECONDS,
+            ),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET status = 'RUNNING', locked_by = %s, lease_token = %s,
+                locked_until = datetime('now', %s),
+                completed_at = NULL, updated_at = CURRENT_TIMESTAMP,
+                error_code = NULL, error_message_redacted = NULL, retryable = 0
+            WHERE id = (
+                SELECT id FROM script_from_audio_tasks
+                WHERE status = 'SUBMISSION_UNCERTAIN' AND provider_task_id IS NOT NULL
+                  AND datetime(updated_at) <= datetime('now', %s)
+                ORDER BY updated_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
+            ) AND status = 'SUBMISSION_UNCERTAIN' AND provider_task_id IS NOT NULL
+            RETURNING *
+            """,
+            (
+                worker_id,
+                lease_token,
+                f"+{SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES} minutes",
+                f"-{SCRIPT_FROM_AUDIO_RECOVERY_BACKOFF_SECONDS} seconds",
+            ),
+        ).fetchone()
+    if row is not None:
+        conn.commit()
+        return ScriptFromAudioTaskLease(
+            id=str(row["id"]),
+            project_id=str(row["project_id"]),
+            created_by_user_id=str(row["created_by_user_id"]),
+            worker_id=worker_id,
+            lease_token=lease_token,
+            attempt=int(row["attempt"]),
+            provider_task_id=str(row["provider_task_id"]),
+        )
+    if conn.is_postgres:
+        row = conn.execute(
+            """
         UPDATE script_from_audio_tasks
         SET status = 'RUNNING', attempt = attempt + 1,
-            locked_by = %s, lease_token = %s, locked_until = %s,
-            started_at = COALESCE(started_at, %s), updated_at = %s,
+            locked_by = %s, lease_token = %s,
+            locked_until = (CURRENT_TIMESTAMP + (%s * interval '1 second'))::text,
+            started_at = COALESCE(started_at, CURRENT_TIMESTAMP::text),
+            updated_at = CURRENT_TIMESTAMP,
             error_code = NULL, error_message_redacted = NULL, retryable = 0
         WHERE id = (
             SELECT id FROM script_from_audio_tasks
@@ -335,9 +414,28 @@ def acquire_script_from_audio_task(
             ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
         ) AND status = 'PENDING'
         RETURNING *
-        """,
-        (worker_id, lease_token, locked_until, now, now),
-    ).fetchone()
+            """,
+            (worker_id, lease_token, lease_seconds),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET status = 'RUNNING', attempt = attempt + 1,
+                locked_by = %s, lease_token = %s,
+                locked_until = datetime('now', %s),
+                started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP,
+                error_code = NULL, error_message_redacted = NULL, retryable = 0
+            WHERE id = (
+                SELECT id FROM script_from_audio_tasks
+                WHERE status = 'PENDING'
+                ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
+            ) AND status = 'PENDING'
+            RETURNING *
+            """,
+            (worker_id, lease_token, f"+{SCRIPT_FROM_AUDIO_TASK_LEASE_MINUTES} minutes"),
+        ).fetchone()
     conn.commit()
     if row is None:
         return None
@@ -369,6 +467,19 @@ def prepare_script_from_audio_task(
     storage: StorageAdapter,
 ) -> PreparedScriptFromAudio:
     row = _require_leased_task(conn, lease)
+    active_provider = get_asr_provider(conn)
+    if lease.provider_task_id is not None:
+        return PreparedScriptFromAudio(
+            task_id=lease.id,
+            project_id=lease.project_id,
+            asset_id="",
+            object_key="",
+            storage=storage,
+            asr=active_provider,
+            ffmpeg_path="",
+            ffprobe_path=None,
+            provider_task_id=lease.provider_task_id,
+        )
     payload = json.loads(str(row["request_json"]))
     asset_id = str(payload.get("source_asset_id", ""))
     asset = conn.execute(
@@ -398,7 +509,7 @@ def prepare_script_from_audio_task(
         asset_id=asset_id,
         object_key=object_key,
         storage=storage,
-        asr=get_asr_provider(conn),
+        asr=active_provider,
         ffmpeg_path=ffmpeg_path,
         ffprobe_path=ffprobe_path,
     )
@@ -417,7 +528,11 @@ def mark_script_from_audio_submission_started(
                 locked_until = (CURRENT_TIMESTAMP + (%s * interval '1 second'))::text,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s AND locked_by = %s AND lease_token = %s AND attempt = %s
-              AND status = 'RUNNING' AND provider_started_at IS NULL
+              AND status = 'RUNNING'
+              AND (
+                (provider_started_at IS NULL AND provider_task_id IS NULL)
+                OR (provider_started_at IS NOT NULL AND provider_task_id = %s)
+              )
               AND locked_until::timestamptz > CURRENT_TIMESTAMP
             RETURNING id
             """,
@@ -427,6 +542,7 @@ def mark_script_from_audio_submission_started(
                 lease.worker_id,
                 lease.lease_token,
                 lease.attempt,
+                lease.provider_task_id,
             ),
         ).fetchone()
     else:
@@ -437,7 +553,11 @@ def mark_script_from_audio_submission_started(
                 locked_until = datetime('now', %s),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s AND locked_by = %s AND lease_token = %s AND attempt = %s
-              AND status = 'RUNNING' AND provider_started_at IS NULL
+              AND status = 'RUNNING'
+              AND (
+                (provider_started_at IS NULL AND provider_task_id IS NULL)
+                OR (provider_started_at IS NOT NULL AND provider_task_id = %s)
+              )
               AND datetime(locked_until) > CURRENT_TIMESTAMP
             RETURNING id
             """,
@@ -447,6 +567,7 @@ def mark_script_from_audio_submission_started(
                 lease.worker_id,
                 lease.lease_token,
                 lease.attempt,
+                lease.provider_task_id,
             ),
         ).fetchone()
     if updated is None:
@@ -508,6 +629,15 @@ def prepare_script_from_audio_submission(
     work: PreparedScriptFromAudio,
 ) -> PreparedScriptFromAudioSubmission:
     """完成可安全重试的本地与存储准备，尚未调用 ASR。"""
+    if work.provider_task_id is not None:
+        return PreparedScriptFromAudioSubmission(
+            storage=work.storage,
+            asr=work.asr,
+            temporary_object_key=None,
+            audio_url=None,
+            duration_sec=None,
+            provider_task_id=work.provider_task_id,
+        )
     video_bytes = work.storage.get_object(work.object_key)
     tmp_key = f"tmp/asr/{work.project_id}/{hashlib.sha256(video_bytes).hexdigest()[:32]}.m4a"
     with tempfile.TemporaryDirectory(prefix="script-from-audio-") as tmp_dir:
@@ -545,6 +675,8 @@ def prepare_script_from_audio_submission(
 
 
 def cleanup_script_from_audio_submission(work: PreparedScriptFromAudioSubmission) -> None:
+    if work.temporary_object_key is None:
+        return
     try:
         work.storage.delete_object(work.temporary_object_key, actor_id="script-from-audio-worker")
     except Exception:  # pragma: no cover - cleanup best effort
@@ -559,6 +691,10 @@ def perform_script_from_audio_provider_call(
 ) -> TranscriptResult:
     """ASR 是唯一可能已被上游受理的步骤；调用后无条件清理临时音频。"""
     try:
+        if work.provider_task_id is not None:
+            return work.asr.resume_transcription(work.provider_task_id, on_poll=on_poll)
+        if work.audio_url is None:
+            raise AsrProviderError("语音转写临时音频未准备完成")
         return work.asr.transcribe(
             work.audio_url,
             duration_sec=work.duration_sec,
@@ -581,11 +717,10 @@ def record_script_from_audio_provider_task(
     provider_task_id: str,
 ) -> ProviderTaskCheckpointResult:
     """Persist the upstream identity before polling so crashes remain reconcilable."""
-    now = _time_text(datetime.now(UTC))
     updated = conn.execute(
         """
         UPDATE script_from_audio_tasks
-        SET provider_task_id = %s, updated_at = %s
+        SET provider_task_id = %s, updated_at = CURRENT_TIMESTAMP
         WHERE id = %s AND attempt = %s AND provider_task_id IS NULL
           AND provider_started_at IS NOT NULL
           AND (
@@ -596,7 +731,6 @@ def record_script_from_audio_provider_task(
         """,
         (
             provider_task_id,
-            now,
             lease.id,
             lease.attempt,
             lease.lease_token,
@@ -616,7 +750,6 @@ def complete_script_from_audio_task(
     lease: ScriptFromAudioTaskLease,
     result: TranscriptResult,
 ) -> bool:
-    now = _time_text(datetime.now(UTC))
     result_payload = {
         "text": result.text,
         "duration_sec": result.duration_sec,
@@ -627,7 +760,7 @@ def complete_script_from_audio_task(
         UPDATE script_from_audio_tasks
         SET status = 'SUCCEEDED', result_json = %s,
             error_code = NULL, error_message_redacted = NULL, retryable = 0,
-            completed_at = %s, updated_at = %s, locked_by = NULL,
+            completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, locked_by = NULL,
             lease_token = NULL, locked_until = NULL, provider_started_at = NULL
         WHERE id = %s AND lease_token = %s AND attempt = %s
           AND status = 'RUNNING' AND provider_started_at IS NOT NULL
@@ -635,8 +768,6 @@ def complete_script_from_audio_task(
         """,
         (
             json.dumps(result_payload, ensure_ascii=False, sort_keys=True),
-            now,
-            now,
             lease.id,
             lease.lease_token,
             lease.attempt,
@@ -656,28 +787,30 @@ def fail_script_from_audio_task(
     submission_started: bool,
 ) -> bool:
     logger.warning("script-from-audio task %s failed: %s", lease.id, type(cause).__name__)
-    now = _time_text(datetime.now(UTC))
-    retryable = 1 if not submission_started else 0
-    provider_task_id = cause.provider_task_id if isinstance(cause, AsrProviderError) else None
-    if submission_started and (
+    provider_was_started = submission_started or lease.provider_task_id is not None
+    retryable = 1 if not provider_was_started else 0
+    provider_task_id = (
+        cause.provider_task_id if isinstance(cause, AsrProviderError) else None
+    ) or lease.provider_task_id
+    if provider_was_started and (
         not isinstance(cause, AsrProviderError) or cause.submission_uncertain
     ):
         status = "SUBMISSION_UNCERTAIN"
         code = "SCRIPT_FROM_AUDIO_SUBMISSION_UNCERTAIN"
-    elif submission_started:
+    elif provider_was_started:
         status = "FAILED"
         code = "SCRIPT_FROM_AUDIO_PROVIDER_FAILED"
     else:
         status = "FAILED"
         code = "SCRIPT_FROM_AUDIO_PIPELINE_FAILED"
-    provider_condition = "IS NOT NULL" if submission_started else "IS NULL"
+    provider_condition = "IS NOT NULL" if provider_was_started else "IS NULL"
     updated = conn.execute(
         f"""
         UPDATE script_from_audio_tasks
         SET status = %s, error_code = %s,
             error_message_redacted = %s, retryable = %s,
             provider_task_id = COALESCE(%s, provider_task_id),
-            completed_at = %s, updated_at = %s, locked_by = NULL,
+            completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, locked_by = NULL,
             lease_token = NULL, locked_until = NULL
         WHERE id = %s AND lease_token = %s AND attempt = %s
           AND status = 'RUNNING' AND provider_started_at {provider_condition}
@@ -689,8 +822,6 @@ def fail_script_from_audio_task(
             _redacted_message(cause),
             retryable,
             provider_task_id,
-            now,
-            now,
             lease.id,
             lease.lease_token,
             lease.attempt,
