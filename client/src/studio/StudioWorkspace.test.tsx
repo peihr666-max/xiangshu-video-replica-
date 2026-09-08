@@ -505,6 +505,76 @@ describe("V1.4 workspace integration", () => {
     expect(screen.queryByText("生成中 45%")).not.toBeInTheDocument();
   });
 
+  it("keeps oral and generation tasks current across multiple polls", async () => {
+    vi.useFakeTimers();
+    const generationTask = {
+      id: "batch-poll",
+      batchId: "batch-poll",
+      title: "持续刷新的生成批次",
+      type: "视频生成" as const,
+      status: "queued" as const,
+      progress: 0,
+      submitted: "2026-09-06T09:00:00Z",
+    };
+    const oralTask = {
+      id: "oral-poll",
+      title: "持续刷新的口播",
+      type: "数字人口播" as const,
+      status: "queued" as const,
+      cancelAllowed: false,
+      submitted: "2026-09-06T09:01:00Z",
+    };
+    live.loadStudioData.mockResolvedValue({
+      people: [],
+      assets: [],
+      videos: [],
+      projects: [],
+      errors: [],
+      loading: false,
+      stats: null,
+      tasks: [generationTask, oralTask],
+    });
+    live.reloadTasks
+      .mockResolvedValueOnce([
+        { ...generationTask, status: "running" as const, progress: 36 },
+        { ...oralTask, status: "running" as const },
+      ])
+      .mockResolvedValueOnce([
+        { ...generationTask, status: "completed" as const, progress: 100 },
+        {
+          ...oralTask,
+          status: "completed" as const,
+          resultId: "oral-result-1",
+        },
+      ]);
+
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        initialState={createState("tasks")}
+      />,
+    );
+    await vi.waitFor(() =>
+      expect(screen.getByText("持续刷新的口播")).toBeInTheDocument(),
+    );
+    expect(screen.getAllByText("排队中")).toHaveLength(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(screen.getByText("生成中 36%")).toBeInTheDocument();
+    expect(screen.getByText("持续刷新的口播")).toBeInTheDocument();
+    expect(screen.getAllByText("生成中")).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(screen.getByText("持续刷新的生成批次")).toBeInTheDocument();
+    expect(screen.getByText("持续刷新的口播")).toBeInTheDocument();
+    expect(screen.getAllByText("已完成")).toHaveLength(3);
+    vi.useRealTimers();
+  });
+
   it("账号切换后忽略不得写入旧账号迟到的轮询结果", async () => {
     vi.useFakeTimers();
     let resolveTasks: ((value: unknown[]) => void) | undefined;
@@ -542,10 +612,11 @@ describe("V1.4 workspace integration", () => {
     await act(async () => {
       resolveTasks?.([
         {
-          id: "old-poll-task",
-          title: "旧账号轮询任务",
-          type: "视频生成",
+          id: "oral-old-poll-task",
+          title: "旧账号口播轮询任务",
+          type: "数字人口播",
           status: "running",
+          cancelAllowed: false,
           submitted: "2026-09-08T10:00:00Z",
         },
       ]);
@@ -559,7 +630,7 @@ describe("V1.4 workspace integration", () => {
       await Promise.resolve();
     });
 
-    expect(screen.queryByText("旧账号轮询任务")).toBeNull();
+    expect(screen.queryByText("旧账号口播轮询任务")).toBeNull();
     expect(screen.queryByText("99")).toBeNull();
     vi.useRealTimers();
   });

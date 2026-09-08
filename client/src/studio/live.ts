@@ -339,11 +339,17 @@ async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {
   return page.items.map(studioTask);
 }
 
-/** Re-read only the generation batches. The workspace shell polls this so a
- * batch that advances while the customer watches stays current without a
- * full project/people reload. */
-export function reloadTasks(currentUser: CurrentUser): Promise<StudioTask[]> {
-  return loadTasks(currentUser);
+/** Re-read every task source used by the task center. Returning one complete
+ * snapshot lets the shell replace stale rows, including oral tasks that have
+ * completed or disappeared, without a full project/people reload. */
+export async function reloadTasks(
+  currentUser: CurrentUser,
+): Promise<StudioTask[]> {
+  const [generationTasks, oralTasks] = await Promise.all([
+    loadTasks(currentUser),
+    loadOralTasks(),
+  ]);
+  return [...generationTasks, ...oralTasks];
 }
 
 /** Workbench quick upload: create a project, PUT the raw video to cloud

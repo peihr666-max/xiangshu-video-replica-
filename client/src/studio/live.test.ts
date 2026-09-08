@@ -43,6 +43,7 @@ import {
   loadProjectDraft,
   loadStudioData,
   loadTaskPreview,
+  reloadTasks,
 } from "./live";
 import type { StudioTask } from "./types";
 
@@ -739,6 +740,35 @@ describe("批次类型映射与取消", () => {
       }),
     ).rejects.toThrow("当前任务不支持取消");
     expect(api.cancelGenerationBatch).not.toHaveBeenCalled();
+  });
+
+  it("任务轮询同时返回生成批次与口播任务", async () => {
+    api.listGenerationBatches.mockResolvedValue(batchPage);
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-poll-1",
+        status: "RUNNING",
+        title: "轮询口播",
+        mode: "TTS",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: "voice-1",
+        script_text: "建房预算讲解",
+        audio_asset_id: null,
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        created_at: "2026-09-06T09:32:00",
+        updated_at: "2026-09-06T09:33:00",
+      },
+    ]);
+
+    const tasks = await reloadTasks(user);
+
+    expect(tasks.map((task) => task.id)).toEqual([
+      "batch-1",
+      "oral-oral-poll-1",
+    ]);
   });
 });
 
