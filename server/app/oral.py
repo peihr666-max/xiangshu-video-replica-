@@ -2,13 +2,9 @@
 
 Vendor-neutral by contract: no table, row, or customer-visible message may
 name the upstream provider (see the red-line test in tests/test_hifly_client.py).
-Polling is pull-based (no public webhook) — the status endpoints refresh from
-the vendor on read, mirroring how the studio shell already polls tasks.
-
-Wallet RESERVE/SETTLE intentionally waits for a dedicated slice: the internal
-billing reconciler (BILL-03) is generation-task scoped, so oral reservations
-need a task-type discriminator before they can survive it. Until then the
-task carries a price snapshot only.
+Polling is pull-based (no public webhook). Generation tasks reserve one wallet
+credit before queueing; the worker settles success, releases terminal failure,
+and retains ambiguous submissions for reconciliation without retrying them.
 """
 
 from __future__ import annotations
@@ -16,13 +12,16 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 from app.auth import CurrentUser
+from app.character_identity import require_current_authorization
 from app.db_portable import BusinessConnection
-from app.hifly import HiflyClient, HiflyError
+from app.hifly import HiflyClient, HiflyError, HiflySettingsUnavailable, hifly_client_from_settings
 from app.media_routes import get_media_storage, storage_for_asset
+from app.permissions import require_asset_access
 from app.settings import SettingsRepository
 from app.storage import StorageAdapter
 
@@ -30,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 ORAL_UNIT_PRICE_FEN_DEFAULT = 1000
 MAX_ORAL_SCRIPT_CHARS = 10_000
+ORAL_TASK_LEASE_SECONDS = 120
+ORAL_POLL_SECONDS = 15
 
 AvatarStatus = str  # PENDING/RUNNING/READY/FAILED
 TaskStatus = str  # QUEUED/RUNNING/SUCCEEDED/FAILED/CANCELLED
@@ -43,13 +44,15 @@ def oral_unit_price_fen(conn: BusinessConnection) -> int:
     """Per-task list price for oral renders; admin-configurable via billing."""
     try:
         billing = SettingsRepository(conn).read_billing_settings()
-    except Exception:  # noqa: BLE001 - pricing must never break task creation
-        return ORAL_UNIT_PRICE_FEN_DEFAULT
+    except Exception as exc:  # noqa: BLE001 - fail closed before reserving credits
+        raise OralDomainError("口播计费配置暂不可用，请稍后重试") from exc
     try:
         price = int(billing.get("oral_unit_price_fen", ORAL_UNIT_PRICE_FEN_DEFAULT))
-    except (TypeError, ValueError):
-        return ORAL_UNIT_PRICE_FEN_DEFAULT
-    return price if price > 0 else ORAL_UNIT_PRICE_FEN_DEFAULT
+    except (TypeError, ValueError) as exc:
+        raise OralDomainError("口播计费配置无效，请联系管理员") from exc
+    if price <= 0:
+        raise OralDomainError("口播计费配置无效，请联系管理员")
+    return price
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +62,9 @@ def oral_unit_price_fen(conn: BusinessConnection) -> int:
 
 def _identity(conn: BusinessConnection, identity_id: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT id, owner_user_id, display_name FROM person_identities WHERE id = %s",
+        """SELECT id, owner_user_id, display_name, status, authorization_status,
+                  authorization_asset_id, authorization_expires_at, source_quality_status
+           FROM person_identities WHERE id = %s""",
         (identity_id,),
     ).fetchone()
     return dict(row) if row is not None else None
@@ -76,10 +81,32 @@ def _asset(conn: BusinessConnection, asset_id: str) -> dict[str, Any] | None:
 def _require_own_identity(
     conn: BusinessConnection, actor: CurrentUser, identity_id: str
 ) -> dict[str, Any]:
+    if actor.role == "auditor":
+        raise OralDomainError("审计角色只能查看口播记录")
     identity = _identity(conn, identity_id)
     if identity is None or identity["owner_user_id"] != actor.id:
         raise OralDomainError("人物不存在或无权使用")
+    try:
+        require_current_authorization(identity)  # type: ignore[arg-type]
+    except Exception as exc:
+        raise OralDomainError("人物肖像授权已失效，请先更新授权") from exc
     return identity
+
+
+def _require_source_asset(
+    conn: BusinessConnection, *, actor: CurrentUser, asset_id: str, message: str
+) -> dict[str, Any]:
+    try:
+        return dict(
+            require_asset_access(
+                conn,
+                actor=actor,
+                asset_id=asset_id,
+                action="oral.source.read",
+            )
+        )
+    except Exception as exc:
+        raise OralDomainError(message) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -106,9 +133,9 @@ def start_avatar_clone(
     if source_kind not in {"VIDEO", "IMAGE"}:
         raise OralDomainError("分身素材类型不支持")
     _require_own_identity(conn, actor, identity_id)
-    asset = _asset(conn, source_asset_id)
-    if asset is None:
-        raise OralDomainError("素材不存在或已删除")
+    asset = _require_source_asset(
+        conn, actor=actor, asset_id=source_asset_id, message="素材不存在或无权使用"
+    )
     clean_title = title.strip() or "口播分身"
 
     try:
@@ -153,9 +180,9 @@ def start_voice_clone(
     vendor: HiflyClient,
 ) -> CloneStartResult:
     _require_own_identity(conn, actor, identity_id)
-    asset = _asset(conn, source_asset_id)
-    if asset is None:
-        raise OralDomainError("音频素材不存在或已删除")
+    asset = _require_source_asset(
+        conn, actor=actor, asset_id=source_asset_id, message="音频素材不存在或无权使用"
+    )
     clean_title = title.strip() or "克隆声音"
 
     try:
@@ -228,7 +255,7 @@ def create_oral_task(
     audio_asset_id: str | None,
     subtitle: dict[str, Any] | None,
     idempotency_key: str,
-    vendor: HiflyClient,
+    vendor: HiflyClient | None = None,
 ) -> OralTaskCreated:
     if mode not in {"TTS", "AUDIO"}:
         raise OralDomainError("口播模式不支持")
@@ -263,8 +290,14 @@ def create_oral_task(
             raise OralDomainError("声音与人物不匹配")
     else:
         effective_voice = None
-        if not audio_asset_id or _asset(conn, audio_asset_id) is None:
+        if not audio_asset_id:
             raise OralDomainError("请上传完整的口播音频")
+        _require_source_asset(
+            conn,
+            actor=actor,
+            asset_id=audio_asset_id,
+            message="口播音频不存在或无权使用",
+        )
 
     existing = conn.execute(
         "SELECT id, status, estimated_cost_fen FROM oral_tasks WHERE idempotency_key = %s",
@@ -278,19 +311,28 @@ def create_oral_task(
             replayed=True,
         )
 
+    project = conn.execute(
+        "SELECT id FROM projects WHERE owner_user_id = %s AND status = 'ACTIVE' "
+        "ORDER BY updated_at DESC, id LIMIT 1",
+        (actor.id,),
+    ).fetchone()
+    if project is None:
+        raise OralDomainError("请先创建可用项目")
+
     price = oral_unit_price_fen(conn)
     task_id = str(uuid4())
     conn.execute(
         """
         INSERT INTO oral_tasks (
-            id, owner_user_id, identity_id, avatar_id, voice_id, mode, title,
+            id, owner_user_id, project_id, identity_id, avatar_id, voice_id, mode, title,
             script_text, audio_asset_id, subtitle_json, status,
             estimated_cost_fen, idempotency_key
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'QUEUED', %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'QUEUED', %s, %s)
         """,
         (
             task_id,
             actor.id,
+            str(project["id"]),
             identity_id,
             avatar_id,
             effective_voice,
@@ -303,8 +345,8 @@ def create_oral_task(
             idempotency_key,
         ),
     )
-
-    _submit_oral_task(conn, task_id=task_id, vendor=vendor)
+    _reserve_oral_billing(conn, user_id=actor.id, task_id=task_id)
+    _ensure_oral_queue_cursor(conn, user_id=actor.id)
     row = _oral_task_row(conn, task_id)
     return OralTaskCreated(
         task_id=task_id,
@@ -347,20 +389,44 @@ def _submit_oral_task(
                 file_id=audio_target.file_id if audio_target else None,
                 aigc_flag=True,
             )
-    except (HiflyError, OralDomainError) as exc:
+    except OralDomainError as exc:
         conn.execute(
             """
             UPDATE oral_tasks
-            SET status = 'FAILED', error_message = %s, updated_at = CURRENT_TIMESTAMP
+            SET status = 'FAILED', error_message = %s, completed_at = CURRENT_TIMESTAMP,
+                locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """,
             (str(exc)[:500], task_id),
         )
+        _finalize_oral_billing(conn, task_id=task_id, outcome="release")
+        _release_oral_queue_slot(conn, task_id=task_id)
+        return
+    except HiflyError as exc:
+        # A transport timeout may happen after the provider accepted the task.
+        # Keep the reservation and require reconciliation instead of retrying
+        # blindly and charging twice.
+        status = "FAILED" if exc.vendor_code is not None else "SUBMISSION_UNCERTAIN"
+        conn.execute(
+            """
+            UPDATE oral_tasks
+            SET status = %s, error_message = %s,
+                completed_at = CASE WHEN %s = 'FAILED' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (status, str(exc)[:500], status, task_id),
+        )
+        if status == "FAILED":
+            _finalize_oral_billing(conn, task_id=task_id, outcome="release")
+        _release_oral_queue_slot(conn, task_id=task_id)
         return
     conn.execute(
         """
         UPDATE oral_tasks
-        SET status = 'RUNNING', vendor_task_id = %s, updated_at = CURRENT_TIMESTAMP
+        SET status = 'RUNNING', vendor_task_id = %s,
+            next_poll_at = now() + interval '15 seconds',
+            locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
         """,
         (vendor_task_id, task_id),
@@ -390,6 +456,233 @@ def _oral_task_row(conn: BusinessConnection, task_id: str) -> dict[str, Any]:
     if row is None:
         raise OralDomainError("口播任务不存在")
     return dict(row)
+
+
+def _ensure_oral_queue_cursor(conn: BusinessConnection, *, user_id: str) -> None:
+    if not conn.is_postgres:
+        return
+    conn.execute(
+        "INSERT INTO user_queue_cursors (user_id, last_dispatched_at, running_tasks_count) "
+        "VALUES (%s, now(), 0) ON CONFLICT (user_id) DO NOTHING",
+        (user_id,),
+    )
+
+
+def _release_oral_queue_slot(conn: BusinessConnection, *, task_id: str) -> None:
+    if not conn.is_postgres:
+        return
+    conn.execute(
+        """
+        UPDATE user_queue_cursors SET
+            running_tasks_count = GREATEST(running_tasks_count - 1, 0),
+            last_dispatched_at = now()
+        WHERE user_id = (SELECT owner_user_id FROM oral_tasks WHERE id = %s)
+        """,
+        (task_id,),
+    )
+
+
+def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, Any] | None:
+    now = datetime.now(UTC)
+    locked_until = (now + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
+    if conn.is_postgres:
+        expired = conn.execute(
+            """
+            UPDATE oral_tasks SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL,
+                locked_until = NULL, error_message = '提交结果未知，等待人工对账',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'SUBMITTING' AND locked_until::timestamptz <= now()
+            RETURNING id
+            """
+        ).fetchall()
+        for row in expired:
+            _release_oral_queue_slot(conn, task_id=str(row["id"]))
+        continuation = conn.execute(
+            """
+            UPDATE oral_tasks SET locked_by = %s, locked_until = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = (
+                SELECT id FROM oral_tasks
+                WHERE status = 'RUNNING'
+                  AND (locked_until IS NULL OR locked_until::timestamptz <= now())
+                  AND (next_poll_at IS NULL OR next_poll_at::timestamptz <= now())
+                ORDER BY next_poll_at, created_at, id
+                LIMIT 1 FOR UPDATE SKIP LOCKED
+            ) RETURNING *
+            """,
+            (worker_id, locked_until),
+        ).fetchone()
+        if continuation is not None:
+            return dict(continuation)
+        cursor = conn.execute(
+            """
+            SELECT user_id FROM user_queue_cursors
+            WHERE running_tasks_count = 0
+              AND EXISTS (
+                  SELECT 1 FROM oral_tasks
+                  WHERE owner_user_id = user_queue_cursors.user_id AND status = 'QUEUED'
+              )
+            ORDER BY last_dispatched_at, user_id
+            LIMIT 1 FOR UPDATE SKIP LOCKED
+            """
+        ).fetchone()
+        if cursor is None:
+            return None
+        user_id = str(cursor["user_id"])
+        row = conn.execute(
+            """
+            UPDATE oral_tasks SET status = 'SUBMITTING', attempt = attempt + 1,
+                submitted_at = COALESCE(submitted_at::timestamptz, CURRENT_TIMESTAMP),
+                locked_by = %s, locked_until = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = (
+                SELECT id FROM oral_tasks WHERE owner_user_id = %s AND status = 'QUEUED'
+                ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
+            ) RETURNING *
+            """,
+            (worker_id, locked_until, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE user_queue_cursors SET running_tasks_count = running_tasks_count + 1, "
+            "last_dispatched_at = now() WHERE user_id = %s",
+            (user_id,),
+        )
+        return dict(row)
+    row = conn.execute(
+        """
+        UPDATE oral_tasks SET
+            status = CASE WHEN status = 'QUEUED' THEN 'SUBMITTING' ELSE status END,
+            attempt = attempt + CASE WHEN status = 'QUEUED' THEN 1 ELSE 0 END,
+            locked_by = %s, locked_until = %s, updated_at = CURRENT_TIMESTAMP
+        WHERE id = (
+            SELECT id FROM oral_tasks
+            WHERE status = 'QUEUED'
+               OR (
+                   status = 'RUNNING'
+                   AND (next_poll_at IS NULL OR next_poll_at <= CURRENT_TIMESTAMP)
+               )
+            ORDER BY created_at, id LIMIT 1
+        ) RETURNING *
+        """,
+        (worker_id, locked_until),
+    ).fetchone()
+    conn.commit()
+    return dict(row) if row is not None else None
+
+
+def run_next_oral_task(
+    conn: BusinessConnection,
+    *,
+    worker_id: str,
+    vendor: HiflyClient | None = None,
+) -> str | None:
+    lease = acquire_oral_task(conn, worker_id=worker_id)
+    if lease is None:
+        return None
+    task_id = str(lease["id"])
+    try:
+        active_vendor = vendor or hifly_client_from_settings(conn)
+    except HiflySettingsUnavailable as exc:
+        conn.execute(
+            "UPDATE oral_tasks SET status = 'FAILED', error_message = %s, "
+            "completed_at = CURRENT_TIMESTAMP, locked_by = NULL, locked_until = NULL, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (str(exc)[:500], task_id),
+        )
+        _finalize_oral_billing(conn, task_id=task_id, outcome="release")
+        _release_oral_queue_slot(conn, task_id=task_id)
+        conn.commit()
+        return task_id
+    actor = CurrentUser(
+        id=str(lease["owner_user_id"]),
+        username=str(lease["owner_user_id"]),
+        display_name=str(lease["owner_user_id"]),
+        role="customer",
+    )
+    if str(lease["status"]) == "SUBMITTING":
+        _submit_oral_task(conn, task_id=task_id, vendor=active_vendor)
+    else:
+        refresh_oral_task(conn, task_id=task_id, actor=actor, vendor=active_vendor)
+    conn.commit()
+    return task_id
+
+
+def _reserve_oral_billing(conn: BusinessConnection, *, user_id: str, task_id: str) -> None:
+    existing = conn.execute(
+        "SELECT user_id FROM wallet_transactions "
+        "WHERE oral_task_id = %s AND billing_round = 1 AND type = 'RESERVE'",
+        (task_id,),
+    ).fetchone()
+    if existing is not None:
+        if str(existing["user_id"]) != user_id:
+            raise OralDomainError("口播任务账本归属异常")
+        return
+    updated = conn.execute(
+        """
+        UPDATE wallets SET available_credits = available_credits - 1,
+            reserved_credits = reserved_credits + 1, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = %s AND available_credits >= 1
+        """,
+        (user_id,),
+    )
+    if updated.rowcount != 1:
+        raise OralDomainError("可用次数不足，请先充值")
+    conn.execute(
+        """
+        INSERT INTO wallet_transactions (
+            id, user_id, type, available_delta, reserved_delta, oral_task_id,
+            billing_round, idempotency_key
+        ) VALUES (%s, %s, 'RESERVE', -1, 1, %s, 1, %s)
+        """,
+        (str(uuid4()), user_id, task_id, f"oral:reserve:{task_id}:1"),
+    )
+
+
+def _finalize_oral_billing(conn: BusinessConnection, *, task_id: str, outcome: str) -> None:
+    reservation = conn.execute(
+        "SELECT user_id FROM wallet_transactions "
+        "WHERE oral_task_id = %s AND billing_round = 1 AND type = 'RESERVE'",
+        (task_id,),
+    ).fetchone()
+    if reservation is None:
+        raise OralDomainError("口播任务缺少预扣记录")
+    existing = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s "
+        "AND billing_round = 1 AND type IN ('SETTLE', 'RELEASE')",
+        (task_id,),
+    ).fetchone()
+    if existing is not None:
+        return
+    transaction_type = "SETTLE" if outcome == "settle" else "RELEASE"
+    available_delta = 0 if transaction_type == "SETTLE" else 1
+    user_id = str(reservation["user_id"])
+    updated = conn.execute(
+        """
+        UPDATE wallets SET available_credits = available_credits + %s,
+            reserved_credits = reserved_credits - 1, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = %s AND reserved_credits >= 1
+        """,
+        (available_delta, user_id),
+    )
+    if updated.rowcount != 1:
+        raise OralDomainError("口播任务预扣余额异常")
+    conn.execute(
+        """
+        INSERT INTO wallet_transactions (
+            id, user_id, type, available_delta, reserved_delta, oral_task_id,
+            billing_round, idempotency_key
+        ) VALUES (%s, %s, %s, %s, -1, %s, 1, %s)
+        """,
+        (
+            str(uuid4()),
+            user_id,
+            transaction_type,
+            available_delta,
+            task_id,
+            f"oral:{transaction_type.lower()}:{task_id}:1",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -425,10 +718,20 @@ def refresh_oral_task(
             conn.execute(
                 """
             UPDATE oral_tasks
-            SET status = 'FAILED', error_message = %s, updated_at = CURRENT_TIMESTAMP
+            SET status = 'FAILED', error_message = %s, completed_at = CURRENT_TIMESTAMP,
+                locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """,
                 ("数字人服务生成失败，请调整内容后重试", task_id),
+            )
+            _finalize_oral_billing(conn, task_id=task_id, outcome="release")
+            _release_oral_queue_slot(conn, task_id=task_id)
+        else:
+            conn.execute(
+                "UPDATE oral_tasks SET next_poll_at = now() + interval '15 seconds', "
+                "locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = %s",
+                (task_id,),
             )
     return _oral_task_row(conn, task_id)
 
@@ -445,11 +748,14 @@ def _archive_oral_result(
         conn.execute(
             """
             UPDATE oral_tasks
-            SET status = 'FAILED', error_message = %s, updated_at = CURRENT_TIMESTAMP
+            SET status = 'FAILED', error_message = %s, completed_at = CURRENT_TIMESTAMP,
+                locked_by = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """,
             ("数字人服务未返回成片地址", str(row["id"])),
         )
+        _finalize_oral_billing(conn, task_id=str(row["id"]), outcome="release")
+        _release_oral_queue_slot(conn, task_id=str(row["id"]))
         return
     try:
         content = vendor.download(video_url)
@@ -465,9 +771,16 @@ def _archive_oral_result(
         INSERT INTO assets (
             id, project_id, kind, storage_uri, sha256, size_bytes,
             content_type, created_by_user_id
-        ) VALUES (%s, NULL, 'oral_video', %s, %s, %s, 'video/mp4', %s)
+        ) VALUES (%s, %s, 'oral_video', %s, %s, %s, 'video/mp4', %s)
         """,
-        (str(uuid4()), stored.uri, stored.sha256, stored.size, row["owner_user_id"]),
+        (
+            str(uuid4()),
+            row["project_id"],
+            stored.uri,
+            stored.sha256,
+            stored.size,
+            row["owner_user_id"],
+        ),
     )
     asset_id = conn.execute(
         "SELECT id FROM assets WHERE storage_uri = %s ORDER BY created_at DESC LIMIT 1",
@@ -477,11 +790,14 @@ def _archive_oral_result(
         """
         UPDATE oral_tasks
         SET status = 'SUCCEEDED', result_asset_id = %s, duration_sec = %s,
+            completed_at = CURRENT_TIMESTAMP, locked_by = NULL, locked_until = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
         """,
         (str(asset_id["id"]) if asset_id else None, duration_sec, str(row["id"])),
     )
+    _finalize_oral_billing(conn, task_id=str(row["id"]), outcome="settle")
+    _release_oral_queue_slot(conn, task_id=str(row["id"]))
 
 
 # ---------------------------------------------------------------------------

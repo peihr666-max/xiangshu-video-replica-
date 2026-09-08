@@ -71,7 +71,7 @@ def studio_task_stats(
     row = conn.execute(
         f"""
         SELECT
-            COALESCE(SUM(CASE WHEN task.status = 'SUCCEEDED' AND task.updated_at >= %s
+            COALESCE(SUM(CASE WHEN task.status = 'SUCCEEDED' AND task.completed_at >= %s
                 THEN 1 ELSE 0 END), 0) AS today_completed,
             COALESCE(SUM(CASE WHEN task.status = 'RUNNING'
                 THEN 1 ELSE 0 END), 0) AS running,

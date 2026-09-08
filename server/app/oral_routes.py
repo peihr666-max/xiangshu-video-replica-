@@ -28,6 +28,7 @@ from app.oral import (
     start_avatar_clone,
     start_voice_clone,
 )
+from app.permissions import require_not_auditor
 
 router = APIRouter(prefix="/api/oral")
 
@@ -63,7 +64,10 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/price")
 def read_oral_price(conn: Database) -> dict[str, int]:
-    return oral_price_quote(conn)
+    try:
+        return oral_price_quote(conn)
+    except OralDomainError as exc:
+        raise OralError("ORAL_BILLING_UNAVAILABLE", str(exc), status_code=503) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +100,13 @@ def create_avatar_clone(
     vendor: OralVendor,
 ) -> dict[str, Any]:
     with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.avatar.create",
+            entity_type="person_identity",
+            entity_id=request.identity_id,
+        )
         try:
             result = start_avatar_clone(
                 conn,
@@ -110,20 +121,29 @@ def create_avatar_clone(
             raise _domain_guard(exc) from exc
         except HiflyError as exc:
             raise _vendor_guard(exc) from exc
+        conn.commit()
     return {"id": result.task_id, "status": result.status}
 
 
 @router.post("/avatars/{avatar_id}/refresh")
 def refresh_avatar(
     avatar_id: str,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
     vendor: OralVendor,
 ) -> dict[str, Any]:
-    try:
-        row = refresh_avatar_clone(conn, avatar_id=avatar_id, actor=actor, vendor=vendor)
-    except OralDomainError as exc:
-        raise _domain_guard(exc) from exc
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.avatar.refresh",
+            entity_type="oral_avatar",
+            entity_id=avatar_id,
+        )
+        try:
+            row = refresh_avatar_clone(conn, avatar_id=avatar_id, actor=actor, vendor=vendor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+        conn.commit()
     return _serialize(row)
 
 
@@ -156,6 +176,13 @@ def create_voice_clone(
     vendor: OralVendor,
 ) -> dict[str, Any]:
     with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.voice.create",
+            entity_type="person_identity",
+            entity_id=request.identity_id,
+        )
         try:
             result = start_voice_clone(
                 conn,
@@ -169,20 +196,29 @@ def create_voice_clone(
             raise _domain_guard(exc) from exc
         except HiflyError as exc:
             raise _vendor_guard(exc) from exc
+        conn.commit()
     return {"id": result.task_id, "status": result.status}
 
 
 @router.post("/voices/{voice_id}/refresh")
 def refresh_voice(
     voice_id: str,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
     vendor: OralVendor,
 ) -> dict[str, Any]:
-    try:
-        row = refresh_voice_clone(conn, voice_id=voice_id, actor=actor, vendor=vendor)
-    except OralDomainError as exc:
-        raise _domain_guard(exc) from exc
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.voice.refresh",
+            entity_type="oral_voice",
+            entity_id=voice_id,
+        )
+        try:
+            row = refresh_voice_clone(conn, voice_id=voice_id, actor=actor, vendor=vendor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+        conn.commit()
     return _serialize(row)
 
 
@@ -209,9 +245,15 @@ class OralTaskRequest(BaseModel):
 def create_oral_generation_task(
     request: OralTaskRequest,
     db: BusinessDbDep,
-    vendor: OralVendor,
 ) -> dict[str, Any]:
     with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.task.create",
+            entity_type="person_identity",
+            entity_id=request.identity_id,
+        )
         try:
             result = create_oral_task(
                 conn,
@@ -225,12 +267,12 @@ def create_oral_generation_task(
                 audio_asset_id=request.audio_asset_id,
                 subtitle=request.subtitle,
                 idempotency_key=request.idempotency_key,
-                vendor=vendor,
             )
         except OralDomainError as exc:
             raise _domain_guard(exc) from exc
         except HiflyError as exc:
             raise _vendor_guard(exc) from exc
+        conn.commit()
     return {
         "id": result.task_id,
         "status": result.status,
@@ -251,12 +293,20 @@ def list_oral_generation_tasks(
 @router.get("/tasks/{task_id}")
 def read_oral_generation_task(
     task_id: str,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
     vendor: OralVendor,
 ) -> dict[str, Any]:
-    try:
-        row = refresh_oral_task(conn, task_id=task_id, actor=actor, vendor=vendor)
-    except OralDomainError as exc:
-        raise _domain_guard(exc) from exc
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.task.refresh",
+            entity_type="oral_task",
+            entity_id=task_id,
+        )
+        try:
+            row = refresh_oral_task(conn, task_id=task_id, actor=actor, vendor=vendor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+        conn.commit()
     return _serialize(row)

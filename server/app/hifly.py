@@ -19,9 +19,9 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 from app.db_portable import BusinessConnection
+from app.remote_binary import RemoteBinaryError, request_public_binary
 from app.settings import SettingsRepository, SettingsUnavailableError
 
 HIFLY_BASE_URL = "https://hfw-api.hifly.cc"
@@ -46,6 +46,8 @@ VendorTaskStatus = Literal["WAITING", "PROCESSING", "DONE", "FAILED"]
 
 _MAX_TITLE_CHARS = 20
 _MAX_TTS_TEXT_CHARS = 10_000
+_MAX_VENDOR_RESPONSE_BYTES = 2 * 1024 * 1024
+_MAX_ORAL_BINARY_BYTES = 512 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -116,9 +118,15 @@ class UrllibHiflyHttpTransport(HiflyHttpTransport):
         body: bytes | None = None,
     ) -> bytes:
         try:
-            request = Request(url, data=body, headers=dict(headers), method=method)
-            with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
-                return cast(bytes, response.read())
+            is_binary = method == "PUT" or not url.startswith(HIFLY_BASE_URL)
+            return request_public_binary(
+                method,
+                url,
+                headers=headers,
+                body=body,
+                timeout_seconds=self.timeout_seconds,
+                max_bytes=_MAX_ORAL_BINARY_BYTES if is_binary else _MAX_VENDOR_RESPONSE_BYTES,
+            )
         except HTTPError as exc:
             detail = ""
             try:
@@ -127,7 +135,7 @@ class UrllibHiflyHttpTransport(HiflyHttpTransport):
                 pass
             logger.warning("ORAL vendor request failed with HTTP status %s: %s", exc.code, detail)
             raise HiflyError(f"数字人服务返回 HTTP {exc.code}") from exc
-        except (TimeoutError, URLError, OSError) as exc:
+        except (TimeoutError, URLError, OSError, RemoteBinaryError) as exc:
             logger.warning("ORAL vendor request failed: %s", type(exc).__name__)
             raise HiflyError("数字人服务网络异常，请稍后重试") from exc
 

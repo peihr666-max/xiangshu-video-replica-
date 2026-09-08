@@ -110,6 +110,14 @@ def client(tmp_path: Path) -> Iterator[tuple[TestClient, StubViralClient]]:
             VALUES ('employee_1', 'employee_1', 'Employee One', 'employee')
             """
         )
+        conn.execute(
+            "INSERT INTO users (id, username, display_name, role) "
+            "VALUES ('auditor_1', 'auditor_1', 'Auditor One', 'auditor')"
+        )
+        conn.execute(
+            "INSERT INTO users (id, username, display_name, role) "
+            "VALUES ('employee_2', 'employee_2', 'Employee Two', 'employee')"
+        )
 
     def database_override() -> Iterator[BusinessConnection]:
         conn = BusinessConnection.sqlite(connect_database(database_path))
@@ -281,6 +289,7 @@ class _StubLocalStorage:
             uri=f"local://local-private/{key}",
             size=len(content),
             content_type=content_type,
+            sha256="sha-" + str(len(content)),
         )
 
     def get_object(self, key):
@@ -366,6 +375,7 @@ class _CoverStorage(_StubLocalStorage):
             uri=f"local://local-private/{key}",
             size=len(content),
             content_type=content_type,
+            sha256="sha-" + str(len(content)),
         )
 
 
@@ -577,7 +587,7 @@ def test_refresh_failure_returns_database_without_advancing_timestamp(client, mo
     assert result.json()["stale"] is True
 
 
-def test_cover_route_recovers_missing_copy_from_persisted_source(client, monkeypatch):
+def test_public_cover_route_does_not_fetch_or_write_missing_copy(client, monkeypatch):
     from app.viral_routes import _open_worker_connection
     from app.viral_store import upsert_viral_videos
 
@@ -592,8 +602,147 @@ def test_cover_route_recovers_missing_copy_from_persisted_source(client, monkeyp
     finally:
         close()
     result = client[0].get("/api/viral/covers/douyin/recover")
-    assert result.status_code == 200
-    assert result.content == b"fake-cover-bytes"
+    assert result.status_code == 404
+    assert storage.put_calls == []
+
+
+def test_auditor_list_reads_cache_without_triggering_paid_refresh(client):
+    http, stub = client
+    seeded = http.get("/api/viral/videos?platform=douyin", headers=_AUTH_HEADERS)
+    assert seeded.status_code == 200
+    calls = len(stub.douyin_calls)
+
+    response = http.get(
+        "/api/viral/videos?platform=douyin",
+        headers={"X-Dev-User-Id": "auditor_1"},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == len(seeded.json()["items"])
+    assert len(stub.douyin_calls) == calls
+
+
+def test_auditor_cannot_trigger_statistics_or_media_writes(client):
+    http, _ = client
+    headers = {"X-Dev-User-Id": "auditor_1"}
+    statistics = http.post(
+        "/api/viral/videos/statistics",
+        json={"videoIds": ["video-1"]},
+        headers=headers,
+    )
+    media = http.post(
+        "/api/viral/videos/media",
+        json={"platform": "douyin", "videoId": "video-1"},
+        headers=headers,
+    )
+
+    assert statistics.status_code == 403
+    assert media.status_code == 403
+
+
+def test_import_viral_media_creates_owner_project_and_is_idempotent(client, monkeypatch):
+    http, _ = client
+    assert http.get("/api/viral/videos?platform=douyin", headers=_AUTH_HEADERS).status_code == 200
+    video_id = "dy-自建房预算-0"
+    key = f"viral/douyin/{video_id}.mp3"
+    storage = _CoverStorage()
+    storage.put_object(key, b"ID3-audio", content_type="audio/mpeg")
+
+    class StubPipeline:
+        calls = 0
+
+        def __init__(self, *, client, storage) -> None:
+            pass
+
+        def fetch(self, video, *, prefer=None):
+            from app.viral_media import ViralMediaResult
+
+            type(self).calls += 1
+            return ViralMediaResult(
+                kind="audio",
+                storage_uri=f"local://local-private/{key}",
+                url="https://storage.test/audio",
+                size=9,
+                content_type="audio/mpeg",
+                cache_hit=True,
+            )
+
+    monkeypatch.setattr("app.viral_routes.get_media_storage", lambda conn: storage)
+    monkeypatch.setattr("app.viral_routes.ViralMediaPipeline", StubPipeline)
+    url = f"/api/viral/videos/douyin/{video_id}/import"
+    first = http.post(url, json={"kind": "audio"}, headers=_AUTH_HEADERS)
+    second = http.post(url, json={"kind": "audio"}, headers=_AUTH_HEADERS)
+
+    assert first.status_code == 200, first.text
+    assert second.json() == first.json()
+    assert StubPipeline.calls == 1
+    conn, close = __import__(
+        "app.viral_routes", fromlist=["_open_worker_connection"]
+    )._open_worker_connection()
+    try:
+        row = conn.execute(
+            "SELECT project_id, created_by_user_id FROM assets WHERE id = %s",
+            (first.json()["asset_id"],),
+        ).fetchone()
+        assert tuple(row) == (first.json()["project_id"], "employee_1")
+        project = conn.execute(
+            "SELECT owner_user_id, status FROM projects WHERE id = %s",
+            (first.json()["project_id"],),
+        ).fetchone()
+        assert tuple(project) == ("employee_1", "ACTIVE")
+    finally:
+        close()
+
+
+def test_import_viral_media_is_isolated_between_users(client, monkeypatch):
+    http, _ = client
+    assert http.get("/api/viral/videos?platform=douyin", headers=_AUTH_HEADERS).status_code == 200
+    video_id = "dy-自建房预算-0"
+    key = f"viral/douyin/{video_id}.mp3"
+    storage = _CoverStorage()
+    storage.put_object(key, b"ID3-audio", content_type="audio/mpeg")
+
+    class StubPipeline:
+        def __init__(self, *, client, storage) -> None:
+            pass
+
+        def fetch(self, video, *, prefer=None):
+            from app.viral_media import ViralMediaResult
+
+            return ViralMediaResult(
+                kind="audio",
+                storage_uri=f"local://local-private/{key}",
+                url="https://storage.test/audio",
+                size=9,
+                content_type="audio/mpeg",
+                cache_hit=True,
+            )
+
+    monkeypatch.setattr("app.viral_routes.get_media_storage", lambda conn: storage)
+    monkeypatch.setattr("app.viral_routes.ViralMediaPipeline", StubPipeline)
+    url = f"/api/viral/videos/douyin/{video_id}/import"
+    first = http.post(url, json={"kind": "audio"}, headers=_AUTH_HEADERS)
+    second = http.post(
+        url,
+        json={"kind": "audio"},
+        headers={"X-Dev-User-Id": "employee_2"},
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["project_id"] != first.json()["project_id"]
+    assert second.json()["asset_id"] != first.json()["asset_id"]
+    conn, close = __import__(
+        "app.viral_routes", fromlist=["_open_worker_connection"]
+    )._open_worker_connection()
+    try:
+        owner = conn.execute(
+            "SELECT owner_user_id FROM projects WHERE id = %s",
+            (second.json()["project_id"],),
+        ).fetchone()
+        assert owner["owner_user_id"] == "employee_2"
+    finally:
+        close()
 
 
 def test_cover_route_accepts_persisted_wechat_base64_id_with_slash(client, monkeypatch):

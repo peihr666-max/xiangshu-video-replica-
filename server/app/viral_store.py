@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -27,6 +29,26 @@ _STATISTICS_METADATA_KEYS = (STATISTICS_CHECKED_AT_KEY, STATISTICS_RETRY_AT_KEY)
 _METADATA_LOOKUP_CHUNK_SIZE = 400
 # 桌面服务是单进程；统一串行化 native_json 的读改写，避免不同请求互相覆盖。
 _NATIVE_JSON_RMW_LOCK = threading.RLock()
+
+
+def lock_viral_scope(conn: BusinessConnection, scope: str) -> None:
+    """Serialize paid refresh and native-json RMW across PostgreSQL instances."""
+    if conn.is_postgres:
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (scope,))
+
+
+@contextmanager
+def viral_session_lock(conn: BusinessConnection, scope: str) -> Iterator[None]:
+    """Hold a PostgreSQL lock across helpers that commit their own writes."""
+    if not conn.is_postgres:
+        yield
+        return
+    conn.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (scope,))
+    try:
+        yield
+    finally:
+        conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (scope,))
+
 
 _UPSERT_SQL = """
 INSERT INTO viral_videos (
@@ -180,6 +202,8 @@ def _merge_cached_statistics_metadata(
 def upsert_viral_videos(conn: BusinessConnection, videos: list[ViralVideo]) -> None:
     """按 (platform, video_id) 去重写入/刷新条目."""
     with _NATIVE_JSON_RMW_LOCK:
+        for platform in sorted({video.platform for video in videos}):
+            lock_viral_scope(conn, f"viral:upsert:{platform}")
         for video in _merge_cached_statistics_metadata(conn, videos):
             conn.execute(_UPSERT_SQL, _video_row(video))
         conn.commit()
@@ -276,8 +300,9 @@ def update_viral_statistics(
 ) -> None:
     """复用媒体详情响应，仅回填实际返回的统计；搜索缺失字段不冲掉补采结果。"""
     with _NATIVE_JSON_RMW_LOCK:
+        lock_viral_scope(conn, f"viral:upsert:{platform}")
         row = conn.execute(
-            "SELECT native_json FROM viral_videos WHERE platform = %s AND video_id = %s",
+            "SELECT native_json FROM viral_videos WHERE platform = %s AND video_id = %s FOR UPDATE",
             (platform, video_id),
         ).fetchone()
         if row is None:
@@ -314,8 +339,9 @@ def mark_viral_statistics_failure(
 ) -> None:
     """记录详情补采失败时间，供短冷却复用；不改成功时间与已有统计。"""
     with _NATIVE_JSON_RMW_LOCK:
+        lock_viral_scope(conn, f"viral:upsert:{platform}")
         row = conn.execute(
-            "SELECT native_json FROM viral_videos WHERE platform = %s AND video_id = %s",
+            "SELECT native_json FROM viral_videos WHERE platform = %s AND video_id = %s FOR UPDATE",
             (platform, video_id),
         ).fetchone()
         if row is None:

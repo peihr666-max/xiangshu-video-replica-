@@ -42,20 +42,29 @@ def seed_stats_scene(connection) -> None:
         """
         INSERT INTO generation_tasks (
             id, batch_id, provider, model, status, archive_status,
-            superseded_by_task_id, created_at, updated_at
-        ) VALUES (?, ?, 'metaso', 'MiniMax-H3', ?, ?, ?, ?, ?)
+            superseded_by_task_id, created_at, updated_at, completed_at
+        ) VALUES (?, ?, 'metaso', 'MiniMax-H3', ?, ?, ?, ?, ?, ?)
         """,
         [
-            ("t-today", "b-1", "SUCCEEDED", "NONE", None, _NOW, _NOW),
-            ("t-old", "b-2", "SUCCEEDED", "NONE", None, _DAYS_AGO, _DAYS_AGO),
-            ("t-run", "b-1", "RUNNING", "NONE", None, _NOW, _NOW),
-            ("t-queued", "b-1", "QUEUED", "NONE", None, _NOW, _NOW),
-            ("t-failed", "b-1", "FAILED", "NONE", None, _NOW, _NOW),
-            ("t-uncertain", "b-1", "SUBMISSION_UNCERTAIN", "NONE", None, _NOW, _NOW),
-            ("t-archive", "b-1", "SUCCEEDED", "ARCHIVE_FAILED", None, _NOW, _NOW),
-            ("t-superseded", "b-2", "SUCCEEDED", "NONE", "t-current", _DAYS_AGO, _DAYS_AGO),
-            ("t-current", "b-2", "SUCCEEDED", "NONE", None, _NOW, _NOW),
-            ("t-hidden", "b-hidden", "SUCCEEDED", "NONE", None, _NOW, _NOW),
+            ("t-today", "b-1", "SUCCEEDED", "NONE", None, _NOW, _NOW, _NOW),
+            ("t-old", "b-2", "SUCCEEDED", "NONE", None, _DAYS_AGO, _DAYS_AGO, _DAYS_AGO),
+            ("t-run", "b-1", "RUNNING", "NONE", None, _NOW, _NOW, None),
+            ("t-queued", "b-1", "QUEUED", "NONE", None, _NOW, _NOW, None),
+            ("t-failed", "b-1", "FAILED", "NONE", None, _NOW, _NOW, _NOW),
+            ("t-uncertain", "b-1", "SUBMISSION_UNCERTAIN", "NONE", None, _NOW, _NOW, None),
+            ("t-archive", "b-1", "SUCCEEDED", "ARCHIVE_FAILED", None, _NOW, _NOW, _NOW),
+            (
+                "t-superseded",
+                "b-2",
+                "SUCCEEDED",
+                "NONE",
+                "t-current",
+                _DAYS_AGO,
+                _DAYS_AGO,
+                _DAYS_AGO,
+            ),
+            ("t-current", "b-2", "SUCCEEDED", "NONE", None, _NOW, _NOW, _NOW),
+            ("t-hidden", "b-hidden", "SUCCEEDED", "NONE", None, _NOW, _NOW, _NOW),
         ],
     )
     connection.execute(
@@ -144,10 +153,13 @@ def test_today_boundary_follows_beijing_day(tmp_path: Path) -> None:
     connection.executemany(
         """
         INSERT INTO generation_tasks (
-            id, batch_id, provider, model, status, created_at, updated_at
-        ) VALUES (?, ?, 'metaso', 'MiniMax-H3', 'SUCCEEDED', '2026-09-05 12:00:00', ?)
+            id, batch_id, provider, model, status, created_at, updated_at, completed_at
+        ) VALUES (?, ?, 'metaso', 'MiniMax-H3', 'SUCCEEDED', '2026-09-05 12:00:00', ?, ?)
         """,
-        [("t-before", "b-1", "2026-09-05 15:59:00"), ("t-after", "b-1", "2026-09-05 16:01:00")],
+        [
+            ("t-before", "b-1", _NOW, "2026-09-05 15:59:00"),
+            ("t-after", "b-1", _NOW, "2026-09-05 16:01:00"),
+        ],
     )
     connection.commit()
     conn = BusinessConnection.sqlite(connection)

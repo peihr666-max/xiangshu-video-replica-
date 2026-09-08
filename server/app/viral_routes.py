@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import threading
@@ -20,17 +21,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote, unquote, urlsplit
+from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, Field
 
-from app.auth import AuthenticatedUser, Database
+from app.auth import Database
+from app.customer_fence import BusinessDbDep
 from app.db import connect_database
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media_routes import api_base_url, get_media_storage
+from app.permissions import require_not_auditor
 from app.settings import settings_encryption_key
 from app.storage import StorageBackendUnavailable, local_download_signature
 from app.viral_keywords import viral_categories, viral_keyword
@@ -48,11 +52,13 @@ from app.viral_statistics import refresh_viral_statistics
 from app.viral_store import (
     fetch_state_is_fresh,
     get_viral_video,
+    lock_viral_scope,
     mark_fetch_state,
     update_viral_cover,
     update_viral_statistics,
     upsert_viral_videos,
     viral_fetched_at,
+    viral_session_lock,
 )
 from app.viral_store import (
     list_viral_videos as list_stored_viral_videos,
@@ -141,6 +147,16 @@ class ViralMediaResponse(BaseModel):
     video: ViralVideoItem | None = None
 
 
+class ViralImportRequest(BaseModel):
+    kind: Literal["audio", "video"]
+
+
+class ViralImportResponse(BaseModel):
+    project_id: str
+    asset_id: str
+    kind: Literal["audio", "video"]
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -227,17 +243,20 @@ def _spawn_cover_enrich(enricher: CoverEnricher, videos: list[ViralVideo]) -> No
 
 
 def _collect_videos(
-    conn: Database,
+    conn: BusinessConnection,
     client: ViralSourceClient | None,
     *,
     platform: str,
     sort: str,
     max_age: timedelta,
     enricher: CoverEnricher | None = None,
+    allow_refresh: bool = True,
 ) -> list[ViralVideo]:
     """响应始终从库读取；同平台冷请求等待首轮落库，随后复用。"""
-    with _REFRESH_LOCKS[platform]:
-        if not fetch_state_is_fresh(conn, platform=platform, sort=sort, max_age=max_age):
+    with _REFRESH_LOCKS[platform], viral_session_lock(conn, f"viral:refresh:{platform}:{sort}"):
+        if allow_refresh and not fetch_state_is_fresh(
+            conn, platform=platform, sort=sort, max_age=max_age
+        ):
             failures: list[ViralSourceError] = []
             jobs: list[tuple[str, str]] = []
             for category in viral_categories():
@@ -317,8 +336,7 @@ def _item(video: ViralVideo) -> ViralVideoItem:
 
 @router.get("/videos", response_model=ViralListResponse)
 def list_viral_videos(
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
     client: ViralSourceClientDep,
     platform: str = PLATFORM_DOUYIN,
     sort: str = SORT_HOT,
@@ -332,54 +350,79 @@ def list_viral_videos(
         raise HTTPException(
             status_code=400, detail={"code": "VIRAL_SORT_INVALID", "message": "不支持的排序方式"}
         )
-    try:
-        videos = _collect_videos(
-            conn,
-            client,
+    with db.write() as (conn, actor):
+        try:
+            videos = _collect_videos(
+                conn,
+                client,
+                platform=platform,
+                sort=sort,
+                max_age=VIRAL_LIST_CACHE_TTL,
+                enricher=_cover_enricher_or_none(conn) if actor.role != "auditor" else None,
+                allow_refresh=actor.role != "auditor",
+            )
+        except ViralSourceUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "VIRAL_SOURCE_UNAVAILABLE", "message": str(exc)},
+            ) from exc
+        except ViralSourceError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "VIRAL_SOURCE_UPSTREAM", "message": str(exc)},
+            ) from exc
+        return ViralListResponse(
             platform=platform,
             sort=sort,
-            max_age=VIRAL_LIST_CACHE_TTL,
-            enricher=_cover_enricher_or_none(conn),
+            categories=viral_categories(),
+            items=[_item(video) for video in videos],
+            fetchedAt=viral_fetched_at(conn, platform=platform, sort=sort),
+            stale=not fetch_state_is_fresh(
+                conn, platform=platform, sort=sort, max_age=VIRAL_LIST_CACHE_TTL
+            ),
         )
-    except ViralSourceUnavailable as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "VIRAL_SOURCE_UNAVAILABLE", "message": str(exc)},
-        ) from exc
-    except ViralSourceError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={"code": "VIRAL_SOURCE_UPSTREAM", "message": str(exc)},
-        ) from exc
-    return ViralListResponse(
-        platform=platform,
-        sort=sort,
-        categories=viral_categories(),
-        items=[_item(video) for video in videos],
-        fetchedAt=viral_fetched_at(conn, platform=platform, sort=sort),
-        stale=not fetch_state_is_fresh(
-            conn, platform=platform, sort=sort, max_age=VIRAL_LIST_CACHE_TTL
-        ),
-    )
 
 
 @router.post("/videos/statistics", response_model=ViralStatisticsResponse)
 def fetch_viral_video_statistics(
     payload: ViralStatisticsRequest,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
     client: ViralSourceClientDep,
 ) -> ViralStatisticsResponse:
-    videos = refresh_viral_statistics(conn, client, payload.videoIds)
-    return ViralStatisticsResponse(items=[_item(video) for video in videos])
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="viral.statistics.refresh",
+            entity_type="viral_video",
+            entity_id=payload.videoIds[0],
+        )
+        videos = refresh_viral_statistics(conn, client, payload.videoIds)
+        return ViralStatisticsResponse(items=[_item(video) for video in videos])
 
 
 @router.post("/videos/media", response_model=ViralMediaResponse)
 def fetch_viral_video_media(
     payload: ViralMediaRequest,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
     client: ViralSourceClientDep,
+) -> ViralMediaResponse:
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="viral.media.fetch",
+            entity_type="viral_video",
+            entity_id=payload.videoId,
+        )
+        return _fetch_viral_video_media(conn, actor.id, client, payload)
+
+
+def _fetch_viral_video_media(
+    conn: BusinessConnection,
+    actor_id: str,
+    client: ViralSourceClient | None,
+    payload: ViralMediaRequest,
 ) -> ViralMediaResponse:
     if payload.platform not in _VALID_PLATFORMS:
         raise HTTPException(
@@ -500,10 +543,118 @@ def fetch_viral_video_media(
     return ViralMediaResponse(
         video=_item(video),
         kind=result.kind,
-        url=_browser_playable_url(result.url, actor.id),
+        url=_browser_playable_url(result.url, actor_id),
         contentType=result.content_type,
         cacheHit=result.cache_hit,
     )
+
+
+@router.post(
+    "/videos/{platform}/{video_id:path}/import",
+    response_model=ViralImportResponse,
+)
+def import_viral_video_asset(
+    platform: str,
+    video_id: str,
+    payload: ViralImportRequest,
+    db: BusinessDbDep,
+    client: ViralSourceClientDep,
+) -> ViralImportResponse:
+    if platform not in _VALID_PLATFORMS:
+        raise HTTPException(status_code=404, detail={"code": "VIRAL_VIDEO_NOT_FOUND"})
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="viral.asset.import",
+            entity_type="viral_video",
+            entity_id=video_id,
+        )
+        lock_viral_scope(
+            conn,
+            f"viral:import:{actor.id}:{platform}:{video_id}:{payload.kind}",
+        )
+        video = get_viral_video(conn, platform=platform, video_id=video_id)
+        if video is None:
+            raise HTTPException(status_code=404, detail={"code": "VIRAL_VIDEO_NOT_FOUND"})
+        project_id = str(uuid5(NAMESPACE_URL, f"viral-project:{actor.id}:{platform}:{video_id}"))
+        project_name = f"爆款复刻 · {video.title.strip()[:48] or video.video_id}"
+        conn.execute(
+            """
+            INSERT INTO projects (id, owner_user_id, name, status)
+            VALUES (%s, %s, %s, 'ACTIVE')
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (project_id, actor.id, project_name),
+        )
+        project = conn.execute(
+            "SELECT owner_user_id, status FROM projects WHERE id = %s",
+            (project_id,),
+        ).fetchone()
+        if project is None or project["owner_user_id"] != actor.id:
+            raise HTTPException(status_code=409, detail={"code": "PROJECT_OWNERSHIP_CONFLICT"})
+        if project["status"] != "ACTIVE":
+            raise HTTPException(status_code=409, detail={"code": "PROJECT_NOT_ACTIVE"})
+        import_identity = (
+            f"viral-import:{actor.id}:{project_id}:{platform}:{video_id}:{payload.kind}"
+        )
+        asset_id = str(uuid5(NAMESPACE_URL, import_identity))
+        existing = conn.execute(
+            "SELECT kind FROM assets WHERE id = %s AND project_id = %s AND created_by_user_id = %s",
+            (asset_id, project_id, actor.id),
+        ).fetchone()
+        if existing is not None:
+            existing_kind = "audio" if existing["kind"] == "source_audio" else "video"
+            return ViralImportResponse(
+                project_id=project_id,
+                asset_id=asset_id,
+                kind=cast(Literal["audio", "video"], existing_kind),
+            )
+        storage = get_media_storage(conn)
+        try:
+            media = ViralMediaPipeline(client=client, storage=storage).fetch(
+                video, prefer=payload.kind
+            )
+        except ViralSourceError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "VIRAL_MEDIA_UPSTREAM", "message": str(exc)},
+            ) from exc
+        key = viral_media_key(platform, video_id, media.kind)
+        stored = storage.head_object(key)
+        if stored is None:
+            raise HTTPException(status_code=502, detail={"code": "VIRAL_MEDIA_ARCHIVE_MISSING"})
+        asset_kind = "source_audio" if media.kind == "audio" else "source_video"
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id, project_id, kind, storage_uri, sha256, size_bytes,
+                content_type, created_by_user_id, metadata_json
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (
+                asset_id,
+                project_id,
+                asset_kind,
+                stored.uri,
+                stored.sha256,
+                stored.size,
+                stored.content_type,
+                actor.id,
+                json.dumps(
+                    {"source": "viral", "platform": platform, "video_id": video_id},
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ),
+            ),
+        )
+        conn.commit()
+        return ViralImportResponse(
+            project_id=project_id,
+            asset_id=asset_id,
+            kind=cast(Literal["audio", "video"], media.kind),
+        )
 
 
 _VIRAL_FILE_SCHEME = "local://"
@@ -583,17 +734,7 @@ def get_viral_cover(
             status_code=503, detail={"code": "STORAGE_BACKEND_UNAVAILABLE"}
         ) from None
     if stored is None:
-        if video is not None:
-            recovered = CoverEnricher(
-                storage=storage, fetcher=UrlFetcher(timeout_seconds=15)
-            ).enrich(video)
-            if recovered.cover_key:
-                update_viral_cover(
-                    conn, platform=platform, video_id=video_id, cover_key=recovered.cover_key
-                )
-                stored = storage.head_object(key)
-        if stored is None:
-            raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
+        raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
     content = storage.get_object(key)
     # 本地盘适配器按文件名猜类型，封面 key 无扩展名 → 按魔数自行判定。
     return Response(

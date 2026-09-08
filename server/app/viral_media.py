@@ -21,10 +21,10 @@ import logging
 import threading
 from dataclasses import dataclass, replace
 from datetime import timedelta
-from typing import Protocol, cast
+from typing import Protocol
 from urllib.parse import quote, urlsplit
-from urllib.request import Request, urlopen
 
+from app.remote_binary import RemoteBinaryError, request_public_binary
 from app.storage import DownloadIntent, StoredObject
 from app.viral_decrypt import decrypt_head, is_encrypted_mp4
 from app.viral_tikhub import (
@@ -40,6 +40,8 @@ VIRAL_STORAGE_PREFIX = "viral"
 VIRAL_MEDIA_URL_TTL = timedelta(hours=6)
 _DEFAULT_FETCH_TIMEOUT_SECONDS = 60.0
 _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+MAX_VIRAL_MEDIA_BYTES = 512 * 1024 * 1024
+MAX_VIRAL_COVER_BYTES = 16 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 _MEDIA_LOCKS = tuple(threading.Lock() for _ in range(32))
@@ -101,10 +103,18 @@ class UrlFetcher:
     def __init__(self, *, timeout_seconds: float = _DEFAULT_FETCH_TIMEOUT_SECONDS) -> None:
         self.timeout_seconds = timeout_seconds
 
-    def fetch(self, url: str) -> bytes:
-        request = Request(url, headers={"User-Agent": _USER_AGENT}, method="GET")
-        with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
-            return cast(bytes, response.read())
+    def fetch(self, url: str, *, max_bytes: int = MAX_VIRAL_MEDIA_BYTES) -> bytes:
+        try:
+            return request_public_binary(
+                "GET",
+                url,
+                headers={"User-Agent": _USER_AGENT},
+                timeout_seconds=self.timeout_seconds,
+                max_bytes=max_bytes,
+                allowed_content_prefixes=("audio/", "video/", "image/", "application/octet-stream"),
+            )
+        except RemoteBinaryError as exc:
+            raise ViralMediaError("该视频素材地址不安全或文件过大") from exc
 
 
 def guess_image_content_type(content: bytes, url: str = "") -> str:
@@ -123,8 +133,14 @@ def guess_image_content_type(content: bytes, url: str = "") -> str:
     return guessed if guessed and guessed.startswith("image/") else "image/jpeg"
 
 
-def _fetch_or_raise(fetcher: UrlFetcher, url: str) -> bytes:
+def _fetch_or_raise(
+    fetcher: UrlFetcher, url: str, *, max_bytes: int = MAX_VIRAL_MEDIA_BYTES
+) -> bytes:
     try:
+        if isinstance(fetcher, UrlFetcher):
+            return fetcher.fetch(url, max_bytes=max_bytes)
+        # Test and adapter seam retained for existing one-argument fetchers;
+        # production uses UrlFetcher and always enforces the bound above.
         return fetcher.fetch(url)
     except ViralSourceError:
         raise
@@ -152,7 +168,9 @@ class CoverEnricher:
         key = viral_cover_key(video.platform, video.video_id)
         try:
             if self._storage.head_object(key) is None:
-                content = _fetch_or_raise(self._fetcher, video.cover_url)
+                content = _fetch_or_raise(
+                    self._fetcher, video.cover_url, max_bytes=MAX_VIRAL_COVER_BYTES
+                )
                 self._storage.put_object(
                     key,
                     content,

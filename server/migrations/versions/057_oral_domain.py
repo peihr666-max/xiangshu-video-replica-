@@ -105,6 +105,12 @@ def upgrade() -> None:
         sa.Column("id", sa.Text(), primary_key=True),
         sa.Column("owner_user_id", sa.Text(), nullable=False),
         sa.Column(
+            "project_id",
+            sa.Text(),
+            sa.ForeignKey("projects.id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
+        sa.Column(
             "identity_id",
             sa.Text(),
             sa.ForeignKey("person_identities.id", ondelete="CASCADE"),
@@ -133,10 +139,17 @@ def upgrade() -> None:
         sa.Column("estimated_cost_fen", sa.Integer(), nullable=False),
         sa.Column("error_message", sa.Text()),
         sa.Column("idempotency_key", sa.Text(), nullable=False),
+        sa.Column("attempt", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("locked_by", sa.Text()),
+        sa.Column("locked_until", sa.Text()),
+        sa.Column("next_poll_at", sa.Text()),
+        sa.Column("submitted_at", sa.Text()),
+        sa.Column("completed_at", sa.Text()),
         *_timestamps(),
         sa.UniqueConstraint("idempotency_key", name="uq_oral_tasks_idempotency_key"),
         sa.CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED')",
+            "status IN ('QUEUED', 'SUBMITTING', 'RUNNING', 'SUBMISSION_UNCERTAIN', "
+            "'SUCCEEDED', 'FAILED', 'CANCELLED')",
             name="ck_oral_tasks_status",
         ),
         sa.CheckConstraint("mode IN ('TTS', 'AUDIO')", name="ck_oral_tasks_mode"),
@@ -146,9 +159,68 @@ def upgrade() -> None:
         "oral_tasks",
         ["owner_user_id", "created_at"],
     )
+    with op.batch_alter_table("wallet_transactions") as batch_op:
+        batch_op.add_column(sa.Column("oral_task_id", sa.Text(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_wallet_transactions_oral_task_id",
+            "oral_tasks",
+            ["oral_task_id"],
+            ["id"],
+        )
+        batch_op.drop_constraint("ck_wallet_transactions_shape", type_="check")
+        batch_op.create_check_constraint(
+            "ck_wallet_transactions_shape",
+            "(type = 'CHARGE' AND available_delta > 0 AND reserved_delta = 0 "
+            "AND recharge_order_id IS NOT NULL AND task_id IS NULL "
+            "AND oral_task_id IS NULL AND billing_round IS NULL) OR "
+            "(type = 'RESERVE' AND available_delta = -1 AND reserved_delta = 1 "
+            "AND recharge_order_id IS NULL AND (task_id IS NULL) <> (oral_task_id IS NULL) "
+            "AND billing_round IS NOT NULL) OR "
+            "(type = 'SETTLE' AND available_delta = 0 AND reserved_delta = -1 "
+            "AND recharge_order_id IS NULL AND (task_id IS NULL) <> (oral_task_id IS NULL) "
+            "AND billing_round IS NOT NULL) OR "
+            "(type = 'RELEASE' AND available_delta = 1 AND reserved_delta = -1 "
+            "AND recharge_order_id IS NULL AND (task_id IS NULL) <> (oral_task_id IS NULL) "
+            "AND billing_round IS NOT NULL)",
+        )
+    op.create_index(
+        "uq_wallet_transactions_oral_reserve_round",
+        "wallet_transactions",
+        ["oral_task_id", "billing_round"],
+        unique=True,
+        sqlite_where=sa.text("type = 'RESERVE'"),
+        postgresql_where=sa.text("type = 'RESERVE'"),
+    )
+    op.create_index(
+        "uq_wallet_transactions_oral_terminal_round",
+        "wallet_transactions",
+        ["oral_task_id", "billing_round"],
+        unique=True,
+        sqlite_where=sa.text("type IN ('SETTLE', 'RELEASE')"),
+        postgresql_where=sa.text("type IN ('SETTLE', 'RELEASE')"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_wallet_transactions_oral_terminal_round", table_name="wallet_transactions")
+    op.drop_index("uq_wallet_transactions_oral_reserve_round", table_name="wallet_transactions")
+    with op.batch_alter_table("wallet_transactions") as batch_op:
+        batch_op.drop_constraint("ck_wallet_transactions_shape", type_="check")
+        batch_op.drop_constraint("fk_wallet_transactions_oral_task_id", type_="foreignkey")
+        batch_op.drop_column("oral_task_id")
+        batch_op.create_check_constraint(
+            "ck_wallet_transactions_shape",
+            "(type = 'CHARGE' AND available_delta > 0 AND reserved_delta = 0 "
+            "AND recharge_order_id IS NOT NULL AND task_id IS NULL AND billing_round IS NULL) OR "
+            "(type = 'RESERVE' AND available_delta = -1 AND reserved_delta = 1 "
+            "AND recharge_order_id IS NULL AND task_id IS NOT NULL "
+            "AND billing_round IS NOT NULL) OR "
+            "(type = 'SETTLE' AND available_delta = 0 AND reserved_delta = -1 "
+            "AND recharge_order_id IS NULL AND task_id IS NOT NULL "
+            "AND billing_round IS NOT NULL) OR "
+            "(type = 'RELEASE' AND available_delta = 1 AND reserved_delta = -1 "
+            "AND recharge_order_id IS NULL AND task_id IS NOT NULL AND billing_round IS NOT NULL)",
+        )
     op.drop_table("oral_tasks")
     op.drop_table("oral_voices")
     op.drop_table("oral_avatars")

@@ -119,6 +119,168 @@ def test_customer_batch_visibility_migration_preserves_generation_and_billing(
         _drop_database(db_name)
 
 
+def test_hifly_provider_migrations_preserve_existing_zpay_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alembic import command
+
+    monkeypatch.delenv("VIDEO_REPLICA_DATABASE_URL", raising=False)
+    db_name = "hifly_provider_migration_test"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+    config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+    try:
+        command.upgrade(config, "055_customer_batch_visibility")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO provider_settings (provider, encrypted_config) "
+                "VALUES ('zpay', 'encrypted-zpay')"
+            )
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            assert (
+                conn.execute(
+                    "SELECT encrypted_config FROM provider_settings WHERE provider = 'zpay'"
+                ).fetchone()[0]
+                == "encrypted-zpay"
+            )
+            conn.execute(
+                "INSERT INTO provider_settings (provider, encrypted_config) "
+                "VALUES ('tikhub', 'encrypted-source')"
+            )
+        command.downgrade(config, "060_script_from_audio_tasks")
+        with psycopg.connect(dsn) as conn:
+            assert (
+                conn.execute(
+                    "SELECT encrypted_config FROM provider_settings WHERE provider = 'zpay'"
+                ).fetchone()[0]
+                == "encrypted-zpay"
+            )
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM provider_settings WHERE provider = 'tikhub'"
+                ).fetchone()[0]
+                == 0
+            )
+    finally:
+        _drop_database(db_name)
+
+
+def test_oral_fair_queue_claim_is_single_winner_across_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alembic import command
+
+    from app.db_portable import BusinessConnection
+    from app.oral import acquire_oral_task
+
+    monkeypatch.delenv("VIDEO_REPLICA_DATABASE_URL", raising=False)
+    db_name = "oral_fair_queue_claim_test"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+    config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+    try:
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name) VALUES ('u1', 'u1', 'User One')"
+            )
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) "
+                "VALUES ('project-1', 'u1', 'Project')"
+            )
+            conn.execute(
+                "INSERT INTO person_identities (id, owner_user_id, display_name) "
+                "VALUES ('identity-1', 'u1', 'Identity')"
+            )
+            conn.execute(
+                "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, "
+                "status, source_kind, source_asset_id) VALUES "
+                "('avatar-1', 'identity-1', 'u1', 'Avatar', 'READY', 'VIDEO', 'asset')"
+            )
+            conn.execute(
+                "INSERT INTO oral_tasks (id, owner_user_id, project_id, identity_id, "
+                "avatar_id, mode, "
+                "title, status, estimated_cost_fen, idempotency_key) VALUES "
+                "('oral-1', 'u1', 'project-1', 'identity-1', 'avatar-1', 'AUDIO', 'One', "
+                "'QUEUED', 1000, 'oral-key-1'), "
+                "('oral-2', 'u1', 'project-1', 'identity-1', 'avatar-1', 'AUDIO', 'Two', "
+                "'QUEUED', 1000, 'oral-key-2')"
+            )
+            conn.execute(
+                "INSERT INTO user_queue_cursors "
+                "(user_id, last_dispatched_at, running_tasks_count) VALUES ("
+                "'u1', CURRENT_TIMESTAMP, 0)"
+            )
+
+        first = psycopg.connect(dsn)
+        second = psycopg.connect(dsn)
+        try:
+            first_lease = acquire_oral_task(
+                BusinessConnection.postgres(first), worker_id="worker-1"
+            )
+            second_lease = acquire_oral_task(
+                BusinessConnection.postgres(second), worker_id="worker-2"
+            )
+            assert first_lease is not None
+            assert second_lease is None
+            first.commit()
+            second.rollback()
+        finally:
+            first.close()
+            second.close()
+        with psycopg.connect(dsn) as conn:
+            assert (
+                conn.execute(
+                    "SELECT running_tasks_count FROM user_queue_cursors WHERE user_id = 'u1'"
+                ).fetchone()[0]
+                == 1
+            )
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM oral_tasks WHERE status = 'SUBMITTING'"
+                ).fetchone()[0]
+                == 1
+            )
+            assert (
+                conn.execute("SELECT count(*) FROM oral_tasks WHERE status = 'QUEUED'").fetchone()[
+                    0
+                ]
+                == 1
+            )
+    finally:
+        _drop_database(db_name)
+
+
+def test_viral_refresh_uses_database_lock_across_connections() -> None:
+    from app.db_portable import BusinessConnection
+    from app.viral_store import viral_session_lock
+
+    first = psycopg.connect(_pg_dsn())
+    second = psycopg.connect(_pg_dsn())
+    try:
+        with viral_session_lock(BusinessConnection.postgres(first), "viral:refresh:douyin:hot"):
+            first.commit()
+            second.execute("SET LOCAL lock_timeout = '100ms'")
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                with viral_session_lock(
+                    BusinessConnection.postgres(second), "viral:refresh:douyin:hot"
+                ):
+                    pass
+            second.rollback()
+        with viral_session_lock(BusinessConnection.postgres(second), "viral:refresh:douyin:hot"):
+            pass
+    finally:
+        first.rollback()
+        second.rollback()
+        first.close()
+        second.close()
+
+
 def _pg_dsn() -> str:
     return os.environ.get("TEST_POSTGRESQL_URL", DEFAULT_DSN)
 
