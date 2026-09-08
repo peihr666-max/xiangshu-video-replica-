@@ -36,6 +36,7 @@ _RATE_SEEDS = [
     ("external_price_768p", "external_price", "second", "768P", 12),
     ("external_price_2k", "external_price", "second", "2K", 20),
 ]
+_SEED_UPDATED_AT = "2026-09-08 00:00:00+00"
 
 
 def upgrade() -> None:
@@ -80,7 +81,10 @@ def upgrade() -> None:
                 """
                 INSERT INTO operation_cost_rates
                     (subject, kind, unit, resolution, unit_price_fen, updated_at)
-                VALUES (:subject, :kind, :unit, :resolution, :price, now())
+                VALUES (
+                    :subject, :kind, :unit, :resolution, :price,
+                    CAST(:updated_at AS timestamptz)
+                )
                 ON CONFLICT (subject) DO NOTHING
                 """
             ).bindparams(
@@ -89,12 +93,41 @@ def upgrade() -> None:
                 unit=unit,
                 resolution=resolution,
                 price=price,
+                updated_at=_SEED_UPDATED_AT,
             )
         )
 
 
 def downgrade() -> None:
-    if op.get_bind().dialect.name != "postgresql":
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
         return
+    expected = {
+        (subject, kind, unit, resolution, price)
+        for subject, kind, unit, resolution, price in _RATE_SEEDS
+    }
+    rows = bind.execute(
+        sa.text(
+            "SELECT subject, kind, unit, resolution, unit_price_fen, updated_by_user_id, "
+            "updated_at::text "
+            "FROM operation_cost_rates"
+        )
+    ).all()
+    actual = {(r[0], r[1], r[2], r[3], r[4]) for r in rows}
+    changed = (
+        actual != expected
+        or any(r[5] is not None for r in rows)
+        or any(r[6] != _SEED_UPDATED_AT for r in rows)
+    )
+    audited = bind.execute(
+        sa.text(
+            "SELECT 1 FROM audit_logs WHERE entity_type = 'operation_cost_rate' "
+            "OR action LIKE 'operation_cost_rate.%' LIMIT 1"
+        )
+    ).first()
+    if changed or audited is not None:
+        raise RuntimeError(
+            "cannot downgrade 064 after operation cost rates or their audit history changed"
+        )
     op.drop_index("idx_operation_cost_rates_kind", table_name="operation_cost_rates")
     op.drop_table("operation_cost_rates")

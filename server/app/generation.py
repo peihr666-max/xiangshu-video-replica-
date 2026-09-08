@@ -4111,6 +4111,7 @@ def _release_archive_retry(
                 """,
                 (next_count, quality_status, task_id),
             )
+            record_video_generation_cost(conn, task_id=task_id, output_seconds=None)
             finalize_internal_billing(conn, task_id=task_id, outcome="failed")
             _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
             release_user_queue_slot_for_task(conn, task_id=task_id)
@@ -5723,6 +5724,7 @@ def cancel_generation_batch(
                 "A task in this batch is already being submitted or generated.",
             )
         for row in cancelled_tasks:
+            record_video_generation_not_called(conn, task_id=str(row["id"]))
             finalize_internal_billing(conn, task_id=str(row["id"]), outcome="failed")
         write_audit(
             conn,

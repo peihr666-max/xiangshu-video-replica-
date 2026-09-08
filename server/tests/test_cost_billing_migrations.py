@@ -66,6 +66,41 @@ def test_operation_cost_rates_upgrade_from_063_and_downgrade(migration_dsn: str)
         assert ("video_generation_768p", "upstream_cost", "second", 9) in rows
         assert ("external_price_2k", "external_price", "second", 20) in rows
 
+    with psycopg.connect(migration_dsn) as conn:
+        conn.execute(
+            "UPDATE operation_cost_rates SET unit_price_fen=10 "
+            "WHERE subject='video_generation_768p'"
+        )
+        conn.commit()
+    with pytest.raises(RuntimeError, match="cannot downgrade 064"):
+        command.downgrade(config, "063_script_from_audio_reconciliation")
+    with psycopg.connect(migration_dsn) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "064_operation_cost_rates",
+        )
+        assert conn.execute(
+            "SELECT unit_price_fen FROM operation_cost_rates WHERE subject='video_generation_768p'"
+        ).fetchone() == (10,)
+        conn.execute(
+            "UPDATE operation_cost_rates SET unit_price_fen=9 WHERE subject='video_generation_768p'"
+        )
+        conn.commit()
+
+    with psycopg.connect(migration_dsn) as conn:
+        conn.execute(
+            "UPDATE operation_cost_rates SET updated_at=updated_at + interval '1 second' "
+            "WHERE subject='video_generation_768p'"
+        )
+        conn.commit()
+    with pytest.raises(RuntimeError, match="cannot downgrade 064"):
+        command.downgrade(config, "063_script_from_audio_reconciliation")
+    with psycopg.connect(migration_dsn) as conn:
+        conn.execute(
+            "UPDATE operation_cost_rates SET updated_at='2026-09-08 00:00:00+00' "
+            "WHERE subject='video_generation_768p'"
+        )
+        conn.commit()
+
     command.downgrade(config, "063_script_from_audio_reconciliation")
     with psycopg.connect(migration_dsn) as conn:
         assert conn.execute("SELECT to_regclass('operation_cost_rates')").fetchone() == (None,)

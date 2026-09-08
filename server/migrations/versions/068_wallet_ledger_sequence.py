@@ -107,8 +107,15 @@ def upgrade() -> None:
                 f"""
                 CREATE TRIGGER {_SQLITE_UPDATE_GUARD}
                 BEFORE UPDATE OF ledger_sequence ON wallet_transactions
-                WHEN OLD.ledger_sequence IS NOT NULL
-                     AND NEW.ledger_sequence IS NOT OLD.ledger_sequence
+                WHEN NEW.ledger_sequence IS NOT OLD.ledger_sequence
+                     AND NOT (
+                         OLD.ledger_sequence IS NULL
+                         AND NEW.ledger_sequence = (
+                             SELECT COALESCE(MAX(ledger_sequence), 0) + 1
+                             FROM wallet_transactions
+                             WHERE id <> NEW.id
+                         )
+                     )
                 BEGIN
                     SELECT RAISE(ABORT, 'ledger_sequence is immutable');
                 END
@@ -137,6 +144,13 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    sequenced = bind.execute(
+        sa.text("SELECT 1 FROM wallet_transactions WHERE ledger_sequence IS NOT NULL LIMIT 1")
+    ).first()
+    if sequenced is not None:
+        raise RuntimeError(
+            "cannot downgrade 068 while wallet ledger sequences exist; preserve ordering evidence"
+        )
     if bind.dialect.name == "postgresql":
         op.execute(sa.text(f"DROP TRIGGER {_POSTGRES_TRIGGER} ON wallet_transactions"))
         op.execute(sa.text(f"DROP FUNCTION {_POSTGRES_FUNCTION}()"))

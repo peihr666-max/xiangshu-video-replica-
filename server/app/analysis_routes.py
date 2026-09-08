@@ -191,6 +191,7 @@ class AnalysisTaskLease:
     created_by_user_id: str
     duration_seconds: float
     worker_id: str
+    attempt: int
 
 
 @dataclass(frozen=True)
@@ -708,6 +709,7 @@ def acquire_analysis_task(
         created_by_user_id=str(row["created_by_user_id"]),
         duration_seconds=float(row["duration_seconds"]),
         worker_id=worker_id,
+        attempt=int(row["attempt"]),
     )
 
 

@@ -5,9 +5,10 @@ import threading
 from pathlib import Path
 
 import pytest
+from alembic import command
 
 import app.internal_billing as internal_billing
-from app.db import connect_database, initialize_database
+from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.internal_billing import (
     BillingInvariantError,
@@ -212,6 +213,47 @@ def test_wallet_ledger_sequence_is_database_assigned_and_immutable(tmp_path: Pat
                 conn.execute(
                     "UPDATE wallet_transactions SET ledger_sequence=999 WHERE task_id='task_1'"
                 )
+
+
+def test_historical_null_sequence_cannot_be_backfilled_or_downgraded(tmp_path: Path) -> None:
+    db_path = tmp_path / "historical-ledger.db"
+    config = alembic_config(db_path)
+    command.upgrade(config, "067_activation_initial_free_seconds")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        seed_task(conn)
+        with conn:
+            reserve_internal_billing(conn, user_id="user_1", task_id="task_1", billing_round=1)
+
+    command.upgrade(config, "068_wallet_ledger_sequence")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE task_id='task_1'"
+            ).fetchone()["ledger_sequence"]
+            is None
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "UPDATE wallet_transactions SET ledger_sequence=123 WHERE task_id='task_1'"
+            )
+        conn.rollback()
+        with conn:
+            conn.execute("UPDATE generation_tasks SET status='FAILED' WHERE id='task_1'")
+            finalize_internal_billing(conn, task_id="task_1", outcome="failed")
+
+    with pytest.raises(RuntimeError, match="cannot downgrade 068"):
+        command.downgrade(config, "067_activation_initial_free_seconds")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "068_wallet_ledger_sequence"
+        )
+        assert (
+            conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE task_id='task_1' "
+                "ORDER BY billing_round LIMIT 1"
+            ).fetchone()["ledger_sequence"]
+            is None
+        )
 
 
 def test_reserve_rejects_insufficient_credits_without_partial_write(tmp_path: Path) -> None:

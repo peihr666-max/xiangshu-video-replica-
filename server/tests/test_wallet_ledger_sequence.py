@@ -145,6 +145,15 @@ def test_wallet_sequence_serializes_same_wallet_and_downgrades_safely(ledger_dsn
                 (int(sequence) + 1,),
             )
 
+    with pytest.raises(RuntimeError, match="cannot downgrade 068"):
+        command.downgrade(config, "067_activation_initial_free_seconds")
+    with psycopg.connect(ledger_dsn, autocommit=True) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "068_wallet_ledger_sequence",
+        )
+        assert conn.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 3
+        conn.execute("DELETE FROM wallet_transactions WHERE ledger_sequence IS NOT NULL")
+
     command.downgrade(config, "067_activation_initial_free_seconds")
     with psycopg.connect(ledger_dsn) as conn:
         assert (
@@ -154,4 +163,4 @@ def test_wallet_sequence_serializes_same_wallet_and_downgrades_safely(ledger_dsn
             ).fetchone()
             is None
         )
-        assert conn.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 3
+        assert conn.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 1
