@@ -149,7 +149,17 @@ function WorkspaceUserAvatar({
   );
 }
 
-export function StudioWorkspace({
+export function StudioWorkspace({ currentUser, ...props }: Props) {
+  return (
+    <StudioWorkspaceSession
+      key={`${currentUser.id}:${currentUser.role}`}
+      currentUser={currentUser}
+      {...props}
+    />
+  );
+}
+
+function StudioWorkspaceSession({
   currentUser,
   customerAccount,
   customerWallet,
@@ -181,7 +191,6 @@ export function StudioWorkspace({
   const busyRef = useRef(false);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
-  const loadedUserIdRef = useRef(currentUser.id);
   const loadUserRef = useRef(currentUser);
   if (
     loadUserRef.current.id !== currentUser.id ||
@@ -293,23 +302,7 @@ export function StudioWorkspace({
     // The explicit refresh key intentionally reruns the same read-only requests.
     if (revision > 0) loadedPeopleRef.current.clear();
     let active = true;
-    if (loadedUserIdRef.current !== loadUser.id) {
-      loadedUserIdRef.current = loadUser.id;
-      loadedPeopleRef.current.clear();
-      const resetState = createState(routeFromHash(window.location.hash));
-      latestDraftRef.current = resetState.draft;
-      draftTouchedRef.current = false;
-      setState(resetState);
-      setData(emptyData);
-      setNotice("");
-      setPicker(undefined);
-      setLivePanel(undefined);
-      setLiveProject(undefined);
-      setHandoffBatch(null);
-      setGeneration(undefined);
-    } else {
-      setData((previous) => ({ ...previous, loading: true }));
-    }
+    setData((previous) => ({ ...previous, loading: true }));
     void loadStudioData(loadUser)
       .then((result) => {
         if (!active) return;

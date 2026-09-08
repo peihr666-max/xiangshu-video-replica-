@@ -291,9 +291,7 @@ describe("V1.4 workspace integration", () => {
     expect(await screen.findByText("旧账号私有爆款")).toBeInTheDocument();
 
     view.rerender(<StudioWorkspace currentUser={user2} />);
-    await waitFor(() =>
-      expect(screen.queryByText("旧账号私有爆款")).not.toBeInTheDocument(),
-    );
+    expect(screen.queryByText("旧账号私有爆款")).not.toBeInTheDocument();
     view.rerender(<StudioWorkspace currentUser={user3} />);
     resolvers.get("account-2")?.({
       ...emptyResult,
@@ -306,6 +304,39 @@ describe("V1.4 workspace integration", () => {
 
     expect(await screen.findByText(/新账号数据/)).toBeInTheDocument();
     expect(screen.queryByText(/旧账号迟到数据/)).toBeNull();
+  });
+
+  it("同账号角色降级的首个提交即隐藏原权限数据", async () => {
+    const privilegedData = {
+      ...createReviewData(),
+      videos: [
+        {
+          ...createReviewData().videos[0],
+          id: "privileged-video",
+          title: "原角色可见内容",
+        },
+      ],
+      loading: false,
+    };
+    live.loadStudioData
+      .mockResolvedValueOnce(privilegedData)
+      .mockReturnValueOnce(new Promise(() => {}));
+    const customer = {
+      ...reviewUser,
+      id: "same-account",
+      role: "customer" as const,
+    };
+    const view = render(<StudioWorkspace currentUser={customer} />);
+    expect(await screen.findByText("原角色可见内容")).toBeInTheDocument();
+
+    view.rerender(
+      <StudioWorkspace
+        currentUser={{ ...customer, role: "auditor" as const }}
+      />,
+    );
+
+    expect(screen.queryByText("原角色可见内容")).toBeNull();
+    expect(live.loadStudioData).toHaveBeenCalledTimes(2);
   });
 
   it("关闭已有项目工作区不会再次导入并覆盖当前草稿", async () => {

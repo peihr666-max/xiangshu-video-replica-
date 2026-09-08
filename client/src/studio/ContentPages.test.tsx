@@ -493,6 +493,42 @@ describe("V1.4 内容与运营页面", () => {
     expect(importViralVideoToProject).toHaveBeenCalledOnce();
   });
 
+  it("一张卡片导入期间禁用其他卡片的导入入口", () => {
+    importViralVideoToProject.mockReturnValue(new Promise(() => {}));
+    listViralVideos.mockReturnValue(new Promise(() => {}));
+    const base = studio();
+    const second = {
+      ...base.data.videos[0],
+      id: "dy-2",
+      nativeId: "native-dy-2",
+      title: "第二条乡墅参考",
+    };
+    const value = studio({
+      review: false,
+      data: { ...base.data, videos: [base.data.videos[0], second] },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralPage />);
+
+    const firstButton = screen.getByRole("button", {
+      name: "复刻 农村建房预算，别只盯着主体",
+    });
+    const secondButton = screen.getByRole("button", {
+      name: "复刻 第二条乡墅参考",
+    });
+    fireEvent.click(firstButton);
+
+    expect(firstButton).toBeDisabled();
+    expect(secondButton).toBeDisabled();
+    fireEvent.click(secondButton);
+    expect(importViralVideoToProject).toHaveBeenCalledOnce();
+    expect(importViralVideoToProject).toHaveBeenCalledWith(
+      "douyin",
+      "native-dy-1",
+      "video",
+    );
+  });
+
   it("切换账号后忽略旧账号未完成的素材导入", async () => {
     let resolveImport:
       | ((value: { projectId: string; assetId: string; kind: "video" }) => void)

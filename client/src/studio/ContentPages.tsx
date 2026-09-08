@@ -371,14 +371,16 @@ function ViralCard({
   video,
   active,
   onActivate,
+  importController,
 }: {
   video: StudioVideo;
   active: boolean;
   onActivate: () => void;
+  importController: ReturnType<typeof useViralMedia>;
 }) {
   const { state, navigate, patchDraft, patchState, review, notify } =
     useStudio();
-  const { media, prepare } = useViralMedia();
+  const { media, prepare } = importController;
   const playerRef = useRef<HTMLVideoElement | null>(null);
   const { playback, play, retry, markFailed, activate } = useViralPlayback(
     video,
@@ -462,9 +464,11 @@ function ViralCard({
               });
             }}
           >
-            {media.status === "loading" ? "导入中…" : "复刻"}
+            {media.status === "loading" && media.videoId === video.id
+              ? "导入中…"
+              : "复刻"}
           </Button>
-          {media.status === "error" && (
+          {media.status === "error" && media.videoId === video.id && (
             <span className="viral-media-status is-error" role="status">
               {media.message}
             </span>
@@ -487,6 +491,7 @@ export function ViralPage() {
   const [listLoading, setListLoading] = useState(!review);
   const listRequestRef = useRef<object | undefined>(undefined);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const importController = useViralMedia();
 
   const shown = useMemo(
     () =>
@@ -660,6 +665,7 @@ export function ViralPage() {
                 video={video}
                 active={activeVideoId === video.id}
                 onActivate={() => setActiveVideoId(video.id)}
+                importController={importController}
               />
             ))}
           </section>
@@ -687,6 +693,7 @@ type ViralMediaState = {
   status: "idle" | "loading" | "ready" | "error";
   message?: string;
   userId?: string;
+  videoId?: string;
 };
 
 function useViralMedia() {
@@ -729,6 +736,7 @@ function useViralMedia() {
           status: "error",
           message: "来源视频缺少平台标识",
           userId,
+          videoId: video.id,
         });
         return;
       }
@@ -738,7 +746,7 @@ function useViralMedia() {
         mountedRef.current &&
         requestId === requestRef.current &&
         activeUserIdRef.current === userId;
-      setMedia({ status: "loading", userId });
+      setMedia({ status: "loading", userId, videoId: video.id });
       try {
         const result = await importViralVideoToProject(
           video.platformKey,
@@ -800,6 +808,7 @@ function useViralMedia() {
           message:
             result.kind === "audio" ? "原声音频已就绪" : "低清视频已就绪",
           userId,
+          videoId: video.id,
         });
         onReady(result);
       } catch (error) {
@@ -808,6 +817,7 @@ function useViralMedia() {
           status: "error",
           message: error instanceof Error ? error.message : "素材准备失败",
           userId,
+          videoId: video.id,
         });
       } finally {
         if (isCurrent()) loadingRef.current = false;
