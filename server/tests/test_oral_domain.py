@@ -151,7 +151,7 @@ def _raise_invalid_media(*_args: object, **_kwargs: object) -> None:
     raise MediaToolFailed("媒体文件无法验证，请稍后重试")
 
 
-def test_clone_protocol_error_is_terminal_instead_of_polling_forever() -> None:
+def test_clone_protocol_error_preserves_known_vendor_task_for_reconciliation() -> None:
     class InvalidStatusVendor:
         def avatar_task(self, _task_id: str) -> None:
             raise HiflyProtocolError("数字人服务返回了无效的任务状态")
@@ -173,10 +173,10 @@ def test_clone_protocol_error_is_terminal_instead_of_polling_forever() -> None:
         )
     )
 
-    assert outcome.status == "FAILED"
+    assert outcome.status == "SUBMISSION_UNCERTAIN"
 
 
-def test_oral_protocol_error_is_terminal_instead_of_polling_forever() -> None:
+def test_oral_protocol_error_preserves_known_vendor_task_and_reservation() -> None:
     class InvalidStatusVendor:
         def video_task(self, _task_id: str) -> None:
             raise HiflyProtocolError("数字人服务返回了无效的任务状态")
@@ -196,7 +196,74 @@ def test_oral_protocol_error_is_terminal_instead_of_polling_forever() -> None:
         )
     )
 
-    assert outcome.status == "FAILED"
+    assert outcome.status == "SUBMISSION_UNCERTAIN"
+
+
+def test_clone_protocol_error_after_submission_requires_reconciliation() -> None:
+    class SourceStorage:
+        def get_object(self, _key: str) -> bytes:
+            return b"valid-source"
+
+    class InvalidCreateVendor:
+        def create_upload_url(self, _extension: str) -> SimpleNamespace:
+            return SimpleNamespace(file_id="source-file")
+
+        def upload_file(self, _target: SimpleNamespace, _content: bytes) -> None:
+            return None
+
+        def create_avatar_by_video(self, **_kwargs: object) -> None:
+            raise HiflyProtocolError("数字人服务未返回任务编号")
+
+    outcome = perform_oral_clone_work(
+        PreparedCloneWork(
+            lease={
+                "id": "avatar-submit-protocol-error",
+                "status": "SUBMITTING",
+                "clone_kind": "avatar",
+                "source_kind": "VIDEO",
+                "title": "提交后协议异常",
+            },
+            vendor=InvalidCreateVendor(),  # type: ignore[arg-type]
+            source_storage=SourceStorage(),  # type: ignore[arg-type]
+            source_key="source.mp4",
+            source_extension="mp4",
+            expected_source_sha256=None,
+            result_storage=None,
+        ),
+        mark_submission_started=lambda: True,
+    )
+
+    assert outcome.status == "SUBMISSION_UNCERTAIN"
+
+
+def test_oral_protocol_error_after_submission_requires_reconciliation() -> None:
+    class InvalidCreateVendor:
+        def create_video_by_tts(self, **_kwargs: object) -> None:
+            raise HiflyProtocolError("数字人服务未返回任务编号")
+
+    outcome = perform_oral_task_work(
+        PreparedOralWork(
+            lease={
+                "id": "oral-submit-protocol-error",
+                "status": "SUBMITTING",
+                "mode": "TTS",
+                "script_text": "测试文案",
+                "title": "提交后协议异常",
+            },
+            vendor=InvalidCreateVendor(),  # type: ignore[arg-type]
+            audio_storage=None,
+            audio_key=None,
+            audio_extension=None,
+            expected_source_sha256=None,
+            result_storage=None,
+            avatar_vendor_id="avatar-1",
+            voice_vendor_id="voice-1",
+            subtitle=None,
+        ),
+        mark_submission_started=lambda: True,
+    )
+
+    assert outcome.status == "SUBMISSION_UNCERTAIN"
 
 
 def test_invalid_voice_demo_is_rejected_before_archive(
@@ -1705,7 +1772,10 @@ def test_refresh_oral_task_archives_result_asset(
     assert refreshed["status"] == "SUCCEEDED"
     assert refreshed["result_asset_id"]
     assert refreshed["duration_sec"] == 32
-    assert validated == [(b"MP4BYTES", "mp4", "video")]
+    assert validated == [
+        (b"MP4BYTES", "mp4", "video"),
+        (b"MP4BYTES", "mp4", "audio"),
+    ]
     wallet = conn.execute(
         "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
         ("employee_1",),

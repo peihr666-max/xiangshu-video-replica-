@@ -969,7 +969,12 @@ def perform_oral_clone_work(
     except OralCloneLeaseLost:
         raise
     except HiflyProtocolError as exc:
-        return CloneOutcome(status="FAILED", error_message=str(exc)[:500])
+        status = (
+            "FAILED"
+            if str(lease["status"]) == "SUBMITTING" and not provider_submission_started
+            else "SUBMISSION_UNCERTAIN"
+        )
+        return CloneOutcome(status=status, error_message=str(exc)[:500])
     except MediaToolFailed as exc:
         return CloneOutcome(status="FAILED", error_message=str(exc)[:500])
     except HiflyError as exc:
@@ -1802,6 +1807,8 @@ def perform_oral_task_work(
         _require_oral_lease_step(renew_lease)
         require_media_stream(content, extension="mp4", expected_stream="video")
         _require_oral_lease_step(renew_lease)
+        require_media_stream(content, extension="mp4", expected_stream="audio")
+        _require_oral_lease_step(renew_lease)
         stored = work.result_storage.put_object(
             f"oral/results/{lease['id']}.mp4", content, content_type="video/mp4"
         )
@@ -1810,7 +1817,12 @@ def perform_oral_task_work(
     except OralTaskLeaseLost:
         raise
     except HiflyProtocolError as exc:
-        return OralOutcome(status="FAILED", error_message=str(exc)[:500])
+        status = (
+            "FAILED"
+            if str(lease["status"]) == "SUBMITTING" and not provider_submission_started
+            else "SUBMISSION_UNCERTAIN"
+        )
+        return OralOutcome(status=status, error_message=str(exc)[:500])
     except MediaToolFailed as exc:
         return OralOutcome(status="FAILED", error_message=str(exc)[:500])
     except HiflyError as exc:
