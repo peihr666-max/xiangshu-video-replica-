@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { confirmOralVoice } from "../api";
+import { useRef, useState } from "react";
+import { confirmOralVoice, customerVisibleErrorMessage } from "../api";
 import { useStudio } from "./context";
 import type { StudioPage, StudioPerson } from "./types";
 import { Button, Empty, Field, Hint, Media, Panel, Tabs } from "./ui";
@@ -399,8 +399,62 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
 }
 
 function AvatarPanel({ person }: { person: StudioPerson }) {
-  const { state, data, openPicker, navigate, patchDraft, notify } = useStudio();
+  const {
+    state,
+    data,
+    review,
+    user,
+    openPicker,
+    navigate,
+    patchDraft,
+    notify,
+    refresh,
+    submitOralClone,
+  } = useStudio();
+  const [title, setTitle] = useState(`${person.name}口播分身`);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const ready = person.avatars.filter((avatar) => avatar.ready);
+  const source = data.assets.find(
+    (asset) =>
+      asset.id === state.draft.imageId &&
+      (asset.kind === "image" || asset.kind === "video"),
+  );
+
+  async function startClone() {
+    if (!source || !submitOralClone || submittingRef.current) return;
+    if (review) {
+      notify("当前为示例审核，不会提交真实人物分身制作任务。");
+      return;
+    }
+    if (user.role === "auditor") {
+      notify("当前账号为只读权限，不能制作人物分身。");
+      return;
+    }
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await submitOralClone({
+        kind: "avatar",
+        identityId: person.id,
+        title: title.trim() || `${person.name}口播分身`,
+        sourceAssetId: source.id,
+        sourceKind: source.kind === "video" ? "VIDEO" : "IMAGE",
+      });
+      notify("人物分身制作已提交，状态更新后即可使用。");
+      refresh();
+    } catch (cause: unknown) {
+      notify(
+        customerVisibleErrorMessage(
+          cause,
+          "人物分身制作提交失败，请稍后重试。",
+        ),
+      );
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }
   return (
     <div className="avatar-layout">
       <Panel>
@@ -453,9 +507,24 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
         >
           上传人物视频制作
         </Button>
-        <Hint>当前生产接口尚未接通，制作操作会保持待接通状态。</Hint>
-        <Button variant="primary" disabled onClick={() => navigate("oral")}>
-          开始制作
+        <Field label="分身名称">
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="例如：张工庭院讲解分身"
+          />
+        </Field>
+        <Hint>
+          {source
+            ? `当前原料：${source.name}`
+            : "请先选择一张当前人物的形象照片作为制作原料。"}
+        </Hint>
+        <Button
+          variant="primary"
+          disabled={!source || !submitOralClone || submitting}
+          onClick={() => void startClone()}
+        >
+          {submitting ? "正在提交" : "开始制作"}
         </Button>
       </Panel>
     </div>
@@ -465,15 +534,24 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
 function VoicePanel({ person }: { person: StudioPerson }) {
   const {
     state,
+    data,
     review,
+    user,
     openPicker,
     navigate,
     patchDraft,
     updateData,
     notify,
     refresh,
+    submitOralClone,
   } = useStudio();
   const [confirmingVoiceId, setConfirmingVoiceId] = useState<string>();
+  const [cloneTitle, setCloneTitle] = useState(`${person.name}克隆声音`);
+  const [cloneSubmitting, setCloneSubmitting] = useState(false);
+  const cloneSubmittingRef = useRef(false);
+  const cloneSource = data.assets.find(
+    (asset) => asset.id === state.draft.audioId && asset.kind === "audio",
+  );
 
   function selectVoice(voiceId: string) {
     patchDraft({ ipId: person.id, voiceId });
@@ -519,6 +597,37 @@ function VoicePanel({ person }: { person: StudioPerson }) {
       );
     } finally {
       setConfirmingVoiceId(undefined);
+    }
+  }
+
+  async function startVoiceClone() {
+    if (!cloneSource || !submitOralClone || cloneSubmittingRef.current) return;
+    if (review) {
+      notify("当前为示例审核，不会提交真实声音克隆任务。");
+      return;
+    }
+    if (user.role === "auditor") {
+      notify("当前账号为只读权限，不能克隆声音。");
+      return;
+    }
+    cloneSubmittingRef.current = true;
+    setCloneSubmitting(true);
+    try {
+      await submitOralClone({
+        kind: "voice",
+        identityId: person.id,
+        title: cloneTitle.trim() || `${person.name}克隆声音`,
+        sourceAssetId: cloneSource.id,
+      });
+      notify("声音克隆已提交，完成后请试听并确认使用。");
+      refresh();
+    } catch (cause: unknown) {
+      notify(
+        customerVisibleErrorMessage(cause, "声音克隆提交失败，请稍后重试。"),
+      );
+    } finally {
+      cloneSubmittingRef.current = false;
+      setCloneSubmitting(false);
     }
   }
   return (
@@ -595,13 +704,23 @@ function VoicePanel({ person }: { person: StudioPerson }) {
           从素材选择声音样本
         </Button>
         <Field label="声音名称">
-          <input placeholder="例如：张工本人音色 V2" />
+          <input
+            value={cloneTitle}
+            onChange={(event) => setCloneTitle(event.target.value)}
+            placeholder="例如：张工本人音色 V2"
+          />
         </Field>
-        <Button variant="primary" disabled onClick={() => undefined}>
-          开始克隆
+        <Button
+          variant="primary"
+          disabled={!cloneSource || !submitOralClone || cloneSubmitting}
+          onClick={() => void startVoiceClone()}
+        >
+          {cloneSubmitting ? "正在提交" : "开始克隆"}
         </Button>
         <Hint>
-          声音克隆接口尚未接通，未确认声音不会出现在数字人口播选择器中。
+          {cloneSource
+            ? `当前原料：${cloneSource.name}。克隆完成后仍需试听确认。`
+            : "请先选择本人或已获授权的声音样本。"}
         </Hint>
       </Panel>
     </div>

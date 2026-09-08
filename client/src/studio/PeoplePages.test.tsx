@@ -7,18 +7,25 @@ const patchDraft = vi.fn();
 const notify = vi.fn();
 const updateData = vi.fn();
 const refresh = vi.fn();
+const openPicker = vi.fn();
+const submitOralClone = vi.fn();
 const api = vi.hoisted(() => ({
   confirmOralVoice: vi.fn(),
+  customerVisibleErrorMessage: vi.fn((error: unknown, fallback: string) =>
+    error instanceof Error && error.message ? error.message : fallback,
+  ),
 }));
 vi.mock("../api", () => api);
 let currentPage = "people";
 let selectedPersonId: string | undefined = "p1";
 let returnTo: string | undefined;
 let review = true;
+let userRole: "customer" | "auditor" = "customer";
+let draft: Record<string, unknown> = {};
 
 vi.mock("./context", () => ({
   useStudio: () => ({
-    state: { page: currentPage, selectedPersonId, returnTo, draft: {} },
+    state: { page: currentPage, selectedPersonId, returnTo, draft },
     data: {
       loading: false,
       errors: [],
@@ -91,22 +98,33 @@ vi.mock("./context", () => ({
           source: "AI生成",
           saved: true,
         },
+        {
+          id: "voice-source",
+          name: "本人声音样本",
+          kind: "audio",
+          url: "/voice-source.wav",
+          group: "声音素材",
+          personId: "p1",
+          source: "本人上传",
+          saved: true,
+        },
       ],
       videos: [],
       tasks: [],
       projects: [],
     },
     review,
-    user: {},
+    user: { id: "user-1", role: userRole },
     navigate,
     patchDraft,
     patchState: vi.fn(),
     updateData,
     notify,
-    openPicker: vi.fn(),
+    openPicker,
     openLive: vi.fn(),
     requestGeneration: vi.fn(),
     saveDraft: vi.fn(),
+    submitOralClone,
     refresh,
   }),
 }));
@@ -117,11 +135,16 @@ describe("PeoplePages", () => {
     selectedPersonId = "p1";
     returnTo = undefined;
     review = true;
+    userRole = "customer";
+    draft = {};
     navigate.mockClear();
     patchDraft.mockClear();
     notify.mockClear();
     updateData.mockClear();
     refresh.mockClear();
+    openPicker.mockClear();
+    submitOralClone.mockReset();
+    submitOralClone.mockResolvedValue(undefined);
     api.confirmOralVoice.mockReset();
   });
 
@@ -214,6 +237,60 @@ describe("PeoplePages", () => {
       selectedPersonId: "p1",
       returnTo: undefined,
     });
+  });
+
+  it("生产工作区使用当前照片授权并创建人物分身", async () => {
+    currentPage = "person-avatars";
+    review = false;
+    draft = { imageId: "scene" };
+    render(<PersonPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始制作" }));
+
+    await waitFor(() =>
+      expect(submitOralClone).toHaveBeenCalledWith({
+        kind: "avatar",
+        identityId: "p1",
+        title: "测试人物口播分身",
+        sourceAssetId: "scene",
+        sourceKind: "IMAGE",
+      }),
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("生产工作区使用当前音频授权并创建克隆声音", async () => {
+    currentPage = "person-voices";
+    review = false;
+    draft = { audioId: "voice-source" };
+    render(<PersonPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始克隆" }));
+
+    await waitFor(() =>
+      expect(submitOralClone).toHaveBeenCalledWith({
+        kind: "voice",
+        identityId: "p1",
+        title: "测试人物克隆声音",
+        sourceAssetId: "voice-source",
+      }),
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { label: "审核示例", reviewMode: true, role: "customer" as const },
+    { label: "只读账号", reviewMode: false, role: "auditor" as const },
+  ])("$label 不创建人物分身请求", ({ reviewMode, role }) => {
+    currentPage = "person-avatars";
+    review = reviewMode;
+    userRole = role;
+    draft = { imageId: "scene" };
+    render(<PersonPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始制作" }));
+
+    expect(submitOralClone).not.toHaveBeenCalled();
   });
 
   it("确认声音响应失败时刷新服务端状态并保持重复点击保护", async () => {

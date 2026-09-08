@@ -58,15 +58,15 @@ class OralCloneLeaseLost(RuntimeError):
 ORAL_CLONE_PURPOSES = {"oral_avatar_clone", "oral_voice_clone"}
 
 
-def oral_unit_price_fen(conn: BusinessConnection) -> int:
-    """Per-task list price for oral renders; admin-configurable via billing."""
+def oral_unit_price_fen(conn: BusinessConnection, *, user_id: str) -> int:
+    """Return the persisted per-video sale price applicable to this user."""
     try:
-        billing = SettingsRepository(conn).read_billing_settings()
+        billing = SettingsRepository(conn).read_customer_billing_settings(user_id=user_id)
     except Exception as exc:  # noqa: BLE001 - fail closed before reserving credits
         raise OralDomainError("口播计费配置暂不可用，请稍后重试") from exc
     try:
-        price = int(billing.get("oral_unit_price_fen", ORAL_UNIT_PRICE_FEN_DEFAULT))
-    except (TypeError, ValueError) as exc:
+        price = int(billing["charged_unit_price_fen"])
+    except (KeyError, TypeError, ValueError) as exc:
         raise OralDomainError("口播计费配置无效，请联系管理员") from exc
     if price <= 0:
         raise OralDomainError("口播计费配置无效，请联系管理员")
@@ -128,6 +128,44 @@ def _require_source_asset(
         raise OralDomainError(message) from exc
 
 
+def _lock_clone_asset_projects(
+    conn: BusinessConnection,
+    *,
+    asset_ids: tuple[str, ...],
+) -> None:
+    """Share the project-delete lock domain before validating clone assets."""
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    placeholders = ",".join("%s" for _ in asset_ids)
+    rows = conn.execute(
+        f"SELECT id, project_id FROM assets WHERE id IN ({placeholders})",  # noqa: S608
+        asset_ids,
+    ).fetchall()
+    discovered_projects = {
+        str(row["id"]): None if row["project_id"] is None else str(row["project_id"])
+        for row in rows
+    }
+    project_ids = sorted({str(row["project_id"]) for row in rows if row["project_id"] is not None})
+    for project_id in project_ids:
+        locked = conn.execute(
+            "SELECT id FROM projects WHERE id = %s FOR UPDATE",
+            (project_id,),
+        ).fetchone()
+        if locked is None:
+            raise OralDomainError("素材所在项目已删除，请重新选择素材")
+    current_rows = conn.execute(
+        f"SELECT id, project_id FROM assets WHERE id IN ({placeholders}) "  # noqa: S608
+        "ORDER BY id",
+        asset_ids,
+    ).fetchall()
+    current_projects = {
+        str(row["id"]): None if row["project_id"] is None else str(row["project_id"])
+        for row in current_rows
+    }
+    if current_projects != discovered_projects:
+        raise OralDomainError("克隆素材已变更，请重新选择素材")
+
+
 def _require_clone_inputs(
     conn: BusinessConnection,
     *,
@@ -137,6 +175,19 @@ def _require_clone_inputs(
     source_asset_id: str,
     source_kind: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    identity = _require_own_identity(conn, actor, identity_id)
+    if str(identity.get("authorization_asset_id") or "") != consent_id:
+        raise OralDomainError("肖像授权与当前人物不匹配")
+    consent = _asset(conn, consent_id)
+    if consent is None or str(consent.get("created_by_user_id") or "") != actor.id:
+        raise OralDomainError("肖像授权不存在或无权使用")
+    _require_source_asset(
+        conn, actor=actor, asset_id=source_asset_id, message="素材不存在或无权使用"
+    )
+    _lock_clone_asset_projects(
+        conn,
+        asset_ids=(source_asset_id, consent_id),
+    )
     identity = _require_own_identity(conn, actor, identity_id)
     if str(identity.get("authorization_asset_id") or "") != consent_id:
         raise OralDomainError("肖像授权与当前人物不匹配")
@@ -197,6 +248,19 @@ def record_oral_clone_consent(
         raise OralDomainError("克隆授权用途不支持")
     identity = _require_own_identity(conn, actor, identity_id)
     consent_id = str(identity.get("authorization_asset_id") or "")
+    consent = _asset(conn, consent_id)
+    if consent is None or str(consent.get("created_by_user_id") or "") != actor.id:
+        raise OralDomainError("肖像授权不存在或无权使用")
+    _require_source_asset(
+        conn, actor=actor, asset_id=source_asset_id, message="素材不存在或无权使用"
+    )
+    _lock_clone_asset_projects(
+        conn,
+        asset_ids=(source_asset_id, consent_id),
+    )
+    identity = _require_own_identity(conn, actor, identity_id)
+    if str(identity.get("authorization_asset_id") or "") != consent_id:
+        raise OralDomainError("肖像授权已变更，请重新选择素材")
     consent_row = conn.execute(
         "SELECT id, kind, storage_uri, content_type, created_by_user_id, metadata_json "
         "FROM assets WHERE id = %s FOR UPDATE",
@@ -1085,7 +1149,7 @@ def create_oral_task(
             replayed=True,
         )
 
-    price = oral_unit_price_fen(conn)
+    price = oral_unit_price_fen(conn, user_id=actor.id)
     task_id = str(uuid4())
     inserted = conn.execute(
         """
@@ -1977,5 +2041,5 @@ def list_oral_tasks(
     return [dict(row) for row in rows]
 
 
-def oral_price_quote(conn: BusinessConnection) -> dict[str, int]:
-    return {"unit_price_fen": oral_unit_price_fen(conn)}
+def oral_price_quote(conn: BusinessConnection, *, user_id: str) -> dict[str, int]:
+    return {"unit_price_fen": oral_unit_price_fen(conn, user_id=user_id)}

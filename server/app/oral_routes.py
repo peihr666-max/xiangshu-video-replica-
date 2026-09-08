@@ -73,9 +73,9 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/price")
-def read_oral_price(conn: Database) -> dict[str, int]:
+def read_oral_price(conn: Database, actor: AuthenticatedUser) -> dict[str, int]:
     try:
-        return oral_price_quote(conn)
+        return oral_price_quote(conn, user_id=actor.id)
     except OralDomainError as exc:
         raise OralError("ORAL_BILLING_UNAVAILABLE", str(exc), status_code=503) from exc
 

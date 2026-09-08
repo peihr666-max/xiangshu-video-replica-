@@ -38,7 +38,6 @@ from app.image_tasks import (
     load_image_task,
     require_character_sheet_task_access,
 )
-from app.media_routes import storage_for_asset
 from app.permissions import require_not_auditor, require_project_access
 from app.simple_character import (
     SIMPLE_UPLOAD_ALLOWED_TYPES,
@@ -639,9 +638,8 @@ def delete_identity(
             conn,
             actor=actor,
             identity_id=identity_id,
-            storage_for_uri=storage_for_asset,
         )
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

@@ -11,6 +11,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+import app.rbac_routes as rbac_routes
 from app.auth import get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
@@ -359,7 +360,7 @@ def test_owner_can_delete_an_unfinished_project_and_its_pending_upload(
     response = client.delete("/api/projects/project_delete", headers=auth_headers("employee_1"))
 
     assert response.status_code == 204
-    assert storage.head_object(storage_key) is None
+    assert storage.head_object(storage_key) is not None
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         project = conn.execute(
             "SELECT id FROM projects WHERE id = ?", ("project_delete",)
@@ -377,7 +378,7 @@ def test_project_delete_removes_a_project_with_completed_work(
 
     assert response.status_code == 204
     storage = LocalStorageAdapter(root=tmp_path / "private-storage", bucket="private-bucket")
-    assert storage.head_object("outputs/asset_owned.mp4") is None
+    assert storage.head_object("outputs/asset_owned.mp4") is not None
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         remaining = {
             table: conn.execute(
@@ -405,10 +406,11 @@ def test_project_delete_removes_a_project_with_completed_work(
     assert remaining_tasks == 0
     assert audit is not None
     assert json.loads(str(audit["metadata_json"])) == {
+        "cleanup_retry_required": True,
         "deleted_asset_count": 1,
         "deleted_versions_count": 0,
-        "storage_cleanup_failed_count": 0,
-        "shared_storage_object_count": 0,
+        "storage_cleanup_deferred_count": 1,
+        "storage_cleanup_status": "DEFERRED",
     }
 
 
@@ -434,7 +436,59 @@ def test_project_delete_blocked_while_generation_tasks_are_active(
     assert project is not None
 
 
-def test_project_delete_tolerates_storage_cleanup_failure(
+@pytest.mark.parametrize("oral_reference", ["task", "clone"])
+def test_project_delete_rejects_retained_oral_history_before_storage_cleanup(
+    client: TestClient,
+    db_path: Path,
+    tmp_path: Path,
+    oral_reference: str,
+) -> None:
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name) "
+            "VALUES ('oral-identity', 'employee_1', '口播人物')"
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, status,
+                source_kind, source_asset_id
+            ) VALUES (
+                'oral-avatar', 'oral-identity', 'employee_1', '口播分身',
+                'READY', 'VIDEO', 'asset_owned'
+            )
+            """
+        )
+        if oral_reference == "task":
+            conn.execute(
+                """
+                INSERT INTO oral_tasks (
+                    id, owner_user_id, project_id, identity_id, avatar_id,
+                    mode, title, status, estimated_cost_fen,
+                    idempotency_key, request_hash
+                ) VALUES (
+                    'oral-task', 'employee_1', 'project_owned', 'oral-identity',
+                    'oral-avatar', 'TTS', '已完成口播', 'SUCCEEDED', 1000,
+                    'oral-project-delete', 'oral-project-delete-hash'
+                )
+                """
+            )
+        conn.commit()
+
+    response = client.delete("/api/projects/project_owned", headers=auth_headers("employee_1"))
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PROJECT_DELETE_HAS_ORAL_HISTORY"
+    storage = LocalStorageAdapter(root=tmp_path / "private-storage", bucket="private-bucket")
+    assert storage.get_object("outputs/asset_owned.mp4") == b"video"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute("SELECT id FROM projects WHERE id = 'project_owned'").fetchone()
+            is not None
+        )
+
+
+def test_project_delete_defers_storage_cleanup_without_resolving_backend(
     client: TestClient,
     db_path: Path,
     tmp_path: Path,
@@ -459,7 +513,34 @@ def test_project_delete_tolerates_storage_cleanup_failure(
         ).fetchone()
     assert project is None
     assert audit is not None
-    assert json.loads(str(audit["metadata_json"]))["storage_cleanup_failed_count"] == 1
+    assert json.loads(str(audit["metadata_json"])) == {
+        "cleanup_retry_required": True,
+        "deleted_asset_count": 1,
+        "deleted_versions_count": 0,
+        "storage_cleanup_deferred_count": 1,
+        "storage_cleanup_status": "DEFERRED",
+    }
+
+
+def test_project_delete_records_cleanup_intent_atomically_without_second_phase(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def must_not_resolve_storage(*_args: object, **_kwargs: object) -> NoReturn:
+        raise AssertionError("physical cleanup must be deferred")
+
+    monkeypatch.setattr(rbac_routes, "storage_for_asset", must_not_resolve_storage)
+    response = client.delete("/api/projects/project_owned", headers=auth_headers("employee_1"))
+    assert response.status_code == 204
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert conn.execute("SELECT id FROM projects WHERE id = 'project_owned'").fetchone() is None
+        audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs WHERE action = 'project.delete'"
+        ).fetchone()
+    assert audit is not None
+    assert json.loads(str(audit["metadata_json"]))["storage_cleanup_status"] == "DEFERRED"
 
 
 def test_project_owner_can_rename_their_project(

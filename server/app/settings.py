@@ -345,6 +345,10 @@ class SettingsRepository:
         video at that customer's price.
         """
         billing = self.read_billing_settings()
+        # Per-customer pricing is a PostgreSQL customer-runtime contract. The
+        # internal SQLite runtime persists only the global billing row.
+        if not self.conn.is_postgres:
+            return billing
         row = self.conn.execute(
             "SELECT unit_price_fen FROM customer_unit_prices WHERE user_id = %s",
             (user_id,),

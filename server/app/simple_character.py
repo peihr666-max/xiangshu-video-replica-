@@ -1334,23 +1334,20 @@ def _next_version_number(conn: BusinessConnection, *, persona_id: str) -> int:
     return current + 1
 
 
-StorageResolver = Callable[[BusinessConnection, str], StorageAdapter]
-
-
 def delete_simple_character_identity(
     conn: BusinessConnection,
     *,
     actor: CurrentUser,
     identity_id: str,
-    storage_for_uri: StorageResolver,
 ) -> None:
     """Delete an identity together with every derived character record.
 
-    Mirrors project deletion: in-flight character generation tasks and project
-    character selections block the delete (409), storage object cleanup is
-    best-effort so an unavailable backend never blocks the operator, and the
-    outcome is recorded in the audit log.
+    In-flight work and project selections block deletion. Database deletion and
+    its audit commit together; physical object cleanup remains deferred until a
+    durable GC can prove that no other record reused the same storage URI.
     """
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("SELECT id FROM person_identities WHERE id = %s FOR UPDATE", (identity_id,))
     row = read_identity_row(conn, identity_id)
     if actor.role != "admin" and str(row["owner_user_id"]) != actor.id:
         raise character_error(
@@ -1390,6 +1387,39 @@ def delete_simple_character_identity(
             "人物存在进行中的生成任务，请等待任务结束后再删除。",
         )
 
+    retained_oral_history = conn.execute(
+        """
+        SELECT 1 FROM (
+            SELECT task.id
+            FROM oral_tasks AS task
+            WHERE task.identity_id = %s
+            UNION ALL
+            SELECT avatar.id
+            FROM oral_avatars AS avatar
+            WHERE avatar.identity_id = %s
+              AND avatar.status IN ('PENDING', 'SUBMITTING', 'SUBMISSION_UNCERTAIN', 'RUNNING')
+            UNION ALL
+            SELECT voice.id
+            FROM oral_voices AS voice
+            WHERE voice.identity_id = %s
+              AND voice.status IN ('PENDING', 'SUBMITTING', 'SUBMISSION_UNCERTAIN', 'RUNNING')
+            UNION ALL
+            SELECT wallet.id
+            FROM wallet_transactions AS wallet
+            JOIN oral_tasks AS task ON task.id = wallet.oral_task_id
+            WHERE task.identity_id = %s
+        ) AS retained_oral_records
+        LIMIT 1
+        """,
+        (identity_id, identity_id, identity_id, identity_id),
+    ).fetchone()
+    if retained_oral_history:
+        raise character_error(
+            409,
+            "IDENTITY_DELETE_HAS_ORAL_HISTORY",
+            "人物存在需保留的口播任务、克隆任务或钱包记录，不能删除。",
+        )
+
     # Project character selections reference versions with ON DELETE RESTRICT;
     # removing a character a project still relies on must stay explicit.
     used_project = conn.execute(
@@ -1420,19 +1450,10 @@ def delete_simple_character_identity(
         if asset_ids
         else []
     )
-
-    # Best-effort object cleanup before removing the rows, mirroring project
-    # deletion: an unavailable backend (e.g. cloud credentials removed) must
-    # not block the delete; failures are counted into the audit log.
-    storage_cleanup_failed_count = 0
-    for asset in asset_rows:
-        uri = str(asset["storage_uri"])
-        try:
-            storage = storage_for_uri(conn, uri)
-            storage.delete_object(storage_key_from_uri(uri), actor_id=actor.id)
-        except (HTTPException, StorageBackendUnavailable, OSError, ValueError):
-            storage_cleanup_failed_count += 1
-
+    # Asset URIs may be reused by another project or identity after this
+    # transaction commits. Without a durable storage GC/outbox, synchronous
+    # deletion has an unavoidable TOCTOU window, so retain the objects and
+    # record a durable deferred-cleanup intent in the authoritative audit.
     version_ids_sql = """
         SELECT version.id
         FROM character_versions AS version
@@ -1440,6 +1461,20 @@ def delete_simple_character_identity(
         WHERE persona.identity_id = %s
     """
     with conn:
+        write_audit(
+            conn,
+            actor=actor,
+            action="simple_character.delete",
+            entity_type="person_identity",
+            entity_id=identity_id,
+            metadata={
+                "cleanup_retry_required": bool(asset_rows),
+                "deleted_asset_count": len(asset_rows),
+                "storage_cleanup_deferred_count": len(asset_rows),
+                "storage_cleanup_status": "DEFERRED" if asset_rows else "NOT_REQUIRED",
+            },
+            commit=False,
+        )
         conn.execute(
             "DELETE FROM character_generation_tasks WHERE character_version_id IN "
             f"({version_ids_sql})",  # noqa: S608
@@ -1478,18 +1513,6 @@ def delete_simple_character_identity(
                 f"DELETE FROM assets WHERE id IN ({placeholders})",
                 tuple(asset_ids),
             )
-
-    write_audit(
-        conn,
-        actor=actor,
-        action="simple_character.delete",
-        entity_type="person_identity",
-        entity_id=identity_id,
-        metadata={
-            "deleted_asset_count": len(asset_rows),
-            "storage_cleanup_failed_count": storage_cleanup_failed_count,
-        },
-    )
 
 
 def _identity_asset_ids(conn: BusinessConnection, identity_id: str) -> set[str]:

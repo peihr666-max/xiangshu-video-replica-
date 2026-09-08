@@ -68,7 +68,7 @@ def studio_task_stats(
         clauses.append("project.owner_user_id = %s")
         parameters.append(actor.id)
 
-    row = conn.execute(
+    generation_row = conn.execute(
         f"""
         SELECT
             COALESCE(SUM(CASE WHEN task.status = 'SUCCEEDED' AND task.completed_at >= %s
@@ -90,20 +90,32 @@ def studio_task_stats(
         """,
         tuple(parameters),
     ).fetchone()
-    if row is None:  # pragma: no cover - aggregate always returns one row
-        return StudioStatsResponse(
-            today_completed=0,
-            running=0,
-            queued=0,
-            needs_attention=0,
-            total_completed=0,
-        )
+    oral_row = conn.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN status = 'SUCCEEDED' AND completed_at >= %s
+                THEN 1 ELSE 0 END), 0) AS today_completed,
+            COALESCE(SUM(CASE WHEN status IN ('SUBMITTING', 'RUNNING')
+                THEN 1 ELSE 0 END), 0) AS running,
+            COALESCE(SUM(CASE WHEN status = 'QUEUED'
+                THEN 1 ELSE 0 END), 0) AS queued,
+            COALESCE(SUM(CASE WHEN status IN ('FAILED', 'SUBMISSION_UNCERTAIN')
+                THEN 1 ELSE 0 END), 0) AS needs_attention,
+            COALESCE(SUM(CASE WHEN status = 'SUCCEEDED'
+                THEN 1 ELSE 0 END), 0) AS total_completed
+        FROM oral_tasks
+        WHERE owner_user_id = %s
+        """,
+        (cutoff, actor.id),
+    ).fetchone()
+    if generation_row is None or oral_row is None:  # pragma: no cover - aggregates return rows
+        raise RuntimeError("studio task aggregate did not return a row")
     return StudioStatsResponse(
-        today_completed=int(row["today_completed"]),
-        running=int(row["running"]),
-        queued=int(row["queued"]),
-        needs_attention=int(row["needs_attention"]),
-        total_completed=int(row["total_completed"]),
+        today_completed=int(generation_row["today_completed"]) + int(oral_row["today_completed"]),
+        running=int(generation_row["running"]) + int(oral_row["running"]),
+        queued=int(generation_row["queued"]) + int(oral_row["queued"]),
+        needs_attention=int(generation_row["needs_attention"]) + int(oral_row["needs_attention"]),
+        total_completed=int(generation_row["total_completed"]) + int(oral_row["total_completed"]),
     )
 
 

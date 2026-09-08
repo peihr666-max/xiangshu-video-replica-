@@ -1218,14 +1218,6 @@ def test_owner_delete_removes_identity_records_and_objects(
 ) -> None:
     created = generate_global(client).json()
     identity_id = created["identity_id"]
-    # Route resolution through the real storage_for_asset would 503 on the
-    # fake:// uri; reroute to the in-memory adapter so object deletion is real.
-    monkeypatch.setattr(
-        simple_character_routes,
-        "storage_for_asset",
-        lambda conn, uri: storage,
-    )
-
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         keys = [
             storage_key_from_uri(str(row["storage_uri"]))
@@ -1268,9 +1260,7 @@ def test_owner_delete_removes_identity_records_and_objects(
         )
         assert (
             conn.execute(
-                """
-            SELECT COUNT(*) FROM character_personas WHERE identity_id = ?
-            """,
+                "SELECT COUNT(*) FROM character_personas WHERE identity_id = ?",
                 (identity_id,),
             ).fetchone()[0]
             == 0
@@ -1291,18 +1281,51 @@ def test_owner_delete_removes_identity_records_and_objects(
         )
         assert (
             conn.execute(
-                """
-            SELECT COUNT(*) FROM assets
-            WHERE json_extract(metadata_json, '$.identity_id') = ?
-            """,
+                "SELECT COUNT(*) FROM assets "
+                "WHERE json_extract(metadata_json, '$.identity_id') = ?",
                 (identity_id,),
             ).fetchone()[0]
             == 0
         )
+        primary_audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'simple_character.delete' AND entity_id = %s",
+            (identity_id,),
+        ).fetchone()
+
+    assert primary_audit is not None
+    assert json.loads(str(primary_audit["metadata_json"]))["storage_cleanup_status"] == "DEFERRED"
 
     for key in keys:
-        with pytest.raises(KeyError):
-            storage.get_object(key)
+        assert storage.get_object(key)
+
+
+def test_identity_delete_records_cleanup_intent_without_resolving_storage(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+    assert response.status_code == 204
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT id FROM person_identities WHERE id = %s", (identity_id,)
+            ).fetchone()
+            is None
+        )
+        audit = conn.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'simple_character.delete' AND entity_id = %s",
+            (identity_id,),
+        ).fetchone()
+    assert audit is not None
+    assert json.loads(str(audit["metadata_json"]))["storage_cleanup_status"] == "DEFERRED"
 
 
 def test_admin_can_delete_any_identity(client: TestClient) -> None:
@@ -1389,6 +1412,113 @@ def test_delete_rejects_identity_with_active_scene_task(client: TestClient) -> N
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "IDENTITY_DELETE_HAS_ACTIVE_TASKS"
+
+
+def test_delete_rejects_identity_with_active_oral_clone_before_storage_cleanup(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        source = conn.execute(
+            "SELECT source_asset_id FROM person_identities WHERE id = %s",
+            (identity_id,),
+        ).fetchone()
+        assert source is not None
+        source_asset_id = str(source["source_asset_id"])
+        source_uri = conn.execute(
+            "SELECT storage_uri FROM assets WHERE id = %s", (source_asset_id,)
+        ).fetchone()
+        assert source_uri is not None
+        source_key = storage_key_from_uri(str(source_uri["storage_uri"]))
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, status,
+                source_kind, source_asset_id
+            ) VALUES (%s, %s, 'employee_1', '进行中分身', 'RUNNING', 'IMAGE', %s)
+            """,
+            (f"avatar-{identity_id}", identity_id, source_asset_id),
+        )
+        conn.commit()
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "IDENTITY_DELETE_HAS_ORAL_HISTORY"
+    assert storage.get_object(source_key)
+
+
+def test_delete_rejects_identity_with_oral_wallet_history(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        source = conn.execute(
+            "SELECT source_asset_id FROM person_identities WHERE id = %s", (identity_id,)
+        ).fetchone()
+        assert source is not None
+        avatar_id = f"avatar-{identity_id}"
+        task_id = f"oral-{identity_id}"
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, status,
+                source_kind, source_asset_id
+            ) VALUES (%s, %s, 'employee_1', '历史分身', 'READY', 'IMAGE', %s)
+            """,
+            (avatar_id, identity_id, str(source["source_asset_id"])),
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_tasks (
+                id, owner_user_id, project_id, identity_id, avatar_id,
+                mode, title, status, estimated_cost_fen, idempotency_key, request_hash
+            ) VALUES (%s, 'employee_1', 'project-owned', %s, %s,
+                      'TTS', '历史口播', 'SUCCEEDED', 1000, %s, %s)
+            """,
+            (task_id, identity_id, avatar_id, f"key-{identity_id}", f"hash-{identity_id}"),
+        )
+        conn.execute(
+            "INSERT INTO wallets (user_id, available_credits, reserved_credits) "
+            "VALUES ('employee_1', 9, 1)"
+        )
+        conn.execute(
+            """
+            INSERT INTO wallet_transactions (
+                id, user_id, type, available_delta, reserved_delta,
+                oral_task_id, billing_round, idempotency_key
+            ) VALUES (%s, 'employee_1', 'RESERVE', -1, 1, %s, 1, %s)
+            """,
+            (f"wallet-{identity_id}", task_id, f"wallet-key-{identity_id}"),
+        )
+        conn.commit()
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "IDENTITY_DELETE_HAS_ORAL_HISTORY"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT id FROM wallet_transactions WHERE oral_task_id = %s", (task_id,)
+            ).fetchone()
+            is not None
+        )
+        assert (
+            conn.execute("SELECT id FROM oral_tasks WHERE id = %s", (task_id,)).fetchone()
+            is not None
+        )
 
 
 def test_delete_missing_identity_returns_404(client: TestClient) -> None:

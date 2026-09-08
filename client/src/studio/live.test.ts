@@ -803,6 +803,23 @@ describe("批次类型映射与取消", () => {
         created_at: "2026-09-06T09:33:00",
         updated_at: "2026-09-06T09:33:00",
       },
+      {
+        id: "oral-submitting",
+        status: "SUBMITTING",
+        title: "供应商提交中的口播",
+        mode: "TTS",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: "voice-1",
+        script_text: "建房成本讲解",
+        audio_asset_id: null,
+        status_message: "正在提交供应商",
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        created_at: "2026-09-06T09:34:00",
+        updated_at: "2026-09-06T09:34:00",
+      },
     ]);
 
     const data = await loadStudioData(user);
@@ -816,6 +833,11 @@ describe("批次类型映射与取消", () => {
       expect.objectContaining({
         id: "oral-oral-uncertain",
         status: "uncertain",
+        cancelAllowed: false,
+      }),
+      expect.objectContaining({
+        id: "oral-oral-submitting",
+        status: "running",
         cancelAllowed: false,
       }),
     ]);

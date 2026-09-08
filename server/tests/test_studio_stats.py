@@ -171,3 +171,61 @@ def test_today_boundary_follows_beijing_day(tmp_path: Path) -> None:
     )
     assert stats.today_completed == 1
     assert stats.total_completed == 2
+
+
+def test_studio_stats_include_oral_tasks_with_task_center_status_semantics(
+    tmp_path: Path,
+) -> None:
+    conn = stats_connection(tmp_path, "stats-oral.db")
+    conn.execute(
+        "INSERT INTO person_identities (id, owner_user_id, display_name) "
+        "VALUES ('oral-identity', 'employee_1', '口播人物')"
+    )
+    conn.execute(
+        """
+        INSERT INTO oral_avatars (
+            id, identity_id, owner_user_id, title, status, source_kind, source_asset_id
+        ) VALUES (
+            'oral-avatar', 'oral-identity', 'employee_1', '分身', 'READY', 'IMAGE', 'source'
+        )
+        """
+    )
+    rows = [
+        ("oral-queued", "QUEUED", None),
+        ("oral-running", "RUNNING", None),
+        ("oral-submitting", "SUBMITTING", None),
+        ("oral-failed", "FAILED", _NOW),
+        ("oral-uncertain", "SUBMISSION_UNCERTAIN", None),
+        ("oral-succeeded", "SUCCEEDED", _NOW),
+        ("oral-old", "SUCCEEDED", _DAYS_AGO),
+        ("oral-cancelled", "CANCELLED", _NOW),
+    ]
+    conn.executemany(
+        """
+        INSERT INTO oral_tasks (
+            id, owner_user_id, project_id, identity_id, avatar_id, mode, title,
+            status, estimated_cost_fen, idempotency_key, request_hash,
+            created_at, updated_at, completed_at
+        ) VALUES (%s, 'employee_1', 'p-1', 'oral-identity', 'oral-avatar', 'TTS',
+                  %s, %s, 1000, %s, %s, %s, %s, %s)
+        """,
+        [
+            (task_id, task_id, status, f"key-{task_id}", f"hash-{task_id}", _NOW, _NOW, done)
+            for task_id, status, done in rows
+        ],
+    )
+    conn.commit()
+
+    stats = studio_task_stats(
+        conn,
+        actor=actor("employee_1", "employee"),
+        now=datetime.fromisoformat(_NOW).replace(tzinfo=UTC),
+    )
+
+    assert stats == StudioStatsResponse(
+        today_completed=3,
+        running=3,
+        queued=2,
+        needs_attention=5,
+        total_completed=4,
+    )

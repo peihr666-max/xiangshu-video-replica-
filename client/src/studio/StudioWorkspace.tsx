@@ -8,7 +8,10 @@ import {
 } from "react";
 import type { WorkspaceShell } from "../App";
 import {
+  createOralAvatarClone,
+  createOralCloneConsent,
   createOralTask,
+  createOralVoiceClone,
   customerVisibleErrorMessage,
   type GenerationBatch,
   getGenerationBatch,
@@ -67,6 +70,7 @@ import type {
   StudioContextValue,
   StudioData,
   StudioDraft,
+  StudioOralCloneRequest,
   StudioPage,
   StudioState,
   StudioTask,
@@ -131,7 +135,7 @@ const navGroups: {
   },
 ];
 
-function isDefiniteOralSubmissionRejection(cause: unknown): boolean {
+function isDefiniteSubmissionRejection(cause: unknown): boolean {
   if (typeof cause !== "object" || cause === null) return false;
   const { status, retryable } = cause as {
     status?: unknown;
@@ -200,8 +204,23 @@ function StudioWorkspaceSession({
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [oralPriceFen, setOralPriceFen] = useState<number | null>(null);
+  const [oralPriceLoading, setOralPriceLoading] = useState(false);
+  const [oralPriceError, setOralPriceError] = useState("");
   const [oralSubmitting, setOralSubmitting] = useState(false);
+  const oralPriceRequestRef = useRef(0);
   const oralSubmissionRef = useRef<OralTaskRequest | undefined>(undefined);
+  const pendingCloneRef = useRef(
+    new Map<
+      string,
+      {
+        request: StudioOralCloneRequest;
+        consentId?: string;
+        idempotencyKey: string;
+        flight?: Promise<void>;
+      }
+    >(),
+  );
+  const cloneActiveRef = useRef(true);
   const oralSubmittingRef = useRef(false);
   const busyRef = useRef(false);
   const operationRef = useRef(0);
@@ -215,6 +234,14 @@ function StudioWorkspaceSession({
   }
   const loadUser = loadUserRef.current;
   const notify = useCallback((message: string) => setNotice(message), []);
+
+  useEffect(() => {
+    cloneActiveRef.current = true;
+    return () => {
+      cloneActiveRef.current = false;
+      pendingCloneRef.current.clear();
+    };
+  }, []);
 
   // ---- 云端草稿（C7）----
   // 编辑后防抖自动保存；恢复只在用户尚未做任何编辑时生效，绝不覆盖进行中的输入。
@@ -259,28 +286,47 @@ function StudioWorkspaceSession({
   useEffect(() => {
     latestDraftRef.current = state.draft;
   }, [state.draft]);
-  // 数字人口播提交前拉取单价（元/条）；失败保持 null 显示“待服务端报价”。
+  const reloadOralPrice = useCallback(async () => {
+    const request = ++oralPriceRequestRef.current;
+    setOralPriceFen(null);
+    setOralPriceError("");
+    setOralPriceLoading(true);
+    try {
+      const price = await getOralPrice();
+      if (request === oralPriceRequestRef.current) {
+        setOralPriceFen(price.unit_price_fen);
+      }
+    } catch {
+      if (request === oralPriceRequestRef.current) {
+        setOralPriceError("口播报价读取失败，请重新获取报价后再提交。");
+      }
+    } finally {
+      if (request === oralPriceRequestRef.current) setOralPriceLoading(false);
+    }
+  }, []);
+
+  // 数字人口播提交前拉取单价（元/条）；报价不可用时保持提交门禁。
   useEffect(() => {
     if (review || generation !== "数字人口播") {
+      oralPriceRequestRef.current += 1;
       setOralPriceFen(null);
+      setOralPriceError("");
+      setOralPriceLoading(false);
       return;
     }
-    let active = true;
-    void getOralPrice()
-      .then((price) => {
-        if (active) setOralPriceFen(price.unit_price_fen);
-      })
-      .catch(() => {
-        if (active) setOralPriceFen(null);
-      });
+    void reloadOralPrice();
     return () => {
-      active = false;
+      oralPriceRequestRef.current += 1;
     };
-  }, [review, generation]);
+  }, [review, generation, reloadOralPrice]);
 
   const submitOralTask = async () => {
     if (currentUser.role === "auditor") {
       notify("当前账号为只读权限，不能提交生成。");
+      return;
+    }
+    if (oralPriceFen === null) {
+      notify("请先获取口播报价，报价成功后才能提交。");
       return;
     }
     if (oralSubmittingRef.current) return;
@@ -316,7 +362,7 @@ function StudioWorkspaceSession({
         refresh();
       }
     } catch (cause: unknown) {
-      if (isDefiniteOralSubmissionRejection(cause)) {
+      if (isDefiniteSubmissionRejection(cause)) {
         oralSubmissionRef.current = undefined;
       }
       notify(
@@ -585,6 +631,78 @@ function StudioWorkspaceSession({
       notify(cause instanceof Error ? cause.message : "请检查生成原材料");
     }
   };
+  const submitOralClone = useCallback(
+    (input: StudioOralCloneRequest): Promise<void> => {
+      if (review) {
+        return Promise.reject(
+          new Error("当前为示例审核，不会提交真实口播克隆任务。"),
+        );
+      }
+      if (currentUser.role === "auditor") {
+        return Promise.reject(
+          new Error("当前账号为只读权限，不能提交口播克隆任务。"),
+        );
+      }
+      const key = `${input.kind}:${input.identityId}`;
+      const existing = pendingCloneRef.current.get(key);
+      if (existing?.flight) return existing.flight;
+      const pending =
+        existing ??
+        ({
+          request: { ...input },
+          idempotencyKey: crypto.randomUUID(),
+        } satisfies {
+          request: StudioOralCloneRequest;
+          idempotencyKey: string;
+        });
+      const flight = (async () => {
+        try {
+          if (!pending.consentId) {
+            const consent = await createOralCloneConsent({
+              identityId: pending.request.identityId,
+              sourceAssetId: pending.request.sourceAssetId,
+              purpose:
+                pending.request.kind === "avatar"
+                  ? "oral_avatar_clone"
+                  : "oral_voice_clone",
+            });
+            if (!cloneActiveRef.current) return;
+            pending.consentId = consent.consent_id;
+          }
+          if (!cloneActiveRef.current) return;
+          if (pending.request.kind === "avatar") {
+            await createOralAvatarClone({
+              identityId: pending.request.identityId,
+              title: pending.request.title,
+              sourceAssetId: pending.request.sourceAssetId,
+              sourceKind: pending.request.sourceKind,
+              consentId: pending.consentId,
+              idempotencyKey: pending.idempotencyKey,
+            });
+          } else {
+            await createOralVoiceClone({
+              identityId: pending.request.identityId,
+              title: pending.request.title,
+              sourceAssetId: pending.request.sourceAssetId,
+              consentId: pending.consentId,
+              idempotencyKey: pending.idempotencyKey,
+            });
+          }
+          pendingCloneRef.current.delete(key);
+        } catch (cause: unknown) {
+          pending.flight = undefined;
+          if (isDefiniteSubmissionRejection(cause)) {
+            pendingCloneRef.current.delete(key);
+          }
+          throw cause;
+        }
+      })();
+      pending.flight = flight;
+      pendingCloneRef.current.set(key, pending);
+      return flight;
+    },
+    [review, currentUser.role],
+  );
   const saveDraft = () => {
     if (
       !state.draft.script.text.trim() &&
@@ -690,6 +808,7 @@ function StudioWorkspaceSession({
     openPicker: setPicker,
     openLive,
     requestGeneration,
+    submitOralClone,
     saveDraft,
     confirmFinalDraft,
     extractScriptFromUpload,
@@ -953,6 +1072,18 @@ function StudioWorkspaceSession({
                 <dd>尚未提交 · 未扣费</dd>
               </div>
             </dl>
+            {!review && generation === "数字人口播" && oralPriceError ? (
+              <Hint>
+                {oralPriceError}
+                <Button
+                  variant="outline"
+                  disabled={oralPriceLoading}
+                  onClick={() => void reloadOralPrice()}
+                >
+                  {oralPriceLoading ? "正在获取报价" : "重新获取报价"}
+                </Button>
+              </Hint>
+            ) : null}
             {review || generation !== "数字人口播" ? (
               <Button variant="primary" disabled>
                 确认费用并提交
@@ -960,7 +1091,9 @@ function StudioWorkspaceSession({
             ) : (
               <Button
                 variant="primary"
-                disabled={oralSubmitting}
+                disabled={
+                  oralSubmitting || oralPriceLoading || oralPriceFen === null
+                }
                 onClick={() => void submitOralTask()}
               >
                 {oralSubmitting ? "正在提交" : "确认费用并提交"}

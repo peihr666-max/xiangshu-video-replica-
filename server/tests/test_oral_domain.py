@@ -1920,7 +1920,29 @@ def test_oral_sources_require_owner_current_authorization_and_non_auditor(
 
 def test_oral_unit_price_defaults_and_reads_settings(tmp_path: Path) -> None:
     conn = seed_scene(tmp_path, "oral-price.db")
-    assert oral_unit_price_fen(conn) == ORAL_UNIT_PRICE_FEN_DEFAULT == 1000
+    assert oral_unit_price_fen(conn, user_id="employee_1") == ORAL_UNIT_PRICE_FEN_DEFAULT == 1000
+    conn.execute("UPDATE runtime_settings SET internal_base_unit_price_fen = 750 WHERE id = 1")
+    conn.commit()
+    assert oral_unit_price_fen(conn, user_id="employee_1") == 750
+
+
+def test_oral_unit_price_uses_current_user_customer_quote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = seed_scene(tmp_path, "oral-customer-price.db")
+    requested_users: list[str] = []
+
+    def customer_quote(_self, *, user_id: str):
+        requested_users.append(user_id)
+        return {"charged_unit_price_fen": 625}
+
+    monkeypatch.setattr(
+        "app.oral.SettingsRepository.read_customer_billing_settings",
+        customer_quote,
+    )
+
+    assert oral_unit_price_fen(conn, user_id="employee_1") == 625
+    assert requested_users == ["employee_1"]
 
 
 def test_oral_unit_price_fails_closed_when_settings_are_unreadable(
@@ -1933,4 +1955,4 @@ def test_oral_unit_price_fails_closed_when_settings_are_unreadable(
     )
 
     with pytest.raises(OralDomainError, match="计费配置暂不可用"):
-        oral_unit_price_fen(conn)
+        oral_unit_price_fen(conn, user_id="employee_1")

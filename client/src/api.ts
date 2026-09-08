@@ -861,6 +861,100 @@ export type OralVoiceRecord = {
   confirmed: boolean | number;
 };
 
+export type OralCloneConsentPurpose = "oral_avatar_clone" | "oral_voice_clone";
+
+export type OralCloneConsent = {
+  consent_id: string;
+  identity_id: string;
+  source_asset_id: string;
+  source_sha256: string;
+  purpose: OralCloneConsentPurpose;
+};
+
+export type OralCloneCreated = {
+  id: string;
+  status: string;
+};
+
+export type OralAvatarCloneRequest = {
+  identityId: string;
+  title: string;
+  sourceAssetId: string;
+  sourceKind: "VIDEO" | "IMAGE";
+  consentId: string;
+  idempotencyKey: string;
+};
+
+export type OralVoiceCloneRequest = {
+  identityId: string;
+  title: string;
+  sourceAssetId: string;
+  consentId: string;
+  idempotencyKey: string;
+};
+
+export async function createOralCloneConsent(input: {
+  identityId: string;
+  sourceAssetId: string;
+  purpose: OralCloneConsentPurpose;
+}): Promise<OralCloneConsent> {
+  return requestApiJson<OralCloneConsent>(
+    "/api/oral/clone-consents",
+    "绑定口播克隆授权失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity_id: input.identityId,
+        source_asset_id: input.sourceAssetId,
+        purpose: input.purpose,
+        accepted: true,
+      }),
+    },
+  );
+}
+
+export async function createOralAvatarClone(
+  input: OralAvatarCloneRequest,
+): Promise<OralCloneCreated> {
+  return requestApiJson<OralCloneCreated>(
+    "/api/oral/avatars",
+    "创建口播分身失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity_id: input.identityId,
+        title: input.title,
+        source_asset_id: input.sourceAssetId,
+        source_kind: input.sourceKind,
+        consent_id: input.consentId,
+        idempotency_key: input.idempotencyKey,
+      }),
+    },
+  );
+}
+
+export async function createOralVoiceClone(
+  input: OralVoiceCloneRequest,
+): Promise<OralCloneCreated> {
+  return requestApiJson<OralCloneCreated>(
+    "/api/oral/voices",
+    "创建克隆声音失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity_id: input.identityId,
+        title: input.title,
+        source_asset_id: input.sourceAssetId,
+        consent_id: input.consentId,
+        idempotency_key: input.idempotencyKey,
+      }),
+    },
+  );
+}
+
 /** 当前登录账号指定人物的数字人分身。 */
 export async function listOralAvatars(
   identityId: string,
@@ -942,6 +1036,7 @@ export type OralTaskRecord = {
   id: string;
   status:
     | "QUEUED"
+    | "SUBMITTING"
     | "RUNNING"
     | "SUCCEEDED"
     | "FAILED"

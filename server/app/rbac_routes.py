@@ -693,106 +693,115 @@ def rename_project(
 @router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(
     project_id: str,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
 ) -> Response:
-    require_not_auditor(
-        conn,
-        actor=actor,
-        action="project.delete",
-        entity_type="project",
-        entity_id=project_id,
-    )
-    require_project_access(conn, actor=actor, project_id=project_id, action="project.delete")
-
-    # Paid provider calls may still be in flight for leased tasks; deleting the
-    # project underneath them would lose their write-back, so require the
-    # operator to wait until they settle (succeed, fail, or supersede).
-    has_active_tasks = conn.execute(
-        """
-        SELECT 1 FROM (
-            SELECT generation_batches.project_id
-            FROM generation_tasks
-            JOIN generation_batches ON generation_batches.id = generation_tasks.batch_id
-            WHERE generation_batches.project_id = %s
-              AND generation_tasks.status IN
-                  ('PENDING', 'SUBMITTING', 'QUEUED', 'RUNNING', 'ARCHIVING')
-            UNION ALL
-            SELECT analysis_tasks.project_id
-            FROM analysis_tasks
-            WHERE analysis_tasks.project_id = %s
-              AND analysis_tasks.status IN ('PENDING', 'RUNNING')
-        ) AS active_project_tasks
-        LIMIT 1
-        """,
-        (project_id, project_id),
-    ).fetchone()
-    if has_active_tasks:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "PROJECT_DELETE_HAS_ACTIVE_TASKS",
-                "message": "项目存在进行中的生成任务，请等待任务结束或失败后再删除。",
-            },
+    deleted_asset_count = 0
+    versions_count = 0
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="project.delete",
+            entity_type="project",
+            entity_id=project_id,
         )
+        require_project_access(conn, actor=actor, project_id=project_id, action="project.delete")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT id FROM projects WHERE id = %s FOR UPDATE", (project_id,))
 
-    assets = conn.execute(
-        """
-        SELECT id, storage_uri, sha256, size_bytes
-        FROM assets
-        WHERE project_id = %s
-        """,
-        (project_id,),
-    ).fetchall()
-    versions_count = int(
-        conn.execute(
-            "SELECT COUNT(*) FROM versions WHERE project_id = %s",
-            (project_id,),
-        ).fetchone()[0]
-    )
-
-    # Best-effort object cleanup: the operator is discarding the whole project,
-    # so an unavailable backend (e.g. cloud credentials removed) must not block
-    # the delete. Failures are counted and surfaced through the audit log.
-    storage_cleanup_failed_count = 0
-    shared_storage_object_count = 0
-    for asset in assets:
-        shared_reference = conn.execute(
-            "SELECT 1 FROM assets WHERE storage_uri = %s AND project_id <> %s LIMIT 1",
-            (str(asset["storage_uri"]), project_id),
+        # Paid provider calls may still be in flight for leased tasks; deleting
+        # the project underneath them would lose their write-back.
+        has_active_tasks = conn.execute(
+            """
+            SELECT 1 FROM (
+                SELECT generation_batches.project_id
+                FROM generation_tasks
+                JOIN generation_batches ON generation_batches.id = generation_tasks.batch_id
+                WHERE generation_batches.project_id = %s
+                  AND generation_tasks.status IN
+                      ('PENDING', 'SUBMITTING', 'QUEUED', 'RUNNING', 'ARCHIVING')
+                UNION ALL
+                SELECT analysis_tasks.project_id
+                FROM analysis_tasks
+                WHERE analysis_tasks.project_id = %s
+                  AND analysis_tasks.status IN ('PENDING', 'RUNNING')
+            ) AS active_project_tasks
+            LIMIT 1
+            """,
+            (project_id, project_id),
         ).fetchone()
-        if shared_reference is not None:
-            shared_storage_object_count += 1
-            continue
-        try:
-            storage = storage_for_asset(conn, str(asset["storage_uri"]))
-            storage.delete_object(
-                storage_key_from_uri(str(asset["storage_uri"])), actor_id=actor.id
+        if has_active_tasks:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "PROJECT_DELETE_HAS_ACTIVE_TASKS",
+                    "message": "项目存在进行中的生成任务，请等待任务结束或失败后再删除。",
+                },
             )
-        except (HTTPException, StorageBackendUnavailable, OSError, ValueError):
-            storage_cleanup_failed_count += 1
 
-    with conn:
+        retained_oral_history = conn.execute(
+            """
+            SELECT 1 FROM (
+                SELECT task.id FROM oral_tasks AS task WHERE task.project_id = %s
+                UNION ALL
+                SELECT avatar.id
+                FROM oral_avatars AS avatar
+                JOIN assets AS asset
+                  ON asset.id IN (avatar.source_asset_id, avatar.consent_id)
+                WHERE asset.project_id = %s
+                UNION ALL
+                SELECT voice.id
+                FROM oral_voices AS voice
+                JOIN assets AS asset
+                  ON asset.id IN (voice.source_asset_id, voice.consent_id, voice.demo_asset_id)
+                WHERE asset.project_id = %s
+            ) AS retained_oral_records
+            LIMIT 1
+            """,
+            (project_id, project_id, project_id),
+        ).fetchone()
+        if retained_oral_history:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "PROJECT_DELETE_HAS_ORAL_HISTORY",
+                    "message": "项目存在需保留的口播任务或克隆记录，不能删除。",
+                },
+            )
+
+        assets = conn.execute(
+            "SELECT id, storage_uri FROM assets WHERE project_id = %s",
+            (project_id,),
+        ).fetchall()
+        deleted_asset_count = len(assets)
+        versions_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM versions WHERE project_id = %s", (project_id,)
+            ).fetchone()[0]
+        )
         # character_reference_selections references versions with ON DELETE
         # RESTRICT, so it must be cleared before the cascade removes versions.
         conn.execute(
             "DELETE FROM character_reference_selections WHERE project_id = %s",
             (project_id,),
         )
+        write_audit(
+            conn,
+            actor=actor,
+            action="project.delete",
+            entity_type="project",
+            entity_id=project_id,
+            metadata={
+                "cleanup_retry_required": bool(assets),
+                "deleted_asset_count": deleted_asset_count,
+                "deleted_versions_count": versions_count,
+                "storage_cleanup_deferred_count": len(assets),
+                "storage_cleanup_status": "DEFERRED" if assets else "NOT_REQUIRED",
+            },
+            commit=False,
+        )
         conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
-    write_audit(
-        conn,
-        actor=actor,
-        action="project.delete",
-        entity_type="project",
-        entity_id=project_id,
-        metadata={
-            "deleted_asset_count": len(assets),
-            "deleted_versions_count": versions_count,
-            "storage_cleanup_failed_count": storage_cleanup_failed_count,
-            "shared_storage_object_count": shared_storage_object_count,
-        },
-    )
+        conn.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

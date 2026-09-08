@@ -457,6 +457,7 @@ export async function uploadWorkbenchSourceVideo(
 function oralTask(row: OralTaskRecord): StudioTask {
   const statusMap: Record<OralTaskRecord["status"], StudioTask["status"]> = {
     QUEUED: "queued",
+    SUBMITTING: "running",
     RUNNING: "running",
     SUCCEEDED: "completed",
     FAILED: "failed",

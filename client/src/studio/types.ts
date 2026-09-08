@@ -210,6 +210,20 @@ export type LivePanel =
   | "profile"
   | "wallet"
   | "analysis";
+export type StudioOralCloneRequest =
+  | {
+      kind: "avatar";
+      identityId: string;
+      title: string;
+      sourceAssetId: string;
+      sourceKind: "VIDEO" | "IMAGE";
+    }
+  | {
+      kind: "voice";
+      identityId: string;
+      title: string;
+      sourceAssetId: string;
+    };
 export type StudioContextValue = {
   state: StudioState;
   data: StudioData;
@@ -223,6 +237,7 @@ export type StudioContextValue = {
   openPicker: (kind: PickerKind) => void;
   openLive: (panel: LivePanel) => void;
   requestGeneration: (kind: StudioTask["type"]) => void;
+  submitOralClone?: (request: StudioOralCloneRequest) => Promise<void>;
   saveDraft: () => void;
   /** 确认终稿：置 confirmed + 立即云端持久化；带 projectId 时软发布到项目脚本版本。 */
   confirmFinalDraft: () => void;

@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Barrier
 
@@ -28,6 +30,7 @@ os.environ.setdefault(
 
 import psycopg
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -927,6 +930,289 @@ def test_script_task_discard_rejects_non_admin_auto_recovery_and_race(
         (pending_id, "PENDING", None),
     ]
     assert audit_count == (1,)
+
+
+@pytest.mark.pg
+def test_oral_price_uses_persisted_customer_unit_price(
+    route_state: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db_portable import BusinessConnection
+    from app.oral import oral_unit_price_fen
+
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
+    with psycopg.connect(route_state) as raw:
+        raw.execute(
+            "INSERT INTO customer_unit_prices "
+            "(user_id, unit_price_fen, updated_by_user_id) "
+            "VALUES ('customer_u', 625, 'admin_u')"
+        )
+        assert (
+            oral_unit_price_fen(
+                BusinessConnection.postgres(raw),
+                user_id="customer_u",
+            )
+            == 625
+        )
+
+
+@pytest.mark.pg
+def test_identity_delete_lock_prevents_concurrent_oral_clone_from_being_cascaded(
+    route_state: str,
+) -> None:
+    from app.auth import CurrentUser
+    from app.db_portable import BusinessConnection
+    from app.simple_character import delete_simple_character_identity
+
+    with psycopg.connect(route_state, autocommit=True) as seed:
+        seed.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name) "
+            "VALUES ('identity-delete-lock', 'customer_u', '并发删除人物')"
+        )
+
+    first = psycopg.connect(route_state)
+    try:
+        delete_simple_character_identity(
+            BusinessConnection.postgres(first),
+            actor=CurrentUser(
+                id="customer_u",
+                username="customer_u",
+                display_name="Customer User",
+                role="customer",
+            ),
+            identity_id="identity-delete-lock",
+        )
+        barrier = Barrier(2)
+
+        def insert_clone() -> str:
+            with psycopg.connect(route_state) as second:
+                second.execute("SET LOCAL lock_timeout = '3s'")
+                barrier.wait()
+                try:
+                    second.execute(
+                        """
+                        INSERT INTO oral_avatars (
+                            id, identity_id, owner_user_id, title, status,
+                            source_kind, source_asset_id
+                        ) VALUES (
+                            'late-avatar', 'identity-delete-lock', 'customer_u',
+                            '迟到分身', 'RUNNING', 'IMAGE', 'source'
+                        )
+                        """
+                    )
+                except psycopg.errors.ForeignKeyViolation:
+                    return "foreign-key-rejected"
+                return "inserted"
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(insert_clone)
+            barrier.wait()
+            time.sleep(0.1)
+            assert not future.done()
+            first.commit()
+            assert future.result(timeout=3) == "foreign-key-rejected"
+    finally:
+        first.close()
+    with psycopg.connect(route_state) as check:
+        assert (
+            check.execute("SELECT id FROM oral_avatars WHERE id = 'late-avatar'").fetchone() is None
+        )
+        audit = check.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'simple_character.delete' "
+            "AND entity_id = 'identity-delete-lock'"
+        ).fetchone()
+    assert audit is not None
+    assert json.loads(audit[0])["storage_cleanup_status"] == "NOT_REQUIRED"
+
+
+@pytest.mark.pg
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_project_delete_lock_rejects_late_clone_with_deleted_source_asset(
+    route_state: str,
+    clone_kind: str,
+) -> None:
+    from app.auth import CurrentUser
+    from app.db_portable import BusinessConnection
+    from app.oral import OralDomainError, start_avatar_clone, start_voice_clone
+
+    project_id = f"project-clone-race-{clone_kind}"
+    identity_id = f"identity-clone-race-{clone_kind}"
+    consent_id = f"consent-clone-race-{clone_kind}"
+    source_id = f"source-clone-race-{clone_kind}"
+    source_sha = "a" * 64 if clone_kind == "avatar" else "b" * 64
+    source_content_type = "image/png" if clone_kind == "avatar" else "audio/mpeg"
+    purpose = "oral_avatar_clone" if clone_kind == "avatar" else "oral_voice_clone"
+    consent_metadata = json.dumps(
+        {
+            "identity_id": identity_id,
+            "purpose": "authorization",
+            "oral_clone_consents": [
+                {
+                    "identity_id": identity_id,
+                    "source_asset_id": source_id,
+                    "source_sha256": source_sha,
+                    "purpose": purpose,
+                }
+            ],
+        }
+    )
+    with psycopg.connect(route_state, autocommit=True) as seed:
+        seed.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, 'customer_u', %s)",
+            (project_id, project_id),
+        )
+        seed.execute(
+            "INSERT INTO assets (id, project_id, kind, storage_uri, sha256, size_bytes, "
+            "content_type, created_by_user_id, metadata_json) VALUES "
+            "(%s, %s, 'identity_authorization', %s, '', 1, 'image/jpeg', "
+            "'customer_u', %s), (%s, %s, 'character_source_image', %s, %s, 1, %s, "
+            "'customer_u', '{}')",
+            (
+                consent_id,
+                project_id,
+                f"local://assets/{consent_id}.jpg",
+                consent_metadata,
+                source_id,
+                project_id,
+                f"local://assets/{source_id}",
+                source_sha,
+                source_content_type,
+            ),
+        )
+        seed.execute(
+            "INSERT INTO person_identities (id, owner_user_id, display_name, "
+            "authorization_status, authorization_asset_id, authorization_expires_at, "
+            "source_asset_id, source_quality_status, status) VALUES "
+            "(%s, 'customer_u', '并发克隆人物', 'AUTHORIZED', %s, "
+            "'2099-01-01T00:00:00+00:00', %s, 'PASSED', 'ACTIVE')",
+            (identity_id, consent_id, source_id),
+        )
+
+    deleting = psycopg.connect(route_state)
+    try:
+        deleting.execute("SELECT id FROM projects WHERE id = %s FOR UPDATE", (project_id,))
+
+        def create_clone() -> str:
+            with psycopg.connect(route_state) as raw:
+                raw.execute("SET LOCAL lock_timeout = '3s'")
+                conn = BusinessConnection.postgres(raw)
+                actor = CurrentUser(
+                    id="customer_u",
+                    username="customer_u",
+                    display_name="Customer User",
+                    role="customer",
+                )
+                try:
+                    if clone_kind == "avatar":
+                        start_avatar_clone(
+                            conn,
+                            actor=actor,
+                            identity_id=identity_id,
+                            title="迟到分身",
+                            source_asset_id=source_id,
+                            source_kind="IMAGE",
+                            consent_id=consent_id,
+                            idempotency_key=f"late-{clone_kind}",
+                        )
+                    else:
+                        start_voice_clone(
+                            conn,
+                            actor=actor,
+                            identity_id=identity_id,
+                            title="迟到声音",
+                            source_asset_id=source_id,
+                            consent_id=consent_id,
+                            idempotency_key=f"late-{clone_kind}",
+                        )
+                except OralDomainError:
+                    return "rejected"
+                return "inserted"
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(create_clone)
+            time.sleep(0.1)
+            assert not future.done()
+            deleting.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            deleting.commit()
+            assert future.result(timeout=3) == "rejected"
+    finally:
+        deleting.close()
+
+    table = "oral_avatars" if clone_kind == "avatar" else "oral_voices"
+    with psycopg.connect(route_state) as check:
+        assert (
+            check.execute(
+                f"SELECT id FROM {table} WHERE source_asset_id = %s",  # noqa: S608
+                (source_id,),
+            ).fetchone()
+            is None
+        )
+
+
+@pytest.mark.pg
+def test_project_delete_defers_storage_when_another_project_reuses_uri(
+    route_state: str,
+    tmp_path: Path,
+) -> None:
+    from app.auth import CurrentUser
+    from app.db_portable import BusinessConnection
+    from app.rbac_routes import delete_project
+    from app.storage import LocalStorageAdapter
+
+    actor = CurrentUser(
+        id="customer_u",
+        username="customer_u",
+        display_name="Customer User",
+        role="customer",
+    )
+    storage = LocalStorageAdapter(root=tmp_path, bucket="shared-bucket")
+    object_key = "shared/reference.mp4"
+    storage.put_object(object_key, b"shared-video", content_type="video/mp4")
+    storage_uri = f"local://shared-bucket/{object_key}"
+    with psycopg.connect(route_state, autocommit=True) as seed:
+        seed.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES "
+            "('project-storage-old', 'customer_u', '旧项目')"
+        )
+        seed.execute(
+            "INSERT INTO assets (id, project_id, kind, storage_uri, sha256, size_bytes, "
+            "content_type, created_by_user_id) VALUES "
+            "('asset-storage-old', 'project-storage-old', 'reference_video', %s, '', 12, "
+            "'video/mp4', 'customer_u')",
+            (storage_uri,),
+        )
+
+    class DirectPgDb:
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            with psycopg.connect(route_state) as raw:
+                yield BusinessConnection.postgres(raw), actor
+
+    response = delete_project("project-storage-old", DirectPgDb())  # type: ignore[arg-type]
+    assert response.status_code == 204
+
+    with psycopg.connect(route_state, autocommit=True) as second:
+        second.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES "
+            "('project-storage-new', 'customer_u', '新项目')"
+        )
+        second.execute(
+            "INSERT INTO assets (id, project_id, kind, storage_uri, sha256, size_bytes, "
+            "content_type, created_by_user_id) VALUES "
+            "('asset-storage-new', 'project-storage-new', 'reference_video', %s, '', 12, "
+            "'video/mp4', 'customer_u')",
+            (storage_uri,),
+        )
+
+    assert storage.get_object(object_key) == b"shared-video"
+    with psycopg.connect(route_state) as check:
+        audit = check.execute(
+            "SELECT metadata_json FROM audit_logs "
+            "WHERE action = 'project.delete' AND entity_id = 'project-storage-old'"
+        ).fetchone()
+    assert audit is not None
+    assert json.loads(audit[0])["storage_cleanup_status"] == "DEFERRED"
 
 
 # ---------------------------------------------------------------------------

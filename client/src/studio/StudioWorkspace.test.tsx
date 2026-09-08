@@ -416,6 +416,310 @@ describe("V1.4 workspace integration", () => {
     vi.unstubAllGlobals();
   });
 
+  it("口播报价失败时阻止提交，并可重试报价后恢复提交", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    let priceCalls = 0;
+    let oralCalls = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/price")) {
+          priceCalls += 1;
+          if (priceCalls === 1) throw new TypeError("price offline");
+          return { ok: true, json: async () => ({ unit_price_fen: 100 }) };
+        }
+        if (url.endsWith("/api/oral/tasks")) {
+          oralCalls += 1;
+          return {
+            ok: true,
+            json: async () => ({
+              id: "oral-after-price",
+              status: "QUEUED",
+              estimated_cost_fen: 100,
+              replayed: false,
+            }),
+          };
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        initialState={createReviewState("oral")}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    const confirm = await screen.findByRole("button", {
+      name: "确认费用并提交",
+    });
+    expect(confirm).toBeDisabled();
+    expect(oralCalls).toBe(0);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "重新获取报价" }),
+    );
+    await screen.findByText("1.00 元/条");
+    expect(confirm).toBeEnabled();
+
+    fireEvent.click(confirm);
+    await waitFor(() => expect(oralCalls).toBe(1));
+    vi.unstubAllGlobals();
+  });
+
+  it.each([408, 425, 429, 503])(
+    "人物分身请求遇到 %s 后跨页面重挂载仍复用完整请求",
+    async (status) => {
+      live.loadStudioData.mockResolvedValue({
+        ...createReviewData(),
+        loading: false,
+      });
+      let avatarCalls = 0;
+      const fetchMock = vi.fn(
+        async (input: RequestInfo | URL, _init?: RequestInit) => {
+          const url = String(input);
+          if (url.endsWith("/api/oral/clone-consents")) {
+            return new Response(
+              JSON.stringify({
+                consent_id: "consent-avatar-1",
+                identity_id: "zhang",
+                source_asset_id: "zhang-courtyard",
+                source_sha256: "fixture-sha256",
+                purpose: "oral_avatar_clone",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          if (url.endsWith("/api/oral/avatars")) {
+            avatarCalls += 1;
+            if (avatarCalls === 1) {
+              return new Response(
+                JSON.stringify({
+                  detail: {
+                    code: "UPSTREAM_UNAVAILABLE",
+                    message: "gateway unavailable",
+                    retryable: false,
+                  },
+                }),
+                {
+                  status,
+                  headers: { "Content-Type": "application/json" },
+                },
+              );
+            }
+            return new Response(
+              JSON.stringify({
+                id: `avatar-${avatarCalls}`,
+                status: "PENDING",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          throw new Error(`unexpected request: ${url}`);
+        },
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      render(
+        <StudioWorkspace
+          currentUser={reviewUser}
+          initialState={createReviewState("person-avatars")}
+        />,
+      );
+
+      const firstSubmit = await screen.findByRole("button", {
+        name: "开始制作",
+      });
+      fireEvent.change(screen.getByLabelText("分身名称"), {
+        target: { value: "首次冻结的庭院分身" },
+      });
+      fireEvent.click(firstSubmit);
+      await waitFor(() => expect(firstSubmit).toBeEnabled());
+      fireEvent.click(screen.getByRole("tab", { name: "IP 定位" }));
+      fireEvent.click(screen.getByRole("tab", { name: "口播分身" }));
+      fireEvent.click(await screen.findByRole("button", { name: "开始制作" }));
+      await waitFor(() => expect(avatarCalls).toBe(2));
+
+      const avatarBodies = fetchMock.mock.calls
+        .filter(([input]) => String(input).endsWith("/api/oral/avatars"))
+        .map(([, init]) => JSON.parse(String(init?.body)));
+      expect(avatarBodies[1]).toEqual(avatarBodies[0]);
+      expect(avatarBodies[0].title).toBe("首次冻结的庭院分身");
+      expect(
+        fetchMock.mock.calls.filter(([input]) =>
+          String(input).endsWith("/api/oral/clone-consents"),
+        ),
+      ).toHaveLength(1);
+      vi.unstubAllGlobals();
+    },
+  );
+
+  it("账号切换后隔离人物分身待重试请求并生成新幂等键", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    let avatarCalls = 0;
+    let consentCalls = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/clone-consents")) {
+          consentCalls += 1;
+          return new Response(
+            JSON.stringify({
+              consent_id: `consent-${consentCalls}`,
+              identity_id: "zhang",
+              source_asset_id: "zhang-courtyard",
+              source_sha256: "fixture-sha256",
+              purpose: "oral_avatar_clone",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/oral/avatars")) {
+          avatarCalls += 1;
+          if (avatarCalls === 1) {
+            return new Response(
+              JSON.stringify({
+                detail: {
+                  code: "UPSTREAM_UNAVAILABLE",
+                  message: "gateway unavailable",
+                  retryable: false,
+                },
+              }),
+              {
+                status: 503,
+                headers: { "Content-Type": "application/json" },
+              },
+            );
+          }
+          return new Response(
+            JSON.stringify({ id: "avatar-new", status: "PENDING" }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const state = createReviewState("person-avatars");
+    const view = render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "account-old" }}
+        initialState={state}
+      />,
+    );
+
+    const firstSubmit = await screen.findByRole("button", {
+      name: "开始制作",
+    });
+    fireEvent.click(firstSubmit);
+    await waitFor(() => expect(firstSubmit).toBeEnabled());
+    view.rerender(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "account-new" }}
+        initialState={state}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "开始制作" }));
+    await waitFor(() => expect(avatarCalls).toBe(2));
+
+    const avatarBodies = fetchMock.mock.calls
+      .filter(([input]) => String(input).endsWith("/api/oral/avatars"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(avatarBodies[1]).toMatchObject({
+      identity_id: avatarBodies[0].identity_id,
+      source_asset_id: avatarBodies[0].source_asset_id,
+      title: avatarBodies[0].title,
+    });
+    expect(avatarBodies[1].idempotency_key).not.toBe(
+      avatarBodies[0].idempotency_key,
+    );
+    expect(consentCalls).toBe(2);
+    vi.unstubAllGlobals();
+  });
+
+  it("声音克隆明确未受理后清除待重试请求", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    let voiceCalls = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/clone-consents")) {
+          return new Response(
+            JSON.stringify({
+              consent_id: `consent-${voiceCalls + 1}`,
+              identity_id: "zhang",
+              source_asset_id: "speech",
+              source_sha256: "fixture-sha256",
+              purpose: "oral_voice_clone",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/oral/voices")) {
+          voiceCalls += 1;
+          if (voiceCalls === 1) {
+            return new Response(
+              JSON.stringify({
+                detail: {
+                  code: "ORAL_INPUT_INVALID",
+                  message: "invalid voice input",
+                  retryable: false,
+                },
+              }),
+              {
+                status: 422,
+                headers: { "Content-Type": "application/json" },
+              },
+            );
+          }
+          return new Response(
+            JSON.stringify({ id: "voice-new", status: "PENDING" }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        initialState={createReviewState("person-voices")}
+      />,
+    );
+
+    const submit = await screen.findByRole("button", { name: "开始克隆" });
+    fireEvent.click(submit);
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(voiceCalls).toBe(2));
+
+    const voiceBodies = fetchMock.mock.calls
+      .filter(([input]) => String(input).endsWith("/api/oral/voices"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(voiceBodies[1].idempotency_key).not.toBe(
+      voiceBodies[0].idempotency_key,
+    );
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/oral/clone-consents"),
+      ),
+    ).toHaveLength(2);
+    vi.unstubAllGlobals();
+  });
+
   it("同一次口播提交阻止并发双击并在所有不确定响应后完整复用请求", async () => {
     live.loadStudioData.mockResolvedValue({
       ...createReviewData(),

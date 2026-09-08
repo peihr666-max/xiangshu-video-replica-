@@ -12,7 +12,10 @@ import {
   confirmSourceFrame,
   createGenerationBatch,
   createGenerationResultPreviewUrl,
+  createOralAvatarClone,
+  createOralCloneConsent,
   createOralTask,
+  createOralVoiceClone,
   createProject,
   createScriptVersion,
   createVideoUploadIntent,
@@ -458,6 +461,76 @@ describe("generation workflow API", () => {
       "http://127.0.0.1:8000/api/oral/voices/voice%2Fa%20b/confirm",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("按授权绑定分别提交分身与声音克隆", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ consent_id: "consent-1" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "avatar-1", status: "PENDING" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "voice-1", status: "PENDING" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createOralCloneConsent({
+      identityId: "person-1",
+      sourceAssetId: "image-1",
+      purpose: "oral_avatar_clone",
+    });
+    await createOralAvatarClone({
+      identityId: "person-1",
+      title: "讲解分身",
+      sourceAssetId: "image-1",
+      sourceKind: "IMAGE",
+      consentId: "consent-1",
+      idempotencyKey: "avatar-key-1",
+    });
+    await createOralVoiceClone({
+      identityId: "person-1",
+      title: "本人声音",
+      sourceAssetId: "audio-1",
+      consentId: "consent-1",
+      idempotencyKey: "voice-key-1",
+    });
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "http://127.0.0.1:8000/api/oral/clone-consents",
+      "http://127.0.0.1:8000/api/oral/avatars",
+      "http://127.0.0.1:8000/api/oral/voices",
+    ]);
+    expect(
+      fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body))),
+    ).toEqual([
+      {
+        identity_id: "person-1",
+        source_asset_id: "image-1",
+        purpose: "oral_avatar_clone",
+        accepted: true,
+      },
+      {
+        identity_id: "person-1",
+        title: "讲解分身",
+        source_asset_id: "image-1",
+        source_kind: "IMAGE",
+        consent_id: "consent-1",
+        idempotency_key: "avatar-key-1",
+      },
+      {
+        identity_id: "person-1",
+        title: "本人声音",
+        source_asset_id: "audio-1",
+        consent_id: "consent-1",
+        idempotency_key: "voice-key-1",
+      },
+    ]);
   });
 
   it("downloads a direct result using task authorization without forwarding credentials", async () => {
