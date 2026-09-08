@@ -14,7 +14,14 @@ import type {
 } from "../api";
 
 const api = vi.hoisted(() => ({
-  createScriptFromAudioTask: vi.fn<() => Promise<ScriptFromAudioTask>>(),
+  createScriptFromAudioTask:
+    vi.fn<
+      (
+        projectId: string,
+        assetId: string,
+        idempotencyKey: string,
+      ) => Promise<ScriptFromAudioTask>
+    >(),
   createGenerationResultPreviewUrl: vi.fn(),
   createGenerationTaskPreviewUrl: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
@@ -890,6 +897,7 @@ describe("批次类型映射与取消", () => {
 describe("文案提取任务身份绑定", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    window.localStorage.clear();
     vi.spyOn(window, "setTimeout").mockImplementation((handler) => {
       if (typeof handler === "function") handler();
       return 1;
@@ -898,6 +906,7 @@ describe("文案提取任务身份绑定", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    window.localStorage.clear();
   });
 
   it("另一标签页任务先完成时仍只读取本次创建任务的文案", async () => {
@@ -917,7 +926,7 @@ describe("文案提取任务身份绑定", () => {
     );
 
     await expect(
-      extractScriptFromUpload("project-1", "asset-1"),
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
     ).resolves.toEqual({ text: "本次草稿文案" });
     expect(api.getScriptFromAudioTask).toHaveBeenCalledTimes(2);
     expect(api.getScriptFromAudioTask).toHaveBeenNthCalledWith(
@@ -949,7 +958,7 @@ describe("文案提取任务身份绑定", () => {
     );
 
     await expect(
-      extractScriptFromUpload("project-1", "asset-1"),
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
     ).rejects.toThrow("本次任务失败");
     expect(api.getScriptFromAudioTask).toHaveBeenCalledWith("script-task-own");
     expect(api.getLatestScriptFromAudioTask).not.toHaveBeenCalled();
@@ -978,7 +987,7 @@ describe("文案提取任务身份绑定", () => {
       );
 
     await expect(
-      extractScriptFromUpload("project-1", "asset-1"),
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
     ).resolves.toEqual({ text: "自动恢复后的最终文案" });
     expect(api.getScriptFromAudioTask).toHaveBeenCalledTimes(2);
   });
@@ -994,8 +1003,390 @@ describe("文案提取任务身份绑定", () => {
     );
 
     await expect(
-      extractScriptFromUpload("project-1", "asset-1"),
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
     ).rejects.toThrow("需要管理员对账");
     expect(api.getScriptFromAudioTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("提交响应丢失后重试复用持久化幂等键", async () => {
+    api.createScriptFromAudioTask
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(scriptFromAudioTask());
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        status: "SUCCEEDED",
+        result: { text: "恢复后的文案", duration_sec: 8, language: "zh" },
+      }),
+    );
+
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).rejects.toThrow("network unavailable");
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "恢复后的文案" });
+
+    expect(api.createScriptFromAudioTask).toHaveBeenCalledTimes(2);
+    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).toBe(
+      api.createScriptFromAudioTask.mock.calls[0]?.[2],
+    );
+  });
+
+  it("页面重载后恢复存储不可读时阻止新建任务", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+
+    await expect(
+      extractScriptFromUpload("user-fresh-blocked", "project-1", "asset-1"),
+    ).rejects.toThrow("无法读取文案提取恢复状态");
+    expect(api.createScriptFromAudioTask).not.toHaveBeenCalled();
+  });
+
+  it("仅 setItem 容量失败时提交响应丢失仍复用同一幂等键", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    api.createScriptFromAudioTask
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(scriptFromAudioTask());
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        status: "SUCCEEDED",
+        result: { text: "容量失败恢复文案", duration_sec: 8, language: "zh" },
+      }),
+    );
+
+    await expect(
+      extractScriptFromUpload("user-quota-response", "project-1", "asset-1"),
+    ).rejects.toThrow("network unavailable");
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    await expect(
+      extractScriptFromUpload("user-quota-response", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "容量失败恢复文案" });
+
+    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).toBe(
+      api.createScriptFromAudioTask.mock.calls[0]?.[2],
+    );
+  });
+
+  it("仅 setItem 容量失败时轮询超时仍复用原任务 ID", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    api.createScriptFromAudioTask.mockResolvedValue(scriptFromAudioTask());
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({ status: "RUNNING" }),
+    );
+
+    await expect(
+      extractScriptFromUpload("user-quota-timeout", "project-1", "asset-1"),
+    ).rejects.toThrow("超时");
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        status: "SUCCEEDED",
+        result: { text: "容量失败超时恢复", duration_sec: 8, language: "zh" },
+      }),
+    );
+    await expect(
+      extractScriptFromUpload("user-quota-timeout", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "容量失败超时恢复" });
+
+    expect(api.createScriptFromAudioTask).toHaveBeenCalledTimes(1);
+    expect(api.getScriptFromAudioTask).toHaveBeenLastCalledWith(
+      "script-task-own",
+    );
+  });
+
+  it("localStorage 删除失败不覆盖明确任务失败且下一次使用新键", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    api.createScriptFromAudioTask
+      .mockResolvedValueOnce(scriptFromAudioTask())
+      .mockResolvedValueOnce(scriptFromAudioTask({ id: "memory-task-new" }));
+    api.getScriptFromAudioTask
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({ status: "FAILED", error_message: "音频无效" }),
+      )
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          id: "memory-task-new",
+          status: "SUCCEEDED",
+          result: { text: "新内存尝试", duration_sec: 8, language: "zh" },
+        }),
+      );
+
+    await expect(
+      extractScriptFromUpload("user-memory-fail", "project-1", "asset-1"),
+    ).rejects.toThrow("音频无效");
+    await expect(
+      extractScriptFromUpload("user-memory-fail", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "新内存尝试" });
+
+    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).not.toBe(
+      api.createScriptFromAudioTask.mock.calls[0]?.[2],
+    );
+  });
+
+  it("仅 removeItem 失败时终态仍允许下一次新建", async () => {
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    api.createScriptFromAudioTask
+      .mockResolvedValueOnce(scriptFromAudioTask())
+      .mockResolvedValueOnce(scriptFromAudioTask({ id: "remove-task-new" }));
+    api.getScriptFromAudioTask
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({ status: "FAILED", error_message: "音频无效" }),
+      )
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          id: "remove-task-new",
+          status: "SUCCEEDED",
+          result: {
+            text: "删除失败后的新文案",
+            duration_sec: 8,
+            language: "zh",
+          },
+        }),
+      );
+
+    await expect(
+      extractScriptFromUpload("user-remove-fail", "project-1", "asset-1"),
+    ).rejects.toThrow("音频无效");
+    await expect(
+      extractScriptFromUpload("user-remove-fail", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "删除失败后的新文案" });
+
+    expect(api.createScriptFromAudioTask).toHaveBeenCalledTimes(2);
+    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).not.toBe(
+      api.createScriptFromAudioTask.mock.calls[0]?.[2],
+    );
+  });
+
+  it("页面重载留下任务 ID 时只恢复轮询而不重复提交", async () => {
+    window.localStorage.setItem(
+      'studio.scriptFromAudioAttempt:["user-1","project-1","asset-1"]',
+      JSON.stringify({
+        version: 1,
+        accountId: "user-1",
+        projectId: "project-1",
+        assetId: "asset-1",
+        idempotencyKey: "persisted-key",
+        taskId: "persisted-task",
+      }),
+    );
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        id: "persisted-task",
+        status: "SUCCEEDED",
+        result: { text: "重载恢复文案", duration_sec: 7, language: "zh" },
+      }),
+    );
+
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "重载恢复文案" });
+
+    expect(api.createScriptFromAudioTask).not.toHaveBeenCalled();
+    expect(api.getScriptFromAudioTask).toHaveBeenCalledWith("persisted-task");
+  });
+
+  it("持久任务明确不存在时清除记录并允许下一次新建", async () => {
+    window.localStorage.setItem(
+      'studio.scriptFromAudioAttempt:["user-missing","project-1","asset-1"]',
+      JSON.stringify({
+        version: 1,
+        accountId: "user-missing",
+        projectId: "project-1",
+        assetId: "asset-1",
+        idempotencyKey: "missing-task-key",
+        taskId: "missing-task",
+      }),
+    );
+    api.getScriptFromAudioTask
+      .mockRejectedValueOnce(
+        Object.assign(new Error("提取任务不存在"), {
+          status: 404,
+          code: "SCRIPT_FROM_AUDIO_TASK_NOT_FOUND",
+          retryable: false,
+        }),
+      )
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          id: "replacement-task",
+          status: "SUCCEEDED",
+          result: { text: "新建任务文案", duration_sec: 7, language: "zh" },
+        }),
+      );
+    api.createScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({ id: "replacement-task" }),
+    );
+
+    await expect(
+      extractScriptFromUpload("user-missing", "project-1", "asset-1"),
+    ).rejects.toThrow("提取任务不存在");
+    await expect(
+      extractScriptFromUpload("user-missing", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "新建任务文案" });
+
+    expect(api.createScriptFromAudioTask).toHaveBeenCalledTimes(1);
+    expect(api.createScriptFromAudioTask.mock.calls[0]?.[2]).not.toBe(
+      "missing-task-key",
+    );
+  });
+
+  it.each([
+    new TypeError("network unavailable"),
+    Object.assign(new Error("request timeout"), { status: 408 }),
+    Object.assign(new Error("too early"), { status: 425 }),
+    Object.assign(new Error("rate limited"), { status: 429 }),
+    Object.assign(new Error("gateway unavailable"), { status: 503 }),
+  ])("持久任务轮询遇不确定错误时保留任务 ID", async (cause) => {
+    window.localStorage.setItem(
+      'studio.scriptFromAudioAttempt:["user-retry","project-1","asset-1"]',
+      JSON.stringify({
+        version: 1,
+        accountId: "user-retry",
+        projectId: "project-1",
+        assetId: "asset-1",
+        idempotencyKey: "retry-task-key",
+        taskId: "retry-task",
+      }),
+    );
+    api.getScriptFromAudioTask
+      .mockRejectedValueOnce(cause)
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          id: "retry-task",
+          status: "SUCCEEDED",
+          result: { text: "继续轮询文案", duration_sec: 7, language: "zh" },
+        }),
+      );
+
+    await expect(
+      extractScriptFromUpload("user-retry", "project-1", "asset-1"),
+    ).rejects.toThrow();
+    await expect(
+      extractScriptFromUpload("user-retry", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "继续轮询文案" });
+
+    expect(api.createScriptFromAudioTask).not.toHaveBeenCalled();
+    expect(api.getScriptFromAudioTask).toHaveBeenNthCalledWith(2, "retry-task");
+  });
+
+  it("轮询超时后再次点击继续读取原任务", async () => {
+    api.createScriptFromAudioTask.mockResolvedValue(scriptFromAudioTask());
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({ status: "RUNNING" }),
+    );
+
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).rejects.toThrow("超时");
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        status: "SUCCEEDED",
+        result: { text: "超时后恢复", duration_sec: 9, language: "zh" },
+      }),
+    );
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "超时后恢复" });
+
+    expect(api.createScriptFromAudioTask).toHaveBeenCalledTimes(1);
+    expect(api.getScriptFromAudioTask).toHaveBeenLastCalledWith(
+      "script-task-own",
+    );
+  });
+
+  it("明确失败后新尝试轮换幂等键", async () => {
+    api.createScriptFromAudioTask
+      .mockResolvedValueOnce(scriptFromAudioTask())
+      .mockResolvedValueOnce(scriptFromAudioTask({ id: "script-task-new" }));
+    api.getScriptFromAudioTask
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({ status: "FAILED", error_message: "音频无效" }),
+      )
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          id: "script-task-new",
+          status: "SUCCEEDED",
+          result: { text: "新尝试文案", duration_sec: 6, language: "zh" },
+        }),
+      );
+
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).rejects.toThrow("音频无效");
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "新尝试文案" });
+
+    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).not.toBe(
+      api.createScriptFromAudioTask.mock.calls[0]?.[2],
+    );
+  });
+
+  it("创建阶段明确未受理后新尝试轮换幂等键", async () => {
+    api.createScriptFromAudioTask
+      .mockRejectedValueOnce(
+        Object.assign(new Error("素材不属于当前项目"), {
+          status: 422,
+          retryable: false,
+        }),
+      )
+      .mockResolvedValueOnce(scriptFromAudioTask());
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        status: "SUCCEEDED",
+        result: { text: "修正后的文案", duration_sec: 6, language: "zh" },
+      }),
+    );
+
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).rejects.toThrow("素材不属于当前项目");
+    await expect(
+      extractScriptFromUpload("user-1", "project-1", "asset-1"),
+    ).resolves.toEqual({ text: "修正后的文案" });
+
+    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).not.toBe(
+      api.createScriptFromAudioTask.mock.calls[0]?.[2],
+    );
+  });
+
+  it("不同账号对同一项目素材使用隔离的提取尝试", async () => {
+    api.createScriptFromAudioTask
+      .mockResolvedValueOnce(scriptFromAudioTask())
+      .mockResolvedValueOnce(scriptFromAudioTask({ id: "task-user-2" }));
+    api.getScriptFromAudioTask
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          status: "SUCCEEDED",
+          result: { text: "账号一文案", duration_sec: 5, language: "zh" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          id: "task-user-2",
+          status: "SUCCEEDED",
+          result: { text: "账号二文案", duration_sec: 5, language: "zh" },
+        }),
+      );
+
+    await extractScriptFromUpload("user-1", "project-1", "asset-1");
+    await extractScriptFromUpload("user-2", "project-1", "asset-1");
+
+    expect(api.createScriptFromAudioTask).toHaveBeenCalledTimes(2);
+    expect(api.createScriptFromAudioTask.mock.calls[1]?.[2]).not.toBe(
+      api.createScriptFromAudioTask.mock.calls[0]?.[2],
+    );
   });
 });

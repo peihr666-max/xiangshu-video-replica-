@@ -468,7 +468,39 @@ def run_worker_once(
                 return processed
         clone_lease = acquire_oral_clone(conn, worker_id=worker_id)
         if clone_lease is not None:
-            run_claimed_oral_clone(conn, lease=clone_lease, worker_id=worker_id)
+            try:
+                run_claimed_oral_clone(conn, lease=clone_lease, worker_id=worker_id)
+            except Exception as exc:
+                logger.warning(
+                    "sqlite oral clone execution failed task_id=%s clone_kind=%s error_type=%s",
+                    str(clone_lease["id"]),
+                    str(clone_lease["clone_kind"]),
+                    type(exc).__name__,
+                )
+                table = (
+                    "oral_avatars" if str(clone_lease["clone_kind"]) == "avatar" else "oral_voices"
+                )
+                checkpoint = conn.execute(
+                    f"SELECT provider_started_at FROM {table} WHERE id = %s",  # noqa: S608
+                    (str(clone_lease["id"]),),
+                ).fetchone()
+                provider_started = checkpoint is not None and checkpoint[0] is not None
+                if provider_started:
+                    preserved = preserve_oral_clone_outcome_for_reconciliation(
+                        conn,
+                        lease=clone_lease,
+                        outcome=None,
+                        cause=exc,
+                    )
+                    if not preserved:
+                        logger.error("oral clone failure not preserved; lease token was replaced")
+                else:
+                    finalized = fail_claimed_oral_clone(conn, lease=clone_lease, cause=exc)
+                    if not finalized:
+                        logger.warning(
+                            "oral clone preparation failure ignored; lease token was replaced"
+                        )
+                conn.commit()
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:

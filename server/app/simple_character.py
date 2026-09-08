@@ -1450,6 +1450,7 @@ def delete_simple_character_identity(
         if asset_ids
         else []
     )
+    deferred_storage_object_count = len({str(asset["storage_uri"]) for asset in asset_rows})
     # Asset URIs may be reused by another project or identity after this
     # transaction commits. Without a durable storage GC/outbox, synchronous
     # deletion has an unavoidable TOCTOU window, so retain the objects and
@@ -1468,10 +1469,15 @@ def delete_simple_character_identity(
             entity_type="person_identity",
             entity_id=identity_id,
             metadata={
-                "cleanup_retry_required": bool(asset_rows),
+                # This count-only intent is durable. A future scanning GC must
+                # enumerate storage and compare it with all live asset URIs;
+                # audit rows signal pending work but are not an object manifest.
+                "cleanup_retry_required": deferred_storage_object_count > 0,
                 "deleted_asset_count": len(asset_rows),
-                "storage_cleanup_deferred_count": len(asset_rows),
-                "storage_cleanup_status": "DEFERRED" if asset_rows else "NOT_REQUIRED",
+                "storage_cleanup_deferred_count": deferred_storage_object_count,
+                "storage_cleanup_status": (
+                    "DEFERRED" if deferred_storage_object_count else "NOT_REQUIRED"
+                ),
             },
             commit=False,
         )

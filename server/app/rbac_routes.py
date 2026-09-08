@@ -725,10 +725,15 @@ def delete_project(
                 FROM analysis_tasks
                 WHERE analysis_tasks.project_id = %s
                   AND analysis_tasks.status IN ('PENDING', 'RUNNING')
+                UNION ALL
+                SELECT script_from_audio_tasks.project_id
+                FROM script_from_audio_tasks
+                WHERE script_from_audio_tasks.project_id = %s
+                  AND script_from_audio_tasks.status IN ('PENDING', 'RUNNING')
             ) AS active_project_tasks
             LIMIT 1
             """,
-            (project_id, project_id),
+            (project_id, project_id, project_id),
         ).fetchone()
         if has_active_tasks:
             raise HTTPException(
@@ -736,6 +741,20 @@ def delete_project(
                 detail={
                     "code": "PROJECT_DELETE_HAS_ACTIVE_TASKS",
                     "message": "项目存在进行中的生成任务，请等待任务结束或失败后再删除。",
+                },
+            )
+
+        retained_asr_history = conn.execute(
+            "SELECT 1 FROM script_from_audio_tasks "
+            "WHERE project_id = %s AND status = 'SUBMISSION_UNCERTAIN' LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if retained_asr_history:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "PROJECT_DELETE_HAS_ASR_RECONCILIATION",
+                    "message": "项目存在待对账的音频文案任务，不能删除。",
                 },
             )
 
@@ -774,6 +793,7 @@ def delete_project(
             (project_id,),
         ).fetchall()
         deleted_asset_count = len(assets)
+        deferred_storage_object_count = len({str(asset["storage_uri"]) for asset in assets})
         versions_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM versions WHERE project_id = %s", (project_id,)
@@ -792,11 +812,16 @@ def delete_project(
             entity_type="project",
             entity_id=project_id,
             metadata={
-                "cleanup_retry_required": bool(assets),
+                # This count-only intent is durable. A future scanning GC must
+                # enumerate storage and compare it with all live asset URIs;
+                # audit rows signal pending work but are not an object manifest.
+                "cleanup_retry_required": deferred_storage_object_count > 0,
                 "deleted_asset_count": deleted_asset_count,
                 "deleted_versions_count": versions_count,
-                "storage_cleanup_deferred_count": len(assets),
-                "storage_cleanup_status": "DEFERRED" if assets else "NOT_REQUIRED",
+                "storage_cleanup_deferred_count": deferred_storage_object_count,
+                "storage_cleanup_status": (
+                    "DEFERRED" if deferred_storage_object_count else "NOT_REQUIRED"
+                ),
             },
             commit=False,
         )

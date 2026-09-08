@@ -9,6 +9,7 @@ network or real buckets.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -289,6 +290,240 @@ def test_avatar_clone_worker_submits_then_polls_to_ready(
     assert refreshed["vendor_avatar_id"] == "vendor-avatar-1"
     # 上传走 PUT；创建与查询各一次 POST/GET。
     assert any(method == "PUT" for method, _ in transport.calls)
+
+
+def test_quicktime_avatar_preserves_mov_upload_extension(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-avatar-mov.db")
+    conn.execute("UPDATE assets SET content_type = 'video/quicktime' WHERE id = 'asset-src'")
+    conn.commit()
+    fake_source_storage.payload = b"\x00\x00\x00\x14ftypqt  quicktime"
+    vendor, transport = make_vendor()
+
+    def upload_target(body: bytes | None) -> bytes:
+        assert json.loads(body or b"{}")["file_extension"] == "mov"
+        return envelope(
+            {
+                "upload_url": "https://up.example/mov",
+                "content_type": "video/quicktime",
+                "file_id": "mov-file",
+            }
+        )
+
+    transport.on("POST", "/api/v2/hifly/tool/create_upload_url", upload_target)
+    transport.on("POST", "/api/v2/hifly/avatar/create_by_video", envelope({"task_id": "mov-task"}))
+    created = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="MOV 分身",
+        source_asset_id="asset-src",
+        source_kind="VIDEO",
+        consent_id="asset-auth",
+        idempotency_key="avatar-mov",
+    )
+    lease = acquire_oral_clone(conn, worker_id="mov-worker")
+    assert lease is not None
+
+    run_claimed_oral_clone(conn, lease=lease, worker_id="mov-worker", vendor=vendor)
+
+    row = conn.execute(
+        "SELECT status, vendor_task_id FROM oral_avatars WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    assert tuple(row) == ("RUNNING", "mov-task")
+
+
+@pytest.mark.parametrize(
+    ("content_type", "extension"),
+    [("video/mp4", "mp4"), ("video/quicktime", "mov"), ("video/webm", "webm")],
+)
+def test_avatar_video_extension_accepts_only_documented_content_types(
+    content_type: str,
+    extension: str,
+) -> None:
+    from app.oral import _extension_for
+
+    assert _extension_for({"content_type": content_type}, "VIDEO") == extension
+    with pytest.raises(OralDomainError, match="视频格式不支持"):
+        _extension_for({"content_type": "video/x-msvideo"}, "VIDEO")
+
+
+def test_sqlite_worker_finalizes_clone_prepare_failure_and_processes_next_clone(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.generation_worker import run_worker_once
+
+    conn = seed_scene(tmp_path, "oral-clone-prepare-starvation.db")
+    conn.execute(
+        "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, status, "
+        "source_kind, source_asset_id, consent_id, idempotency_key, request_hash, "
+        "created_at) VALUES "
+        "('a-broken-clone', 'ident-1', 'employee_1', '坏素材', 'PENDING', 'VIDEO', "
+        "'missing-source', 'asset-auth', 'broken-clone', 'broken-hash', "
+        "'2000-01-01T00:00:00+00:00')"
+    )
+    healthy = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="后续分身",
+        source_asset_id="asset-src",
+        source_kind="VIDEO",
+        consent_id="asset-auth",
+        idempotency_key="healthy-clone",
+    )
+    conn.commit()
+    vendor, transport = make_vendor()
+    transport.on(
+        "POST",
+        "/api/v2/hifly/tool/create_upload_url",
+        envelope(
+            {
+                "upload_url": "https://up.example/healthy",
+                "content_type": "video/mp4",
+                "file_id": "healthy-file",
+            }
+        ),
+    )
+    transport.on(
+        "POST", "/api/v2/hifly/avatar/create_by_video", envelope({"task_id": "healthy-task"})
+    )
+    monkeypatch.setattr("app.oral.hifly_client_from_settings", lambda _conn: vendor)
+
+    processed = run_worker_once(
+        conn,
+        worker_id="clone-starvation-worker",
+        storage=fake_source_storage,  # type: ignore[arg-type]
+        max_tasks=2,
+    )
+
+    assert processed == 2
+    rows = conn.execute(
+        "SELECT id, status, vendor_task_id FROM oral_avatars WHERE id IN ('a-broken-clone', %s)",
+        (healthy.task_id,),
+    ).fetchall()
+    states = {str(row["id"]): (str(row["status"]), row["vendor_task_id"]) for row in rows}
+    assert states == {
+        "a-broken-clone": ("FAILED", None),
+        healthy.task_id: ("RUNNING", "healthy-task"),
+    }
+
+
+def test_sqlite_clone_prepare_failure_logs_context_and_persists_safe_message(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.generation_worker import run_worker_once
+
+    conn = seed_scene(tmp_path, "oral-clone-safe-error.db")
+    conn.execute(
+        "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, status, "
+        "source_kind, source_asset_id, consent_id, idempotency_key, request_hash) VALUES "
+        "('safe-error-clone', 'ident-1', 'employee_1', '配置失败', 'PENDING', 'VIDEO', "
+        "'asset-src', 'asset-auth', 'safe-error-key', 'safe-error-hash')"
+    )
+    conn.commit()
+    secret_detail = "private-config-path-and-token"
+
+    def raise_prepare_error(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError(secret_detail)
+
+    monkeypatch.setattr("app.generation_worker.run_claimed_oral_clone", raise_prepare_error)
+    worker_logger = logging.getLogger("app.generation_worker")
+    monkeypatch.setattr(worker_logger, "handlers", [*worker_logger.handlers, caplog.handler])
+    caplog.set_level(logging.WARNING, logger="app.generation_worker")
+
+    assert (
+        run_worker_once(
+            conn,
+            worker_id="safe-error-worker",
+            storage=fake_source_storage,  # type: ignore[arg-type]
+            max_tasks=1,
+        )
+        == 1
+    )
+
+    row = conn.execute(
+        "SELECT status, error_message FROM oral_avatars WHERE id = 'safe-error-clone'"
+    ).fetchone()
+    assert tuple(row) == ("FAILED", "克隆服务配置或依赖暂不可用，请稍后重试")
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "task_id=safe-error-clone" in message
+        and "clone_kind=avatar" in message
+        and "error_type=RuntimeError" in message
+        for message in messages
+    )
+    assert not any("lease token was replaced" in message for message in messages)
+    assert secret_detail not in caplog.text
+    assert secret_detail not in str(row["error_message"])
+
+
+def test_sqlite_clone_prepare_failure_logs_replaced_token_without_overwrite(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.generation_worker import run_worker_once
+
+    conn = seed_scene(tmp_path, "oral-clone-stale-error.db")
+    conn.execute(
+        "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, status, "
+        "source_kind, source_asset_id, consent_id, idempotency_key, request_hash) VALUES "
+        "('stale-error-clone', 'ident-1', 'employee_1', '旧租约', 'PENDING', 'VIDEO', "
+        "'asset-src', 'asset-auth', 'stale-error-key', 'stale-error-hash')"
+    )
+    conn.commit()
+
+    secret_detail = "stale-worker-private-path-and-token"
+
+    def replace_token_then_fail(
+        active_conn: BusinessConnection,
+        *,
+        lease: dict[str, Any],
+        worker_id: str,
+    ) -> str:
+        assert worker_id == "stale-error-worker"
+        active_conn.execute(
+            "UPDATE oral_avatars SET lease_token = 'replacement-token' WHERE id = %s",
+            (str(lease["id"]),),
+        )
+        active_conn.commit()
+        raise RuntimeError(secret_detail)
+
+    monkeypatch.setattr(
+        "app.generation_worker.run_claimed_oral_clone",
+        replace_token_then_fail,
+    )
+    worker_logger = logging.getLogger("app.generation_worker")
+    monkeypatch.setattr(worker_logger, "handlers", [*worker_logger.handlers, caplog.handler])
+    caplog.set_level(logging.WARNING, logger="app.generation_worker")
+
+    assert (
+        run_worker_once(
+            conn,
+            worker_id="stale-error-worker",
+            storage=fake_source_storage,  # type: ignore[arg-type]
+            max_tasks=1,
+        )
+        == 1
+    )
+
+    row = conn.execute(
+        "SELECT status, lease_token, error_message FROM oral_avatars WHERE id = 'stale-error-clone'"
+    ).fetchone()
+    assert tuple(row) == ("SUBMITTING", "replacement-token", None)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("task_id=stale-error-clone" in message for message in messages)
+    assert any("lease token was replaced" in message for message in messages)
+    assert secret_detail not in caplog.text
 
 
 def test_voice_clone_archives_demo_but_requires_confirmation(

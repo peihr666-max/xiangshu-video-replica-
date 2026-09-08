@@ -771,7 +771,7 @@ function StudioWorkspaceSession({
     }
     extractingRef.current = true;
     notify("正在提取音频并转写文案，预计一到两分钟，请勿关闭页面…");
-    void extractScriptFromUploadLive(projectId, assetId)
+    void extractScriptFromUploadLive(currentUser.id, projectId, assetId)
       .then(({ text }) => {
         extractingRef.current = false;
         const currentScript = latestDraftRef.current.script;

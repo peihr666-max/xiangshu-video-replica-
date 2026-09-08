@@ -513,11 +513,17 @@ def _asset_storage_target(
 
 def _extension_for(asset: dict[str, Any], source_kind: str) -> str:
     content_type = str(asset.get("content_type") or "")
-    if source_kind == "IMAGE" or content_type.startswith("image/"):
+    if source_kind == "IMAGE":
         return "image"
-    if content_type.endswith("webm"):
-        return "webm"
-    return "mp4"
+    extensions = {
+        "video/mp4": "mp4",
+        "video/quicktime": "mov",
+        "video/webm": "webm",
+    }
+    try:
+        return extensions[content_type]
+    except KeyError as exc:
+        raise OralDomainError("分身视频格式不支持，请上传 MP4、MOV 或 WebM 视频") from exc
 
 
 def _verified_image_extension(content: bytes) -> str:
@@ -932,13 +938,21 @@ def fail_claimed_oral_clone(
         "lease_token = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP "
         f"WHERE id = %s AND lease_token = %s AND status = %s AND {lease_current} RETURNING id",
         (
-            str(cause)[:500],
+            _safe_clone_failure_message(cause),
             str(lease["id"]),
             str(lease["lease_token"]),
             str(lease["status"]),
         ),
     ).fetchone()
     return updated is not None
+
+
+def _safe_clone_failure_message(cause: Exception) -> str:
+    if isinstance(cause, OralDomainError):
+        return str(cause)[:500]
+    if isinstance(cause, (OSError, TimeoutError)):
+        return "克隆素材暂时无法读取，请稍后重试"
+    return "克隆服务配置或依赖暂不可用，请稍后重试"
 
 
 def preserve_oral_clone_outcome_for_reconciliation(

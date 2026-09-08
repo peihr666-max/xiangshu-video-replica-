@@ -29,6 +29,7 @@ import {
   type OralTaskRecord,
   type Project,
   readAnalysisPayload,
+  type ScriptFromAudioTask,
   type SimpleLibraryEntry,
   type StudioDraftKind,
   type StudioSavedScriptInput,
@@ -763,19 +764,195 @@ export async function loadPersonAssets(
 
 /** 提取文案管线（script-from-audio）：提交任务 → 每 2 秒轮询 → 终态返回。
  * 自动恢复的不确定任务继续轮询；需人工对账或失败时抛出明确错误。 */
-export async function extractScriptFromUpload(
+type ScriptExtractionAttempt = {
+  version: 1;
+  accountId: string;
+  projectId: string;
+  assetId: string;
+  idempotencyKey: string;
+  taskId?: string;
+};
+
+const scriptExtractionFlights = new Map<string, Promise<{ text: string }>>();
+const scriptExtractionAttempts = new Map<
+  string,
+  { attempt: ScriptExtractionAttempt; persisted: boolean }
+>();
+const removedScriptExtractionAttempts = new Set<string>();
+
+function scriptExtractionStorageKey(
+  accountId: string,
+  projectId: string,
+  assetId: string,
+): string {
+  return `studio.scriptFromAudioAttempt:${JSON.stringify([accountId, projectId, assetId])}`;
+}
+
+function readScriptExtractionAttempt(
+  storageKey: string,
+  accountId: string,
+  projectId: string,
+  assetId: string,
+): ScriptExtractionAttempt | undefined {
+  if (removedScriptExtractionAttempts.has(storageKey)) return undefined;
+  const memory = scriptExtractionAttempts.get(storageKey);
+  let saved: string | null;
+  try {
+    saved = window.localStorage.getItem(storageKey);
+  } catch {
+    if (memory) return memory.attempt;
+    throw new Error("无法读取文案提取恢复状态，请检查浏览器存储权限后重试。");
+  }
+  if (!saved) {
+    if (memory && !memory.persisted) return memory.attempt;
+    scriptExtractionAttempts.delete(storageKey);
+    return undefined;
+  }
+  try {
+    const attempt = JSON.parse(saved) as Partial<ScriptExtractionAttempt>;
+    if (
+      attempt.version !== 1 ||
+      attempt.accountId !== accountId ||
+      attempt.projectId !== projectId ||
+      attempt.assetId !== assetId ||
+      typeof attempt.idempotencyKey !== "string" ||
+      (attempt.taskId !== undefined && typeof attempt.taskId !== "string")
+    ) {
+      removeScriptExtractionAttempt(storageKey);
+      return undefined;
+    }
+    const validAttempt = attempt as ScriptExtractionAttempt;
+    if (memory && !memory.persisted) {
+      return memory.attempt;
+    }
+    scriptExtractionAttempts.set(storageKey, {
+      attempt: validAttempt,
+      persisted: true,
+    });
+    return validAttempt;
+  } catch {
+    removeScriptExtractionAttempt(storageKey);
+    return undefined;
+  }
+}
+
+function writeScriptExtractionAttempt(
+  storageKey: string,
+  attempt: ScriptExtractionAttempt,
+): void {
+  removedScriptExtractionAttempts.delete(storageKey);
+  scriptExtractionAttempts.set(storageKey, { attempt, persisted: false });
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(attempt));
+    scriptExtractionAttempts.set(storageKey, { attempt, persisted: true });
+  } catch {
+    // The in-memory record still prevents duplicate submissions in this page.
+  }
+}
+
+function removeScriptExtractionAttempt(storageKey: string): void {
+  scriptExtractionAttempts.delete(storageKey);
+  try {
+    window.localStorage.removeItem(storageKey);
+    removedScriptExtractionAttempts.delete(storageKey);
+  } catch {
+    removedScriptExtractionAttempts.add(storageKey);
+    // Keep a tombstone so a stale storage row cannot revive the terminal task.
+  }
+}
+
+function isDefiniteClientRejection(cause: unknown): boolean {
+  if (typeof cause !== "object" || cause === null) return false;
+  const { status, retryable } = cause as {
+    status?: unknown;
+    retryable?: unknown;
+  };
+  if (typeof status !== "number") return false;
+  if (status === 408 || status === 425 || status === 429) return false;
+  return status >= 400 && status < 500 && retryable !== true;
+}
+
+function isDefiniteMissingTask(cause: unknown): boolean {
+  if (typeof cause !== "object" || cause === null) return false;
+  const { status, code } = cause as { status?: unknown; code?: unknown };
+  return (
+    status === 404 ||
+    status === 410 ||
+    code === "SCRIPT_FROM_AUDIO_TASK_NOT_FOUND"
+  );
+}
+
+export function extractScriptFromUpload(
+  accountId: string,
   projectId: string,
   assetId: string,
 ): Promise<{ text: string }> {
-  const created = await createScriptFromAudioTask(
+  const storageKey = scriptExtractionStorageKey(accountId, projectId, assetId);
+  const existingFlight = scriptExtractionFlights.get(storageKey);
+  if (existingFlight) return existingFlight;
+  const flight = runScriptExtraction(storageKey, accountId, projectId, assetId);
+  scriptExtractionFlights.set(storageKey, flight);
+  const clearFlight = () => {
+    if (scriptExtractionFlights.get(storageKey) === flight) {
+      scriptExtractionFlights.delete(storageKey);
+    }
+  };
+  void flight.then(clearFlight, clearFlight);
+  return flight;
+}
+
+async function runScriptExtraction(
+  storageKey: string,
+  accountId: string,
+  projectId: string,
+  assetId: string,
+): Promise<{ text: string }> {
+  let attempt = readScriptExtractionAttempt(
+    storageKey,
+    accountId,
     projectId,
     assetId,
-    crypto.randomUUID(),
   );
+  if (!attempt) {
+    attempt = {
+      version: 1,
+      accountId,
+      projectId,
+      assetId,
+      idempotencyKey: crypto.randomUUID(),
+    };
+    writeScriptExtractionAttempt(storageKey, attempt);
+  }
+  let taskId = attempt.taskId;
+  if (!taskId) {
+    try {
+      const created = await createScriptFromAudioTask(
+        projectId,
+        assetId,
+        attempt.idempotencyKey,
+      );
+      taskId = created.id;
+      attempt = { ...attempt, taskId };
+      writeScriptExtractionAttempt(storageKey, attempt);
+    } catch (cause: unknown) {
+      if (isDefiniteClientRejection(cause)) {
+        removeScriptExtractionAttempt(storageKey);
+      }
+      throw cause;
+    }
+  }
   const maxAttempts = 150; // 2s × 150 = 5 分钟上限（长音频异步转写兜底）
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  for (let pollAttempt = 0; pollAttempt < maxAttempts; pollAttempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 2000));
-    const task = await getScriptFromAudioTask(created.id);
+    let task: ScriptFromAudioTask;
+    try {
+      task = await getScriptFromAudioTask(taskId);
+    } catch (cause: unknown) {
+      if (isDefiniteMissingTask(cause)) {
+        removeScriptExtractionAttempt(storageKey);
+      }
+      throw cause;
+    }
     if (task.status === "SUCCEEDED" && task.result) {
       return { text: task.result.text };
     }
@@ -796,6 +973,9 @@ export async function extractScriptFromUpload(
       );
     }
     if (task.status === "FAILED" || task.status === "SUBMISSION_UNCERTAIN") {
+      if (task.status === "FAILED") {
+        removeScriptExtractionAttempt(storageKey);
+      }
       throw new Error(task.error_message || "文案提取失败，请稍后重试。");
     }
   }

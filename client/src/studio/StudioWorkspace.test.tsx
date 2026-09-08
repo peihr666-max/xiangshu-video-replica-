@@ -783,6 +783,7 @@ describe("V1.4 workspace integration", () => {
     const confirm = await screen.findByRole("button", {
       name: "确认费用并提交",
     });
+    await waitFor(() => expect(confirm).toBeEnabled());
     fireEvent.click(confirm);
     fireEvent.click(confirm);
 
@@ -1273,6 +1274,7 @@ describe("V1.4 workspace integration", () => {
       fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
       await waitFor(() =>
         expect(live.extractScriptFromUpload).toHaveBeenCalledWith(
+          reviewUser.id,
           "project-1",
           "asset-1",
         ),

@@ -436,6 +436,47 @@ def test_project_delete_blocked_while_generation_tasks_are_active(
     assert project is not None
 
 
+@pytest.mark.parametrize(
+    ("task_status", "expected_code"),
+    [
+        ("PENDING", "PROJECT_DELETE_HAS_ACTIVE_TASKS"),
+        ("RUNNING", "PROJECT_DELETE_HAS_ACTIVE_TASKS"),
+        ("SUBMISSION_UNCERTAIN", "PROJECT_DELETE_HAS_ASR_RECONCILIATION"),
+    ],
+)
+def test_project_delete_preserves_active_or_uncertain_script_from_audio_task(
+    client: TestClient,
+    db_path: Path,
+    tmp_path: Path,
+    task_status: str,
+    expected_code: str,
+) -> None:
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO script_from_audio_tasks ("
+            "id, project_id, source_asset_id, created_by_user_id, idempotency_key, "
+            "request_hash, request_json, status) VALUES (%s, 'project_owned', 'asset_owned', "
+            "'employee_1', %s, %s, '{}', %s)",
+            (f"asr-delete-{task_status}", f"key-{task_status}", f"hash-{task_status}", task_status),
+        )
+        conn.commit()
+
+    response = client.delete("/api/projects/project_owned", headers=auth_headers("employee_1"))
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == expected_code
+    storage = LocalStorageAdapter(root=tmp_path / "private-storage", bucket="private-bucket")
+    assert storage.get_object("outputs/asset_owned.mp4") == b"video"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT id FROM script_from_audio_tasks WHERE id = %s",
+                (f"asr-delete-{task_status}",),
+            ).fetchone()
+            is not None
+        )
+
+
 @pytest.mark.parametrize("oral_reference", ["task", "clone"])
 def test_project_delete_rejects_retained_oral_history_before_storage_cleanup(
     client: TestClient,

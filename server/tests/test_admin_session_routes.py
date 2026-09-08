@@ -1215,6 +1215,69 @@ def test_project_delete_defers_storage_when_another_project_reuses_uri(
     assert json.loads(audit[0])["storage_cleanup_status"] == "DEFERRED"
 
 
+@pytest.mark.pg
+@pytest.mark.parametrize(
+    ("task_status", "expected_code"),
+    [
+        ("PENDING", "PROJECT_DELETE_HAS_ACTIVE_TASKS"),
+        ("RUNNING", "PROJECT_DELETE_HAS_ACTIVE_TASKS"),
+        ("SUBMISSION_UNCERTAIN", "PROJECT_DELETE_HAS_ASR_RECONCILIATION"),
+    ],
+)
+def test_pg_project_delete_preserves_script_from_audio_lifecycle(
+    route_state: str,
+    task_status: str,
+    expected_code: str,
+) -> None:
+    from fastapi import HTTPException
+
+    from app.auth import CurrentUser
+    from app.db_portable import BusinessConnection
+    from app.rbac_routes import delete_project
+
+    actor = CurrentUser(
+        id="customer_u",
+        username="customer_u",
+        display_name="Customer User",
+        role="customer",
+    )
+    project_id = f"project-asr-delete-{task_status.lower()}"
+    asset_id = f"asset-asr-delete-{task_status.lower()}"
+    task_id = f"task-asr-delete-{task_status.lower()}"
+    with psycopg.connect(route_state, autocommit=True) as seed:
+        seed.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES (%s, 'customer_u', %s)",
+            (project_id, project_id),
+        )
+        seed.execute(
+            "INSERT INTO assets (id, project_id, kind, storage_uri, sha256, size_bytes, "
+            "content_type, created_by_user_id) VALUES "
+            "(%s, %s, 'reference_video', %s, '', 1, 'video/mp4', 'customer_u')",
+            (asset_id, project_id, f"local://assets/{asset_id}.mp4"),
+        )
+        seed.execute(
+            "INSERT INTO script_from_audio_tasks (id, project_id, source_asset_id, "
+            "created_by_user_id, idempotency_key, request_hash, request_json, status) "
+            "VALUES (%s, %s, %s, 'customer_u', %s, %s, '{}', %s)",
+            (task_id, project_id, asset_id, f"key-{task_id}", f"hash-{task_id}", task_status),
+        )
+
+    class DirectPgDb:
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            with psycopg.connect(route_state) as raw:
+                yield BusinessConnection.postgres(raw), actor
+
+    with pytest.raises(HTTPException) as raised:
+        delete_project(project_id, DirectPgDb())  # type: ignore[arg-type]
+    assert raised.value.status_code == 409
+    assert raised.value.detail["code"] == expected_code
+    with psycopg.connect(route_state) as check:
+        assert check.execute(
+            "SELECT status FROM script_from_audio_tasks WHERE id = %s", (task_id,)
+        ).fetchone() == (task_status,)
+
+
 # ---------------------------------------------------------------------------
 # Queue-mode switch (M4/M5 review M2 follow-up, PR #68 Codex P1): the
 # production control-plane write path for fair_queue_enabled. PR #85 review
