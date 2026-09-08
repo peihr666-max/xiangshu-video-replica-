@@ -82,6 +82,10 @@ from app.image_tasks import (
 )
 from app.media_routes import get_media_storage
 from app.oral import (
+    CloneOutcome,
+    OralOutcome,
+    PreparedCloneWork,
+    PreparedOralWork,
     acquire_oral_clone,
     acquire_oral_task,
     fail_claimed_oral_clone,
@@ -92,6 +96,8 @@ from app.oral import (
     perform_oral_task_work,
     prepare_oral_clone_work,
     prepare_oral_task_work,
+    preserve_oral_clone_outcome_for_reconciliation,
+    preserve_oral_task_outcome_for_reconciliation,
     run_claimed_oral_clone,
     run_next_oral_task,
 )
@@ -846,6 +852,44 @@ def _run_pg_generation_step(
             )
 
 
+def _finalize_pg_oral_clone_after_external(
+    *, lease: dict[str, Any], work: PreparedCloneWork, outcome: CloneOutcome
+) -> None:
+    try:
+        with pg_transaction() as raw_conn:
+            finalize_oral_clone_work(
+                BusinessConnection.postgres(raw_conn), work=work, outcome=outcome
+            )
+    except Exception as exc:
+        logger.error("oral clone finalization failed; preserving outcome: %s", type(exc).__name__)
+        with pg_transaction() as raw_conn:
+            preserve_oral_clone_outcome_for_reconciliation(
+                BusinessConnection.postgres(raw_conn),
+                lease=lease,
+                outcome=outcome,
+                cause=exc,
+            )
+
+
+def _finalize_pg_oral_task_after_external(
+    *, lease: dict[str, Any], work: PreparedOralWork, outcome: OralOutcome
+) -> None:
+    try:
+        with pg_transaction() as raw_conn:
+            finalize_oral_task_work(
+                BusinessConnection.postgres(raw_conn), work=work, outcome=outcome
+            )
+    except Exception as exc:
+        logger.error("oral task finalization failed; preserving outcome: %s", type(exc).__name__)
+        with pg_transaction() as raw_conn:
+            preserve_oral_task_outcome_for_reconciliation(
+                BusinessConnection.postgres(raw_conn),
+                lease=lease,
+                outcome=outcome,
+                cause=exc,
+            )
+
+
 def run_pg_worker_once(
     *,
     worker_id: str,
@@ -1002,17 +1046,30 @@ def run_pg_worker_once(
                     clone_work = prepare_oral_clone_work(
                         BusinessConnection.postgres(raw_conn), lease=clone_lease
                     )
-                clone_outcome = perform_oral_clone_work(clone_work)
-                with pg_transaction() as raw_conn:
-                    finalize_oral_clone_work(
-                        BusinessConnection.postgres(raw_conn),
-                        work=clone_work,
-                        outcome=clone_outcome,
-                    )
             except Exception as exc:
                 with pg_transaction() as raw_conn:
-                    fail_claimed_oral_clone(
-                        BusinessConnection.postgres(raw_conn), lease=clone_lease, cause=exc
+                    conn = BusinessConnection.postgres(raw_conn)
+                    if str(clone_lease["status"]) == "SUBMITTING":
+                        fail_claimed_oral_clone(conn, lease=clone_lease, cause=exc)
+                    else:
+                        preserve_oral_clone_outcome_for_reconciliation(
+                            conn, lease=clone_lease, outcome=None, cause=exc
+                        )
+            else:
+                clone_outcome = None
+                try:
+                    clone_outcome = perform_oral_clone_work(clone_work)
+                except Exception as exc:
+                    with pg_transaction() as raw_conn:
+                        preserve_oral_clone_outcome_for_reconciliation(
+                            BusinessConnection.postgres(raw_conn),
+                            lease=clone_lease,
+                            outcome=None,
+                            cause=exc,
+                        )
+                else:
+                    _finalize_pg_oral_clone_after_external(
+                        lease=clone_lease, work=clone_work, outcome=clone_outcome
                     )
             processed += 1
             processed_round = True
@@ -1029,17 +1086,30 @@ def run_pg_worker_once(
                     oral_work = prepare_oral_task_work(
                         BusinessConnection.postgres(raw_conn), lease=oral_lease
                     )
-                oral_outcome = perform_oral_task_work(oral_work)
-                with pg_transaction() as raw_conn:
-                    finalize_oral_task_work(
-                        BusinessConnection.postgres(raw_conn),
-                        work=oral_work,
-                        outcome=oral_outcome,
-                    )
             except Exception as exc:
                 with pg_transaction() as raw_conn:
-                    fail_claimed_oral_task(
-                        BusinessConnection.postgres(raw_conn), lease=oral_lease, cause=exc
+                    conn = BusinessConnection.postgres(raw_conn)
+                    if str(oral_lease["status"]) == "SUBMITTING":
+                        fail_claimed_oral_task(conn, lease=oral_lease, cause=exc)
+                    else:
+                        preserve_oral_task_outcome_for_reconciliation(
+                            conn, lease=oral_lease, outcome=None, cause=exc
+                        )
+            else:
+                oral_outcome = None
+                try:
+                    oral_outcome = perform_oral_task_work(oral_work)
+                except Exception as exc:
+                    with pg_transaction() as raw_conn:
+                        preserve_oral_task_outcome_for_reconciliation(
+                            BusinessConnection.postgres(raw_conn),
+                            lease=oral_lease,
+                            outcome=None,
+                            cause=exc,
+                        )
+                else:
+                    _finalize_pg_oral_task_after_external(
+                        lease=oral_lease, work=oral_work, outcome=oral_outcome
                     )
             oral_task_id = str(oral_lease["id"])
         if oral_task_id is not None:

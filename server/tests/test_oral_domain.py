@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -26,11 +27,14 @@ from app.oral import (
     CloneOutcome,
     OralDomainError,
     OralOutcome,
+    acquire_oral_clone,
+    acquire_oral_task,
     confirm_voice_clone,
     create_oral_task,
     finalize_oral_clone_work,
     finalize_oral_task_work,
     oral_unit_price_fen,
+    record_oral_clone_consent,
     refresh_avatar_clone,
     refresh_voice_clone,
     run_next_oral_task,
@@ -147,7 +151,8 @@ def seed_scene(tmp_path: Path, name: str) -> BusinessConnection:
         )
         VALUES (
             'asset-src', 'project-1', 'source_video', 'local://assets/src.mp4',
-            '', 0, 'video/mp4', 'employee_1'
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            0, 'video/mp4', 'employee_1'
         )
         """
     )
@@ -159,9 +164,36 @@ def seed_scene(tmp_path: Path, name: str) -> BusinessConnection:
         )
         VALUES (
             'asset-audio', 'project-1', 'oral_audio', 'local://assets/v.mp3',
-            '', 0, 'audio/mpeg', 'employee_1'
+            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            0, 'audio/mpeg', 'employee_1'
         )
         """
+    )
+    connection.execute(
+        "UPDATE assets SET metadata_json = ? WHERE id = 'asset-auth'",
+        (
+            json.dumps(
+                {
+                    "identity_id": "ident-1",
+                    "purpose": "authorization",
+                    "oral_clone_consents": [
+                        {
+                            "identity_id": "ident-1",
+                            "source_asset_id": "asset-src",
+                            "source_sha256": "a" * 64,
+                            "purpose": "oral_avatar_clone",
+                        },
+                        {
+                            "identity_id": "ident-1",
+                            "source_asset_id": "asset-audio",
+                            "source_sha256": "b" * 64,
+                            "purpose": "oral_voice_clone",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        ),
     )
     connection.execute(
         "INSERT INTO wallets (user_id, available_credits, reserved_credits) "
@@ -833,6 +865,190 @@ def test_clone_requires_consent_bound_to_same_identity(
             consent_id="other-consent",
             idempotency_key="wrong-consent",
         )
+
+
+def test_clone_consent_rejects_unrelated_owned_asset_and_accepts_exact_binding(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "clone-consent-source-binding.db")
+    conn.execute(
+        "INSERT INTO assets (id, project_id, kind, storage_uri, sha256, size_bytes, "
+        "content_type, created_by_user_id) VALUES (%s, 'project-1', 'source_video', "
+        "'local://assets/unrelated.mp4', %s, 0, 'video/mp4', 'employee_1')",
+        ("unrelated-video", "c" * 64),
+    )
+    conn.commit()
+
+    with pytest.raises(OralDomainError, match="未绑定当前克隆素材"):
+        start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="错误素材",
+            source_asset_id="unrelated-video",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="unrelated-owned-source",
+        )
+
+    accepted = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="正确素材",
+        source_asset_id="asset-src",
+        source_kind="VIDEO",
+        consent_id="asset-auth",
+        idempotency_key="exact-consent-source",
+    )
+    assert accepted.status == "PENDING"
+
+
+def test_clone_consent_binding_is_persisted_with_source_fingerprint(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "clone-consent-persist.db")
+    conn.execute(
+        "UPDATE assets SET metadata_json = %s WHERE id = 'asset-auth'",
+        (json.dumps({"identity_id": "ident-1", "purpose": "authorization"}),),
+    )
+    conn.commit()
+
+    result = record_oral_clone_consent(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        source_asset_id="asset-src",
+        purpose="oral_avatar_clone",
+    )
+
+    assert result["source_sha256"] == "a" * 64
+    metadata = json.loads(
+        conn.execute("SELECT metadata_json FROM assets WHERE id = 'asset-auth'").fetchone()[0]
+    )
+    assert metadata["oral_clone_consents"] == [
+        {
+            "identity_id": "ident-1",
+            "source_asset_id": "asset-src",
+            "source_sha256": "a" * 64,
+            "purpose": "oral_avatar_clone",
+        }
+    ]
+
+
+def test_oral_finalize_db_failure_preserves_outcome_and_wallet_reservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import generation_worker
+
+    conn = seed_scene(tmp_path, "oral-finalize-db-failure.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="待对账口播",
+        script_text="测试文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="finalize-db-failure",
+    )
+    lease = acquire_oral_task(conn, worker_id="worker-finalize-failure")
+    assert lease is not None
+    outcome = OralOutcome(status="RUNNING", vendor_task_id="vendor-video-accepted")
+
+    @contextmanager
+    def fake_pg_transaction():
+        yield object()
+
+    monkeypatch.setattr(generation_worker, "pg_transaction", fake_pg_transaction)
+    monkeypatch.setattr(
+        generation_worker.BusinessConnection,
+        "postgres",
+        staticmethod(lambda _raw: conn),
+    )
+    monkeypatch.setattr(
+        generation_worker,
+        "finalize_oral_task_work",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database write failed")),
+    )
+
+    generation_worker._finalize_pg_oral_task_after_external(
+        lease=lease, work=object(), outcome=outcome
+    )
+
+    task = conn.execute(
+        "SELECT status, vendor_task_id, reconciliation_json FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert task["status"] == "SUBMISSION_UNCERTAIN"
+    assert task["vendor_task_id"] == "vendor-video-accepted"
+    assert json.loads(task["reconciliation_json"])["status"] == "RUNNING"
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    assert tuple(wallet) == (9, 1)
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM wallet_transactions WHERE oral_task_id = %s "
+            "AND type IN ('SETTLE', 'RELEASE')",
+            (created.task_id,),
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_clone_finalize_db_failure_preserves_vendor_association(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import generation_worker
+
+    conn = seed_scene(tmp_path, "clone-finalize-db-failure.db")
+    created = start_avatar_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="待对账分身",
+        source_asset_id="asset-src",
+        source_kind="VIDEO",
+        consent_id="asset-auth",
+        idempotency_key="clone-finalize-db-failure",
+    )
+    lease = acquire_oral_clone(conn, worker_id="worker-clone-finalize-failure")
+    assert lease is not None
+    outcome = CloneOutcome(status="RUNNING", vendor_task_id="vendor-clone-accepted")
+
+    @contextmanager
+    def fake_pg_transaction():
+        yield object()
+
+    monkeypatch.setattr(generation_worker, "pg_transaction", fake_pg_transaction)
+    monkeypatch.setattr(
+        generation_worker.BusinessConnection,
+        "postgres",
+        staticmethod(lambda _raw: conn),
+    )
+    monkeypatch.setattr(
+        generation_worker,
+        "finalize_oral_clone_work",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database write failed")),
+    )
+
+    generation_worker._finalize_pg_oral_clone_after_external(
+        lease=lease, work=object(), outcome=outcome
+    )
+
+    clone = conn.execute(
+        "SELECT status, vendor_task_id, reconciliation_json FROM oral_avatars WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert clone["status"] == "SUBMISSION_UNCERTAIN"
+    assert clone["vendor_task_id"] == "vendor-clone-accepted"
+    assert json.loads(clone["reconciliation_json"])["status"] == "RUNNING"
 
 
 def test_clone_idempotency_is_owner_scoped_and_payload_bound(

@@ -41,6 +41,9 @@ class OralDomainError(Exception):
     """Customer-safe oral-domain failure (message is UI-renderable)."""
 
 
+ORAL_CLONE_PURPOSES = {"oral_avatar_clone", "oral_voice_clone"}
+
+
 def oral_unit_price_fen(conn: BusinessConnection) -> int:
     """Per-task list price for oral renders; admin-configurable via billing."""
     try:
@@ -131,14 +134,6 @@ def _require_clone_inputs(
         "character_authorization",
     }:
         raise OralDomainError("肖像授权类型不正确")
-    if consent.get("metadata_json"):
-        try:
-            consent_metadata = json.loads(str(consent["metadata_json"]))
-        except json.JSONDecodeError as exc:
-            raise OralDomainError("肖像授权记录无效") from exc
-        bound_identity_id = consent_metadata.get("identity_id")
-        if bound_identity_id is not None and bound_identity_id != identity_id:
-            raise OralDomainError("肖像授权与当前人物不匹配")
     source = _require_source_asset(
         conn, actor=actor, asset_id=source_asset_id, message="素材不存在或无权使用"
     )
@@ -146,6 +141,27 @@ def _require_clone_inputs(
     expected_prefix = {"VIDEO": "video/", "IMAGE": "image/", "AUDIO": "audio/"}[source_kind]
     if not content_type.startswith(expected_prefix):
         raise OralDomainError("克隆素材类型与请求不匹配")
+    try:
+        consent_metadata = json.loads(str(consent.get("metadata_json") or "{}"))
+        bindings = consent_metadata.get("oral_clone_consents", [])
+    except (AttributeError, json.JSONDecodeError) as exc:
+        raise OralDomainError("肖像授权记录无效") from exc
+    purpose = "oral_voice_clone" if source_kind == "AUDIO" else "oral_avatar_clone"
+    source_sha256 = str(source.get("sha256") or "")
+    if len(source_sha256) != 64 or not isinstance(bindings, list):
+        raise OralDomainError("肖像授权未绑定当前克隆素材")
+    expected_binding = {
+        "identity_id": identity_id,
+        "source_asset_id": source_asset_id,
+        "source_sha256": source_sha256,
+        "purpose": purpose,
+    }
+    if not any(
+        isinstance(binding, dict)
+        and all(binding.get(key) == value for key, value in expected_binding.items())
+        for binding in bindings
+    ):
+        raise OralDomainError("肖像授权未绑定当前克隆素材")
     return identity, source
 
 
@@ -153,6 +169,79 @@ def _request_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def record_oral_clone_consent(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    identity_id: str,
+    source_asset_id: str,
+    purpose: str,
+) -> dict[str, str]:
+    if purpose not in ORAL_CLONE_PURPOSES:
+        raise OralDomainError("克隆授权用途不支持")
+    identity = _require_own_identity(conn, actor, identity_id)
+    consent_id = str(identity.get("authorization_asset_id") or "")
+    consent_row = conn.execute(
+        "SELECT id, kind, storage_uri, content_type, created_by_user_id, metadata_json "
+        "FROM assets WHERE id = %s FOR UPDATE",
+        (consent_id,),
+    ).fetchone()
+    consent = dict(consent_row) if consent_row is not None else None
+    if consent is None or str(consent.get("created_by_user_id") or "") != actor.id:
+        raise OralDomainError("肖像授权不存在或无权使用")
+    if str(consent.get("kind") or "") not in {
+        "identity_authorization",
+        "character_authorization",
+    }:
+        raise OralDomainError("肖像授权类型不正确")
+    source = _require_source_asset(
+        conn, actor=actor, asset_id=source_asset_id, message="素材不存在或无权使用"
+    )
+    content_type = str(source.get("content_type") or "")
+    if purpose == "oral_voice_clone" and not content_type.startswith("audio/"):
+        raise OralDomainError("声音克隆授权只能绑定音频素材")
+    if purpose == "oral_avatar_clone" and not content_type.startswith(("image/", "video/")):
+        raise OralDomainError("分身克隆授权只能绑定图片或视频素材")
+    source_sha256 = str(source.get("sha256") or "")
+    if len(source_sha256) != 64:
+        raise OralDomainError("素材指纹缺失，请重新上传")
+    try:
+        metadata = json.loads(str(consent.get("metadata_json") or "{}"))
+    except json.JSONDecodeError as exc:
+        raise OralDomainError("肖像授权记录无效") from exc
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("identity_id") != identity_id
+        or metadata.get("purpose") != "authorization"
+    ):
+        raise OralDomainError("肖像授权与当前人物不匹配")
+    binding = {
+        "identity_id": identity_id,
+        "source_asset_id": source_asset_id,
+        "source_sha256": source_sha256,
+        "purpose": purpose,
+    }
+    bindings = metadata.get("oral_clone_consents")
+    if not isinstance(bindings, list):
+        bindings = []
+    if binding not in bindings:
+        bindings.append(binding)
+    metadata["oral_clone_consents"] = bindings
+    updated = conn.execute(
+        "UPDATE assets SET metadata_json = %s WHERE id = %s AND created_by_user_id = %s",
+        (json.dumps(metadata, ensure_ascii=False, sort_keys=True), consent_id, actor.id),
+    )
+    if updated.rowcount != 1:
+        raise OralDomainError("肖像授权绑定失败")
+    return {
+        "consent_id": consent_id,
+        "identity_id": identity_id,
+        "source_asset_id": source_asset_id,
+        "source_sha256": source_sha256,
+        "purpose": purpose,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +269,7 @@ def start_avatar_clone(
 ) -> CloneStartResult:
     if source_kind not in {"VIDEO", "IMAGE"}:
         raise OralDomainError("分身素材类型不支持")
-    _require_clone_inputs(
+    _, source = _require_clone_inputs(
         conn,
         actor=actor,
         identity_id=identity_id,
@@ -194,6 +283,7 @@ def start_avatar_clone(
             "identity_id": identity_id,
             "title": clean_title,
             "source_asset_id": source_asset_id,
+            "source_sha256": str(source["sha256"]),
             "source_kind": source_kind,
             "consent_id": consent_id,
         }
@@ -257,7 +347,7 @@ def start_voice_clone(
     idempotency_key: str,
     vendor: HiflyClient | None = None,
 ) -> CloneStartResult:
-    _require_clone_inputs(
+    _, source = _require_clone_inputs(
         conn,
         actor=actor,
         identity_id=identity_id,
@@ -271,6 +361,7 @@ def start_voice_clone(
             "identity_id": identity_id,
             "title": clean_title,
             "source_asset_id": source_asset_id,
+            "source_sha256": str(source["sha256"]),
             "consent_id": consent_id,
         }
     )
@@ -408,6 +499,33 @@ class CloneOutcome:
     error_message: str | None = None
 
 
+def _stored_object_snapshot(stored: StoredObject | None) -> dict[str, Any] | None:
+    if stored is None:
+        return None
+    return {
+        "uri": stored.uri,
+        "sha256": stored.sha256,
+        "size": stored.size,
+        "content_type": stored.content_type,
+    }
+
+
+def _clone_outcome_snapshot(outcome: CloneOutcome | None) -> str | None:
+    if outcome is None:
+        return None
+    return json.dumps(
+        {
+            "status": outcome.status,
+            "vendor_task_id": outcome.vendor_task_id,
+            "vendor_resource_id": outcome.vendor_resource_id,
+            "demo": _stored_object_snapshot(outcome.demo),
+            "error_message": outcome.error_message,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def _clone_status_map(status: str) -> str:
     if status == "DONE":
         return "READY"
@@ -502,12 +620,15 @@ def perform_oral_clone_work(work: PreparedCloneWork) -> CloneOutcome:
             status = "RUNNING"
         return CloneOutcome(status=status, error_message=str(exc)[:500])
     except OralDomainError as exc:
-        return CloneOutcome(status="FAILED", error_message=str(exc)[:500])
+        status = "SUBMISSION_UNCERTAIN" if str(lease["status"]) == "SUBMITTING" else "RUNNING"
+        return CloneOutcome(status=status, error_message=str(exc)[:500])
     except Exception as exc:  # noqa: BLE001 - storage failures are explicit clone outcomes
         logger.warning("oral clone external work failed: %s", type(exc).__name__)
         if str(lease["status"]) == "RUNNING":
             return CloneOutcome(status="RUNNING", error_message="克隆结果归档失败，等待自动重试")
-        return CloneOutcome(status="FAILED", error_message="克隆素材处理失败，请重新创建任务")
+        return CloneOutcome(
+            status="SUBMISSION_UNCERTAIN", error_message="克隆提交结果未知，等待人工对账"
+        )
 
 
 def finalize_oral_clone_work(
@@ -600,6 +721,46 @@ def fail_claimed_oral_clone(
         f"WHERE id = %s AND lease_token = %s AND status = %s AND {lease_current} RETURNING id",
         (
             str(cause)[:500],
+            str(lease["id"]),
+            str(lease["lease_token"]),
+            str(lease["status"]),
+        ),
+    ).fetchone()
+    return updated is not None
+
+
+def preserve_oral_clone_outcome_for_reconciliation(
+    conn: BusinessConnection,
+    *,
+    lease: dict[str, Any],
+    outcome: CloneOutcome | None,
+    cause: Exception,
+) -> bool:
+    table = "oral_avatars" if lease["clone_kind"] == "avatar" else "oral_voices"
+    resource_column = "vendor_avatar_id" if lease["clone_kind"] == "avatar" else "vendor_voice_id"
+    lease_current = (
+        "locked_until::timestamptz > CURRENT_TIMESTAMP"
+        if conn.is_postgres
+        else "locked_until > CURRENT_TIMESTAMP"
+    )
+    failure_message = (
+        f"供应商结果已返回但本地终结失败：{type(cause).__name__}"
+        if outcome is not None
+        else f"供应商调用已开始但结果未确认：{type(cause).__name__}"
+    )
+    updated = conn.execute(
+        f"UPDATE {table} SET status = 'SUBMISSION_UNCERTAIN', "
+        "vendor_task_id = COALESCE(%s, vendor_task_id), "
+        f"{resource_column} = COALESCE(%s, {resource_column}), "
+        "reconciliation_json = COALESCE(%s, reconciliation_json), "
+        "error_message = %s, locked_by = NULL, "
+        "lease_token = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP "
+        f"WHERE id = %s AND lease_token = %s AND status = %s AND {lease_current} RETURNING id",
+        (
+            outcome.vendor_task_id if outcome else None,
+            outcome.vendor_resource_id if outcome else None,
+            _clone_outcome_snapshot(outcome),
+            failure_message[:500],
             str(lease["id"]),
             str(lease["lease_token"]),
             str(lease["status"]),
@@ -968,6 +1129,23 @@ class OralOutcome:
     duration_sec: int | None = None
 
 
+def _oral_outcome_snapshot(outcome: OralOutcome | None) -> str | None:
+    if outcome is None:
+        return None
+    return json.dumps(
+        {
+            "status": outcome.status,
+            "vendor_task_id": outcome.vendor_task_id,
+            "vendor_error_code": outcome.vendor_error_code,
+            "error_message": outcome.error_message,
+            "stored": _stored_object_snapshot(outcome.stored),
+            "duration_sec": outcome.duration_sec,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def prepare_oral_task_work(
     conn: BusinessConnection,
     *,
@@ -1056,11 +1234,15 @@ def perform_oral_task_work(work: PreparedOralWork) -> OralOutcome:
             error_message=str(exc)[:500],
         )
     except OralDomainError as exc:
-        return OralOutcome(status="FAILED", error_message=str(exc)[:500])
+        status = "SUBMISSION_UNCERTAIN" if str(lease["status"]) == "SUBMITTING" else "RUNNING"
+        return OralOutcome(status=status, error_message=str(exc)[:500])
     except Exception as exc:  # noqa: BLE001 - storage failure remains retryable after submit
         logger.warning("oral external work failed: %s", type(exc).__name__)
         if str(lease["status"]) == "SUBMITTING":
-            return OralOutcome(status="FAILED", error_message="素材读取失败，请重新上传")
+            return OralOutcome(
+                status="SUBMISSION_UNCERTAIN",
+                error_message="口播提交结果未知，等待人工对账",
+            )
         return OralOutcome(status="RUNNING", error_message="成片归档失败，等待自动重试")
 
 
@@ -1164,6 +1346,48 @@ def fail_claimed_oral_task(
         return False
     _finalize_oral_billing(conn, task_id=task_id, outcome="release")
     _release_oral_queue_slot(conn, task_id=task_id)
+    return True
+
+
+def preserve_oral_task_outcome_for_reconciliation(
+    conn: BusinessConnection,
+    *,
+    lease: dict[str, Any],
+    outcome: OralOutcome | None,
+    cause: Exception,
+) -> bool:
+    lease_current = (
+        "locked_until::timestamptz > CURRENT_TIMESTAMP"
+        if conn.is_postgres
+        else "locked_until > CURRENT_TIMESTAMP"
+    )
+    failure_message = (
+        f"供应商结果已返回但本地终结失败：{type(cause).__name__}"
+        if outcome is not None
+        else f"供应商调用已开始但结果未确认：{type(cause).__name__}"
+    )
+    updated = conn.execute(
+        "UPDATE oral_tasks SET status = 'SUBMISSION_UNCERTAIN', "
+        "vendor_task_id = COALESCE(%s, vendor_task_id), "
+        "vendor_error_code = COALESCE(%s, vendor_error_code), "
+        "reconciliation_json = COALESCE(%s, reconciliation_json), "
+        "error_message = %s, locked_by = NULL, "
+        "lease_token = NULL, locked_until = NULL, next_poll_at = NULL, "
+        "updated_at = CURRENT_TIMESTAMP WHERE id = %s "
+        f"AND lease_token = %s AND status = %s AND {lease_current} RETURNING id",
+        (
+            outcome.vendor_task_id if outcome else None,
+            outcome.vendor_error_code if outcome else None,
+            _oral_outcome_snapshot(outcome),
+            failure_message[:500],
+            str(lease["id"]),
+            str(lease["lease_token"]),
+            str(lease["status"]),
+        ),
+    ).fetchone()
+    if updated is None:
+        return False
+    _release_oral_queue_slot(conn, task_id=str(lease["id"]))
     return True
 
 

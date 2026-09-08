@@ -27,6 +27,7 @@ from app.oral import (
     read_oral_task,
     read_voice_clone,
     reconcile_uncertain_oral_task,
+    record_oral_clone_consent,
     start_avatar_clone,
     start_voice_clone,
 )
@@ -60,7 +61,8 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in row.items()
-        if not key.startswith("vendor_") and key not in {"idempotency_key", "subtitle_json"}
+        if not key.startswith("vendor_")
+        and key not in {"idempotency_key", "subtitle_json", "reconciliation_json"}
     }
 
 
@@ -95,6 +97,56 @@ class AvatarCloneRequest(BaseModel):
     source_kind: Literal["VIDEO", "IMAGE"]
     consent_id: str = Field(min_length=1, max_length=128)
     idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class OralCloneConsentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    identity_id: str = Field(min_length=1, max_length=128)
+    source_asset_id: str = Field(min_length=1, max_length=128)
+    purpose: Literal["oral_avatar_clone", "oral_voice_clone"]
+    accepted: Literal[True]
+
+
+@router.post("/clone-consents")
+def bind_clone_consent(
+    request: OralCloneConsentRequest,
+    db: BusinessDbDep,
+) -> dict[str, str]:
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.clone_consent.bind",
+            entity_type="person_identity",
+            entity_id=request.identity_id,
+        )
+        try:
+            result = record_oral_clone_consent(
+                conn,
+                actor=actor,
+                identity_id=request.identity_id,
+                source_asset_id=request.source_asset_id,
+                purpose=request.purpose,
+            )
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+        write_audit(
+            conn,
+            actor=actor,
+            action="oral.clone_consent.bind",
+            entity_type="asset",
+            entity_id=result["consent_id"],
+            metadata={
+                "identity_id": request.identity_id,
+                "source_asset_id": request.source_asset_id,
+                "source_sha256": result["source_sha256"],
+                "purpose": request.purpose,
+            },
+            commit=False,
+        )
+        conn.commit()
+    return result
 
 
 @router.post("/avatars", status_code=status.HTTP_202_ACCEPTED)
