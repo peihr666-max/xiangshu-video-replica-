@@ -6,7 +6,7 @@ import os
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 
@@ -81,7 +81,11 @@ from app.image_tasks import (
     save_first_frame_task_checkpoint,
 )
 from app.media_routes import get_media_storage
-from app.operation_costs import begin_operation_cost, complete_operation_cost
+from app.operation_costs import (
+    analysis_cost_source_id,
+    begin_operation_cost,
+    complete_operation_cost,
+)
 from app.oral import (
     CloneOutcome,
     OralCloneLeaseLost,
@@ -1013,7 +1017,7 @@ def run_pg_worker_once(
             conn = BusinessConnection.postgres(raw_conn)
             analysis_lease = acquire_analysis_task(conn, worker_id=worker_id)
         if analysis_lease is not None:
-            analysis_cost_id = ""
+            pending_analysis_costs: dict[str, str] = {}
             try:
                 # Preparation only reads settings/asset state and creates the
                 # short-lived signed URL.  The paid provider call below runs
@@ -1026,31 +1030,51 @@ def run_pg_worker_once(
                         storage=storage,
                         provider=analysis_provider,
                     )
-                    analysis_cost_id = begin_operation_cost(
-                        conn,
-                        source_type="analysis_task_attempt",
-                        source_id=f"{analysis_lease.id}:{analysis_lease.attempt}",
-                        subject="video_analysis_768p",
-                        user_id=analysis_lease.created_by_user_id,
-                    )
-                analysis_result = perform_analysis_task(analysis_work)
+
+                def begin_analysis_call(phase: Literal["main", "repair"]) -> None:
+                    with pg_transaction() as raw_conn:
+                        pending_analysis_costs[phase] = begin_operation_cost(
+                            BusinessConnection.postgres(raw_conn),
+                            source_type="analysis_task_call",
+                            source_id=analysis_cost_source_id(
+                                analysis_lease.id, analysis_lease.attempt, phase
+                            ),
+                            subject="video_analysis_768p",
+                            user_id=analysis_lease.created_by_user_id,
+                        )
+
+                def complete_analysis_call(phase: Literal["main", "repair"]) -> None:
+                    record_id = pending_analysis_costs[phase]
+                    with pg_transaction() as raw_conn:
+                        complete_operation_cost(
+                            BusinessConnection.postgres(raw_conn),
+                            record_id=record_id,
+                            usage_amount=analysis_lease.duration_seconds,
+                        )
+                    pending_analysis_costs.pop(phase)
+
+                analysis_result = perform_analysis_task(
+                    analysis_work,
+                    before_provider_call=begin_analysis_call,
+                    after_provider_call=complete_analysis_call,
+                )
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
-                    complete_operation_cost(
-                        conn,
-                        record_id=analysis_cost_id,
-                        usage_amount=analysis_lease.duration_seconds,
-                    )
                     complete_analysis_task(
                         conn,
                         work=analysis_work,
                         result=analysis_result,
                     )
             except Exception as exc:
+                for record_id in pending_analysis_costs.values():
+                    with pg_transaction() as raw_conn:
+                        complete_operation_cost(
+                            BusinessConnection.postgres(raw_conn),
+                            record_id=record_id,
+                            usage_amount=None,
+                        )
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
-                    if analysis_cost_id:
-                        complete_operation_cost(conn, record_id=analysis_cost_id, usage_amount=None)
                     fail_analysis_task(conn, lease=analysis_lease, cause=exc)
             processed += 1
             processed_round = True

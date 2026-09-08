@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -388,8 +388,14 @@ def analyze_video(
     video_uri: str,
     video_duration_seconds: float,
     provider: VideoAnalysisProvider,
+    before_provider_call: Callable[[Literal["main", "repair"]], None] | None = None,
+    after_provider_call: Callable[[Literal["main", "repair"]], None] | None = None,
 ) -> AnalysisResult:
+    if before_provider_call is not None:
+        before_provider_call("main")
     response = provider.analyze(video_uri=video_uri, duration_seconds=video_duration_seconds)
+    if after_provider_call is not None:
+        after_provider_call("main")
     try:
         analysis = parse_analysis_response(response.text, duration_seconds=video_duration_seconds)
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
@@ -397,6 +403,8 @@ def analyze_video(
             "Video analysis response validation failed before repair: %s",
             _validation_diagnostic(exc),
         )
+        if before_provider_call is not None:
+            before_provider_call("repair")
         repaired = provider.repair_json(
             invalid_json=response.text,
             error=(
@@ -404,6 +412,8 @@ def analyze_video(
                 f"{exc}"
             ),
         )
+        if after_provider_call is not None:
+            after_provider_call("repair")
         try:
             analysis = parse_analysis_response(
                 repaired.text, duration_seconds=video_duration_seconds

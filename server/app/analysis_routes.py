@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -760,11 +761,18 @@ def prepare_analysis_task(
     )
 
 
-def perform_analysis_task(work: AnalysisTaskWork) -> AnalysisResult:
+def perform_analysis_task(
+    work: AnalysisTaskWork,
+    *,
+    before_provider_call: Callable[[Literal["main", "repair"]], None] | None = None,
+    after_provider_call: Callable[[Literal["main", "repair"]], None] | None = None,
+) -> AnalysisResult:
     return analyze_video(
         video_uri=work.video_uri,
         video_duration_seconds=work.lease.duration_seconds,
         provider=work.provider,
+        before_provider_call=before_provider_call,
+        after_provider_call=after_provider_call,
     )
 
 

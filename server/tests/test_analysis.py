@@ -402,6 +402,31 @@ def test_analysis_repair_receives_precise_duration_and_logs_no_provider_content(
     assert "validation:" in caplog.text
 
 
+def test_analysis_cost_callbacks_wrap_main_and_repair_calls_independently() -> None:
+    invalid_payload = valid_analysis_payload()
+    invalid_payload["unexpected"] = True
+    provider = FakeGemini(
+        analysis_json=json.dumps(invalid_payload),
+        repair_json=json.dumps(valid_analysis_payload()),
+    )
+    events: list[tuple[str, str]] = []
+
+    analyze_video(
+        video_uri="local://owned.mp4",
+        video_duration_seconds=10,
+        provider=provider,
+        before_provider_call=lambda phase: events.append(("before", phase)),
+        after_provider_call=lambda phase: events.append(("after", phase)),
+    )
+
+    assert events == [
+        ("before", "main"),
+        ("after", "main"),
+        ("before", "repair"),
+        ("after", "repair"),
+    ]
+
+
 class RecordedApilioTransport:
     def __init__(self, response: bytes) -> None:
         self.response = response
