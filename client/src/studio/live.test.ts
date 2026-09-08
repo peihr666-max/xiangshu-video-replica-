@@ -36,6 +36,7 @@ import {
   loadProjectDraft,
   loadStudioData,
   loadTaskPreview,
+  loadViralVideoData,
 } from "./live";
 import type { StudioTask } from "./types";
 
@@ -409,6 +410,17 @@ describe("真实 Studio 只读适配器", () => {
     expect(data.errors).toEqual([]);
   });
 
+  it("基础工作区加载不等待爆款平台冷拉取", async () => {
+    api.listViralVideos.mockReturnValue(new Promise(() => {}));
+
+    const data = await loadStudioData(user);
+
+    expect(data.projects).toEqual([project]);
+    expect(data.loading).toBe(false);
+    expect(data.videos).toEqual([]);
+    expect(api.listViralVideos).not.toHaveBeenCalled();
+  });
+
   it("一个爆款平台失败时保留另一平台并上报错误", async () => {
     api.listViralVideos.mockImplementation((platform: string) => {
       if (platform === "wechat_channels") {
@@ -445,7 +457,7 @@ describe("真实 Studio 只读适配器", () => {
       });
     });
 
-    const data = await loadStudioData(user);
+    const data = await loadViralVideoData();
 
     expect(data.videos).toHaveLength(1);
     expect(data.videos[0]?.nativeId).toBe("douyin-1");

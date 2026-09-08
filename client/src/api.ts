@@ -4739,6 +4739,12 @@ export type ViralMediaResponse = {
   video?: ViralVideoItem | null;
 };
 
+export type ViralProjectImportResponse = {
+  projectId: string;
+  assetId: string;
+  kind: "audio" | "video";
+};
+
 export type ViralStatisticsResponse = {
   items: ViralVideoItem[];
 };
@@ -4775,6 +4781,32 @@ export function fetchViralVideoMedia(
     },
     VIRAL_MEDIA_TIMEOUT_MS,
   );
+}
+
+/** 把平台媒体复制为当前用户可访问的项目资产，再交给提取或复刻流程。 */
+export async function importViralVideoToProject(
+  platform: ViralPlatform,
+  videoId: string,
+  kind: "audio" | "video",
+): Promise<ViralProjectImportResponse> {
+  const response = await requestApiJson<{
+    project_id: string;
+    asset_id: string;
+    kind: "audio" | "video";
+  }>(
+    `/api/viral/videos/${encodeURIComponent(platform)}/${encodeURIComponent(videoId)}/import`,
+    "视频素材导入失败",
+    {
+      method: "POST",
+      body: JSON.stringify({ kind }),
+    },
+    VIRAL_MEDIA_TIMEOUT_MS,
+  );
+  return {
+    projectId: response.project_id,
+    assetId: response.asset_id,
+    kind: response.kind,
+  };
 }
 
 /** 按需补齐视频号互动统计；服务端负责缓存与失败退避。 */

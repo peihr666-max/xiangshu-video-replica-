@@ -427,7 +427,7 @@ export function studioVideoFromViral(item: ViralVideoItem): StudioVideo {
 
 /** 爆款视频（C4 重启）：两个平台各自聚合；数据源未配置或失败时保持
  * 空态，不打断工作台其余数据的加载（与统计指标同一容错口径）。 */
-async function loadViralVideos(): Promise<{
+export async function loadViralVideoData(): Promise<{
   videos: StudioVideo[];
   errors: string[];
 }> {
@@ -451,21 +451,14 @@ async function loadViralVideos(): Promise<{
 export async function loadStudioData(
   currentUser: CurrentUser,
 ): Promise<StudioData> {
-  const [
-    projectsResult,
-    peopleResult,
-    tasksResult,
-    statsResult,
-    oralResult,
-    viralResult,
-  ] = await Promise.allSettled([
-    loadProjects(),
-    loadPeople(),
-    loadTasks(currentUser),
-    getStudioStats(),
-    loadOralTasks(),
-    loadViralVideos(),
-  ]);
+  const [projectsResult, peopleResult, tasksResult, statsResult, oralResult] =
+    await Promise.allSettled([
+      loadProjects(),
+      loadPeople(),
+      loadTasks(currentUser),
+      getStudioStats(),
+      loadOralTasks(),
+    ]);
   const errors: string[] = [];
   const projectData =
     projectsResult.status === "fulfilled"
@@ -496,16 +489,10 @@ export async function loadStudioData(
   if (oralResult.status === "rejected") {
     errors.push(`读取口播任务失败：${errorText(oralResult.reason)}`);
   }
-  if (viralResult.status === "rejected") {
-    errors.push(`读取爆款视频失败：${errorText(viralResult.reason)}`);
-  } else {
-    errors.push(...viralResult.value.errors);
-  }
-
   return {
     people: peopleData.people,
     assets: [...projectData.assets, ...peopleData.assets],
-    videos: viralResult.status === "fulfilled" ? viralResult.value.videos : [],
+    videos: [],
     tasks,
     projects: projectData.projects,
     errors,

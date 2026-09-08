@@ -31,6 +31,7 @@ import {
   getLatestProjectFirstFrames,
   getLatestScriptVersion,
   getSettings,
+  importViralVideoToProject,
   listGenerationBatches,
   listProjectCharacterVersions,
   listProjects,
@@ -1290,6 +1291,39 @@ describe("createProject", () => {
     const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect((options.headers as Headers).get("X-Dev-User-Id")).toBe(
       "employee_1",
+    );
+  });
+});
+
+describe("importViralVideoToProject", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("imports platform media into a user-scoped project asset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        project_id: "viral-project-1",
+        asset_id: "viral-asset-1",
+        kind: "video",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      importViralVideoToProject("douyin", "native/video 1", "video"),
+    ).resolves.toEqual({
+      projectId: "viral-project-1",
+      assetId: "viral-asset-1",
+      kind: "video",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/viral/videos/douyin/native%2Fvideo%201/import",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ kind: "video" }),
+      }),
     );
   });
 });

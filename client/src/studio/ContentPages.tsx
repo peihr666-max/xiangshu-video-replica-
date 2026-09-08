@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchViralVideoMedia,
   fetchViralVideoStatistics,
+  importViralVideoToProject,
   listViralVideos,
   type ViralVideoItem,
 } from "../api";
@@ -357,6 +358,7 @@ function ViralCard({
   onActivate: () => void;
 }) {
   const { state, navigate, patchDraft, patchState } = useStudio();
+  const { media, prepare } = useViralMedia();
   const playerRef = useRef<HTMLVideoElement | null>(null);
   const { playback, play, retry, markFailed, activate } = useViralPlayback(
     video,
@@ -415,16 +417,28 @@ function ViralCard({
           <Button
             variant="outline"
             aria-label={`复刻 ${video.title}`}
-            onClick={() => {
-              patchDraft({ sourceId: video.id });
-              navigate("replica", {
-                selectedVideoId: video.id,
-                returnTo: "viral",
-              });
-            }}
+            disabled={media.status === "loading"}
+            onClick={() =>
+              prepare(video, "video", ({ projectId, assetId }) => {
+                patchDraft({
+                  projectId,
+                  sourceId: projectId,
+                  sourceAssetId: assetId,
+                });
+                navigate("replica", {
+                  selectedVideoId: video.id,
+                  returnTo: "viral",
+                });
+              })
+            }
           >
-            复刻
+            {media.status === "loading" ? "导入中…" : "复刻"}
           </Button>
+          {media.status === "error" && (
+            <span className="viral-media-status is-error" role="status">
+              {media.message}
+            </span>
+          )}
         </div>
       </div>
     </article>
@@ -440,6 +454,7 @@ export function ViralPage() {
   const [visibleCount, setVisibleCount] = useState(viralInitialCount);
   const [activeVideoId, setActiveVideoId] = useState<string>();
   const [listError, setListError] = useState<string>();
+  const [listLoading, setListLoading] = useState(!review);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   const shown = useMemo(
@@ -494,6 +509,7 @@ export function ViralPage() {
     const sortKey = sort === "最新" ? "latest" : "hot";
     let cancelled = false;
     setListError(undefined);
+    setListLoading(true);
     void listViralVideos(platformKey, sortKey)
       .then((result) => {
         if (cancelled) return;
@@ -510,6 +526,9 @@ export function ViralPage() {
       })
       .catch(() => {
         if (!cancelled) setListError("视频列表暂时无法更新，已保留当前内容");
+      })
+      .finally(() => {
+        if (!cancelled) setListLoading(false);
       });
     return () => {
       cancelled = true;
@@ -594,6 +613,11 @@ export function ViralPage() {
           {listError ?? statisticsError}
         </p>
       )}
+      {listLoading && (
+        <p className="viral-media-status" role="status">
+          正在加载爆款视频，不影响其他工作区功能…
+        </p>
+      )}
       {current.length ? (
         <>
           <section className="content-video-grid content-video-grid-viral">
@@ -614,8 +638,12 @@ export function ViralPage() {
         </>
       ) : (
         <Empty
-          title="暂无爆款视频"
-          description="数据源尚未配置或最近 7 天暂无内容，配置后自动展示。"
+          title={listLoading ? "正在加载爆款视频" : "暂无爆款视频"}
+          description={
+            listLoading
+              ? "平台冷数据将在后台继续读取。"
+              : "数据源尚未配置或最近 7 天暂无内容，配置后自动展示。"
+          }
         />
       )}
     </section>
@@ -628,31 +656,35 @@ type ViralMediaState = {
 };
 
 function useViralMedia() {
-  const { updateData } = useStudio();
   const [media, setMedia] = useState<ViralMediaState>({ status: "idle" });
   return {
     media,
     prepare: async (
       video: StudioVideo,
-      onReady: (kind: "audio" | "video") => void,
+      kind: "audio" | "video",
+      onReady: (source: {
+        projectId: string;
+        assetId: string;
+        kind: "audio" | "video";
+      }) => void,
     ) => {
       if (!video.platformKey || !video.nativeId) {
-        onReady("video");
+        setMedia({ status: "error", message: "来源视频缺少平台标识" });
         return;
       }
       setMedia({ status: "loading" });
       try {
-        const result = await fetchViralVideoMedia(
+        const result = await importViralVideoToProject(
           video.platformKey,
           video.nativeId,
+          kind,
         );
-        updateViralStats(updateData, result.video);
         setMedia({
           status: "ready",
           message:
             result.kind === "audio" ? "原声音频已就绪" : "低清视频已就绪",
         });
-        onReady(result.kind);
+        onReady(result);
       } catch (error) {
         setMedia({
           status: "error",
@@ -697,15 +729,27 @@ export function ViralDetailPage() {
     ["share", "转发", formatCount(video.shares)],
     ["star", "收藏", formatCount(video.collections)],
   ];
-  const goExtract = () => {
-    patchDraft({ sourceId: video.id });
+  const goExtract = ({
+    projectId,
+    assetId,
+  }: {
+    projectId: string;
+    assetId: string;
+  }) => {
+    patchDraft({ projectId, sourceId: projectId, sourceAssetId: assetId });
     navigate("copy", {
       selectedVideoId: video.id,
       returnTo: "viral-detail",
     });
   };
-  const goReplica = () => {
-    patchDraft({ sourceId: video.id });
+  const goReplica = ({
+    projectId,
+    assetId,
+  }: {
+    projectId: string;
+    assetId: string;
+  }) => {
+    patchDraft({ projectId, sourceId: projectId, sourceAssetId: assetId });
     navigate("replica", {
       selectedVideoId: video.id,
       returnTo: "viral-detail",
@@ -819,7 +863,7 @@ export function ViralDetailPage() {
               <Button
                 disabled={media.status === "loading"}
                 variant="outline"
-                onClick={() => prepare(video, goExtract)}
+                onClick={() => prepare(video, "audio", goExtract)}
               >
                 提取文案
               </Button>
@@ -828,7 +872,7 @@ export function ViralDetailPage() {
               <Button
                 disabled={media.status === "loading"}
                 variant="outline"
-                onClick={() => prepare(video, goReplica)}
+                onClick={() => prepare(video, "video", goReplica)}
               >
                 视频复刻
               </Button>

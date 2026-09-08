@@ -38,6 +38,7 @@ import {
   loadProjectDraft,
   loadSavedScriptList,
   loadStudioData,
+  loadViralVideoData,
   persistCloudDraft,
   persistSavedScript,
   publishScriptVersion,
@@ -286,7 +287,27 @@ export function StudioWorkspace({
     setData((previous) => ({ ...previous, loading: true }));
     void loadStudioData(currentUser)
       .then((result) => {
-        if (active) setData(result);
+        if (!active) return;
+        setData(result);
+        void loadViralVideoData()
+          .then((viral) => {
+            if (!active) return;
+            setData((previous) => ({
+              ...previous,
+              videos: viral.videos,
+              errors: [...previous.errors, ...viral.errors],
+            }));
+          })
+          .catch((cause: unknown) => {
+            if (!active) return;
+            setData((previous) => ({
+              ...previous,
+              errors: [
+                ...previous.errors,
+                customerVisibleErrorMessage(cause, "爆款视频暂不可用。"),
+              ],
+            }));
+          });
       })
       .catch((cause: unknown) => {
         if (active)

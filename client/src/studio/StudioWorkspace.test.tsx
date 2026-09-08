@@ -13,6 +13,7 @@ import { createState } from "./state";
 
 const live = vi.hoisted(() => ({
   loadStudioData: vi.fn(),
+  loadViralVideoData: vi.fn(async () => ({ videos: [], errors: [] })),
   loadPersonAssets: vi.fn(),
   loadProjectDraft: vi.fn(),
   reloadTasks: vi.fn(async (): Promise<unknown[]> => []),
@@ -160,6 +161,7 @@ describe("V1.4 workspace integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     live.loadPersonAssets.mockResolvedValue({ assets: [], errors: [] });
+    live.loadViralVideoData.mockResolvedValue({ videos: [], errors: [] });
     window.history.replaceState(null, "", "/#studio/workbench");
   });
   it("renders the approved navigation order and keeps review data isolated", () => {
@@ -231,6 +233,27 @@ describe("V1.4 workspace integration", () => {
     expect(screen.getByText(/人物库暂不可用/)).toBeInTheDocument();
     expect(screen.queryByText("张工")).not.toBeInTheDocument();
     expect(screen.queryByText(/示例审核/)).not.toBeInTheDocument();
+  });
+
+  it("爆款冷拉取未完成时基础工作区已经可用", async () => {
+    live.loadStudioData.mockResolvedValue({
+      people: [],
+      assets: [],
+      videos: [],
+      tasks: [],
+      projects: [],
+      errors: [],
+      loading: false,
+      stats: null,
+    });
+    live.loadViralVideoData.mockReturnValue(new Promise(() => {}));
+
+    render(<StudioWorkspace currentUser={reviewUser} />);
+
+    expect(
+      await screen.findByText("提取文案进入文案工坊，开始复刻进入分镜工作区。"),
+    ).toBeInTheDocument();
+    expect(live.loadViralVideoData).toHaveBeenCalledOnce();
   });
 
   it("关闭已有项目工作区不会再次导入并覆盖当前草稿", async () => {
