@@ -114,7 +114,7 @@ export function DevicesPage({ readOnly = false }: { readOnly?: boolean }) {
   return (
     <div className="devices-page">
       <header className="admin-page-header">
-        <h1>设备管理</h1>
+        <h2>设备管理</h2>
         <p>集中处理设备绑定状态、最近活跃情况与强制下线操作。</p>
       </header>
 

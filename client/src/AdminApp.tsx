@@ -10,6 +10,7 @@ import { PaymentSettingsSection } from "./admin/PaymentSettingsSection";
 import { QueueModeSection } from "./admin/QueueModeSection";
 import { SessionsPage } from "./admin/SessionsPage";
 import { PageBanner } from "./admin/ui/PageBanner";
+import { TabBar } from "./admin/ui/TabBar";
 import { roleLabel } from "./admin/ui/vocabulary";
 import { SESSION_EXPIRED_EVENT } from "./api";
 import {
@@ -23,7 +24,7 @@ import {
   loginAdminWithPassword,
   recoverAdminPassword,
 } from "./api.admin";
-import jingxuLogoMark from "./assets/brand/jingxu-logo-mark.png";
+import zhongshuLogoMark from "./assets/brand/zhongshu-logo-mark.svg";
 import { SettingsPanel } from "./SettingsPanel";
 
 type AuthPhase =
@@ -34,16 +35,13 @@ type AuthPhase =
   | "ready";
 
 type AdminTab =
-  | "accounts"
-  | "orders"
-  | "settings"
-  | "services"
-  | "activation"
-  | "devices"
-  | "customers"
+  | "overview"
+  | "analytics"
+  | "funds"
+  | "customersMgmt"
   | "generationRecords"
-  | "sessions"
-  | "audit";
+  | "auditCenter"
+  | "systemSettings";
 
 const tabGroups: Array<{
   id: string;
@@ -54,8 +52,9 @@ const tabGroups: Array<{
     id: "overview",
     label: "运营概览",
     tabs: [
-      { id: "accounts", label: "账号与钱包", helper: "钱包、条数与流水" },
-      { id: "orders", label: "充值订单", helper: "支付、查单、对账与导出" },
+      { id: "overview", label: "总览仪表盘", helper: "核心指标与经营总览" },
+      { id: "analytics", label: "经营分析", helper: "利润、成本与趋势" },
+      { id: "funds", label: "资金流水", helper: "充值订单与额度流水" },
     ],
   },
   {
@@ -63,46 +62,39 @@ const tabGroups: Array<{
     label: "客户运营",
     tabs: [
       {
-        id: "activation",
-        label: "激活码与发放",
-        helper: "生成、发放、暂停恢复与撤销",
-      },
-      { id: "devices", label: "设备", helper: "绑定状态与强制下线" },
-      {
-        id: "customers",
-        label: "客户",
-        helper: "客户账户、售价、免费条数与调账",
+        id: "customersMgmt",
+        label: "客户管理",
+        helper: "客户、激活码、设备与会话",
       },
       {
         id: "generationRecords",
         label: "生成记录",
         helper: "视频、图片与 AI 评分费用追溯",
       },
-      { id: "sessions", label: "会话", helper: "在线态与单在线约束" },
     ],
   },
   {
     id: "governance",
     label: "系统治理",
     tabs: [
-      { id: "settings", label: "支付与价格", helper: "定价与渠道设置" },
-      { id: "services", label: "服务配置", helper: "上游服务与运行参数" },
-      { id: "audit", label: "审计", helper: "操作留痕与事件检索" },
+      { id: "auditCenter", label: "审计中心", helper: "审计日志与调账记录" },
+      {
+        id: "systemSettings",
+        label: "系统设置",
+        helper: "支付、费率与服务配置",
+      },
     ],
   },
 ];
 
 const tabPageTitles: Record<AdminTab, string> = {
-  accounts: "账号与钱包",
-  orders: "充值订单",
-  settings: "支付与价格",
-  services: "服务配置",
-  activation: "激活码与发放",
-  devices: "设备管理",
-  customers: "客户管理",
+  overview: "总览仪表盘",
+  analytics: "经营分析",
+  funds: "资金流水",
+  customersMgmt: "客户管理",
   generationRecords: "用户生成记录",
-  sessions: "会话管理",
-  audit: "审计日志",
+  auditCenter: "审计中心",
+  systemSettings: "系统设置",
 };
 
 const compactNavigationBreakpoint = 1024;
@@ -115,10 +107,7 @@ export function AdminApp() {
   const [recoveryCredential, setRecoveryCredential] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [activeTab, setActiveTab] = useState<AdminTab>("accounts");
-  const [sessionUserId, setSessionUserId] = useState<string | undefined>(
-    undefined,
-  );
+  const [activeTab, setActiveTab] = useState<AdminTab>("overview");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isCompactNavigation, setIsCompactNavigation] = useState(() =>
@@ -137,7 +126,7 @@ export function AdminApp() {
       clearAdminActivationSession();
       setActor(null);
       setAuthPhase("anonymous");
-      setActiveTab("accounts");
+      setActiveTab("overview");
       setLoginPassword("");
       setRecoveryCredential("");
       setNewPassword("");
@@ -218,7 +207,7 @@ export function AdminApp() {
       setActor(result.actor);
       setLoginPassword("");
       setAuthPhase("ready");
-      setActiveTab("accounts");
+      setActiveTab("overview");
     } catch (cause) {
       setError(adminActivationErrorMessage(cause, "后台登录失败"));
     }
@@ -455,10 +444,10 @@ export function AdminApp() {
         >
           <div className="admin-sidebar__top">
             <div className="admin-brand">
-              <img alt="" aria-hidden="true" src={jingxuLogoMark} />
+              <img alt="" aria-hidden="true" src={zhongshuLogoMark} />
               <div>
-                <strong>镜序 Studio</strong>
-                <span>OPERATIONS</span>
+                <strong>众墅之家</strong>
+                <span>AI 即创 · AI 视频创作平台</span>
               </div>
             </div>
             <div className="admin-sidebar__context">
@@ -526,44 +515,175 @@ export function AdminApp() {
             <p>{activeTabMeta?.helper ?? "运营核心视图"}</p>
           </header>
 
-          {activeTab === "accounts" ? <AccountsPage /> : null}
-          {activeTab === "orders" ? <OrdersPage readOnly={readOnly} /> : null}
-          {activeTab === "settings" ? (
-            <PaymentSettingsSection readOnly={readOnly} />
-          ) : null}
-          {activeTab === "services" ? (
-            <>
-              <QueueModeSection readOnly={readOnly} />
-              <section className="admin-panel" aria-label="服务配置">
-                <SettingsPanel readOnly={readOnly} source="control" />
-              </section>
-            </>
-          ) : null}
-          {activeTab === "activation" ? (
-            <AdminActivationSection
+          {activeTab === "overview" ? <AccountsPage /> : null}
+          {activeTab === "analytics" ? <AnalyticsShell /> : null}
+          {activeTab === "funds" ? <FundsShell readOnly={readOnly} /> : null}
+          {activeTab === "customersMgmt" ? (
+            <CustomersShell
               actor={actor}
+              readOnly={readOnly}
               onSessionExpired={handleSessionExpired}
             />
           ) : null}
-          {activeTab === "devices" ? <DevicesPage readOnly={readOnly} /> : null}
-          {activeTab === "customers" ? (
-            <CustomersPage
-              embedded
-              readOnly={readOnly}
-              onOpenDevices={() => setActiveTab("devices")}
-              onOpenSessions={(userId) => {
-                setSessionUserId(userId);
-                setActiveTab("sessions");
-              }}
-            />
-          ) : null}
           {activeTab === "generationRecords" ? <GenerationRecordsPage /> : null}
-          {activeTab === "sessions" ? (
-            <SessionsPage readOnly={readOnly} userId={sessionUserId} />
+          {activeTab === "auditCenter" ? <AuditShell /> : null}
+          {activeTab === "systemSettings" ? (
+            <SystemSettingsShell readOnly={readOnly} />
           ) : null}
-          {activeTab === "audit" ? <AuditEventsPage /> : null}
         </div>
       </section>
     </main>
+  );
+}
+
+function AnalyticsShell() {
+  const [tab, setTab] = useState("profit");
+  return (
+    <div>
+      <TabBar
+        active={tab}
+        ariaLabel="经营分析页签"
+        items={[
+          { id: "profit", label: "利润总览" },
+          { id: "cost", label: "成本明细" },
+        ]}
+        onChange={setTab}
+      />
+      <section
+        className="admin-panel"
+        aria-label={tab === "profit" ? "利润总览" : "成本明细"}
+      >
+        <h2>{tab === "profit" ? "利润总览" : "成本明细"}</h2>
+        <p>经营统计将在独立业务 PR 中接入。</p>
+      </section>
+    </div>
+  );
+}
+
+function FundsShell({ readOnly }: { readOnly: boolean }) {
+  const [tab, setTab] = useState("orders");
+  return (
+    <div>
+      <TabBar
+        active={tab}
+        ariaLabel="资金流水页签"
+        items={[
+          { id: "orders", label: "充值订单" },
+          { id: "transactions", label: "额度流水" },
+        ]}
+        onChange={setTab}
+      />
+      {tab === "orders" ? <OrdersPage readOnly={readOnly} /> : <AccountsPage />}
+    </div>
+  );
+}
+
+function CustomersShell({
+  actor,
+  readOnly,
+  onSessionExpired,
+}: {
+  actor: AdminActorInfo;
+  readOnly: boolean;
+  onSessionExpired: () => void;
+}) {
+  const [tab, setTab] = useState("customers");
+  const [sessionUserId, setSessionUserId] = useState<string>();
+  return (
+    <div>
+      <TabBar
+        active={tab}
+        ariaLabel="客户管理页签"
+        items={[
+          { id: "customers", label: "客户列表" },
+          { id: "activation", label: "激活码" },
+          { id: "devices", label: "设备与会话" },
+        ]}
+        onChange={setTab}
+      />
+      {tab === "customers" ? (
+        <CustomersPage
+          embedded
+          readOnly={readOnly}
+          onOpenDevices={() => setTab("devices")}
+          onOpenSessions={(userId) => {
+            setSessionUserId(userId);
+            setTab("devices");
+          }}
+        />
+      ) : null}
+      {tab === "activation" ? (
+        <AdminActivationSection
+          actor={actor}
+          onSessionExpired={onSessionExpired}
+        />
+      ) : null}
+      {tab === "devices" ? (
+        <div className="admin-devices-sessions-layout">
+          <DevicesPage readOnly={readOnly} />
+          <SessionsPage readOnly={readOnly} userId={sessionUserId} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AuditShell() {
+  const [tab, setTab] = useState("audit");
+  return (
+    <div>
+      <TabBar
+        active={tab}
+        ariaLabel="审计中心页签"
+        items={[
+          { id: "audit", label: "审计日志" },
+          { id: "adjustments", label: "调账记录" },
+        ]}
+        onChange={setTab}
+      />
+      {tab === "audit" ? (
+        <AuditEventsPage />
+      ) : (
+        <section className="admin-panel" aria-label="调账记录">
+          <h2>调账记录</h2>
+          <p>请从客户详情查看对应调账历史。</p>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function SystemSettingsShell({ readOnly }: { readOnly: boolean }) {
+  const [tab, setTab] = useState("payment");
+  return (
+    <div>
+      <TabBar
+        active={tab}
+        ariaLabel="系统设置页签"
+        items={[
+          { id: "payment", label: "支付与价格" },
+          { id: "rates", label: "费率管理" },
+          { id: "services", label: "服务配置" },
+        ]}
+        onChange={setTab}
+      />
+      {tab === "payment" ? (
+        <PaymentSettingsSection readOnly={readOnly} />
+      ) : null}
+      {tab === "rates" ? (
+        <section className="admin-panel" aria-label="费率管理">
+          <h2>费率管理</h2>
+          <p>费率配置将在独立业务 PR 中接入。</p>
+        </section>
+      ) : null}
+      {tab === "services" ? (
+        <>
+          <QueueModeSection readOnly={readOnly} />
+          <section className="admin-panel" aria-label="服务配置">
+            <SettingsPanel readOnly={readOnly} source="control" />
+          </section>
+        </>
+      ) : null}
+    </div>
   );
 }

@@ -77,7 +77,7 @@ describe("RootApp", () => {
       expect(
         screen.getByRole("heading", { name: "运营管理后台" }),
       ).toBeInTheDocument();
-      expect(screen.queryByRole("heading", { name: "镜序 Studio" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "众墅之家" })).toBeNull();
     },
   );
 

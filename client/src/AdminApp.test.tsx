@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -157,15 +158,21 @@ const settings = {
   },
 };
 
-function installFetch(options?: { session?: "valid" | "missing" }) {
-  const sessionState = options?.session ?? "missing";
+function installFetch(config?: {
+  session?: "valid" | "missing";
+  actor?: typeof adminActor;
+}) {
+  const sessionState = config?.session ?? "missing";
   const fetchMock = vi.fn((url: string, options?: RequestInit) => {
     if (
       url.endsWith("/api/control/admin/session") &&
       (!options?.method || options.method === "GET")
     ) {
       if (sessionState === "valid") {
-        return jsonResponse(adminSession);
+        return jsonResponse({
+          ...adminSession,
+          actor: config?.actor ?? adminActor,
+        });
       }
       return jsonResponse(
         {
@@ -241,6 +248,12 @@ function installFetch(options?: { session?: "valid" | "missing" }) {
         limit: 50,
         offset: 0,
       });
+    }
+    if (url.includes("/api/control/devices?")) {
+      return jsonResponse({ items: [], total: 0, limit: 100, offset: 0 });
+    }
+    if (url.includes("/api/control/customer-sessions/live")) {
+      return jsonResponse({ items: [], total: 0, limit: 20, offset: 0 });
     }
     if (url.endsWith("/api/control/billing-reconciliation")) {
       return jsonResponse(reconciliation);
@@ -348,7 +361,8 @@ describe("AdminApp", () => {
     render(<AdminApp />);
     await signInWithPassword();
 
-    fireEvent.click(screen.getByRole("button", { name: "充值订单" }));
+    fireEvent.click(screen.getByRole("button", { name: "资金流水" }));
+    fireEvent.click(screen.getByRole("tab", { name: "充值订单" }));
 
     expect(
       await screen.findByText(
@@ -386,7 +400,8 @@ describe("AdminApp", () => {
     render(<AdminApp />);
     await signInWithPassword();
 
-    fireEvent.click(screen.getByRole("button", { name: "支付与价格" }));
+    fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "支付与价格" }));
     expect(await screen.findByDisplayValue("merchant-1")).toBeInTheDocument();
     expect(screen.getByText("********cret")).toBeInTheDocument();
     expect(screen.queryByLabelText("网关地址")).toBeNull();
@@ -446,7 +461,8 @@ describe("AdminApp", () => {
     render(<AdminApp />);
     await signInWithPassword();
 
-    fireEvent.click(screen.getByRole("button", { name: "服务配置" }));
+    fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "服务配置" }));
     expect(
       await screen.findByRole("heading", { name: "视频生成" }),
     ).toBeInTheDocument();
@@ -492,13 +508,14 @@ describe("AdminApp", () => {
 
     render(<AdminApp />);
     await signInWithPassword();
-    fireEvent.click(screen.getByRole("button", { name: "激活码与发放" }));
+    fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "激活码" }));
 
     expect(
       await screen.findByRole("heading", { name: "直接生成激活码" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { level: 1, name: "激活码与发放" }),
+      screen.getByRole("heading", { level: 1, name: "客户管理" }),
     ).toBeInTheDocument();
   });
 
@@ -525,6 +542,74 @@ describe("AdminApp", () => {
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("管理员密码")).toBeNull();
     expect(screen.getAllByText("管理员一号").length).toBeGreaterThan(0);
+  });
+
+  it("renders the seven-entry admin shell and Zhongshu brand", async () => {
+    installFetch({ session: "valid" });
+    render(<AdminApp />);
+    const navigation = await screen.findByRole("navigation", {
+      name: "管理端导航",
+    });
+
+    expect(screen.getByText("众墅之家")).toBeInTheDocument();
+    expect(within(navigation).getAllByRole("button")).toHaveLength(7);
+    for (const name of [
+      "总览仪表盘",
+      "经营分析",
+      "资金流水",
+      "客户管理",
+      "生成记录",
+      "审计中心",
+      "系统设置",
+    ]) {
+      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    }
+  });
+
+  it("keeps all shell entries visible for the read-only auditor role", async () => {
+    installFetch({
+      session: "valid",
+      actor: {
+        ...adminActor,
+        user_id: "auditor-1",
+        display_name: "审计员一号",
+        role: "auditor",
+      },
+    });
+    render(<AdminApp />);
+    const navigation = await screen.findByRole("navigation", {
+      name: "管理端导航",
+    });
+
+    expect(screen.getAllByText("审计员").length).toBeGreaterThan(0);
+    expect(within(navigation).getAllByRole("button")).toHaveLength(7);
+    for (const name of [
+      "总览仪表盘",
+      "经营分析",
+      "资金流水",
+      "客户管理",
+      "生成记录",
+      "审计中心",
+      "系统设置",
+    ]) {
+      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    }
+  });
+
+  it("keeps the embedded device page below the customer management heading", async () => {
+    installFetch({ session: "valid" });
+    render(<AdminApp />);
+    await screen.findByRole("navigation", { name: "管理端导航" });
+
+    fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "设备与会话" }));
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "客户管理" }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "设备管理" }),
+    ).toBeInTheDocument();
   });
 
   it("returns to the login gate and clears admin session state when a control 401 emits the shared expiry event", async () => {
@@ -611,7 +696,8 @@ describe("AdminApp", () => {
     render(<AdminApp />);
     await signInWithPassword();
     fireEvent.click(screen.getByRole("button", { name: "展开导航" }));
-    fireEvent.click(screen.getByRole("button", { name: "充值订单" }));
+    fireEvent.click(screen.getByRole("button", { name: "资金流水" }));
+    fireEvent.click(screen.getByRole("tab", { name: "充值订单" }));
 
     expect(
       await screen.findByRole("button", { name: "查单同步" }),
@@ -636,20 +722,22 @@ describe("AdminApp", () => {
     expect(
       await screen.findByRole("button", { name: "展开导航" }),
     ).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: "客户" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "客户管理" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "展开导航" }));
 
     expect(screen.getAllByText("运营概览").length).toBeGreaterThan(0);
     expect(screen.getAllByText("客户运营").length).toBeGreaterThan(0);
     expect(screen.getAllByText("系统治理").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "客户" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "客户管理" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "关闭导航" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "客户" }));
+    fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
 
     expect(
       await screen.findByRole("heading", { name: "客户管理" }),
