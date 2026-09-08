@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from math import floor
+from math import floor, isfinite
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -44,6 +44,11 @@ from app.internal_billing import (
     InsufficientCreditsError,
     finalize_internal_billing,
     reserve_internal_billing,
+)
+from app.operation_costs import (
+    record_video_generation_cost,
+    record_video_generation_not_called,
+    snapshot_generation_rates,
 )
 from app.permissions import (
     insert_audit,
@@ -272,6 +277,7 @@ class H3CreateResult(BaseModel):
     result_content: bytes
     audio_quality_status: Literal["AUDIO_OK", "AUDIO_QUALITY_FAILED", "NOT_REQUIRED"]
     quality_issue_codes: list[str]
+    output_seconds: float | None = None
 
 
 class H3QueryResult(BaseModel):
@@ -288,6 +294,7 @@ class H3QueryResult(BaseModel):
 
     status: Literal["RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
     result_url: str | None = None
+    output_seconds: float | None = None
 
 
 class SubmissionUncertain(RuntimeError):
@@ -366,6 +373,7 @@ class ReconcileOperationOutcome:
     result_url: str | None = None
     audio_quality_status: str | None = None
     quality_issue_codes: list[str] | None = None
+    output_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -513,6 +521,7 @@ class MetasoH3Provider(H3Provider):
             return H3QueryResult(
                 status="SUCCEEDED",
                 result_url=_metaso_content_url(item, provider_task_id=provider_task_id),
+                output_seconds=_metaso_output_seconds(item),
             )
         if status == "failed":
             return H3QueryResult(status="FAILED")
@@ -537,6 +546,7 @@ class MetasoH3Provider(H3Provider):
                     result_content=b"",
                     audio_quality_status="NOT_REQUIRED",
                     quality_issue_codes=[],
+                    output_seconds=result.output_seconds,
                 )
             if result.status in {"FAILED", "CANCELLED"}:
                 raise H3ProviderFailed(
@@ -646,6 +656,7 @@ class FakeH3Provider(H3Provider):
             result_content=result_content,
             audio_quality_status="AUDIO_OK" if audio_ok else "AUDIO_QUALITY_FAILED",
             quality_issue_codes=[] if audio_ok else ["AUDIO_QUALITY_FAILED"],
+            output_seconds=float(request["duration"]),
         )
 
     def download_result(self, url: str) -> bytes:
@@ -1829,6 +1840,12 @@ def create_generation_batch(
                     billed_seconds,
                 ),
             )
+            snapshot_generation_rates(
+                conn,
+                task_id=task_id,
+                resolution=request.resolution,
+                billed_seconds=billed_seconds,
+            )
             _reserve_generation_credit(
                 conn,
                 user_id=actor.id,
@@ -2019,6 +2036,13 @@ def regenerate_generation_batch(
                     actor.id,
                 ),
             )
+            replacement_snapshot = json.loads(prompt_snapshot)
+            snapshot_generation_rates(
+                conn,
+                task_id=replacement_task_id,
+                resolution=str(replacement_snapshot.get("resolution", "768P")),
+                billed_seconds=billed_seconds,
+            )
             _reserve_generation_credit(
                 conn,
                 user_id=billed_user_id,
@@ -2200,6 +2224,13 @@ def regenerate_generation_task(
                 request.generation_reason,
                 actor.id,
             ),
+        )
+        replacement_snapshot = json.loads(prompt_snapshot)
+        snapshot_generation_rates(
+            conn,
+            task_id=replacement_task_id,
+            resolution=str(replacement_snapshot.get("resolution", "768P")),
+            billed_seconds=_seconds_from_prompt_snapshot(prompt_snapshot),
         )
         _reserve_generation_credit(
             conn,
@@ -2598,6 +2629,7 @@ def run_next_generation_task(
             lease=lease,
             quality_status="NOT_REQUIRED",
             quality_issue_codes=[],
+            output_seconds=provider_result.output_seconds,
         )
 
 
@@ -3471,6 +3503,7 @@ def perform_generation_reconcile_operation(
         result_url=query.result_url,
         audio_quality_status="NOT_REQUIRED",
         quality_issue_codes=[],
+        output_seconds=query.output_seconds,
     )
 
 
@@ -3502,6 +3535,7 @@ def complete_generation_reconcile_operation(
             )
             if task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
+            record_video_generation_cost(conn, task_id=lease.task_id, output_seconds=None)
             finalize_internal_billing(
                 conn,
                 task_id=lease.task_id,
@@ -3533,6 +3567,11 @@ def complete_generation_reconcile_operation(
             )
             if task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
+            record_video_generation_cost(
+                conn,
+                task_id=lease.task_id,
+                output_seconds=outcome.output_seconds,
+            )
             finalize_internal_billing(conn, task_id=lease.task_id, outcome="success")
             _refresh_batch_status_in_transaction(conn, batch_id=work.batch_id)
             result = get_task_result(conn, lease.task_id)
@@ -3966,6 +4005,11 @@ def reconcile_submission_uncertain_task(
             )
             if reconcile_reservation is not None and task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
+            record_video_generation_cost(
+                conn,
+                task_id=task_id,
+                output_seconds=_metaso_output_seconds(item),
+            )
             finalize_internal_billing(conn, task_id=task_id, outcome="success")
             _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
             if reconcile_reservation is None:
@@ -4005,6 +4049,7 @@ def reconcile_submission_uncertain_task(
             )
             if reconcile_reservation is not None and task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
+            record_video_generation_cost(conn, task_id=task_id, output_seconds=None)
             finalize_internal_billing(
                 conn,
                 task_id=task_id,
@@ -4711,6 +4756,7 @@ def finalize_generation_direct_result(
     lease: dict[str, Any],
     quality_status: str,
     quality_issue_codes: list[str],
+    output_seconds: float | None = None,
 ) -> TaskResult:
     """Settle a provider-hosted result without copying video bytes to storage."""
 
@@ -4744,6 +4790,7 @@ def finalize_generation_direct_result(
         if row is not None and row["superseded_by_task_id"] is not None:
             raise GenerationTaskSupersededError(task_id)
         raise RuntimeError("generation result lease was lost before direct delivery")
+    record_video_generation_cost(conn, task_id=task_id, output_seconds=output_seconds)
     finalize_internal_billing(conn, task_id=task_id, outcome="success")
     _refresh_batch_status_in_transaction(conn, batch_id=str(lease["batch_id"]))
     release_user_queue_slot_for_task(conn, task_id=task_id)
@@ -4836,6 +4883,7 @@ def mark_task_provider_settings_unavailable(
             """,
             (task_id,),
         )
+        record_video_generation_not_called(conn, task_id=task_id)
         finalize_internal_billing(conn, task_id=task_id, outcome="failed")
         _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
         release_user_queue_slot_for_task(conn, task_id=task_id)
@@ -4869,6 +4917,7 @@ def mark_task_provider_failed(
             # L1 (M4M5 review): the replacement flow owns the terminal
             # state, the billing settlement and the slot release now.
             raise GenerationTaskSupersededError(task_id)
+        record_video_generation_cost(conn, task_id=task_id, output_seconds=None)
         finalize_internal_billing(conn, task_id=task_id, outcome="failed")
         _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
         release_user_queue_slot_for_task(conn, task_id=task_id)
@@ -4901,6 +4950,7 @@ def mark_task_first_frame_url_sign_failed(
             # L1 (M4M5 review): the replacement flow owns the terminal
             # state, the billing settlement and the slot release now.
             raise GenerationTaskSupersededError(task_id)
+        record_video_generation_not_called(conn, task_id=task_id)
         finalize_internal_billing(conn, task_id=task_id, outcome="failed")
         _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
         # Terminal failure: the per-user concurrency slot is free again.
@@ -5800,6 +5850,17 @@ def _metaso_content_url(item: dict[str, Any], *, provider_task_id: str) -> str:
         )
     _require_public_https_host(parsed.hostname)
     return result_url
+
+
+def _metaso_output_seconds(item: dict[str, Any]) -> float | None:
+    usage = item.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    value = usage.get("output_seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    return seconds if isfinite(seconds) and seconds >= 0 else None
 
 
 def _h3_request_has_https_first_frame(request: dict[str, Any]) -> bool:

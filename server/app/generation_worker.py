@@ -804,6 +804,7 @@ def _run_pg_generation_step(
                 lease=lease,
                 quality_status="NOT_REQUIRED",
                 quality_issue_codes=[],
+                output_seconds=result.output_seconds,
             )
         return
 
@@ -865,7 +866,11 @@ def _run_pg_generation_step(
                 result_url=query.result_url,
             )
             finalize_generation_direct_result(
-                conn, lease=lease, quality_status="NOT_REQUIRED", quality_issue_codes=[]
+                conn,
+                lease=lease,
+                quality_status="NOT_REQUIRED",
+                quality_issue_codes=[],
+                output_seconds=query.output_seconds,
             )
         return
 
