@@ -2,12 +2,23 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StudioContextValue, StudioState } from "./types";
 
-const { useStudio, fetchViralVideoMedia } = vi.hoisted(() => ({
+const {
+  useStudio,
+  fetchViralVideoMedia,
+  fetchViralVideoStatistics,
+  listViralVideos,
+} = vi.hoisted(() => ({
   useStudio: vi.fn(),
   fetchViralVideoMedia: vi.fn(),
+  fetchViralVideoStatistics: vi.fn(),
+  listViralVideos: vi.fn(),
 }));
 vi.mock("./context", () => ({ useStudio }));
-vi.mock("../api", () => ({ fetchViralVideoMedia }));
+vi.mock("../api", () => ({
+  fetchViralVideoMedia,
+  fetchViralVideoStatistics,
+  listViralVideos,
+}));
 
 class IntersectionObserverStub {
   observe() {}
@@ -134,7 +145,19 @@ function studio(
 }
 
 describe("V1.4 内容与运营页面", () => {
-  beforeEach(() => useStudio.mockReset());
+  beforeEach(() => {
+    useStudio.mockReset();
+    fetchViralVideoMedia.mockReset();
+    fetchViralVideoStatistics.mockReset();
+    listViralVideos.mockReset();
+    listViralVideos.mockResolvedValue({
+      platform: "douyin",
+      sort: "hot",
+      categories: [],
+      items: [],
+      fetchedAt: null,
+    });
+  });
 
   it("爆款视频按平台过滤、收藏并把来源带入复刻", () => {
     const value = studio();
@@ -179,7 +202,7 @@ describe("V1.4 内容与运营页面", () => {
     expect(screen.getByText("乡墅建房笔记")).toBeInTheDocument();
     expect(screen.getByText("抖音 · 建房预算 · 有原声")).toBeInTheDocument();
     expect(
-      screen.getByText("取低清视频作参考，带入视频创作"),
+      screen.getByRole("button", { name: "播放 农村建房预算，别只盯着主体" }),
     ).toBeInTheDocument();
     expect(view.container.querySelector("main")).toBeNull();
     expect(screen.queryByText("内容浏览示例审核")).toBeNull();
@@ -205,7 +228,11 @@ describe("V1.4 内容与运营页面", () => {
       },
     });
     useStudio.mockReturnValue(value);
-    render(<ViralDetailPage />);
+    const view = render(<ViralDetailPage />);
+    expect(view.container.querySelector(".content-detail-grid")).toHaveClass(
+      "content-detail-grid-viral",
+    );
+    expect(screen.getByText("▶ 播放")).toHaveClass("content-player-viral-play");
     fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
     await waitFor(() => {
       expect(screen.getByText(/素材准备失败/)).toBeInTheDocument();
@@ -238,6 +265,329 @@ describe("V1.4 内容与运营页面", () => {
 
     expect(screen.queryByText("采集参数仅在管理后台配置。")).toBeNull();
     expect(screen.queryByText("内容浏览示例审核")).toBeNull();
+  });
+
+  it("爆款封面失败状态随封面地址更新而恢复", () => {
+    const base = studio();
+    const value = studio({
+      data: { ...base.data, videos: [base.data.videos[0]] },
+    });
+    useStudio.mockReturnValue(value);
+    const view = render(<ViralPage />);
+
+    const brokenPoster = view.container.querySelector(".viral-card-cover-img");
+    expect(brokenPoster).not.toBeNull();
+    if (!brokenPoster) return;
+    fireEvent.error(brokenPoster);
+    expect(view.container.querySelector(".viral-card-cover-img")).toBeNull();
+
+    const refreshed = {
+      ...value,
+      data: {
+        ...value.data,
+        videos: [{ ...value.data.videos[0], poster: "/studio/fresh.jpg" }],
+      },
+    };
+    useStudio.mockReturnValue(refreshed);
+    view.rerender(<ViralPage />);
+
+    expect(
+      view.container.querySelector(".viral-card-cover-img"),
+    ).toHaveAttribute("src", "/studio/fresh.jpg");
+  });
+
+  it("真实爆款首次点击即通过服务端媒体地址在原卡片播放", async () => {
+    let resolveMedia: ((value: unknown) => void) | undefined;
+    fetchViralVideoMedia.mockReturnValue(
+      new Promise((resolve) => {
+        resolveMedia = resolve;
+      }),
+    );
+    const base = studio();
+    const value = studio({
+      data: {
+        ...base.data,
+        videos: [
+          {
+            ...base.data.videos[0],
+            playUrl: "https://source.test/native-dy-1.mp4",
+          },
+        ],
+      },
+    });
+    useStudio.mockReturnValue(value);
+    const view = render(<ViralPage />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "播放 农村建房预算，别只盯着主体" }),
+    );
+    expect(fetchViralVideoMedia).toHaveBeenCalledWith(
+      "douyin",
+      "native-dy-1",
+      "video",
+    );
+    expect(screen.getByText("准备中…")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "播放 农村建房预算，别只盯着主体" }),
+    );
+    expect(fetchViralVideoMedia).toHaveBeenCalledOnce();
+
+    resolveMedia?.({
+      kind: "video",
+      url: "https://storage.test/viral/douyin/native-dy-1.mp4",
+      contentType: "video/mp4",
+      cacheHit: false,
+      video: null,
+    });
+    await waitFor(() => {
+      expect(view.container.querySelector("video")).toHaveAttribute(
+        "src",
+        "https://storage.test/viral/douyin/native-dy-1.mp4",
+      );
+    });
+    expect(view.container.querySelector(".viral-card-overlay")).toBeNull();
+  });
+
+  it("新卡片开始播放时暂停上一条并保留原播放器", async () => {
+    const pause = vi
+      .spyOn(HTMLMediaElement.prototype, "pause")
+      .mockImplementation(() => {});
+    fetchViralVideoMedia.mockImplementation((_platform, videoId) =>
+      Promise.resolve({
+        kind: "video",
+        url: `https://storage.test/${videoId}.mp4`,
+        contentType: "video/mp4",
+        cacheHit: false,
+        video: null,
+      }),
+    );
+    const base = studio();
+    const second = {
+      ...base.data.videos[0],
+      id: "dy-2",
+      nativeId: "native-dy-2",
+      title: "第二条乡墅参考",
+    };
+    useStudio.mockReturnValue(
+      studio({ data: { ...base.data, videos: [base.data.videos[0], second] } }),
+    );
+    render(<ViralPage />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "播放 农村建房预算，别只盯着主体" }),
+    );
+    const firstPlayer = await screen.findByTitle("农村建房预算，别只盯着主体");
+    fireEvent.click(
+      screen.getByRole("button", { name: "播放 第二条乡墅参考" }),
+    );
+    await screen.findByTitle("第二条乡墅参考");
+
+    expect(pause).toHaveBeenCalledWith();
+    expect(firstPlayer).toBeInTheDocument();
+    pause.mockRestore();
+  });
+
+  it("快速切换卡片时旧请求晚返回不会抢占播放", async () => {
+    const resolvers = new Map<string, (value: unknown) => void>();
+    fetchViralVideoMedia.mockImplementation(
+      (_platform, videoId) =>
+        new Promise((resolve) => {
+          resolvers.set(videoId, resolve);
+        }),
+    );
+    const base = studio();
+    const second = {
+      ...base.data.videos[0],
+      id: "dy-2",
+      nativeId: "native-dy-2",
+      title: "第二条乡墅参考",
+    };
+    useStudio.mockReturnValue(
+      studio({ data: { ...base.data, videos: [base.data.videos[0], second] } }),
+    );
+    render(<ViralPage />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "播放 农村建房预算，别只盯着主体" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "播放 第二条乡墅参考" }),
+    );
+    resolvers.get("native-dy-2")?.({
+      kind: "video",
+      url: "https://storage.test/native-dy-2.mp4",
+      contentType: "video/mp4",
+      cacheHit: false,
+      video: null,
+    });
+    expect(await screen.findByTitle("第二条乡墅参考")).toHaveAttribute(
+      "src",
+      "https://storage.test/native-dy-2.mp4",
+    );
+
+    resolvers.get("native-dy-1")?.({
+      kind: "video",
+      url: "https://storage.test/native-dy-1.mp4",
+      contentType: "video/mp4",
+      cacheHit: false,
+      video: null,
+    });
+    await waitFor(() => {
+      expect(screen.queryByTitle("农村建房预算，别只盯着主体")).toBeNull();
+    });
+  });
+
+  it("媒体响应携带补采统计时只更新对应爆款视频", async () => {
+    const responseVideo = {
+      platform: "douyin" as const,
+      videoId: "native-dy-1",
+      category: "建房预算",
+      title: "农村建房预算，别只盯着主体",
+      author: "乡墅建房笔记",
+      authorAvatar: null,
+      verified: true,
+      coverUrl: "/studio/demo.jpg",
+      durationMs: 88_000,
+      likes: 19_001,
+      comments: 321,
+      shares: 654,
+      collects: 987,
+      publishedAt: null,
+      publishedDisplay: null,
+      likeDisplay: "1.9万",
+      tags: [],
+      hasPlayableAudio: true,
+      playUrl: null,
+    };
+    fetchViralVideoMedia.mockResolvedValue({
+      kind: "audio",
+      url: "https://storage.test/viral/douyin/native-dy-1.mp3",
+      contentType: "audio/mpeg",
+      cacheHit: false,
+      video: responseVideo,
+    });
+    const base = studio();
+    const value = studio({
+      state: {
+        ...base.state,
+        page: "viral-detail",
+        selectedVideoId: "dy-1",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralDetailPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    await waitFor(() => expect(value.updateData).toHaveBeenCalledOnce());
+    const update = vi.mocked(value.updateData).mock.calls[0][0];
+    const updated = update(value.data);
+
+    expect(updated.videos[0]).toMatchObject({
+      likes: 19_001,
+      comments: 321,
+      shares: 654,
+      collections: 987,
+      likeDisplay: "1.9万",
+    });
+    expect(updated.videos[1]).toBe(value.data.videos[1]);
+  });
+
+  it("未知爆款统计显示短横线", () => {
+    const base = studio();
+    useStudio.mockReturnValue(
+      studio({
+        data: {
+          ...base.data,
+          videos: [
+            {
+              ...base.data.videos[0],
+              comments: null,
+              shares: null,
+              collections: null,
+            },
+          ],
+        },
+      }),
+    );
+    render(<ViralPage />);
+
+    expect(screen.getByTitle("评论")).toHaveTextContent("—");
+    expect(screen.getByTitle("转发")).toHaveTextContent("—");
+    expect(screen.getByTitle("收藏")).toHaveTextContent("—");
+  });
+
+  it("非审核列表为当前可见的视频号完整统计查询缓存且每页仅一次", async () => {
+    listViralVideos.mockReturnValue(new Promise(() => {}));
+    const base = studio();
+    const sourceVideo = {
+      ...base.data.videos[1],
+      comments: 10,
+      shares: 20,
+      collections: 30,
+    };
+    fetchViralVideoStatistics.mockResolvedValue({
+      items: [
+        {
+          platform: "wechat_channels",
+          videoId: "native-wx-1",
+          category: "庭院案例",
+          title: sourceVideo.title,
+          author: sourceVideo.author,
+          authorAvatar: null,
+          verified: false,
+          coverUrl: sourceVideo.poster,
+          durationMs: 72_000,
+          likes: 9_800,
+          comments: 44,
+          shares: 55,
+          collects: 66,
+          publishedAt: null,
+          publishedDisplay: "3天前",
+          likeDisplay: "1.2万",
+          tags: [],
+          hasPlayableAudio: false,
+          playUrl: null,
+        },
+      ],
+    });
+    const value = studio({
+      review: false,
+      data: { ...base.data, videos: [sourceVideo] },
+    });
+    useStudio.mockReturnValue(value);
+    const view = render(<ViralPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "视频号 1" }));
+
+    await waitFor(() =>
+      expect(fetchViralVideoStatistics).toHaveBeenCalledWith(["native-wx-1"]),
+    );
+    view.rerender(<ViralPage />);
+    expect(fetchViralVideoStatistics).toHaveBeenCalledOnce();
+    const update = vi.mocked(value.updateData).mock.calls[0][0];
+    expect(update(value.data).videos[0]).toMatchObject({
+      comments: 44,
+      shares: 55,
+      collections: 66,
+    });
+  });
+
+  it("视频号详情直接打开时也查询当前完整统计缓存", async () => {
+    const base = studio();
+    fetchViralVideoStatistics.mockResolvedValue({ items: [] });
+    const value = studio({
+      review: false,
+      state: {
+        ...base.state,
+        page: "viral-detail",
+        selectedVideoId: "wx-1",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralDetailPage />);
+
+    await waitFor(() =>
+      expect(fetchViralVideoStatistics).toHaveBeenCalledWith(["native-wx-1"]),
+    );
   });
 
   it("爆款列表默认渲染前十二条并保留平台筛选", () => {
@@ -289,6 +639,20 @@ describe("V1.4 内容与运营页面", () => {
       target: { value: "最新" },
     });
     expect(titles()[0]).toBe("排序参考 1");
+  });
+
+  it("切换最新排序时按当前平台重新读取列表", async () => {
+    const value = studio({ review: false });
+    useStudio.mockReturnValue(value);
+    render(<ViralPage />);
+
+    fireEvent.change(screen.getByLabelText("排序方式"), {
+      target: { value: "最新" },
+    });
+
+    await waitFor(() =>
+      expect(listViralVideos).toHaveBeenCalledWith("douyin", "latest"),
+    );
   });
 
   it("非审核工作区不把示例三十条当作真实采集数据", () => {
