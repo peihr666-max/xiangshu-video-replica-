@@ -5560,6 +5560,7 @@ def cancel_generation_batch(
         SELECT id, project_id, created_by_user_id, status
         FROM generation_batches
         WHERE id = %s
+        FOR UPDATE
         """,
         (batch_id,),
     ).fetchone()
@@ -5596,6 +5597,7 @@ def cancel_generation_batch(
             """
             SELECT id, status FROM generation_tasks
             WHERE batch_id = %s
+            FOR UPDATE
             """,
             (batch_id,),
         ).fetchall()
@@ -5607,23 +5609,39 @@ def cancel_generation_batch(
                 "BATCH_ALREADY_ACTIVE",
                 "A task in this batch is already being submitted or generated.",
             )
-        conn.execute(
+        cancelled_batch = conn.execute(
             """
             UPDATE generation_batches
             SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
             WHERE id = %s AND status = 'QUEUED'
+            RETURNING id
             """,
             (batch_id,),
-        )
-        conn.execute(
+        ).fetchone()
+        if cancelled_batch is None:
+            conn.rollback()
+            raise generation_error(
+                409,
+                "BATCH_NOT_CANCELLABLE",
+                "Only queued batches can be cancelled.",
+            )
+        cancelled_tasks = conn.execute(
             """
             UPDATE generation_tasks
             SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
             WHERE batch_id = %s AND status = 'PENDING'
+            RETURNING id
             """,
             (batch_id,),
-        )
-        for row in task_rows:
+        ).fetchall()
+        if len(cancelled_tasks) != len(task_rows):
+            conn.rollback()
+            raise generation_error(
+                409,
+                "BATCH_ALREADY_ACTIVE",
+                "A task in this batch is already being submitted or generated.",
+            )
+        for row in cancelled_tasks:
             finalize_internal_billing(conn, task_id=str(row["id"]), outcome="failed")
         write_audit(
             conn,

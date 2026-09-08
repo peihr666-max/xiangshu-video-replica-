@@ -15,6 +15,7 @@ from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.viral_store import (
     VIRAL_FETCH_TTL,
+    claim_viral_work,
     fetch_state_is_fresh,
     get_viral_video,
     list_viral_videos,
@@ -22,6 +23,7 @@ from app.viral_store import (
     update_viral_statistics,
     upsert_viral_videos,
     viral_fetched_at,
+    viral_work_is_owned,
 )
 from app.viral_tikhub import (
     ViralHttpTransport,
@@ -34,6 +36,27 @@ from app.viral_tikhub import (
 
 def _open(path: Path) -> BusinessConnection:
     return BusinessConnection.sqlite(connect_database(path))
+
+
+def test_viral_work_claim_replaces_only_expired_token(tmp_path: Path) -> None:
+    db_path = tmp_path / "viral-claims.db"
+    initialize_database(db_path).close()
+    with _open(db_path) as conn:
+        first = claim_viral_work(conn, "viral:media:douyin:1:video")
+        assert first is not None
+        conn.commit()
+        assert claim_viral_work(conn, "viral:media:douyin:1:video") is None
+        conn.execute(
+            "UPDATE viral_work_claims SET locked_until = %s WHERE scope = %s",
+            ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), "viral:media:douyin:1:video"),
+        )
+        assert not viral_work_is_owned(conn, scope="viral:media:douyin:1:video", lease_token=first)
+        replacement = claim_viral_work(conn, "viral:media:douyin:1:video")
+        assert replacement is not None and replacement != first
+        assert not viral_work_is_owned(conn, scope="viral:media:douyin:1:video", lease_token=first)
+        assert viral_work_is_owned(
+            conn, scope="viral:media:douyin:1:video", lease_token=replacement
+        )
 
 
 def _video(

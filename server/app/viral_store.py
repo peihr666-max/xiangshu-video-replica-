@@ -16,6 +16,7 @@ import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from app.db_portable import BusinessConnection
 from app.viral_tikhub import MAX_TAGS, ViralVideo, WechatVideoDetail, is_irrelevant_viral_video
@@ -33,6 +34,42 @@ def lock_viral_scope(conn: BusinessConnection, scope: str) -> None:
     """Serialize paid refresh and native-json RMW across PostgreSQL instances."""
     if conn.is_postgres:
         conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (scope,))
+
+
+def claim_viral_work(conn: BusinessConnection, scope: str) -> str | None:
+    now = datetime.now(UTC)
+    token = str(uuid4())
+    row = conn.execute(
+        """
+        INSERT INTO viral_work_claims (scope, lease_token, locked_until)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (scope) DO UPDATE SET
+            lease_token = excluded.lease_token,
+            locked_until = excluded.locked_until,
+            created_at = CURRENT_TIMESTAMP
+        WHERE viral_work_claims.locked_until <= %s
+        RETURNING lease_token
+        """,
+        (scope, token, (now + timedelta(minutes=20)).isoformat(), now.isoformat()),
+    ).fetchone()
+    return token if row is not None else None
+
+
+def release_viral_work(conn: BusinessConnection, *, scope: str, lease_token: str) -> bool:
+    row = conn.execute(
+        "DELETE FROM viral_work_claims WHERE scope = %s AND lease_token = %s RETURNING scope",
+        (scope, lease_token),
+    ).fetchone()
+    return row is not None
+
+
+def viral_work_is_owned(conn: BusinessConnection, *, scope: str, lease_token: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM viral_work_claims "
+        "WHERE scope = %s AND lease_token = %s AND locked_until > %s",
+        (scope, lease_token, datetime.now(UTC).isoformat()),
+    ).fetchone()
+    return row is not None
 
 
 _UPSERT_SQL = """

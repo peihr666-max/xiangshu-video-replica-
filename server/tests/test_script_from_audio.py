@@ -330,6 +330,32 @@ def test_missing_ffmpeg_fails_closed(
     assert "未找到 ffmpeg" in (task["error_message"] or "")
 
 
+def test_local_preparation_failure_does_not_mark_provider_started(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.generation_worker as worker_module
+
+    task_id = enqueue(client).json()["id"]
+    storage = FakeStorageAdapter(provider="fake", bucket="private-bucket")
+
+    def fail_locally(_work):
+        raise RuntimeError("local ffmpeg failed")
+
+    monkeypatch.setattr(worker_module, "prepare_script_from_audio_submission", fail_locally)
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        run_worker_once(conn, worker_id="audio-local-failure", storage=storage, max_tasks=1)
+        row = conn.execute(
+            "SELECT status, provider_started_at, retryable "
+            "FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+    assert row["status"] == "FAILED"
+    assert row["provider_started_at"] is None
+    assert row["retryable"] == 1
+
+
 def test_transcript_result_dataclass_defaults() -> None:
     result = TranscriptResult(text="abc", duration_sec=None, language=None)
     assert result.text == "abc"
@@ -392,9 +418,14 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
         steps.append("mark")
         return True
 
-    def perform(_work):
+    def prepare_submission(_work):
         assert transaction_depth == 0
-        steps.append("perform")
+        steps.append("local")
+        return object()
+
+    def perform_provider(_work):
+        assert transaction_depth == 0
+        steps.append("provider")
         return TranscriptResult(text="PG transcript", duration_sec=None, language=None)
 
     def complete(*_args, **_kwargs):
@@ -403,8 +434,9 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
         return True
 
     monkeypatch.setattr(worker, "prepare_script_from_audio_task", prepare)
+    monkeypatch.setattr(worker, "prepare_script_from_audio_submission", prepare_submission)
     monkeypatch.setattr(worker, "mark_script_from_audio_submission_started", mark)
-    monkeypatch.setattr(worker, "perform_script_from_audio_task", perform)
+    monkeypatch.setattr(worker, "perform_script_from_audio_provider_call", perform_provider)
     monkeypatch.setattr(worker, "complete_script_from_audio_task", complete)
 
     processed = worker.run_pg_worker_once(
@@ -413,7 +445,7 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
         max_tasks=1,
     )
     assert processed == 1
-    assert steps == ["prepare", "mark", "perform", "complete"]
+    assert steps == ["prepare", "local", "mark", "provider", "complete"]
 
 
 def test_replacement_lease_token_blocks_all_old_worker_lifecycle_writes(

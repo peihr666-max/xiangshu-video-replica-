@@ -131,6 +131,15 @@ class PreparedScriptFromAudio:
     ffprobe_path: str | None
 
 
+@dataclass(frozen=True)
+class PreparedScriptFromAudioSubmission:
+    storage: StorageAdapter
+    asr: AsrProvider
+    temporary_object_key: str
+    audio_url: str
+    duration_sec: float | None
+
+
 def script_from_audio_error(status_code: int, code: str, message: str) -> Exception:
     from fastapi import HTTPException
 
@@ -415,10 +424,10 @@ def mark_script_from_audio_submission_started(
     return True
 
 
-def perform_script_from_audio_task(
+def prepare_script_from_audio_submission(
     work: PreparedScriptFromAudio,
-) -> TranscriptResult:
-    """抽取 → 临时对象 → 转写 → 即删。临时对象在 finally 中无条件清理。"""
+) -> PreparedScriptFromAudioSubmission:
+    """完成可安全重试的本地与存储准备，尚未调用 ASR。"""
     video_bytes = work.storage.get_object(work.object_key)
     tmp_key = f"tmp/asr/{work.project_id}/{hashlib.sha256(video_bytes).hexdigest()[:32]}.m4a"
     with tempfile.TemporaryDirectory(prefix="script-from-audio-") as tmp_dir:
@@ -434,20 +443,40 @@ def perform_script_from_audio_task(
             probe_duration_seconds(work.ffprobe_path, audio_path) if work.ffprobe_path else None
         )
         work.storage.put_object(tmp_key, audio_bytes, content_type="audio/mp4")
-        try:
-            intent = work.storage.create_download_intent(
-                tmp_key,
-                expires_in=_DOWNLOAD_INTENT_EXPIRES,
-                can_read=True,
-            )
-            transcript = work.asr.transcribe(intent.url, duration_sec=duration)
-        finally:
-            # 转写用完即删（决策 #6）：成功、失败一律清理，不留音频残留。
-            try:
-                work.storage.delete_object(tmp_key, actor_id="script-from-audio-worker")
-            except Exception:  # pragma: no cover - cleanup best effort
-                logger.warning("temporary ASR audio cleanup failed for key %s", tmp_key)
-    return transcript
+        intent = work.storage.create_download_intent(
+            tmp_key,
+            expires_in=_DOWNLOAD_INTENT_EXPIRES,
+            can_read=True,
+        )
+    return PreparedScriptFromAudioSubmission(
+        storage=work.storage,
+        asr=work.asr,
+        temporary_object_key=tmp_key,
+        audio_url=intent.url,
+        duration_sec=duration,
+    )
+
+
+def cleanup_script_from_audio_submission(work: PreparedScriptFromAudioSubmission) -> None:
+    try:
+        work.storage.delete_object(work.temporary_object_key, actor_id="script-from-audio-worker")
+    except Exception:  # pragma: no cover - cleanup best effort
+        logger.warning("temporary ASR audio cleanup failed for key %s", work.temporary_object_key)
+
+
+def perform_script_from_audio_provider_call(
+    work: PreparedScriptFromAudioSubmission,
+) -> TranscriptResult:
+    """ASR 是唯一可能已被上游受理的步骤；调用后无条件清理临时音频。"""
+    try:
+        return work.asr.transcribe(work.audio_url, duration_sec=work.duration_sec)
+    finally:
+        cleanup_script_from_audio_submission(work)
+
+
+def perform_script_from_audio_task(work: PreparedScriptFromAudio) -> TranscriptResult:
+    """SQLite 兼容入口；PG worker 使用拆分后的两阶段函数。"""
+    return perform_script_from_audio_provider_call(prepare_script_from_audio_submission(work))
 
 
 def complete_script_from_audio_task(

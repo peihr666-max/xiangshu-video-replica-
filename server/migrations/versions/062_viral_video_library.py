@@ -85,9 +85,19 @@ def upgrade() -> None:
         sa.Column("fetched_at", sa.Text(), nullable=False),
         sa.PrimaryKeyConstraint("platform", "sort"),
     )
+    op.create_table(
+        "viral_work_claims",
+        sa.Column("scope", sa.Text(), primary_key=True),
+        sa.Column("lease_token", sa.Text(), nullable=False),
+        sa.Column("locked_until", sa.Text(), nullable=False),
+        sa.Column(
+            "created_at", sa.Text(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+        ),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("viral_work_claims")
     op.drop_table("viral_fetch_state")
     op.drop_index("ix_viral_videos_platform_published", "viral_videos")
     op.drop_index("ix_viral_videos_platform_likes", "viral_videos")

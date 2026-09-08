@@ -55,6 +55,7 @@ from app.generation import (
     MetasoH3Provider,
     ReconcileReservation,
     acquire_generation_task_lease,
+    cancel_generation_batch,
     mark_expired_active_leases_needing_attention,
     mark_task_submission_uncertain,
     reconcile_submission_uncertain_task,
@@ -214,6 +215,60 @@ def _acquire(dsn: str, worker_id: str) -> dict[str, object] | None:
         if lease is not None:
             return dict(lease)
         return None
+
+
+def test_cancel_batch_row_lock_prevents_concurrent_worker_claim(fair_state: str) -> None:
+    _seed(fair_state, user_ids=["u1"], tasks_per_user=1)
+    tasks_locked = threading.Event()
+    allow_cancel = threading.Event()
+    failures: list[BaseException] = []
+
+    class PausingConnection:
+        def __init__(self, inner: BusinessConnection) -> None:
+            self.inner = inner
+
+        def __getattr__(self, name: str):
+            return getattr(self.inner, name)
+
+        def execute(self, sql: str, parameters=()):
+            cursor = self.inner.execute(sql, parameters)
+            if "FROM generation_tasks" in sql and "FOR UPDATE" in sql:
+                tasks_locked.set()
+                assert allow_cancel.wait(timeout=5)
+            return cursor
+
+    def cancel() -> None:
+        try:
+            with pg_transaction() as raw:
+                conn = PausingConnection(BusinessConnection.postgres(raw))
+                cancel_generation_batch(
+                    cast(BusinessConnection, conn),
+                    actor=CurrentUser(
+                        id="proj-owner",
+                        username="admin",
+                        display_name="Admin",
+                        role="admin",
+                    ),
+                    batch_id="batch-u1",
+                )
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=cancel)
+    thread.start()
+    assert tasks_locked.wait(timeout=5)
+    assert _acquire(fair_state, "worker-racing-cancel") is None
+    allow_cancel.set()
+    thread.join(timeout=5)
+    assert not failures
+    with psycopg.connect(fair_state) as pg:
+        batch_status = pg.execute(
+            "SELECT status FROM generation_batches WHERE id = 'batch-u1'"
+        ).fetchone()[0]
+        task_status = pg.execute(
+            "SELECT status FROM generation_tasks WHERE id = 'task-u1-0'"
+        ).fetchone()[0]
+    assert (batch_status, task_status) == ("CANCELLED", "CANCELLED")
 
 
 def _cursor_count(dsn: str, user_id: str) -> int:

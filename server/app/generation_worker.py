@@ -103,10 +103,12 @@ from app.oral import (
 )
 from app.script_from_audio import (
     acquire_script_from_audio_task,
+    cleanup_script_from_audio_submission,
     complete_script_from_audio_task,
     fail_script_from_audio_task,
     mark_script_from_audio_submission_started,
-    perform_script_from_audio_task,
+    perform_script_from_audio_provider_call,
+    prepare_script_from_audio_submission,
     prepare_script_from_audio_task,
 )
 from app.script_rewrite import (
@@ -405,24 +407,28 @@ def run_worker_once(
         script_from_audio_lease = acquire_script_from_audio_task(conn, worker_id=worker_id)
         if script_from_audio_lease is not None:
             audio_submission_started = False
+            audio_submission = None
             try:
                 audio_work = prepare_script_from_audio_task(
                     conn,
                     lease=script_from_audio_lease,
                     storage=storage,
                 )
+                audio_submission = prepare_script_from_audio_submission(audio_work)
                 mark_script_from_audio_submission_started(
                     conn,
                     lease=script_from_audio_lease,
                 )
                 audio_submission_started = True
-                audio_result = perform_script_from_audio_task(audio_work)
+                audio_result = perform_script_from_audio_provider_call(audio_submission)
                 complete_script_from_audio_task(
                     conn,
                     lease=script_from_audio_lease,
                     result=audio_result,
                 )
             except Exception as exc:
+                if audio_submission is not None and not audio_submission_started:
+                    cleanup_script_from_audio_submission(audio_submission)
                 fail_script_from_audio_task(
                     conn,
                     lease=script_from_audio_lease,
@@ -1053,6 +1059,7 @@ def run_pg_worker_once(
             )
         if script_from_audio_lease is not None:
             audio_submission_started = False
+            audio_submission = None
             try:
                 with pg_transaction() as raw_conn:
                     audio_work = prepare_script_from_audio_task(
@@ -1060,13 +1067,14 @@ def run_pg_worker_once(
                         lease=script_from_audio_lease,
                         storage=storage,
                     )
+                audio_submission = prepare_script_from_audio_submission(audio_work)
                 with pg_transaction() as raw_conn:
                     mark_script_from_audio_submission_started(
                         BusinessConnection.postgres(raw_conn),
                         lease=script_from_audio_lease,
                     )
                 audio_submission_started = True
-                audio_result = perform_script_from_audio_task(audio_work)
+                audio_result = perform_script_from_audio_provider_call(audio_submission)
                 with pg_transaction() as raw_conn:
                     complete_script_from_audio_task(
                         BusinessConnection.postgres(raw_conn),
@@ -1074,6 +1082,8 @@ def run_pg_worker_once(
                         result=audio_result,
                     )
             except Exception as exc:
+                if audio_submission is not None and not audio_submission_started:
+                    cleanup_script_from_audio_submission(audio_submission)
                 with pg_transaction() as raw_conn:
                     failed = fail_script_from_audio_task(
                         BusinessConnection.postgres(raw_conn),

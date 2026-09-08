@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -258,6 +259,69 @@ def test_media_returns_url_and_red_line_holds(
     assert payload["contentType"] == "audio/mpeg"
     assert payload["url"].startswith("https://storage.test/")
     assert "tikhub" not in response.text.lower()
+
+
+def test_media_external_work_has_no_business_transaction_and_session_switch_blocks_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.viral_media import ViralMediaResult
+    from app.viral_routes import ViralMediaRequest, fetch_viral_video_media
+
+    class FakeConn:
+        def commit(self) -> None:
+            pass
+
+    class SwitchingDb:
+        active = 0
+        actors = iter((SimpleNamespace(id="user-1"),) * 2 + (SimpleNamespace(id="user-2"),))
+
+        @contextmanager
+        def write(self):
+            self.active += 1
+            try:
+                yield FakeConn(), next(self.actors)
+            finally:
+                self.active -= 1
+
+    db = SwitchingDb()
+    video = _video(
+        platform="douyin",
+        video_id="video-session-switch",
+        category="建房预算",
+        audio_url="https://cdn.test/audio.mp3",
+    )
+
+    class Pipeline:
+        detail = None
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def fetch(self, _video, *, prefer=None):
+            assert db.active == 0
+            return ViralMediaResult(
+                "audio", "test://cached", "https://storage.test/a.mp3", 12, "audio/mpeg", False
+            )
+
+    monkeypatch.setattr("app.viral_routes.require_not_auditor", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.viral_routes.get_viral_video", lambda *args, **kwargs: video)
+    monkeypatch.setattr("app.viral_routes.claim_viral_work", lambda *args, **kwargs: "token")
+    monkeypatch.setattr("app.viral_routes.get_media_storage", lambda _conn: object())
+    monkeypatch.setattr("app.viral_routes.ViralMediaPipeline", Pipeline)
+    monkeypatch.setattr(
+        "app.viral_routes.update_viral_statistics",
+        lambda *args, **kwargs: pytest.fail("旧会话不得写统计"),
+    )
+
+    with pytest.raises(Exception) as error:
+        fetch_viral_video_media(
+            ViralMediaRequest(platform="douyin", videoId=video.video_id, kind="audio"),
+            db,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+        )
+    assert getattr(error.value, "status_code", None) == 409
 
 
 def test_media_unknown_video_returns_404(client: tuple[TestClient, StubViralClient]) -> None:
