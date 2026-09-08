@@ -794,6 +794,7 @@ export type ScriptFromAudioTask = {
   error_code: string | null;
   error_message: string | null;
   retryable: boolean;
+  recovery_mode: "AUTO" | "ADMIN_REQUIRED" | null;
 };
 
 /** 提交"提取文案"异步任务（202）：上传视频 → 抽音轨 → ASR 转写。 */

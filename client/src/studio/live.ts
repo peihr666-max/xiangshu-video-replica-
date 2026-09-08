@@ -761,7 +761,7 @@ export async function loadPersonAssets(
 }
 
 /** 提取文案管线（script-from-audio）：提交任务 → 每 2 秒轮询 → 终态返回。
- * 成功返回转写全文；失败抛出带服务端文案的 Error（含 SUBMISSION_UNCERTAIN）。 */
+ * 自动恢复的不确定任务继续轮询；需人工对账或失败时抛出明确错误。 */
 export async function extractScriptFromUpload(
   projectId: string,
   assetId: string,
@@ -777,6 +777,22 @@ export async function extractScriptFromUpload(
     const task = await getScriptFromAudioTask(created.id);
     if (task.status === "SUCCEEDED" && task.result) {
       return { text: task.result.text };
+    }
+    if (
+      task.status === "SUBMISSION_UNCERTAIN" &&
+      task.recovery_mode === "AUTO"
+    ) {
+      continue;
+    }
+    if (
+      task.status === "SUBMISSION_UNCERTAIN" &&
+      task.recovery_mode === "ADMIN_REQUIRED"
+    ) {
+      throw new Error(
+        task.error_message
+          ? `文案提取需要管理员对账：${task.error_message}`
+          : "文案提取需要管理员对账，请联系管理员处理。",
+      );
     }
     if (task.status === "FAILED" || task.status === "SUBMISSION_UNCERTAIN") {
       throw new Error(task.error_message || "文案提取失败，请稍后重试。");

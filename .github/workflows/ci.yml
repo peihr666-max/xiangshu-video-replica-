@@ -143,9 +143,47 @@ jobs:
             exit "$status"
           done
 
+  ffmpeg-windows:
+    name: Prepare Windows ffmpeg
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build LGPL Windows ffmpeg tools
+        run: bash scripts/ffmpeg-minimal/build.sh "$RUNNER_TEMP/ffmpeg-windows"
+      - name: Verify PE32+ outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/ffmpeg-windows/ffmpeg.exe"
+          test -f "$RUNNER_TEMP/ffmpeg-windows/ffprobe.exe"
+          test -f "$RUNNER_TEMP/ffmpeg-windows/ffmpeg-7.1.5.tar.xz"
+          test -s "$RUNNER_TEMP/ffmpeg-windows/BUILD-PACKAGES.txt"
+          file "$RUNNER_TEMP/ffmpeg-windows/ffmpeg.exe" "$RUNNER_TEMP/ffmpeg-windows/ffprobe.exe" |
+            tee "$RUNNER_TEMP/ffmpeg-file-types.txt"
+          test "$(grep -c 'PE32+ executable' "$RUNNER_TEMP/ffmpeg-file-types.txt")" -eq 2
+          test "$(sha256sum "$RUNNER_TEMP/ffmpeg-windows/ffmpeg-7.1.5.tar.xz" | cut -d ' ' -f 1)" = \
+            "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
+          (
+            cd "$RUNNER_TEMP/ffmpeg-windows"
+            sha256sum ffmpeg.exe ffprobe.exe ffmpeg-7.1.5.tar.xz > SHA256SUMS.txt
+          )
+      - name: Upload Windows ffmpeg tools
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ffmpeg-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/ffmpeg-windows/
+          if-no-files-found: error
+          retention-days: 1
+
   windows-nsis:
     name: Windows Tauri and NSIS
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: ffmpeg-windows
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -153,6 +191,88 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Download Windows ffmpeg tools
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ffmpeg-windows-${{ github.sha }}
+          path: client/src-tauri/resources/ffmpeg
+      - name: Verify Windows media tools
+        shell: pwsh
+        run: |
+          $resourceRoot = 'client/src-tauri/resources/ffmpeg'
+          $expectedHashes = @{}
+          Get-Content -LiteralPath (Join-Path $resourceRoot 'SHA256SUMS.txt') | ForEach-Object {
+            if ($_ -notmatch '^([0-9a-f]{64})\s+\*?(.+)$') {
+              throw "invalid SHA256SUMS line: $_"
+            }
+            $expectedHashes[$Matches[2]] = $Matches[1].ToUpperInvariant()
+          }
+          foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) {
+            $path = Join-Path $resourceRoot $name
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "$name was not downloaded"
+            }
+            $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            if ($actualHash -ne $expectedHashes[$name]) {
+              throw "$name does not match the uploaded SHA256 manifest"
+            }
+            $version = & $path -version 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              throw "$name is not runnable on Windows"
+            }
+            if ($version -match '--enable-gpl') {
+              throw "$name unexpectedly enables GPL components"
+            }
+            if ($version -notmatch '--enable-version3') {
+              throw "$name is missing the declared LGPL v3 build flag"
+            }
+            $version.Trim().Split([Environment]::NewLine)[0]
+          }
+          $sourceName = 'ffmpeg-7.1.5.tar.xz'
+          $sourcePath = Join-Path $resourceRoot $sourceName
+          $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+          if ($sourceHash -ne $expectedHashes[$sourceName] -or
+              $sourceHash -ne 'DE668509CAF9E35E3CD162473441FDB29538C6D96ED080292B3CF9E6FC5D558F') {
+            throw 'the bundled FFmpeg source archive does not match version 7.1.5'
+          }
+
+          $wavPath = Join-Path $env:RUNNER_TEMP 'ffmpeg-smoke.wav'
+          $m4aPath = Join-Path $env:RUNNER_TEMP 'ffmpeg-smoke.m4a'
+          $sampleRate = 8000
+          $dataLength = $sampleRate * 2
+          $writer = [System.IO.BinaryWriter]::new([System.IO.File]::Create($wavPath))
+          try {
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+            $writer.Write([int](36 + $dataLength))
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('WAVEfmt '))
+            $writer.Write([int]16)
+            $writer.Write([short]1)
+            $writer.Write([short]1)
+            $writer.Write([int]$sampleRate)
+            $writer.Write([int]($sampleRate * 2))
+            $writer.Write([short]2)
+            $writer.Write([short]16)
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+            $writer.Write([int]$dataLength)
+            $writer.Write([byte[]]::new($dataLength))
+          } finally {
+            $writer.Dispose()
+          }
+          & (Join-Path $resourceRoot 'ffmpeg.exe') -hide_banner -loglevel error -y -i $wavPath -c:a aac $m4aPath
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $m4aPath)) {
+            throw 'ffmpeg failed the WAV to AAC/M4A smoke conversion'
+          }
+          $durationText = & (Join-Path $resourceRoot 'ffprobe.exe') -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $m4aPath
+          if ($LASTEXITCODE -ne 0) {
+            throw 'ffprobe failed to read the smoke conversion duration'
+          }
+          $duration = [double]::Parse(
+            $durationText.Trim(),
+            [System.Globalization.CultureInfo]::InvariantCulture
+          )
+          if ($duration -lt 0.8 -or $duration -gt 1.2) {
+            throw "unexpected smoke conversion duration: $duration"
+          }
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -169,6 +289,57 @@ jobs:
         run: npm run check:tauri:customer
       - name: Build unsigned internal NSIS installer
         run: npm run tauri:build -- --bundles nsis --no-sign --ci
+      - name: Verify internal installer contains Windows media tools
+        shell: pwsh
+        run: |
+          $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
+          $sevenZip = if ($null -ne $sevenZipCommand) {
+            $sevenZipCommand.Source
+          } else {
+            Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          }
+          if (-not (Test-Path -LiteralPath $sevenZip)) {
+            throw '7-Zip is required to inspect the NSIS payload'
+          }
+          $installer = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw 'internal NSIS installer was not produced'
+          }
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'internal-nsis-payload'
+          & $sevenZip x $installer.FullName "-o$extractRoot" -y
+          if ($LASTEXITCODE -ne 0) {
+            throw 'internal NSIS installer could not be inspected'
+          }
+          $expectedHashes = @{}
+          Get-Content -LiteralPath 'client/src-tauri/resources/ffmpeg/SHA256SUMS.txt' | ForEach-Object {
+            if ($_ -match '^([0-9a-f]{64})\s+\*?(.+)$') {
+              $expectedHashes[$Matches[2]] = $Matches[1].ToUpperInvariant()
+            }
+          }
+          $required = @(
+            'ffmpeg.exe',
+            'ffprobe.exe',
+            'ffmpeg-7.1.5.tar.xz',
+            'BUILD-PACKAGES.txt',
+            'SHA256SUMS.txt',
+            'COPYING.LGPLv3',
+            'SOURCE-NOTICE.md'
+          )
+          foreach ($name in $required) {
+            $suffix = "/resources/ffmpeg/$name".ToLowerInvariant()
+            $matches = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -File | Where-Object {
+              $_.FullName.Replace('\', '/').ToLowerInvariant().EndsWith($suffix)
+            })
+            if ($matches.Count -ne 1) {
+              throw "internal NSIS installer must contain exactly resources/ffmpeg/$name"
+            }
+            if ($expectedHashes.ContainsKey($name)) {
+              $payloadHash = (Get-FileHash -LiteralPath $matches[0].FullName -Algorithm SHA256).Hash
+              if ($payloadHash -ne $expectedHashes[$name]) {
+                throw "internal NSIS installer payload hash mismatch for $name"
+              }
+            }
+          }
       - name: Record internal installer SHA256
         shell: pwsh
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
@@ -225,10 +396,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'customer NSIS installer could not be inspected'
           }
+          $forbiddenNames = @(
+            'start-backend.bat',
+            'start-backend.sh',
+            'ffmpeg.exe',
+            'ffprobe.exe',
+            'ffmpeg-7.1.5.tar.xz',
+            'BUILD-PACKAGES.txt',
+            'SHA256SUMS.txt',
+            'COPYING.LGPLv3',
+            'SOURCE-NOTICE.md'
+          )
           $forbidden = Get-ChildItem -LiteralPath $extractRoot -Recurse -File |
-            Where-Object { $_.Name -in @('start-backend.bat', 'start-backend.sh') }
+            Where-Object { $_.Name -in $forbiddenNames }
           if ($forbidden) {
-            throw "customer installer contains local launchers: $($forbidden.FullName -join ', ')"
+            throw "customer installer contains local runtime resources: $($forbidden.FullName -join ', ')"
           }
       - name: Record customer cloud installer SHA256
         shell: pwsh

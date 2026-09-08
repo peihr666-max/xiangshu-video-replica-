@@ -186,12 +186,14 @@ def admin_app(monkeypatch: pytest.MonkeyPatch, route_state: str) -> Iterator[Fas
     from app.admin_runtime_routes import router as admin_runtime_router
     from app.admin_session_routes import router as admin_session_router
     from app.oral_routes import admin_router as admin_oral_router
+    from app.script_from_audio_routes import admin_router as admin_script_from_audio_router
 
     app = FastAPI()
     app.include_router(admin_auth_router)
     app.include_router(admin_session_router)
     app.include_router(admin_runtime_router)
     app.include_router(admin_oral_router)
+    app.include_router(admin_script_from_audio_router)
     monkeypatch.setenv(DATABASE_URL_ENV, route_state)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
     monkeypatch.setenv(ADMIN_SESSION_HMAC_KEY_ENV, TEST_ADMIN_SESSION_KEY)
@@ -328,6 +330,46 @@ def _reconcile_oral_task(
         f"/api/control/admin/oral/tasks/{task_id}/reconcile",
         headers={**headers, "Idempotency-Key": key},
         json={"outcome": outcome, "confirm": True, "reason": reason},
+    )
+
+
+def _seed_uncertain_script_from_audio_task(
+    task_id: str,
+    *,
+    provider_task_id: str | None = None,
+    status: str = "SUBMISSION_UNCERTAIN",
+) -> None:
+    with psycopg.connect(_t34_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO projects (id, owner_user_id, name) "
+            "VALUES ('asr-project', 'customer_u', 'ASR Project') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        conn.execute(
+            """
+            INSERT INTO script_from_audio_tasks (
+                id, project_id, source_asset_id, created_by_user_id,
+                idempotency_key, request_hash, request_json, status,
+                provider_task_id
+            ) VALUES (%s, 'asr-project', 'source-asset', 'customer_u',
+                      %s, %s, '{}', %s, %s)
+            """,
+            (task_id, f"create-{task_id}", f"hash-{task_id}", status, provider_task_id),
+        )
+
+
+def _discard_uncertain_script_from_audio_task(
+    client: TestClient,
+    headers: dict[str, str],
+    task_id: str,
+    *,
+    key: str,
+    reason: str = "供应商后台确认未创建任务",
+):
+    return client.post(
+        f"/api/control/admin/script-from-audio/tasks/{task_id}/reconcile",
+        headers={**headers, "Idempotency-Key": key},
+        json={"outcome": "DISCARD", "confirm": True, "reason": reason},
     )
 
 
@@ -742,6 +784,149 @@ def test_oral_task_reconcile_replay_and_concurrency_apply_once(client: TestClien
         ).fetchone()
     assert terminal_counts == [("RELEASE", 1), ("SETTLE", 1)]
     assert audit_count == (2,)
+
+
+@pytest.mark.pg
+def test_admin_can_discard_idless_uncertain_script_task_with_idempotent_audit(
+    client: TestClient,
+) -> None:
+    task_id = "asr-idless-discard"
+    _seed_uncertain_script_from_audio_task(task_id)
+    headers = _admin_session(client)
+
+    missing_csrf = _discard_uncertain_script_from_audio_task(
+        client,
+        {},
+        task_id,
+        key="asr-discard-no-csrf",
+    )
+    assert missing_csrf.status_code == 403
+    assert missing_csrf.json()["detail"]["code"] == "ADMIN_CSRF_REQUIRED"
+
+    first = _discard_uncertain_script_from_audio_task(
+        client,
+        headers,
+        task_id,
+        key="asr-discard-replay",
+    )
+    replay = _discard_uncertain_script_from_audio_task(
+        client,
+        headers,
+        task_id,
+        key="asr-discard-replay",
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "FAILED"
+    assert first.json()["recovery_mode"] is None
+    assert replay.status_code == 200
+    assert replay.headers["X-Idempotent-Replay"] == "true"
+    assert replay.json() == first.json()
+
+    fresh_key_after_discard = _discard_uncertain_script_from_audio_task(
+        client,
+        headers,
+        task_id,
+        key="asr-discard-after-terminal",
+    )
+    assert fresh_key_after_discard.status_code == 409
+    with psycopg.connect(_t34_dsn()) as conn:
+        row = conn.execute(
+            "SELECT status, retryable, provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+        audits = conn.execute(
+            "SELECT actor_user_id, metadata_json FROM audit_logs "
+            "WHERE action = 'script_from_audio.task.reconcile' AND entity_id = %s",
+            (task_id,),
+        ).fetchall()
+    assert row == ("FAILED", 1, None)
+    assert len(audits) == 1
+    assert audits[0][0] == "admin_u"
+    metadata = json.loads(str(audits[0][1]))
+    assert metadata["outcome"] == "DISCARD"
+    assert metadata["reason"] == "供应商后台确认未创建任务"
+    assert metadata["request_id"]
+    assert metadata["admin_session_id"]
+
+
+@pytest.mark.pg
+def test_script_task_discard_rejects_non_admin_auto_recovery_and_race(
+    client: TestClient,
+) -> None:
+    denied_id = "asr-idless-denied"
+    _seed_uncertain_script_from_audio_task(denied_id)
+    customer = _discard_uncertain_script_from_audio_task(
+        client,
+        {"X-Dev-User-Id": "customer_u"},
+        denied_id,
+        key="asr-customer-discard",
+    )
+    assert customer.status_code == 401
+    auditor = _discard_uncertain_script_from_audio_task(
+        client,
+        _admin_session(client, "auditor_u"),
+        denied_id,
+        key="asr-auditor-discard",
+    )
+    assert auditor.status_code == 403
+    assert auditor.json()["detail"]["code"] == "AUDITOR_READ_ONLY"
+
+    headers = _admin_session(client)
+    auto_id = "asr-auto-recovery"
+    _seed_uncertain_script_from_audio_task(auto_id, provider_task_id="provider-asr-1")
+    auto = _discard_uncertain_script_from_audio_task(
+        client,
+        headers,
+        auto_id,
+        key="asr-auto-discard",
+    )
+    assert auto.status_code == 409
+
+    pending_id = "asr-pending-discard"
+    _seed_uncertain_script_from_audio_task(pending_id, status="PENDING")
+    pending = _discard_uncertain_script_from_audio_task(
+        client,
+        headers,
+        pending_id,
+        key="asr-pending-discard",
+    )
+    assert pending.status_code == 409
+
+    race_id = "asr-idless-race"
+    _seed_uncertain_script_from_audio_task(race_id)
+    barrier = Barrier(2)
+
+    def race(key: str):
+        barrier.wait()
+        return _discard_uncertain_script_from_audio_task(
+            client,
+            headers,
+            race_id,
+            key=key,
+            reason="并发处置验证",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(race, ("asr-race-a", "asr-race-b")))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    with psycopg.connect(_t34_dsn()) as conn:
+        rows = conn.execute(
+            "SELECT id, status, provider_task_id FROM script_from_audio_tasks "
+            "WHERE id IN (%s, %s, %s, %s) ORDER BY id",
+            (denied_id, auto_id, pending_id, race_id),
+        ).fetchall()
+        audit_count = conn.execute(
+            "SELECT count(*) FROM audit_logs "
+            "WHERE action = 'script_from_audio.task.reconcile' AND entity_id = %s",
+            (race_id,),
+        ).fetchone()
+    assert rows == [
+        (auto_id, "SUBMISSION_UNCERTAIN", "provider-asr-1"),
+        (denied_id, "SUBMISSION_UNCERTAIN", None),
+        (race_id, "FAILED", None),
+        (pending_id, "PENDING", None),
+    ]
+    assert audit_count == (1,)
 
 
 # ---------------------------------------------------------------------------

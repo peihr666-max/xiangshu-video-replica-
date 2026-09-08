@@ -552,25 +552,20 @@ function VoicePanel({ person }: { person: StudioPerson }) {
               >
                 试听
               </Button>
+              {voice.url ? (
+                <audio
+                  controls
+                  preload="none"
+                  src={voice.url}
+                  aria-label={`${voice.name}试听`}
+                >
+                  <track kind="captions" label="声音样本" />
+                </audio>
+              ) : null}
               {voice.confirmed ? (
-                <>
-                  {voice.url ? (
-                    <audio
-                      controls
-                      preload="none"
-                      src={voice.url}
-                      aria-label={`${voice.name}试听`}
-                    >
-                      <track kind="captions" label="声音样本" />
-                    </audio>
-                  ) : null}
-                  <Button
-                    variant="primary"
-                    onClick={() => selectVoice(voice.id)}
-                  >
-                    使用此声音
-                  </Button>
-                </>
+                <Button variant="primary" onClick={() => selectVoice(voice.id)}>
+                  使用此声音
+                </Button>
               ) : null}
               {!voice.confirmed ? (
                 <Button

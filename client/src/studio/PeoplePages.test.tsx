@@ -55,6 +55,7 @@ vi.mock("./context", () => ({
               name: "待确认音色",
               confirmed: false,
               isDefault: false,
+              url: "/voice-pending.mp3",
             },
           ],
         },
@@ -169,6 +170,20 @@ describe("PeoplePages", () => {
     expect(
       screen.queryByRole("button", { name: "用于数字人口播" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("未确认但已有样本的 READY 声音可以试听且不会被选择或确认", () => {
+    currentPage = "person-voices";
+    render(<PersonPage />);
+
+    expect(screen.getByLabelText("待确认音色试听")).toHaveAttribute(
+      "src",
+      "/voice-pending.mp3",
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "试听" })[1]);
+    expect(patchDraft).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(api.confirmOralVoice).not.toHaveBeenCalled();
   });
 
   it("生产工作区确认声音后选择该声音并返回原创作页", async () => {

@@ -27,7 +27,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "resources": ["resources/*"],
+    "resources": ["resources/"],
     "publisher": "镜序 Studio",
     "category": "Productivity",
     "shortDescription": "AI 短视频复刻工作台",

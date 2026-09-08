@@ -364,6 +364,7 @@ def test_ambiguous_provider_failure_preserves_reconciliation_state(
         f"/api/script-from-audio-tasks/{task_id}", headers=auth_headers("employee_1")
     ).json()
     assert task["status"] == "SUBMISSION_UNCERTAIN"
+    assert task["recovery_mode"] == "AUTO"
     assert task["retryable"] is False
     assert "语音转写" in (task["error_message"] or "")
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
@@ -374,6 +375,30 @@ def test_ambiguous_provider_failure_preserves_reconciliation_state(
     assert row["provider_task_id"] == "provider-before-poll-failure"
     leftovers = [key for key in storage._objects if key.startswith("tmp/asr/")]
     assert leftovers == []
+
+
+def test_uncertain_task_without_provider_id_requires_admin_disposition(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = enqueue(client)
+    task_id = created.json()["id"]
+    assert created.json()["recovery_mode"] is None
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET status = 'SUBMISSION_UNCERTAIN', provider_task_id = NULL
+            WHERE id = %s
+            """,
+            (task_id,),
+        )
+        conn.commit()
+
+    task = client.get(f"/api/script-from-audio-tasks/{task_id}", headers=auth_headers("employee_1"))
+    assert task.status_code == 200
+    assert task.json()["recovery_mode"] == "ADMIN_REQUIRED"
 
 
 def test_worker_resumes_persisted_provider_task_without_resubmitting(

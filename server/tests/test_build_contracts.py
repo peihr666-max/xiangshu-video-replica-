@@ -116,15 +116,15 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert workflow.count("branches: [main]") == 2
     assert "pull_request_target:" not in workflow
     assert "permissions:\n  contents: read" in workflow
-    assert workflow.count("persist-credentials: false") == 3
+    assert workflow.count("persist-credentials: false") == 4
     assert "secret-scan:" in workflow
     assert "name: Secret scan" in workflow
     assert "quality-linux:" in workflow
     assert "name: Linux quality gate" in workflow
     assert "windows-nsis:" in workflow
     assert "name: Windows Tauri and NSIS" in workflow
-    assert workflow.count(f"if: {fork_pr_guard}") == 3
-    assert workflow.count("runs-on: ubuntu-24.04") == 2
+    assert workflow.count(f"if: {fork_pr_guard}") == 4
+    assert workflow.count("runs-on: ubuntu-24.04") == 3
     assert workflow.count("runs-on: windows-2025") == 1
     assert "npm run check:security" in workflow
     assert "run: npm run check\n" in workflow
@@ -152,16 +152,73 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
             "          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts\n"
         ) in step
     assert workflow.count("LOCAL_ARTIFACT_ROOT") == 8
-    assert workflow.count("SHA256SUMS.txt") == 2
+    assert workflow.count("Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt')") == 2
     assert "Verify customer installer excludes local launchers" in workflow
     assert "7-Zip\\7z.exe" in workflow
     assert "start-backend.bat" in workflow
     assert "start-backend.sh" in workflow
-    assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 3
+    assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 4
     assert workflow.count("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020") == 3
     assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
-    assert "actions/upload-artifact@" not in workflow
+    assert "ffmpeg-windows:" in workflow
+    assert "name: Prepare Windows ffmpeg" in workflow
+    assert "needs: ffmpeg-windows" in windows_job
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in workflow
+    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in workflow
+    assert "Build LGPL Windows ffmpeg tools" in workflow
+    assert "Verify Windows media tools" in workflow
+    assert "Verify internal installer contains Windows media tools" in workflow
+    assert "ffmpeg-7.1.5.tar.xz" in workflow
+    assert "COPYING.LGPLv3" in workflow
+    assert "SOURCE-NOTICE.md" in workflow
+    assert "ffmpeg-smoke.wav" in workflow
+    assert "ffmpeg-smoke.m4a" in workflow
+    assert "payload hash mismatch" in workflow
     assert ".cargo-target/release/bundle/nsis/*.exe" in workflow
+
+
+def test_windows_ffmpeg_builder_targets_pe_executables_and_tauri_bundles_directory() -> None:
+    dockerfile = (REPO_ROOT / "scripts/ffmpeg-minimal/Dockerfile").read_text(encoding="utf-8")
+    build_script = (REPO_ROOT / "scripts/ffmpeg-minimal/build.sh").read_text(encoding="utf-8")
+    tauri_config = json.loads(
+        (REPO_ROOT / "client/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
+    )
+    customer_config = json.loads(
+        (REPO_ROOT / "client/src-tauri/tauri.customer.conf.json").read_text(encoding="utf-8")
+    )
+    license_text = (REPO_ROOT / "client/src-tauri/resources/ffmpeg/COPYING.LGPLv3").read_text(
+        encoding="utf-8"
+    )
+    source_notice = (REPO_ROOT / "client/src-tauri/resources/ffmpeg/SOURCE-NOTICE.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "gcc-mingw-w64-x86-64" in dockerfile
+    assert (
+        "FROM debian:bookworm-slim@sha256:"
+        "88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
+    ) in dockerfile
+    assert "ARG FFMPEG_VERSION=7.1.5" in dockerfile
+    assert "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f" in dockerfile
+    assert "--target-os=mingw32" in dockerfile
+    assert "--cross-prefix=x86_64-w64-mingw32-" in dockerfile
+    assert "COPY --from=build /src/ffmpeg.exe /ffmpeg.exe" in dockerfile
+    assert "COPY --from=build /src/ffprobe.exe /ffprobe.exe" in dockerfile
+    assert "COPY --from=build /tmp/ffmpeg-source.tar.xz /ffmpeg-7.1.5.tar.xz" in dockerfile
+    assert "COPY --from=build /tmp/BUILD-PACKAGES.txt /BUILD-PACKAGES.txt" in dockerfile
+    assert "x86_64-linux-musl" not in dockerfile
+    assert "ffmpeg.exe" in build_script
+    assert "ffprobe.exe" in build_script
+    assert "ffmpeg-7.1.5.tar.xz" in build_script
+    assert tauri_config["bundle"]["resources"] == ["resources/"]
+    assert customer_config["bundle"]["resources"] == []
+    assert "GNU LESSER GENERAL PUBLIC LICENSE" in license_text
+    assert "Version 3" in license_text
+    assert "FFmpeg 7.1.5" in source_notice
+    assert "Source modifications: none" in source_notice
+    assert "--disable-everything" in source_notice
+    assert "--enable-version3" in source_notice
+    assert "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f" in source_notice
 
 
 def test_posix_backend_launcher_executes_default_commands(tmp_path: Path) -> None:

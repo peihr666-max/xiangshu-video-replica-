@@ -193,6 +193,7 @@ function scriptFromAudioTask(
     error_code: null,
     error_message: null,
     retryable: false,
+    recovery_mode: null,
     ...overrides,
   };
 }
@@ -459,6 +460,14 @@ describe("真实 Studio 只读适配器", () => {
         demo_asset_id: "voice-demo-1",
         confirmed: true,
       },
+      {
+        id: "voice-pending",
+        identity_id: "person-1",
+        title: "张工待确认音色",
+        status: "READY",
+        demo_asset_id: "voice-demo-2",
+        confirmed: false,
+      },
     ]);
     api.getAssetDownloadUrl.mockImplementation(async (assetId: string) => ({
       url: `https://signed/${assetId}`,
@@ -485,6 +494,12 @@ describe("真实 Studio 只读适配器", () => {
           confirmed: true,
           url: "https://signed/voice-demo-1",
         },
+        {
+          id: "voice-pending",
+          name: "张工待确认音色",
+          confirmed: false,
+          url: "https://signed/voice-demo-2",
+        },
       ],
     });
     expect(data.assets).toEqual(
@@ -500,6 +515,12 @@ describe("真实 Studio 只读适配器", () => {
           personId: "person-1",
           kind: "audio",
           url: "https://signed/voice-demo-1",
+        }),
+        expect.objectContaining({
+          id: "voice-demo-2",
+          personId: "person-1",
+          kind: "audio",
+          url: "https://signed/voice-demo-2",
         }),
       ]),
     );
@@ -910,5 +931,49 @@ describe("文案提取任务身份绑定", () => {
     ).rejects.toThrow("本次任务失败");
     expect(api.getScriptFromAudioTask).toHaveBeenCalledWith("script-task-own");
     expect(api.getLatestScriptFromAudioTask).not.toHaveBeenCalled();
+  });
+
+  it("自动恢复的提交不确定任务会继续轮询并应用最终文案", async () => {
+    api.createScriptFromAudioTask.mockResolvedValue(scriptFromAudioTask());
+    api.getScriptFromAudioTask
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          status: "SUBMISSION_UNCERTAIN",
+          recovery_mode: "AUTO",
+          error_message: "正在自动核对供应商任务",
+        }),
+      )
+      .mockResolvedValueOnce(
+        scriptFromAudioTask({
+          status: "SUCCEEDED",
+          recovery_mode: null,
+          result: {
+            text: "自动恢复后的最终文案",
+            duration_sec: 9,
+            language: "zh",
+          },
+        }),
+      );
+
+    await expect(
+      extractScriptFromUpload("project-1", "asset-1"),
+    ).resolves.toEqual({ text: "自动恢复后的最终文案" });
+    expect(api.getScriptFromAudioTask).toHaveBeenCalledTimes(2);
+  });
+
+  it("需要人工对账的提交不确定任务停止轮询并给出明确提示", async () => {
+    api.createScriptFromAudioTask.mockResolvedValue(scriptFromAudioTask());
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        status: "SUBMISSION_UNCERTAIN",
+        recovery_mode: "ADMIN_REQUIRED",
+        error_message: "供应商任务身份无法自动确认",
+      }),
+    );
+
+    await expect(
+      extractScriptFromUpload("project-1", "asset-1"),
+    ).rejects.toThrow("需要管理员对账");
+    expect(api.getScriptFromAudioTask).toHaveBeenCalledTimes(1);
   });
 });

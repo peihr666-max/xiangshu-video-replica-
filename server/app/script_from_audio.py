@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -80,6 +80,7 @@ class ScriptFromAudioTaskResponse(BaseModel):
     updated_at: str
     started_at: str | None
     completed_at: str | None
+    recovery_mode: Literal["AUTO", "ADMIN_REQUIRED"] | None
 
 
 def script_from_audio_task_response(row: sqlite3.Row) -> ScriptFromAudioTaskResponse:
@@ -94,10 +95,14 @@ def script_from_audio_task_response(row: sqlite3.Row) -> ScriptFromAudioTaskResp
             ),
             language=(None if payload.get("language") is None else str(payload["language"])),
         )
+    task_status = str(row["status"])
+    recovery_mode: Literal["AUTO", "ADMIN_REQUIRED"] | None = None
+    if task_status == "SUBMISSION_UNCERTAIN":
+        recovery_mode = "AUTO" if row["provider_task_id"] is not None else "ADMIN_REQUIRED"
     return ScriptFromAudioTaskResponse(
         id=str(row["id"]),
         project_id=str(row["project_id"]),
-        status=str(row["status"]),
+        status=task_status,
         attempt=int(row["attempt"]),
         result=result,
         error_code=None if row["error_code"] is None else str(row["error_code"]),
@@ -109,6 +114,7 @@ def script_from_audio_task_response(row: sqlite3.Row) -> ScriptFromAudioTaskResp
         updated_at=str(row["updated_at"]),
         started_at=None if row["started_at"] is None else str(row["started_at"]),
         completed_at=(None if row["completed_at"] is None else str(row["completed_at"])),
+        recovery_mode=recovery_mode,
     )
 
 
@@ -846,6 +852,34 @@ def load_script_from_audio_task(conn: BusinessConnection, task_id: str) -> sqlit
     if row is None:
         raise script_from_audio_error(404, "SCRIPT_FROM_AUDIO_TASK_NOT_FOUND", "提取任务不存在。")
     return cast(sqlite3.Row, row)
+
+
+def discard_idless_uncertain_script_from_audio_task(
+    conn: BusinessConnection,
+    *,
+    task_id: str,
+) -> sqlite3.Row | None:
+    """Discard only an ambiguity that cannot be reconciled by provider task id."""
+    row = conn.execute(
+        """
+        UPDATE script_from_audio_tasks
+        SET status = 'FAILED',
+            error_code = 'SCRIPT_FROM_AUDIO_ADMIN_DISCARDED',
+            error_message_redacted = '管理员已确认供应商未创建任务，可重新提交。',
+            retryable = 1,
+            locked_by = NULL,
+            lease_token = NULL,
+            locked_until = NULL,
+            completed_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+          AND status = 'SUBMISSION_UNCERTAIN'
+          AND provider_task_id IS NULL
+        RETURNING *
+        """,
+        (task_id,),
+    ).fetchone()
+    return None if row is None else cast(sqlite3.Row, row)
 
 
 def latest_script_from_audio_task(
