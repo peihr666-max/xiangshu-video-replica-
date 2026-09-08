@@ -2870,6 +2870,41 @@ def test_admin_device_events_downgrade_guard(route_state: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_forged_fingerprint_is_caught_by_pairing_risk_control(
+    client: TestClient,
+) -> None:
+    """CW-009/S4: 伪造（陌生）指纹不得直接产出 BOUND 设备。
+
+    A forged fingerprint enrolling the code must land in its own PENDING
+    pairing request (binding the candidate digest) and never touch the
+    existing binding; risk control sees the request instead of a device.
+    """
+    customer = _activated_customer(
+        client, code=FIRST_CODE, fingerprint="fp-cw09-owner", suffix="cw09fp"
+    )
+    forged = _enroll(
+        client,
+        code=FIRST_CODE,
+        fingerprint="fp-cw09-forged",
+        key="idem-cw09-forged",
+        name="Forged Device",
+    )
+    assert forged.status_code == 202, forged.text
+    pairing_id = forged.json()["pairing_request_id"]
+
+    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
+        row = _pairing_row(conn, pairing_id)
+    assert row is not None
+    status, candidate_digest = row[0], row[1]
+    assert status == "PENDING"
+    assert isinstance(candidate_digest, str) and len(candidate_digest) > 0
+    # The digest must not be the raw fingerprint.
+    assert candidate_digest != "fp-cw09-forged"
+    # No new BOUND device: only the owner's original binding exists.
+    assert _count_rows("SELECT COUNT(*) FROM customer_devices") == 1
+    assert customer["device_token"]  # owner session untouched
+
+
 def test_pairing_downgrade_refuses_once_rows_exist(route_state: str) -> None:
     """P2 fix: the 033 downgrade guards the pairing approval lineage.
 

@@ -2206,3 +2206,69 @@ def test_suspending_an_unactivated_code_writes_no_session_logout(client: TestCli
         state = conn.execute("SELECT count(*) FROM customer_session_state").fetchone()
     assert int(events[0]) == 0
     assert int(state[0]) == 0
+
+
+def test_session_fixation_injection_is_never_adopted(client: TestClient) -> None:
+    """CW-009/S6: 攻击者自造的 session token 无从"固定"为有效会话。
+
+    Customer sessions are only ever server-issued (login/activate responses);
+    an attacker-crafted Bearer value is rejected outright and leaves no
+    session state or events behind, so the classic fixation precondition —
+    a victim adopting an attacker-known token — cannot exist.
+    """
+    customer = _activated_customer(
+        client,
+        code="XS04-CW09AAA-BBBBBBB-CCCCCCC-DDDDDDD",
+        fingerprint="fp-cw09-fix",
+        suffix="cw09fix",
+    )
+    attacker_token = "attacker-crafted-session-token"
+
+    with psycopg.connect(_t19_dsn(), autocommit=True) as conn:
+        state_before = conn.execute("SELECT COUNT(*) FROM customer_session_state").fetchone()[0]
+        events_before = conn.execute("SELECT COUNT(*) FROM customer_session_events").fetchone()[0]
+
+    for path in (HEARTBEAT_PATH, LOGOUT_PATH):
+        rejected = client.post(
+            path,
+            json={},
+            headers={
+                **_bearer(attacker_token),
+                IDEMPOTENCY_KEY_HEADER: f"cw09-fixation-{path.rsplit('/', 1)[-1]}",
+            },
+        )
+        assert rejected.status_code == 401, (path, rejected.text)
+
+    with psycopg.connect(_t19_dsn(), autocommit=True) as conn:
+        state_after = conn.execute("SELECT COUNT(*) FROM customer_session_state").fetchone()[0]
+        events_after = conn.execute("SELECT COUNT(*) FROM customer_session_events").fetchone()[0]
+    assert state_after == state_before
+    assert events_after == events_before
+
+    # Presenting the crafted token through the only client-facing intake
+    # (LoginRequest.session_token) must never mint it into a live session:
+    # either the server rejects it outright or it establishes a freshly
+    # issued token that differs from the attacker-chosen value.
+    presented = client.post(
+        LOGIN_PATH,
+        json={"session_token": attacker_token},
+        headers={
+            **_bearer(customer["device_token"]),
+            IDEMPOTENCY_KEY_HEADER: "cw09-fixation-presented",
+        },
+    )
+    if presented.status_code in (200, 201):
+        assert presented.json()["session_token"] != attacker_token
+    else:
+        assert presented.status_code == 401, presented.text
+    # A real login mints a server-side token and never adopts the crafted one.
+    login = client.post(
+        LOGIN_PATH,
+        json={},
+        headers={
+            **_bearer(customer["device_token"]),
+            IDEMPOTENCY_KEY_HEADER: "cw09-fixation-real-login",
+        },
+    )
+    assert login.status_code in (200, 201), login.text
+    assert login.json().get("session_token") not in (None, attacker_token)
