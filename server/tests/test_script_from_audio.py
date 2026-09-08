@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.asr import AsrProviderError, TranscriptResult
@@ -330,3 +333,141 @@ def test_missing_ffmpeg_fails_closed(
 def test_transcript_result_dataclass_defaults() -> None:
     result = TranscriptResult(text="abc", duration_sec=None, language=None)
     assert result.text == "abc"
+
+
+def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.generation_worker as worker
+    from app.script_from_audio import ScriptFromAudioTaskLease
+
+    lease = ScriptFromAudioTaskLease(
+        id="audio-task-1",
+        project_id="project-1",
+        created_by_user_id="user-1",
+        worker_id="pg-worker",
+        lease_token="lease-token-1",
+        attempt=1,
+    )
+    transaction_depth = 0
+    steps: list[str] = []
+    fake_conn = object()
+
+    @contextmanager
+    def fake_pg_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+
+    monkeypatch.setattr(worker, "pg_transaction", fake_pg_transaction)
+    monkeypatch.setattr(
+        worker.BusinessConnection,
+        "postgres",
+        staticmethod(lambda _raw: fake_conn),
+    )
+    for name in (
+        "acquire_generation_continuation_lease",
+        "acquire_generation_task_lease",
+        "acquire_character_generation_task",
+        "acquire_analysis_task",
+        "acquire_script_rewrite_task",
+    ):
+        monkeypatch.setattr(worker, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        worker,
+        "acquire_script_from_audio_task",
+        lambda *_args, **_kwargs: lease,
+    )
+
+    def prepare(*_args, **_kwargs):
+        assert transaction_depth == 1
+        steps.append("prepare")
+        return object()
+
+    def mark(*_args, **_kwargs):
+        assert transaction_depth == 1
+        steps.append("mark")
+        return True
+
+    def perform(_work):
+        assert transaction_depth == 0
+        steps.append("perform")
+        return TranscriptResult(text="PG transcript", duration_sec=None, language=None)
+
+    def complete(*_args, **_kwargs):
+        assert transaction_depth == 1
+        steps.append("complete")
+        return True
+
+    monkeypatch.setattr(worker, "prepare_script_from_audio_task", prepare)
+    monkeypatch.setattr(worker, "mark_script_from_audio_submission_started", mark)
+    monkeypatch.setattr(worker, "perform_script_from_audio_task", perform)
+    monkeypatch.setattr(worker, "complete_script_from_audio_task", complete)
+
+    processed = worker.run_pg_worker_once(
+        worker_id="pg-worker",
+        storage=FakeStorageAdapter(provider="fake", bucket="bucket"),
+        max_tasks=1,
+    )
+    assert processed == 1
+    assert steps == ["prepare", "mark", "perform", "complete"]
+
+
+def test_replacement_lease_token_blocks_all_old_worker_lifecycle_writes(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    from app.script_from_audio import (
+        acquire_script_from_audio_task,
+        complete_script_from_audio_task,
+        fail_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+    )
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        old_lease = acquire_script_from_audio_task(conn, worker_id="worker-reused")
+        assert old_lease is not None
+        expired = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET locked_until = %s WHERE id = %s",
+            (expired, task_id),
+        )
+        conn.commit()
+        replacement = acquire_script_from_audio_task(conn, worker_id="worker-reused")
+        assert replacement is not None
+        assert replacement.lease_token != old_lease.lease_token
+        assert replacement.attempt == old_lease.attempt + 1
+
+        with pytest.raises(HTTPException) as mark_error:
+            mark_script_from_audio_submission_started(conn, lease=old_lease)
+        assert mark_error.value.status_code == 409
+        mark_script_from_audio_submission_started(conn, lease=replacement)
+
+        with pytest.raises(HTTPException) as complete_error:
+            complete_script_from_audio_task(
+                conn,
+                lease=old_lease,
+                result=TranscriptResult(text="stale result", duration_sec=None, language=None),
+            )
+        assert complete_error.value.status_code == 409
+        assert not fail_script_from_audio_task(
+            conn,
+            lease=old_lease,
+            cause=RuntimeError("stale failure"),
+            submission_started=True,
+        )
+
+        row = conn.execute(
+            "SELECT status, attempt, lease_token, result_json, error_code "
+            "FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+        assert row["status"] == "RUNNING"
+        assert row["attempt"] == replacement.attempt
+        assert row["lease_token"] == replacement.lease_token
+        assert row["result_json"] is None
+        assert row["error_code"] is None

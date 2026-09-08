@@ -115,6 +115,7 @@ class ScriptFromAudioTaskLease:
     project_id: str
     created_by_user_id: str
     worker_id: str
+    lease_token: str
     attempt: int
 
 
@@ -278,7 +279,7 @@ def acquire_script_from_audio_task(
     conn.execute(
         """
         UPDATE script_from_audio_tasks
-        SET status = 'PENDING', locked_by = NULL, locked_until = NULL,
+        SET status = 'PENDING', locked_by = NULL, lease_token = NULL, locked_until = NULL,
             error_code = NULL, error_message_redacted = NULL, retryable = 0,
             updated_at = %s
         WHERE status = 'RUNNING' AND provider_started_at IS NULL
@@ -289,7 +290,8 @@ def acquire_script_from_audio_task(
     conn.execute(
         """
         UPDATE script_from_audio_tasks
-        SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL, locked_until = NULL,
+        SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL, lease_token = NULL,
+            locked_until = NULL,
             error_code = 'SCRIPT_FROM_AUDIO_SUBMISSION_UNCERTAIN',
             error_message_redacted = %s, retryable = 0,
             completed_at = %s, updated_at = %s
@@ -303,11 +305,12 @@ def acquire_script_from_audio_task(
             now,
         ),
     )
+    lease_token = str(uuid4())
     row = conn.execute(
         """
         UPDATE script_from_audio_tasks
         SET status = 'RUNNING', attempt = attempt + 1,
-            locked_by = %s, locked_until = %s,
+            locked_by = %s, lease_token = %s, locked_until = %s,
             started_at = COALESCE(started_at, %s), updated_at = %s,
             error_code = NULL, error_message_redacted = NULL, retryable = 0
         WHERE id = (
@@ -317,7 +320,7 @@ def acquire_script_from_audio_task(
         ) AND status = 'PENDING'
         RETURNING *
         """,
-        (worker_id, locked_until, now, now),
+        (worker_id, lease_token, locked_until, now, now),
     ).fetchone()
     conn.commit()
     if row is None:
@@ -327,16 +330,18 @@ def acquire_script_from_audio_task(
         project_id=str(row["project_id"]),
         created_by_user_id=str(row["created_by_user_id"]),
         worker_id=worker_id,
+        lease_token=lease_token,
         attempt=int(row["attempt"]),
     )
 
 
 def _require_leased_task(conn: BusinessConnection, lease: ScriptFromAudioTaskLease) -> sqlite3.Row:
     row = conn.execute(
-        "SELECT * FROM script_from_audio_tasks WHERE id = %s AND status = 'RUNNING'",
-        (lease.id,),
+        "SELECT * FROM script_from_audio_tasks WHERE id = %s AND status = 'RUNNING' "
+        "AND locked_by = %s AND lease_token = %s AND attempt = %s",
+        (lease.id, lease.worker_id, lease.lease_token, lease.attempt),
     ).fetchone()
-    if row is None or str(row["locked_by"]) != lease.worker_id:
+    if row is None:
         raise script_from_audio_error(409, "SCRIPT_FROM_AUDIO_LEASE_LOST", "任务租约已失效。")
     return cast(sqlite3.Row, row)
 
@@ -387,16 +392,27 @@ def mark_script_from_audio_submission_started(
     conn: BusinessConnection,
     *,
     lease: ScriptFromAudioTaskLease,
-) -> None:
-    conn.execute(
+) -> bool:
+    updated = conn.execute(
         """
         UPDATE script_from_audio_tasks
         SET provider_started_at = %s, updated_at = %s
-        WHERE id = %s
+        WHERE id = %s AND lease_token = %s AND attempt = %s
+          AND status = 'RUNNING' AND provider_started_at IS NULL
+        RETURNING id
         """,
-        (_time_text(datetime.now(UTC)), _time_text(datetime.now(UTC)), lease.id),
-    )
+        (
+            _time_text(datetime.now(UTC)),
+            _time_text(datetime.now(UTC)),
+            lease.id,
+            lease.lease_token,
+            lease.attempt,
+        ),
+    ).fetchone()
+    if updated is None:
+        raise script_from_audio_error(409, "SCRIPT_FROM_AUDIO_LEASE_LOST", "任务租约已失效。")
     conn.commit()
+    return True
 
 
 def perform_script_from_audio_task(
@@ -439,30 +455,37 @@ def complete_script_from_audio_task(
     *,
     lease: ScriptFromAudioTaskLease,
     result: TranscriptResult,
-) -> None:
+) -> bool:
     now = _time_text(datetime.now(UTC))
     result_payload = {
         "text": result.text,
         "duration_sec": result.duration_sec,
         "language": result.language,
     }
-    conn.execute(
+    updated = conn.execute(
         """
         UPDATE script_from_audio_tasks
         SET status = 'SUCCEEDED', result_json = %s,
             error_code = NULL, error_message_redacted = NULL, retryable = 0,
             completed_at = %s, updated_at = %s, locked_by = NULL,
-            locked_until = NULL, provider_started_at = NULL
-        WHERE id = %s
+            lease_token = NULL, locked_until = NULL, provider_started_at = NULL
+        WHERE id = %s AND lease_token = %s AND attempt = %s
+          AND status = 'RUNNING' AND provider_started_at IS NOT NULL
+        RETURNING id
         """,
         (
             json.dumps(result_payload, ensure_ascii=False, sort_keys=True),
             now,
             now,
             lease.id,
+            lease.lease_token,
+            lease.attempt,
         ),
-    )
+    ).fetchone()
+    if updated is None:
+        raise script_from_audio_error(409, "SCRIPT_FROM_AUDIO_LEASE_LOST", "任务租约已失效。")
     conn.commit()
+    return True
 
 
 def fail_script_from_audio_task(
@@ -471,7 +494,7 @@ def fail_script_from_audio_task(
     lease: ScriptFromAudioTaskLease,
     cause: Exception,
     submission_started: bool,
-) -> None:
+) -> bool:
     logger.warning("script-from-audio task %s failed: %s", lease.id, type(cause).__name__)
     now = _time_text(datetime.now(UTC))
     retryable = 1 if not submission_started else 0
@@ -484,14 +507,17 @@ def fail_script_from_audio_task(
     else:
         status = "FAILED"
         code = "SCRIPT_FROM_AUDIO_PIPELINE_FAILED"
-    conn.execute(
-        """
+    provider_condition = "IS NOT NULL" if submission_started else "IS NULL"
+    updated = conn.execute(
+        f"""
         UPDATE script_from_audio_tasks
         SET status = %s, error_code = %s,
             error_message_redacted = %s, retryable = %s,
             completed_at = %s, updated_at = %s, locked_by = NULL,
-            locked_until = NULL
-        WHERE id = %s
+            lease_token = NULL, locked_until = NULL
+        WHERE id = %s AND lease_token = %s AND attempt = %s
+          AND status = 'RUNNING' AND provider_started_at {provider_condition}
+        RETURNING id
         """,
         (
             status,
@@ -501,9 +527,19 @@ def fail_script_from_audio_task(
             now,
             now,
             lease.id,
+            lease.lease_token,
+            lease.attempt,
         ),
-    )
+    ).fetchone()
+    if updated is None:
+        logger.warning(
+            "script-from-audio stale lease could not write failure for task %s", lease.id
+        )
+        if not conn.is_postgres:
+            conn.rollback()
+        return False
     conn.commit()
+    return True
 
 
 def load_script_from_audio_task(conn: BusinessConnection, task_id: str) -> sqlite3.Row:

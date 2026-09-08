@@ -1047,6 +1047,49 @@ def run_pg_worker_once(
             if max_tasks is not None and processed >= max_tasks:
                 return processed
         with pg_transaction() as raw_conn:
+            script_from_audio_lease = acquire_script_from_audio_task(
+                BusinessConnection.postgres(raw_conn),
+                worker_id=worker_id,
+            )
+        if script_from_audio_lease is not None:
+            audio_submission_started = False
+            try:
+                with pg_transaction() as raw_conn:
+                    audio_work = prepare_script_from_audio_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=script_from_audio_lease,
+                        storage=storage,
+                    )
+                with pg_transaction() as raw_conn:
+                    mark_script_from_audio_submission_started(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=script_from_audio_lease,
+                    )
+                audio_submission_started = True
+                audio_result = perform_script_from_audio_task(audio_work)
+                with pg_transaction() as raw_conn:
+                    complete_script_from_audio_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=script_from_audio_lease,
+                        result=audio_result,
+                    )
+            except Exception as exc:
+                with pg_transaction() as raw_conn:
+                    failed = fail_script_from_audio_task(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=script_from_audio_lease,
+                        cause=exc,
+                        submission_started=audio_submission_started,
+                    )
+                if not failed:
+                    logger.warning(
+                        "script-from-audio failure ignored because the lease token was replaced"
+                    )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        with pg_transaction() as raw_conn:
             clone_lease = acquire_oral_clone(
                 BusinessConnection.postgres(raw_conn), worker_id=worker_id
             )

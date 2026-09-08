@@ -46,6 +46,7 @@ def upgrade() -> None:
         sa.Column("status", sa.Text(), nullable=False, server_default="PENDING"),
         sa.Column("attempt", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("locked_by", sa.Text()),
+        sa.Column("lease_token", sa.Text()),
         sa.Column("locked_until", sa.Text()),
         sa.Column("provider_started_at", sa.Text()),
         sa.Column("error_code", sa.Text()),
