@@ -97,3 +97,17 @@ def test_secret_scan_script_passes_on_repository_contract_surface() -> None:
     # str() keeps the failure message renderable even when the shell emits
     # bytes that the ambient Windows code page cannot decode.
     assert result.returncode == 0, str(result.stdout) + str(result.stderr)
+
+
+def test_no_sentry_sdk_enters_the_server_runtime() -> None:
+    """CW-009/S2: the Sentry medium is structurally absent.
+
+    The runtime contract carries no Sentry SDK and no DSN, so "credentials
+    never reach Sentry" holds structurally. If an SDK is ever introduced,
+    this contract fails and plaintext-leak assertions for captured events
+    (CW-009 S2) must land in the same change.
+    """
+    pyproject = (REPO_ROOT / "server" / "pyproject.toml").read_text()
+    assert "sentry" not in pyproject.lower()
+    for path in sorted((REPO_ROOT / "server" / "app").rglob("*.py")):
+        assert "sentry" not in path.read_text().lower(), str(path)
