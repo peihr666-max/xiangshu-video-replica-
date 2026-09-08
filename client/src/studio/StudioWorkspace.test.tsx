@@ -404,6 +404,65 @@ describe("V1.4 workspace integration", () => {
     expect(screen.queryByText("生成中 45%")).not.toBeInTheDocument();
   });
 
+  it("账号切换后忽略不得写入旧账号迟到的轮询结果", async () => {
+    vi.useFakeTimers();
+    let resolveTasks: ((value: unknown[]) => void) | undefined;
+    let resolveStats: ((value: unknown) => void) | undefined;
+    live.loadStudioData.mockResolvedValue({
+      people: [],
+      assets: [],
+      videos: [],
+      projects: [],
+      tasks: [],
+      errors: [],
+      loading: false,
+      stats: null,
+    });
+    live.reloadTasks.mockReturnValue(
+      new Promise((resolve) => {
+        resolveTasks = resolve;
+      }),
+    );
+    live.reloadStats.mockReturnValue(
+      new Promise((resolve) => {
+        resolveStats = resolve;
+      }),
+    );
+    const user1 = { ...reviewUser, id: "poll-user-1" };
+    const user2 = { ...reviewUser, id: "poll-user-2" };
+    const view = render(<StudioWorkspace currentUser={user1} />);
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(live.reloadTasks).toHaveBeenCalledWith(user1);
+
+    view.rerender(<StudioWorkspace currentUser={user2} />);
+    await act(async () => {
+      resolveTasks?.([
+        {
+          id: "old-poll-task",
+          title: "旧账号轮询任务",
+          type: "视频生成",
+          status: "running",
+          submitted: "2026-09-08T10:00:00Z",
+        },
+      ]);
+      resolveStats?.({
+        today_completed: 99,
+        running: 1,
+        queued: 0,
+        needs_attention: 0,
+        total_completed: 99,
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("旧账号轮询任务")).toBeNull();
+    expect(screen.queryByText("99")).toBeNull();
+    vi.useRealTimers();
+  });
+
   describe("C7 云端草稿", () => {
     // 前面的轮询用例开启了 fake timers 且不恢复；本组用例的 waitFor 依赖
     // 真实 setTimeout，先显式切回，防止用例间定时器状态泄漏。

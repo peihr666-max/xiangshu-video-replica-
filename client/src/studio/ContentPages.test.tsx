@@ -238,19 +238,132 @@ describe("V1.4 内容与运营页面", () => {
   });
 
   it("示例审核只做本地跳转，不调用素材导入接口", () => {
-    const value = studio({ review: true });
+    const base = studio();
+    const value = studio({
+      review: true,
+      data: {
+        ...base.data,
+        videos: [
+          {
+            ...base.data.videos[0],
+            playUrl: "https://fixture.test/review.mp4",
+          },
+          base.data.videos[1],
+        ],
+      },
+    });
     useStudio.mockReturnValue(value);
-    render(<ViralPage />);
+    const view = render(<ViralPage />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "播放 农村建房预算，别只盯着主体" }),
+    );
 
     fireEvent.click(
       screen.getByRole("button", { name: "复刻 农村建房预算，别只盯着主体" }),
     );
 
     expect(importViralVideoToProject).not.toHaveBeenCalled();
+    expect(fetchViralVideoMedia).not.toHaveBeenCalled();
+    expect(fetchViralVideoStatistics).not.toHaveBeenCalled();
+    expect(listViralVideos).not.toHaveBeenCalled();
+    expect(view.container.querySelector("video")).toHaveAttribute(
+      "src",
+      "https://fixture.test/review.mp4",
+    );
     expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "dy-1" });
     expect(value.navigate).toHaveBeenCalledWith("replica", {
       selectedVideoId: "dy-1",
       returnTo: "viral",
+    });
+  });
+
+  it("导入视频时更新已有项目引用并重置旧分析状态", async () => {
+    importViralVideoToProject.mockResolvedValue({
+      projectId: "existing-project",
+      assetId: "fresh-video-asset",
+      kind: "video",
+    });
+    const base = studio();
+    const existing = {
+      id: "existing-project",
+      owner_user_id: "user-1",
+      name: "保留的项目名称",
+      status: "ACTIVE",
+      reference_asset_id: "old-video-asset",
+      reference_upload_status: "READY" as const,
+      analysis_status: "READY" as const,
+      analysis_task_id: "old-analysis",
+      analysis_error_message: "旧错误",
+      analysis_retryable: true,
+    };
+    const value = studio({
+      review: false,
+      data: { ...base.data, projects: [existing] },
+      state: {
+        ...base.state,
+        page: "viral-detail",
+        selectedVideoId: "dy-1",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralDetailPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
+    await waitFor(() => expect(value.updateData).toHaveBeenCalled());
+    const updated = vi
+      .mocked(value.updateData)
+      .mock.calls.reduce((current, [update]) => update(current), value.data);
+
+    expect(updated.projects[0]).toEqual({
+      ...existing,
+      reference_asset_id: "fresh-video-asset",
+      reference_upload_status: "READY",
+      analysis_status: "NOT_READY",
+      analysis_task_id: null,
+      analysis_error_message: null,
+      analysis_retryable: false,
+    });
+  });
+
+  it("导入音频时不把音频写成项目参考视频", async () => {
+    importViralVideoToProject.mockResolvedValue({
+      projectId: "existing-project",
+      assetId: "fresh-audio-asset",
+      kind: "audio",
+    });
+    const base = studio();
+    const existing = {
+      id: "existing-project",
+      owner_user_id: "user-1",
+      name: "已有项目",
+      status: "ACTIVE",
+      reference_asset_id: "existing-video",
+      reference_upload_status: "READY" as const,
+      analysis_status: "READY" as const,
+    };
+    const value = studio({
+      review: false,
+      data: { ...base.data, projects: [existing] },
+      state: {
+        ...base.state,
+        page: "viral-detail",
+        selectedVideoId: "dy-1",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<ViralDetailPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    await waitFor(() => expect(value.updateData).toHaveBeenCalled());
+    const updated = vi
+      .mocked(value.updateData)
+      .mock.calls.reduce((current, [update]) => update(current), value.data);
+
+    expect(updated.projects[0]).toEqual(existing);
+    expect(updated.assets[0]).toMatchObject({
+      id: "fresh-audio-asset",
+      kind: "audio",
     });
   });
 
@@ -521,6 +634,7 @@ describe("V1.4 内容与运营页面", () => {
     );
     const base = studio();
     const value = studio({
+      review: false,
       data: {
         ...base.data,
         videos: [
@@ -585,7 +699,10 @@ describe("V1.4 内容与运营页面", () => {
       title: "第二条乡墅参考",
     };
     useStudio.mockReturnValue(
-      studio({ data: { ...base.data, videos: [base.data.videos[0], second] } }),
+      studio({
+        review: false,
+        data: { ...base.data, videos: [base.data.videos[0], second] },
+      }),
     );
     render(<ViralPage />);
 
@@ -619,7 +736,10 @@ describe("V1.4 内容与运营页面", () => {
       title: "第二条乡墅参考",
     };
     useStudio.mockReturnValue(
-      studio({ data: { ...base.data, videos: [base.data.videos[0], second] } }),
+      studio({
+        review: false,
+        data: { ...base.data, videos: [base.data.videos[0], second] },
+      }),
     );
     render(<ViralPage />);
 
@@ -684,6 +804,7 @@ describe("V1.4 内容与运营页面", () => {
     });
     const base = studio();
     const value = studio({
+      review: false,
       state: {
         ...base.state,
         page: "viral-detail",

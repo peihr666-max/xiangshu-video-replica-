@@ -337,18 +337,24 @@ export function StudioWorkspace({
   // and the poll pauses while the tab is hidden or a live panel is busy.
   useEffect(() => {
     if (review) return;
+    let active = true;
+    const pollUserId = loadUser.id;
+    const isCurrent = () => active && loadUserRef.current.id === pollUserId;
     const timer = window.setInterval(() => {
       if (document.hidden || busyRef.current) return;
       void reloadTasks(loadUser)
         .then((tasks) => {
+          if (!isCurrent()) return;
           setData((previous) => ({ ...previous, tasks }));
         })
         .catch(() => {});
       void reloadStats().then((stats) => {
-        if (stats) setData((previous) => ({ ...previous, stats }));
+        if (stats && isCurrent())
+          setData((previous) => ({ ...previous, stats }));
       });
     }, TASKS_POLL_INTERVAL_MS);
     return () => {
+      active = false;
       window.clearInterval(timer);
     };
   }, [review, loadUser]);

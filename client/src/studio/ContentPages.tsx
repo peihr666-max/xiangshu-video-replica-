@@ -173,6 +173,7 @@ function useViralPlayback(
   video?: StudioVideo,
   active = true,
   onActivate?: () => void,
+  enabled = true,
 ) {
   const { updateData } = useStudio();
   const [playback, setPlayback] = useState<ViralPlayback>({ status: "idle" });
@@ -196,6 +197,18 @@ function useViralPlayback(
   }, [active]);
 
   const playFromStorage = async () => {
+    if (!enabled) {
+      activate();
+      if (video?.playUrl) {
+        setPlayback({ status: "playing", src: video.playUrl });
+      } else {
+        setPlayback({
+          status: "error",
+          message: "示例审核不读取真实平台媒体",
+        });
+      }
+      return;
+    }
     if (!video?.platformKey || !video.nativeId || loadingRef.current) return;
     activate();
     const requestId = ++requestIdRef.current;
@@ -371,6 +384,7 @@ function ViralCard({
     video,
     active,
     onActivate,
+    !review,
   );
   useEffect(() => {
     if (!active) playerRef.current?.pause();
@@ -740,27 +754,47 @@ function useViralMedia() {
           source: "爆款视频导入",
           saved: true,
         };
-        updateData((data) => ({
-          ...data,
-          projects: data.projects.some((item) => item.id === result.projectId)
-            ? data.projects
+        updateData((data) => {
+          const existingProject = data.projects.some(
+            (item) => item.id === result.projectId,
+          );
+          const projects = existingProject
+            ? data.projects.map((project) =>
+                project.id === result.projectId && result.kind === "video"
+                  ? {
+                      ...project,
+                      reference_asset_id: result.assetId,
+                      reference_upload_status: "READY" as const,
+                      analysis_status: "NOT_READY" as const,
+                      analysis_task_id: null,
+                      analysis_error_message: null,
+                      analysis_retryable: false,
+                    }
+                  : project,
+              )
             : [
                 {
                   id: result.projectId,
                   owner_user_id: user.id,
                   name: video.title,
                   status: "ACTIVE",
-                  reference_asset_id: result.assetId,
-                  reference_upload_status: "READY",
+                  reference_asset_id:
+                    result.kind === "video" ? result.assetId : null,
+                  reference_upload_status:
+                    result.kind === "video" ? "READY" : "NOT_STARTED",
                   analysis_status: "NOT_READY",
                 } satisfies Project,
                 ...data.projects,
-              ],
-          assets: [
-            asset,
-            ...data.assets.filter((item) => item.id !== asset.id),
-          ],
-        }));
+              ];
+          return {
+            ...data,
+            projects,
+            assets: [
+              asset,
+              ...data.assets.filter((item) => item.id !== asset.id),
+            ],
+          };
+        });
         setMedia({
           status: "ready",
           message:
@@ -789,7 +823,12 @@ export function ViralDetailPage() {
     ? data.videos.find((item) => item.id === state.selectedVideoId)
     : undefined;
   const statisticsError = useViralStatistics(video ? [video] : [], !review);
-  const { playback, play, retry, markFailed } = useViralPlayback(video);
+  const { playback, play, retry, markFailed } = useViralPlayback(
+    video,
+    true,
+    undefined,
+    !review,
+  );
   if (!video)
     return (
       <section className="content-page">
