@@ -201,7 +201,7 @@ def test_wallet_ledger_sequence_is_database_assigned_and_immutable(tmp_path: Pat
             ).fetchone()
             assert row is not None and int(row["ledger_sequence"]) > 0
 
-            with pytest.raises(sqlite3.IntegrityError, match="database assigned"):
+            with pytest.raises(sqlite3.DatabaseError):
                 conn.execute(
                     "INSERT INTO wallet_transactions "
                     "(id,user_id,type,available_delta,reserved_delta,task_id,billing_round,"
@@ -209,10 +209,33 @@ def test_wallet_ledger_sequence_is_database_assigned_and_immutable(tmp_path: Pat
                     "('manual-sequence','user_1','SETTLE',0,-1,'task_1',2,"
                     "'manual-sequence',999)"
                 )
-            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            with pytest.raises(sqlite3.DatabaseError):
                 conn.execute(
                     "UPDATE wallet_transactions SET ledger_sequence=999 WHERE task_id='task_1'"
                 )
+            with pytest.raises(sqlite3.IntegrityError, match="database assigned"):
+                conn.execute(
+                    "INSERT INTO wallet_transactions "
+                    "(ledger_sequence_internal,id,user_id,type,available_delta,reserved_delta,"
+                    "task_id,billing_round,idempotency_key) VALUES "
+                    "(999,'manual-internal','user_1','SETTLE',0,-1,'task_1',2,"
+                    "'manual-internal')"
+                )
+            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+                conn.execute(
+                    "UPDATE wallet_transactions SET ledger_sequence_internal="
+                    "ledger_sequence_internal+1 WHERE task_id='task_1'"
+                )
+            conn.rollback()
+            with conn:
+                conn.execute("UPDATE generation_tasks SET status='FAILED' WHERE id='task_1'")
+                finalize_internal_billing(conn, task_id="task_1", outcome="failed")
+            assert [
+                int(row["ledger_sequence"])
+                for row in conn.execute(
+                    "SELECT ledger_sequence FROM wallet_transactions ORDER BY ledger_sequence"
+                ).fetchall()
+            ] == [1, 2]
 
 
 def test_historical_null_sequence_cannot_be_backfilled_or_downgraded(tmp_path: Path) -> None:
@@ -232,9 +255,17 @@ def test_historical_null_sequence_cannot_be_backfilled_or_downgraded(tmp_path: P
             ).fetchone()["ledger_sequence"]
             is None
         )
-        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        with pytest.raises(sqlite3.DatabaseError):
             conn.execute(
                 "UPDATE wallet_transactions SET ledger_sequence=123 WHERE task_id='task_1'"
+            )
+        next_sequence = conn.execute(
+            "SELECT COALESCE(MAX(ledger_sequence), 0) + 1 FROM wallet_transactions"
+        ).fetchone()[0]
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute(
+                "UPDATE wallet_transactions SET ledger_sequence=? WHERE task_id='task_1'",
+                (next_sequence,),
             )
         conn.rollback()
         with conn:
@@ -254,6 +285,54 @@ def test_historical_null_sequence_cannot_be_backfilled_or_downgraded(tmp_path: P
             ).fetchone()["ledger_sequence"]
             is None
         )
+
+
+def test_historical_only_ledger_can_downgrade_and_reupgrade(tmp_path: Path) -> None:
+    db_path = tmp_path / "historical-only-ledger.db"
+    config = alembic_config(db_path)
+    command.upgrade(config, "067_activation_initial_free_seconds")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        seed_task(conn)
+        with conn:
+            reserve_internal_billing(conn, user_id="user_1", task_id="task_1", billing_round=1)
+
+    command.upgrade(config, "068_wallet_ledger_sequence")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE task_id='task_1'"
+            ).fetchone()["ledger_sequence"]
+            is None
+        )
+
+    command.downgrade(config, "067_activation_initial_free_seconds")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(wallet_transactions)").fetchall()
+        }
+        assert "ledger_sequence" not in columns
+        assert conn.execute("SELECT COUNT(*) FROM wallet_transactions").fetchone()[0] == 1
+
+    command.upgrade(config, "068_wallet_ledger_sequence")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE task_id='task_1'"
+            ).fetchone()["ledger_sequence"]
+            is None
+        )
+        with conn:
+            conn.execute("UPDATE generation_tasks SET status='FAILED' WHERE id='task_1'")
+            finalize_internal_billing(conn, task_id="task_1", outcome="failed")
+        sequences = [
+            row["ledger_sequence"]
+            for row in conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions ORDER BY created_at, id"
+            ).fetchall()
+        ]
+        assert sequences.count(None) == 1
+        assert [value for value in sequences if value is not None] == [1]
 
 
 def test_reserve_rejects_insufficient_credits_without_partial_write(tmp_path: Path) -> None:
