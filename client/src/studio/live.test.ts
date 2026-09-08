@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CurrentUser,
   GenerationBatch,
@@ -6,11 +6,13 @@ import type {
   GenerationTask,
   OralTaskRecord,
   Project,
+  ScriptFromAudioTask,
   SimpleLibraryEntry,
   SimpleSceneLook,
 } from "../api";
 
 const api = vi.hoisted(() => ({
+  createScriptFromAudioTask: vi.fn<() => Promise<ScriptFromAudioTask>>(),
   createGenerationResultPreviewUrl: vi.fn(),
   createGenerationTaskPreviewUrl: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
@@ -19,6 +21,9 @@ const api = vi.hoisted(() => ({
   getLatestProjectAnalysis: vi.fn(),
   getStudioStats: vi.fn(async () => null),
   getLatestScriptVersion: vi.fn(),
+  getLatestScriptFromAudioTask:
+    vi.fn<() => Promise<ScriptFromAudioTask | null>>(),
+  getScriptFromAudioTask: vi.fn<() => Promise<ScriptFromAudioTask>>(),
   listCharacterSceneLooks: vi.fn(),
   listGenerationBatches: vi.fn(),
   listOralTasks: vi.fn(async (): Promise<OralTaskRecord[]> => []),
@@ -33,6 +38,7 @@ vi.mock("../api", () => api);
 
 import {
   cancelStudioTask,
+  extractScriptFromUpload,
   loadPersonAssets,
   loadProjectDraft,
   loadStudioData,
@@ -169,6 +175,22 @@ const studioTask: StudioTask = {
   status: "completed",
   submitted: "2026-09-05T09:30:00+08:00",
 };
+
+function scriptFromAudioTask(
+  overrides: Partial<ScriptFromAudioTask> = {},
+): ScriptFromAudioTask {
+  return {
+    id: "script-task-own",
+    project_id: "project-1",
+    status: "PENDING",
+    attempt: 0,
+    result: null,
+    error_code: null,
+    error_message: null,
+    retryable: false,
+    ...overrides,
+  };
+}
 
 describe("真实 Studio 只读适配器", () => {
   beforeEach(() => {
@@ -717,5 +739,74 @@ describe("批次类型映射与取消", () => {
       }),
     ).rejects.toThrow("当前任务不支持取消");
     expect(api.cancelGenerationBatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("文案提取任务身份绑定", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.spyOn(window, "setTimeout").mockImplementation((handler) => {
+      if (typeof handler === "function") handler();
+      return 1;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("另一标签页任务先完成时仍只读取本次创建任务的文案", async () => {
+    const own = scriptFromAudioTask();
+    const other = scriptFromAudioTask({
+      id: "script-task-other",
+      status: "SUCCEEDED",
+      result: { text: "另一标签页文案", duration_sec: 12, language: "zh" },
+    });
+    api.createScriptFromAudioTask.mockResolvedValue(own);
+    api.getLatestScriptFromAudioTask.mockResolvedValue(other);
+    api.getScriptFromAudioTask.mockResolvedValueOnce(own).mockResolvedValueOnce(
+      scriptFromAudioTask({
+        status: "SUCCEEDED",
+        result: { text: "本次草稿文案", duration_sec: 10, language: "zh" },
+      }),
+    );
+
+    await expect(
+      extractScriptFromUpload("project-1", "asset-1"),
+    ).resolves.toEqual({ text: "本次草稿文案" });
+    expect(api.getScriptFromAudioTask).toHaveBeenCalledTimes(2);
+    expect(api.getScriptFromAudioTask).toHaveBeenNthCalledWith(
+      1,
+      "script-task-own",
+    );
+    expect(api.getScriptFromAudioTask).toHaveBeenNthCalledWith(
+      2,
+      "script-task-own",
+    );
+    expect(api.getLatestScriptFromAudioTask).not.toHaveBeenCalled();
+  });
+
+  it("另一标签页任务失败时不会把它的错误写成本次任务错误", async () => {
+    const own = scriptFromAudioTask();
+    api.createScriptFromAudioTask.mockResolvedValue(own);
+    api.getLatestScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        id: "script-task-other",
+        status: "FAILED",
+        error_message: "另一标签页失败",
+      }),
+    );
+    api.getScriptFromAudioTask.mockResolvedValue(
+      scriptFromAudioTask({
+        status: "FAILED",
+        error_message: "本次任务失败",
+      }),
+    );
+
+    await expect(
+      extractScriptFromUpload("project-1", "asset-1"),
+    ).rejects.toThrow("本次任务失败");
+    expect(api.getScriptFromAudioTask).toHaveBeenCalledWith("script-task-own");
+    expect(api.getLatestScriptFromAudioTask).not.toHaveBeenCalled();
   });
 });

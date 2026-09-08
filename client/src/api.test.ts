@@ -30,6 +30,7 @@ import {
   getLatestGenerationPrompt,
   getLatestProjectFirstFrames,
   getLatestScriptVersion,
+  getScriptFromAudioTask,
   getSettings,
   importViralVideoToProject,
   listGenerationBatches,
@@ -318,6 +319,29 @@ describe("generation workflow API", () => {
     setInternalAccessToken(null);
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("按创建返回的任务 ID 读取文案提取状态", async () => {
+    const task = {
+      id: "task/a b",
+      project_id: "project-1",
+      status: "RUNNING",
+      attempt: 1,
+      result: null,
+      error_code: null,
+      error_message: null,
+      retryable: false,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => task,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getScriptFromAudioTask("task/a b")).resolves.toEqual(task);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:8000/api/script-from-audio-tasks/task%2Fa%20b",
+    );
   });
 
   it("downloads a direct result using task authorization without forwarding credentials", async () => {

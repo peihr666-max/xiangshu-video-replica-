@@ -14,8 +14,8 @@ import {
   getGenerationBatch,
   getLatestProjectAnalysis,
   getLatestProjectShotCards,
-  getLatestScriptFromAudioTask,
   getLatestScriptVersion,
+  getScriptFromAudioTask,
   getStudioDraft,
   getStudioStats,
   listCharacterSceneLooks,
@@ -678,12 +678,15 @@ export async function extractScriptFromUpload(
   projectId: string,
   assetId: string,
 ): Promise<{ text: string }> {
-  await createScriptFromAudioTask(projectId, assetId, crypto.randomUUID());
+  const created = await createScriptFromAudioTask(
+    projectId,
+    assetId,
+    crypto.randomUUID(),
+  );
   const maxAttempts = 150; // 2s × 150 = 5 分钟上限（长音频异步转写兜底）
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 2000));
-    const task = await getLatestScriptFromAudioTask(projectId);
-    if (!task) continue;
+    const task = await getScriptFromAudioTask(created.id);
     if (task.status === "SUCCEEDED" && task.result) {
       return { text: task.result.text };
     }

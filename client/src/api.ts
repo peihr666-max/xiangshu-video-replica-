@@ -814,6 +814,16 @@ export async function createScriptFromAudioTask(
   );
 }
 
+/** 按任务 ID 读取本次文案提取状态，避免同项目并发任务串读。 */
+export async function getScriptFromAudioTask(
+  taskId: string,
+): Promise<ScriptFromAudioTask> {
+  return requestApiJson<ScriptFromAudioTask>(
+    `/api/script-from-audio-tasks/${encodeURIComponent(taskId)}`,
+    "读取文案提取任务失败",
+  );
+}
+
 /** 读取项目最近的提取文案任务；尚无任务返回 null。 */
 export async function getLatestScriptFromAudioTask(
   projectId: string,
