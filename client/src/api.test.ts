@@ -11,6 +11,7 @@ import {
   confirmSourceFrame,
   createGenerationBatch,
   createGenerationResultPreviewUrl,
+  createOralTask,
   createProject,
   createScriptVersion,
   createVideoUploadIntent,
@@ -342,6 +343,36 @@ describe("generation workflow API", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       "http://127.0.0.1:8000/api/script-from-audio-tasks/task%2Fa%20b",
     );
+  });
+
+  it("口播创建请求携带当前选择项目", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: "oral-1",
+        status: "QUEUED",
+        estimated_cost_fen: 100,
+        replayed: false,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createOralTask({
+      projectId: "project/current",
+      identityId: "person-1",
+      avatarId: "avatar-1",
+      voiceId: "voice-1",
+      mode: "TTS",
+      title: "建房预算",
+      scriptText: "预算说明",
+      idempotencyKey: "idem-1",
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({
+      project_id: "project/current",
+      identity_id: "person-1",
+      mode: "TTS",
+    });
   });
 
   it("downloads a direct result using task authorization without forwarding credentials", async () => {

@@ -33,12 +33,14 @@ from app.oral import (
     create_oral_task,
     finalize_oral_clone_work,
     finalize_oral_task_work,
+    mark_oral_provider_submission_started,
     oral_unit_price_fen,
     preserve_oral_clone_outcome_for_reconciliation,
     preserve_oral_task_outcome_for_reconciliation,
     record_oral_clone_consent,
     refresh_avatar_clone,
     refresh_voice_clone,
+    renew_oral_task_lease,
     run_next_oral_task,
     start_avatar_clone,
     start_voice_clone,
@@ -413,6 +415,7 @@ def test_create_oral_task_tts_submits_and_replays_idempotently(
     created = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_id,
         voice_id=voice_id,
@@ -443,6 +446,7 @@ def test_create_oral_task_tts_submits_and_replays_idempotently(
     replayed = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_id,
         voice_id=voice_id,
@@ -463,6 +467,7 @@ def test_create_oral_task_tts_submits_and_replays_idempotently(
         create_oral_task(
             conn,
             actor=actor(),
+            project_id="project-1",
             identity_id="ident-1",
             avatar_id=avatar_id,
             voice_id=voice_id,
@@ -514,6 +519,7 @@ def test_oral_idempotency_key_is_scoped_by_owner(tmp_path: Path) -> None:
     first = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_1,
         voice_id=voice_1,
@@ -527,6 +533,7 @@ def test_oral_idempotency_key_is_scoped_by_owner(tmp_path: Path) -> None:
     second = create_oral_task(
         conn,
         actor=actor("employee_2"),
+        project_id="project-2",
         identity_id="ident-2",
         avatar_id="avatar-2",
         voice_id="voice-2",
@@ -548,6 +555,7 @@ def test_create_oral_task_rejects_unready_assets(tmp_path: Path) -> None:
         create_oral_task(
             conn,
             actor=actor(),
+            project_id="project-1",
             identity_id="ident-1",
             avatar_id="missing",
             voice_id=None,
@@ -561,6 +569,96 @@ def test_create_oral_task_rejects_unready_assets(tmp_path: Path) -> None:
         )
 
 
+def test_tts_oral_task_requires_explicit_owned_project(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-project-required.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+
+    with pytest.raises(OralDomainError, match="请选择口播所属项目"):
+        create_oral_task(
+            conn,
+            actor=actor(),
+            project_id=None,
+            identity_id="ident-1",
+            avatar_id=avatar_id,
+            voice_id=voice_id,
+            mode="TTS",
+            title="明确项目",
+            script_text="文案",
+            audio_asset_id=None,
+            subtitle=None,
+            idempotency_key="project-required",
+        )
+
+
+def test_tts_oral_task_rejects_subtitle_collision_before_reserving(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-subtitle-collision.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+
+    with pytest.raises(OralDomainError, match="字幕参数不受支持"):
+        create_oral_task(
+            conn,
+            actor=actor(),
+            project_id="project-1",
+            identity_id="ident-1",
+            avatar_id=avatar_id,
+            voice_id=voice_id,
+            mode="TTS",
+            title="字幕碰撞",
+            script_text="文案",
+            audio_asset_id=None,
+            subtitle={"avatar": "other-avatar"},
+            idempotency_key="subtitle-collision",
+        )
+
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    assert tuple(wallet) == (10, 0)
+
+
+def test_audio_oral_task_derives_project_and_rejects_mismatch(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-audio-project.db")
+    avatar_id, _ = seed_ready_assets(conn)
+
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id=None,
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=None,
+        mode="AUDIO",
+        title="音频口播",
+        script_text=None,
+        audio_asset_id="asset-audio",
+        subtitle=None,
+        idempotency_key="audio-project-derived",
+    )
+    row = conn.execute(
+        "SELECT project_id FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    assert row["project_id"] == "project-1"
+
+    conn.execute(
+        "INSERT INTO projects (id, owner_user_id, name) VALUES ('project-other', 'employee_1', 'O')"
+    )
+    with pytest.raises(OralDomainError, match="所属项目不一致"):
+        create_oral_task(
+            conn,
+            actor=actor(),
+            project_id="project-other",
+            identity_id="ident-1",
+            avatar_id=avatar_id,
+            voice_id=None,
+            mode="AUDIO",
+            title="错误项目",
+            script_text=None,
+            audio_asset_id="asset-audio",
+            subtitle=None,
+            idempotency_key="audio-project-mismatch",
+        )
+
+
 def test_refresh_oral_task_archives_result_asset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -571,6 +669,7 @@ def test_refresh_oral_task_archives_result_asset(
     created = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_id,
         voice_id=voice_id,
@@ -664,6 +763,7 @@ def test_vendor_failure_lands_customer_safe_message(
     created = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_id,
         voice_id=voice_id,
@@ -694,6 +794,212 @@ def test_vendor_failure_lands_customer_safe_message(
     assert tuple(wallet) == (10, 0)
 
 
+def test_audio_pre_submit_storage_failure_releases_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-audio-local-failure.db")
+    avatar_id, _ = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+
+    def fail_read(_key: str) -> bytes:
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(fake_source_storage, "get_object", fail_read)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id=None,
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=None,
+        mode="AUDIO",
+        title="本地准备失败",
+        script_text=None,
+        audio_asset_id="asset-audio",
+        subtitle=None,
+        idempotency_key="audio-local-failure",
+    )
+
+    run_next_oral_task(conn, worker_id="worker-local-failure", vendor=vendor)
+
+    task = conn.execute(
+        "SELECT status, provider_started_at FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    assert tuple(task) == ("FAILED", None)
+    assert tuple(wallet) == (10, 0)
+    assert not any(url.endswith("/video/create_by_audio") for _, url in transport.calls)
+
+
+def test_audio_submit_renews_between_external_steps_and_marks_paid_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-audio-renewal.db")
+    avatar_id, _ = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+
+    def read_without_transaction(_key: str) -> bytes:
+        assert not conn.raw.in_transaction
+        return b"FAKEMEDIA"
+
+    monkeypatch.setattr(fake_source_storage, "get_object", read_without_transaction)
+    transport.on(
+        "POST",
+        "/api/v2/hifly/tool/create_upload_url",
+        envelope(
+            {
+                "upload_url": "https://up.example/audio",
+                "content_type": "audio/mpeg",
+                "file_id": "audio-file-1",
+            }
+        ),
+    )
+    transport.on(
+        "POST", "/api/v2/hifly/video/create_by_audio", envelope({"task_id": "audio-video-1"})
+    )
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id=None,
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=None,
+        mode="AUDIO",
+        title="续租口播",
+        script_text=None,
+        audio_asset_id="asset-audio",
+        subtitle=None,
+        idempotency_key="audio-renewal",
+    )
+    renewals = 0
+    original = renew_oral_task_lease
+
+    def recording_renewal(*args: Any, **kwargs: Any) -> bool:
+        nonlocal renewals
+        renewals += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("app.oral.renew_oral_task_lease", recording_renewal)
+    run_next_oral_task(conn, worker_id="worker-renewal", vendor=vendor)
+
+    row = conn.execute(
+        "SELECT status, vendor_task_id, provider_started_at FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert renewals == 4
+    assert row["status"] == "RUNNING"
+    assert row["vendor_task_id"] == "audio-video-1"
+    assert row["provider_started_at"] is not None
+
+
+def test_oral_lease_renew_and_submit_boundary_reject_expired_or_replaced_token(
+    tmp_path: Path,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-renew-fencing.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="租约围栏",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-renew-fencing",
+    )
+    lease = acquire_oral_task(conn, worker_id="worker-old")
+    assert lease is not None
+    assert renew_oral_task_lease(conn, lease=lease)
+    assert not conn.raw.in_transaction
+    conn.execute(
+        "UPDATE oral_tasks SET locked_until = '2020-01-01T00:00:00+00:00' WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+    assert not renew_oral_task_lease(conn, lease=lease)
+    assert not conn.raw.in_transaction
+    assert not mark_oral_provider_submission_started(conn, lease=lease)
+    assert not conn.raw.in_transaction
+    conn.execute(
+        "UPDATE oral_tasks SET lease_token = 'replacement-token', "
+        "locked_until = '2099-01-01T00:00:00+00:00' WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+    assert not renew_oral_task_lease(conn, lease=lease)
+    assert not conn.raw.in_transaction
+    assert not mark_oral_provider_submission_started(conn, lease=lease)
+    assert not conn.raw.in_transaction
+    row = conn.execute(
+        "SELECT provider_started_at FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    assert row["provider_started_at"] is None
+
+
+def test_sqlite_provider_started_survives_crash_and_prevents_paid_replay(
+    tmp_path: Path,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-provider-crash.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+
+    def crash_after_acceptance(_body: bytes | None) -> bytes:
+        assert not conn.raw.in_transaction
+        raise KeyboardInterrupt("worker crashed during paid submit")
+
+    transport.on("POST", "/api/v2/hifly/video/create_by_tts", crash_after_acceptance)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="崩溃围栏",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-provider-crash",
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="worker crashed"):
+        run_next_oral_task(conn, worker_id="worker-crash", vendor=vendor)
+    assert not conn.raw.in_transaction
+    started = conn.execute(
+        "SELECT status, provider_started_at FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    assert started["status"] == "SUBMITTING"
+    assert started["provider_started_at"] is not None
+
+    conn.execute(
+        "UPDATE oral_tasks SET locked_until = '2020-01-01T00:00:00+00:00' WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+    assert acquire_oral_task(conn, worker_id="worker-replacement") is None
+    recovered = conn.execute(
+        "SELECT status, lease_token FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    assert tuple(recovered) == ("SUBMISSION_UNCERTAIN", None)
+    assert (
+        sum(
+            1
+            for method, url in transport.calls
+            if method == "POST" and url.endswith("create_by_tts")
+        )
+        == 1
+    )
+
+
 def test_transport_uncertainty_keeps_reservation_for_reconciliation(
     tmp_path: Path, fake_source_storage: FakeSourceStorage
 ) -> None:
@@ -710,6 +1016,7 @@ def test_transport_uncertainty_keeps_reservation_for_reconciliation(
     created = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_id,
         voice_id=voice_id,
@@ -761,6 +1068,7 @@ def test_http_status_during_submit_remains_uncertain_and_reserved(
     created = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_id,
         voice_id=voice_id,
@@ -788,6 +1096,7 @@ def test_old_oral_lease_token_cannot_finalize_or_release_wallet(tmp_path: Path) 
     created = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_id,
         voice_id=voice_id,
@@ -969,6 +1278,7 @@ def test_oral_finalize_db_failure_preserves_outcome_and_wallet_reservation(
     created = create_oral_task(
         conn,
         actor=actor(),
+        project_id="project-1",
         identity_id="ident-1",
         avatar_id=avatar_id,
         voice_id=voice_id,

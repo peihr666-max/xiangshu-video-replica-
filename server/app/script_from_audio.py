@@ -15,8 +15,10 @@ import json
 import logging
 import sqlite3
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -119,6 +121,11 @@ class ScriptFromAudioTaskLease:
     attempt: int
 
 
+class ProviderTaskCheckpointResult(StrEnum):
+    CURRENT_LEASE = "CURRENT_LEASE"
+    LATE_UNCERTAIN = "LATE_UNCERTAIN"
+
+
 @dataclass
 class PreparedScriptFromAudio:
     task_id: str
@@ -211,7 +218,7 @@ def enqueue_script_from_audio_task(
     active = conn.execute(
         """
         SELECT * FROM script_from_audio_tasks
-        WHERE project_id = %s AND status IN ('PENDING','RUNNING')
+        WHERE project_id = %s AND status IN ('PENDING','RUNNING','SUBMISSION_UNCERTAIN')
         ORDER BY created_at DESC, id DESC LIMIT 1
         """,
         (project_id,),
@@ -252,7 +259,7 @@ def enqueue_script_from_audio_task(
         row = conn.execute(
             """
             SELECT * FROM script_from_audio_tasks
-            WHERE project_id = %s AND status IN ('PENDING','RUNNING')
+            WHERE project_id = %s AND status IN ('PENDING','RUNNING','SUBMISSION_UNCERTAIN')
             ORDER BY created_at DESC, id DESC LIMIT 1
             """,
             (project_id,),
@@ -443,11 +450,18 @@ def prepare_script_from_audio_submission(
             probe_duration_seconds(work.ffprobe_path, audio_path) if work.ffprobe_path else None
         )
         work.storage.put_object(tmp_key, audio_bytes, content_type="audio/mp4")
-        intent = work.storage.create_download_intent(
-            tmp_key,
-            expires_in=_DOWNLOAD_INTENT_EXPIRES,
-            can_read=True,
-        )
+        try:
+            intent = work.storage.create_download_intent(
+                tmp_key,
+                expires_in=_DOWNLOAD_INTENT_EXPIRES,
+                can_read=True,
+            )
+        except Exception:
+            try:
+                work.storage.delete_object(tmp_key, actor_id="script-from-audio-worker")
+            except Exception:
+                logger.warning("temporary ASR audio cleanup failed for key %s", tmp_key)
+            raise
     return PreparedScriptFromAudioSubmission(
         storage=work.storage,
         asr=work.asr,
@@ -466,10 +480,16 @@ def cleanup_script_from_audio_submission(work: PreparedScriptFromAudioSubmission
 
 def perform_script_from_audio_provider_call(
     work: PreparedScriptFromAudioSubmission,
+    *,
+    on_task_created: Callable[[str], None] | None = None,
 ) -> TranscriptResult:
     """ASR 是唯一可能已被上游受理的步骤；调用后无条件清理临时音频。"""
     try:
-        return work.asr.transcribe(work.audio_url, duration_sec=work.duration_sec)
+        return work.asr.transcribe(
+            work.audio_url,
+            duration_sec=work.duration_sec,
+            on_task_created=on_task_created,
+        )
     finally:
         cleanup_script_from_audio_submission(work)
 
@@ -477,6 +497,42 @@ def perform_script_from_audio_provider_call(
 def perform_script_from_audio_task(work: PreparedScriptFromAudio) -> TranscriptResult:
     """SQLite 兼容入口；PG worker 使用拆分后的两阶段函数。"""
     return perform_script_from_audio_provider_call(prepare_script_from_audio_submission(work))
+
+
+def record_script_from_audio_provider_task(
+    conn: BusinessConnection,
+    *,
+    lease: ScriptFromAudioTaskLease,
+    provider_task_id: str,
+) -> ProviderTaskCheckpointResult:
+    """Persist the upstream identity before polling so crashes remain reconcilable."""
+    now = _time_text(datetime.now(UTC))
+    updated = conn.execute(
+        """
+        UPDATE script_from_audio_tasks
+        SET provider_task_id = %s, updated_at = %s
+        WHERE id = %s AND attempt = %s AND provider_task_id IS NULL
+          AND provider_started_at IS NOT NULL
+          AND (
+            (status = 'RUNNING' AND lease_token = %s)
+            OR (status = 'SUBMISSION_UNCERTAIN' AND lease_token IS NULL)
+          )
+        RETURNING status
+        """,
+        (
+            provider_task_id,
+            now,
+            lease.id,
+            lease.attempt,
+            lease.lease_token,
+        ),
+    ).fetchone()
+    if updated is None:
+        raise script_from_audio_error(409, "SCRIPT_FROM_AUDIO_LEASE_LOST", "任务租约已失效。")
+    conn.commit()
+    if str(updated["status"]) == "SUBMISSION_UNCERTAIN":
+        return ProviderTaskCheckpointResult.LATE_UNCERTAIN
+    return ProviderTaskCheckpointResult.CURRENT_LEASE
 
 
 def complete_script_from_audio_task(
@@ -527,12 +583,15 @@ def fail_script_from_audio_task(
     logger.warning("script-from-audio task %s failed: %s", lease.id, type(cause).__name__)
     now = _time_text(datetime.now(UTC))
     retryable = 1 if not submission_started else 0
-    if submission_started and isinstance(cause, AsrProviderError):
-        status = "FAILED"
-        code = "SCRIPT_FROM_AUDIO_PROVIDER_FAILED"
-    elif submission_started:
+    provider_task_id = cause.provider_task_id if isinstance(cause, AsrProviderError) else None
+    if submission_started and (
+        not isinstance(cause, AsrProviderError) or cause.submission_uncertain
+    ):
         status = "SUBMISSION_UNCERTAIN"
         code = "SCRIPT_FROM_AUDIO_SUBMISSION_UNCERTAIN"
+    elif submission_started:
+        status = "FAILED"
+        code = "SCRIPT_FROM_AUDIO_PROVIDER_FAILED"
     else:
         status = "FAILED"
         code = "SCRIPT_FROM_AUDIO_PIPELINE_FAILED"
@@ -542,6 +601,7 @@ def fail_script_from_audio_task(
         UPDATE script_from_audio_tasks
         SET status = %s, error_code = %s,
             error_message_redacted = %s, retryable = %s,
+            provider_task_id = COALESCE(%s, provider_task_id),
             completed_at = %s, updated_at = %s, locked_by = NULL,
             lease_token = NULL, locked_until = NULL
         WHERE id = %s AND lease_token = %s AND attempt = %s
@@ -553,6 +613,7 @@ def fail_script_from_audio_task(
             code,
             _redacted_message(cause),
             retryable,
+            provider_task_id,
             now,
             now,
             lease.id,

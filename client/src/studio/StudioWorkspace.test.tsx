@@ -339,6 +339,76 @@ describe("V1.4 workspace integration", () => {
     expect(live.loadStudioData).toHaveBeenCalledTimes(2);
   });
 
+  it("账号切换后口播请求只携带新账号当前项目", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/price")) {
+          return { ok: true, json: async () => ({ unit_price_fen: 100 }) };
+        }
+        if (url.endsWith("/api/oral/tasks")) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "oral-1",
+              status: "QUEUED",
+              estimated_cost_fen: 100,
+              replayed: false,
+            }),
+          };
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const oldState = createReviewState("oral");
+    oldState.draft.projectId = "project-old";
+    const newState = createReviewState("oral");
+    newState.draft.projectId = "project-new";
+    const view = render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "account-old" }}
+        initialState={oldState}
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    ).toBeEnabled();
+
+    view.rerender(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, id: "account-new" }}
+        initialState={newState}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input, init]) => {
+          if (!String(input).endsWith("/api/oral/tasks")) return false;
+          return JSON.parse(String(init?.body)).project_id === "project-new";
+        }),
+      ).toBe(true),
+    );
+    expect(
+      fetchMock.mock.calls.some(([input, init]) => {
+        if (!String(input).endsWith("/api/oral/tasks")) return false;
+        return JSON.parse(String(init?.body)).project_id === "project-old";
+      }),
+    ).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
   it("关闭已有项目工作区不会再次导入并覆盖当前草稿", async () => {
     const imported = createReviewState("workbench").draft;
     live.loadStudioData.mockResolvedValue({

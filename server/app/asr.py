@@ -38,6 +38,17 @@ ASR_PROVIDER_OVERRIDE_ENV = "VIDEO_REPLICA_ASR_PROVIDER"
 class AsrProviderError(RuntimeError):
     """Provider-side failure surfaced to the task as a redacted message."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        submission_uncertain: bool = True,
+        provider_task_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.submission_uncertain = submission_uncertain
+        self.provider_task_id = provider_task_id
+
 
 @dataclass(frozen=True)
 class TranscriptResult:
@@ -63,7 +74,11 @@ class AsrProvider(Protocol):
     name: str
 
     def transcribe(
-        self, file_url: str, *, duration_sec: float | None = None
+        self,
+        file_url: str,
+        *,
+        duration_sec: float | None = None,
+        on_task_created: Callable[[str], None] | None = None,
     ) -> TranscriptResult: ...
 
 
@@ -108,7 +123,13 @@ class FakeAsrProvider:
         self._text = text
         self.calls: list[str] = []
 
-    def transcribe(self, file_url: str, *, duration_sec: float | None = None) -> TranscriptResult:
+    def transcribe(
+        self,
+        file_url: str,
+        *,
+        duration_sec: float | None = None,
+        on_task_created: Callable[[str], None] | None = None,
+    ) -> TranscriptResult:
         self.calls.append(file_url)
         return TranscriptResult(
             text=self._text,
@@ -135,7 +156,13 @@ class DashScopeFunAsr:
 
     # ---------------- public ----------------
 
-    def transcribe(self, file_url: str, *, duration_sec: float | None = None) -> TranscriptResult:
+    def transcribe(
+        self,
+        file_url: str,
+        *,
+        duration_sec: float | None = None,
+        on_task_created: Callable[[str], None] | None = None,
+    ) -> TranscriptResult:
         cfg = self._config
         if not cfg.api_key:
             raise AsrProviderError("语音转写服务未配置")
@@ -146,7 +173,7 @@ class DashScopeFunAsr:
                 cfg.flash_threshold_sec,
             )
             return self._transcribe_flash(file_url)
-        return self._transcribe_async(file_url)
+        return self._transcribe_async(file_url, on_task_created=on_task_created)
 
     # ---------------- flash (sync) ----------------
 
@@ -171,7 +198,7 @@ class DashScopeFunAsr:
             body=json.dumps(payload).encode("utf-8"),
             timeout_seconds=DASHSCOPE_TIMEOUT_SECONDS,
         )
-        data = self._decode(status, body)
+        data = self._decode(status, body, definite_client_error=True)
         text = str(data.get("output", {}).get("text", ""))
         if not text:
             raise AsrProviderError("语音转写服务返回空文本")
@@ -184,10 +211,33 @@ class DashScopeFunAsr:
 
     # ---------------- async (submit → poll → download) ----------------
 
-    def _transcribe_async(self, file_url: str) -> TranscriptResult:
+    def _transcribe_async(
+        self,
+        file_url: str,
+        *,
+        on_task_created: Callable[[str], None] | None,
+    ) -> TranscriptResult:
         task_id = self._submit_async_task(file_url)
-        output = self._poll_async_task(task_id)
-        return self._download_transcription(output)
+        try:
+            if on_task_created is not None:
+                try:
+                    on_task_created(task_id)
+                except Exception as exc:
+                    raise AsrProviderError(
+                        "语音转写任务号持久化失败，请稍后核对任务状态",
+                        submission_uncertain=True,
+                        provider_task_id=task_id,
+                    ) from exc
+            output = self._poll_async_task(task_id)
+            return self._download_transcription(output)
+        except AsrProviderError as exc:
+            if exc.provider_task_id == task_id:
+                raise
+            raise AsrProviderError(
+                str(exc),
+                submission_uncertain=True,
+                provider_task_id=task_id,
+            ) from exc
 
     def _submit_async_task(self, file_url: str) -> str:
         cfg = self._config
@@ -203,7 +253,7 @@ class DashScopeFunAsr:
             body=json.dumps(payload).encode("utf-8"),
             timeout_seconds=30.0,
         )
-        data = self._decode(status, body)
+        data = self._decode(status, body, definite_client_error=True)
         task_id = data.get("output", {}).get("task_id")
         if not task_id:
             raise AsrProviderError("语音转写任务提交失败：未返回任务号")
@@ -234,8 +284,15 @@ class DashScopeFunAsr:
                     if item.get("subtask_status") == "FAILED":
                         message = str(item.get("message") or item.get("code") or "")
                         break
-                raise AsrProviderError(f"语音转写任务失败：{message or task_status}")
-        raise AsrProviderError("语音转写任务轮询超时，请稍后重试")
+                raise AsrProviderError(
+                    f"语音转写任务失败：{message or task_status}",
+                    submission_uncertain=False,
+                    provider_task_id=task_id,
+                )
+        raise AsrProviderError(
+            "语音转写任务轮询超时，请稍后重试",
+            provider_task_id=task_id,
+        )
 
     def _download_transcription(self, output: dict[str, Any]) -> TranscriptResult:
         transcription_url = None
@@ -279,11 +336,24 @@ class DashScopeFunAsr:
             headers["X-DashScope-Async"] = "enable"
         return headers
 
-    def _decode(self, status: int, body: bytes) -> dict[str, Any]:
+    def _decode(
+        self,
+        status: int,
+        body: bytes,
+        *,
+        definite_client_error: bool = False,
+    ) -> dict[str, Any]:
+        submission_uncertain = not (definite_client_error and 400 <= status < 500)
         if status in (401, 403):
-            raise AsrProviderError("语音转写服务凭据无效或无权限，请检查设置")
+            raise AsrProviderError(
+                "语音转写服务凭据无效或无权限，请检查设置",
+                submission_uncertain=submission_uncertain,
+            )
         if status >= 400:
-            raise AsrProviderError(f"语音转写服务返回错误（HTTP {status}）")
+            raise AsrProviderError(
+                f"语音转写服务返回错误（HTTP {status}）",
+                submission_uncertain=submission_uncertain,
+            )
         try:
             data: dict[str, Any] = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

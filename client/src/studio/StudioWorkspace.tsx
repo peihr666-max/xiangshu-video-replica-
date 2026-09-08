@@ -272,6 +272,7 @@ function StudioWorkspaceSession({
       const mode = state.page === "oral-audio" ? "audio" : "text";
       const input = buildOralInput(state.draft, mode);
       const result = await createOralTask({
+        projectId: state.draft.projectId,
         identityId: input.ipId,
         avatarId: input.avatarId,
         voiceId: input.voiceId,

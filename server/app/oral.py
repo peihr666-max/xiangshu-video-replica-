@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,7 +21,12 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from app.auth import CurrentUser
 from app.character_identity import require_current_authorization
 from app.db_portable import BusinessConnection
-from app.hifly import HiflyClient, HiflyError, hifly_client_from_settings
+from app.hifly import (
+    HiflyClient,
+    HiflyError,
+    hifly_client_from_settings,
+    validate_tts_subtitle,
+)
 from app.media_routes import get_media_storage, storage_for_asset
 from app.permissions import require_asset_access
 from app.settings import SettingsRepository
@@ -39,6 +45,10 @@ TaskStatus = str  # QUEUED/RUNNING/SUCCEEDED/FAILED/CANCELLED
 
 class OralDomainError(Exception):
     """Customer-safe oral-domain failure (message is UI-renderable)."""
+
+
+class OralTaskLeaseLost(RuntimeError):
+    """The claimed task may no longer be changed by this worker."""
 
 
 ORAL_CLONE_PURPOSES = {"oral_avatar_clone", "oral_voice_clone"}
@@ -798,6 +808,7 @@ def create_oral_task(
     conn: BusinessConnection,
     *,
     actor: CurrentUser,
+    project_id: str | None,
     identity_id: str,
     avatar_id: str,
     voice_id: str | None,
@@ -826,6 +837,10 @@ def create_oral_task(
 
     effective_voice = voice_id
     if mode == "TTS":
+        try:
+            subtitle = validate_tts_subtitle(subtitle)
+        except ValueError as exc:
+            raise OralDomainError("字幕参数不受支持") from exc
         if not script_text or not script_text.strip():
             raise OralDomainError("请填写口播文案")
         if len(script_text) > MAX_ORAL_SCRIPT_CHARS:
@@ -843,21 +858,45 @@ def create_oral_task(
             raise OralDomainError("声音与人物不匹配")
         if int(voice["confirmed"] or 0) != 1 or not voice["demo_asset_id"]:
             raise OralDomainError("请先试听并确认克隆声音")
+    selected_project_id: str
+    if mode == "TTS":
+        if not project_id:
+            raise OralDomainError("请选择口播所属项目")
+        project = conn.execute(
+            "SELECT id FROM projects WHERE id = %s AND owner_user_id = %s AND status = 'ACTIVE'",
+            (project_id, actor.id),
+        ).fetchone()
+        if project is None:
+            raise OralDomainError("所选项目不存在或不可用")
+        selected_project_id = str(project["id"])
     else:
         effective_voice = None
         if not audio_asset_id:
             raise OralDomainError("请上传完整的口播音频")
-        _require_source_asset(
+        audio_asset = _require_source_asset(
             conn,
             actor=actor,
             asset_id=audio_asset_id,
             message="口播音频不存在或无权使用",
         )
+        asset_project_id = str(audio_asset.get("project_id") or "")
+        if not asset_project_id:
+            raise OralDomainError("口播音频必须属于一个可用项目")
+        project = conn.execute(
+            "SELECT id FROM projects WHERE id = %s AND owner_user_id = %s AND status = 'ACTIVE'",
+            (asset_project_id, actor.id),
+        ).fetchone()
+        if project is None:
+            raise OralDomainError("口播音频所属项目不存在或不可用")
+        if project_id is not None and project_id != asset_project_id:
+            raise OralDomainError("所选项目与口播音频所属项目不一致")
+        selected_project_id = asset_project_id
 
     request_hash = hashlib.sha256(
         json.dumps(
             {
                 "identity_id": identity_id,
+                "project_id": selected_project_id,
                 "avatar_id": avatar_id,
                 "voice_id": effective_voice,
                 "mode": mode,
@@ -886,14 +925,6 @@ def create_oral_task(
             replayed=True,
         )
 
-    project = conn.execute(
-        "SELECT id FROM projects WHERE owner_user_id = %s AND status = 'ACTIVE' "
-        "ORDER BY updated_at DESC, id LIMIT 1",
-        (actor.id,),
-    ).fetchone()
-    if project is None:
-        raise OralDomainError("请先创建可用项目")
-
     price = oral_unit_price_fen(conn)
     task_id = str(uuid4())
     inserted = conn.execute(
@@ -909,7 +940,7 @@ def create_oral_task(
         (
             task_id,
             actor.id,
-            str(project["id"]),
+            selected_project_id,
             identity_id,
             avatar_id,
             effective_voice,
@@ -1011,13 +1042,27 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
     now = datetime.now(UTC)
     locked_until = (now + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
     if conn.is_postgres:
+        retryable = conn.execute(
+            """
+            UPDATE oral_tasks SET status = 'QUEUED', locked_by = NULL,
+                lease_token = NULL, locked_until = NULL,
+                error_message = '提交前处理超时，等待自动重试',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'SUBMITTING' AND provider_started_at IS NULL
+              AND locked_until::timestamptz <= now()
+            RETURNING id
+            """
+        ).fetchall()
+        for row in retryable:
+            _release_oral_queue_slot(conn, task_id=str(row["id"]))
         expired = conn.execute(
             """
             UPDATE oral_tasks SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL,
                 lease_token = NULL, locked_until = NULL,
                 error_message = '提交结果未知，等待人工对账',
                 updated_at = CURRENT_TIMESTAMP
-            WHERE status = 'SUBMITTING' AND locked_until::timestamptz <= now()
+            WHERE status = 'SUBMITTING' AND provider_started_at IS NOT NULL
+              AND locked_until::timestamptz <= now()
             RETURNING id
             """
         ).fetchall()
@@ -1061,6 +1106,7 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
             """
             UPDATE oral_tasks SET status = 'SUBMITTING', attempt = attempt + 1,
                 submitted_at = COALESCE(submitted_at::timestamptz, CURRENT_TIMESTAMP),
+                provider_started_at = NULL,
                 locked_by = %s, lease_token = %s, locked_until = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = (
@@ -1078,6 +1124,26 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
             (user_id,),
         )
         return dict(row)
+    conn.execute(
+        """
+        UPDATE oral_tasks SET status = 'QUEUED', locked_by = NULL,
+            lease_token = NULL, locked_until = NULL,
+            error_message = '提交前处理超时，等待自动重试',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'SUBMITTING' AND provider_started_at IS NULL
+          AND datetime(locked_until) <= CURRENT_TIMESTAMP
+        """
+    )
+    conn.execute(
+        """
+        UPDATE oral_tasks SET status = 'SUBMISSION_UNCERTAIN', locked_by = NULL,
+            lease_token = NULL, locked_until = NULL,
+            error_message = '提交结果未知，等待人工对账',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'SUBMITTING' AND provider_started_at IS NOT NULL
+          AND datetime(locked_until) <= CURRENT_TIMESTAMP
+        """
+    )
     lease_token = str(uuid4())
     row = conn.execute(
         """
@@ -1100,6 +1166,66 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
     ).fetchone()
     conn.commit()
     return dict(row) if row is not None else None
+
+
+def renew_oral_task_lease(conn: BusinessConnection, *, lease: dict[str, Any]) -> bool:
+    """Extend only the exact still-current lease before another external step."""
+    if conn.is_postgres:
+        updated = conn.execute(
+            "UPDATE oral_tasks SET locked_until = "
+            "(CURRENT_TIMESTAMP + (%s * interval '1 second'))::text, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND lease_token = %s "
+            "AND status = %s AND locked_until::timestamptz > CURRENT_TIMESTAMP RETURNING id",
+            (
+                ORAL_TASK_LEASE_SECONDS,
+                str(lease["id"]),
+                str(lease["lease_token"]),
+                str(lease["status"]),
+            ),
+        ).fetchone()
+    else:
+        locked_until = (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
+        updated = conn.execute(
+            "UPDATE oral_tasks SET locked_until = %s, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = %s AND lease_token = %s AND status = %s "
+            "AND datetime(locked_until) > CURRENT_TIMESTAMP RETURNING id",
+            (
+                locked_until,
+                str(lease["id"]),
+                str(lease["lease_token"]),
+                str(lease["status"]),
+            ),
+        ).fetchone()
+    if not conn.is_postgres:
+        conn.commit()
+    return updated is not None
+
+
+def mark_oral_provider_submission_started(
+    conn: BusinessConnection, *, lease: dict[str, Any]
+) -> bool:
+    """Fence the boundary after which an interrupted submit needs reconciliation."""
+    if conn.is_postgres:
+        updated = conn.execute(
+            "UPDATE oral_tasks SET provider_started_at = CURRENT_TIMESTAMP, locked_until = "
+            "(CURRENT_TIMESTAMP + (%s * interval '1 second'))::text, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND lease_token = %s "
+            "AND status = 'SUBMITTING' AND locked_until::timestamptz > CURRENT_TIMESTAMP "
+            "RETURNING id",
+            (ORAL_TASK_LEASE_SECONDS, str(lease["id"]), str(lease["lease_token"])),
+        ).fetchone()
+    else:
+        locked_until = (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
+        updated = conn.execute(
+            "UPDATE oral_tasks SET provider_started_at = CURRENT_TIMESTAMP, locked_until = %s, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND lease_token = %s "
+            "AND status = 'SUBMITTING' AND datetime(locked_until) > CURRENT_TIMESTAMP "
+            "RETURNING id",
+            (locked_until, str(lease["id"]), str(lease["lease_token"])),
+        ).fetchone()
+    if not conn.is_postgres:
+        conn.commit()
+    return updated is not None
 
 
 @dataclass(frozen=True)
@@ -1176,15 +1302,38 @@ def prepare_oral_task_work(
     )
 
 
-def perform_oral_task_work(work: PreparedOralWork) -> OralOutcome:
+def _require_oral_lease_step(check: Callable[[], bool] | None) -> None:
+    if check is None:
+        return
+    try:
+        current = check()
+    except Exception as exc:  # noqa: BLE001 - a failed fence is a lost lease
+        raise OralTaskLeaseLost("口播任务租约续期失败") from exc
+    if not current:
+        raise OralTaskLeaseLost("口播任务租约已失效")
+
+
+def perform_oral_task_work(
+    work: PreparedOralWork,
+    *,
+    renew_lease: Callable[[], bool] | None = None,
+    mark_submission_started: Callable[[], bool] | None = None,
+) -> OralOutcome:
     lease = work.lease
+    provider_submission_started = False
     try:
         if str(lease["status"]) == "SUBMITTING":
             audio_target = None
             if work.audio_storage is not None and work.audio_key is not None:
+                _require_oral_lease_step(renew_lease)
                 audio_content = work.audio_storage.get_object(work.audio_key)
+                _require_oral_lease_step(renew_lease)
                 audio_target = work.vendor.create_upload_url("mp3")
+                _require_oral_lease_step(renew_lease)
                 work.vendor.upload_file(audio_target, audio_content)
+                _require_oral_lease_step(renew_lease)
+            _require_oral_lease_step(mark_submission_started)
+            provider_submission_started = True
             if lease["mode"] == "TTS":
                 vendor_task_id = work.vendor.create_video_by_tts(
                     voice=str(work.voice_vendor_id),
@@ -1202,7 +1351,9 @@ def perform_oral_task_work(work: PreparedOralWork) -> OralOutcome:
                     aigc_flag=True,
                 )
             return OralOutcome(status="RUNNING", vendor_task_id=vendor_task_id)
+        _require_oral_lease_step(renew_lease)
         snapshot = work.vendor.video_task(str(lease["vendor_task_id"]))
+        _require_oral_lease_step(renew_lease)
         if snapshot.status == "FAILED":
             return OralOutcome(
                 status="FAILED", error_message="数字人服务生成失败，请调整内容后重试"
@@ -1214,13 +1365,21 @@ def perform_oral_task_work(work: PreparedOralWork) -> OralOutcome:
         if work.result_storage is None:
             raise OralDomainError("成片存储暂不可用")
         content = work.vendor.download(snapshot.video_url)
+        _require_oral_lease_step(renew_lease)
         stored = work.result_storage.put_object(
             f"oral/results/{lease['id']}.mp4", content, content_type="video/mp4"
         )
+        _require_oral_lease_step(renew_lease)
         return OralOutcome(status="SUCCEEDED", stored=stored, duration_sec=snapshot.duration)
+    except OralTaskLeaseLost:
+        raise
     except HiflyError as exc:
         if str(lease["status"]) == "SUBMITTING":
-            status = "FAILED" if exc.business_rejection else "SUBMISSION_UNCERTAIN"
+            status = (
+                "SUBMISSION_UNCERTAIN"
+                if provider_submission_started and not exc.business_rejection
+                else "FAILED"
+            )
         else:
             status = "RUNNING"
         return OralOutcome(
@@ -1229,14 +1388,24 @@ def perform_oral_task_work(work: PreparedOralWork) -> OralOutcome:
             error_message=str(exc)[:500],
         )
     except OralDomainError as exc:
-        status = "SUBMISSION_UNCERTAIN" if str(lease["status"]) == "SUBMITTING" else "RUNNING"
+        status = (
+            "SUBMISSION_UNCERTAIN"
+            if str(lease["status"]) == "SUBMITTING" and provider_submission_started
+            else "FAILED"
+            if str(lease["status"]) == "SUBMITTING"
+            else "RUNNING"
+        )
         return OralOutcome(status=status, error_message=str(exc)[:500])
     except Exception as exc:  # noqa: BLE001 - storage failure remains retryable after submit
         logger.warning("oral external work failed: %s", type(exc).__name__)
         if str(lease["status"]) == "SUBMITTING":
             return OralOutcome(
-                status="SUBMISSION_UNCERTAIN",
-                error_message="口播提交结果未知，等待人工对账",
+                status="SUBMISSION_UNCERTAIN" if provider_submission_started else "FAILED",
+                error_message=(
+                    "口播提交结果未知，等待人工对账"
+                    if provider_submission_started
+                    else "口播提交前处理失败，请稍后重试"
+                ),
             )
         return OralOutcome(status="RUNNING", error_message="成片归档失败，等待自动重试")
 
@@ -1395,7 +1564,11 @@ def run_next_oral_task(
         return None
     work = prepare_oral_task_work(conn, lease=lease, vendor=vendor)
     conn.commit()
-    outcome = perform_oral_task_work(work)
+    outcome = perform_oral_task_work(
+        work,
+        renew_lease=lambda: renew_oral_task_lease(conn, lease=lease),
+        mark_submission_started=lambda: mark_oral_provider_submission_started(conn, lease=lease),
+    )
     finalize_oral_task_work(conn, work=work, outcome=outcome)
     conn.commit()
     return str(lease["id"])

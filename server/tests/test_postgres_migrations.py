@@ -175,7 +175,11 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
     from alembic import command
 
     from app.db_portable import BusinessConnection
-    from app.oral import acquire_oral_task
+    from app.oral import (
+        acquire_oral_task,
+        mark_oral_provider_submission_started,
+        renew_oral_task_lease,
+    )
 
     monkeypatch.delenv("VIDEO_REPLICA_DATABASE_URL", raising=False)
     db_name = "oral_fair_queue_claim_test"
@@ -241,6 +245,19 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
             assert second_lease is None
             first.commit()
             second.rollback()
+            first_business = BusinessConnection.postgres(first)
+            assert renew_oral_task_lease(first_business, lease=first_lease)
+            first.commit()
+            assert mark_oral_provider_submission_started(first_business, lease=first_lease)
+            first.commit()
+            first.execute(
+                "UPDATE oral_tasks SET lease_token = 'replacement-token' WHERE id = 'oral-1'"
+            )
+            first.commit()
+            assert not renew_oral_task_lease(first_business, lease=first_lease)
+            assert not mark_oral_provider_submission_started(first_business, lease=first_lease)
+            first.execute("UPDATE oral_tasks SET provider_started_at = NULL WHERE id = 'oral-1'")
+            first.commit()
         finally:
             first.close()
             second.close()
@@ -534,6 +551,192 @@ def _alembic_config(dsn: str):  # type: ignore[no-untyped-def]
     return config
 
 
+def test_pg_reconciliation_upgrade_and_lossy_downgrade_guard() -> None:
+    from alembic import command
+
+    db_name = "reconciliation_migration_test"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+    config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+    try:
+        command.upgrade(config, "062_viral_video_library")
+        with psycopg.connect(dsn) as conn:
+            before = conn.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE (table_name, column_name) IN "
+                "(('script_from_audio_tasks', 'provider_task_id'), "
+                "('oral_tasks', 'provider_started_at'))"
+            ).fetchall()
+            assert before == []
+
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            columns = set(
+                conn.execute(
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE (table_name, column_name) IN "
+                    "(('script_from_audio_tasks', 'provider_task_id'), "
+                    "('oral_tasks', 'provider_started_at'))"
+                ).fetchall()
+            )
+            assert columns == {
+                ("script_from_audio_tasks", "provider_task_id"),
+                ("oral_tasks", "provider_started_at"),
+            }
+            conn.execute(
+                "INSERT INTO users (id, username, display_name) VALUES ('u1', 'u1', 'User')"
+            )
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES ('p1', 'u1', 'Project')"
+            )
+            conn.execute(
+                "INSERT INTO script_from_audio_tasks "
+                "(id, project_id, source_asset_id, created_by_user_id, idempotency_key, "
+                "request_hash, request_json, provider_task_id) VALUES "
+                "('s1', 'p1', 'a1', 'u1', 'key', 'hash', '{}', 'provider-pg-1')"
+            )
+
+        with pytest.raises(RuntimeError, match="reconciliation data exists"):
+            command.downgrade(config, "062_viral_video_library")
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            assert (
+                conn.execute(
+                    "SELECT provider_task_id FROM script_from_audio_tasks WHERE id = 's1'"
+                ).fetchone()[0]
+                == "provider-pg-1"
+            )
+            conn.execute(
+                "UPDATE script_from_audio_tasks SET provider_task_id = NULL WHERE id = 's1'"
+            )
+        command.downgrade(config, "062_viral_video_library")
+        with psycopg.connect(dsn) as conn:
+            after = conn.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE (table_name, column_name) IN "
+                "(('script_from_audio_tasks', 'provider_task_id'), "
+                "('oral_tasks', 'provider_started_at'))"
+            ).fetchall()
+            assert after == []
+    finally:
+        _drop_database(db_name)
+
+
+def test_pg_sweeper_allows_one_late_provider_id_checkpoint() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from alembic import command
+
+    from app.db_portable import BusinessConnection
+    from app.script_from_audio import (
+        ProviderTaskCheckpointResult,
+        acquire_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+        record_script_from_audio_provider_task,
+    )
+
+    db_name = "asr_late_checkpoint_test"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+    config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+    try:
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn) as raw_conn:
+            raw_conn.execute(
+                "INSERT INTO users (id, username, display_name) VALUES ('u1', 'u1', 'User')"
+            )
+            raw_conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES ('p1', 'u1', 'Project')"
+            )
+            raw_conn.execute(
+                "INSERT INTO script_from_audio_tasks "
+                "(id, project_id, source_asset_id, created_by_user_id, idempotency_key, "
+                "request_hash, request_json) VALUES "
+                "('s1', 'p1', 'a1', 'u1', 'key', 'hash', '{}')"
+            )
+            raw_conn.commit()
+            conn = BusinessConnection.postgres(raw_conn)
+            with raw_conn.transaction():
+                lease = acquire_script_from_audio_task(conn, worker_id="slow-pg-worker")
+            assert lease is not None
+            with raw_conn.transaction():
+                mark_script_from_audio_submission_started(conn, lease=lease)
+            with raw_conn.transaction():
+                raw_conn.execute(
+                    "UPDATE script_from_audio_tasks SET locked_until = %s WHERE id = 's1'",
+                    ((datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),),
+                )
+            with raw_conn.transaction():
+                assert acquire_script_from_audio_task(conn, worker_id="pg-sweeper") is None
+
+            with raw_conn.transaction():
+                result = record_script_from_audio_provider_task(
+                    conn,
+                    lease=lease,
+                    provider_task_id="provider-pg-late",
+                )
+            assert result is ProviderTaskCheckpointResult.LATE_UNCERTAIN
+
+        with psycopg.connect(dsn) as verify_conn:
+            row = verify_conn.execute(
+                "SELECT status, attempt, provider_task_id "
+                "FROM script_from_audio_tasks WHERE id = 's1'"
+            ).fetchone()
+            assert row[0] == "SUBMISSION_UNCERTAIN"
+            assert row[2] == "provider-pg-late"
+
+        with psycopg.connect(dsn) as raw_conn:
+            conn = BusinessConnection.postgres(raw_conn)
+            with pytest.raises(Exception, match="租约已失效"):
+                with raw_conn.transaction():
+                    record_script_from_audio_provider_task(
+                        conn,
+                        lease=lease,
+                        provider_task_id="provider-pg-overwrite",
+                    )
+        with psycopg.connect(dsn) as verify_conn:
+            row = verify_conn.execute(
+                "SELECT provider_task_id FROM script_from_audio_tasks WHERE id = 's1'"
+            ).fetchone()
+            assert row[0] == "provider-pg-late"
+
+        with psycopg.connect(dsn) as raw_conn:
+            raw_conn.execute(
+                """
+                UPDATE script_from_audio_tasks
+                SET status = 'PENDING', provider_task_id = NULL, provider_started_at = NULL,
+                    completed_at = NULL, error_code = NULL, error_message_redacted = NULL
+                WHERE id = 's1'
+                """
+            )
+            raw_conn.commit()
+            conn = BusinessConnection.postgres(raw_conn)
+            with raw_conn.transaction():
+                new_lease = acquire_script_from_audio_task(conn, worker_id="new-pg-attempt")
+            assert new_lease is not None
+            assert new_lease.attempt == lease.attempt + 1
+            with raw_conn.transaction():
+                mark_script_from_audio_submission_started(conn, lease=new_lease)
+            with pytest.raises(Exception, match="租约已失效"):
+                with raw_conn.transaction():
+                    record_script_from_audio_provider_task(
+                        conn,
+                        lease=lease,
+                        provider_task_id="provider-old-pg-attempt",
+                    )
+        with psycopg.connect(dsn) as verify_conn:
+            row = verify_conn.execute(
+                "SELECT attempt, provider_task_id FROM script_from_audio_tasks WHERE id = 's1'"
+            ).fetchone()
+            assert row == (new_lease.attempt, None)
+    finally:
+        _drop_database(db_name)
+
+
 def test_pg_upgrade_from_published_040_head_applies_fair_queue() -> None:
     """M5 review P1-3: a database already stamped at the published 040 head
     (the pre-M5 chain, where 032 descends from 029) must APPLY the fair-queue
@@ -565,7 +768,7 @@ def test_pg_upgrade_from_published_040_head_applies_fair_queue() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "062_viral_video_library"
+            assert version == "063_script_from_audio_reconciliation"
             fair_queue_column = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.columns "
                 "WHERE table_name = 'runtime_settings' AND column_name = 'fair_queue_enabled'"
@@ -599,7 +802,9 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
 
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "062_viral_video_library", f"unexpected head revision: {version}"
+            assert version == "063_script_from_audio_reconciliation", (
+                f"unexpected head revision: {version}"
+            )
 
             tables = {
                 row[0]
@@ -716,7 +921,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "062_viral_video_library"
+            assert version == "063_script_from_audio_reconciliation"
     finally:
         _drop_database("t06_migrate_test")
 
@@ -838,7 +1043,7 @@ def test_pg_wallet_downgrade_blocked_when_ledger_has_settled_rounds() -> None:
         # The database must be left exactly at head (no partial rollback).
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "062_viral_video_library"
+        assert version == "063_script_from_audio_reconciliation"
     finally:
         _drop_database(db_name)
 
@@ -952,7 +1157,7 @@ def test_pg_free_grant_downgrade_preserves_ledger(
 
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "062_viral_video_library",
+                "063_script_from_audio_reconciliation",
             )
             for table in tables:
                 assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]
@@ -1229,7 +1434,7 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             command.downgrade(_alembic_config(sqlalchemy_dsn), "025_postgres_runtime_compatibility")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "062_viral_video_library"
+        assert version == "063_script_from_audio_reconciliation"
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
@@ -1331,7 +1536,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "062_viral_video_library"
+            assert version == "063_script_from_audio_reconciliation"
 
             indexes = {
                 row[0]
@@ -1512,7 +1717,7 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
         # indexes intact when the append-only evidence guard refuses rollback.
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "062_viral_video_library"
+            assert version == "063_script_from_audio_reconciliation"
             index_count = conn.execute(
                 "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
                 "AND indexname = 'idx_wallets_updated_at_user'"
@@ -1684,7 +1889,7 @@ def test_t46_scene_task_constraint_and_downgrade_guard() -> None:
 
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            assert version == "062_viral_video_library"
+            assert version == "063_script_from_audio_reconciliation"
             conn.execute("DELETE FROM character_sheet_tasks WHERE id = 'scene-task-t46'")
 
         command.downgrade(

@@ -48,8 +48,31 @@ _MAX_TITLE_CHARS = 20
 _MAX_TTS_TEXT_CHARS = 10_000
 _MAX_VENDOR_RESPONSE_BYTES = 2 * 1024 * 1024
 _MAX_ORAL_BINARY_BYTES = 512 * 1024 * 1024
+_TTS_SUBTITLE_FIELDS = frozenset(
+    {
+        "st_show",
+        "st_font_name",
+        "st_font_size",
+        "st_primary_color",
+        "st_outline_color",
+        "st_width",
+        "st_height",
+        "st_x",
+        "st_y",
+    }
+)
 
 logger = logging.getLogger(__name__)
+
+
+def validate_tts_subtitle(subtitle: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return only the subtitle fields documented by the provider contract."""
+    clean = dict(subtitle or {})
+    unknown_fields = set(clean) - _TTS_SUBTITLE_FIELDS
+    if unknown_fields:
+        fields = ", ".join(sorted(unknown_fields))
+        raise ValueError(f"unsupported subtitle fields: {fields}")
+    return clean
 
 
 class HiflyError(RuntimeError):
@@ -450,7 +473,7 @@ class HiflyClient:
             "aigc_flag": bool(aigc_flag),
         }
         if subtitle:
-            payload.update(dict(subtitle))
+            payload.update(validate_tts_subtitle(subtitle))
         data = self._request("POST", VIDEO_CREATE_BY_TTS_PATH, payload=payload)
         return self._extract_task_id(data)
 

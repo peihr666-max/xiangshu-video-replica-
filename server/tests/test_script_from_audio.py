@@ -21,12 +21,13 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.asr import AsrProviderError, TranscriptResult
+from app.asr import AsrProviderError, FakeAsrProvider, TranscriptResult
 from app.auth import get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.generation_worker import run_worker_once
 from app.main import app
+from app.script_from_audio import ProviderTaskCheckpointResult
 from app.storage import FakeStorageAdapter
 
 
@@ -133,6 +134,76 @@ def stub_media(monkeypatch: pytest.MonkeyPatch) -> StubMediaTools:
     monkeypatch.setattr(domain, "probe_duration_seconds", stub.probe_duration_seconds)
     monkeypatch.setattr(domain, "resolve_media_binary", lambda tool: f"/stub/{tool}")
     return stub
+
+
+def test_download_intent_failure_removes_uploaded_temporary_audio(
+    stub_media: StubMediaTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.script_from_audio import PreparedScriptFromAudio, prepare_script_from_audio_submission
+
+    storage = FakeStorageAdapter(provider="fake", bucket="private-bucket")
+    source_key = "projects/project-1/uploads/asset-1/source.mp4"
+    storage.put_object(source_key, b"video", content_type="video/mp4")
+    original_error = RuntimeError("signing unavailable")
+    monkeypatch.setattr(
+        storage,
+        "create_download_intent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(original_error),
+    )
+    work = PreparedScriptFromAudio(
+        task_id="task-1",
+        project_id="project-1",
+        asset_id="asset-1",
+        object_key=source_key,
+        storage=storage,
+        asr=FakeAsrProvider(),
+        ffmpeg_path="/stub/ffmpeg",
+        ffprobe_path="/stub/ffprobe",
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        prepare_script_from_audio_submission(work)
+
+    assert caught.value is original_error
+    assert not any(key.startswith("tmp/asr/") for key in storage._objects)
+
+
+def test_cleanup_failure_does_not_replace_download_intent_error(
+    stub_media: StubMediaTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.script_from_audio import PreparedScriptFromAudio, prepare_script_from_audio_submission
+
+    storage = FakeStorageAdapter(provider="fake", bucket="private-bucket")
+    source_key = "projects/project-1/uploads/asset-1/source.mp4"
+    storage.put_object(source_key, b"video", content_type="video/mp4")
+    original_error = RuntimeError("signing unavailable")
+    monkeypatch.setattr(
+        storage,
+        "create_download_intent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(original_error),
+    )
+    monkeypatch.setattr(
+        storage,
+        "delete_object",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cleanup unavailable")),
+    )
+    work = PreparedScriptFromAudio(
+        task_id="task-1",
+        project_id="project-1",
+        asset_id="asset-1",
+        object_key=source_key,
+        storage=storage,
+        asr=FakeAsrProvider(),
+        ffmpeg_path="/stub/ffmpeg",
+        ffprobe_path="/stub/ffprobe",
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        prepare_script_from_audio_submission(work)
+
+    assert caught.value is original_error
 
 
 def test_enqueue_returns_202_and_replays_idempotently(client: TestClient) -> None:
@@ -246,13 +317,15 @@ def test_latest_endpoint_returns_newest_task(client: TestClient) -> None:
     assert latest.json()["status"] in ("PENDING", "RUNNING", "SUCCEEDED")
 
 
-def test_worker_failures_delete_temp_audio_and_surface_error(
+def test_ambiguous_provider_failure_preserves_reconciliation_state(
     client: TestClient, db_path: Path, stub_media: StubMediaTools, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import app.generation_worker as worker_module
     import app.script_from_audio as domain
 
-    def failing_transcribe(file_url, *, duration_sec=None):
+    def failing_transcribe(file_url, *, duration_sec=None, on_task_created=None):
+        assert on_task_created is not None
+        on_task_created("provider-before-poll-failure")
         raise AsrProviderError("语音转写服务返回错误（HTTP 500）")
 
     created = enqueue(client)
@@ -283,10 +356,93 @@ def test_worker_failures_delete_temp_audio_and_surface_error(
     task = client.get(
         f"/api/script-from-audio-tasks/{task_id}", headers=auth_headers("employee_1")
     ).json()
-    assert task["status"] == "FAILED"
+    assert task["status"] == "SUBMISSION_UNCERTAIN"
+    assert task["retryable"] is False
     assert "语音转写" in (task["error_message"] or "")
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+    assert row["provider_task_id"] == "provider-before-poll-failure"
     leftovers = [key for key in storage._objects if key.startswith("tmp/asr/")]
     assert leftovers == []
+
+
+def test_definite_provider_rejection_fails_without_allowing_ambiguous_replay(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    from app.script_from_audio import (
+        acquire_script_from_audio_task,
+        fail_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+    )
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = acquire_script_from_audio_task(conn, worker_id="audio-definite")
+        assert lease is not None
+        mark_script_from_audio_submission_started(conn, lease=lease)
+        assert fail_script_from_audio_task(
+            conn,
+            lease=lease,
+            cause=AsrProviderError(
+                "语音转写任务被供应商拒绝",
+                submission_uncertain=False,
+                provider_task_id="provider-rejected-1",
+            ),
+            submission_started=True,
+        )
+        row = conn.execute(
+            "SELECT status, retryable, provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+
+    assert row["status"] == "FAILED"
+    assert row["retryable"] == 0
+    assert row["provider_task_id"] == "provider-rejected-1"
+
+
+def test_ambiguous_submission_blocks_duplicate_project_charge(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    from app.script_from_audio import (
+        acquire_script_from_audio_task,
+        fail_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+    )
+
+    task_id = enqueue(client, idempotency_key="uncertain-key").json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = acquire_script_from_audio_task(conn, worker_id="audio-uncertain")
+        assert lease is not None
+        mark_script_from_audio_submission_started(conn, lease=lease)
+        assert fail_script_from_audio_task(
+            conn,
+            lease=lease,
+            cause=AsrProviderError(
+                "轮询传输超时",
+                provider_task_id="provider-uncertain-1",
+            ),
+            submission_started=True,
+        )
+
+    replay = enqueue(client, idempotency_key="uncertain-key")
+    assert replay.status_code == 202
+    assert replay.json()["id"] == task_id
+    duplicate = enqueue(client, source_asset_id="asset_video_2")
+    assert duplicate.status_code == 409
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT status, retryable, provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+    assert row["status"] == "SUBMISSION_UNCERTAIN"
+    assert row["retryable"] == 0
+    assert row["provider_task_id"] == "provider-uncertain-1"
 
 
 def test_missing_ffmpeg_fails_closed(
@@ -423,10 +579,17 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
         steps.append("local")
         return object()
 
-    def perform_provider(_work):
+    def perform_provider(_work, *, on_task_created):
         assert transaction_depth == 0
+        on_task_created("provider-pg-1")
         steps.append("provider")
         return TranscriptResult(text="PG transcript", duration_sec=None, language=None)
+
+    def record(*_args, **kwargs):
+        assert transaction_depth == 1
+        assert kwargs["provider_task_id"] == "provider-pg-1"
+        steps.append("persist")
+        return True
 
     def complete(*_args, **_kwargs):
         assert transaction_depth == 1
@@ -437,6 +600,7 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
     monkeypatch.setattr(worker, "prepare_script_from_audio_submission", prepare_submission)
     monkeypatch.setattr(worker, "mark_script_from_audio_submission_started", mark)
     monkeypatch.setattr(worker, "perform_script_from_audio_provider_call", perform_provider)
+    monkeypatch.setattr(worker, "record_script_from_audio_provider_task", record)
     monkeypatch.setattr(worker, "complete_script_from_audio_task", complete)
 
     processed = worker.run_pg_worker_once(
@@ -445,7 +609,165 @@ def test_pg_worker_consumes_script_from_audio_without_db_during_external_work(
         max_tasks=1,
     )
     assert processed == 1
-    assert steps == ["prepare", "local", "mark", "provider", "complete"]
+    assert steps == ["prepare", "local", "mark", "persist", "provider", "complete"]
+
+
+def test_provider_task_id_survives_worker_crash_and_lease_expiry(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    from app.script_from_audio import (
+        acquire_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+        record_script_from_audio_provider_task,
+    )
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = acquire_script_from_audio_task(conn, worker_id="crashing-worker")
+        assert lease is not None
+        mark_script_from_audio_submission_started(conn, lease=lease)
+        record_script_from_audio_provider_task(
+            conn,
+            lease=lease,
+            provider_task_id="provider-survives-crash",
+        )
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET locked_until = %s WHERE id = %s",
+            ((datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"), task_id),
+        )
+        conn.commit()
+
+        assert acquire_script_from_audio_task(conn, worker_id="replacement-worker") is None
+        row = conn.execute(
+            "SELECT status, provider_task_id, lease_token "
+            "FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+
+    assert row["status"] == "SUBMISSION_UNCERTAIN"
+    assert row["provider_task_id"] == "provider-survives-crash"
+    assert row["lease_token"] is None
+
+
+def test_sweeper_then_observer_backfills_id_once_but_old_attempt_cannot_overwrite(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    from app.script_from_audio import (
+        acquire_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+        record_script_from_audio_provider_task,
+    )
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        old_lease = acquire_script_from_audio_task(conn, worker_id="slow-worker")
+        assert old_lease is not None
+        mark_script_from_audio_submission_started(conn, lease=old_lease)
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET locked_until = %s WHERE id = %s",
+            ((datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"), task_id),
+        )
+        conn.commit()
+        assert acquire_script_from_audio_task(conn, worker_id="sweeper") is None
+
+        result = record_script_from_audio_provider_task(
+            conn,
+            lease=old_lease,
+            provider_task_id="provider-after-sweep",
+        )
+        assert result is ProviderTaskCheckpointResult.LATE_UNCERTAIN
+        row = conn.execute(
+            "SELECT status, attempt, provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+        assert row["status"] == "SUBMISSION_UNCERTAIN"
+        assert row["provider_task_id"] == "provider-after-sweep"
+
+        with pytest.raises(HTTPException):
+            record_script_from_audio_provider_task(
+                conn,
+                lease=old_lease,
+                provider_task_id="provider-overwrite",
+            )
+        assert (
+            conn.execute(
+                "SELECT provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+                (task_id,),
+            ).fetchone()["provider_task_id"]
+            == "provider-after-sweep"
+        )
+
+        conn.execute(
+            """
+            UPDATE script_from_audio_tasks
+            SET status = 'PENDING', provider_task_id = NULL, provider_started_at = NULL,
+                completed_at = NULL, error_code = NULL, error_message_redacted = NULL
+            WHERE id = %s
+            """,
+            (task_id,),
+        )
+        conn.commit()
+        new_lease = acquire_script_from_audio_task(conn, worker_id="new-attempt")
+        assert new_lease is not None
+        assert new_lease.attempt == old_lease.attempt + 1
+        mark_script_from_audio_submission_started(conn, lease=new_lease)
+
+        with pytest.raises(HTTPException):
+            record_script_from_audio_provider_task(
+                conn,
+                lease=old_lease,
+                provider_task_id="provider-old-attempt",
+            )
+        assert (
+            conn.execute(
+                "SELECT provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+                (task_id,),
+            ).fetchone()["provider_task_id"]
+            is None
+        )
+
+
+def test_stale_lease_cannot_overwrite_persisted_provider_task_id(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    from app.script_from_audio import (
+        acquire_script_from_audio_task,
+        mark_script_from_audio_submission_started,
+        record_script_from_audio_provider_task,
+    )
+
+    task_id = enqueue(client).json()["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = acquire_script_from_audio_task(conn, worker_id="original-worker")
+        assert lease is not None
+        mark_script_from_audio_submission_started(conn, lease=lease)
+        record_script_from_audio_provider_task(
+            conn,
+            lease=lease,
+            provider_task_id="provider-original",
+        )
+        conn.execute(
+            "UPDATE script_from_audio_tasks SET lease_token = %s WHERE id = %s",
+            ("replacement-token", task_id),
+        )
+        conn.commit()
+
+        with pytest.raises(HTTPException) as error:
+            record_script_from_audio_provider_task(
+                conn,
+                lease=lease,
+                provider_task_id="provider-stale-overwrite",
+            )
+        row = conn.execute(
+            "SELECT provider_task_id FROM script_from_audio_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+
+    assert error.value.status_code == 409
+    assert row["provider_task_id"] == "provider-original"
 
 
 def test_replacement_lease_token_blocks_all_old_worker_lifecycle_writes(
@@ -489,12 +811,15 @@ def test_replacement_lease_token_blocks_all_old_worker_lifecycle_writes(
         assert not fail_script_from_audio_task(
             conn,
             lease=old_lease,
-            cause=RuntimeError("stale failure"),
+            cause=AsrProviderError(
+                "stale ambiguous failure",
+                provider_task_id="stale-provider-task",
+            ),
             submission_started=True,
         )
 
         row = conn.execute(
-            "SELECT status, attempt, lease_token, result_json, error_code "
+            "SELECT status, attempt, lease_token, result_json, error_code, provider_task_id "
             "FROM script_from_audio_tasks WHERE id = %s",
             (task_id,),
         ).fetchone()
@@ -503,3 +828,4 @@ def test_replacement_lease_token_blocks_all_old_worker_lifecycle_writes(
         assert row["lease_token"] == replacement.lease_token
         assert row["result_json"] is None
         assert row["error_code"] is None
+        assert row["provider_task_id"] is None

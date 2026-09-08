@@ -299,6 +299,7 @@ class OralTaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identity_id: str = Field(min_length=1, max_length=128)
+    project_id: str | None = Field(default=None, min_length=1, max_length=128)
     avatar_id: str = Field(min_length=1, max_length=128)
     voice_id: str | None = Field(default=None, min_length=1, max_length=128)
     mode: Literal["TTS", "AUDIO"]
@@ -332,6 +333,7 @@ def create_oral_generation_task(
             result = create_oral_task(
                 conn,
                 actor=actor,
+                project_id=request.project_id,
                 identity_id=request.identity_id,
                 avatar_id=request.avatar_id,
                 voice_id=request.voice_id,

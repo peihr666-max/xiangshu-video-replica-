@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "062_viral_video_library"
+    assert version == "063_script_from_audio_reconciliation"
     assert {
         "characters",
         "project_main_characters",

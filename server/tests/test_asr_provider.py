@@ -35,7 +35,7 @@ def make_config(**overrides: object) -> AsrConfiguration:
 
 
 class StubTransport:
-    def __init__(self, responses: list[tuple[int, bytes]]) -> None:
+    def __init__(self, responses: list[tuple[int, bytes] | Exception]) -> None:
         self.responses = list(responses)
         self.calls: list[tuple[str, str]] = []
 
@@ -51,7 +51,10 @@ class StubTransport:
         self.calls.append((method, url))
         if headers:
             assert headers.get("Authorization") == "Bearer test-key"
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def test_flash_sync_mode_for_short_audio() -> None:
@@ -119,6 +122,71 @@ def test_async_mode_submits_polls_and_downloads() -> None:
     assert transport.calls[1][1].endswith("/api/v1/tasks/task-1")
 
 
+def test_async_task_id_is_observed_before_polling() -> None:
+    events: list[str] = []
+
+    class OrderedTransport(StubTransport):
+        def __call__(self, *args, **kwargs):
+            if args[0] == "GET":
+                events.append("poll")
+            return super().__call__(*args, **kwargs)
+
+    transport = OrderedTransport(
+        [
+            (200, json.dumps({"output": {"task_id": "task-observed"}}).encode()),
+            (
+                200,
+                json.dumps(
+                    {
+                        "output": {
+                            "task_status": "SUCCEEDED",
+                            "results": [
+                                {
+                                    "subtask_status": "SUCCEEDED",
+                                    "transcription_url": "https://result.example/observed.json",
+                                }
+                            ],
+                        }
+                    }
+                ).encode(),
+            ),
+            (200, b'{"transcripts":[{"text":"ok"}]}'),
+        ]
+    )
+    provider = DashScopeFunAsr(make_config(), transport=transport)
+
+    provider.transcribe(
+        "https://media.example/long.mp4",
+        duration_sec=400.0,
+        on_task_created=lambda task_id: events.append(f"persist:{task_id}"),
+    )
+
+    assert events[:2] == ["persist:task-observed", "poll"]
+
+
+def test_async_observer_failure_keeps_task_id_and_never_polls() -> None:
+    transport = StubTransport(
+        [(200, json.dumps({"output": {"task_id": "task-db-failure"}}).encode())]
+    )
+    provider = DashScopeFunAsr(make_config(), transport=transport)
+
+    def fail_to_persist(_task_id: str) -> None:
+        raise RuntimeError("database unavailable")
+
+    with pytest.raises(AsrProviderError, match="任务号持久化失败") as caught:
+        provider.transcribe(
+            "https://media.example/long.mp4",
+            duration_sec=400.0,
+            on_task_created=fail_to_persist,
+        )
+
+    assert caught.value.submission_uncertain is True
+    assert caught.value.provider_task_id == "task-db-failure"
+    assert transport.calls == [
+        ("POST", "https://asr.example/api/v1/services/audio/asr/transcription")
+    ]
+
+
 def test_async_failure_raises_readable_error() -> None:
     transport = StubTransport(
         [
@@ -137,8 +205,10 @@ def test_async_failure_raises_readable_error() -> None:
         ]
     )
     provider = DashScopeFunAsr(make_config(), transport=transport)
-    with pytest.raises(AsrProviderError, match="音频无法解析"):
+    with pytest.raises(AsrProviderError, match="音频无法解析") as caught:
         provider.transcribe("https://media.example/bad.mp4", duration_sec=400.0)
+    assert caught.value.submission_uncertain is False
+    assert caught.value.provider_task_id == "task-2"
 
 
 def test_async_poll_timeout_raises() -> None:
@@ -146,8 +216,67 @@ def test_async_poll_timeout_raises() -> None:
         (200, json.dumps({"output": {"task_id": "task-3"}}).encode())
     ] + [(200, json.dumps({"output": {"task_status": "RUNNING"}}).encode())] * 6
     provider = DashScopeFunAsr(make_config(), transport=StubTransport(responses))
-    with pytest.raises(AsrProviderError, match="轮询超时"):
+    with pytest.raises(AsrProviderError, match="轮询超时") as caught:
         provider.transcribe("https://media.example/slow.mp4", duration_sec=None)
+    assert caught.value.submission_uncertain is True
+    assert caught.value.provider_task_id == "task-3"
+
+
+def test_async_submit_response_loss_is_uncertain_without_provider_id() -> None:
+    provider = DashScopeFunAsr(
+        make_config(),
+        transport=StubTransport([AsrProviderError("语音转写服务连接失败：TimeoutError")]),
+    )
+
+    with pytest.raises(AsrProviderError, match="连接失败") as caught:
+        provider.transcribe("https://media.example/long.mp4", duration_sec=400.0)
+
+    assert caught.value.submission_uncertain is True
+    assert caught.value.provider_task_id is None
+
+
+def test_async_submit_success_without_task_id_is_uncertain() -> None:
+    provider = DashScopeFunAsr(
+        make_config(),
+        transport=StubTransport([(200, b'{"output":{}}')]),
+    )
+
+    with pytest.raises(AsrProviderError, match="未返回任务号") as caught:
+        provider.transcribe("https://media.example/long.mp4", duration_sec=400.0)
+
+    assert caught.value.submission_uncertain is True
+    assert caught.value.provider_task_id is None
+
+
+def test_async_poll_transport_error_keeps_provider_task_id_for_reconciliation() -> None:
+    provider = DashScopeFunAsr(
+        make_config(),
+        transport=StubTransport(
+            [
+                (200, json.dumps({"output": {"task_id": "task-poll"}}).encode()),
+                AsrProviderError("语音转写服务连接失败：TimeoutError"),
+            ]
+        ),
+    )
+
+    with pytest.raises(AsrProviderError, match="连接失败") as caught:
+        provider.transcribe("https://media.example/long.mp4", duration_sec=400.0)
+
+    assert caught.value.submission_uncertain is True
+    assert caught.value.provider_task_id == "task-poll"
+
+
+def test_async_submit_rejection_is_definite() -> None:
+    provider = DashScopeFunAsr(
+        make_config(),
+        transport=StubTransport([(400, b'{"code":"InvalidParameter"}')]),
+    )
+
+    with pytest.raises(AsrProviderError, match="HTTP 400") as caught:
+        provider.transcribe("https://media.example/long.mp4", duration_sec=400.0)
+
+    assert caught.value.submission_uncertain is False
+    assert caught.value.provider_task_id is None
 
 
 def test_invalid_credentials_surface_config_error() -> None:

@@ -84,6 +84,7 @@ from app.media_routes import get_media_storage
 from app.oral import (
     CloneOutcome,
     OralOutcome,
+    OralTaskLeaseLost,
     PreparedCloneWork,
     PreparedOralWork,
     acquire_oral_clone,
@@ -92,16 +93,19 @@ from app.oral import (
     fail_claimed_oral_task,
     finalize_oral_clone_work,
     finalize_oral_task_work,
+    mark_oral_provider_submission_started,
     perform_oral_clone_work,
     perform_oral_task_work,
     prepare_oral_clone_work,
     prepare_oral_task_work,
     preserve_oral_clone_outcome_for_reconciliation,
     preserve_oral_task_outcome_for_reconciliation,
+    renew_oral_task_lease,
     run_claimed_oral_clone,
     run_next_oral_task,
 )
 from app.script_from_audio import (
+    ProviderTaskCheckpointResult,
     acquire_script_from_audio_task,
     cleanup_script_from_audio_submission,
     complete_script_from_audio_task,
@@ -110,6 +114,7 @@ from app.script_from_audio import (
     perform_script_from_audio_provider_call,
     prepare_script_from_audio_submission,
     prepare_script_from_audio_task,
+    record_script_from_audio_provider_task,
 )
 from app.script_rewrite import (
     acquire_script_rewrite_task,
@@ -420,7 +425,20 @@ def run_worker_once(
                     lease=script_from_audio_lease,
                 )
                 audio_submission_started = True
-                audio_result = perform_script_from_audio_provider_call(audio_submission)
+
+                def persist_sqlite_asr_task(provider_task_id: str) -> None:
+                    result = record_script_from_audio_provider_task(
+                        conn,
+                        lease=script_from_audio_lease,
+                        provider_task_id=provider_task_id,
+                    )
+                    if result is ProviderTaskCheckpointResult.LATE_UNCERTAIN:
+                        raise HTTPException(status_code=409, detail="SCRIPT_FROM_AUDIO_LEASE_LOST")
+
+                audio_result = perform_script_from_audio_provider_call(
+                    audio_submission,
+                    on_task_created=persist_sqlite_asr_task,
+                )
                 complete_script_from_audio_task(
                     conn,
                     lease=script_from_audio_lease,
@@ -1074,7 +1092,21 @@ def run_pg_worker_once(
                         lease=script_from_audio_lease,
                     )
                 audio_submission_started = True
-                audio_result = perform_script_from_audio_provider_call(audio_submission)
+
+                def persist_asr_task(provider_task_id: str) -> None:
+                    with pg_transaction() as raw_conn:
+                        result = record_script_from_audio_provider_task(
+                            BusinessConnection.postgres(raw_conn),
+                            lease=script_from_audio_lease,
+                            provider_task_id=provider_task_id,
+                        )
+                    if result is ProviderTaskCheckpointResult.LATE_UNCERTAIN:
+                        raise HTTPException(status_code=409, detail="SCRIPT_FROM_AUDIO_LEASE_LOST")
+
+                audio_result = perform_script_from_audio_provider_call(
+                    audio_submission,
+                    on_task_created=persist_asr_task,
+                )
                 with pg_transaction() as raw_conn:
                     complete_script_from_audio_task(
                         BusinessConnection.postgres(raw_conn),
@@ -1162,8 +1194,29 @@ def run_pg_worker_once(
                             )
             else:
                 oral_outcome = None
+
+                def renew_oral_lease() -> bool:
+                    with pg_transaction() as raw_conn:
+                        return renew_oral_task_lease(
+                            BusinessConnection.postgres(raw_conn), lease=oral_lease
+                        )
+
+                def mark_oral_submit_started() -> bool:
+                    with pg_transaction() as raw_conn:
+                        return mark_oral_provider_submission_started(
+                            BusinessConnection.postgres(raw_conn), lease=oral_lease
+                        )
+
                 try:
-                    oral_outcome = perform_oral_task_work(oral_work)
+                    oral_outcome = perform_oral_task_work(
+                        oral_work,
+                        renew_lease=renew_oral_lease,
+                        mark_submission_started=mark_oral_submit_started,
+                    )
+                except OralTaskLeaseLost:
+                    logger.warning(
+                        "oral task lease lost between external steps; stale worker stopped"
+                    )
                 except Exception as exc:
                     _preserve_pg_oral_task(lease=oral_lease, outcome=None, cause=exc)
                 else:

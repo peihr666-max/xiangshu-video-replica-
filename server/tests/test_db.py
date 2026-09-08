@@ -91,12 +91,16 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
         alembic_versions = [
             row[0] for row in conn.execute("SELECT version_num FROM alembic_version").fetchall()
         ]
+        script_from_audio_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(script_from_audio_tasks)").fetchall()
+        }
 
     assert db_path.exists()
     assert journal_mode == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5000
-    assert alembic_versions == ["062_viral_video_library"]
+    assert alembic_versions == ["063_script_from_audio_reconciliation"]
+    assert "provider_task_id" in script_from_audio_columns
     assert "schema_migrations" not in tables
     assert {
         "users",
@@ -121,6 +125,85 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
         "source_frame_tasks",
         "script_rewrite_tasks",
     }.issubset(tables)
+
+
+@pytest.mark.parametrize("active_field", ["script", "oral"])
+def test_reconciliation_migration_refuses_lossy_downgrade_atomically(
+    tmp_path: Path,
+    active_field: str,
+) -> None:
+    db_path = tmp_path / f"reconciliation-{active_field}.db"
+    config = alembic_config(db_path)
+    command.upgrade(config, "062_viral_video_library")
+    command.upgrade(config, "063_script_from_audio_reconciliation")
+
+    with sqlite3.connect(db_path) as conn:
+        if active_field == "script":
+            conn.execute(
+                """
+                INSERT INTO script_from_audio_tasks (
+                    id, project_id, source_asset_id, created_by_user_id,
+                    idempotency_key, request_hash, request_json, provider_task_id
+                ) VALUES ('script-1', 'project-1', 'asset-1', 'user-1', 'key', 'hash', '{}', ?)
+                """,
+                ("provider-script-1",),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO oral_tasks (
+                    id, owner_user_id, project_id, identity_id, avatar_id, mode,
+                    title, estimated_cost_fen, idempotency_key, provider_started_at
+                ) VALUES (
+                    'oral-1', 'user-1', 'project-1', 'identity-1', 'avatar-1',
+                    'TTS', 'oral', 1, 'key', ?
+                )
+                """,
+                ("2026-09-08 00:00:00",),
+            )
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="reconciliation data exists"):
+        command.downgrade(config, "062_viral_video_library")
+
+    with sqlite3.connect(db_path) as conn:
+        script_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(script_from_audio_tasks)")
+        }
+        oral_columns = {row[1] for row in conn.execute("PRAGMA table_info(oral_tasks)")}
+        assert "provider_task_id" in script_columns
+        assert "provider_started_at" in oral_columns
+        if active_field == "script":
+            assert (
+                conn.execute(
+                    "SELECT provider_task_id FROM script_from_audio_tasks WHERE id = 'script-1'"
+                ).fetchone()[0]
+                == "provider-script-1"
+            )
+        else:
+            assert (
+                conn.execute(
+                    "SELECT provider_started_at FROM oral_tasks WHERE id = 'oral-1'"
+                ).fetchone()[0]
+                == "2026-09-08 00:00:00"
+            )
+
+
+def test_reconciliation_migration_downgrades_when_no_live_data(tmp_path: Path) -> None:
+    db_path = tmp_path / "reconciliation-empty.db"
+    config = alembic_config(db_path)
+    command.upgrade(config, "062_viral_video_library")
+    command.upgrade(config, "063_script_from_audio_reconciliation")
+
+    command.downgrade(config, "062_viral_video_library")
+
+    with sqlite3.connect(db_path) as conn:
+        script_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(script_from_audio_tasks)")
+        }
+        oral_columns = {row[1] for row in conn.execute("PRAGMA table_info(oral_tasks)")}
+    assert "provider_task_id" not in script_columns
+    assert "provider_started_at" not in oral_columns
 
 
 def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
@@ -165,7 +248,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             for row in conn.execute("PRAGMA index_list(generation_task_operations)").fetchall()
         }
 
-    assert version == "062_viral_video_library"
+    assert version == "063_script_from_audio_reconciliation"
     assert {
         "locked_by",
         "locked_until",
@@ -277,7 +360,7 @@ def test_retry_lineage_revision_is_reversible(tmp_path: Path) -> None:
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "062_viral_video_library"
+            "063_script_from_audio_reconciliation"
         )
 
 
@@ -333,7 +416,7 @@ def test_remove_oss_migration_purges_settings_and_selects_safe_fallback(
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE runtime_settings SET active_storage_provider = 'oss' WHERE id = 1")
 
-    assert version == "062_viral_video_library"
+    assert version == "063_script_from_audio_reconciliation"
     assert "oss" not in providers
     assert active_provider == expected_provider
 
@@ -437,7 +520,7 @@ def test_runtime_bootstrap_upgrades_an_existing_database_before_startup(
     assert result.returncode == 0, result.stderr
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "062_viral_video_library"
+            "063_script_from_audio_reconciliation"
         )
         assert (
             conn.execute(

@@ -842,6 +842,7 @@ export async function getOralPrice(): Promise<OralPrice> {
 }
 
 export type OralTaskRequest = {
+  projectId?: string;
   identityId: string;
   avatarId: string;
   voiceId?: string;
@@ -871,6 +872,7 @@ export async function createOralTask(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        project_id: input.projectId ?? null,
         identity_id: input.identityId,
         avatar_id: input.avatarId,
         voice_id: input.voiceId ?? null,

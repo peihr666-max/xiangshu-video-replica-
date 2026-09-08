@@ -148,6 +148,39 @@ def test_create_video_by_tts_carries_subtitle_params_only_when_enabled() -> None
     assert payload["st_primary_color"] == "0xFFFFFF"
 
 
+@pytest.mark.parametrize("field", ["avatar", "voice", "text", "title", "aigc_flag"])
+def test_create_video_by_tts_rejects_subtitle_core_field_collisions(field: str) -> None:
+    client, transport = client_with(b"{}")
+
+    with pytest.raises(ValueError, match="unsupported subtitle fields"):
+        client.create_video_by_tts(
+            voice="voice-1",
+            text="文案",
+            avatar="avatar-1",
+            title="字幕口播",
+            aigc_flag=True,
+            subtitle={field: "attacker-controlled"},
+        )
+
+    assert transport.requests == []
+
+
+def test_create_video_by_tts_rejects_undocumented_st_field() -> None:
+    client, transport = client_with(b"{}")
+
+    with pytest.raises(ValueError, match="st_unreviewed"):
+        client.create_video_by_tts(
+            voice="voice-1",
+            text="文案",
+            avatar="avatar-1",
+            title="字幕口播",
+            aigc_flag=True,
+            subtitle={"st_unreviewed": True},
+        )
+
+    assert transport.requests == []
+
+
 def test_vendor_business_error_maps_to_read_message_and_code() -> None:
     client, _ = client_with(b'{"code": 1002, "msg": "credit not enough", "data": {}}')
 
