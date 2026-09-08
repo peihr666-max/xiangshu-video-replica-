@@ -8,18 +8,22 @@ archive next to the corresponding `ffmpeg.exe` and `ffprobe.exe` binaries.
 - Source modifications: none
 - License: GNU Lesser General Public License version 3 or later; see
   `COPYING.LGPLv3` in this directory.
-- Reproducible build definition: `scripts/ffmpeg-minimal/Dockerfile`
+- Shared feature configuration: `scripts/ffmpeg-minimal/configure.sh`
+- Reproducible local build: `scripts/ffmpeg-minimal/Dockerfile`
+- Windows CI build: `scripts/ffmpeg-minimal/build-windows-msys2.sh`
 - Compiler package manifest: generated as `BUILD-PACKAGES.txt` and included in
   the same installer directory.
 
-The exact configure invocation is:
+Both builds use the following shared configure invocation. The Docker build
+sets `FFMPEG_CROSS_PREFIX=x86_64-w64-mingw32-`, which adds
+`--enable-cross-compile --cross-prefix=x86_64-w64-mingw32-`; the native MINGW64
+CI build leaves that variable unset.
 
 ```text
 ./configure \
   --target-os=mingw32 \
   --arch=x86_64 \
-  --enable-cross-compile \
-  --cross-prefix=x86_64-w64-mingw32- \
+  [--enable-cross-compile --cross-prefix=x86_64-w64-mingw32-] \
   --enable-static \
   --disable-shared \
   --enable-w32threads \

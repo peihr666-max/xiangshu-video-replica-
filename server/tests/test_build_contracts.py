@@ -116,15 +116,15 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert workflow.count("branches: [main]") == 2
     assert "pull_request_target:" not in workflow
     assert "permissions:\n  contents: read" in workflow
-    assert workflow.count("persist-credentials: false") == 4
+    assert workflow.count("persist-credentials: false") == 3
     assert "secret-scan:" in workflow
     assert "name: Secret scan" in workflow
     assert "quality-linux:" in workflow
     assert "name: Linux quality gate" in workflow
     assert "windows-nsis:" in workflow
     assert "name: Windows Tauri and NSIS" in workflow
-    assert workflow.count(f"if: {fork_pr_guard}") == 4
-    assert workflow.count("runs-on: ubuntu-24.04") == 3
+    assert workflow.count(f"if: {fork_pr_guard}") == 3
+    assert workflow.count("runs-on: ubuntu-24.04") == 2
     assert workflow.count("runs-on: windows-2025") == 1
     assert "npm run check:security" in workflow
     assert "run: npm run check\n" in workflow
@@ -157,14 +157,14 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert "7-Zip\\7z.exe" in workflow
     assert "start-backend.bat" in workflow
     assert "start-backend.sh" in workflow
-    assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 4
+    assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 3
     assert workflow.count("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020") == 3
     assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
-    assert "ffmpeg-windows:" in workflow
-    assert "name: Prepare Windows ffmpeg" in workflow
-    assert "needs: ffmpeg-windows" in windows_job
-    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in workflow
-    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in workflow
+    assert "actions/upload-artifact@" not in workflow
+    assert "actions/download-artifact@" not in workflow
+    assert "msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884" in workflow
+    assert "Download and verify FFmpeg source" in workflow
+    assert "Set up MSYS2 build toolchain" in workflow
     assert "Build LGPL Windows ffmpeg tools" in workflow
     assert "Verify Windows media tools" in workflow
     assert "Verify internal installer contains Windows media tools" in workflow
@@ -180,6 +180,12 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
 def test_windows_ffmpeg_builder_targets_pe_executables_and_tauri_bundles_directory() -> None:
     dockerfile = (REPO_ROOT / "scripts/ffmpeg-minimal/Dockerfile").read_text(encoding="utf-8")
     build_script = (REPO_ROOT / "scripts/ffmpeg-minimal/build.sh").read_text(encoding="utf-8")
+    msys2_script = (REPO_ROOT / "scripts/ffmpeg-minimal/build-windows-msys2.sh").read_text(
+        encoding="utf-8"
+    )
+    configure_script = (REPO_ROOT / "scripts/ffmpeg-minimal/configure.sh").read_text(
+        encoding="utf-8"
+    )
     tauri_config = json.loads(
         (REPO_ROOT / "client/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
     )
@@ -200,8 +206,11 @@ def test_windows_ffmpeg_builder_targets_pe_executables_and_tauri_bundles_directo
     ) in dockerfile
     assert "ARG FFMPEG_VERSION=7.1.5" in dockerfile
     assert "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f" in dockerfile
-    assert "--target-os=mingw32" in dockerfile
-    assert "--cross-prefix=x86_64-w64-mingw32-" in dockerfile
+    assert "FFMPEG_CROSS_PREFIX=x86_64-w64-mingw32-" in dockerfile
+    assert "--target-os=mingw32" in configure_script
+    assert '"--cross-prefix=${FFMPEG_CROSS_PREFIX}"' in configure_script
+    assert "--disable-everything" in configure_script
+    assert "--enable-version3" in configure_script
     assert "COPY --from=build /src/ffmpeg.exe /ffmpeg.exe" in dockerfile
     assert "COPY --from=build /src/ffprobe.exe /ffprobe.exe" in dockerfile
     assert "COPY --from=build /tmp/ffmpeg-source.tar.xz /ffmpeg-7.1.5.tar.xz" in dockerfile
@@ -210,6 +219,10 @@ def test_windows_ffmpeg_builder_targets_pe_executables_and_tauri_bundles_directo
     assert "ffmpeg.exe" in build_script
     assert "ffprobe.exe" in build_script
     assert "ffmpeg-7.1.5.tar.xz" in build_script
+    assert "configure.sh" in msys2_script
+    assert "pacman -Q" in msys2_script
+    assert "SHA256SUMS.txt" in msys2_script
+    assert "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f" in msys2_script
     assert tauri_config["bundle"]["resources"] == ["resources/"]
     assert customer_config["bundle"]["resources"] == []
     assert "GNU LESSER GENERAL PUBLIC LICENSE" in license_text

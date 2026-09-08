@@ -143,47 +143,9 @@ jobs:
             exit "$status"
           done
 
-  ffmpeg-windows:
-    name: Prepare Windows ffmpeg
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build LGPL Windows ffmpeg tools
-        run: bash scripts/ffmpeg-minimal/build.sh "$RUNNER_TEMP/ffmpeg-windows"
-      - name: Verify PE32+ outputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f "$RUNNER_TEMP/ffmpeg-windows/ffmpeg.exe"
-          test -f "$RUNNER_TEMP/ffmpeg-windows/ffprobe.exe"
-          test -f "$RUNNER_TEMP/ffmpeg-windows/ffmpeg-7.1.5.tar.xz"
-          test -s "$RUNNER_TEMP/ffmpeg-windows/BUILD-PACKAGES.txt"
-          file "$RUNNER_TEMP/ffmpeg-windows/ffmpeg.exe" "$RUNNER_TEMP/ffmpeg-windows/ffprobe.exe" |
-            tee "$RUNNER_TEMP/ffmpeg-file-types.txt"
-          test "$(grep -c 'PE32+ executable' "$RUNNER_TEMP/ffmpeg-file-types.txt")" -eq 2
-          test "$(sha256sum "$RUNNER_TEMP/ffmpeg-windows/ffmpeg-7.1.5.tar.xz" | cut -d ' ' -f 1)" = \
-            "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
-          (
-            cd "$RUNNER_TEMP/ffmpeg-windows"
-            sha256sum ffmpeg.exe ffprobe.exe ffmpeg-7.1.5.tar.xz > SHA256SUMS.txt
-          )
-      - name: Upload Windows ffmpeg tools
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ffmpeg-windows-${{ github.sha }}
-          path: ${{ runner.temp }}/ffmpeg-windows/
-          if-no-files-found: error
-          retention-days: 1
-
   windows-nsis:
     name: Windows Tauri and NSIS
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: ffmpeg-windows
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -191,11 +153,31 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Download Windows ffmpeg tools
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Download and verify FFmpeg source
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.5.tar.xz'
+          Invoke-WebRequest 'https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz' -OutFile $source
+          $actual = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+          if ($actual -ne 'DE668509CAF9E35E3CD162473441FDB29538C6D96ED080292B3CF9E6FC5D558F') {
+            throw 'FFmpeg 7.1.5 source checksum mismatch'
+          }
+      - name: Set up MSYS2 build toolchain
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
-          name: ffmpeg-windows-${{ github.sha }}
-          path: client/src-tauri/resources/ffmpeg
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            nasm
+            yasm
+      - name: Build LGPL Windows ffmpeg tools
+        shell: msys2 {0}
+        run: |
+          source_path="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-7.1.5.tar.xz"
+          output_path="$PWD/client/src-tauri/resources/ffmpeg"
+          bash scripts/ffmpeg-minimal/build-windows-msys2.sh "$source_path" "$output_path"
       - name: Verify Windows media tools
         shell: pwsh
         run: |

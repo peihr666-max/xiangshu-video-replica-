@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /src
 
+COPY configure.sh /tmp/configure-ffmpeg.sh
+
 ARG FFMPEG_VERSION=7.1.5
 ARG FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
 RUN curl -fsSL --retry 3 --retry-delay 2 \
@@ -30,44 +32,8 @@ RUN curl -fsSL --retry 3 --retry-delay 2 \
     tar -xJf /tmp/ffmpeg-source.tar.xz --strip-components=1
 
 # Debian 的 mingw-w64 交叉编译器生成原生 PE32+ Windows 程序。
-# disable-everything 后只显式启用抽音轨和探测所需组件。
-RUN ./configure \
-        --target-os=mingw32 \
-        --arch=x86_64 \
-        --enable-cross-compile \
-        --cross-prefix=x86_64-w64-mingw32- \
-        --enable-static \
-        --disable-shared \
-        --enable-w32threads \
-        --enable-version3 \
-        --extra-cflags="-Os -ffunction-sections -fdata-sections" \
-        --extra-ldflags="-static -Wl,--gc-sections" \
-        --disable-everything \
-        --disable-autodetect \
-        --disable-debug \
-        --disable-doc \
-        --disable-programs \
-        --disable-network \
-        --disable-iconv \
-        --disable-bzlib \
-        --disable-lzma \
-        --disable-sdl2 \
-        --disable-xlib \
-        --disable-libxcb \
-        --disable-vaapi \
-        --disable-vdpau \
-        --disable-d3d11va \
-        --enable-small \
-        --enable-ffmpeg \
-        --enable-ffprobe \
-        --enable-protocol=file \
-        --enable-demuxer=mov,mp4,m4a,matroska,webm,avi,flv,ogg,wav,mp3,aac \
-        --enable-parser=aac,ac3,dca,flac,h264,hevc,mpegaudio,opus,vorbis,vp8,vp9 \
-        --enable-decoder=aac,mp3,mp2,flac,opus,vorbis,pcm_s16le,pcm_u8,ac3,eac3 \
-        --enable-encoder=aac,flac,pcm_s16le \
-        --enable-muxer=mp4,ipod,adts,flac,wav \
-        --enable-bsf=aac_adtstoasc \
-        --enable-filter=aresample,aformat,anull,volume && \
+# configure.sh 与 Windows CI 共用同一组功能开关。
+RUN FFMPEG_CROSS_PREFIX=x86_64-w64-mingw32- bash /tmp/configure-ffmpeg.sh && \
     make -j"$(nproc)" && \
     test -f ffmpeg.exe && \
     test -f ffprobe.exe && \

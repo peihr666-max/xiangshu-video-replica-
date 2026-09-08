@@ -17,10 +17,10 @@
 
 在任意有 Docker 的机器上执行仓库脚本 `scripts/ffmpeg-minimal/build.sh`。
 脚本使用 Debian mingw-w64 交叉编译原生 Windows PE32+ 程序，产物输出到
-本目录。CI 在 Ubuntu 构建并校验产物后，通过短期 artifact 传给 Windows
-NSIS 任务；Windows 会实际执行两个程序、完成 WAV → AAC/M4A 转换，并
-检查内部安装包中的路径和 SHA256。二进制与源码归档不提交进 git（见同
-目录 `.gitignore`），由固定构建流程在 CI 中生成和获取。
+本目录。CI 在 Windows 的 MSYS2 环境使用同一份 `configure.sh` 构建，避开
+GitHub artifact 存储依赖；随后实际执行两个程序、完成 WAV → AAC/M4A
+转换，并检查内部安装包中的路径和 SHA256。二进制与源码归档不提交进
+git（见同目录 `.gitignore`），由固定构建流程在 CI 中生成和获取。
 
 ## 自检
 
