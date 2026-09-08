@@ -52,14 +52,23 @@ def upgrade() -> None:
         sa.Column("status", sa.Text(), nullable=False, server_default="PENDING"),
         sa.Column("source_kind", sa.Text(), nullable=False),
         sa.Column("source_asset_id", sa.Text(), nullable=False),
+        sa.Column("consent_id", sa.Text()),
+        sa.Column("idempotency_key", sa.Text()),
+        sa.Column("request_hash", sa.Text()),
         sa.Column("error_message", sa.Text()),
         sa.Column("locked_by", sa.Text()),
+        sa.Column("lease_token", sa.Text()),
         sa.Column("locked_until", sa.Text()),
         *_timestamps(),
         sa.CheckConstraint(
             "status IN ('PENDING', 'SUBMITTING', 'SUBMISSION_UNCERTAIN', "
             "'RUNNING', 'READY', 'FAILED')",
             name="ck_oral_avatars_status",
+        ),
+        sa.UniqueConstraint(
+            "owner_user_id",
+            "idempotency_key",
+            name="uq_oral_avatars_owner_idempotency_key",
         ),
         sa.CheckConstraint(
             "source_kind IN ('VIDEO', 'IMAGE')",
@@ -87,10 +96,14 @@ def upgrade() -> None:
         sa.Column("vendor_task_id", sa.Text()),
         sa.Column("status", sa.Text(), nullable=False, server_default="PENDING"),
         sa.Column("source_asset_id", sa.Text(), nullable=False),
+        sa.Column("consent_id", sa.Text()),
+        sa.Column("idempotency_key", sa.Text()),
+        sa.Column("request_hash", sa.Text()),
         sa.Column("demo_asset_id", sa.Text()),
         sa.Column("confirmed", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("error_message", sa.Text()),
         sa.Column("locked_by", sa.Text()),
+        sa.Column("lease_token", sa.Text()),
         sa.Column("locked_until", sa.Text()),
         *_timestamps(),
         sa.CheckConstraint(
@@ -99,6 +112,11 @@ def upgrade() -> None:
             name="ck_oral_voices_status",
         ),
         sa.CheckConstraint("confirmed IN (0, 1)", name="ck_oral_voices_confirmed"),
+        sa.UniqueConstraint(
+            "owner_user_id",
+            "idempotency_key",
+            name="uq_oral_voices_owner_idempotency_key",
+        ),
     )
     op.create_index(
         "idx_oral_voices_identity",
@@ -149,6 +167,7 @@ def upgrade() -> None:
         sa.Column("request_hash", sa.Text(), nullable=False, server_default=""),
         sa.Column("attempt", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("locked_by", sa.Text()),
+        sa.Column("lease_token", sa.Text()),
         sa.Column("locked_until", sa.Text()),
         sa.Column("next_poll_at", sa.Text()),
         sa.Column("submitted_at", sa.Text()),

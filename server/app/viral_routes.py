@@ -438,7 +438,7 @@ def _fetch_viral_video_media(
         )
     lock_viral_scope(
         conn,
-        f"viral:media:{payload.platform}:{payload.videoId}:{payload.kind or 'auto'}",
+        f"viral:catalog:{payload.platform}:{payload.videoId}",
     )
     video = get_viral_video(conn, platform=payload.platform, video_id=payload.videoId)
     if video is None:
@@ -473,10 +473,8 @@ def _fetch_viral_video_media(
                 "message": "该视频已不在爆款列表中，请刷新后重试",
             },
         )
-    lock_viral_scope(
-        conn,
-        f"viral:media:{payload.platform}:{payload.videoId}:{payload.kind or 'auto'}",
-    )
+    resolved_kind = payload.kind or ("audio" if video.audio_url else "video")
+    lock_viral_scope(conn, f"viral:media:{payload.platform}:{payload.videoId}:{resolved_kind}")
     storage = get_media_storage(conn)
     needs_video = payload.kind == "video" or not video.audio_url
     cached_video = (
@@ -587,7 +585,7 @@ def import_viral_video_asset(
         )
         lock_viral_scope(
             conn,
-            f"viral:import:{actor.id}:{platform}:{video_id}:{payload.kind}",
+            f"viral:media:{platform}:{video_id}:{payload.kind}",
         )
         video = get_viral_video(conn, platform=platform, video_id=video_id)
         if video is None:

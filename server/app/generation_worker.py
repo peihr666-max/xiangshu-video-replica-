@@ -28,7 +28,6 @@ from app.db_pg import (
     DatabaseMode,
     check_pg_ready,
     close_pg_pool,
-    get_pg_pool,
     pg_transaction,
     resolve_database_config,
     validate_customer_production,
@@ -85,6 +84,14 @@ from app.media_routes import get_media_storage
 from app.oral import (
     acquire_oral_clone,
     acquire_oral_task,
+    fail_claimed_oral_clone,
+    fail_claimed_oral_task,
+    finalize_oral_clone_work,
+    finalize_oral_task_work,
+    perform_oral_clone_work,
+    perform_oral_task_work,
+    prepare_oral_clone_work,
+    prepare_oral_task_work,
     run_claimed_oral_clone,
     run_next_oral_task,
 )
@@ -990,12 +997,23 @@ def run_pg_worker_once(
                 BusinessConnection.postgres(raw_conn), worker_id=worker_id
             )
         if clone_lease is not None:
-            with get_pg_pool().connection() as raw_conn:
-                run_claimed_oral_clone(
-                    BusinessConnection.postgres(raw_conn),
-                    lease=clone_lease,
-                    worker_id=worker_id,
-                )
+            try:
+                with pg_transaction() as raw_conn:
+                    clone_work = prepare_oral_clone_work(
+                        BusinessConnection.postgres(raw_conn), lease=clone_lease
+                    )
+                clone_outcome = perform_oral_clone_work(clone_work)
+                with pg_transaction() as raw_conn:
+                    finalize_oral_clone_work(
+                        BusinessConnection.postgres(raw_conn),
+                        work=clone_work,
+                        outcome=clone_outcome,
+                    )
+            except Exception as exc:
+                with pg_transaction() as raw_conn:
+                    fail_claimed_oral_clone(
+                        BusinessConnection.postgres(raw_conn), lease=clone_lease, cause=exc
+                    )
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
@@ -1006,12 +1024,24 @@ def run_pg_worker_once(
             )
         oral_task_id = None
         if oral_lease is not None:
-            with get_pg_pool().connection() as raw_conn:
-                oral_task_id = run_next_oral_task(
-                    BusinessConnection.postgres(raw_conn),
-                    worker_id=worker_id,
-                    lease=oral_lease,
-                )
+            try:
+                with pg_transaction() as raw_conn:
+                    oral_work = prepare_oral_task_work(
+                        BusinessConnection.postgres(raw_conn), lease=oral_lease
+                    )
+                oral_outcome = perform_oral_task_work(oral_work)
+                with pg_transaction() as raw_conn:
+                    finalize_oral_task_work(
+                        BusinessConnection.postgres(raw_conn),
+                        work=oral_work,
+                        outcome=oral_outcome,
+                    )
+            except Exception as exc:
+                with pg_transaction() as raw_conn:
+                    fail_claimed_oral_task(
+                        BusinessConnection.postgres(raw_conn), lease=oral_lease, cause=exc
+                    )
+            oral_task_id = str(oral_lease["id"])
         if oral_task_id is not None:
             processed += 1
             processed_round = True

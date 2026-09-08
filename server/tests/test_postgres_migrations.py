@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 from collections.abc import Callable, Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -236,6 +237,7 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
                 BusinessConnection.postgres(second), worker_id="worker-2"
             )
             assert first_lease is not None
+            assert first_lease["lease_token"]
             assert second_lease is None
             first.commit()
             second.rollback()
@@ -263,6 +265,54 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
             )
         with pytest.raises(RuntimeError, match="oral wallet transactions exist"):
             command.downgrade(config, "056_hifly_provider")
+    finally:
+        _drop_database(db_name)
+
+
+def test_oral_clone_idempotency_has_one_winner_per_owner_under_concurrency() -> None:
+    from alembic import command
+
+    db_name = "oral_clone_idempotency_test"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+    config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+    try:
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name) VALUES "
+                "('clone-u1', 'clone-u1', 'One'), ('clone-u2', 'clone-u2', 'Two')"
+            )
+            conn.execute(
+                "INSERT INTO person_identities (id, owner_user_id, display_name) VALUES "
+                "('clone-i1', 'clone-u1', 'One'), ('clone-i2', 'clone-u2', 'Two')"
+            )
+
+        def insert(owner: str, identity: str, row_id: str, request_hash: str) -> str | None:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                row = conn.execute(
+                    "INSERT INTO oral_avatars (id, identity_id, owner_user_id, title, status, "
+                    "source_kind, source_asset_id, idempotency_key, request_hash) VALUES "
+                    "(%s, %s, %s, 'Avatar', 'PENDING', 'VIDEO', 'asset', 'shared-key', %s) "
+                    "ON CONFLICT (owner_user_id, idempotency_key) DO NOTHING RETURNING id",
+                    (row_id, identity, owner, request_hash),
+                ).fetchone()
+                return None if row is None else str(row[0])
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda args: insert(*args),
+                    [
+                        ("clone-u1", "clone-i1", "clone-a1", "hash-a"),
+                        ("clone-u1", "clone-i1", "clone-a2", "hash-b"),
+                    ],
+                )
+            )
+        assert sum(result is not None for result in results) == 1
+        assert insert("clone-u2", "clone-i2", "clone-a3", "hash-c") == "clone-a3"
     finally:
         _drop_database(db_name)
 

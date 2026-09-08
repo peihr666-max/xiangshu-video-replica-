@@ -4,7 +4,9 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 from cryptography.fernet import Fernet
@@ -16,6 +18,7 @@ from app.hifly import (
     HiflyClient,
     HiflyError,
     HiflySettingsUnavailable,
+    UrllibHiflyHttpTransport,
     hifly_client_from_config,
 )
 from app.settings import (
@@ -164,6 +167,22 @@ def test_invalid_token_error_is_reported_as_configuration_problem() -> None:
         client.account_credit()
     assert excinfo.value.vendor_code == 2003
     assert "未正确配置" in str(excinfo.value)
+
+
+def test_http_status_is_audited_but_not_a_definite_business_rejection(monkeypatch) -> None:
+    def fail(*_args, **_kwargs):
+        raise HTTPError("https://api.example/tasks", 429, "busy", {}, BytesIO(b"busy"))
+
+    monkeypatch.setattr("app.hifly.request_public_binary", fail)
+    with pytest.raises(HiflyError) as excinfo:
+        UrllibHiflyHttpTransport().request(
+            "POST",
+            "https://api.example/tasks",
+            headers={"Authorization": "Bearer placeholder"},
+            body=b"{}",
+        )
+    assert excinfo.value.vendor_code == 429
+    assert excinfo.value.business_rejection is False
 
 
 def test_avatar_task_normalizes_vendor_status() -> None:

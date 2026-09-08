@@ -17,6 +17,7 @@ from app.customer_fence import BusinessDbDep
 from app.hifly import HiflyClient, HiflyError, hifly_client_from_settings
 from app.oral import (
     OralDomainError,
+    confirm_voice_clone,
     create_oral_task,
     list_avatars,
     list_oral_tasks,
@@ -92,6 +93,8 @@ class AvatarCloneRequest(BaseModel):
     title: str = Field(min_length=1, max_length=60)
     source_asset_id: str = Field(min_length=1, max_length=128)
     source_kind: Literal["VIDEO", "IMAGE"]
+    consent_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 
 @router.post("/avatars", status_code=status.HTTP_202_ACCEPTED)
@@ -115,6 +118,8 @@ def create_avatar_clone(
                 title=request.title,
                 source_asset_id=request.source_asset_id,
                 source_kind=request.source_kind,
+                consent_id=request.consent_id,
+                idempotency_key=request.idempotency_key,
             )
         except OralDomainError as exc:
             raise _domain_guard(exc) from exc
@@ -157,6 +162,8 @@ class VoiceCloneRequest(BaseModel):
     identity_id: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=60)
     source_asset_id: str = Field(min_length=1, max_length=128)
+    consent_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 
 @router.post("/voices", status_code=status.HTTP_202_ACCEPTED)
@@ -179,6 +186,8 @@ def create_voice_clone(
                 identity_id=request.identity_id,
                 title=request.title,
                 source_asset_id=request.source_asset_id,
+                consent_id=request.consent_id,
+                idempotency_key=request.idempotency_key,
             )
         except OralDomainError as exc:
             raise _domain_guard(exc) from exc
@@ -198,6 +207,34 @@ def refresh_voice(
         row = read_voice_clone(conn, voice_id=voice_id, actor=actor)
     except OralDomainError as exc:
         raise _domain_guard(exc) from exc
+    return _serialize(row)
+
+
+@router.post("/voices/{voice_id}/confirm")
+def confirm_voice(
+    voice_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="oral.voice.confirm",
+            entity_type="oral_voice",
+            entity_id=voice_id,
+        )
+        try:
+            row = confirm_voice_clone(conn, voice_id=voice_id, actor=actor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+        write_audit(
+            conn,
+            actor=actor,
+            action="oral.voice.confirm",
+            entity_type="oral_voice",
+            entity_id=voice_id,
+        )
+        conn.commit()
     return _serialize(row)
 
 

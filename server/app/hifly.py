@@ -60,9 +60,16 @@ class HiflyError(RuntimeError):
     …) so callers can branch on known conditions.
     """
 
-    def __init__(self, message: str, *, vendor_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        vendor_code: int | None = None,
+        business_rejection: bool = False,
+    ) -> None:
         super().__init__(message)
         self.vendor_code = vendor_code
+        self.business_rejection = business_rejection
 
 
 class HiflySettingsUnavailable(RuntimeError):
@@ -134,6 +141,9 @@ class UrllibHiflyHttpTransport(HiflyHttpTransport):
             except OSError:
                 pass
             logger.warning("ORAL vendor request failed with HTTP status %s: %s", exc.code, detail)
+            # An HTTP failure can be emitted by a gateway after the provider
+            # accepted a paid submission.  Preserve the status for audit, but
+            # never classify it as a definite business rejection.
             raise HiflyError(f"数字人服务返回 HTTP {exc.code}", vendor_code=int(exc.code)) from exc
         except (TimeoutError, URLError, OSError, RemoteBinaryError) as exc:
             logger.warning("ORAL vendor request failed: %s", type(exc).__name__)
@@ -247,6 +257,7 @@ class HiflyClient:
             raise HiflyError(
                 _vendor_message(int(code), str(envelope.get("msg", ""))),
                 vendor_code=int(code),
+                business_rejection=True,
             )
         data = envelope.get("data")
         return data if isinstance(data, dict) else {}
