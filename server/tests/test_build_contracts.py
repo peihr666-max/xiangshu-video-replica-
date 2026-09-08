@@ -118,20 +118,53 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert workflow.count("branches: [main]") == 2
     assert "pull_request_target:" not in workflow
     assert "permissions:\n  contents: read" in workflow
-    assert workflow.count("persist-credentials: false") == 3
+    assert workflow.count("persist-credentials: false") == 5
     assert "secret-scan:" in workflow
     assert "name: Secret scan" in workflow
+    assert "server-full:" in workflow
+    assert "name: Server full" in workflow
+    assert "client:" in workflow
+    assert "name: Client" in workflow
+    assert "rust:" in workflow
+    assert "name: Rust" in workflow
+    server_job = workflow.split("\n  server-full:\n", 1)[1].split("\n  client:\n", 1)[0]
+    client_job = workflow.split("\n  client:\n", 1)[1].split("\n  rust:\n", 1)[0]
+    rust_job = workflow.split("\n  rust:\n", 1)[1].split("\n  quality-linux:\n", 1)[0]
+    assert "needs:" not in server_job
+    assert "needs:" not in client_job
+    assert "needs:" not in rust_job
+    assert "npm " not in server_job
+    assert "cargo " not in client_job
+    assert "uv " not in rust_job
+    assert "services:\n      postgres:" in client_job
+    assert "TEST_POSTGRESQL_URL:" in client_job
+    assert "uv sync --project server --locked --group dev --python 3.12" in client_job
     assert "quality-linux:" in workflow
     assert "name: Linux quality gate" in workflow
+    aggregator = workflow.split("\n  quality-linux:\n", 1)[1].split("\n  windows-nsis:\n", 1)[0]
+    assert "needs: [server-full, client, rust]" in aggregator
+    assert "if: always() && (" in aggregator
+    assert "SERVER_RESULT: ${{ needs.server-full.result }}" in aggregator
+    assert "CLIENT_RESULT: ${{ needs.client.result }}" in aggregator
+    assert "RUST_RESULT: ${{ needs.rust.result }}" in aggregator
+    assert 'test "$SERVER_RESULT" = success' in aggregator
+    assert 'test "$CLIENT_RESULT" = success' in aggregator
+    assert 'test "$RUST_RESULT" = success' in aggregator
     assert "windows-nsis:" in workflow
     assert "name: Windows Tauri and NSIS" in workflow
-    assert workflow.count(f"if: {fork_pr_guard}") == 3
-    assert workflow.count("runs-on: ubuntu-24.04") == 2
+    assert workflow.count(f"if: {fork_pr_guard}") == 5
+    assert workflow.count("runs-on: ubuntu-24.04") == 5
     assert workflow.count("runs-on: windows-2025") == 1
     assert "npm run check:security" in workflow
-    assert "run: npm run check\n" in workflow
+    assert "npm run check --workspace client" in workflow
+    assert "npm run check:e2e" in workflow
+    assert "python -m pytest --rootdir server server/tests" in workflow
+    assert "python -m mypy --config-file server/pyproject.toml server/app" in workflow
+    assert "ruff check server" in workflow
+    assert "ruff format --check server" in workflow
     assert "npm run build" in workflow
     assert "npm audit --audit-level=high" in workflow
+    assert "cargo fmt --manifest-path client/src-tauri/Cargo.toml --check" in workflow
     assert "cargo test --manifest-path client/src-tauri/Cargo.toml --locked" in workflow
     assert "npm run check:tauri" in workflow
     assert "npm run check:tauri:customer" in workflow
@@ -142,32 +175,63 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     job_config, windows_steps = windows_job.split("\n    steps:\n", 1)
     assert "runner.temp" not in job_config
     assert "LOCAL_ARTIFACT_ROOT" not in job_config
-    for step_name in (
-        "Archive unsigned internal NSIS installer locally",
-        "Archive unsigned customer cloud NSIS installer locally",
-    ):
-        step = windows_steps.split(f"      - name: {step_name}\n", 1)[1].split(
-            "\n      - name:", 1
-        )[0]
-        assert (
-            "\n        env:\n"
-            "          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts\n"
-        ) in step
-    assert workflow.count("LOCAL_ARTIFACT_ROOT") == 8
-    assert workflow.count("Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt')") == 2
+    assert "Archive unsigned internal NSIS installer locally" not in workflow
+    assert "Archive unsigned customer cloud NSIS installer locally" not in workflow
+    assert "LOCAL_ARTIFACT_ROOT" not in workflow
+    assert "Clean Windows bundle outputs" in windows_steps
+    assert "Clean Windows bundle outputs for customer build" in windows_steps
+    assert windows_steps.index("Clean Windows bundle outputs") < windows_steps.index(
+        "Build unsigned internal NSIS installer"
+    )
+    assert windows_steps.index(
+        "Clean Windows bundle outputs for customer build"
+    ) < windows_steps.index("Build unsigned customer cloud NSIS installer")
     assert "Verify customer installer excludes local launchers" in workflow
     assert "7-Zip\\7z.exe" in workflow
     assert "start-backend.bat" in workflow
     assert "start-backend.sh" in workflow
-    assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 3
+    assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 5
     assert workflow.count("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020") == 3
+    assert workflow.count("cache: npm") == 3
+    assert workflow.count("cache-dependency-path: package-lock.json") == 3
     assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
+    cache_action = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+    assert workflow.count(cache_action) == 3
+    assert workflow.count("hashFiles('client/src-tauri/Cargo.lock')") == 2
+    assert workflow.count(".cargo-target") >= 2
     assert "actions/upload-artifact@" not in workflow
     assert "actions/download-artifact@" not in workflow
     assert "msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884" in workflow
     assert "Download and verify FFmpeg source" in workflow
     assert "Set up MSYS2 build toolchain" in workflow
     assert "Build LGPL Windows ffmpeg tools" in workflow
+    assert "id: ffmpeg-cache" in workflow
+    assert "client/src-tauri/resources/ffmpeg/ffmpeg.exe" in workflow
+    assert "client/src-tauri/resources/ffmpeg/ffprobe.exe" in workflow
+    assert "client/src-tauri/resources/ffmpeg/ffmpeg-7.1.5.tar.xz" in workflow
+    assert "client/src-tauri/resources/ffmpeg/BUILD-PACKAGES.txt" in workflow
+    assert "client/src-tauri/resources/ffmpeg/SHA256SUMS.txt" in workflow
+    assert "ffmpeg-windows-2025-${{ runner.arch }}-7.1.5-" in workflow
+    build_hash = (
+        "hashFiles('scripts/ffmpeg-minimal/build-windows-msys2.sh', "
+        "'scripts/ffmpeg-minimal/configure.sh')"
+    )
+    assert build_hash in workflow
+    cache_miss_guard = "if: steps.ffmpeg-cache.outputs.cache-hit != 'true'"
+    assert workflow.count(cache_miss_guard) == 3
+    for step_name in (
+        "Download and verify FFmpeg source",
+        "Set up MSYS2 build toolchain",
+        "Build LGPL Windows ffmpeg tools",
+    ):
+        step = windows_steps.split(f"      - name: {step_name}\n", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        assert cache_miss_guard in step
+    verify_step = windows_steps.split("      - name: Verify Windows media tools\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert cache_miss_guard not in verify_step
     assert "Verify Windows media tools" in workflow
     assert "Verify internal installer contains Windows media tools" in workflow
     assert "ffmpeg-7.1.5.tar.xz" in workflow

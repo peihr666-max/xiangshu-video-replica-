@@ -28,11 +28,13 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
       - name: Scan runtime contract surface
         run: npm run check:security
 
-  quality-linux:
-    name: Linux quality gate
+  server-full:
+    name: Server full
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     # 2026-08-26: raised 30 -> 60 — the full pytest suite (~1450 tests, PG
@@ -64,33 +66,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Tauri system dependencies
-        run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i \
-              's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-              /etc/apt/apt-mirrors.txt
-          fi
-          sudo apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            update
-          sudo apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            install --yes \
-            build-essential \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -101,22 +76,71 @@ jobs:
           version: "0.12.0"
           enable-cache: true
           cache-dependency-glob: server/uv.lock
-      - name: Set up Rust
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt
-          rustup default stable
-      - name: Install JavaScript dependencies
-        run: npm ci
       - name: Install Python dependencies
         run: uv sync --project server --locked --group dev --python 3.12
-      - name: Run repository quality checks
-        run: npm run check
+      - name: Check Python formatting and lint
+        run: |
+          uv --cache-dir .uv-cache run --project server --locked ruff check server
+          uv --cache-dir .uv-cache run --project server --locked ruff format --check server
+      - name: Type-check server
+        run: uv --cache-dir .uv-cache run --project server --locked python -m mypy --config-file server/pyproject.toml server/app
+      - name: Run full server test suite
+        run: uv --cache-dir .uv-cache run --project server --locked python -m pytest --rootdir server server/tests
+
+  client:
+    name: Client
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: customer_v3_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U testuser -d customer_v3_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_POSTGRESQL_URL: postgresql://testuser:testpass@localhost:5433/customer_v3_test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.0"
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Install browser-test server dependencies
+        run: uv sync --project server --locked --group dev --python 3.12
+      - name: Check web client and E2E sources
+        run: |
+          npm run check --workspace client
+          npm run check:e2e
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
       - name: Run customer browser E2E
         run: npm run test:customer-e2e
-      - name: Run Rust tests
-        run: cargo test --manifest-path client/src-tauri/Cargo.toml --locked
       - name: Build web client
         run: npm run build
       - name: Audit JavaScript dependencies
@@ -143,6 +167,74 @@ jobs:
             exit "$status"
           done
 
+  rust:
+    name: Rust
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Tauri system dependencies
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i \
+              's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
+          sudo apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install --yes \
+            build-essential \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+      - name: Cache Cargo dependencies and build output
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .cargo-target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-stable-${{ hashFiles('client/src-tauri/Cargo.lock') }}
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path client/src-tauri/Cargo.toml --check
+      - name: Run Rust tests
+        run: cargo test --manifest-path client/src-tauri/Cargo.toml --locked
+
+  quality-linux:
+    name: Linux quality gate
+    needs: [server-full, client, rust]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every Linux quality job to succeed
+        shell: bash
+        env:
+          SERVER_RESULT: ${{ needs.server-full.result }}
+          CLIENT_RESULT: ${{ needs.client.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+        run: |
+          test "$SERVER_RESULT" = success
+          test "$CLIENT_RESULT" = success
+          test "$RUST_RESULT" = success
+
   windows-nsis:
     name: Windows Tauri and NSIS
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -153,7 +245,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore compiled FFmpeg cache
+        id: ffmpeg-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            client/src-tauri/resources/ffmpeg/ffmpeg.exe
+            client/src-tauri/resources/ffmpeg/ffprobe.exe
+            client/src-tauri/resources/ffmpeg/ffmpeg-7.1.5.tar.xz
+            client/src-tauri/resources/ffmpeg/BUILD-PACKAGES.txt
+            client/src-tauri/resources/ffmpeg/SHA256SUMS.txt
+          key: ffmpeg-windows-2025-${{ runner.arch }}-7.1.5-de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f-v1-${{ hashFiles('scripts/ffmpeg-minimal/build-windows-msys2.sh', 'scripts/ffmpeg-minimal/configure.sh') }}
       - name: Download and verify FFmpeg source
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $source = Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.5.tar.xz'
@@ -163,6 +267,7 @@ jobs:
             throw 'FFmpeg 7.1.5 source checksum mismatch'
           }
       - name: Set up MSYS2 build toolchain
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: MINGW64
@@ -173,6 +278,7 @@ jobs:
             nasm
             yasm
       - name: Build LGPL Windows ffmpeg tools
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: msys2 {0}
         run: |
           source_path="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-7.1.5.tar.xz"
@@ -309,16 +415,29 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
       - name: Set up Rust
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
           rustup default stable
+      - name: Cache Cargo dependencies and build output
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .cargo-target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-stable-${{ hashFiles('client/src-tauri/Cargo.lock') }}
       - name: Install JavaScript dependencies
         run: npm ci
       - name: Check Tauri project
         run: npm run check:tauri
       - name: Check customer cloud target without local sidecar
         run: npm run check:tauri:customer
+      - name: Clean Windows bundle outputs
+        shell: pwsh
+        run: Remove-Item -LiteralPath '.cargo-target/release/bundle/nsis' -Recurse -Force -ErrorAction SilentlyContinue
       - name: Build unsigned internal NSIS installer
         run: npm run tauri:build -- --bundles nsis --no-sign --ci
       - name: Verify internal installer contains Windows media tools
@@ -375,32 +494,9 @@ jobs:
       - name: Record internal installer SHA256
         shell: pwsh
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
-      - name: Archive unsigned internal NSIS installer locally
+      - name: Clean Windows bundle outputs for customer build
         shell: pwsh
-        env:
-          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts
-        run: |
-          if (-not $env:LOCAL_ARTIFACT_ROOT) {
-            throw 'LOCAL_ARTIFACT_ROOT must be configured for the Windows job'
-          }
-          $installers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
-          if (-not $installers) {
-            throw 'internal NSIS installer was not produced'
-          }
-          $destination = Join-Path $env:LOCAL_ARTIFACT_ROOT '${{ github.sha }}\internal'
-          New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          $installers | Copy-Item -Destination $destination -Force
-          $installers | Get-FileHash -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash) *$(Split-Path $_.Path -Leaf)" } |
-            Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding utf8
-      - name: Isolate customer NSIS output
-        shell: pwsh
-        run: |
-          $internalInstallers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
-          if (-not $internalInstallers) {
-            throw 'internal NSIS installer was not produced'
-          }
-          $internalInstallers | Remove-Item -Force
+        run: Remove-Item -LiteralPath '.cargo-target/release/bundle/nsis' -Recurse -Force -ErrorAction SilentlyContinue
       - name: Build unsigned customer cloud NSIS installer
         run: npm run tauri:build:customer
         env:
@@ -447,21 +543,3 @@ jobs:
       - name: Record customer cloud installer SHA256
         shell: pwsh
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
-      - name: Archive unsigned customer cloud NSIS installer locally
-        shell: pwsh
-        env:
-          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts
-        run: |
-          if (-not $env:LOCAL_ARTIFACT_ROOT) {
-            throw 'LOCAL_ARTIFACT_ROOT must be configured for the Windows job'
-          }
-          $installers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
-          if (-not $installers) {
-            throw 'customer NSIS installer was not produced'
-          }
-          $destination = Join-Path $env:LOCAL_ARTIFACT_ROOT '${{ github.sha }}\customer-cloud'
-          New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          $installers | Copy-Item -Destination $destination -Force
-          $installers | Get-FileHash -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash) *$(Split-Path $_.Path -Leaf)" } |
-            Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding utf8
