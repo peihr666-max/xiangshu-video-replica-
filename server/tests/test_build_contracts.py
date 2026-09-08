@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import shutil
@@ -173,6 +175,13 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert "SOURCE-NOTICE.md" in workflow
     assert "ffmpeg-smoke.wav" in workflow
     assert "ffmpeg-smoke.m4a" in workflow
+    assert "ffmpeg-smoke.mp3" in workflow
+    assert "h264-valid.mp4" in workflow
+    assert "h264-truncated.mp4" in workflow
+    assert "progress=end" in workflow
+    assert "valid audio stream failed full decode" in workflow
+    assert "valid H.264 video stream failed full decode" in workflow
+    assert "truncated H.264 video unexpectedly passed full decode" in workflow
     assert "payload hash mismatch" in workflow
     assert ".cargo-target/release/bundle/nsis/*.exe" in workflow
 
@@ -211,6 +220,18 @@ def test_windows_ffmpeg_builder_targets_pe_executables_and_tauri_bundles_directo
     assert '"--cross-prefix=${FFMPEG_CROSS_PREFIX}"' in configure_script
     assert "--disable-everything" in configure_script
     assert "--enable-version3" in configure_script
+    assert "--enable-protocol=file,pipe" in configure_script
+    assert "--enable-parser=" in configure_script
+    assert "h264" in configure_script
+    assert "--enable-decoder=" in configure_script
+    assert "hevc" in configure_script
+    assert "mpeg4" in configure_script
+    assert "vp8" in configure_script
+    assert "vp9" in configure_script
+    assert "--enable-encoder=" in configure_script
+    assert "wrapped_avframe" in configure_script
+    assert "--enable-muxer=" in configure_script
+    assert "null" in configure_script
     assert "COPY --from=build /src/ffmpeg.exe /ffmpeg.exe" in dockerfile
     assert "COPY --from=build /src/ffprobe.exe /ffprobe.exe" in dockerfile
     assert "COPY --from=build /tmp/ffmpeg-source.tar.xz /ffmpeg-7.1.5.tar.xz" in dockerfile
@@ -231,7 +252,30 @@ def test_windows_ffmpeg_builder_targets_pe_executables_and_tauri_bundles_directo
     assert "Source modifications: none" in source_notice
     assert "--disable-everything" in source_notice
     assert "--enable-version3" in source_notice
+    assert "--enable-protocol=file,pipe" in source_notice
+    assert "wrapped_avframe" in source_notice
+    assert "--enable-muxer=mp4,ipod,adts,flac,wav,null" in source_notice
     assert "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f" in source_notice
+
+
+def test_windows_ffmpeg_validation_fixtures_are_stable_synthetic_media() -> None:
+    fixture_root = REPO_ROOT / "scripts" / "ffmpeg-minimal" / "fixtures"
+    expected = {
+        "ffmpeg-smoke.mp3.b64": (
+            4941,
+            "d77ea9bd333a27ab042154cdfbf96ff8c3fd3e58a7be0cd2fbba48f9dd051c56",
+        ),
+        "h264-valid.mp4.b64": (
+            1831,
+            "c778f7ac74d7fb2e3f6bc0c019fd1a6dd1f382a958aaa7a48451ceba6b72f15e",
+        ),
+    }
+
+    for name, (expected_size, expected_sha256) in expected.items():
+        encoded = (fixture_root / name).read_text(encoding="ascii").strip()
+        decoded = base64.b64decode(encoded, validate=True)
+        assert len(decoded) == expected_size
+        assert hashlib.sha256(decoded).hexdigest() == expected_sha256
 
 
 def test_posix_backend_launcher_executes_default_commands(tmp_path: Path) -> None:

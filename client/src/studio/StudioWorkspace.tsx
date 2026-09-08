@@ -736,7 +736,13 @@ function StudioWorkspaceSession({
     try {
       const imported = await loadProjectDraft(project);
       if (operation !== operationRef.current) return;
-      setState((previous) => withImportedProject(previous, imported.draft));
+      draftTouchedRef.current = true;
+      setState((previous) => {
+        const next = withImportedProject(previous, imported.draft);
+        latestDraftRef.current = next.draft;
+        return next;
+      });
+      scheduleDraftSave();
       if (imported.errors.length) notify(imported.errors.join("；"));
       else notify("已带入项目来源与已保存文案。请核对内容并确认终稿。");
     } catch (cause) {
@@ -857,25 +863,26 @@ function StudioWorkspaceSession({
           if (!consentId) {
             throw new Error("克隆授权状态无效，请重新提交。");
           }
-          if (pending.input.kind === "avatar") {
-            await createOralAvatarClone({
-              identityId: pending.input.identityId,
-              title: pending.input.title,
-              sourceAssetId: pending.input.sourceAssetId,
-              sourceKind: pending.input.sourceKind,
-              consentId,
-              idempotencyKey: pending.idempotencyKey,
-            });
-          } else {
-            await createOralVoiceClone({
-              identityId: pending.input.identityId,
-              title: pending.input.title,
-              sourceAssetId: pending.input.sourceAssetId,
-              consentId,
-              idempotencyKey: pending.idempotencyKey,
-            });
+          const result =
+            pending.input.kind === "avatar"
+              ? await createOralAvatarClone({
+                  identityId: pending.input.identityId,
+                  title: pending.input.title,
+                  sourceAssetId: pending.input.sourceAssetId,
+                  sourceKind: pending.input.sourceKind,
+                  consentId,
+                  idempotencyKey: pending.idempotencyKey,
+                })
+              : await createOralVoiceClone({
+                  identityId: pending.input.identityId,
+                  title: pending.input.title,
+                  sourceAssetId: pending.input.sourceAssetId,
+                  consentId,
+                  idempotencyKey: pending.idempotencyKey,
+                });
+          if (result.status !== "SUBMISSION_UNCERTAIN") {
+            removeWorkspaceAttempt(key);
           }
-          removeWorkspaceAttempt(key);
         } catch (cause: unknown) {
           if (isDefiniteSubmissionRejection(cause)) {
             removeWorkspaceAttempt(key);

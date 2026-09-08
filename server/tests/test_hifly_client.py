@@ -17,6 +17,7 @@ from app.hifly import (
     HIFLY_BASE_URL,
     HiflyClient,
     HiflyError,
+    HiflyProtocolError,
     HiflySettingsUnavailable,
     UrllibHiflyHttpTransport,
     hifly_client_from_config,
@@ -226,6 +227,57 @@ def test_avatar_task_normalizes_vendor_status() -> None:
     assert snapshot.status == "DONE"
     assert snapshot.avatar_id == "av-9"
     assert snapshot.raw["status"] == 3
+
+
+@pytest.mark.parametrize(
+    ("method_name", "response_data"),
+    [
+        ("avatar_task", {"avatar_id": "av-9"}),
+        ("voice_task", {"voice": "voice-9"}),
+        ("video_task", {"video_Url": "https://tmp.example/v.mp4"}),
+    ],
+)
+@pytest.mark.parametrize("status", [None, 0, 5, "unknown", True, False, 1.0, 1.5])
+def test_task_queries_reject_missing_or_unknown_vendor_status(
+    method_name: str,
+    response_data: dict[str, object],
+    status: object,
+) -> None:
+    data = dict(response_data)
+    if status is not None:
+        data["status"] = status
+    body = json.dumps({"code": 0, "msg": "", "data": data}).encode()
+    client, _ = client_with(body)
+
+    with pytest.raises(HiflyProtocolError, match="任务状态"):
+        getattr(client, method_name)("task-9")
+
+
+@pytest.mark.parametrize("method_name", ["avatar_task", "voice_task", "video_task"])
+@pytest.mark.parametrize(
+    ("vendor_status", "expected"),
+    [
+        (1, "WAITING"),
+        (2, "PROCESSING"),
+        (3, "DONE"),
+        (4, "FAILED"),
+        ("1", "WAITING"),
+        ("2", "PROCESSING"),
+        ("3", "DONE"),
+        ("4", "FAILED"),
+    ],
+)
+def test_task_queries_keep_all_documented_vendor_statuses(
+    method_name: str,
+    vendor_status: int | str,
+    expected: str,
+) -> None:
+    body = json.dumps({"code": 0, "msg": "", "data": {"status": vendor_status}}).encode()
+    client, _ = client_with(body)
+
+    snapshot = getattr(client, method_name)("task-9")
+
+    assert snapshot.status == expected
 
 
 def test_video_task_reads_temporary_video_url() -> None:

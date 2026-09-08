@@ -8,12 +8,14 @@ network or real buckets.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,13 +24,17 @@ from cryptography.fernet import Fernet
 from app.auth import CurrentUser
 from app.db import initialize_database
 from app.db_portable import BusinessConnection
-from app.hifly import HiflyClient
+from app.hifly import HiflyClient, HiflyProtocolError
+from app.media_tools import MediaToolFailed
 from app.oral import (
     ORAL_UNIT_PRICE_FEN_DEFAULT,
     CloneOutcome,
     OralCloneLeaseLost,
     OralDomainError,
     OralOutcome,
+    OralTaskLeaseLost,
+    PreparedCloneWork,
+    PreparedOralWork,
     acquire_oral_clone,
     acquire_oral_task,
     confirm_voice_clone,
@@ -40,6 +46,7 @@ from app.oral import (
     mark_oral_provider_submission_started,
     oral_unit_price_fen,
     perform_oral_clone_work,
+    perform_oral_task_work,
     prepare_oral_clone_work,
     prepare_oral_task_work,
     preserve_oral_clone_outcome_for_reconciliation,
@@ -57,6 +64,7 @@ from app.oral import (
 )
 
 _NOW = "2026-09-06 03:00:00"
+_FAKE_MEDIA_SHA256 = "f12c3039fa8bf0aff5549f429f3decac524e9324a4ffb80faddd56d8a3de912e"
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +134,213 @@ def make_vendor() -> tuple[HiflyClient, ScriptedVendorTransport]:
     return HiflyClient(api_key="test-key", transport=transport), transport
 
 
+class _NeverStore:
+    def put_object(self, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("invalid provider media must not be archived")
+
+
+class _RecordingStorage:
+    def __init__(self) -> None:
+        self.puts: list[tuple[str, bytes, str]] = []
+
+    def put_object(self, key: str, content: bytes, *, content_type: str) -> None:
+        self.puts.append((key, content, content_type))
+
+
+def _raise_invalid_media(*_args: object, **_kwargs: object) -> None:
+    raise MediaToolFailed("媒体文件无法验证，请稍后重试")
+
+
+def test_clone_protocol_error_is_terminal_instead_of_polling_forever() -> None:
+    class InvalidStatusVendor:
+        def avatar_task(self, _task_id: str) -> None:
+            raise HiflyProtocolError("数字人服务返回了无效的任务状态")
+
+    outcome = perform_oral_clone_work(
+        PreparedCloneWork(
+            lease={
+                "id": "avatar-protocol-error",
+                "status": "RUNNING",
+                "clone_kind": "avatar",
+                "vendor_task_id": "vendor-task",
+            },
+            vendor=InvalidStatusVendor(),  # type: ignore[arg-type]
+            source_storage=None,
+            source_key=None,
+            source_extension=None,
+            expected_source_sha256=None,
+            result_storage=None,
+        )
+    )
+
+    assert outcome.status == "FAILED"
+
+
+def test_oral_protocol_error_is_terminal_instead_of_polling_forever() -> None:
+    class InvalidStatusVendor:
+        def video_task(self, _task_id: str) -> None:
+            raise HiflyProtocolError("数字人服务返回了无效的任务状态")
+
+    outcome = perform_oral_task_work(
+        PreparedOralWork(
+            lease={"id": "oral-protocol-error", "status": "RUNNING", "vendor_task_id": "vt"},
+            vendor=InvalidStatusVendor(),  # type: ignore[arg-type]
+            audio_storage=None,
+            audio_key=None,
+            audio_extension=None,
+            expected_source_sha256=None,
+            result_storage=_NeverStore(),  # type: ignore[arg-type]
+            avatar_vendor_id=None,
+            voice_vendor_id=None,
+            subtitle=None,
+        )
+    )
+
+    assert outcome.status == "FAILED"
+
+
+def test_invalid_voice_demo_is_rejected_before_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InvalidDemoVendor:
+        def voice_task(self, _task_id: str) -> SimpleNamespace:
+            return SimpleNamespace(status="DONE", voice="voice-id", demo_url="https://tmp/demo")
+
+        def download(self, _url: str) -> bytes:
+            return b"<html>not audio</html>"
+
+    monkeypatch.setattr("app.oral.require_media_stream", _raise_invalid_media, raising=False)
+    outcome = perform_oral_clone_work(
+        PreparedCloneWork(
+            lease={
+                "id": "voice-invalid-demo",
+                "status": "RUNNING",
+                "clone_kind": "voice",
+                "vendor_task_id": "vendor-task",
+            },
+            vendor=InvalidDemoVendor(),  # type: ignore[arg-type]
+            source_storage=None,
+            source_key=None,
+            source_extension=None,
+            expected_source_sha256=None,
+            result_storage=_NeverStore(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert outcome.status == "FAILED"
+
+
+def test_invalid_oral_video_is_rejected_before_archive_and_settlement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InvalidVideoVendor:
+        def video_task(self, _task_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                status="DONE",
+                video_url="https://tmp/video",
+                duration=30,
+            )
+
+        def download(self, _url: str) -> bytes:
+            return b"<html>not video</html>"
+
+    monkeypatch.setattr("app.oral.require_media_stream", _raise_invalid_media, raising=False)
+    outcome = perform_oral_task_work(
+        PreparedOralWork(
+            lease={"id": "oral-invalid-video", "status": "RUNNING", "vendor_task_id": "vt"},
+            vendor=InvalidVideoVendor(),  # type: ignore[arg-type]
+            audio_storage=None,
+            audio_key=None,
+            audio_extension=None,
+            expected_source_sha256=None,
+            result_storage=_NeverStore(),  # type: ignore[arg-type]
+            avatar_vendor_id=None,
+            voice_vendor_id=None,
+            subtitle=None,
+        )
+    )
+
+    assert outcome.status == "FAILED"
+
+
+def test_voice_demo_lost_lease_after_validation_is_not_archived(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ReadyVoiceVendor:
+        def voice_task(self, _task_id: str) -> SimpleNamespace:
+            return SimpleNamespace(status="DONE", voice="voice-id", demo_url="https://tmp/demo")
+
+        def download(self, _url: str) -> bytes:
+            return b"VALID-MP3"
+
+    storage = _RecordingStorage()
+    monkeypatch.setattr("app.oral.require_media_stream", lambda *_args, **_kwargs: None)
+    renewals = iter((True, True, True, False))
+
+    with pytest.raises(OralCloneLeaseLost, match="租约已失效"):
+        perform_oral_clone_work(
+            PreparedCloneWork(
+                lease={
+                    "id": "voice-validation-fence",
+                    "status": "RUNNING",
+                    "clone_kind": "voice",
+                    "vendor_task_id": "vendor-task",
+                },
+                vendor=ReadyVoiceVendor(),  # type: ignore[arg-type]
+                source_storage=None,
+                source_key=None,
+                source_extension=None,
+                expected_source_sha256=None,
+                result_storage=storage,  # type: ignore[arg-type]
+            ),
+            renew_lease=lambda: next(renewals),
+        )
+
+    assert storage.puts == []
+
+
+def test_oral_video_lost_lease_after_validation_is_not_archived(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ReadyVideoVendor:
+        def video_task(self, _task_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                status="DONE",
+                video_url="https://tmp/video",
+                duration=30,
+            )
+
+        def download(self, _url: str) -> bytes:
+            return b"VALID-MP4"
+
+    storage = _RecordingStorage()
+    monkeypatch.setattr("app.oral.require_media_stream", lambda *_args, **_kwargs: None)
+    renewals = iter((True, True, True, False))
+
+    with pytest.raises(OralTaskLeaseLost, match="租约已失效"):
+        perform_oral_task_work(
+            PreparedOralWork(
+                lease={
+                    "id": "oral-validation-fence",
+                    "status": "RUNNING",
+                    "vendor_task_id": "vendor-task",
+                },
+                vendor=ReadyVideoVendor(),  # type: ignore[arg-type]
+                audio_storage=None,
+                audio_key=None,
+                audio_extension=None,
+                expected_source_sha256=None,
+                result_storage=storage,  # type: ignore[arg-type]
+                avatar_vendor_id=None,
+                voice_vendor_id=None,
+                subtitle=None,
+            ),
+            renew_lease=lambda: next(renewals),
+        )
+
+    assert storage.puts == []
+
+
 def seed_scene(tmp_path: Path, name: str) -> BusinessConnection:
     connection = initialize_database(tmp_path / name)
     connection.execute(
@@ -165,7 +380,7 @@ def seed_scene(tmp_path: Path, name: str) -> BusinessConnection:
         )
         VALUES (
             'asset-src', 'project-1', 'source_video', 'local://assets/src.mp4',
-            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'f12c3039fa8bf0aff5549f429f3decac524e9324a4ffb80faddd56d8a3de912e',
             0, 'video/mp4', 'employee_1'
         )
         """
@@ -178,7 +393,7 @@ def seed_scene(tmp_path: Path, name: str) -> BusinessConnection:
         )
         VALUES (
             'asset-audio', 'project-1', 'oral_audio', 'local://assets/v.mp3',
-            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            'f12c3039fa8bf0aff5549f429f3decac524e9324a4ffb80faddd56d8a3de912e',
             0, 'audio/mpeg', 'employee_1'
         )
         """
@@ -194,13 +409,13 @@ def seed_scene(tmp_path: Path, name: str) -> BusinessConnection:
                         {
                             "identity_id": "ident-1",
                             "source_asset_id": "asset-src",
-                            "source_sha256": "a" * 64,
+                            "source_sha256": _FAKE_MEDIA_SHA256,
                             "purpose": "oral_avatar_clone",
                         },
                         {
                             "identity_id": "ident-1",
                             "source_asset_id": "asset-audio",
-                            "source_sha256": "b" * 64,
+                            "source_sha256": _FAKE_MEDIA_SHA256,
                             "purpose": "oral_voice_clone",
                         },
                     ],
@@ -222,11 +437,11 @@ def seed_ready_assets(conn: BusinessConnection) -> tuple[str, str]:
         """
         INSERT INTO oral_avatars (
             id, identity_id, owner_user_id, title, vendor_avatar_id,
-            status, source_kind, source_asset_id
+            status, source_kind, source_asset_id, consent_id
         )
         VALUES (
             'avatar-ready', 'ident-1', 'employee_1', '张工分身',
-            'vendor-avatar-9', 'READY', 'VIDEO', 'asset-src'
+            'vendor-avatar-9', 'READY', 'VIDEO', 'asset-src', 'asset-auth'
         )
         """
     )
@@ -234,11 +449,11 @@ def seed_ready_assets(conn: BusinessConnection) -> tuple[str, str]:
         """
         INSERT INTO oral_voices (
             id, identity_id, owner_user_id, title, vendor_voice_id,
-            status, source_asset_id, demo_asset_id, confirmed
+            status, source_asset_id, consent_id, demo_asset_id, confirmed
         )
         VALUES (
             'voice-ready', 'ident-1', 'employee_1', '张工声音',
-            'vendor-voice-9', 'READY', 'asset-audio', 'demo-ready', 1
+            'vendor-voice-9', 'READY', 'asset-audio', 'asset-auth', 'demo-ready', 1
         )
         """
     )
@@ -300,8 +515,19 @@ def test_quicktime_avatar_preserves_mov_upload_extension(
 ) -> None:
     conn = seed_scene(tmp_path, "oral-avatar-mov.db")
     conn.execute("UPDATE assets SET content_type = 'video/quicktime' WHERE id = 'asset-src'")
-    conn.commit()
     fake_source_storage.payload = b"\x00\x00\x00\x14ftypqt  quicktime"
+    conn.execute(
+        "UPDATE assets SET sha256 = %s WHERE id = 'asset-src'",
+        (hashlib.sha256(fake_source_storage.payload).hexdigest(),),
+    )
+    record_oral_clone_consent(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        source_asset_id="asset-src",
+        purpose="oral_avatar_clone",
+    )
+    conn.commit()
     vendor, transport = make_vendor()
 
     def upload_target(body: bytes | None) -> bytes:
@@ -572,6 +798,13 @@ def test_voice_clone_archives_demo_but_requires_confirmation(
             )
 
     monkeypatch.setattr("app.oral.get_media_storage", lambda _conn: DemoStorage())
+    validated: list[tuple[bytes, str, str]] = []
+    monkeypatch.setattr(
+        "app.oral.require_media_stream",
+        lambda content, *, extension, expected_stream: validated.append(
+            (content, extension, expected_stream)
+        ),
+    )
 
     started = start_voice_clone(
         conn,
@@ -600,6 +833,7 @@ def test_voice_clone_archives_demo_but_requires_confirmation(
     assert refreshed["vendor_voice_id"] == "vendor-voice-2"
     assert refreshed["confirmed"] == 0
     assert refreshed["demo_asset_id"]
+    assert validated == [(b"DEMO", "mp3", "audio")]
 
 
 @pytest.mark.parametrize(
@@ -688,8 +922,19 @@ def test_image_avatar_uses_verified_mime_extension(
 
     conn = seed_scene(tmp_path, "oral-image-worker.db")
     conn.execute("UPDATE assets SET content_type = 'image/jpeg' WHERE id = 'asset-src'")
-    conn.commit()
     fake_source_storage.payload = payload
+    conn.execute(
+        "UPDATE assets SET sha256 = %s WHERE id = 'asset-src'",
+        (hashlib.sha256(payload).hexdigest(),),
+    )
+    record_oral_clone_consent(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        source_asset_id="asset-src",
+        purpose="oral_avatar_clone",
+    )
+    conn.commit()
     vendor, transport = make_vendor()
 
     def upload_target(body: bytes | None) -> bytes:
@@ -738,8 +983,19 @@ def test_image_avatar_rejects_invalid_magic_before_any_provider_call(
 ) -> None:
     conn = seed_scene(tmp_path, "oral-invalid-image-worker.db")
     conn.execute("UPDATE assets SET content_type = 'image/jpeg' WHERE id = 'asset-src'")
-    conn.commit()
     fake_source_storage.payload = b"not-an-image"
+    conn.execute(
+        "UPDATE assets SET sha256 = %s WHERE id = 'asset-src'",
+        (hashlib.sha256(fake_source_storage.payload).hexdigest(),),
+    )
+    record_oral_clone_consent(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        source_asset_id="asset-src",
+        purpose="oral_avatar_clone",
+    )
+    conn.commit()
     vendor, transport = make_vendor()
     started = start_avatar_clone(
         conn,
@@ -1429,6 +1685,13 @@ def test_refresh_oral_task_archives_result_asset(
 
     storage = FakeResultStorage()
     monkeypatch.setattr("app.oral.get_media_storage", lambda _conn: storage)
+    validated: list[tuple[bytes, str, str]] = []
+    monkeypatch.setattr(
+        "app.oral.require_media_stream",
+        lambda content, *, extension, expected_stream: validated.append(
+            (content, extension, expected_stream)
+        ),
+    )
     conn.execute(
         "UPDATE oral_tasks SET next_poll_at = '2000-01-01T00:00:00+00:00' WHERE id = %s",
         (created.task_id,),
@@ -1442,6 +1705,7 @@ def test_refresh_oral_task_archives_result_asset(
     assert refreshed["status"] == "SUCCEEDED"
     assert refreshed["result_asset_id"]
     assert refreshed["duration_sec"] == 32
+    assert validated == [(b"MP4BYTES", "mp4", "video")]
     wallet = conn.execute(
         "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
         ("employee_1",),
@@ -1546,6 +1810,508 @@ def test_audio_pre_submit_storage_failure_releases_reservation(
     assert tuple(task) == ("FAILED", None)
     assert tuple(wallet) == (10, 0)
     assert not any(url.endswith("/video/create_by_audio") for _, url in transport.calls)
+
+
+@pytest.mark.parametrize(
+    ("content_type", "expected_extension"),
+    [("audio/mpeg", "mp3"), ("audio/mp4", "m4a"), ("audio/wav", "wav")],
+)
+def test_audio_oral_upload_uses_validated_source_extension(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    content_type: str,
+    expected_extension: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-audio-upload-{expected_extension}.db")
+    avatar_id, _ = seed_ready_assets(conn)
+    conn.execute("UPDATE assets SET content_type = %s WHERE id = 'asset-audio'", (content_type,))
+    conn.commit()
+    vendor, transport = make_vendor()
+
+    def upload_target(body: bytes | None) -> bytes:
+        assert json.loads(body or b"{}")["file_extension"] == expected_extension
+        return envelope(
+            {
+                "upload_url": "https://up.example/audio",
+                "content_type": content_type,
+                "file_id": "audio-file",
+            }
+        )
+
+    transport.on("POST", "/api/v2/hifly/tool/create_upload_url", upload_target)
+    transport.on("POST", "/api/v2/hifly/video/create_by_audio", envelope({"task_id": "audio-task"}))
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id=None,
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=None,
+        mode="AUDIO",
+        title="音频口播",
+        script_text=None,
+        audio_asset_id="asset-audio",
+        subtitle=None,
+        idempotency_key=f"audio-upload-{expected_extension}",
+    )
+
+    assert run_next_oral_task(conn, worker_id="audio-worker", vendor=vendor) == created.task_id
+    task = conn.execute(
+        "SELECT status, vendor_task_id FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    assert tuple(task) == ("RUNNING", "audio-task")
+
+
+@pytest.mark.parametrize("content_type", ["audio/webm", "video/mp4", "image/jpeg"])
+def test_audio_oral_creation_rejects_unsupported_mime_before_reservation(
+    tmp_path: Path,
+    content_type: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-audio-invalid-{content_type.replace('/', '-')}.db")
+    avatar_id, _ = seed_ready_assets(conn)
+    conn.execute("UPDATE assets SET content_type = %s WHERE id = 'asset-audio'", (content_type,))
+    vendor, transport = make_vendor()
+
+    with pytest.raises(OralDomainError, match="声音素材格式不支持"):
+        create_oral_task(
+            conn,
+            actor=actor(),
+            project_id=None,
+            identity_id="ident-1",
+            avatar_id=avatar_id,
+            voice_id=None,
+            mode="AUDIO",
+            title="非法音频",
+            script_text=None,
+            audio_asset_id="asset-audio",
+            subtitle=None,
+            idempotency_key=f"audio-invalid-{content_type}",
+            vendor=vendor,
+        )
+
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    assert tuple(wallet) == (10, 0)
+    assert conn.execute("SELECT COUNT(*) FROM oral_tasks").fetchone()[0] == 0
+    assert transport.calls == []
+
+
+def test_audio_oral_prepare_rejects_changed_mime_and_releases_reservation(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-audio-mime-changed.db")
+    avatar_id, _ = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id=None,
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=None,
+        mode="AUDIO",
+        title="素材变化",
+        script_text=None,
+        audio_asset_id="asset-audio",
+        subtitle=None,
+        idempotency_key="audio-mime-changed",
+    )
+    conn.execute("UPDATE assets SET content_type = 'audio/webm' WHERE id = 'asset-audio'")
+    conn.commit()
+
+    assert run_next_oral_task(conn, worker_id="audio-worker", vendor=vendor) == created.task_id
+
+    task = conn.execute(
+        "SELECT status, provider_started_at FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    ledger = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY created_at, type",
+        (created.task_id,),
+    ).fetchall()
+    assert tuple(task) == ("FAILED", None)
+    assert tuple(wallet) == (10, 0)
+    assert [row["type"] for row in ledger] == ["RELEASE", "RESERVE"]
+    assert transport.calls == []
+
+
+def test_oral_submission_revalidates_authorization_before_provider(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-authorization-recheck.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="授权过期",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-authorization-recheck",
+    )
+    conn.execute(
+        "UPDATE person_identities SET authorization_status = 'EXPIRED' WHERE id = 'ident-1'"
+    )
+    conn.commit()
+
+    assert (
+        run_next_oral_task(conn, worker_id="authorization-worker", vendor=vendor) == created.task_id
+    )
+
+    task = conn.execute(
+        "SELECT status, provider_started_at FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    assert tuple(task) == ("FAILED", None)
+    assert tuple(wallet) == (10, 0)
+    assert transport.calls == []
+
+
+def test_oral_submission_revalidates_at_paid_provider_boundary(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-paid-boundary-recheck.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="出网前授权变化",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-paid-boundary-recheck",
+    )
+    lease = acquire_oral_task(conn, worker_id="boundary-worker")
+    assert lease is not None
+    work = prepare_oral_task_work(conn, lease=lease, vendor=vendor)
+    conn.commit()
+    conn.execute(
+        "UPDATE person_identities SET authorization_status = 'EXPIRED' WHERE id = 'ident-1'"
+    )
+    conn.commit()
+
+    outcome = perform_oral_task_work(
+        work,
+        mark_submission_started=lambda: mark_oral_provider_submission_started(conn, lease=lease),
+    )
+    assert outcome.status == "FAILED"
+    assert finalize_oral_task_work(conn, work=work, outcome=outcome)
+    conn.commit()
+
+    task = conn.execute(
+        "SELECT status, provider_started_at FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    assert tuple(task) == ("FAILED", None)
+    assert tuple(wallet) == (10, 0)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    "invalidate_sql",
+    [
+        "UPDATE oral_avatars SET status = 'FAILED' WHERE id = 'avatar-ready'",
+        "UPDATE oral_voices SET confirmed = 0 WHERE id = 'voice-ready'",
+        "UPDATE assets SET metadata_json = '{}' WHERE id = 'asset-auth'",
+    ],
+)
+def test_oral_submission_revalidates_clone_state_and_consent_before_provider(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    invalidate_sql: str,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-resource-recheck.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="资源重验",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-resource-recheck",
+    )
+    conn.execute(invalidate_sql)
+    conn.commit()
+
+    assert run_next_oral_task(conn, worker_id="resource-worker", vendor=vendor) == created.task_id
+
+    task = conn.execute(
+        "SELECT status, provider_started_at FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    assert tuple(task) == ("FAILED", None)
+    assert tuple(wallet) == (10, 0)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_clone_rejects_downloaded_source_hash_mismatch_before_provider(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    clone_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-{clone_kind}-source-hash.db")
+    vendor, transport = make_vendor()
+    if clone_kind == "avatar":
+        created = start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="源素材变化",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="avatar-source-hash",
+        )
+        table = "oral_avatars"
+    else:
+        created = start_voice_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="源素材变化",
+            source_asset_id="asset-audio",
+            consent_id="asset-auth",
+            idempotency_key="voice-source-hash",
+        )
+        table = "oral_voices"
+    fake_source_storage.payload = b"changed-source-bytes"
+    lease = acquire_oral_clone(conn, worker_id="source-hash-worker")
+    assert lease is not None
+
+    assert (
+        run_claimed_oral_clone(conn, lease=lease, worker_id="source-hash-worker", vendor=vendor)
+        == created.task_id
+    )
+
+    row = conn.execute(
+        f"SELECT status, provider_started_at FROM {table} WHERE id = %s",  # noqa: S608
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("FAILED", None)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("clone_kind", ["avatar", "voice"])
+def test_clone_revalidates_current_authorization_before_provider(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    clone_kind: str,
+) -> None:
+    conn = seed_scene(tmp_path, f"oral-{clone_kind}-authorization-recheck.db")
+    vendor, transport = make_vendor()
+    if clone_kind == "avatar":
+        created = start_avatar_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="授权变化",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id="asset-auth",
+            idempotency_key="avatar-authorization-recheck",
+        )
+        table = "oral_avatars"
+    else:
+        created = start_voice_clone(
+            conn,
+            actor=actor(),
+            identity_id="ident-1",
+            title="授权变化",
+            source_asset_id="asset-audio",
+            consent_id="asset-auth",
+            idempotency_key="voice-authorization-recheck",
+        )
+        table = "oral_voices"
+    conn.execute("UPDATE assets SET metadata_json = '{}' WHERE id = 'asset-auth'")
+    conn.commit()
+    lease = acquire_oral_clone(conn, worker_id="authorization-worker")
+    assert lease is not None
+
+    assert (
+        run_claimed_oral_clone(conn, lease=lease, worker_id="authorization-worker", vendor=vendor)
+        == created.task_id
+    )
+
+    row = conn.execute(
+        f"SELECT status, provider_started_at FROM {table} WHERE id = %s",  # noqa: S608
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("FAILED", None)
+    assert transport.calls == []
+
+
+def test_audio_oral_rejects_downloaded_source_hash_mismatch_and_releases_reservation(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-audio-source-hash.db")
+    avatar_id, _ = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id=None,
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=None,
+        mode="AUDIO",
+        title="音频变化",
+        script_text=None,
+        audio_asset_id="asset-audio",
+        subtitle=None,
+        idempotency_key="audio-source-hash",
+    )
+    fake_source_storage.payload = b"changed-audio-bytes"
+
+    assert (
+        run_next_oral_task(conn, worker_id="source-hash-worker", vendor=vendor) == created.task_id
+    )
+
+    task = conn.execute(
+        "SELECT status, provider_started_at FROM oral_tasks WHERE id = %s", (created.task_id,)
+    ).fetchone()
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
+    ).fetchone()
+    assert tuple(task) == ("FAILED", None)
+    assert tuple(wallet) == (10, 0)
+    assert transport.calls == []
+
+
+def test_sqlite_running_oral_prepare_failure_is_preserved_without_starving_queue(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-running-prepare-failure.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    transport.on("POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "vendor-1"}))
+    first = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="首任务",
+        script_text="文案一",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="running-prepare-first",
+    )
+    assert run_next_oral_task(conn, worker_id="worker", vendor=vendor) == first.task_id
+    conn.execute(
+        "UPDATE oral_tasks SET locked_until = '2020-01-01T00:00:00+00:00', "
+        "next_poll_at = '2020-01-01T00:00:00+00:00', "
+        "created_at = '2000-01-01T00:00:00+00:00' WHERE id = %s",
+        (first.task_id,),
+    )
+    second = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="后续任务",
+        script_text="文案二",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="running-prepare-second",
+    )
+    conn.commit()
+    monkeypatch.setattr(
+        "app.oral.get_media_storage",
+        lambda _conn: (_ for _ in ()).throw(OSError("storage unavailable")),
+    )
+
+    assert run_next_oral_task(conn, worker_id="worker", vendor=vendor) == first.task_id
+    monkeypatch.undo()
+    transport.on("POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "vendor-2"}))
+    assert run_next_oral_task(conn, worker_id="worker", vendor=vendor) == second.task_id
+
+    rows = conn.execute(
+        "SELECT id, status, vendor_task_id FROM oral_tasks WHERE id IN (%s, %s)",
+        (first.task_id, second.task_id),
+    ).fetchall()
+    states = {str(row["id"]): (str(row["status"]), row["vendor_task_id"]) for row in rows}
+    assert states[first.task_id] == ("SUBMISSION_UNCERTAIN", "vendor-1")
+    assert states[second.task_id] == ("RUNNING", "vendor-2")
+
+
+def test_sqlite_oral_finalize_failure_preserves_vendor_outcome(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-finalize-preserve.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    transport.on(
+        "POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "vendor-accepted"})
+    )
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        project_id="project-1",
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="终结失败",
+        script_text="文案",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="sqlite-finalize-preserve",
+    )
+    monkeypatch.setattr(
+        "app.oral.finalize_oral_task_work",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database failure")),
+    )
+
+    assert run_next_oral_task(conn, worker_id="worker", vendor=vendor) == created.task_id
+
+    task = conn.execute(
+        "SELECT status, vendor_task_id, reconciliation_json FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(task)[:2] == ("SUBMISSION_UNCERTAIN", "vendor-accepted")
+    assert json.loads(task["reconciliation_json"])["vendor_task_id"] == "vendor-accepted"
 
 
 def test_audio_submit_renews_between_external_steps_and_marks_paid_boundary(
@@ -1845,7 +2611,8 @@ def test_old_oral_lease_token_cannot_finalize_or_release_wallet(tmp_path: Path) 
         "SELECT status, vendor_task_id, reconciliation_json FROM oral_tasks WHERE id = %s",
         (created.task_id,),
     ).fetchone()
-    assert tuple(task) == ("SUBMITTING", None, None)
+    assert tuple(task)[:2] == ("SUBMITTING", None)
+    assert json.loads(task["reconciliation_json"]) == {"submission_contract": 1}
     wallet = conn.execute(
         "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
     ).fetchone()
@@ -1941,7 +2708,11 @@ def test_old_clone_lease_token_cannot_overwrite_new_claim(
         "SELECT status, vendor_task_id, reconciliation_json FROM oral_avatars WHERE id = %s",
         (started.task_id,),
     ).fetchone()
-    assert tuple(clone) == ("SUBMITTING", None, None)
+    assert tuple(clone)[:2] == ("SUBMITTING", None)
+    assert (
+        json.loads(clone["reconciliation_json"])["expected_source_sha256"]
+        == hashlib.sha256(b"FAKEMEDIA").hexdigest()
+    )
 
 
 def test_clone_requires_consent_bound_to_same_identity(
@@ -2020,7 +2791,7 @@ def test_clone_consent_binding_is_persisted_with_source_fingerprint(tmp_path: Pa
         purpose="oral_avatar_clone",
     )
 
-    assert result["source_sha256"] == "a" * 64
+    assert result["source_sha256"] == hashlib.sha256(b"FAKEMEDIA").hexdigest()
     metadata = json.loads(
         conn.execute("SELECT metadata_json FROM assets WHERE id = 'asset-auth'").fetchone()[0]
     )
@@ -2028,7 +2799,7 @@ def test_clone_consent_binding_is_persisted_with_source_fingerprint(tmp_path: Pa
         {
             "identity_id": "ident-1",
             "source_asset_id": "asset-src",
-            "source_sha256": "a" * 64,
+            "source_sha256": hashlib.sha256(b"FAKEMEDIA").hexdigest(),
             "purpose": "oral_avatar_clone",
         }
     ]

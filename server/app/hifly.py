@@ -95,6 +95,10 @@ class HiflyError(RuntimeError):
         self.business_rejection = business_rejection
 
 
+class HiflyProtocolError(HiflyError):
+    """The provider returned a successful envelope with an invalid payload."""
+
+
 class HiflySettingsUnavailable(RuntimeError):
     """The encrypted provider settings are missing or unreadable."""
 
@@ -212,10 +216,16 @@ _VENDOR_STATUS_NAMES: dict[int, VendorTaskStatus] = {
 
 
 def _vendor_status(status: Any) -> VendorTaskStatus:
+    if type(status) is int:
+        normalized = status
+    elif isinstance(status, str) and status in {"1", "2", "3", "4"}:
+        normalized = int(status)
+    else:
+        raise HiflyProtocolError("数字人服务返回了无效的任务状态")
     try:
-        return _VENDOR_STATUS_NAMES[int(status)]
-    except (KeyError, TypeError, ValueError):
-        return "WAITING"
+        return _VENDOR_STATUS_NAMES[normalized]
+    except KeyError as exc:
+        raise HiflyProtocolError("数字人服务返回了无效的任务状态") from exc
 
 
 def _require_text(value: Any, field: str) -> str:

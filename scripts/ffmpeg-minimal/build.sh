@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 精简 LGPL Windows 构建 ffmpeg/ffprobe（决策 #5，C7/ASR 文案链路）。
-# 产出静态 PE32+ exe，覆盖“抽音轨 + 探测时长”所需能力，不含 GPL 组件。
+# 产出静态 PE32+ exe，覆盖抽音轨、探测时长和口播媒体完整解码，不含 GPL 组件。
 #
 # 用法：scripts/ffmpeg-minimal/build.sh [输出目录]
 # 依赖：Docker；容器内使用 Debian mingw-w64 交叉编译。

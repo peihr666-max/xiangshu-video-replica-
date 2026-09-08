@@ -12,7 +12,9 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
+from typing import Literal
 
 FFMPEG_DIR_ENV = "VIDEO_REPLICA_FFMPEG_DIR"
 FFMPEG_TIMEOUT_SECONDS = 300
@@ -84,6 +86,81 @@ def probe_duration_seconds(ffprobe_path: str, media_path: Path) -> float | None:
         return float(duration)
     except (subprocess.SubprocessError, KeyError, ValueError, OSError):
         return None
+
+
+def require_media_stream(
+    content: bytes,
+    *,
+    extension: str,
+    expected_stream: Literal["audio", "video"],
+) -> None:
+    """Fail closed unless the expected stream exists and fully decodes."""
+    if not content:
+        raise MediaToolFailed("媒体文件为空，无法归档")
+    ffprobe_path = resolve_media_binary("ffprobe")
+    ffmpeg_path = resolve_media_binary("ffmpeg")
+    suffix = f".{extension.lstrip('.')}"
+    try:
+        with tempfile.TemporaryDirectory(prefix="video-replica-media-") as directory:
+            media_path = Path(directory) / f"provider-result{suffix}"
+            media_path.write_bytes(content)
+            probe = subprocess.run(
+                [
+                    ffprobe_path,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_type",
+                    "-of",
+                    "json",
+                    str(media_path),
+                ],
+                capture_output=True,
+                timeout=FFMPEG_TIMEOUT_SECONDS,
+            )
+            if probe.returncode != 0:
+                raise MediaToolFailed("媒体文件无法验证，请稍后重试")
+            payload = json.loads(probe.stdout.decode("utf-8"))
+            streams = payload.get("streams")
+            if not isinstance(streams, list) or not any(
+                isinstance(stream, dict) and stream.get("codec_type") == expected_stream
+                for stream in streams
+            ):
+                raise MediaToolFailed("媒体文件无法验证，请稍后重试")
+            decoded = subprocess.run(
+                [
+                    ffmpeg_path,
+                    "-v",
+                    "error",
+                    "-xerror",
+                    "-i",
+                    str(media_path),
+                    "-map",
+                    f"0:{expected_stream[0]}:0",
+                    "-f",
+                    "null",
+                    "-",
+                    "-progress",
+                    "pipe:1",
+                    "-nostats",
+                ],
+                capture_output=True,
+                timeout=FFMPEG_TIMEOUT_SECONDS,
+            )
+            progress = dict(
+                line.split("=", 1)
+                for line in decoded.stdout.decode("utf-8", "replace").splitlines()
+                if "=" in line
+            )
+            has_output = (
+                int(progress.get("out_time_us", "0")) > 0 or int(progress.get("frame", "0")) > 0
+            )
+            if decoded.returncode != 0 or progress.get("progress") != "end" or not has_output:
+                raise MediaToolFailed("媒体文件无法验证，请稍后重试")
+    except MediaToolFailed:
+        raise
+    except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise MediaToolFailed("媒体文件无法验证，请稍后重试") from exc
 
 
 def _run(command: list[str]) -> None:

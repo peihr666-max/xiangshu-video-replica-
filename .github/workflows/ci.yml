@@ -210,6 +210,8 @@ jobs:
             }
             $version.Trim().Split([Environment]::NewLine)[0]
           }
+          Get-Item -LiteralPath (Join-Path $resourceRoot 'ffmpeg.exe'), (Join-Path $resourceRoot 'ffprobe.exe') |
+            Select-Object Name, Length
           $sourceName = 'ffmpeg-7.1.5.tar.xz'
           $sourcePath = Join-Path $resourceRoot $sourceName
           $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
@@ -254,6 +256,50 @@ jobs:
           )
           if ($duration -lt 0.8 -or $duration -gt 1.2) {
             throw "unexpected smoke conversion duration: $duration"
+          }
+
+          $ffmpeg = Join-Path $resourceRoot 'ffmpeg.exe'
+          function Assert-FullDecode {
+            param(
+              [string]$InputPath,
+              [string]$StreamMap,
+              [string]$FailureMessage
+            )
+            $decodeOutput = & $ffmpeg -v error -xerror -i $InputPath -map $StreamMap -f null - -progress pipe:1 -nostats 2>&1 | Out-String
+            $decodeStatus = $LASTEXITCODE
+            if ($decodeStatus -ne 0) {
+              throw "$FailureMessage (exit $decodeStatus): $decodeOutput"
+            }
+            if ($decodeOutput -notmatch '(?m)^progress=end\s*$') {
+              throw "$FailureMessage (missing progress=end): $decodeOutput"
+            }
+            $outTimeMatch = [regex]::Match($decodeOutput, '(?m)^out_time_us=([1-9][0-9]*)\s*$')
+            $frameMatch = [regex]::Match($decodeOutput, '(?m)^frame=\s*([1-9][0-9]*)\s*$')
+            if (-not $outTimeMatch.Success -and -not $frameMatch.Success) {
+              throw "$FailureMessage (no decoded output): $decodeOutput"
+            }
+          }
+
+          Assert-FullDecode -InputPath $m4aPath -StreamMap '0:a:0' -FailureMessage 'valid audio stream failed full decode'
+
+          $mp3Path = Join-Path $env:RUNNER_TEMP 'ffmpeg-smoke.mp3'
+          $mp3Base64 = Get-Content -LiteralPath 'scripts/ffmpeg-minimal/fixtures/ffmpeg-smoke.mp3.b64' -Raw
+          [System.IO.File]::WriteAllBytes($mp3Path, [Convert]::FromBase64String($mp3Base64))
+          Assert-FullDecode -InputPath $mp3Path -StreamMap '0:a:0' -FailureMessage 'valid MP3 audio stream failed full decode'
+
+          $validVideoPath = Join-Path $env:RUNNER_TEMP 'h264-valid.mp4'
+          $validVideoBase64 = Get-Content -LiteralPath 'scripts/ffmpeg-minimal/fixtures/h264-valid.mp4.b64' -Raw
+          $validVideoBytes = [Convert]::FromBase64String($validVideoBase64)
+          [System.IO.File]::WriteAllBytes($validVideoPath, $validVideoBytes)
+          Assert-FullDecode -InputPath $validVideoPath -StreamMap '0:v:0' -FailureMessage 'valid H.264 video stream failed full decode'
+
+          $truncatedVideoPath = Join-Path $env:RUNNER_TEMP 'h264-truncated.mp4'
+          $truncatedVideoBytes = [byte[]]::new($validVideoBytes.Length - 64)
+          [Array]::Copy($validVideoBytes, $truncatedVideoBytes, $truncatedVideoBytes.Length)
+          [System.IO.File]::WriteAllBytes($truncatedVideoPath, $truncatedVideoBytes)
+          $truncatedOutput = & $ffmpeg -v error -xerror -i $truncatedVideoPath -map '0:v:0' -f null - -progress pipe:1 -nostats 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0) {
+            throw "truncated H.264 video unexpectedly passed full decode: $truncatedOutput"
           }
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

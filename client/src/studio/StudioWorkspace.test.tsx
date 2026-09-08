@@ -566,6 +566,87 @@ describe("V1.4 workspace integration", () => {
     },
   );
 
+  it.each([
+    {
+      page: "person-avatars" as const,
+      submitName: "开始制作",
+      endpoint: "/api/oral/avatars",
+      sourceAssetId: "zhang-courtyard",
+      purpose: "oral_avatar_clone",
+    },
+    {
+      page: "person-voices" as const,
+      submitName: "开始克隆",
+      endpoint: "/api/oral/voices",
+      sourceAssetId: "speech",
+      purpose: "oral_voice_clone",
+    },
+  ])(
+    "$page 响应丢失且 replay 为 SUBMISSION_UNCERTAIN 时持续复用请求",
+    async ({ page, submitName, endpoint, sourceAssetId, purpose }) => {
+      live.loadStudioData.mockResolvedValue({
+        ...createReviewData(),
+        loading: false,
+      });
+      let cloneCalls = 0;
+      const fetchMock = vi.fn(
+        async (input: RequestInfo | URL, _init?: RequestInit) => {
+          const url = String(input);
+          if (url.endsWith("/api/oral/clone-consents")) {
+            return new Response(
+              JSON.stringify({
+                consent_id: "consent-uncertain",
+                identity_id: "zhang",
+                source_asset_id: sourceAssetId,
+                source_sha256: "fixture-sha256",
+                purpose,
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          if (url.endsWith(endpoint)) {
+            cloneCalls += 1;
+            if (cloneCalls === 1) throw new TypeError("network unavailable");
+            return new Response(
+              JSON.stringify({
+                id: `uncertain-${cloneCalls}`,
+                status: "SUBMISSION_UNCERTAIN",
+                replayed: true,
+              }),
+              { status: 202, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          throw new Error(`unexpected request: ${url}`);
+        },
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      render(
+        <StudioWorkspace
+          currentUser={reviewUser}
+          initialState={createReviewState(page)}
+        />,
+      );
+
+      const submit = await screen.findByRole("button", { name: submitName });
+      for (const expectedCalls of [1, 2, 3]) {
+        fireEvent.click(submit);
+        await waitFor(() => expect(cloneCalls).toBe(expectedCalls));
+        await waitFor(() => expect(submit).toBeEnabled());
+      }
+
+      const bodies = fetchMock.mock.calls
+        .filter(([input]) => String(input).endsWith(endpoint))
+        .map(([, init]) => JSON.parse(String(init?.body)));
+      expect(bodies).toEqual([bodies[0], bodies[0], bodies[0]]);
+      expect(
+        fetchMock.mock.calls.filter(([input]) =>
+          String(input).endsWith("/api/oral/clone-consents"),
+        ),
+      ).toHaveLength(1);
+      vi.unstubAllGlobals();
+    },
+  );
+
   it("账号切换后隔离人物分身待重试请求并生成新幂等键", async () => {
     live.loadStudioData.mockResolvedValue({
       ...createReviewData(),
@@ -1264,6 +1345,44 @@ describe("V1.4 workspace integration", () => {
     await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
   });
 
+  it("生产项目导入后防抖保存带入的完整草稿", async () => {
+    const imported = createReviewState("workbench").draft;
+    imported.projectId = livePanel.project.id;
+    let resolveImport:
+      | ((value: { draft: typeof imported; errors: string[] }) => void)
+      | undefined;
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    live.loadCloudDraft.mockResolvedValue(undefined);
+    live.loadProjectDraft.mockReturnValue(
+      new Promise((resolve) => {
+        resolveImport = resolve;
+      }),
+    );
+    render(<StudioWorkspace currentUser={reviewUser} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "开始复刻" }));
+    fireEvent.click(screen.getByRole("button", { name: "选择测试项目" }));
+    await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveImport?.({ draft: imported, errors: [] });
+        await Promise.resolve();
+      });
+      expect(live.persistCloudDraft).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(live.persistCloudDraft).toHaveBeenCalledTimes(1);
+      expect(live.persistCloudDraft).toHaveBeenCalledWith(imported);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("workbench metric cards show real platform stats", async () => {
     live.loadStudioData.mockResolvedValue({
       ...createReviewData(),
@@ -1507,7 +1626,15 @@ describe("V1.4 workspace integration", () => {
 
     it("挂载时恢复云端草稿与我的文案列表", async () => {
       live.loadStudioData.mockResolvedValue(emptyStudioData);
-      live.loadCloudDraft.mockResolvedValue({ draft: restoredDraft() });
+      const restored = restoredDraft();
+      let resolveCloud:
+        | ((value: { draft: typeof restored }) => void)
+        | undefined;
+      live.loadCloudDraft.mockReturnValue(
+        new Promise((resolve) => {
+          resolveCloud = resolve;
+        }),
+      );
       live.loadSavedScriptList.mockResolvedValue([
         {
           id: "saved-1",
@@ -1521,17 +1648,25 @@ describe("V1.4 workspace integration", () => {
       render(<StudioWorkspace currentUser={reviewUser} />);
 
       await openCopyPage();
-      // 恢复是异步 setState：等值到位，而不是等 textarea 出现。
-      await waitFor(() =>
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveCloud?.({ draft: restored });
+          await Promise.resolve();
+        });
         expect(
           (screen.getByLabelText("二创文案") as HTMLTextAreaElement).value,
-        ).toBe("云端恢复的文案内容"),
-      );
-      expect(screen.getByText("终稿 V1")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("tab", { name: "我的文案" }));
-      expect(screen.getByText("已保存文案")).toBeInTheDocument();
-      // 未做任何编辑时不触发自动保存。
-      expect(live.persistCloudDraft).not.toHaveBeenCalled();
+        ).toBe("云端恢复的文案内容");
+        expect(screen.getByText("终稿 V1")).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("tab", { name: "我的文案" }));
+        expect(screen.getByText("已保存文案")).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000);
+        });
+        expect(live.persistCloudDraft).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("编辑二创文案后防抖自动保存到云端", async () => {

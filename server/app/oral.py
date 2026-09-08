@@ -15,7 +15,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from app.auth import CurrentUser
@@ -24,10 +24,12 @@ from app.db_portable import BusinessConnection
 from app.hifly import (
     HiflyClient,
     HiflyError,
+    HiflyProtocolError,
     hifly_client_from_settings,
     validate_tts_subtitle,
 )
 from app.media_routes import get_media_storage, storage_for_asset
+from app.media_tools import MediaToolFailed, require_media_stream
 from app.permissions import require_asset_access
 from app.settings import SettingsRepository
 from app.storage import StorageAdapter, StoredObject
@@ -236,6 +238,116 @@ def _request_hash(payload: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _source_snapshot(source_sha256: str | None = None) -> str:
+    snapshot: dict[str, Any] = {"submission_contract": 1}
+    if source_sha256 is not None:
+        snapshot["expected_source_sha256"] = source_sha256
+    return json.dumps(snapshot, sort_keys=True)
+
+
+def _has_submission_contract(lease: dict[str, Any]) -> bool:
+    try:
+        snapshot = json.loads(str(lease.get("reconciliation_json") or "{}"))
+    except json.JSONDecodeError:
+        return False
+    return isinstance(snapshot, dict) and snapshot.get("submission_contract") == 1
+
+
+def _expected_source_sha256(lease: dict[str, Any]) -> str | None:
+    try:
+        snapshot = json.loads(str(lease.get("reconciliation_json") or "{}"))
+    except json.JSONDecodeError:
+        return None
+    expected = snapshot.get("expected_source_sha256") if isinstance(snapshot, dict) else None
+    return str(expected) if isinstance(expected, str) and len(expected) == 64 else None
+
+
+def _verify_source_bytes(content: bytes, *, expected_sha256: str | None) -> None:
+    # Legacy queued rows have no snapshot; new rows always freeze the source digest.
+    if expected_sha256 is not None and hashlib.sha256(content).hexdigest() != expected_sha256:
+        raise OralDomainError("源素材内容已变更，请重新创建任务")
+
+
+def _owner_actor(conn: BusinessConnection, owner_user_id: str) -> CurrentUser:
+    row = conn.execute(
+        "SELECT username, display_name, role FROM users WHERE id = %s", (owner_user_id,)
+    ).fetchone()
+    if row is None:
+        raise OralDomainError("任务所属用户已失效")
+    role = str(row["role"])
+    if role not in {"employee", "admin", "auditor", "customer"}:
+        raise OralDomainError("任务所属用户角色无效")
+    return CurrentUser(
+        id=owner_user_id,
+        username=str(row["username"]),
+        display_name=str(row["display_name"]),
+        role=cast(Literal["employee", "admin", "auditor", "customer"], role),
+    )
+
+
+def _revalidate_clone_submission(conn: BusinessConnection, lease: dict[str, Any]) -> None:
+    if not _has_submission_contract(lease):
+        return
+    actor = _owner_actor(conn, str(lease["owner_user_id"]))
+    _require_clone_inputs(
+        conn,
+        actor=actor,
+        identity_id=str(lease["identity_id"]),
+        consent_id=str(lease["consent_id"] or ""),
+        source_asset_id=str(lease["source_asset_id"]),
+        source_kind=("AUDIO" if lease["clone_kind"] == "voice" else str(lease["source_kind"])),
+    )
+
+
+def _revalidate_oral_submission(conn: BusinessConnection, lease: dict[str, Any]) -> None:
+    if not _has_submission_contract(lease):
+        return
+    actor = _owner_actor(conn, str(lease["owner_user_id"]))
+    identity_id = str(lease["identity_id"])
+    _require_own_identity(conn, actor, identity_id)
+    avatar = conn.execute(
+        "SELECT * FROM oral_avatars WHERE id = %s AND owner_user_id = %s",
+        (str(lease["avatar_id"]), actor.id),
+    ).fetchone()
+    if (
+        avatar is None
+        or str(avatar["status"]) != "READY"
+        or str(avatar["identity_id"]) != identity_id
+    ):
+        raise OralDomainError("口播分身已失效，请重新选择")
+    avatar_data = dict(avatar)
+    _require_clone_inputs(
+        conn,
+        actor=actor,
+        identity_id=identity_id,
+        consent_id=str(avatar_data.get("consent_id") or ""),
+        source_asset_id=str(avatar_data["source_asset_id"]),
+        source_kind=str(avatar_data["source_kind"]),
+    )
+    if str(lease["mode"]) == "TTS":
+        voice = conn.execute(
+            "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s",
+            (str(lease["voice_id"]), actor.id),
+        ).fetchone()
+        if (
+            voice is None
+            or str(voice["status"]) != "READY"
+            or str(voice["identity_id"]) != identity_id
+            or int(voice["confirmed"] or 0) != 1
+            or not voice["demo_asset_id"]
+        ):
+            raise OralDomainError("口播声音已失效，请重新选择")
+        voice_data = dict(voice)
+        _require_clone_inputs(
+            conn,
+            actor=actor,
+            identity_id=identity_id,
+            consent_id=str(voice_data.get("consent_id") or ""),
+            source_asset_id=str(voice_data["source_asset_id"]),
+            source_kind="AUDIO",
+        )
+
+
 def record_oral_clone_consent(
     conn: BusinessConnection,
     *,
@@ -383,8 +495,9 @@ def start_avatar_clone(
         """
         INSERT INTO oral_avatars (
             id, identity_id, owner_user_id, title, vendor_task_id,
-            status, source_kind, source_asset_id, consent_id, idempotency_key, request_hash
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            status, source_kind, source_asset_id, consent_id, idempotency_key, request_hash,
+            reconciliation_json
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (owner_user_id, idempotency_key) DO NOTHING
         RETURNING id
         """,
@@ -400,6 +513,7 @@ def start_avatar_clone(
             consent_id,
             idempotency_key,
             request_hash,
+            _source_snapshot(str(source["sha256"])),
         ),
     ).fetchone()
     if inserted is not None:
@@ -460,8 +574,9 @@ def start_voice_clone(
         """
         INSERT INTO oral_voices (
             id, identity_id, owner_user_id, title, vendor_task_id,
-            status, source_asset_id, consent_id, idempotency_key, request_hash
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            status, source_asset_id, consent_id, idempotency_key, request_hash,
+            reconciliation_json
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (owner_user_id, idempotency_key) DO NOTHING
         RETURNING id
         """,
@@ -476,6 +591,7 @@ def start_voice_clone(
             consent_id,
             idempotency_key,
             request_hash,
+            _source_snapshot(str(source["sha256"])),
         ),
     ).fetchone()
     if inserted is not None:
@@ -553,7 +669,14 @@ def _voice_extension_for(asset: dict[str, Any]) -> str:
 
 
 def acquire_oral_clone(conn: BusinessConnection, *, worker_id: str) -> dict[str, Any] | None:
-    locked_until = (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
+    locked_until: str | int = (
+        ORAL_TASK_LEASE_SECONDS
+        if conn.is_postgres
+        else (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
+    )
+    lease_deadline = (
+        "(CURRENT_TIMESTAMP + (%s * interval '1 second'))::text" if conn.is_postgres else "%s"
+    )
     for table, clone_kind in (("oral_avatars", "avatar"), ("oral_voices", "voice")):
         lease_token = str(uuid4())
         lease_expired = (
@@ -583,7 +706,7 @@ def acquire_oral_clone(conn: BusinessConnection, *, worker_id: str) -> dict[str,
                 status = CASE WHEN status = 'PENDING' THEN 'SUBMITTING' ELSE status END,
                 provider_started_at = CASE WHEN status = 'PENDING' THEN NULL
                     ELSE provider_started_at END,
-                locked_by = %s, lease_token = %s, locked_until = %s,
+                locked_by = %s, lease_token = %s, locked_until = {lease_deadline},
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = (
                 SELECT id FROM {table}
@@ -607,6 +730,8 @@ def _clone_table(lease: dict[str, Any]) -> str:
 
 def renew_oral_clone_lease(conn: BusinessConnection, *, lease: dict[str, Any]) -> bool:
     """Extend only the exact current avatar/voice clone lease."""
+    if str(lease["status"]) == "SUBMITTING":
+        _revalidate_clone_submission(conn, lease)
     table = _clone_table(lease)
     if conn.is_postgres:
         updated = conn.execute(
@@ -642,6 +767,7 @@ def mark_oral_clone_provider_submission_started(
     conn: BusinessConnection, *, lease: dict[str, Any]
 ) -> bool:
     """Persist the boundary immediately before the paid clone-create call."""
+    _revalidate_clone_submission(conn, lease)
     table = _clone_table(lease)
     if conn.is_postgres:
         updated = conn.execute(
@@ -672,6 +798,7 @@ class PreparedCloneWork:
     source_storage: StorageAdapter | None
     source_key: str | None
     source_extension: str | None
+    expected_source_sha256: str | None
     result_storage: StorageAdapter | None
 
 
@@ -725,6 +852,8 @@ def prepare_oral_clone_work(
     lease: dict[str, Any],
     vendor: HiflyClient | None = None,
 ) -> PreparedCloneWork:
+    if str(lease["status"]) == "SUBMITTING":
+        _revalidate_clone_submission(conn, lease)
     active_vendor = vendor or hifly_client_from_settings(conn)
     if str(lease["status"]) != "SUBMITTING":
         return PreparedCloneWork(
@@ -733,6 +862,7 @@ def prepare_oral_clone_work(
             source_storage=None,
             source_key=None,
             source_extension=None,
+            expected_source_sha256=None,
             result_storage=(get_media_storage(conn) if lease["clone_kind"] == "voice" else None),
         )
     asset = _asset(conn, str(lease["source_asset_id"]))
@@ -750,6 +880,7 @@ def prepare_oral_clone_work(
         source_storage=source_storage,
         source_key=source_key,
         source_extension=extension,
+        expected_source_sha256=_expected_source_sha256(lease),
         result_storage=None,
     )
 
@@ -759,6 +890,8 @@ def _require_clone_lease_step(check: Callable[[], bool] | None) -> None:
         return
     try:
         current = check()
+    except OralDomainError:
+        raise
     except Exception as exc:  # noqa: BLE001 - a failed fence is a lost lease
         raise OralCloneLeaseLost("克隆任务租约续期失败") from exc
     if not current:
@@ -783,6 +916,7 @@ def perform_oral_clone_work(
                 raise OralDomainError("克隆素材已失效")
             _require_clone_lease_step(renew_lease)
             content = work.source_storage.get_object(work.source_key)
+            _verify_source_bytes(content, expected_sha256=work.expected_source_sha256)
             _require_clone_lease_step(renew_lease)
             source_extension = (
                 _verified_image_extension(content)
@@ -825,6 +959,8 @@ def perform_oral_clone_work(
                 return CloneOutcome(status="FAILED", error_message="声音试听文件缺失，请重新克隆")
             content = work.vendor.download(snapshot.demo_url)
             _require_clone_lease_step(renew_lease)
+            require_media_stream(content, extension="mp3", expected_stream="audio")
+            _require_clone_lease_step(renew_lease)
             demo = work.result_storage.put_object(
                 f"oral/voice-demos/{lease['id']}.mp3", content, content_type="audio/mpeg"
             )
@@ -832,6 +968,10 @@ def perform_oral_clone_work(
         return CloneOutcome(status=status, vendor_resource_id=snapshot.voice, demo=demo)
     except OralCloneLeaseLost:
         raise
+    except HiflyProtocolError as exc:
+        return CloneOutcome(status="FAILED", error_message=str(exc)[:500])
+    except MediaToolFailed as exc:
+        return CloneOutcome(status="FAILED", error_message=str(exc)[:500])
     except HiflyError as exc:
         if str(lease["status"]) == "SUBMITTING":
             status = (
@@ -1031,7 +1171,17 @@ def run_claimed_oral_clone(
 ) -> str:
     if conn.is_postgres:
         raise OralDomainError("PostgreSQL 口播 worker 必须使用分段短事务执行")
-    work = prepare_oral_clone_work(conn, lease=lease, vendor=vendor)
+    try:
+        work = prepare_oral_clone_work(conn, lease=lease, vendor=vendor)
+    except Exception as exc:
+        if str(lease["status"]) == "SUBMITTING":
+            fail_claimed_oral_clone(conn, lease=lease, cause=exc)
+        else:
+            preserve_oral_clone_outcome_for_reconciliation(
+                conn, lease=lease, outcome=None, cause=exc
+            )
+        conn.commit()
+        return str(lease["id"])
     conn.commit()
     outcome = perform_oral_clone_work(
         work,
@@ -1040,7 +1190,13 @@ def run_claimed_oral_clone(
             conn, lease=lease
         ),
     )
-    finalize_oral_clone_work(conn, work=work, outcome=outcome)
+    try:
+        finalize_oral_clone_work(conn, work=work, outcome=outcome)
+    except Exception as exc:
+        conn.rollback()
+        preserve_oral_clone_outcome_for_reconciliation(
+            conn, lease=lease, outcome=outcome, cause=exc
+        )
     conn.commit()
     return str(lease["id"])
 
@@ -1133,6 +1289,10 @@ def create_oral_task(
             asset_id=audio_asset_id,
             message="口播音频不存在或无权使用",
         )
+        _voice_extension_for(audio_asset)
+        audio_source_sha256 = str(audio_asset.get("sha256") or "")
+        if len(audio_source_sha256) != 64:
+            raise OralDomainError("口播音频指纹缺失，请重新上传")
         asset_project_id = str(audio_asset.get("project_id") or "")
         if not asset_project_id:
             raise OralDomainError("口播音频必须属于一个可用项目")
@@ -1186,8 +1346,8 @@ def create_oral_task(
         INSERT INTO oral_tasks (
             id, owner_user_id, project_id, identity_id, avatar_id, voice_id, mode, title,
             script_text, audio_asset_id, subtitle_json, status,
-            estimated_cost_fen, idempotency_key, request_hash
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'QUEUED', %s, %s, %s)
+            estimated_cost_fen, idempotency_key, request_hash, reconciliation_json
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'QUEUED', %s, %s, %s, %s)
         ON CONFLICT (owner_user_id, idempotency_key) DO NOTHING
         RETURNING id
         """,
@@ -1206,6 +1366,7 @@ def create_oral_task(
             price,
             idempotency_key,
             request_hash,
+            _source_snapshot(audio_source_sha256 if mode == "AUDIO" else None),
         ),
     ).fetchone()
     if inserted is None:
@@ -1293,8 +1454,6 @@ def _release_oral_queue_slot(conn: BusinessConnection, *, task_id: str) -> None:
 
 
 def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, Any] | None:
-    now = datetime.now(UTC)
-    locked_until = (now + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
     if conn.is_postgres:
         retryable = conn.execute(
             """
@@ -1325,7 +1484,8 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
         continuation_token = str(uuid4())
         continuation = conn.execute(
             """
-            UPDATE oral_tasks SET locked_by = %s, lease_token = %s, locked_until = %s,
+            UPDATE oral_tasks SET locked_by = %s, lease_token = %s,
+                locked_until = (CURRENT_TIMESTAMP + (%s * interval '1 second'))::text,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = (
                 SELECT id FROM oral_tasks
@@ -1336,7 +1496,7 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
                 LIMIT 1 FOR UPDATE SKIP LOCKED
             ) RETURNING *
             """,
-            (worker_id, continuation_token, locked_until),
+            (worker_id, continuation_token, ORAL_TASK_LEASE_SECONDS),
         ).fetchone()
         if continuation is not None:
             return dict(continuation)
@@ -1361,14 +1521,15 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
             UPDATE oral_tasks SET status = 'SUBMITTING', attempt = attempt + 1,
                 submitted_at = COALESCE(submitted_at::timestamptz, CURRENT_TIMESTAMP),
                 provider_started_at = NULL,
-                locked_by = %s, lease_token = %s, locked_until = %s,
+                locked_by = %s, lease_token = %s,
+                locked_until = (CURRENT_TIMESTAMP + (%s * interval '1 second'))::text,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = (
                 SELECT id FROM oral_tasks WHERE owner_user_id = %s AND status = 'QUEUED'
                 ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
             ) RETURNING *
             """,
-            (worker_id, lease_token, locked_until, user_id),
+            (worker_id, lease_token, ORAL_TASK_LEASE_SECONDS, user_id),
         ).fetchone()
         if row is None:
             return None
@@ -1378,6 +1539,7 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
             (user_id,),
         )
         return dict(row)
+    locked_until = (datetime.now(UTC) + timedelta(seconds=ORAL_TASK_LEASE_SECONDS)).isoformat()
     conn.execute(
         """
         UPDATE oral_tasks SET status = 'QUEUED', locked_by = NULL,
@@ -1424,6 +1586,8 @@ def acquire_oral_task(conn: BusinessConnection, *, worker_id: str) -> dict[str, 
 
 def renew_oral_task_lease(conn: BusinessConnection, *, lease: dict[str, Any]) -> bool:
     """Extend only the exact still-current lease before another external step."""
+    if str(lease["status"]) == "SUBMITTING":
+        _revalidate_oral_submission(conn, lease)
     if conn.is_postgres:
         updated = conn.execute(
             "UPDATE oral_tasks SET locked_until = "
@@ -1459,6 +1623,7 @@ def mark_oral_provider_submission_started(
     conn: BusinessConnection, *, lease: dict[str, Any]
 ) -> bool:
     """Fence the boundary after which an interrupted submit needs reconciliation."""
+    _revalidate_oral_submission(conn, lease)
     if conn.is_postgres:
         updated = conn.execute(
             "UPDATE oral_tasks SET provider_started_at = CURRENT_TIMESTAMP, locked_until = "
@@ -1488,6 +1653,8 @@ class PreparedOralWork:
     vendor: HiflyClient
     audio_storage: StorageAdapter | None
     audio_key: str | None
+    audio_extension: str | None
+    expected_source_sha256: str | None
     result_storage: StorageAdapter | None
     avatar_vendor_id: str | None
     voice_vendor_id: str | None
@@ -1527,17 +1694,23 @@ def prepare_oral_task_work(
     lease: dict[str, Any],
     vendor: HiflyClient | None = None,
 ) -> PreparedOralWork:
+    if str(lease["status"]) == "SUBMITTING":
+        _revalidate_oral_submission(conn, lease)
     active_vendor = vendor or hifly_client_from_settings(conn)
     audio_storage: StorageAdapter | None = None
     audio_key: str | None = None
+    audio_extension: str | None = None
+    expected_source_sha256: str | None = None
     avatar_vendor_id: str | None = None
     voice_vendor_id: str | None = None
     subtitle = None
     if str(lease["status"]) == "SUBMITTING":
         if lease["mode"] == "AUDIO":
             asset = _asset(conn, str(lease["audio_asset_id"]))
-            if asset is None:
+            if asset is None or str(asset["created_by_user_id"]) != str(lease["owner_user_id"]):
                 raise OralDomainError("口播音频已失效，请重新上传")
+            audio_extension = _voice_extension_for(asset)
+            expected_source_sha256 = _expected_source_sha256(lease)
             audio_storage, audio_key = _asset_storage_target(conn, asset)
         avatar_vendor_id = _vendor_avatar_id(conn, str(lease["avatar_id"]))
         voice_vendor_id = (
@@ -1549,6 +1722,8 @@ def prepare_oral_task_work(
         vendor=active_vendor,
         audio_storage=audio_storage,
         audio_key=audio_key,
+        audio_extension=audio_extension,
+        expected_source_sha256=expected_source_sha256,
         result_storage=get_media_storage(conn) if str(lease["status"]) == "RUNNING" else None,
         avatar_vendor_id=avatar_vendor_id,
         voice_vendor_id=voice_vendor_id,
@@ -1561,6 +1736,8 @@ def _require_oral_lease_step(check: Callable[[], bool] | None) -> None:
         return
     try:
         current = check()
+    except OralDomainError:
+        raise
     except Exception as exc:  # noqa: BLE001 - a failed fence is a lost lease
         raise OralTaskLeaseLost("口播任务租约续期失败") from exc
     if not current:
@@ -1579,10 +1756,13 @@ def perform_oral_task_work(
         if str(lease["status"]) == "SUBMITTING":
             audio_target = None
             if work.audio_storage is not None and work.audio_key is not None:
+                if work.audio_extension is None:
+                    raise OralDomainError("口播音频格式无法验证，请重新上传")
                 _require_oral_lease_step(renew_lease)
                 audio_content = work.audio_storage.get_object(work.audio_key)
+                _verify_source_bytes(audio_content, expected_sha256=work.expected_source_sha256)
                 _require_oral_lease_step(renew_lease)
-                audio_target = work.vendor.create_upload_url("mp3")
+                audio_target = work.vendor.create_upload_url(work.audio_extension)
                 _require_oral_lease_step(renew_lease)
                 work.vendor.upload_file(audio_target, audio_content)
                 _require_oral_lease_step(renew_lease)
@@ -1620,6 +1800,8 @@ def perform_oral_task_work(
             raise OralDomainError("成片存储暂不可用")
         content = work.vendor.download(snapshot.video_url)
         _require_oral_lease_step(renew_lease)
+        require_media_stream(content, extension="mp4", expected_stream="video")
+        _require_oral_lease_step(renew_lease)
         stored = work.result_storage.put_object(
             f"oral/results/{lease['id']}.mp4", content, content_type="video/mp4"
         )
@@ -1627,6 +1809,10 @@ def perform_oral_task_work(
         return OralOutcome(status="SUCCEEDED", stored=stored, duration_sec=snapshot.duration)
     except OralTaskLeaseLost:
         raise
+    except HiflyProtocolError as exc:
+        return OralOutcome(status="FAILED", error_message=str(exc)[:500])
+    except MediaToolFailed as exc:
+        return OralOutcome(status="FAILED", error_message=str(exc)[:500])
     except HiflyError as exc:
         if str(lease["status"]) == "SUBMITTING":
             status = (
@@ -1816,14 +2002,28 @@ def run_next_oral_task(
     lease = lease or acquire_oral_task(conn, worker_id=worker_id)
     if lease is None:
         return None
-    work = prepare_oral_task_work(conn, lease=lease, vendor=vendor)
+    try:
+        work = prepare_oral_task_work(conn, lease=lease, vendor=vendor)
+    except Exception as exc:
+        if str(lease["status"]) == "SUBMITTING":
+            fail_claimed_oral_task(conn, lease=lease, cause=exc)
+        else:
+            preserve_oral_task_outcome_for_reconciliation(
+                conn, lease=lease, outcome=None, cause=exc
+            )
+        conn.commit()
+        return str(lease["id"])
     conn.commit()
     outcome = perform_oral_task_work(
         work,
         renew_lease=lambda: renew_oral_task_lease(conn, lease=lease),
         mark_submission_started=lambda: mark_oral_provider_submission_started(conn, lease=lease),
     )
-    finalize_oral_task_work(conn, work=work, outcome=outcome)
+    try:
+        finalize_oral_task_work(conn, work=work, outcome=outcome)
+    except Exception as exc:
+        conn.rollback()
+        preserve_oral_task_outcome_for_reconciliation(conn, lease=lease, outcome=outcome, cause=exc)
     conn.commit()
     return str(lease["id"])
 

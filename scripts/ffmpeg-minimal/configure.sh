@@ -36,11 +36,11 @@ exec "$configure_command" \
   --enable-small \
   --enable-ffmpeg \
   --enable-ffprobe \
-  --enable-protocol=file \
+  --enable-protocol=file,pipe \
   --enable-demuxer=mov,mp4,m4a,matroska,webm,avi,flv,ogg,wav,mp3,aac \
-  --enable-parser=aac,ac3,dca,flac,h264,hevc,mpegaudio,opus,vorbis,vp8,vp9 \
-  --enable-decoder=aac,mp3,mp2,flac,opus,vorbis,pcm_s16le,pcm_u8,ac3,eac3 \
-  --enable-encoder=aac,flac,pcm_s16le \
-  --enable-muxer=mp4,ipod,adts,flac,wav \
+  --enable-parser=aac,ac3,dca,flac,h264,hevc,mpeg4video,mpegaudio,opus,vorbis,vp8,vp9 \
+  --enable-decoder=aac,mp3,mp2,flac,opus,vorbis,pcm_s16le,pcm_u8,ac3,eac3,h264,hevc,mpeg4,vp8,vp9 \
+  --enable-encoder=aac,flac,pcm_s16le,wrapped_avframe \
+  --enable-muxer=mp4,ipod,adts,flac,wav,null \
   --enable-bsf=aac_adtstoasc \
   --enable-filter=aresample,aformat,anull,volume

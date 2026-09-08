@@ -253,6 +253,11 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
             assert first_lease is not None
             assert first_lease["lease_token"]
             assert second_lease is None
+            assert first.execute(
+                "SELECT locked_until::timestamptz BETWEEN "
+                "CURRENT_TIMESTAMP + interval '110 seconds' AND "
+                "CURRENT_TIMESTAMP + interval '130 seconds' FROM oral_tasks WHERE id = 'oral-1'"
+            ).fetchone()[0]
             first.commit()
             second.rollback()
             first_business = BusinessConnection.postgres(first)
@@ -277,6 +282,12 @@ def test_oral_fair_queue_claim_is_single_winner_across_connections(
                 assert clone_lease is not None
                 assert clone_lease["clone_kind"] == clone_kind
                 assert clone_lease["id"] == clone_id
+                assert first.execute(
+                    f"SELECT locked_until::timestamptz BETWEEN "  # noqa: S608
+                    "CURRENT_TIMESTAMP + interval '110 seconds' AND "
+                    f"CURRENT_TIMESTAMP + interval '130 seconds' FROM {table} WHERE id = %s",
+                    (clone_id,),
+                ).fetchone()[0]
                 first.commit()
                 assert renew_oral_clone_lease(first_business, lease=clone_lease)
                 first.commit()

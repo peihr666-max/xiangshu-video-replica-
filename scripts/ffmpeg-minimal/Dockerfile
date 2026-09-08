@@ -1,5 +1,5 @@
 # 精简 LGPL Windows 构建：为内部 NSIS 安装包生成静态 ffmpeg.exe/ffprobe.exe。
-# 只保留“上传视频 -> 抽音轨（AAC/m4a）-> ffprobe 探测时长”所需能力，
+# 只保留抽音轨、探测时长以及口播 MP3/MP4 完整解码校验所需能力，
 # 不启用 x264/x265 等 GPL 组件。
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS build
 

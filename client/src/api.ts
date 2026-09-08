@@ -873,7 +873,13 @@ export type OralCloneConsent = {
 
 export type OralCloneCreated = {
   id: string;
-  status: string;
+  status:
+    | "PENDING"
+    | "SUBMITTING"
+    | "SUBMISSION_UNCERTAIN"
+    | "RUNNING"
+    | "READY"
+    | "FAILED";
 };
 
 export type OralAvatarCloneRequest = {
