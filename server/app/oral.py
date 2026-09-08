@@ -738,11 +738,6 @@ def preserve_oral_clone_outcome_for_reconciliation(
 ) -> bool:
     table = "oral_avatars" if lease["clone_kind"] == "avatar" else "oral_voices"
     resource_column = "vendor_avatar_id" if lease["clone_kind"] == "avatar" else "vendor_voice_id"
-    lease_current = (
-        "locked_until::timestamptz > CURRENT_TIMESTAMP"
-        if conn.is_postgres
-        else "locked_until > CURRENT_TIMESTAMP"
-    )
     failure_message = (
         f"供应商结果已返回但本地终结失败：{type(cause).__name__}"
         if outcome is not None
@@ -755,7 +750,7 @@ def preserve_oral_clone_outcome_for_reconciliation(
         "reconciliation_json = COALESCE(%s, reconciliation_json), "
         "error_message = %s, locked_by = NULL, "
         "lease_token = NULL, locked_until = NULL, updated_at = CURRENT_TIMESTAMP "
-        f"WHERE id = %s AND lease_token = %s AND status = %s AND {lease_current} RETURNING id",
+        "WHERE id = %s AND lease_token = %s AND status = %s RETURNING id",
         (
             outcome.vendor_task_id if outcome else None,
             outcome.vendor_resource_id if outcome else None,
@@ -1356,11 +1351,6 @@ def preserve_oral_task_outcome_for_reconciliation(
     outcome: OralOutcome | None,
     cause: Exception,
 ) -> bool:
-    lease_current = (
-        "locked_until::timestamptz > CURRENT_TIMESTAMP"
-        if conn.is_postgres
-        else "locked_until > CURRENT_TIMESTAMP"
-    )
     failure_message = (
         f"供应商结果已返回但本地终结失败：{type(cause).__name__}"
         if outcome is not None
@@ -1374,7 +1364,7 @@ def preserve_oral_task_outcome_for_reconciliation(
         "error_message = %s, locked_by = NULL, "
         "lease_token = NULL, locked_until = NULL, next_poll_at = NULL, "
         "updated_at = CURRENT_TIMESTAMP WHERE id = %s "
-        f"AND lease_token = %s AND status = %s AND {lease_current} RETURNING id",
+        "AND lease_token = %s AND status = %s RETURNING id",
         (
             outcome.vendor_task_id if outcome else None,
             outcome.vendor_error_code if outcome else None,

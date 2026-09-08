@@ -34,6 +34,8 @@ from app.oral import (
     finalize_oral_clone_work,
     finalize_oral_task_work,
     oral_unit_price_fen,
+    preserve_oral_clone_outcome_for_reconciliation,
+    preserve_oral_task_outcome_for_reconciliation,
     record_oral_clone_consent,
     refresh_avatar_clone,
     refresh_voice_clone,
@@ -809,6 +811,17 @@ def test_old_oral_lease_token_cannot_finalize_or_release_wallet(tmp_path: Path) 
     conn.commit()
     with pytest.raises(OralDomainError, match="租约"):
         finalize_oral_task_work(conn, work=work, outcome=OralOutcome(status="FAILED"))
+    assert not preserve_oral_task_outcome_for_reconciliation(
+        conn,
+        lease=lease,
+        outcome=OralOutcome(status="RUNNING", vendor_task_id="stale-vendor-task"),
+        cause=RuntimeError("finalize failed"),
+    )
+    task = conn.execute(
+        "SELECT status, vendor_task_id, reconciliation_json FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(task) == ("SUBMITTING", None, None)
     wallet = conn.execute(
         "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = 'employee_1'"
     ).fetchone()
@@ -842,6 +855,17 @@ def test_old_clone_lease_token_cannot_overwrite_new_claim(
     conn.commit()
     with pytest.raises(OralDomainError, match="租约"):
         finalize_oral_clone_work(conn, work=work, outcome=CloneOutcome(status="RUNNING"))
+    assert not preserve_oral_clone_outcome_for_reconciliation(
+        conn,
+        lease=lease,
+        outcome=CloneOutcome(status="RUNNING", vendor_task_id="stale-clone-task"),
+        cause=RuntimeError("finalize failed"),
+    )
+    clone = conn.execute(
+        "SELECT status, vendor_task_id, reconciliation_json FROM oral_avatars WHERE id = %s",
+        (started.task_id,),
+    ).fetchone()
+    assert tuple(clone) == ("SUBMITTING", None, None)
 
 
 def test_clone_requires_consent_bound_to_same_identity(
@@ -957,6 +981,11 @@ def test_oral_finalize_db_failure_preserves_outcome_and_wallet_reservation(
     )
     lease = acquire_oral_task(conn, worker_id="worker-finalize-failure")
     assert lease is not None
+    conn.execute(
+        "UPDATE oral_tasks SET locked_until = '2020-01-01T00:00:00+00:00' WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
     outcome = OralOutcome(status="RUNNING", vendor_task_id="vendor-video-accepted")
 
     @contextmanager
@@ -1020,6 +1049,11 @@ def test_clone_finalize_db_failure_preserves_vendor_association(
     )
     lease = acquire_oral_clone(conn, worker_id="worker-clone-finalize-failure")
     assert lease is not None
+    conn.execute(
+        "UPDATE oral_avatars SET locked_until = '2020-01-01T00:00:00+00:00' WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
     outcome = CloneOutcome(status="RUNNING", vendor_task_id="vendor-clone-accepted")
 
     @contextmanager

@@ -852,6 +852,28 @@ def _run_pg_generation_step(
             )
 
 
+def _preserve_pg_oral_clone(
+    *, lease: dict[str, Any], outcome: CloneOutcome | None, cause: Exception
+) -> None:
+    with pg_transaction() as raw_conn:
+        preserved = preserve_oral_clone_outcome_for_reconciliation(
+            BusinessConnection.postgres(raw_conn), lease=lease, outcome=outcome, cause=cause
+        )
+    if not preserved:
+        logger.error("oral clone outcome not preserved because the lease token was replaced")
+
+
+def _preserve_pg_oral_task(
+    *, lease: dict[str, Any], outcome: OralOutcome | None, cause: Exception
+) -> None:
+    with pg_transaction() as raw_conn:
+        preserved = preserve_oral_task_outcome_for_reconciliation(
+            BusinessConnection.postgres(raw_conn), lease=lease, outcome=outcome, cause=cause
+        )
+    if not preserved:
+        logger.error("oral task outcome not preserved because the lease token was replaced")
+
+
 def _finalize_pg_oral_clone_after_external(
     *, lease: dict[str, Any], work: PreparedCloneWork, outcome: CloneOutcome
 ) -> None:
@@ -862,13 +884,7 @@ def _finalize_pg_oral_clone_after_external(
             )
     except Exception as exc:
         logger.error("oral clone finalization failed; preserving outcome: %s", type(exc).__name__)
-        with pg_transaction() as raw_conn:
-            preserve_oral_clone_outcome_for_reconciliation(
-                BusinessConnection.postgres(raw_conn),
-                lease=lease,
-                outcome=outcome,
-                cause=exc,
-            )
+        _preserve_pg_oral_clone(lease=lease, outcome=outcome, cause=exc)
 
 
 def _finalize_pg_oral_task_after_external(
@@ -881,13 +897,7 @@ def _finalize_pg_oral_task_after_external(
             )
     except Exception as exc:
         logger.error("oral task finalization failed; preserving outcome: %s", type(exc).__name__)
-        with pg_transaction() as raw_conn:
-            preserve_oral_task_outcome_for_reconciliation(
-                BusinessConnection.postgres(raw_conn),
-                lease=lease,
-                outcome=outcome,
-                cause=exc,
-            )
+        _preserve_pg_oral_task(lease=lease, outcome=outcome, cause=exc)
 
 
 def run_pg_worker_once(
@@ -1052,21 +1062,19 @@ def run_pg_worker_once(
                     if str(clone_lease["status"]) == "SUBMITTING":
                         fail_claimed_oral_clone(conn, lease=clone_lease, cause=exc)
                     else:
-                        preserve_oral_clone_outcome_for_reconciliation(
+                        preserved = preserve_oral_clone_outcome_for_reconciliation(
                             conn, lease=clone_lease, outcome=None, cause=exc
                         )
+                        if not preserved:
+                            logger.error(
+                                "oral clone preparation failure not preserved; lease replaced"
+                            )
             else:
                 clone_outcome = None
                 try:
                     clone_outcome = perform_oral_clone_work(clone_work)
                 except Exception as exc:
-                    with pg_transaction() as raw_conn:
-                        preserve_oral_clone_outcome_for_reconciliation(
-                            BusinessConnection.postgres(raw_conn),
-                            lease=clone_lease,
-                            outcome=None,
-                            cause=exc,
-                        )
+                    _preserve_pg_oral_clone(lease=clone_lease, outcome=None, cause=exc)
                 else:
                     _finalize_pg_oral_clone_after_external(
                         lease=clone_lease, work=clone_work, outcome=clone_outcome
@@ -1092,21 +1100,19 @@ def run_pg_worker_once(
                     if str(oral_lease["status"]) == "SUBMITTING":
                         fail_claimed_oral_task(conn, lease=oral_lease, cause=exc)
                     else:
-                        preserve_oral_task_outcome_for_reconciliation(
+                        preserved = preserve_oral_task_outcome_for_reconciliation(
                             conn, lease=oral_lease, outcome=None, cause=exc
                         )
+                        if not preserved:
+                            logger.error(
+                                "oral task preparation failure not preserved; lease replaced"
+                            )
             else:
                 oral_outcome = None
                 try:
                     oral_outcome = perform_oral_task_work(oral_work)
                 except Exception as exc:
-                    with pg_transaction() as raw_conn:
-                        preserve_oral_task_outcome_for_reconciliation(
-                            BusinessConnection.postgres(raw_conn),
-                            lease=oral_lease,
-                            outcome=None,
-                            cause=exc,
-                        )
+                    _preserve_pg_oral_task(lease=oral_lease, outcome=None, cause=exc)
                 else:
                     _finalize_pg_oral_task_after_external(
                         lease=oral_lease, work=oral_work, outcome=oral_outcome
