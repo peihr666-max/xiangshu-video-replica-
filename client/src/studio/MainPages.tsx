@@ -11,6 +11,7 @@ import {
   retryStudioTask,
   uploadWorkbenchSourceVideo,
 } from "./live";
+import { OralCompositionPanel } from "./OralCompositionPanel";
 import { draftFromTask } from "./state";
 import type { StudioTask, StudioVideo } from "./types";
 import {
@@ -987,6 +988,16 @@ export function TaskDetailPage() {
             ))}
           </dl>
         </Panel>
+        {!review &&
+          task.backendKind === "oral_task" &&
+          task.backendId &&
+          task.status === "completed" && (
+            <OralCompositionPanel
+              oralTaskId={task.backendId}
+              defaultText={task.title}
+              onActivated={refresh}
+            />
+          )}
         <Panel>
           <h2>动作</h2>
           <div className="studio-result-actions">

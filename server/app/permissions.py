@@ -351,6 +351,19 @@ def require_asset_access(
         if owned_oral_result is not None:
             return cast(sqlite3.Row, row)
 
+    if str(row["kind"]) == "oral_composed_video":
+        owned_oral_result = conn.execute(
+            """
+            SELECT 1
+            FROM oral_compositions
+            WHERE result_asset_id = %s AND owner_user_id = %s
+            LIMIT 1
+            """,
+            (asset_id, actor.id),
+        ).fetchone()
+        if owned_oral_result is not None:
+            return cast(sqlite3.Row, row)
+
     # Contact sheets live outside character_assets, so grant access through the
     # published character version referenced in their asset metadata.
     if str(row["kind"]) == "character_contact_sheet":

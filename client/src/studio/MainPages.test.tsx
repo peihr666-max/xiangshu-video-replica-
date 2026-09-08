@@ -51,6 +51,11 @@ const {
 }));
 
 vi.mock("./context", () => ({ useStudio }));
+vi.mock("./OralCompositionPanel", () => ({
+  OralCompositionPanel: ({ oralTaskId }: { oralTaskId: string }) => (
+    <div>后期面板 {oralTaskId}</div>
+  ),
+}));
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   getStudioNotificationPreferences,
@@ -283,6 +288,8 @@ describe("V1.4 任务详情真实成片预览", () => {
     useStudio.mockReturnValue(value);
     downloadStudioTaskResult.mockResolvedValue(undefined);
     render(<TaskDetailPage />);
+
+    expect(screen.getByText("后期面板 oral-backend-id")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "下载成片" }));
 

@@ -134,6 +134,7 @@ export type StudioTask = {
   submitted: string;
   poster?: string;
   resultId?: string;
+  originalResultId?: string;
   batchId?: string;
   /** 独立创作批次无项目归属（null）。 */
   projectId?: string | null;

@@ -49,6 +49,7 @@ from app.ops_metrics import (
     set_current_result_code,
     unhandled_exception_response,
 )
+from app.oral_compose_routes import router as oral_compose_router
 from app.oral_routes import router as oral_router
 from app.payment_routes import router as payment_router
 from app.rbac_routes import router as rbac_router
@@ -357,6 +358,7 @@ app.include_router(character_reference_router)
 app.include_router(source_frame_router)
 app.include_router(first_frame_router)
 app.include_router(character_simple_router)
+app.include_router(oral_compose_router)
 
 
 @app.get("/health", response_model=HealthResponse)

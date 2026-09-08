@@ -986,6 +986,34 @@ describe("批次类型映射与取消", () => {
     );
   });
 
+  it("口播任务优先使用当前生效的后期成片", async () => {
+    api.listGenerationBatches.mockResolvedValue({ ...batchPage, items: [] });
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-composed",
+        status: "SUCCEEDED",
+        title: "张工口播",
+        mode: "TTS",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: "voice-1",
+        script_text: "正文",
+        audio_asset_id: null,
+        result_asset_id: "oral-original-asset",
+        active_result_asset_id: "oral-composed-asset",
+        duration_sec: 12,
+        estimated_cost_fen: 100,
+        created_at: "2026-09-06T09:00:00Z",
+        updated_at: "2026-09-06T09:01:00Z",
+      },
+    ] satisfies OralTaskRecord[]);
+
+    const [task] = await reloadTasks(user);
+
+    expect(task.resultId).toBe("oral-composed-asset");
+    expect(task.originalResultId).toBe("oral-original-asset");
+  });
+
   it("轮询时某类任务失败仍保留另一类", async () => {
     api.listGenerationBatches.mockRejectedValue(new Error("generation down"));
     api.listOralTasks.mockResolvedValue([

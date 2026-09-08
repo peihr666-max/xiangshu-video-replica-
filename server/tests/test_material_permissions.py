@@ -70,6 +70,29 @@ def test_oral_result_asset_is_readable_only_by_task_owner(tmp_path: Path) -> Non
         INSERT INTO assets (
             id, project_id, kind, storage_uri, sha256, size_bytes,
             content_type, created_by_user_id
+        ) VALUES ('oral-composed', NULL, 'oral_composed_video',
+                  'local://oral/composed.mp4', 'composed-hash', 14,
+                  'video/mp4', 'owner')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO oral_compositions (
+            id, owner_user_id, oral_task_id, source_asset_id, template, text,
+            idempotency_key, request_hash, status, version, result_asset_id,
+            is_active
+        ) VALUES (
+            'composition', 'owner', 'task', 'oral-result', 'top_title', '标题',
+            'composition-permissions', 'composition-hash', 'SUCCEEDED', 1,
+            'oral-composed', 1
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO assets (
+            id, project_id, kind, storage_uri, sha256, size_bytes,
+            content_type, created_by_user_id
         ) VALUES ('unlinked', NULL, 'misc', 'local://misc/unlinked.bin',
                   'misc-hash', 8, 'application/octet-stream', 'owner')
         """
@@ -80,6 +103,10 @@ def test_oral_result_asset_is_readable_only_by_task_owner(tmp_path: Path) -> Non
         conn, actor=_actor("owner"), asset_id="oral-result", action="asset.read"
     )
     assert row["id"] == "oral-result"
+    composed = require_asset_access(
+        conn, actor=_actor("owner"), asset_id="oral-composed", action="asset.read"
+    )
+    assert composed["id"] == "oral-composed"
     audio = require_asset_access(
         conn, actor=_actor("owner"), asset_id="owned-audio", action="asset.read"
     )
@@ -87,6 +114,7 @@ def test_oral_result_asset_is_readable_only_by_task_owner(tmp_path: Path) -> Non
 
     for actor_id, asset_id in (
         ("other", "oral-result"),
+        ("other", "oral-composed"),
         ("other", "owned-audio"),
         ("owner", "unlinked"),
     ):

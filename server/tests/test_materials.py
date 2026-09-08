@@ -184,6 +184,88 @@ def test_direct_result_is_visible_but_not_presented_as_cloud_asset(client: TestC
     assert "rename" not in material["allowed_actions"]
 
 
+def test_oral_material_prefers_the_active_composition_result(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    with connect_database(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO person_identities (id, owner_user_id, display_name, status)
+            VALUES ('oral-identity', 'employee_1', '张工', 'ACTIVE')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, vendor_avatar_id,
+                status, source_kind, source_asset_id
+            ) VALUES (
+                'oral-avatar', 'oral-identity', 'employee_1', '张工分身',
+                'vendor-avatar', 'READY', 'VIDEO', 'source'
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO assets (
+                id, project_id, kind, storage_uri, sha256, size_bytes,
+                content_type, metadata_json, created_by_user_id
+            ) VALUES (?, NULL, ?, ?, ?, 12, 'video/mp4', '{}', 'employee_1')
+            """,
+            [
+                (
+                    "oral-original",
+                    "oral_video",
+                    "local://oral/original.mp4",
+                    "original-hash",
+                ),
+                (
+                    "oral-composed",
+                    "oral_composed_video",
+                    "local://oral/composed.mp4",
+                    "composed-hash",
+                ),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_tasks (
+                id, owner_user_id, identity_id, avatar_id, mode, title, status,
+                result_asset_id, estimated_cost_fen, idempotency_key
+            ) VALUES (
+                'oral-task', 'employee_1', 'oral-identity', 'oral-avatar',
+                'TTS', '张工口播', 'SUCCEEDED', 'oral-original', 1000,
+                'oral-material-original'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_compositions (
+                id, owner_user_id, oral_task_id, source_asset_id, template, text,
+                idempotency_key, request_hash, status, version, result_asset_id,
+                is_active
+            ) VALUES (
+                'oral-composition', 'employee_1', 'oral-task', 'oral-original',
+                'bottom_caption', '防水先做对', 'oral-material-composition',
+                'oral-composition-hash', 'SUCCEEDED', 1, 'oral-composed', 1
+            )
+            """
+        )
+        conn.commit()
+
+    response = client.get(
+        "/api/studio/materials?source=oral",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["asset_id"] == "oral-composed"
+    assert response.json()["items"][0]["title"] == "张工口播"
+
+
 def test_upload_audio_to_storage_then_complete_and_list_it(
     client: TestClient,
     storage: FakeStorageAdapter,

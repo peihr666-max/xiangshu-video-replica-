@@ -1157,6 +1157,7 @@ export type OralTaskRecord = {
   status_message?: string | null;
   error_message?: string | null;
   result_asset_id: string | null;
+  active_result_asset_id?: string | null;
   duration_sec: number | null;
   estimated_cost_fen: number;
   billing_status?: string | null;
@@ -1190,6 +1191,74 @@ export function cancelOralTask(taskId: string): Promise<OralTaskRecord> {
 
 export function retryOralTaskArchive(taskId: string): Promise<OralTaskRecord> {
   return mutateOralTask(taskId, "archive-retry", "重试归档口播成片失败");
+}
+
+export type OralCompositionTemplate =
+  | "bottom_caption"
+  | "center_banner"
+  | "top_title";
+
+export type OralCompositionCapabilities = {
+  available: boolean;
+  reason: string | null;
+  templates: Array<{
+    id: OralCompositionTemplate;
+    title: string;
+    description: string;
+  }>;
+};
+
+export type OralCompositionRecord = {
+  id: string;
+  oral_task_id: string;
+  template: OralCompositionTemplate;
+  text: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  result_asset_id: string | null;
+  is_active: boolean;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  replayed?: boolean;
+};
+
+export async function getOralCompositionCapabilities(): Promise<OralCompositionCapabilities> {
+  return requestApiJson<OralCompositionCapabilities>(
+    "/api/oral/compose-capabilities",
+    "读取口播后期能力失败",
+  );
+}
+
+export async function listOralCompositions(
+  oralTaskId: string,
+): Promise<OralCompositionRecord[]> {
+  return requestApiJson<OralCompositionRecord[]>(
+    `/api/oral/tasks/${encodeURIComponent(oralTaskId)}/compositions`,
+    "读取口播后期版本失败",
+  );
+}
+
+export async function createOralComposition(
+  oralTaskId: string,
+  input: {
+    template: OralCompositionTemplate;
+    text: string;
+    idempotencyKey: string;
+  },
+): Promise<OralCompositionRecord> {
+  return requestApiJson<OralCompositionRecord>(
+    `/api/oral/tasks/${encodeURIComponent(oralTaskId)}/compositions`,
+    "创建口播后期版本失败",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        template: input.template,
+        text: input.text,
+        idempotency_key: input.idempotencyKey,
+      }),
+    },
+  );
 }
 
 export async function getCurrentUser(): Promise<CurrentUser> {

@@ -81,8 +81,15 @@ from app.image_tasks import (
     run_first_frame_task_outside_transaction,
     save_first_frame_task_checkpoint,
 )
-from app.media_routes import get_media_storage
+from app.media_routes import get_media_storage, storage_for_asset
 from app.operation_costs import begin_operation_cost, complete_operation_cost
+from app.oral_composer import CommandRunner, compose_video, store_composed_video
+from app.oral_compositions import (
+    CompositionConflictError,
+    claim_composition,
+    complete_composition,
+    fail_composition,
+)
 from app.oral_worker import (
     OralLeaseLostError,
     OralWorkKind,
@@ -127,6 +134,7 @@ from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
     StoragePermissionError,
+    storage_object_ref_from_uri,
 )
 
 logger = logging.getLogger(__name__)
@@ -322,6 +330,116 @@ def _run_sqlite_oral_step(
     return True
 
 
+def _run_sqlite_composition_step(
+    conn: BusinessConnection,
+    *,
+    worker_id: str,
+    storage: StorageAdapter,
+    runner: CommandRunner | None,
+) -> bool:
+    lease = claim_composition(conn, worker_id=worker_id)
+    if lease is None:
+        return False
+    stored = None
+    try:
+        source_ref = storage_object_ref_from_uri(lease.source_storage_uri)
+        source_storage = (
+            storage
+            if storage.provider == source_ref.provider and storage.bucket == source_ref.bucket
+            else storage_for_asset(conn, lease.source_storage_uri)
+        )
+        source = source_storage.get_object(source_ref.key)
+        content = compose_video(
+            source=source,
+            text=lease.text,
+            template=lease.template,  # type: ignore[arg-type]
+            runner=runner,
+        )
+        stored = store_composed_video(
+            storage,
+            composition_id=lease.id,
+            owner_user_id=lease.owner_user_id,
+            content=content,
+        )
+        complete_composition(
+            conn,
+            lease=lease,
+            storage_uri=stored.uri,
+            sha256=stored.sha256,
+            size_bytes=stored.size,
+        )
+    except CompositionConflictError:
+        _discard_composition_result(storage, stored, owner_user_id=lease.owner_user_id)
+        logger.warning("oral composition result discarded after lease loss: id=%s", lease.id)
+    except Exception as exc:
+        _discard_composition_result(storage, stored, owner_user_id=lease.owner_user_id)
+        logger.error("oral composition failed: id=%s error=%s", lease.id, type(exc).__name__)
+        fail_composition(conn, lease=lease, error_message=str(exc))
+    return True
+
+
+def _discard_composition_result(
+    storage: StorageAdapter, stored: Any, *, owner_user_id: str
+) -> None:
+    if stored is None:
+        return
+    try:
+        storage.delete_object(stored.key, actor_id=owner_user_id)
+    except Exception as exc:
+        logger.warning("oral composition orphan cleanup failed: %s", type(exc).__name__)
+
+
+def _run_pg_composition_step(
+    *, worker_id: str, storage: StorageAdapter, runner: CommandRunner | None
+) -> bool:
+    with pg_transaction() as raw_conn:
+        lease = claim_composition(BusinessConnection.postgres(raw_conn), worker_id=worker_id)
+    if lease is None:
+        return False
+    stored = None
+    try:
+        with pg_transaction() as raw_conn:
+            source_conn = BusinessConnection.postgres(raw_conn)
+            source_ref = storage_object_ref_from_uri(lease.source_storage_uri)
+            source_storage = (
+                storage
+                if storage.provider == source_ref.provider and storage.bucket == source_ref.bucket
+                else storage_for_asset(source_conn, lease.source_storage_uri)
+            )
+        source = source_storage.get_object(source_ref.key)
+        content = compose_video(
+            source=source,
+            text=lease.text,
+            template=lease.template,  # type: ignore[arg-type]
+            runner=runner,
+        )
+        stored = store_composed_video(
+            storage,
+            composition_id=lease.id,
+            owner_user_id=lease.owner_user_id,
+            content=content,
+        )
+        with pg_transaction() as raw_conn:
+            complete_composition(
+                BusinessConnection.postgres(raw_conn),
+                lease=lease,
+                storage_uri=stored.uri,
+                sha256=stored.sha256,
+                size_bytes=stored.size,
+            )
+    except CompositionConflictError:
+        _discard_composition_result(storage, stored, owner_user_id=lease.owner_user_id)
+        logger.warning("oral composition result discarded after lease loss: id=%s", lease.id)
+    except Exception as exc:
+        _discard_composition_result(storage, stored, owner_user_id=lease.owner_user_id)
+        logger.error("oral composition failed: id=%s error=%s", lease.id, type(exc).__name__)
+        with pg_transaction() as raw_conn:
+            fail_composition(
+                BusinessConnection.postgres(raw_conn), lease=lease, error_message=str(exc)
+            )
+    return True
+
+
 def run_worker_once(
     conn: BusinessConnection,
     *,
@@ -338,6 +456,7 @@ def run_worker_once(
     video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
     reconcile_provider: H3Provider | None = None,
     oral_vendor: HiflyClient | None = None,
+    composition_runner: CommandRunner | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks, then return so SQLite connections stay short-lived."""
@@ -638,6 +757,16 @@ def run_worker_once(
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:
                 return processed
+        if _run_sqlite_composition_step(
+            conn,
+            worker_id=worker_id,
+            storage=storage,
+            runner=composition_runner,
+        ):
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
         if not processed_round:
             break
     return processed
@@ -902,6 +1031,7 @@ def run_pg_worker_once(
     source_frame_quality_inspector: SourceFrameQualityInspector | None = None,
     video_frame_extractor: Callable[[bytes], list[ImageInput]] | None = None,
     oral_vendor: HiflyClient | None = None,
+    composition_runner: CommandRunner | None = None,
     max_tasks: int | None = None,
 ) -> int:
     """Process all currently eligible tasks on the PostgreSQL lane.
@@ -1318,6 +1448,15 @@ def run_pg_worker_once(
                         cause=exc,
                         submission_started=submission_started,
                     )
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
+        if _run_pg_composition_step(
+            worker_id=worker_id,
+            storage=storage,
+            runner=composition_runner,
+        ):
             processed += 1
             processed_round = True
             if max_tasks is not None and processed >= max_tasks:

@@ -241,7 +241,12 @@ def _candidate_cte() -> str:
             asset.content_type, asset.size_bytes, asset.metadata_json,
             asset.created_at, 'video', 'ready', 'stored'
         FROM oral_tasks AS oral
-        JOIN assets AS asset ON asset.id = oral.result_asset_id
+        LEFT JOIN oral_compositions AS composition
+          ON composition.oral_task_id = oral.id
+         AND composition.status = 'SUCCEEDED'
+         AND composition.is_active = 1
+        JOIN assets AS asset
+          ON asset.id = COALESCE(composition.result_asset_id, oral.result_asset_id)
         WHERE oral.status = 'SUCCEEDED'
 
         UNION ALL

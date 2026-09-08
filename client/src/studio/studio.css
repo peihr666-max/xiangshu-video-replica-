@@ -1260,6 +1260,40 @@
   min-height: 68px;
   padding: 10px;
 }
+.studio-oral-composition {
+  display: grid;
+  gap: 14px;
+  grid-column: 1 / -1;
+}
+.studio-oral-composition h2,
+.studio-oral-composition p {
+  margin: 0;
+}
+.studio-oral-composition textarea,
+.studio-oral-composition select {
+  width: 100%;
+}
+.studio-compose-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.studio-compose-versions {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.studio-compose-versions li {
+  align-items: center;
+  background: #f5f4ef;
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+}
 .studio-recreate {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

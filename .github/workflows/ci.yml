@@ -143,9 +143,34 @@ jobs:
             exit "$status"
           done
 
+  media-runtime-windows:
+    name: Build Windows media runtime
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build pinned LGPL FFmpeg and Noto font
+        run: scripts/ffmpeg-minimal/build.sh
+      - name: Upload Windows media runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-media-runtime
+          path: |
+            client/src-tauri/resources/ffmpeg/ffmpeg.exe
+            client/src-tauri/resources/ffmpeg/ffprobe.exe
+            client/src-tauri/resources/ffmpeg/FFmpeg-LGPLv3.txt
+            client/src-tauri/resources/ffmpeg/NotoSansSC-Regular.otf
+            client/src-tauri/resources/ffmpeg/NotoSansSC-OFL-1.1.txt
+          if-no-files-found: error
+
   windows-nsis:
     name: Windows Tauri and NSIS
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: media-runtime-windows
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -153,6 +178,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Download Windows media runtime
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-media-runtime
+          path: client/src-tauri/resources/ffmpeg
+      - name: Verify Windows media runtime
+        shell: pwsh
+        run: scripts/ffmpeg-minimal/verify-windows.ps1
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -169,6 +202,40 @@ jobs:
         run: npm run check:tauri:customer
       - name: Build unsigned internal NSIS installer
         run: npm run tauri:build -- --bundles nsis --no-sign --ci
+      - name: Verify internal installer contains media runtime
+        shell: pwsh
+        run: |
+          $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
+          $sevenZip = if ($null -ne $sevenZipCommand) {
+            $sevenZipCommand.Source
+          } else {
+            Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          }
+          if (-not (Test-Path -LiteralPath $sevenZip)) {
+            throw '7-Zip is required to inspect the NSIS payload'
+          }
+          $installer = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw 'internal NSIS installer was not produced'
+          }
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'internal-nsis-payload'
+          & $sevenZip x $installer.FullName "-o$extractRoot" -y
+          if ($LASTEXITCODE -ne 0) {
+            throw 'internal NSIS installer could not be inspected'
+          }
+          $names = Get-ChildItem -LiteralPath $extractRoot -Recurse -File |
+            ForEach-Object { $_.Name }
+          foreach ($required in @(
+            'ffmpeg.exe',
+            'ffprobe.exe',
+            'FFmpeg-LGPLv3.txt',
+            'NotoSansSC-Regular.otf',
+            'NotoSansSC-OFL-1.1.txt'
+          )) {
+            if ($required -notin $names) {
+              throw "internal NSIS installer is missing $required"
+            }
+          }
       - name: Record internal installer SHA256
         shell: pwsh
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
@@ -226,7 +293,15 @@ jobs:
             throw 'customer NSIS installer could not be inspected'
           }
           $forbidden = Get-ChildItem -LiteralPath $extractRoot -Recurse -File |
-            Where-Object { $_.Name -in @('start-backend.bat', 'start-backend.sh') }
+            Where-Object {
+              $_.Name -in @(
+                'start-backend.bat',
+                'start-backend.sh',
+                'ffmpeg.exe',
+                'ffprobe.exe',
+                'NotoSansSC-Regular.otf'
+              )
+            }
           if ($forbidden) {
             throw "customer installer contains local launchers: $($forbidden.FullName -join ', ')"
           }

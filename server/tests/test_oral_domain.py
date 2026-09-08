@@ -2846,10 +2846,46 @@ def test_oral_task_serialization_reports_billing_status_and_available_actions(
         single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
         assert single.json()["billing_status"] == "SETTLED"
         assert single.json()["available_actions"] == []
+        assert single.json()["result_asset_id"] == "oral-final-result"
+        assert single.json()["active_result_asset_id"] is None
+
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id, project_id, kind, storage_uri, sha256, size_bytes,
+                content_type, created_by_user_id
+            ) VALUES (
+                'oral-composed-result', NULL, 'oral_composed_video',
+                'local://assets/composed.mp4', 'composed-hash', 11,
+                'video/mp4', 'employee_1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_compositions (
+                id, owner_user_id, oral_task_id, source_asset_id, template, text,
+                idempotency_key, request_hash, status, version, result_asset_id,
+                is_active
+            ) VALUES (
+                'oral-composition-result', 'employee_1', %s,
+                'oral-final-result', 'center_banner', '稳定质量',
+                'oral-composition-result-key', 'oral-composition-result-hash',
+                'SUCCEEDED', 1, 'oral-composed-result', 1
+            )
+            """,
+            (uncertain.task_id,),
+        )
+        conn.commit()
+
+        single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
+        assert single.json()["result_asset_id"] == "oral-final-result"
+        assert single.json()["active_result_asset_id"] == "oral-composed-result"
 
         listing = client.get("/api/oral/tasks", headers=headers).json()
         by_id = {entry["id"]: entry for entry in listing}
         assert by_id[uncertain.task_id]["billing_status"] == "SETTLED"
+        assert by_id[uncertain.task_id]["active_result_asset_id"] == "oral-composed-result"
         assert by_id[cancelled.task_id]["billing_status"] == "RELEASED"
     finally:
         app.dependency_overrides.clear()

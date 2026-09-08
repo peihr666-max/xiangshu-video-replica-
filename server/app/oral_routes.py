@@ -89,7 +89,11 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
 _TERMINAL_BILLING_LABELS = {"SETTLE": "SETTLED", "RELEASE": "RELEASED"}
 
 
-def _serialize_task(row: dict[str, Any], terminals: dict[str, str]) -> dict[str, Any]:
+def _serialize_task(
+    row: dict[str, Any],
+    terminals: dict[str, str],
+    active_results: dict[str, str],
+) -> dict[str, Any]:
     """Task projection with retry hints and the wallet truth of the current round.
 
     A task whose billing round has no terminal transaction still holds its
@@ -97,6 +101,7 @@ def _serialize_task(row: dict[str, Any], terminals: dict[str, str]) -> dict[str,
     reports ``RESERVED``.
     """
     data = _serialize(row)
+    data["active_result_asset_id"] = active_results.get(str(row["id"]))
     data["available_actions"] = oral_task_available_actions(row)
     if row.get("billing_round") is not None:
         data["billing_status"] = _TERMINAL_BILLING_LABELS.get(
@@ -109,7 +114,25 @@ def _serialize_tasks_for_owner(conn: Database, rows: list[dict[str, Any]]) -> li
     if not rows:
         return []
     terminals = oral_terminal_billing_states(conn, owner_user_id=str(rows[0]["owner_user_id"]))
-    return [_serialize_task(row, terminals) for row in rows]
+    task_ids = [str(row["id"]) for row in rows]
+    placeholders = ", ".join("%s" for _ in task_ids)
+    active_rows = conn.execute(
+        f"""
+        SELECT oral_task_id, result_asset_id
+        FROM oral_compositions
+        WHERE owner_user_id = %s
+          AND status = 'SUCCEEDED'
+          AND is_active = 1
+          AND oral_task_id IN ({placeholders})
+        """,
+        (str(rows[0]["owner_user_id"]), *task_ids),
+    ).fetchall()
+    active_results = {
+        str(active["oral_task_id"]): str(active["result_asset_id"])
+        for active in active_rows
+        if active["result_asset_id"] is not None
+    }
+    return [_serialize_task(row, terminals, active_results) for row in rows]
 
 
 @router.get("/price")
