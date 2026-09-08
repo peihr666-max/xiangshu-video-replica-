@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import indexHtml from "../index.html?raw";
 import tauriConfig from "../src-tauri/tauri.conf.json";
+import zhongshuLogo from "./assets/brand/zhongshu-logo-mark.svg?raw";
 
 describe("desktop window chrome", () => {
   it("keeps the native title bar unnamed", () => {
@@ -18,5 +19,9 @@ describe("desktop window chrome", () => {
 
   it("keeps the Zhongshu browser title", () => {
     expect(indexHtml).toContain("<title>众墅之家 | AI 即创</title>");
+  });
+
+  it("gives the Zhongshu logo a non-empty accessible title", () => {
+    expect(zhongshuLogo).toContain("<title>众墅之家品牌标识</title>");
   });
 });

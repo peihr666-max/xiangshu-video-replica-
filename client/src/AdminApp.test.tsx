@@ -362,7 +362,7 @@ describe("AdminApp", () => {
     await signInWithPassword();
 
     fireEvent.click(screen.getByRole("button", { name: "资金流水" }));
-    fireEvent.click(screen.getByRole("tab", { name: "充值订单" }));
+    fireEvent.click(screen.getByRole("button", { name: "充值订单" }));
 
     expect(
       await screen.findByText(
@@ -401,7 +401,7 @@ describe("AdminApp", () => {
     await signInWithPassword();
 
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
-    fireEvent.click(screen.getByRole("tab", { name: "支付与价格" }));
+    fireEvent.click(screen.getByRole("button", { name: "支付与价格" }));
     expect(await screen.findByDisplayValue("merchant-1")).toBeInTheDocument();
     expect(screen.getByText("********cret")).toBeInTheDocument();
     expect(screen.queryByLabelText("网关地址")).toBeNull();
@@ -462,7 +462,7 @@ describe("AdminApp", () => {
     await signInWithPassword();
 
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
-    fireEvent.click(screen.getByRole("tab", { name: "服务配置" }));
+    fireEvent.click(screen.getByRole("button", { name: "服务配置" }));
     expect(
       await screen.findByRole("heading", { name: "视频生成" }),
     ).toBeInTheDocument();
@@ -509,7 +509,7 @@ describe("AdminApp", () => {
     render(<AdminApp />);
     await signInWithPassword();
     fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
-    fireEvent.click(await screen.findByRole("tab", { name: "激活码" }));
+    fireEvent.click(await screen.findByRole("button", { name: "激活码" }));
 
     expect(
       await screen.findByRole("heading", { name: "直接生成激活码" }),
@@ -602,7 +602,7 @@ describe("AdminApp", () => {
     await screen.findByRole("navigation", { name: "管理端导航" });
 
     fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
-    fireEvent.click(await screen.findByRole("tab", { name: "设备与会话" }));
+    fireEvent.click(await screen.findByRole("button", { name: "设备与会话" }));
 
     expect(
       screen.getByRole("heading", { level: 1, name: "客户管理" }),
@@ -697,7 +697,7 @@ describe("AdminApp", () => {
     await signInWithPassword();
     fireEvent.click(screen.getByRole("button", { name: "展开导航" }));
     fireEvent.click(screen.getByRole("button", { name: "资金流水" }));
-    fireEvent.click(screen.getByRole("tab", { name: "充值订单" }));
+    fireEvent.click(screen.getByRole("button", { name: "充值订单" }));
 
     expect(
       await screen.findByRole("button", { name: "查单同步" }),

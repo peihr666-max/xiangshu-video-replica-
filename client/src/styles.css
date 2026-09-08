@@ -33,6 +33,10 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  min-inline-size: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
 }
 
 .admin-page-tab {
