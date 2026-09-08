@@ -108,6 +108,33 @@ describe("GenerationRecordsPage", () => {
     });
   });
 
+  it("submits draft filters once instead of loading while typing", async () => {
+    render(<GenerationRecordsPage />);
+    await screen.findByText("人物置换首帧");
+
+    fireEvent.change(screen.getByLabelText("生成账号"), {
+      target: { value: "customer-2" },
+    });
+    fireEvent.change(screen.getByLabelText("生成状态"), {
+      target: { value: "SUCCEEDED" },
+    });
+    await Promise.resolve();
+    expect(adminApi.getAdminGenerationRecords).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "查询" }));
+
+    await waitFor(() => {
+      expect(adminApi.getAdminGenerationRecords).toHaveBeenCalledTimes(2);
+    });
+    expect(adminApi.getAdminGenerationRecords).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        offset: 0,
+        status: "SUCCEEDED",
+        username: "customer-2",
+      }),
+    );
+  });
+
   it("ignores an older response after a newer refresh finishes", async () => {
     let resolveFirst:
       | ((value: adminApi.AdminGenerationRecordPage) => void)

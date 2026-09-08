@@ -7,9 +7,12 @@ import {
 import { DataTable } from "./ui/DataTable";
 import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
+import { StatusBadge } from "./ui/StatusBadge";
+import { TabBar } from "./ui/TabBar";
 import {
   formatDateTime,
   GENERATION_RECORD_TYPE_LABELS,
+  GENERATION_STATUS_LABELS,
   labelFrom,
 } from "./ui/vocabulary";
 
@@ -21,6 +24,18 @@ export function GenerationRecordsPage() {
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [username, setUsername] = useState("");
+  const [status, setStatus] = useState("");
+  const [recordType, setRecordType] = useState("");
+  const [createdFrom, setCreatedFrom] = useState("");
+  const [createdTo, setCreatedTo] = useState("");
+  const [filters, setFilters] = useState({
+    username: "",
+    status: "",
+    recordType: "",
+    createdFrom: "",
+    createdTo: "",
+  });
   const requestIdRef = useRef(0);
 
   const loadRecords = useCallback(async () => {
@@ -30,7 +45,15 @@ export function GenerationRecordsPage() {
       setLoading(true);
       setError("");
       setItems([]);
-      const response = await getAdminGenerationRecords(PAGE_SIZE, offset);
+      const response = await getAdminGenerationRecords({
+        limit: PAGE_SIZE,
+        offset,
+        username: filters.username || undefined,
+        status: filters.status || undefined,
+        recordType: filters.recordType || undefined,
+        createdFrom: filters.createdFrom || undefined,
+        createdTo: filters.createdTo || undefined,
+      });
       if (requestId !== requestIdRef.current) {
         return;
       }
@@ -50,14 +73,23 @@ export function GenerationRecordsPage() {
         setLoading(false);
       }
     }
-  }, [offset]);
+  }, [filters, offset]);
 
   useEffect(() => {
     void loadRecords();
   }, [loadRecords]);
 
   return (
-    <section aria-label="生成记录" className="admin-panel">
+    <section
+      aria-label="生成记录"
+      className="admin-panel admin-generation-records"
+    >
+      <TabBar
+        active="records"
+        ariaLabel="生成记录页签"
+        items={[{ id: "records", label: "生成记录" }]}
+        onChange={() => {}}
+      />
       <div className="admin-actions">
         <button type="button" onClick={() => void loadRecords()}>
           {loading ? "刷新中…" : "刷新记录"}
@@ -69,6 +101,73 @@ export function GenerationRecordsPage() {
         记录视频、图片和 AI
         评分调用。上游未返回精确成本时会明确标注，不以零成本代替。
       </p>
+      <form
+        className="admin-toolbar"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setOffset(0);
+          setFilters({ username, status, recordType, createdFrom, createdTo });
+        }}
+      >
+        <label>
+          账号
+          <input
+            aria-label="生成账号"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+          />
+        </label>
+        <label>
+          类型
+          <select
+            aria-label="生成类型"
+            value={recordType}
+            onChange={(event) => setRecordType(event.target.value)}
+          >
+            <option value="">全部类型</option>
+            <option value="VIDEO">视频</option>
+            <option value="FIRST_FRAME_IMAGE">首帧图片</option>
+            <option value="CHARACTER_SHEET_IMAGE">人物表</option>
+            <option value="CHARACTER_VIEW_IMAGE">人物视图</option>
+            <option value="SOURCE_FRAME_PROCESS">素材处理</option>
+            <option value="SOURCE_FRAME_AI_SCORE">AI 评分</option>
+          </select>
+        </label>
+        <label>
+          状态
+          <select
+            aria-label="生成状态"
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+          >
+            <option value="">全部状态</option>
+            {Object.entries(GENERATION_STATUS_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          起始时间
+          <input
+            aria-label="生成起始时间"
+            type="date"
+            value={createdFrom}
+            onChange={(event) => setCreatedFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          截止时间
+          <input
+            aria-label="生成截止时间"
+            type="date"
+            value={createdTo}
+            onChange={(event) => setCreatedTo(event.target.value)}
+          />
+        </label>
+        <button type="submit">查询</button>
+      </form>
 
       {error ? <PageBanner tone="error">{error}</PageBanner> : null}
 
@@ -85,8 +184,9 @@ export function GenerationRecordsPage() {
               <th>生成类型</th>
               <th>服务 / 模型</th>
               <th>状态</th>
-              <th>扣减条数</th>
-              <th>上游成本</th>
+              <th>耗时</th>
+              <th>扣减额度</th>
+              <th>上游成本（元）</th>
               <th>结果 / 错误</th>
             </>
           }
@@ -100,8 +200,25 @@ export function GenerationRecordsPage() {
                 {labelFrom(GENERATION_RECORD_TYPE_LABELS, item.record_type)}
               </td>
               <td>{formatProvider(item)}</td>
-              <td>{item.status}</td>
-              <td>{item.charged_credits}</td>
+              <td>
+                <StatusBadge
+                  tone={
+                    item.status === "SUCCEEDED"
+                      ? "good"
+                      : item.status === "FAILED"
+                        ? "danger"
+                        : "warn"
+                  }
+                >
+                  {labelFrom(GENERATION_STATUS_LABELS, item.status)}
+                </StatusBadge>
+              </td>
+              <td>{formatDuration(item.created_at, item.completed_at)}</td>
+              <td>
+                {item.charged_credits > 0
+                  ? `${item.charged_credits} 秒`
+                  : "0 秒"}
+              </td>
               <td>{formatProviderCost(item)}</td>
               <td>{formatResult(item)}</td>
             </tr>
@@ -145,4 +262,15 @@ function formatResult(item: AdminGenerationRecord): string {
     return "记录数据损坏";
   }
   return item.error_code ?? item.result_reference ?? "—";
+}
+
+function formatDuration(createdAt: string, completedAt: string | null): string {
+  if (!completedAt) return "进行中";
+  const seconds = Math.max(
+    0,
+    Math.round((Date.parse(completedAt) - Date.parse(createdAt)) / 1000),
+  );
+  if (!Number.isFinite(seconds)) return "—";
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
 }

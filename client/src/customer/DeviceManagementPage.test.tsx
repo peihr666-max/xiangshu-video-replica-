@@ -78,7 +78,7 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
 
   it("provides recharge button that calls onRecharge callback", () => {
     renderWithProps();
-    fireEvent.click(screen.getByRole("button", { name: "充值条数" }));
+    fireEvent.click(screen.getByRole("button", { name: "充值秒数" }));
     expect(mockOnRecharge).toHaveBeenCalledTimes(1);
   });
 

@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -226,15 +232,22 @@ describe("ActivationCodesPage", () => {
     render(<ActivationCodesPage />);
 
     expect(await screen.findByText("XS****01")).toBeInTheDocument();
-    expect(screen.getByText("customer_9")).toBeInTheDocument();
+    expect(screen.getAllByText("customer_9")).toHaveLength(2);
     expect(
       screen.getByRole("button", { name: "1 台设备" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "激活码列表" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("共 3 条")).toBeInTheDocument();
+    expect(
+      screen.getByRole("table", { name: "待批准配对列表" }),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "1 台设备" }));
 
     expect(screen.getByText("办公室电脑")).toBeInTheDocument();
-    expect(screen.getByText("Windows")).toBeInTheDocument();
+    expect(screen.getAllByText("Windows")).toHaveLength(2);
     expect(screen.getByText("已绑定")).toBeInTheDocument();
   });
 
@@ -250,6 +263,15 @@ describe("ActivationCodesPage", () => {
     fireEvent.click(
       (await screen.findAllByRole("button", { name: "复制" }))[0],
     );
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/activation-codes/code-1/reveal"),
+      ),
+    ).toBe(false);
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "交付客户首次激活" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认复制" }));
 
     expect(await screen.findByText(/req-reveal-1/)).toBeInTheDocument();
     expect(writeText).toHaveBeenCalledWith(
@@ -259,8 +281,31 @@ describe("ActivationCodesPage", () => {
       String(url).endsWith("/activation-codes/code-1/reveal"),
     );
     expect(revealCall?.[1]?.body).toBe(
-      JSON.stringify({ confirm: true, reason: "后台复制激活码" }),
+      JSON.stringify({ confirm: true, reason: "交付客户首次激活" }),
     );
+  });
+
+  it("does not offer lifecycle mutations for an expired code", async () => {
+    const expired = {
+      ...codesPage.items[0],
+      code_id: "code-expired",
+      masked_code: "XS****EX",
+      status: "EXPIRED",
+    };
+    installFetch({ items: [expired] });
+    render(<ActivationCodesPage />);
+
+    const row = (await screen.findByText("XS****EX")).closest("tr");
+    expect(row).not.toBeNull();
+    expect(
+      within(row as HTMLElement).getByText("无需操作"),
+    ).toBeInTheDocument();
+    expect(
+      within(row as HTMLElement).queryByRole("button", { name: "撤销激活码" }),
+    ).toBeNull();
+    expect(
+      within(row as HTMLElement).queryByRole("button", { name: "恢复" }),
+    ).toBeNull();
   });
 
   it("revokes a code with reason and explicit confirmation", async () => {

@@ -764,6 +764,7 @@ def run_first_frame_task_outside_transaction(
     after_provider_call: Callable[[], None] | None = None,
     heartbeat: Callable[[], None] | None = None,
     checkpoint_candidates: Callable[[list[GeneratedImage]], None] | None = None,
+    on_generated_images: Callable[[int], None] | None = None,
 ) -> tuple[FirstFrameGenerationWork, StoredFirstFrameCandidates]:
     if heartbeat is not None:
         heartbeat()
@@ -808,6 +809,7 @@ def run_first_frame_task_outside_transaction(
             resumed_candidates=resumed_candidates,
             archive_generated=archive_generated if checkpoint_candidates is not None else None,
             checkpoint_candidates=persist_checkpoint if checkpoint_candidates is not None else None,
+            on_generated_images=on_generated_images,
         )
     except BaseException:
         if uncheckpointed_assets:

@@ -17,6 +17,16 @@ vi.mock("../TaskRecordsPanel", () => ({
   ),
 }));
 
+vi.mock("../CharacterLibrary", () => ({
+  CharacterLibrary: ({
+    initialIdentityId,
+    initialTab,
+  }: {
+    initialIdentityId?: string;
+    initialTab?: string;
+  }) => <p>{`${initialIdentityId ?? "none"}:${initialTab ?? "base"}`}</p>,
+}));
+
 import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
 
 afterEach(() => vi.restoreAllMocks());
@@ -41,6 +51,14 @@ it("任务面板消费交接后回传给工作区控制器清除暂存批次", (
   expect(onHandoffConsumed).toHaveBeenCalledTimes(1);
 });
 
+<<<<<<< main
+it("人物面板会带入 Studio 已选人物和场景造型页签", () => {
+  render(
+    <LiveWorkspacePanel
+      characterIdentityId="identity-1"
+      characterInitialTab="scenes"
+      currentUser={reviewUser}
+=======
 it("客户账号进入使用记录时读取客户钱包并能打开预设充值", async () => {
   const sessionTokenText = "workspace-wallet-fixture-session";
   const store: CustomerCredentialStore = {
@@ -83,12 +101,20 @@ it("客户账号进入使用记录时读取客户钱包并能打开预设充值"
         onUnbind: vi.fn(),
         onUpdateProfile: vi.fn(),
       }}
+>>>>>>> codex/local-main-brand-shell-20260908
       onBatchCreated={vi.fn()}
       onBusyChange={vi.fn()}
       onClose={vi.fn()}
       onHandoffConsumed={vi.fn()}
       onProjectSelected={vi.fn()}
       onRefresh={vi.fn()}
+<<<<<<< main
+      panel="characters"
+    />,
+  );
+
+  expect(screen.getByText("identity-1:scenes")).toBeInTheDocument();
+=======
       panel="wallet"
     />,
   );
@@ -104,4 +130,5 @@ it("客户账号进入使用记录时读取客户钱包并能打开预设充值"
   fireEvent.click(screen.getByRole("button", { name: "充值100元" }));
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByRole("spinbutton")).toHaveValue(100);
+>>>>>>> codex/local-main-brand-shell-20260908
 });

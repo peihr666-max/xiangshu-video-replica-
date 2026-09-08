@@ -1,14 +1,11 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { AccountsPage } from "./admin/AccountsPage";
-import { AdminActivationSection } from "./admin/AdminActivationSection";
-import { AuditEventsPage } from "./admin/AuditEventsPage";
-import { CustomersPage } from "./admin/CustomersPage";
-import { DevicesPage } from "./admin/DevicesPage";
+import { AnalyticsPage } from "./admin/AnalyticsPage";
+import { AuditCenterPage } from "./admin/AuditCenterPage";
+import { CustomersManagementPage } from "./admin/CustomersManagementPage";
+import { FundsPage } from "./admin/FundsPage";
 import { GenerationRecordsPage } from "./admin/GenerationRecordsPage";
-import { OrdersPage } from "./admin/OrdersPage";
-import { PaymentSettingsSection } from "./admin/PaymentSettingsSection";
-import { QueueModeSection } from "./admin/QueueModeSection";
-import { SessionsPage } from "./admin/SessionsPage";
+import { OverviewPage } from "./admin/OverviewPage";
+import { SystemSettingsPage } from "./admin/SystemSettingsPage";
 import { PageBanner } from "./admin/ui/PageBanner";
 import { TabBar } from "./admin/ui/TabBar";
 import { roleLabel } from "./admin/ui/vocabulary";
@@ -25,7 +22,17 @@ import {
   recoverAdminPassword,
 } from "./api.admin";
 import zhongshuLogoMark from "./assets/brand/zhongshu-logo-mark.svg";
+<<<<<<< main
+import chartIcon from "./assets/icons/chart-no-axes-combined.svg";
+import clapperboardIcon from "./assets/icons/clapperboard.svg";
+import gaugeIcon from "./assets/icons/gauge.svg";
+import settingsIcon from "./assets/icons/settings.svg";
+import shieldIcon from "./assets/icons/shield-check.svg";
+import usersIcon from "./assets/icons/users-round.svg";
+import walletIcon from "./assets/icons/wallet.svg";
+=======
 import { SettingsPanel } from "./SettingsPanel";
+>>>>>>> codex/local-main-brand-shell-20260908
 
 type AuthPhase =
   | "checking"
@@ -86,7 +93,6 @@ const tabGroups: Array<{
     ],
   },
 ];
-
 const tabPageTitles: Record<AdminTab, string> = {
   overview: "总览仪表盘",
   analytics: "经营分析",
@@ -98,6 +104,15 @@ const tabPageTitles: Record<AdminTab, string> = {
 };
 
 const compactNavigationBreakpoint = 1024;
+const navigationIcons: Record<AdminTab, string> = {
+  overview: gaugeIcon,
+  analytics: chartIcon,
+  funds: walletIcon,
+  customersMgmt: usersIcon,
+  generationRecords: clapperboardIcon,
+  auditCenter: shieldIcon,
+  systemSettings: settingsIcon,
+};
 
 export function AdminApp() {
   const [authPhase, setAuthPhase] = useState<AuthPhase>("checking");
@@ -108,6 +123,10 @@ export function AdminApp() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [activeTab, setActiveTab] = useState<AdminTab>("overview");
+<<<<<<< main
+  const [navigationIntent, setNavigationIntent] = useState("");
+=======
+>>>>>>> codex/local-main-brand-shell-20260908
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isCompactNavigation, setIsCompactNavigation] = useState(() =>
@@ -482,6 +501,7 @@ export function AdminApp() {
                         type="button"
                         onClick={() => {
                           setActiveTab(tab.id);
+                          setNavigationIntent("");
                           // C3：切标签清掉上一页残留的全局提示。
                           setError("");
                           setNotice("");
@@ -490,8 +510,16 @@ export function AdminApp() {
                           }
                         }}
                       >
-                        <span>{tab.label}</span>
-                        <small>{tab.helper}</small>
+                        <img
+                          alt=""
+                          aria-hidden="true"
+                          className="admin-navigation-icon"
+                          src={navigationIcons[tab.id]}
+                        />
+                        <span className="admin-navigation-copy">
+                          <span>{tab.label}</span>
+                          <small>{tab.helper}</small>
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -515,6 +543,64 @@ export function AdminApp() {
             <p>{activeTabMeta?.helper ?? "运营核心视图"}</p>
           </header>
 
+<<<<<<< main
+          {activeTab === "overview" ? (
+            <>
+              <TabBar
+                ariaLabel="运营概览快捷导航"
+                items={tabGroups[0].tabs}
+                active={activeTab}
+                onChange={(tab) => setActiveTab(tab as AdminTab)}
+              />
+              <OverviewPage
+                readOnly={readOnly}
+                onNavigate={(destination) => {
+                  setNavigationIntent(destination);
+                  const routes: Record<string, AdminTab> = {
+                    issueCodes: "customersMgmt",
+                    codes: "customersMgmt",
+                    customerAdjustments: "customersMgmt",
+                    costDetails: "analytics",
+                    rates: "systemSettings",
+                  };
+                  setActiveTab(
+                    routes[destination] ?? (destination as AdminTab),
+                  );
+                }}
+              />
+            </>
+          ) : null}
+          {activeTab === "analytics" ? (
+            <AnalyticsPage
+              readOnly={readOnly}
+              initialTab={
+                navigationIntent === "costDetails" ? "cost" : "profit"
+              }
+            />
+          ) : null}
+          {activeTab === "funds" ? <FundsPage readOnly={readOnly} /> : null}
+          {activeTab === "customersMgmt" ? (
+            <CustomersManagementPage
+              actor={actor}
+              readOnly={readOnly}
+              onSessionExpired={handleSessionExpired}
+              initialTab={
+                navigationIntent === "issueCodes" ||
+                navigationIntent === "codes"
+                  ? "codes"
+                  : "customers"
+              }
+              initiallyShowGenerator={navigationIntent === "issueCodes"}
+            />
+          ) : null}
+          {activeTab === "generationRecords" ? <GenerationRecordsPage /> : null}
+          {activeTab === "auditCenter" ? <AuditCenterPage /> : null}
+          {activeTab === "systemSettings" ? (
+            <SystemSettingsPage
+              readOnly={readOnly}
+              initialTab={navigationIntent === "rates" ? "rates" : "payment"}
+            />
+=======
           {activeTab === "overview" ? <AccountsPage /> : null}
           {activeTab === "analytics" ? <AnalyticsShell /> : null}
           {activeTab === "funds" ? <FundsShell readOnly={readOnly} /> : null}
@@ -529,6 +615,7 @@ export function AdminApp() {
           {activeTab === "auditCenter" ? <AuditShell /> : null}
           {activeTab === "systemSettings" ? (
             <SystemSettingsShell readOnly={readOnly} />
+>>>>>>> codex/local-main-brand-shell-20260908
           ) : null}
         </div>
       </section>

@@ -28,7 +28,11 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
+<<<<<<< main
+_HEAD_REVISION = "076_studio_notification_preferences"
+=======
 _HEAD_REVISION = "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
 
 
 def _pg_dsn() -> str:
@@ -324,7 +328,7 @@ def test_batch_shapes_enforced(catalog_dsn: str) -> None:
             unit_price_fen_snapshot=0,
             credits_snapshot=0,
         )
-        rejected(11, face_value_fen=0, credits_snapshot=1)
+        _insert_batch(conn, 11, face_value_fen=0, credits_snapshot=1)
         rejected(12, face_value_fen=1, credits_snapshot=0)
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             _insert_batch(conn, 7, created_by_user_id="u-ghost")

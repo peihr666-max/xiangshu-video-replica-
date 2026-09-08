@@ -65,7 +65,10 @@ describe("PromptMarkdown", () => {
     expect(editor).toHaveValue(SAMPLE_TEXT);
 
     fireEvent.change(editor, { target: { value: "手写提示词。" } });
-    fireEvent.click(screen.getByRole("button", { name: "另存 Prompt 新版本" }));
+    expect(
+      screen.getByText("另存到我的提示词，原始拆解内容保留。"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledWith("手写提示词。"));
     // 保存成功后退回预览态；text 由宿主刷新，这里仍是原文。
@@ -81,7 +84,7 @@ describe("PromptMarkdown", () => {
     fireEvent.change(screen.getByLabelText("提示词源码"), {
       target: { value: "   " },
     });
-    fireEvent.click(screen.getByRole("button", { name: "另存 Prompt 新版本" }));
+    fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
 
     expect(await screen.findByText("提示词不能为空。")).toBeInTheDocument();
     expect(onSave).not.toHaveBeenCalled();
@@ -96,7 +99,7 @@ describe("PromptMarkdown", () => {
     fireEvent.change(screen.getByLabelText("提示词源码"), {
       target: { value: "新文本" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "另存 Prompt 新版本" }));
+    fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
 
     expect(await screen.findByText("上游输入已变化。")).toBeInTheDocument();
     expect(screen.getByLabelText("提示词源码")).toBeInTheDocument();

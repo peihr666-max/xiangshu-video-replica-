@@ -24,7 +24,11 @@ def test_zpay_provider_migration_is_reversible(tmp_path: Path) -> None:
     with initialize_database(db_path) as raw:
         with BusinessConnection.sqlite(raw) as conn:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+<<<<<<< main
+                "076_studio_notification_preferences"
+=======
                 "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
             )
 
     command.downgrade(alembic_config(db_path), "022_internal_billing")
@@ -40,7 +44,11 @@ def test_zpay_provider_migration_is_reversible(tmp_path: Path) -> None:
     command.upgrade(alembic_config(db_path), "head")
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+<<<<<<< main
+            "076_studio_notification_preferences"
+=======
             "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
         )
 
 

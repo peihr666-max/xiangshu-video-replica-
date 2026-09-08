@@ -272,6 +272,51 @@ def test_activate_route_keeps_its_response_model_in_the_openapi_contract() -> No
     )
 
 
+def test_initial_free_seconds_keep_zero_revenue_and_one_audited_grant(
+    client: TestClient, clean_state: str
+) -> None:
+    plaintext = generate_activation_code()
+    with psycopg.connect(clean_state, autocommit=True) as conn:
+        _insert_code(
+            conn,
+            code_id="code-free-seconds",
+            batch_id="batch-free-seconds",
+            plaintext=plaintext,
+            face_value_fen=0,
+            unit_price_fen=10,
+            credits=600,
+        )
+        conn.execute(
+            "UPDATE activation_code_batches SET creation_reason='活动免费赠送', "
+            "creation_request_id='grant-authorized' WHERE id='batch-free-seconds'"
+        )
+    response = _post_activate(client, plaintext, "fp-free-seconds", "idem-free-seconds")
+    assert response.status_code == 201, response.text
+    again = _post_activate(client, plaintext, "fp-free-seconds", "idem-free-seconds")
+    assert again.status_code == 201, again.text
+    uid = response.json()["user_id"]
+    with psycopg.connect(clean_state) as conn:
+        assert (
+            conn.execute(
+                "SELECT available_credits FROM wallets WHERE user_id=%s", (uid,)
+            ).fetchone()[0]
+            == 600
+        )
+        order = conn.execute(
+            "SELECT id,provider,amount_fen,credits FROM recharge_orders WHERE user_id=%s", (uid,)
+        ).fetchall()
+        assert len(order) == 1
+        assert order[0][1:] == ("admin_adjustment", 0, 600)
+        assert conn.execute(
+            "SELECT count(*),sum(available_delta) FROM wallet_transactions WHERE user_id=%s", (uid,)
+        ).fetchone() == (1, 600)
+        assert conn.execute(
+            "SELECT admin_user_id,source_document_type,reason FROM admin_adjustments "
+            "WHERE target_user_id=%s",
+            (uid,),
+        ).fetchone() == ("admin_u", "FREE_GRANT", "活动免费赠送")
+
+
 def test_license_only_activation_starts_with_zero_credits_and_no_fake_charge(
     client: TestClient, clean_state: str
 ) -> None:

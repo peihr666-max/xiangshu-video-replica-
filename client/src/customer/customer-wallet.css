@@ -1,0 +1,49 @@
+.wallet-page,
+.wallet-page .wallet-summary-grid,
+.wallet-page .wallet-summary-card,
+.wallet-page .wallet-section {
+  min-width: 0;
+}
+
+.wallet-page .table-scroll {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.wallet-page .recharge-presets {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.wallet-page .recharge-presets button {
+  border: 1px solid #5a4525;
+  color: #f1d39b;
+  background: #111114;
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.wallet-page .recharge-presets button:hover:enabled,
+.wallet-page .recharge-presets button:focus-visible {
+  border-color: var(--accent-strong);
+  color: #f7d993;
+  background: rgba(224, 168, 63, 0.1);
+}
+
+.wallet-page .recharge-presets span {
+  color: #aaa297;
+}
+
+@media (max-width: 1000px) {
+  .wallet-page .recharge-presets {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .wallet-page .wallet-summary-grid,
+  .wallet-page .recharge-presets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

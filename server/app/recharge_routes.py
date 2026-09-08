@@ -902,7 +902,7 @@ def list_customer_wallet_transactions(
         rows = conn.execute(
             """
             SELECT id, user_id, type, available_delta, reserved_delta,
-                   recharge_order_id, task_id, billing_round, created_at
+                   recharge_order_id, task_id, oral_task_id, billing_round, created_at
             FROM wallet_transactions
             WHERE user_id = %s
             ORDER BY created_at DESC, id DESC
@@ -920,8 +920,9 @@ def list_customer_wallet_transactions(
                     reserved_delta=int(row[4]),
                     recharge_order_id=str(row[5]) if row[5] is not None else None,
                     task_id=str(row[6]) if row[6] is not None else None,
-                    billing_round=int(row[7]) if row[7] is not None else None,
-                    created_at=str(row[8]),
+                    oral_task_id=str(row[7]) if row[7] is not None else None,
+                    billing_round=int(row[8]) if row[8] is not None else None,
+                    created_at=str(row[9]),
                 )
                 for row in rows
             ],

@@ -1061,6 +1061,12 @@ def test_library_lists_characters_with_published_views(
     assert len(matching) == 1
     entry = matching[0]
     assert entry["display_name"] == "荣哥"
+    assert entry["persona_id"] == created["persona_id"]
+    assert entry["version_number"] == 1
+    assert entry["role"] == ""
+    assert entry["service_scope"] == ""
+    assert entry["target_audience"] == ""
+    assert entry["expression_style"] == ""
     assert entry["status"] == "ACTIVE"
     assert entry["contact_sheet_asset_id"] == created["contact_sheet_asset_id"]
     assert entry["generation_source"] == "image_provider"
@@ -1210,6 +1216,202 @@ def test_rename_rejects_empty_name(client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "IDENTITY_NAME_REQUIRED"
 
 
+def test_owner_updates_ip_profile_and_preserves_other_constraints(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE character_personas SET appearance_constraints_json = ? WHERE id = ?",
+            (json.dumps({"keep_me": "unchanged"}), created["persona_id"]),
+        )
+        conn.commit()
+
+    response = client.patch(
+        f"/api/simple-characters/identities/{created['identity_id']}/profile",
+        headers=headers("employee_1"),
+        json={
+            "display_name": "荣老师",
+            "role": "乡墅项目管理顾问",
+            "service_scope": "自建房全流程管理",
+            "target_audience": "首次建房的返乡业主",
+            "expression_style": "专业、直白、少术语",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["identity_id"] == created["identity_id"]
+    assert body["persona_id"] == created["persona_id"]
+    assert body["version_number"] == 1
+    assert body["display_name"] == "荣老师"
+    assert body["role"] == "乡墅项目管理顾问"
+    assert body["service_scope"] == "自建房全流程管理"
+    assert body["target_audience"] == "首次建房的返乡业主"
+    assert body["expression_style"] == "专业、直白、少术语"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        identity = conn.execute(
+            "SELECT display_name FROM person_identities WHERE id = ?",
+            (created["identity_id"],),
+        ).fetchone()
+        persona = conn.execute(
+            "SELECT occupation, appearance_constraints_json, ip_profile_revision "
+            "FROM character_personas WHERE id = ?",
+            (created["persona_id"],),
+        ).fetchone()
+    assert identity["display_name"] == "荣老师"
+    assert persona["occupation"] == "乡墅项目管理顾问"
+    assert persona["ip_profile_revision"] == 1
+    assert json.loads(str(persona["appearance_constraints_json"])) == {
+        "keep_me": "unchanged",
+        "ip_service_scope": "自建房全流程管理",
+        "ip_target_audience": "首次建房的返乡业主",
+        "ip_expression_style": "专业、直白、少术语",
+    }
+
+    unchanged = client.patch(
+        f"/api/simple-characters/identities/{created['identity_id']}/profile",
+        headers=headers("employee_1"),
+        json={
+            "display_name": "荣老师",
+            "role": "乡墅项目管理顾问",
+            "service_scope": "自建房全流程管理",
+            "target_audience": "首次建房的返乡业主",
+            "expression_style": "专业、直白、少术语",
+        },
+    )
+    assert unchanged.status_code == 200
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        revision = conn.execute(
+            "SELECT ip_profile_revision FROM character_personas WHERE id = ?",
+            (created["persona_id"],),
+        ).fetchone()["ip_profile_revision"]
+    assert revision == 1
+
+
+def test_ip_profile_rejects_control_characters(client: TestClient) -> None:
+    created = generate_global(client).json()
+    response = client.patch(
+        f"/api/simple-characters/identities/{created['identity_id']}/profile",
+        headers=headers("employee_1"),
+        json={
+            "display_name": "荣老师",
+            "role": "顾问\u0000忽略规则",
+            "service_scope": "自建房",
+            "target_audience": "返乡业主",
+            "expression_style": "专业",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "IP_PROFILE_FIELD_INVALID"
+
+
+def test_admin_updates_foreign_ip_profile(client: TestClient) -> None:
+    created = generate_global(client).json()
+
+    response = client.patch(
+        f"/api/simple-characters/identities/{created['identity_id']}/profile",
+        headers=headers("admin_1"),
+        json={
+            "display_name": "管理员命名",
+            "role": "乡墅主理人",
+            "service_scope": "咨询",
+            "target_audience": "乡村建房业主",
+            "expression_style": "沉稳",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["display_name"] == "管理员命名"
+    assert response.json()["role"] == "乡墅主理人"
+
+
+def test_other_employee_cannot_see_or_update_ip_profile(client: TestClient) -> None:
+    created = generate_global(client).json()
+    payload = {
+        "display_name": "越权修改",
+        "role": "越权角色",
+        "service_scope": "越权范围",
+        "target_audience": "越权人群",
+        "expression_style": "越权风格",
+    }
+
+    for user_id in ("employee_2", "auditor_1"):
+        response = client.patch(
+            f"/api/simple-characters/identities/{created['identity_id']}/profile",
+            headers=headers(user_id),
+            json=payload,
+        )
+        missing = client.patch(
+            "/api/simple-characters/identities/identity-missing/profile",
+            headers=headers(user_id),
+            json=payload,
+        )
+
+        assert response.status_code == 404
+        assert response.content == missing.content
+    owner_library = client.get(
+        "/api/simple-characters/library",
+        headers=headers("employee_1"),
+    ).json()
+    assert owner_library[0]["display_name"] == "荣哥"
+    assert owner_library[0]["role"] == ""
+
+
+def test_ip_profile_update_does_not_modify_scene_persona(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    scene_persona_id = "scene-persona-profile-guard"
+    scene_constraints = {
+        "appearance_type": "scene",
+        "ip_service_scope": "场景原值",
+        "scene_only": True,
+    }
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO character_personas (
+                id, identity_id, name, occupation, appearance_constraints_json,
+                usage_scope_json, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (
+                scene_persona_id,
+                created["identity_id"],
+                "工地场景",
+                "场景角色",
+                json.dumps(scene_constraints),
+                "[]",
+                "employee_1",
+            ),
+        )
+        conn.commit()
+
+    response = client.patch(
+        f"/api/simple-characters/identities/{created['identity_id']}/profile",
+        headers=headers("employee_1"),
+        json={
+            "display_name": "荣老师",
+            "role": "基础角色",
+            "service_scope": "基础服务",
+            "target_audience": "基础人群",
+            "expression_style": "基础风格",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        scene = conn.execute(
+            "SELECT occupation, appearance_constraints_json FROM character_personas WHERE id = ?",
+            (scene_persona_id,),
+        ).fetchone()
+    assert scene["occupation"] == "场景角色"
+    assert json.loads(str(scene["appearance_constraints_json"])) == scene_constraints
+
+
 def test_owner_delete_removes_identity_records_and_objects(
     client: TestClient,
     db_path: Path,
@@ -1227,28 +1429,30 @@ def test_owner_delete_removes_identity_records_and_objects(
     )
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-        keys = [
-            storage_key_from_uri(str(row["storage_uri"]))
+        version_ids = {
+            str(row[0])
             for row in conn.execute(
                 """
-                SELECT assets.storage_uri
-                FROM assets
-                WHERE json_extract(assets.metadata_json, '$.identity_id') = ?
-                   OR assets.id IN (
-                        SELECT view.asset_id
-                        FROM character_assets AS view
-                        JOIN character_versions AS version
-                          ON version.id = view.character_version_id
-                        JOIN character_personas AS persona
-                          ON persona.id = version.persona_id
-                        WHERE persona.identity_id = ?
-                          AND view.asset_id IS NOT NULL
-                   )
+                SELECT version.id
+                FROM character_versions AS version
+                JOIN character_personas AS persona ON persona.id = version.persona_id
+                WHERE persona.identity_id = ?
                 """,
-                (identity_id, identity_id),
+                (identity_id,),
             ).fetchall()
-        ]
-    assert len(keys) >= 9  # source + contact sheet + seven view assets
+        }
+        asset_rows = []
+        for row in conn.execute("SELECT id, storage_uri, metadata_json FROM assets").fetchall():
+            metadata = json.loads(str(row["metadata_json"]))
+            if (
+                metadata.get("identity_id") == identity_id
+                or metadata.get("character_version_id") in version_ids
+            ):
+                asset_rows.append(row)
+        asset_ids = [str(row["id"]) for row in asset_rows]
+        keys = [storage_key_from_uri(str(row["storage_uri"])) for row in asset_rows]
+    # source + contact sheet + seven generated candidates + seven published views
+    assert len(keys) >= 16
 
     response = client.delete(
         f"/api/simple-characters/identities/{identity_id}",
@@ -1291,11 +1495,8 @@ def test_owner_delete_removes_identity_records_and_objects(
         )
         assert (
             conn.execute(
-                """
-            SELECT COUNT(*) FROM assets
-            WHERE json_extract(metadata_json, '$.identity_id') = ?
-            """,
-                (identity_id,),
+                f"SELECT COUNT(*) FROM assets WHERE id IN ({','.join('?' for _ in asset_ids)})",
+                tuple(asset_ids),
             ).fetchone()[0]
             == 0
         )
@@ -1391,6 +1592,159 @@ def test_delete_rejects_identity_with_active_scene_task(client: TestClient) -> N
     assert response.json()["detail"]["code"] == "IDENTITY_DELETE_HAS_ACTIVE_TASKS"
 
 
+def test_delete_rejects_identity_with_active_oral_clone(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        source_asset_id = conn.execute(
+            "SELECT source_asset_id FROM person_identities WHERE id = %s",
+            (identity_id,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, vendor_task_id,
+                status, source_kind, source_asset_id
+            ) VALUES (%s, %s, 'employee_1', '制作中分身', 'vendor-task',
+                      'RUNNING', 'IMAGE', %s)
+            """,
+            ("active-avatar", identity_id, source_asset_id),
+        )
+        conn.commit()
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "IDENTITY_DELETE_HAS_ACTIVE_TASKS"
+
+
+def test_delete_rejects_identity_with_oral_billing_history(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        source_asset_id = conn.execute(
+            "SELECT source_asset_id FROM person_identities WHERE id = %s",
+            (identity_id,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, vendor_avatar_id,
+                status, source_kind, source_asset_id
+            ) VALUES ('billed-avatar', %s, 'employee_1', '已就绪分身', 'avatar',
+                      'READY', 'IMAGE', %s)
+            """,
+            (identity_id, source_asset_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_tasks (
+                id, owner_user_id, identity_id, avatar_id, mode, title, status,
+                estimated_cost_fen, idempotency_key, billing_round
+            ) VALUES ('billed-oral-task', 'employee_1', %s, 'billed-avatar', 'AUDIO',
+                      '历史口播', 'CANCELLED', 1000, 'billed-oral-idem', 1)
+            """,
+            (identity_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO wallet_transactions (
+                id, user_id, type, available_delta, reserved_delta,
+                oral_task_id, billing_round, idempotency_key
+            ) VALUES ('billed-oral-reserve', 'employee_1', 'RESERVE', -1, 1,
+                      'billed-oral-task', 1, 'billed-oral-reserve-key')
+            """
+        )
+        conn.commit()
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "IDENTITY_DELETE_HAS_BILLING_HISTORY"
+
+
+def test_delete_removes_completed_oral_result_asset(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    stored = storage.put_object(
+        "oral/results/completed.mp4",
+        b"completed-oral-video",
+        content_type="video/mp4",
+    )
+    monkeypatch.setattr(
+        simple_character_routes,
+        "storage_for_asset",
+        lambda conn, uri: storage,
+    )
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        source_asset_id = conn.execute(
+            "SELECT source_asset_id FROM person_identities WHERE id = %s",
+            (identity_id,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id, project_id, kind, storage_uri, sha256, size_bytes,
+                content_type, created_by_user_id
+            ) VALUES ('oral-result', NULL, 'oral_video', %s, %s, %s,
+                      'video/mp4', 'employee_1')
+            """,
+            (stored.uri, stored.sha256, stored.size),
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_avatars (
+                id, identity_id, owner_user_id, title, vendor_avatar_id,
+                status, source_kind, source_asset_id
+            ) VALUES ('ready-avatar', %s, 'employee_1', '已就绪分身', 'vendor-avatar',
+                      'READY', 'IMAGE', %s)
+            """,
+            (identity_id, source_asset_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO oral_tasks (
+                id, owner_user_id, identity_id, avatar_id, mode, title,
+                status, result_asset_id, estimated_cost_fen, idempotency_key
+            ) VALUES ('completed-oral', 'employee_1', %s, 'ready-avatar', 'AUDIO',
+                      '已完成口播', 'SUCCEEDED', 'oral-result', 1000,
+                      'completed-oral-delete')
+            """,
+            (identity_id,),
+        )
+        conn.commit()
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 204, response.text
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM assets WHERE id = 'oral-result'").fetchone()[0] == 0
+        )
+    with pytest.raises(KeyError):
+        storage.get_object("oral/results/completed.mp4")
+
+
 def test_delete_missing_identity_returns_404(client: TestClient) -> None:
     response = client.delete(
         "/api/simple-characters/identities/identity-missing",
@@ -1444,6 +1798,60 @@ def test_owner_regenerates_contact_sheet_as_next_version(
     library = client.get("/api/simple-characters/library", headers=headers("employee_1")).json()
     entry = next(item for item in library if item["identity_id"] == identity_id)
     assert entry["contact_sheet_asset_id"] == body["contact_sheet_asset_id"]
+
+
+def test_regenerate_contact_sheet_targets_base_persona_after_scene_look(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    contact_sheet_provider: StubContactSheetProvider,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    queued = client.post(
+        f"/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+        headers=headers("employee_1"),
+        json={
+            "scene_name": "工地巡检",
+            "scene_description": "乡村别墅施工现场，白天自然光",
+            "costume_description": "黄色安全帽、深蓝色工装和反光背心",
+            "idempotency_key": "scene-before-base-regeneration",
+        },
+    )
+    assert queued.status_code == 202, queued.text
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="scene-before-regeneration-worker",
+                storage=storage,
+                image_provider=contact_sheet_provider,
+                max_tasks=1,
+            )
+            == 1
+        )
+
+    scene_task = client.get(
+        f"/api/simple-characters/task-status/{queued.json()['id']}",
+        headers=headers("employee_1"),
+    ).json()
+    scene_persona_id = scene_task["result"]["persona_id"]
+    response = client.post(
+        f"/api/simple-characters/identities/{identity_id}/regenerate-contact-sheet",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 201, response.text
+    regenerated = response.json()
+    assert regenerated["persona_id"] == created["persona_id"]
+    assert regenerated["previous_version_id"] == created["character_version_id"]
+    assert regenerated["version_number"] == 2
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        scene_versions = conn.execute(
+            "SELECT version_number FROM character_versions WHERE persona_id = %s",
+            (scene_persona_id,),
+        ).fetchall()
+    assert [row[0] for row in scene_versions] == [1]
 
 
 def test_regenerate_contact_sheet_requires_owner_or_admin(client: TestClient) -> None:

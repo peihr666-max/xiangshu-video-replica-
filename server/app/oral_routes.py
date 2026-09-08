@@ -14,15 +14,46 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
-from app.hifly import HiflyClient, HiflyError, hifly_client_from_settings
+from app.hifly import (
+    HiflyClient,
+    HiflyError,
+    HiflySubmissionUncertain,
+    hifly_client_from_settings,
+)
+from app.internal_billing import (
+    BillingInvariantError,
+    InsufficientCreditsError,
+    reconcile_oral_billing_by_evidence,
+)
 from app.oral import (
+    ORAL_CONSENT_TEXT_VERSION,
+    OralConflictError,
     OralDomainError,
+<<<<<<< main
+    cancel_oral_task,
     confirm_voice_clone,
+    create_oral_consent,
+=======
+    confirm_voice_clone,
+>>>>>>> codex/local-main-brand-shell-20260908
     create_oral_task,
     list_avatars,
+    list_oral_consents,
     list_oral_tasks,
     list_voices,
     oral_price_quote,
+<<<<<<< main
+    oral_task_available_actions,
+    oral_terminal_billing_states,
+    read_avatar_clone,
+    read_oral_task,
+    read_voice_clone,
+    start_avatar_clone,
+    start_voice_clone,
+)
+from app.oral_worker import request_oral_archive_retry, request_oral_submission_retry
+from app.permissions import require_role, write_audit
+=======
     read_avatar_clone,
     read_oral_task,
     read_voice_clone,
@@ -32,6 +63,7 @@ from app.oral import (
     start_voice_clone,
 )
 from app.permissions import require_not_auditor, require_role, write_audit
+>>>>>>> codex/local-main-brand-shell-20260908
 
 router = APIRouter(prefix="/api/oral")
 
@@ -49,10 +81,14 @@ class OralError(HTTPException):
 
 
 def _domain_guard(exc: OralDomainError) -> HTTPException:
+    if isinstance(exc, OralConflictError):
+        return OralError("ORAL_IDEMPOTENCY_CONFLICT", str(exc), status_code=409)
     return OralError("ORAL_REQUEST_INVALID", str(exc))
 
 
 def _vendor_guard(exc: HiflyError) -> HTTPException:
+    if isinstance(exc, HiflySubmissionUncertain):
+        return OralError("ORAL_SUBMISSION_UNCERTAIN", str(exc), status_code=503)
     return OralError("ORAL_VENDOR_UNAVAILABLE", str(exc), status_code=503)
 
 
@@ -62,8 +98,38 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
         key: value
         for key, value in row.items()
         if not key.startswith("vendor_")
+<<<<<<< main
+        and key not in {"idempotency_key", "request_hash", "subtitle_json"}
+=======
         and key not in {"idempotency_key", "subtitle_json", "reconciliation_json"}
+>>>>>>> codex/local-main-brand-shell-20260908
     }
+
+
+_TERMINAL_BILLING_LABELS = {"SETTLE": "SETTLED", "RELEASE": "RELEASED"}
+
+
+def _serialize_task(row: dict[str, Any], terminals: dict[str, str]) -> dict[str, Any]:
+    """Task projection with retry hints and the wallet truth of the current round.
+
+    A task whose billing round has no terminal transaction still holds its
+    reservation (open while active, frozen while submission-uncertain), so it
+    reports ``RESERVED``.
+    """
+    data = _serialize(row)
+    data["available_actions"] = oral_task_available_actions(row)
+    if row.get("billing_round") is not None:
+        data["billing_status"] = _TERMINAL_BILLING_LABELS.get(
+            terminals.get(str(row["id"]), ""), "RESERVED"
+        )
+    return data
+
+
+def _serialize_tasks_for_owner(conn: Database, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    terminals = oral_terminal_billing_states(conn, owner_user_id=str(rows[0]["owner_user_id"]))
+    return [_serialize_task(row, terminals) for row in rows]
 
 
 @router.get("/price")
@@ -72,6 +138,50 @@ def read_oral_price(conn: Database) -> dict[str, int]:
         return oral_price_quote(conn)
     except OralDomainError as exc:
         raise OralError("ORAL_BILLING_UNAVAILABLE", str(exc), status_code=503) from exc
+
+
+# ---------------------------------------------------------------------------
+# Clone consent
+# ---------------------------------------------------------------------------
+
+
+class OralConsentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    identity_id: str = Field(min_length=1, max_length=128)
+    source_asset_id: str = Field(min_length=1, max_length=128)
+    purpose: Literal["AVATAR", "VOICE", "AVATAR_CLONE", "VOICE_CLONE"]
+
+
+@router.post("/consents", status_code=status.HTTP_201_CREATED)
+def create_clone_consent(
+    request: OralConsentRequest,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            return create_oral_consent(
+                conn,
+                actor=actor,
+                identity_id=request.identity_id,
+                source_asset_id=request.source_asset_id,
+                purpose=request.purpose,
+                consent_text_version=ORAL_CONSENT_TEXT_VERSION,
+            )
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+
+
+@router.get("/consents")
+def read_clone_consents(
+    identity_id: Annotated[str, Query(min_length=1, max_length=128)],
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> list[dict[str, Any]]:
+    try:
+        return list_oral_consents(conn, actor=actor, identity_id=identity_id)
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +207,8 @@ class AvatarCloneRequest(BaseModel):
     source_kind: Literal["VIDEO", "IMAGE"]
     consent_id: str = Field(min_length=1, max_length=128)
     idempotency_key: str = Field(min_length=8, max_length=128)
+<<<<<<< main
+=======
 
 
 class OralCloneConsentRequest(BaseModel):
@@ -147,6 +259,7 @@ def bind_clone_consent(
         )
         conn.commit()
     return result
+>>>>>>> codex/local-main-brand-shell-20260908
 
 
 @router.post("/avatars", status_code=status.HTTP_202_ACCEPTED)
@@ -154,6 +267,8 @@ def create_avatar_clone(
     request: AvatarCloneRequest,
     db: BusinessDbDep,
 ) -> dict[str, Any]:
+    domain_error: OralDomainError | None = None
+    result = None
     with db.write() as (conn, actor):
         require_not_auditor(
             conn,
@@ -174,11 +289,24 @@ def create_avatar_clone(
                 idempotency_key=request.idempotency_key,
             )
         except OralDomainError as exc:
+<<<<<<< main
+            domain_error = exc
+    if domain_error is not None:
+        raise _domain_guard(domain_error) from domain_error
+    assert result is not None
+    return {
+        "id": result.task_id,
+        "status": result.status,
+        "submission_state": result.submission_state,
+        "replayed": result.replayed,
+    }
+=======
             raise _domain_guard(exc) from exc
         except HiflyError as exc:
             raise _vendor_guard(exc) from exc
         conn.commit()
     return {"id": result.task_id, "status": result.status}
+>>>>>>> codex/local-main-brand-shell-20260908
 
 
 @router.post("/avatars/{avatar_id}/refresh")
@@ -223,6 +351,8 @@ def create_voice_clone(
     request: VoiceCloneRequest,
     db: BusinessDbDep,
 ) -> dict[str, Any]:
+    domain_error: OralDomainError | None = None
+    result = None
     with db.write() as (conn, actor):
         require_not_auditor(
             conn,
@@ -242,11 +372,24 @@ def create_voice_clone(
                 idempotency_key=request.idempotency_key,
             )
         except OralDomainError as exc:
+<<<<<<< main
+            domain_error = exc
+    if domain_error is not None:
+        raise _domain_guard(domain_error) from domain_error
+    assert result is not None
+    return {
+        "id": result.task_id,
+        "status": result.status,
+        "submission_state": result.submission_state,
+        "replayed": result.replayed,
+    }
+=======
             raise _domain_guard(exc) from exc
         except HiflyError as exc:
             raise _vendor_guard(exc) from exc
         conn.commit()
     return {"id": result.task_id, "status": result.status}
+>>>>>>> codex/local-main-brand-shell-20260908
 
 
 @router.post("/voices/{voice_id}/refresh")
@@ -268,6 +411,12 @@ def confirm_voice(
     db: BusinessDbDep,
 ) -> dict[str, Any]:
     with db.write() as (conn, actor):
+<<<<<<< main
+        try:
+            return _serialize(confirm_voice_clone(conn, voice_id=voice_id, actor=actor))
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+=======
         require_not_auditor(
             conn,
             actor=actor,
@@ -288,6 +437,7 @@ def confirm_voice(
         )
         conn.commit()
     return _serialize(row)
+>>>>>>> codex/local-main-brand-shell-20260908
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +460,20 @@ class OralTaskRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 
+<<<<<<< main
+class OralBillingReconcileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reconciliation_operation_id: str = Field(min_length=8, max_length=128)
+    provider_outcome: Literal["SUCCEEDED", "FAILED", "CANCELLED", "NOT_FOUND"]
+    provider_charge_state: Literal["CHARGED", "NOT_CHARGED"]
+    resolution: Literal["SETTLE", "RELEASE"]
+    evidence_asset_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=4, max_length=500)
+
+
+@router.post("/tasks", status_code=status.HTTP_202_ACCEPTED)
+=======
 class OralReconcileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -317,10 +481,15 @@ class OralReconcileRequest(BaseModel):
 
 
 @router.post("/tasks", status_code=status.HTTP_201_CREATED)
+>>>>>>> codex/local-main-brand-shell-20260908
 def create_oral_generation_task(
     request: OralTaskRequest,
     db: BusinessDbDep,
 ) -> dict[str, Any]:
+<<<<<<< main
+    try:
+        with db.write() as (conn, actor):
+=======
     with db.write() as (conn, actor):
         require_not_auditor(
             conn,
@@ -330,6 +499,7 @@ def create_oral_generation_task(
             entity_id=request.identity_id,
         )
         try:
+>>>>>>> codex/local-main-brand-shell-20260908
             result = create_oral_task(
                 conn,
                 actor=actor,
@@ -344,16 +514,28 @@ def create_oral_generation_task(
                 subtitle=request.subtitle,
                 idempotency_key=request.idempotency_key,
             )
+<<<<<<< main
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
+    except InsufficientCreditsError as exc:
+        raise OralError(
+            "INSUFFICIENT_CREDITS",
+            "可用次数不足，请先充值。",
+            status_code=402,
+        ) from exc
+=======
         except OralDomainError as exc:
             raise _domain_guard(exc) from exc
         except HiflyError as exc:
             raise _vendor_guard(exc) from exc
         conn.commit()
+>>>>>>> codex/local-main-brand-shell-20260908
     return {
         "id": result.task_id,
         "status": result.status,
         "estimated_cost_fen": result.estimated_cost_fen,
         "replayed": result.replayed,
+        "submission_state": result.submission_state,
     }
 
 
@@ -363,7 +545,7 @@ def list_oral_generation_tasks(
     actor: AuthenticatedUser,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> list[dict[str, Any]]:
-    return [_serialize(row) for row in list_oral_tasks(conn, actor=actor, limit=limit)]
+    return _serialize_tasks_for_owner(conn, list_oral_tasks(conn, actor=actor, limit=limit))
 
 
 @router.get("/tasks/{task_id}")
@@ -376,6 +558,75 @@ def read_oral_generation_task(
         row = read_oral_task(conn, task_id=task_id, actor=actor)
     except OralDomainError as exc:
         raise _domain_guard(exc) from exc
+<<<<<<< main
+    return _serialize_tasks_for_owner(conn, [row])[0]
+
+
+@router.post("/tasks/{task_id}/refresh")
+def refresh_oral_generation_task(
+    task_id: str,
+    conn: Database,
+    actor: AuthenticatedUser,
+) -> dict[str, Any]:
+    try:
+        row = read_oral_task(conn, task_id=task_id, actor=actor)
+    except OralDomainError as exc:
+        raise _domain_guard(exc) from exc
+    return _serialize_tasks_for_owner(conn, [row])[0]
+
+
+@router.post("/tasks/{task_id}/archive-retry")
+def retry_oral_archive(
+    task_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            row = request_oral_archive_retry(conn, task_id=task_id, owner_user_id=actor.id)
+        except ValueError as exc:
+            raise OralError(
+                "ORAL_ARCHIVE_RETRY_NOT_ALLOWED",
+                "只有保留了成片地址的归档失败任务可重试归档。",
+                status_code=409,
+            ) from exc
+        return _serialize_tasks_for_owner(conn, [row])[0]
+
+
+@router.post("/tasks/{task_id}/retry")
+def retry_oral_submission(
+    task_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            row = request_oral_submission_retry(conn, task_id=task_id, owner_user_id=actor.id)
+        except ValueError as exc:
+            raise OralError(
+                "ORAL_RETRY_NOT_ALLOWED",
+                "只有提交结果未知的口播任务可以重试。",
+                status_code=409,
+            ) from exc
+        return _serialize_tasks_for_owner(conn, [row])[0]
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_oral_generation_task(
+    task_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            row = cancel_oral_task(conn, task_id=task_id, actor=actor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+        return _serialize_tasks_for_owner(conn, [row])[0]
+
+
+@router.post("/tasks/{task_id}/billing-reconcile")
+def reconcile_oral_generation_billing(
+    task_id: str,
+    request: OralBillingReconcileRequest,
+=======
     return _serialize(row)
 
 
@@ -383,6 +634,7 @@ def read_oral_generation_task(
 def reconcile_oral_generation_task(
     task_id: str,
     request: OralReconcileRequest,
+>>>>>>> codex/local-main-brand-shell-20260908
     db: BusinessDbDep,
 ) -> dict[str, Any]:
     with db.write() as (conn, actor):
@@ -390,6 +642,65 @@ def reconcile_oral_generation_task(
             conn,
             actor=actor,
             allowed_roles={"admin"},
+<<<<<<< main
+            action="oral.billing_reconcile",
+            entity_type="oral_task",
+            entity_id=task_id,
+        )
+        evidence = conn.execute(
+            """
+            SELECT id, sha256 FROM assets
+            WHERE id = %s AND created_by_user_id = %s
+            """,
+            (request.evidence_asset_id, actor.id),
+        ).fetchone()
+        if evidence is None:
+            raise OralError(
+                "ORAL_BILLING_RECONCILE_CONFLICT",
+                "口播账务状态与本次人工对账不一致。",
+                status_code=409,
+            )
+        try:
+            result = reconcile_oral_billing_by_evidence(
+                conn,
+                oral_task_id=task_id,
+                reconciliation_operation_id=request.reconciliation_operation_id,
+                provider_outcome=request.provider_outcome,
+                provider_charge_state=request.provider_charge_state,
+                resolution=request.resolution,
+                reason=request.reason,
+                evidence_asset_id=str(evidence["id"]),
+                evidence_sha256=str(evidence["sha256"]),
+            )
+        except BillingInvariantError as exc:
+            raise OralError(
+                "ORAL_BILLING_RECONCILE_CONFLICT",
+                "口播账务状态与本次人工对账不一致。",
+                status_code=409,
+            ) from exc
+        write_audit(
+            conn,
+            actor=actor,
+            action="oral.billing.reconcile",
+            entity_type="oral_task",
+            entity_id=task_id,
+            metadata={
+                "reconciliation_operation_id": request.reconciliation_operation_id,
+                "provider_outcome": request.provider_outcome,
+                "provider_charge_state": request.provider_charge_state,
+                "resolution": request.resolution,
+                "evidence_asset_id": str(evidence["id"]),
+                "evidence_sha256": str(evidence["sha256"]),
+                "reason": request.reason,
+            },
+            commit=False,
+        )
+    return {
+        "task_id": result.task_id,
+        "billing_round": result.billing_round,
+        "transaction_type": result.transaction_type,
+    }
+=======
             action="oral.task.reconcile",
             entity_type="oral_task",
             entity_id=task_id,
@@ -409,3 +720,4 @@ def reconcile_oral_generation_task(
         )
         conn.commit()
     return _serialize(row)
+>>>>>>> codex/local-main-brand-shell-20260908

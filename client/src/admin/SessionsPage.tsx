@@ -1,23 +1,22 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import {
   type AdjustmentWriteInput,
   AdminActivationError,
+  AdminSessionError,
   type CustomerSessionListItem,
   createCustomerAdjustment,
   listCustomerSessions,
   listLiveSessions,
+  revokeCustomerSession,
 } from "../api.admin";
+import "./admin-sessions.css";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
-import {
-  ADJUSTMENT_SOURCE_LABELS,
-  formatDateTime,
-  labelFrom,
-} from "./ui/vocabulary";
+import { ADJUSTMENT_SOURCE_LABELS, labelFrom } from "./ui/vocabulary";
 
-/** 加款/免费发放可选的来源单类型（与 054 服务端枚举一致）。 */
+const PAGE_SIZE = 50;
 const SOURCE_DOCUMENT_OPTIONS = [
   "CS_TICKET",
   "FREE_GRANT",
@@ -26,16 +25,33 @@ const SOURCE_DOCUMENT_OPTIONS = [
   "LEDGER_CORRECTION",
 ] as const;
 
-/**
- * T34 / ADM-02 — live customer session view.
- *
- * Queries the 029 one-row-per-user session state through the T34 endpoint
- * and offers the T23 background adjustment write (the Codex review P2
- * "no client call for the existing adjustment POST route" gap). Auditor
- * sessions are read-only: the write form stays hidden for them via the
- * shared admin session role, and the server answers AUDITOR_READ_ONLY
- * anyway as defense in depth.
- */
+function platformLabel(platform: string) {
+  const labels: Record<string, string> = {
+    windows: "Windows",
+    macos: "macOS",
+    linux: "Linux",
+  };
+  return labels[platform.toLowerCase()] ?? platform;
+}
+
+function secondsBetween(later: string | number, earlier: string | number) {
+  return Math.max(
+    0,
+    Math.ceil((new Date(later).getTime() - new Date(earlier).getTime()) / 1000),
+  );
+}
+
+function leaseState(item: CustomerSessionListItem, now: number) {
+  const remaining = secondsBetween(item.lease_until, now);
+  const duration = Math.max(
+    1,
+    secondsBetween(item.lease_until, item.last_heartbeat_at),
+  );
+  const percent = Math.round(Math.min(1, remaining / duration) * 100);
+  const heartbeatAgo = secondsBetween(now, item.last_heartbeat_at);
+  return { heartbeatAgo, percent, remaining };
+}
+
 export function SessionsPage({
   userId,
   readOnly = false,
@@ -44,128 +60,150 @@ export function SessionsPage({
   readOnly?: boolean;
 }) {
   const [queryUserId, setQueryUserId] = useState(userId ?? "");
-  const [items, setItems] = useState<CustomerSessionListItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  // The customer the adjustment form targets: set once a query succeeds,
-  // so the T23 write entry is reachable from the sessions tab.
+  const [viewUserId, setViewUserId] = useState<string | null>(userId ?? null);
   const [activeUserId, setActiveUserId] = useState<string | null>(
     userId ?? null,
   );
+  const [items, setItems] = useState<CustomerSessionListItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [now, setNow] = useState(Date.now());
 
-  // Adjustment write state (T23 / BILL-02): one idempotency key per logical
-  // write, preserved across ambiguous retries like the other admin pages.
+  const [pendingRevoke, setPendingRevoke] =
+    useState<CustomerSessionListItem | null>(null);
+  const [revokeKey, setRevokeKey] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState("");
+  const [revoking, setRevoking] = useState(false);
+
+  const [adjustOpen, setAdjustOpen] = useState(false);
   const [adjustKey, setAdjustKey] = useState<string | null>(null);
   const [credits, setCredits] = useState("");
   const [sourceType, setSourceType] = useState<string>("CS_TICKET");
   const [sourceRef, setSourceRef] = useState("");
-  const [writeNotice, setWriteNotice] = useState("");
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [adjustConfirmOpen, setAdjustConfirmOpen] = useState(false);
   const [writeError, setWriteError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  // A11：全部在线会话总览模式（无需先知道客户 ID）。
-  const [liveMode, setLiveMode] = useState(false);
-  const [liveItems, setLiveItems] = useState<CustomerSessionListItem[]>([]);
-  const [liveTotal, setLiveTotal] = useState(0);
-  const [liveOffset, setLiveOffset] = useState(0);
 
-  async function load(userIdToLoad: string) {
-    if (!userIdToLoad.trim()) {
-      setItems([]);
-      setTotal(0);
-      return;
-    }
-    setLoading(true);
-    setError("");
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const load = useCallback(
+    async (targetUserId: string | null, nextOffset = 0) => {
+      setLoading(true);
+      setError("");
+      try {
+        const response = targetUserId
+          ? await listCustomerSessions(targetUserId, { limit: PAGE_SIZE })
+          : await listLiveSessions({ limit: PAGE_SIZE, offset: nextOffset });
+        setItems(response.items);
+        setTotal(response.total);
+        setOffset(nextOffset);
+      } catch (cause) {
+        setError(
+          cause instanceof Error && cause.message
+            ? `加载失败：${cause.message}`
+            : "加载失败：未知错误",
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    setViewUserId(userId ?? null);
+    setActiveUserId(userId ?? null);
+    void load(userId ?? null, 0);
+  }, [load, userId]);
+
+  function handleQuery(event: FormEvent) {
+    event.preventDefault();
+    const target = queryUserId.trim();
+    if (!target) return;
+    setViewUserId(target);
+    setActiveUserId(target);
+    setAdjustOpen(false);
+    setNotice("");
+    void load(target, 0);
+  }
+
+  function showAllLive() {
+    setViewUserId(null);
+    setActiveUserId(null);
+    setAdjustOpen(false);
+    setNotice("");
+    void load(null, 0);
+  }
+
+  function selectCustomer(item: CustomerSessionListItem) {
+    setActiveUserId(item.user_id);
+    setQueryUserId(item.user_id);
+    setAdjustOpen(false);
+  }
+
+  function beginRevoke(item: CustomerSessionListItem) {
+    setPendingRevoke(item);
+    setRevokeKey(null);
+    setRevokeError("");
+  }
+
+  async function submitRevoke(reason: string) {
+    if (!pendingRevoke || revoking) return;
+    const key = revokeKey ?? crypto.randomUUID();
+    setRevokeKey(key);
+    setRevoking(true);
     try {
-      const response = await listCustomerSessions(userIdToLoad.trim(), {
-        limit: 50,
-      });
-      setItems(response.items);
-      setTotal(response.total);
-      setActiveUserId(userIdToLoad.trim());
-    } catch (cause) {
-      setError(
-        cause instanceof Error && cause.message
-          ? `加载失败：${cause.message}`
-          : "加载失败：未知错误",
+      await revokeCustomerSession(
+        pendingRevoke.session_id,
+        pendingRevoke.session_epoch,
+        reason,
+        key,
       );
+      setNotice(`已强制下线 ${pendingRevoke.username}，会话状态已刷新。`);
+      setPendingRevoke(null);
+      setRevokeKey(null);
+      await load(viewUserId, offset);
+    } catch (cause) {
+      setRevokeError(
+        cause instanceof Error ? cause.message : "结束会话失败：未知错误",
+      );
+      if (cause instanceof AdminSessionError && cause.status !== undefined) {
+        setRevokeKey(null);
+      }
     } finally {
-      setLoading(false);
+      setRevoking(false);
     }
   }
 
-  function handleQuery(e: FormEvent) {
-    e.preventDefault();
-    setWriteNotice("");
-    setLiveMode(false);
-    void load(queryUserId);
-  }
-
-  async function loadLive(offsetToLoad: number) {
-    setLoading(true);
-    setError("");
-    try {
-      const response = await listLiveSessions({
-        limit: 50,
-        offset: offsetToLoad,
-      });
-      setLiveItems(response.items);
-      setLiveTotal(response.total);
-      setLiveOffset(offsetToLoad);
-    } catch (cause) {
-      setError(
-        cause instanceof Error && cause.message
-          ? `加载失败：${cause.message}`
-          : "加载失败：未知错误",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function openLiveMode() {
-    setLiveMode(true);
-    setLiveOffset(0);
-    void loadLive(0);
-  }
-
-  function focusCustomer(userId: string) {
-    setQueryUserId(userId);
-    setLiveMode(false);
-    void load(userId);
-  }
-
-  function handleAdjustSubmit(e: FormEvent) {
-    e.preventDefault();
-    setWriteNotice("");
+  function handleAdjustSubmit(event: FormEvent) {
+    event.preventDefault();
     setWriteError("");
-    if (!activeUserId) {
-      return;
-    }
-    const creditsNumber = Number.parseInt(credits, 10);
-    if (!Number.isFinite(creditsNumber) || creditsNumber <= 0) {
-      setError("请输入大于 0 的加款条数");
+    setError("");
+    const seconds = Number.parseInt(credits, 10);
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      setError("请输入大于 0 的加款秒数");
       return;
     }
     if (!sourceRef.trim()) {
       setError("请填写来源单号");
       return;
     }
-    // 原因与"我已知晓"在确认对话框里收集——直接改钱包余额属高危操作。
-    setConfirmOpen(true);
+    setAdjustConfirmOpen(true);
   }
 
   async function submitAdjustment(reason: string) {
-    if (!activeUserId || submitting) {
-      return;
-    }
-    const creditsNumber = Number.parseInt(credits, 10);
+    if (!activeUserId || submitting) return;
+    const seconds = Number.parseInt(credits, 10);
     const input: AdjustmentWriteInput = {
       sourceDocumentType: sourceType,
       sourceDocumentRef: sourceRef.trim(),
-      credits: creditsNumber,
+      credits: seconds,
     };
     const key = adjustKey ?? crypto.randomUUID();
     setAdjustKey(key);
@@ -177,25 +215,19 @@ export function SessionsPage({
         reason,
         key,
       );
-      setWriteNotice(
-        `调账成功（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 条`,
+      setNotice(
+        `加秒成功（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 秒`,
       );
       setCredits("");
       setSourceRef("");
       setAdjustKey(null);
-      setConfirmOpen(false);
-      // Refresh the session view (the wallet changed, the session row may
-      // surface a new lease).
-      void load(activeUserId);
+      setAdjustConfirmOpen(false);
+      await load(viewUserId, offset);
     } catch (cause) {
       setWriteError(
-        cause instanceof Error && cause.message
-          ? cause.message
-          : "调账失败：未知错误",
+        cause instanceof Error ? cause.message : "加秒失败：未知错误",
       );
       if (cause instanceof AdminActivationError && cause.status !== undefined) {
-        // A definitive failure releases the key; an ambiguous one (timeout /
-        // network) keeps it so the retry replays instead of double-charging.
         setAdjustKey(null);
       }
     } finally {
@@ -204,146 +236,188 @@ export function SessionsPage({
   }
 
   return (
-    <section aria-label="客户会话" className="admin-panel">
-      <header>
-        <h2>客户会话</h2>
+    <section aria-label="客户会话" className="admin-sessions admin-panel">
+      <header className="admin-sessions__header">
+        <div>
+          <h2>在线会话</h2>
+          <p>实时查看客户租约，并在必要时强制结束当前会话。</p>
+        </div>
+        <span className="admin-sessions__count">{total} 个在线</span>
       </header>
 
-      {error ? <PageBanner tone="error">{error}</PageBanner> : null}
-      {writeNotice ? (
-        <PageBanner tone="notice">{writeNotice}</PageBanner>
-      ) : null}
-
-      {userId ? null : (
-        <form className="admin-form" onSubmit={handleQuery}>
+      {!userId ? (
+        <form className="admin-sessions__toolbar" onSubmit={handleQuery}>
           <label>
-            客户 ID
+            <span>客户 ID</span>
             <input
-              placeholder="例如：customer_u"
+              placeholder="输入客户 ID"
               value={queryUserId}
-              onChange={(e) => setQueryUserId(e.target.value)}
+              onChange={(event) => setQueryUserId(event.target.value)}
             />
           </label>
           <button disabled={loading} type="submit">
-            {loading ? "查询中…" : "查询会话"}
+            查看客户
           </button>
-          <button type="button" onClick={() => void openLiveMode()}>
-            {liveMode ? "刷新在线会话" : "查看全部在线会话"}
+          <button disabled={loading} type="button" onClick={showAllLive}>
+            全部在线
           </button>
         </form>
-      )}
-
-      {liveMode ? (
-        <>
-          <ul aria-label="在线会话列表" className="session-list">
-            {liveItems.map((item) => (
-              <li className="session-item" key={item.session_id}>
-                <div className="session-meta">
-                  <strong>会话 {item.session_id}</strong>
-                  <span>客户 {item.username}</span>
-                  <span>设备 {item.device_name ?? item.device_id}</span>
-                  <span>租约到期 {formatDateTime(item.lease_until)}</span>
-                  <button
-                    type="button"
-                    onClick={() => focusCustomer(item.user_id)}
-                  >
-                    查看此客户
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <Pagination
-            limit={50}
-            offset={liveOffset}
-            total={liveTotal}
-            onPageChange={(next) => void loadLive(next)}
-          />
-        </>
       ) : null}
 
-      {items.length === 0 && !loading ? (
-        <PageBanner tone="notice">该客户当前没有活动会话。</PageBanner>
-      ) : (
-        <ul aria-label="会话列表" className="session-list">
-          {items.map((item) => (
-            <li className="session-item" key={item.session_id}>
-              <div className="session-meta">
-                <strong>会话 {item.session_id}</strong>
-                <span>客户 {item.username}</span>
-                <span>设备 {item.device_name ?? item.device_id}</span>
-                <span>槽位 #{item.slot_no}</span>
-                <span>状态 {item.device_status}</span>
-                <span>租约到期 {formatDateTime(item.lease_until)}</span>
-              </div>
-            </li>
-          ))}
+      {error ? <PageBanner tone="error">{error}</PageBanner> : null}
+      {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
+      {loading ? <div className="loading">加载中...</div> : null}
+      {!loading && !error && items.length === 0 ? (
+        <div className="empty-state">当前没有活动会话</div>
+      ) : null}
+
+      {!loading && items.length > 0 ? (
+        <ul aria-label="在线会话列表" className="admin-sessions__list">
+          {items.map((item) => {
+            const lease = leaseState(item, now);
+            return (
+              <li className="admin-sessions__card" key={item.session_id}>
+                <div className="admin-sessions__identity">
+                  <span aria-hidden="true" className="admin-sessions__avatar">
+                    {item.username.slice(0, 1).toUpperCase()}
+                  </span>
+                  <div>
+                    <strong>{item.username}</strong>
+                    <span>
+                      {item.device_name || item.device_id} ·{" "}
+                      {platformLabel(item.platform)}
+                    </span>
+                  </div>
+                </div>
+                <div className="admin-sessions__lease-meta">
+                  <span>租约剩余 {lease.remaining} 秒</span>
+                  <span>心跳 {lease.heartbeatAgo} 秒前</span>
+                  <span>Epoch {item.session_epoch}</span>
+                </div>
+                <div
+                  aria-label={`${item.username} 租约剩余`}
+                  aria-valuemax={100}
+                  aria-valuemin={0}
+                  aria-valuenow={lease.percent}
+                  className="admin-sessions__progress"
+                  role="progressbar"
+                >
+                  <span style={{ width: `${lease.percent}%` }} />
+                </div>
+                <div className="admin-sessions__actions">
+                  {!userId ? (
+                    <button type="button" onClick={() => selectCustomer(item)}>
+                      选择客户
+                    </button>
+                  ) : null}
+                  {!readOnly ? (
+                    <button
+                      aria-label={`强制下线 ${item.username}`}
+                      className="admin-sessions__revoke"
+                      type="button"
+                      onClick={() => beginRevoke(item)}
+                    >
+                      强制下线
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
         </ul>
-      )}
-      {total > items.length ? (
-        <PageBanner tone="notice">
-          共 {total} 条，当前显示 {items.length} 条。
-        </PageBanner>
+      ) : null}
+
+      {!viewUserId && total > PAGE_SIZE ? (
+        <Pagination
+          disabled={loading}
+          limit={PAGE_SIZE}
+          offset={offset}
+          total={total}
+          onPageChange={(next) => void load(null, next)}
+        />
       ) : null}
 
       {activeUserId && !readOnly ? (
-        <form className="admin-form" onSubmit={handleAdjustSubmit}>
-          <h3>后台加款</h3>
-          <PageBanner tone="notice">目标客户：{activeUserId}</PageBanner>
-          <label>
-            加款条数
-            <input
-              min={1}
-              placeholder="例如：100"
-              step={1}
-              type="number"
-              value={credits}
-              onChange={(e) => setCredits(e.target.value)}
-            />
-          </label>
-          <label>
-            来源单类型
-            <select
-              value={sourceType}
-              onChange={(e) => setSourceType(e.target.value)}
-            >
-              {SOURCE_DOCUMENT_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {labelFrom(ADJUSTMENT_SOURCE_LABELS, option)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            来源单号
-            <input
-              placeholder="必填，例如：manual-20260902-001"
-              value={sourceRef}
-              onChange={(e) => setSourceRef(e.target.value)}
-            />
-          </label>
-          <button type="submit">执行后台加款</button>
-        </form>
+        <section className="admin-sessions__adjustment">
+          <button
+            aria-expanded={adjustOpen}
+            className="admin-sessions__adjust-toggle"
+            type="button"
+            onClick={() => setAdjustOpen((open) => !open)}
+          >
+            {adjustOpen ? "收起后台加秒" : "展开后台加秒"}
+          </button>
+          {adjustOpen ? (
+            <form className="admin-form" onSubmit={handleAdjustSubmit}>
+              <h3>为 {activeUserId} 后台加秒</h3>
+              <label>
+                加款秒数
+                <input
+                  min={1}
+                  step={1}
+                  type="number"
+                  value={credits}
+                  onChange={(event) => setCredits(event.target.value)}
+                />
+              </label>
+              <label>
+                来源单类型
+                <select
+                  value={sourceType}
+                  onChange={(event) => setSourceType(event.target.value)}
+                >
+                  {SOURCE_DOCUMENT_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {labelFrom(ADJUSTMENT_SOURCE_LABELS, option)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                来源单号
+                <input
+                  value={sourceRef}
+                  onChange={(event) => setSourceRef(event.target.value)}
+                />
+              </label>
+              <button type="submit">执行后台加秒</button>
+            </form>
+          ) : null}
+        </section>
       ) : null}
 
       <ConfirmDialog
-        busy={submitting}
-        confirmLabel="确认加款"
+        busy={revoking}
+        confirmLabel="确认强制下线"
         description={
-          <>
-            即将直接为客户 {activeUserId ?? ""} 的钱包增加 {credits || "0"}{" "}
-            条。该操作立即生效并写入审计，请确认来源单与金额无误。
-          </>
+          pendingRevoke
+            ? `将结束 ${pendingRevoke.username} 在 ${pendingRevoke.device_name || pendingRevoke.device_id} 上的当前会话。`
+            : null
         }
+        error={revokeError}
+        level="reason"
+        open={pendingRevoke !== null && !readOnly}
+        title="确认强制下线"
+        onClose={() => {
+          setPendingRevoke(null);
+          setRevokeError("");
+          setRevokeKey(null);
+        }}
+        onConfirm={(reason) => void submitRevoke(reason)}
+      />
+      <ConfirmDialog
+        busy={submitting}
+        confirmLabel="确认加秒"
+        description={`即将为 ${activeUserId ?? ""} 增加 ${credits || "0"} 秒。`}
         error={writeError}
         level="reasonAndAck"
-        open={confirmOpen}
-        title="确认后台加款"
+        open={adjustConfirmOpen}
+        title="确认后台加秒"
         onClose={() => {
-          setConfirmOpen(false);
+          setAdjustConfirmOpen(false);
           setWriteError("");
         }}
-        onConfirm={(reason: string) => void submitAdjustment(reason)}
+        onConfirm={(reason) => void submitAdjustment(reason)}
       />
     </section>
   );

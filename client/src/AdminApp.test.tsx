@@ -205,6 +205,26 @@ function installFetch(config?: {
     if (url.includes("/api/control/accounts?")) {
       return jsonResponse(accountsPage);
     }
+    if (url.endsWith("/api/control/dashboard/summary")) {
+      return jsonResponse({
+        today: {
+          generated: 0,
+          succeeded: 0,
+          failed: 0,
+          online_devices: 0,
+          active_customers: 0,
+          recharge_fen: 0,
+        },
+        trend: [],
+        todos: {
+          pending_pairings: 0,
+          failed_tasks_7d: 0,
+          reconciliation_problems: 0,
+          expiring_codes_7d: 0,
+        },
+        device_slots: { bound: 0, total: 0 },
+      });
+    }
     if (url.includes("/api/control/recharge-orders?")) {
       return jsonResponse(ordersPage);
     }
@@ -301,6 +321,12 @@ function installFetch(config?: {
     ) {
       return blobResponse();
     }
+    if (url.includes("/api/control/devices?")) {
+      return jsonResponse({ items: [], total: 0, limit: 100, offset: 0 });
+    }
+    if (url.includes("/api/control/customer-sessions/live")) {
+      return jsonResponse({ items: [], total: 0, limit: 20, offset: 0 });
+    }
     throw new Error(`unexpected request: ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -362,15 +388,27 @@ describe("AdminApp", () => {
     await signInWithPassword();
 
     fireEvent.click(screen.getByRole("button", { name: "资金流水" }));
+<<<<<<< main
+    fireEvent.click(screen.getByRole("tab", { name: "充值订单" }));
+=======
     fireEvent.click(screen.getByRole("button", { name: "充值订单" }));
+>>>>>>> codex/local-main-brand-shell-20260908
 
     expect(
       await screen.findByText(
         (_, element) => element?.textContent === "待支付订单 1",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("已支付未入账 2")).toBeInTheDocument();
-    expect(screen.getByText("入账但订单未支付 1")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, element) => element?.textContent === "已支付未入账 2",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, element) => element?.textContent === "入账但订单未支付 1",
+      ),
+    ).toBeInTheDocument();
 
     // 查单同步先经"原因必填"确认（A4 写契约），再发请求。
     fireEvent.click(await screen.findByRole("button", { name: "查单同步" }));
@@ -401,7 +439,11 @@ describe("AdminApp", () => {
     await signInWithPassword();
 
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
+<<<<<<< main
+    fireEvent.click(screen.getByRole("tab", { name: "支付与价格" }));
+=======
     fireEvent.click(screen.getByRole("button", { name: "支付与价格" }));
+>>>>>>> codex/local-main-brand-shell-20260908
     expect(await screen.findByDisplayValue("merchant-1")).toBeInTheDocument();
     expect(screen.getByText("********cret")).toBeInTheDocument();
     expect(screen.queryByLabelText("网关地址")).toBeNull();
@@ -418,7 +460,7 @@ describe("AdminApp", () => {
       target: { value: "" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存 ZPay 设置" }));
-    fireEvent.change(screen.getByLabelText("内部单价（分/条）"), {
+    fireEvent.change(screen.getByLabelText("内部单价（分/秒）"), {
       target: { value: "500" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存内部价格" }));
@@ -462,7 +504,11 @@ describe("AdminApp", () => {
     await signInWithPassword();
 
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
+<<<<<<< main
+    fireEvent.click(screen.getByRole("tab", { name: "服务配置" }));
+=======
     fireEvent.click(screen.getByRole("button", { name: "服务配置" }));
+>>>>>>> codex/local-main-brand-shell-20260908
     expect(
       await screen.findByRole("heading", { name: "视频生成" }),
     ).toBeInTheDocument();
@@ -509,10 +555,15 @@ describe("AdminApp", () => {
     render(<AdminApp />);
     await signInWithPassword();
     fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
+<<<<<<< main
+    fireEvent.click(await screen.findByRole("tab", { name: "激活码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成激活码" }));
+=======
     fireEvent.click(await screen.findByRole("button", { name: "激活码" }));
+>>>>>>> codex/local-main-brand-shell-20260908
 
     expect(
-      await screen.findByRole("heading", { name: "直接生成激活码" }),
+      await screen.findByRole("heading", { name: "生成激活码" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { level: 1, name: "客户管理" }),
@@ -544,6 +595,43 @@ describe("AdminApp", () => {
     expect(screen.getAllByText("管理员一号").length).toBeGreaterThan(0);
   });
 
+<<<<<<< main
+  it("opens economics from the overview group tabs while retaining navigation context", async () => {
+    installFetch({ session: "valid" });
+    render(<AdminApp />);
+    await screen.findByRole("navigation", { name: "管理端导航" });
+    const groupTabs = screen.getByRole("tablist", { name: "运营概览快捷导航" });
+    expect(groupTabs).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "总览仪表盘" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "经营分析" }));
+    expect(screen.getByRole("tab", { name: "成本明细" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "经营分析" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  it("opens the actual issuance form from the overview shortcut", async () => {
+    installFetch({ session: "valid" });
+    render(<AdminApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "快速发码" }));
+    expect(screen.getByRole("tab", { name: "激活码" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText(/初始秒数/)).toBeInTheDocument();
+  });
+
+  it("renders the merged seven-item navigation with per-page tabs", async () => {
+    installFetch({ session: "valid" });
+
+    render(<AdminApp />);
+    await screen.findByRole("navigation", { name: "管理端导航" });
+
+=======
   it("renders the seven-entry admin shell and Zhongshu brand", async () => {
     installFetch({ session: "valid" });
     render(<AdminApp />);
@@ -553,6 +641,7 @@ describe("AdminApp", () => {
 
     expect(screen.getByText("众墅之家")).toBeInTheDocument();
     expect(within(navigation).getAllByRole("button")).toHaveLength(7);
+>>>>>>> codex/local-main-brand-shell-20260908
     for (const name of [
       "总览仪表盘",
       "经营分析",
@@ -564,6 +653,30 @@ describe("AdminApp", () => {
     ]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
+<<<<<<< main
+
+    fireEvent.click(screen.getByRole("button", { name: "资金流水" }));
+    expect(screen.getByRole("tab", { name: "充值订单" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "额度流水" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "经营分析" }));
+    expect(screen.getByRole("tab", { name: "利润总览" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "成本明细" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
+    expect(screen.getByRole("tab", { name: "客户列表" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "激活码" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "设备与会话" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "审计中心" }));
+    expect(screen.getByRole("tab", { name: "审计日志" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "调账记录" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
+    expect(screen.getByRole("tab", { name: "支付与价格" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "费率管理" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "服务配置" })).toBeInTheDocument();
+=======
   });
 
   it("keeps all shell entries visible for the read-only auditor role", async () => {
@@ -610,6 +723,7 @@ describe("AdminApp", () => {
     expect(
       await screen.findByRole("heading", { level: 2, name: "设备管理" }),
     ).toBeInTheDocument();
+>>>>>>> codex/local-main-brand-shell-20260908
   });
 
   it("returns to the login gate and clears admin session state when a control 401 emits the shared expiry event", async () => {
@@ -697,7 +811,11 @@ describe("AdminApp", () => {
     await signInWithPassword();
     fireEvent.click(screen.getByRole("button", { name: "展开导航" }));
     fireEvent.click(screen.getByRole("button", { name: "资金流水" }));
+<<<<<<< main
+    fireEvent.click(screen.getByRole("tab", { name: "充值订单" }));
+=======
     fireEvent.click(screen.getByRole("button", { name: "充值订单" }));
+>>>>>>> codex/local-main-brand-shell-20260908
 
     expect(
       await screen.findByRole("button", { name: "查单同步" }),

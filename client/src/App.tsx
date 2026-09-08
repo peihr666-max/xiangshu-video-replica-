@@ -799,12 +799,12 @@ function pageTitle(page: WorkspacePage): string {
 // 一级页面的引导副标题：随页头一次性说明该页做什么，页面内部不再重复标题。
 function pageSubtitle(page: WorkspacePage): string {
   return {
-    characters: "上传一张图片一键生成五视角拼合图，供项目选用。",
+    characters: "上传一张图片一键生成五视图拼合图，供项目选用。",
     profile: "查看账号、激活凭证、余额和已绑定设备。",
     projects: "上传参考视频，拆解提示词，配首帧生成新视频。",
     settings: "管理各服务连接凭据与运行参数。",
     tasks: "查看生成批次，播放结果并处理异常任务。",
-    wallet: "查看内部计费条数、充值记录与支付状态。",
+    wallet: "查看秒数额度、充值记录与支付状态。",
   }[page];
 }
 

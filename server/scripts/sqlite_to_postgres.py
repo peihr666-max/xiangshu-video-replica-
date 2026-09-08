@@ -40,6 +40,7 @@ from scripts.reconcile_customer_billing import (
     _sqlite_columns,
     _table_names,
     connect_sqlite_readonly,
+    pg_only_table_has_divergent_state,
     reconcile_connection_pair,
     safe_error_message,
     validate_database_invariants,
@@ -57,6 +58,8 @@ PG_DERIVED_IMPORT_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "audit_logs": (("occurred_at", "created_at"),),
     "generation_tasks": (("created_at_utc", "created_at"),),
 }
+WALLET_LEDGER_TRIGGER = "trg_wallet_transactions_assign_ledger_sequence"
+WALLET_LEDGER_SEQUENCE = "wallet_ledger_sequence_seq"
 
 
 class MigrationSafetyError(RuntimeError):
@@ -190,13 +193,6 @@ def require_validated_postgres_foreign_keys(pg_conn: Any) -> None:
         )
 
 
-def _pg_table_row_count(pg_conn: psycopg.Connection[Any], table: str) -> int:
-    row = pg_conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
-    if row is None:
-        raise MigrationSafetyError(f"count query returned no row for table {table!r}")
-    return int(row["count"] if isinstance(row, Mapping) else row[0])
-
-
 def _validate_schema(
     sqlite_conn: sqlite3.Connection,
     pg_conn: psycopg.Connection[Any],
@@ -213,7 +209,9 @@ def _validate_schema(
     # customer production line opens, so any row there is divergent state.
     unexpected_extra = [table for table in extra if table not in PG_ONLY_TABLES]
     divergent_pg_only = [
-        table for table in extra if table in PG_ONLY_TABLES and _pg_table_row_count(pg_conn, table)
+        table
+        for table in extra
+        if table in PG_ONLY_TABLES and pg_only_table_has_divergent_state(pg_conn, table)
     ]
     if missing or unexpected_extra or divergent_pg_only:
         raise MigrationSafetyError(
@@ -417,6 +415,35 @@ def _insert_table_rows(
     return total
 
 
+def _set_wallet_ledger_trigger(pg_conn: psycopg.Connection[Any], *, enabled: bool) -> None:
+    action = sql.SQL("ENABLE") if enabled else sql.SQL("DISABLE")
+    pg_conn.execute(
+        sql.SQL("ALTER TABLE wallet_transactions {} TRIGGER {}").format(
+            action,
+            sql.Identifier(WALLET_LEDGER_TRIGGER),
+        )
+    )
+    row = pg_conn.execute(
+        "SELECT tgenabled FROM pg_trigger "
+        "WHERE tgrelid = 'wallet_transactions'::regclass AND tgname = %s",
+        (WALLET_LEDGER_TRIGGER,),
+    ).fetchone()
+    expected = "O" if enabled else "D"
+    if row is None or str(row["tgenabled"] if isinstance(row, Mapping) else row[0]) != expected:
+        raise MigrationSafetyError("wallet ledger sequence trigger state could not be verified")
+
+
+def _reset_wallet_ledger_sequence(pg_conn: psycopg.Connection[Any]) -> None:
+    row = pg_conn.execute(
+        "SELECT MAX(ledger_sequence) AS maximum FROM wallet_transactions"
+    ).fetchone()
+    maximum = None if row is None else (row["maximum"] if isinstance(row, Mapping) else row[0])
+    pg_conn.execute(
+        "SELECT setval(%s, %s, %s)",
+        (WALLET_LEDGER_SEQUENCE, 1 if maximum is None else int(maximum), maximum is not None),
+    )
+
+
 def _reset_sequences(pg_conn: psycopg.Connection[Any], tables: Sequence[str]) -> None:
     rows = pg_conn.execute(
         """
@@ -544,6 +571,14 @@ def migrate_snapshot(
                 for table in _dependency_order(sqlite_conn, tables):
                     columns, primary_key = _sqlite_columns(sqlite_conn, table)
                     _, _, target_types = _pg_columns(pg_conn, table)
+                    preserve_ledger_sequence = (
+                        table == "wallet_transactions" and "ledger_sequence" in columns
+                    )
+                    if preserve_ledger_sequence:
+                        # The 063 trigger correctly rejects caller-assigned sequences.
+                        # Cutover is the sole exception: copy exact historical NULL/new
+                        # sequence values while every other table guard remains active.
+                        _set_wallet_ledger_trigger(pg_conn, enabled=False)
                     source_rows = _insert_table_rows(
                         sqlite_conn,
                         pg_conn,
@@ -553,6 +588,9 @@ def migrate_snapshot(
                         target_types,
                         batch_size=batch_size,
                     )
+                    if preserve_ledger_sequence:
+                        _set_wallet_ledger_trigger(pg_conn, enabled=True)
+                        _reset_wallet_ledger_sequence(pg_conn)
                     imported.append(ImportedTable(table=table, source_rows=source_rows))
                     if fail_after_table == table:
                         raise RuntimeError(f"injected failure after table {table}")

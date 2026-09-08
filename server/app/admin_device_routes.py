@@ -95,6 +95,7 @@ def list_devices(
     status: str | None = None,
     activation_code_id: str | None = None,
     user_id: str | None = None,
+    platform: str | None = None,
     limit: int = DEFAULT_LIST_LIMIT,
     offset: int = 0,
 ) -> dict[str, object]:
@@ -104,29 +105,57 @@ def list_devices(
     clauses: list[str] = []
     params: list[object] = []
     if status:
-        clauses.append("status = %s")
+        clauses.append("cd.status = %s")
         params.append(status)
     if activation_code_id:
-        clauses.append("activation_code_id = %s")
+        clauses.append("cd.activation_code_id = %s")
         params.append(activation_code_id)
     if user_id:
-        clauses.append("user_id = %s")
+        clauses.append("cd.user_id = %s")
         params.append(user_id)
+    if platform:
+        clauses.append("cd.platform = %s")
+        params.append(platform)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     try:
         with pg_transaction() as conn:
             total_row = conn.execute(
-                f"SELECT COUNT(*) FROM customer_devices {where}",
+                "SELECT COUNT(*) FROM customer_devices cd "
+                "JOIN users u ON u.id = cd.user_id "
+                "JOIN activation_codes ac ON ac.id = cd.activation_code_id "
+                f"{where}",
                 params,
             ).fetchone()
             total = int(total_row[0]) if total_row is not None else 0
             rows = conn.execute(
-                "SELECT id, activation_code_id, user_id, slot_no, display_name, platform, "
-                "status, bound_at, unbound_at, revoked_at "
-                f"FROM customer_devices {where} "
-                "ORDER BY bound_at DESC LIMIT %s OFFSET %s",
+                "SELECT cd.id, cd.activation_code_id, cd.user_id, cd.slot_no, "
+                "cd.display_name, cd.platform, cd.status, cd.bound_at, cd.unbound_at, "
+                "cd.revoked_at, u.username, ac.masked_code, css.last_heartbeat_at, "
+                "(cd.status = 'BOUND' AND "
+                " css.lease_until::timestamptz > clock_timestamp()) AS online "
+                "FROM customer_devices cd "
+                "JOIN users u ON u.id = cd.user_id "
+                "JOIN activation_codes ac ON ac.id = cd.activation_code_id "
+                "LEFT JOIN customer_session_state css ON css.device_id = cd.id "
+                f"{where} ORDER BY cd.bound_at DESC LIMIT %s OFFSET %s",
                 (*params, bounded_limit, bounded_offset),
             ).fetchall()
+            summary_row = conn.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (WHERE cd.status = 'BOUND'),
+                  COUNT(*) FILTER (
+                    WHERE cd.status = 'BOUND'
+                      AND css.lease_until::timestamptz > clock_timestamp()
+                  ),
+                  COUNT(*) FILTER (
+                    WHERE cd.revoked_at::timestamptz >= date_trunc('day', clock_timestamp())
+                  ),
+                  COUNT(*) FILTER (WHERE cd.status = 'UNBOUND')
+                FROM customer_devices cd
+                LEFT JOIN customer_session_state css ON css.device_id = cd.id
+                """
+            ).fetchone()
     except RuntimeError as exc:
         raise _http(503, DEVICE_SERVICE_UNAVAILABLE, DEVICE_SERVICE_UNAVAILABLE_MESSAGE) from exc
     items = [
@@ -141,6 +170,10 @@ def list_devices(
             "bound_at": row[7],
             "unbound_at": row[8],
             "revoked_at": row[9],
+            "username": str(row[10]),
+            "activation_code": str(row[11]),
+            "last_heartbeat_at": row[12],
+            "online": bool(row[13]),
         }
         for row in rows
     ]
@@ -150,6 +183,12 @@ def list_devices(
         "total": total,
         "limit": bounded_limit,
         "offset": bounded_offset,
+        "summary": {
+            "bound": int(summary_row[0]) if summary_row else 0,
+            "online": int(summary_row[1]) if summary_row else 0,
+            "revoked_today": int(summary_row[2]) if summary_row else 0,
+            "unbound": int(summary_row[3]) if summary_row else 0,
+        },
     }
 
 

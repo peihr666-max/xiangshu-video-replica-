@@ -11,7 +11,11 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository
 
+<<<<<<< main
+HEAD_REVISION = "076_studio_notification_preferences"
+=======
 HEAD_REVISION = "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
 
 
 def seed_subjects(conn: sqlite3.Connection) -> None:

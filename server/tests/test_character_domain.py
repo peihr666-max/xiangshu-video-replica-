@@ -238,7 +238,11 @@ def test_empty_database_upgrade_creates_character_domain_constraints(tmp_path: P
             row[1]: row for row in conn.execute("PRAGMA table_info(character_reference_selections)")
         }
 
+<<<<<<< main
+    assert version == "076_studio_notification_preferences"
+=======
     assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
     assert CHARACTER_DOMAIN_TABLES.issubset(tables)
     assert "character_version_id" in main_character_columns
     assert "uq_character_versions_persona_version" in version_indexes
@@ -517,7 +521,11 @@ def test_character_image_generation_migration_downgrade_roundtrip(tmp_path: Path
             row[1] for row in conn.execute("PRAGMA table_info(external_call_logs)")
         }
 
+<<<<<<< main
+    assert upgraded_version == "076_studio_notification_preferences"
+=======
     assert upgraded_version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
     assert "idempotency_key" in upgraded_task_columns
     assert "character_generation_task_id" in upgraded_log_columns
 
@@ -545,7 +553,11 @@ def test_character_asset_publication_migration_downgrade_roundtrip(tmp_path: Pat
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         upgraded_version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
         upgraded_columns = {row[1] for row in conn.execute("PRAGMA table_info(character_versions)")}
+<<<<<<< main
+    assert upgraded_version == "076_studio_notification_preferences"
+=======
     assert upgraded_version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
     assert {"publication_snapshot_json", "publication_hash"} <= upgraded_columns
 
 
@@ -575,7 +587,11 @@ def test_character_reference_snapshot_migration_downgrade_roundtrip(tmp_path: Pa
         upgraded_columns = {
             row[1]: row for row in conn.execute("PRAGMA table_info(character_reference_selections)")
         }
+<<<<<<< main
+    assert upgraded_version == "076_studio_notification_preferences"
+=======
     assert upgraded_version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
     assert upgraded_columns["character_version_snapshot_json"][3] == 1
 
 

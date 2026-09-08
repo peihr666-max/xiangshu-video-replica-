@@ -1,5 +1,11 @@
 # Customer Edition Task Evidence Record V3
 
+## 管理后台改版 W3–W17（2026-09-05，自动化与本地浏览器验证完成）
+
+分支 `feat/customer-v3-admin-revamp`，实施基线 `67cf008`。完成管理聚合、按秒计费和实际用量成本、个人提示词、客户端参数与钱包、圆滑趋势曲线。最终 `npm.cmd run check` 退出 0：前端 746 通过；后端 1633 通过/1 项因缺少 ffmpeg 跳过；密钥扫描、静态检查、Cargo 和 Mypy 通过。133 个受检源码指纹与最终工作树一致。后台 12 页及客户端 3 个组件完成参考图成对对照，明确保留真实数据及已裁决范围差异。
+
+证据层级 `AUTOMATED_VERIFIED`；真实支付、付费 Provider、生产迁移、安装包及发布未执行。浏览器具体赠送 60 秒激活码写入被自动审批拒绝，未绕过；业务行为有自动化覆盖。完整 §14 记录、接口与迁移说明见 `docs/evidence/admin-revamp/implementation.md`；截图、交互与风险见 `docs/evidence/admin-revamp/browser-qa.md`。
+
 ## 视频直链交付与桌面下载反馈（2026-09-04，自动化验证完成）
 
 基于用户最新确认，取消生成视频后的媒体处理，保留授权/审计/结算；精简客户任务 UI，新增真实桌面保存反馈，并将客户删除改为账号级隐藏、管理端永久保留。最终全仓门禁为客户前端 715/715、服务端 1555 通过/1 项因本机无 `ffmpeg` 跳过，Tauri/Ruff/mypy/密钥扫描通过。证据记录：`docs/evidence/VIDEO-DIRECT-DELIVERY-DOWNLOAD-EVIDENCE.md`。当前仅为 `AUTOMATED_VERIFIED`，不宣称生产已更新或桌面安装包已验收。

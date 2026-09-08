@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StudioContextValue } from "./types";
 
@@ -7,6 +13,79 @@ const { useStudio } = vi.hoisted(() => ({
 }));
 
 vi.mock("./context", () => ({ useStudio }));
+
+// 复刻模块（模块①）：部分 mock api/live，其余保持原实现。
+const replicaApi = vi.hoisted(() => ({
+  selectCharacterReferences: vi.fn(),
+  startVideoAnalysis: vi.fn(),
+  waitForAnalysisTask: vi.fn(),
+  getLatestProjectShotCards: vi.fn(),
+  getLatestProjectAnalysis: vi.fn(async () => ({ id: "av-x", payload: {} })),
+  getLatestProjectFirstFrameSelection: vi.fn(),
+  saveGenerationPrompt: vi.fn(),
+  saveShotCards: vi.fn(),
+}));
+const replicaLive = vi.hoisted(() => ({
+  uploadWorkbenchSourceVideo: vi.fn(),
+  runReplicaGeneration: vi.fn(),
+}));
+vi.mock("../api", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ...replicaApi,
+}));
+vi.mock("./live", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ...replicaLive,
+}));
+
+// 人物替换（模块②）：叶子组件打桩，专测组合与置位链路。
+vi.mock("../CharacterSelection", () => ({
+  CharacterSelection: (props: { onVersionChange?: (s: unknown) => void }) => (
+    <button
+      type="button"
+      onClick={() =>
+        props.onVersionChange?.({
+          character_version_id: "cv-1",
+          character_snapshot: { identity: { id: "ident-1" } },
+        })
+      }
+    >
+      stub-选择人物
+    </button>
+  ),
+}));
+vi.mock("../SourceFrameSelection", () => ({
+  SourceFrameSelection: (props: {
+    onSelectionChange?: (s: unknown) => void;
+  }) => (
+    <button
+      type="button"
+      onClick={() => props.onSelectionChange?.({ id: "sfv-1", payload: {} })}
+    >
+      stub-确认源画面
+    </button>
+  ),
+}));
+vi.mock("../FirstFrameSelection", () => ({
+  FirstFrameSelection: (props: {
+    onSelectionChange?: (s: unknown) => void;
+  }) => (
+    <button
+      type="button"
+      onClick={() =>
+        props.onSelectionChange?.({
+          id: "ffv-1",
+          payload: {
+            first_frame_candidates_version_id: "cand-1",
+            first_frame_asset_id: "ff-asset-1",
+          },
+        })
+      }
+    >
+      stub-确认置换首帧
+    </button>
+  ),
+}));
 
 import {
   CopyPage,
@@ -135,8 +214,11 @@ function studio(
       tasks: [],
       projects: [],
       errors: [],
+      materials: [],
       loading: false,
       stats: null,
+      analytics7: null,
+      analytics30: null,
     },
     review: true,
     user: {} as StudioContextValue["user"],
@@ -228,12 +310,11 @@ describe("V1.4 创作页面", () => {
 
     const { container } = render(<ReplicaPage />);
 
-    expect(container.querySelectorAll(".creation-shot")).toHaveLength(3);
+    // 新复刻页：审核样例分镜以行卡呈现，Prompt 编辑区预填样例提示词。
+    expect(container.querySelectorAll(".creation-shot-row")).toHaveLength(3);
     expect(
-      container.querySelector<HTMLImageElement>(
-        '.creation-frame-target img[src="/target-person.png"]',
-      ),
-    ).not.toBeNull();
+      (container.querySelector("textarea") as HTMLTextAreaElement).value.length,
+    ).toBeGreaterThan(0);
   });
 
   it("文案工坊可直接更换参与二创的人物IP", () => {
@@ -246,34 +327,69 @@ describe("V1.4 创作页面", () => {
     expect(value.openPicker).toHaveBeenCalledWith("person");
   });
 
-  it("人物置换只选择目标人物照片，不改原始画面", () => {
-    const value = studio();
+  function replacementStudio() {
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "replacement",
+      draft: { ...value.state.draft, projectId: "project-1" },
+    };
+    value.data = {
+      ...value.data,
+      projects: [
+        {
+          id: "project-1",
+          name: "替换测试项目",
+          owner_user_id: "employee_1",
+          status: "ACTIVE",
+          reference_asset_id: "asset-1",
+          reference_upload_status: "READY",
+          analysis_status: "READY",
+        },
+      ],
+    };
+    return value;
+  }
+
+  it("人物替换：无项目时引导先准备项目", () => {
+    const value = studio({ review: false });
+    value.state = { ...value.state, page: "replacement" };
+    value.data = { ...value.data, projects: [] };
     useStudio.mockReturnValue(value);
     render(<ReplacementPage />);
-    fireEvent.click(screen.getByRole("button", { name: "从人物库选择" }));
-    expect(value.openPicker).toHaveBeenCalledWith("image");
-    expect(value.patchDraft).not.toHaveBeenCalledWith(
-      expect.objectContaining({ originalImageId: expect.anything() }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "更换原始画面" }));
-    expect(value.openPicker).toHaveBeenCalledWith("original-frame");
+    expect(screen.getByText(/先在视频复刻中准备好项目/)).toBeInTheDocument();
   });
 
-  it("历史素材选择不会持续覆盖人物置换草稿目标", () => {
-    const value = studio();
-    value.data.assets.push({
-      id: "target-2",
-      name: "张工设计室形象照",
-      kind: "image",
-      group: "人物照片",
-      personId: "person-1",
-      source: "人物库",
-      saved: true,
+  it("人物替换：确认置换首帧后置位草稿并可跳转视频生成", async () => {
+    const value = replacementStudio();
+    replicaApi.selectCharacterReferences.mockResolvedValue({
+      id: "crs-1",
+      payload: {},
     });
-    value.state = { ...value.state, selectedAssetId: "target-2" };
     useStudio.mockReturnValue(value);
     render(<ReplacementPage />);
-    expect(value.patchDraft).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "stub-选择人物" }));
+    fireEvent.click(screen.getByRole("button", { name: "stub-确认源画面" }));
+    await waitFor(() =>
+      expect(replicaApi.selectCharacterReferences).toHaveBeenCalledWith(
+        "project-1",
+        {
+          character_version_id: "cv-1",
+          source_frame_selection_version_id: "sfv-1",
+        },
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "stub-确认置换首帧" }));
+
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        firstFrameId: "ff-asset-1",
+        frameConfirmed: true,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "用于文/图生视频" }));
+    expect(value.navigate).toHaveBeenCalledWith("video");
   });
 
   it("视频生成在文图和多参考两种模式之间切换", () => {
@@ -473,5 +589,227 @@ describe("V1.4 创作页面", () => {
       returnTo: "oral-audio",
       selectedPersonId: "person-1",
     });
+  });
+});
+
+describe("视频复刻（模块①）", () => {
+  beforeEach(() => useStudio.mockReset());
+
+  const shot = {
+    shot_id: "s1",
+    start_time: 0,
+    end_time: 8,
+    shot_type: "中景",
+    composition: "",
+    camera_motion: "推进",
+    subject: "院落",
+    action: "镜头缓推庭院",
+    scene: "乡墅庭院",
+    spoken_text: "这栋房子的采光设计",
+    transition: "切镜",
+  };
+
+  function replicaStudio() {
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "replica",
+      draft: {
+        ...value.state.draft,
+        projectId: "project-1",
+        sourceAssetId: "asset-1",
+        prompt: "",
+      },
+    };
+    value.data = {
+      ...value.data,
+      projects: [
+        {
+          id: "project-1",
+          name: "复刻测试项目",
+          owner_user_id: "employee_1",
+          status: "ACTIVE",
+          reference_asset_id: "asset-1",
+          reference_upload_status: "READY",
+          analysis_status: "READY",
+        },
+      ],
+    };
+    return value;
+  }
+
+  function mockAnalysisSuccess(options: { existingShotCards?: boolean } = {}) {
+    replicaApi.startVideoAnalysis.mockResolvedValue({
+      id: "task-1",
+      status: "RUNNING",
+    });
+    replicaApi.waitForAnalysisTask.mockResolvedValue({
+      id: "task-1",
+      status: "SUCCEEDED",
+    });
+    replicaApi.getLatestProjectShotCards.mockResolvedValue(
+      options.existingShotCards
+        ? {
+            id: "scv-existing",
+            payload: {
+              source_analysis_version_id: "av-1",
+              duration_seconds: 8,
+              shots: [shot],
+            },
+          }
+        : null,
+    );
+    replicaApi.getLatestProjectAnalysis.mockResolvedValue({
+      id: "av-1",
+      payload: {
+        analysis: {
+          summary: "庭院复刻",
+          duration_seconds: 8,
+          original_script: "这栋房子的采光设计非常好",
+          shots: [shot],
+        },
+      },
+    });
+    replicaApi.saveShotCards.mockResolvedValue({
+      id: "scv-1",
+      payload: {
+        source_analysis_version_id: "av-1",
+        duration_seconds: 8,
+        shots: [shot],
+      },
+    });
+  }
+
+  async function openReplicaAndAnalyze(
+    options: { existingShotCards?: boolean } = {},
+  ) {
+    const value = replicaStudio();
+    mockAnalysisSuccess(options);
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+    fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
+    await screen.findAllByText(/院落/);
+    return value;
+  }
+
+  it("上传参考视频后写入草稿的项目与来源", async () => {
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "replica",
+      draft: {
+        ...value.state.draft,
+        projectId: undefined,
+        sourceId: undefined,
+      },
+    };
+    value.data = { ...value.data, projects: [] };
+    replicaLive.uploadWorkbenchSourceVideo.mockResolvedValue({
+      projectId: "project-upload-1",
+      assetId: "asset-upload-1",
+    });
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "上传参考视频" }));
+    const input = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    expect(input).not.toBeNull();
+    Object.defineProperty(input, "files", { value: [new File([], "a.mp4")] });
+    fireEvent.change(input);
+
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        projectId: "project-upload-1",
+        sourceId: "asset-upload-1",
+        sourceAssetId: "asset-upload-1",
+      }),
+    );
+  });
+
+  it("启动 AI 拆解后生成分镜行与逐镜头 Prompt", async () => {
+    const value = await openReplicaAndAnalyze();
+
+    expect(screen.getAllByText(/院落/).length).toBeGreaterThan(0);
+    const textarea = screen.getByLabelText(
+      "拆解 Prompt",
+    ) as HTMLTextAreaElement;
+    expect(textarea.value).toContain("【镜头 1】");
+    expect(textarea.value).toContain("【原片口播稿】");
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      prompt: expect.stringContaining("【镜头 1】"),
+    });
+  });
+
+  it("编辑后的 Prompt 可保存为用户自定义提示词", async () => {
+    const value = await openReplicaAndAnalyze();
+    replicaApi.saveGenerationPrompt.mockResolvedValue({ id: "sp-1" });
+
+    const textarea = screen.getByLabelText("拆解 Prompt");
+    fireEvent.change(textarea, { target: { value: "我改过的复刻提示词" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
+    fireEvent.change(screen.getByLabelText("自定义提示词名称"), {
+      target: { value: "我的复刻" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+
+    await waitFor(() =>
+      expect(replicaApi.saveGenerationPrompt).toHaveBeenCalledWith(
+        "project-1",
+        { name: "我的复刻", prompt_text: "我改过的复刻提示词" },
+      ),
+    );
+    expect(value.notify).toHaveBeenCalledWith(
+      expect.stringContaining("我的提示词"),
+    );
+  });
+
+  it("送生成：无确认首帧时引导到人物置换", async () => {
+    const value = await openReplicaAndAnalyze();
+    replicaApi.getLatestProjectFirstFrameSelection.mockResolvedValue({
+      version: null,
+      stale: false,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "送生成" }));
+
+    await waitFor(() => expect(value.notify).toHaveBeenCalled());
+    expect(
+      vi.mocked(value.notify).mock.calls.map((call) => String(call[0])),
+    ).toContainEqual(
+      expect.stringContaining("请先到「人物置换」生成并确认首帧"),
+    );
+    expect(replicaLive.runReplicaGeneration).not.toHaveBeenCalled();
+  });
+
+  it("送生成：有确认首帧时走完整管线建批", async () => {
+    const value = await openReplicaAndAnalyze();
+    replicaApi.getLatestProjectFirstFrameSelection.mockResolvedValue({
+      version: {
+        payload: {
+          first_frame_candidates_version_id: "cand-1",
+          first_frame_asset_id: "ff-1",
+        },
+      },
+      stale: false,
+    });
+    replicaLive.runReplicaGeneration.mockResolvedValue({
+      id: "batch-9",
+      status: "QUEUED",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "送生成" }));
+
+    await waitFor(() =>
+      expect(replicaLive.runReplicaGeneration).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({
+          shotCardVersionId: "scv-1",
+          firstFrameAssetId: "ff-1",
+        }),
+      ),
+    );
+    expect(value.navigate).toHaveBeenCalledWith("tasks");
   });
 });

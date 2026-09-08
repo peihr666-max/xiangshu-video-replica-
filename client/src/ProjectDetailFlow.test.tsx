@@ -22,6 +22,7 @@ vi.mock("./api", async (importOriginal) => {
     defaultBatchProvider: actual.defaultBatchProvider,
     extractSourceFrames: vi.fn(),
     generateFirstFrames: vi.fn(),
+    getGenerationPriceQuote: vi.fn(),
     getGenerationRuntimeLimits: vi.fn(),
     getLatestGenerationPrompt: vi.fn(),
     getLatestProjectAnalysis: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock("./api", async (importOriginal) => {
     previewGenerationPrompt: vi.fn(),
     reviseGenerationPrompt: vi.fn(),
     resumeFirstFrameGeneration: vi.fn(),
+    saveGenerationPrompt: vi.fn(),
     saveShotCards: vi.fn(),
     selectCharacterReferences: vi.fn(),
     waitForSourceFrameTask: vi.fn(),
@@ -177,9 +179,10 @@ const firstFrameSelectionVersion: api.AnalysisVersion = {
 
 const previewResult: api.PromptPreviewResult = {
   prompt_text:
-    "生成一条 10 秒、768P、写实短视频，从提供的首帧自然开始。\n[0.0-2.5s] 近景，特写，固定。口播意图：乡下的房子。",
-  output_duration_seconds: 10,
+    "生成一条 15 秒、768P、写实短视频，从提供的首帧自然开始。\n[0.0-2.5s] 近景，特写，固定。口播意图：乡下的房子。",
+  output_duration_seconds: 15,
   resolution: "768P",
+  ratio: "adaptive",
   script_source: "analysis_original",
   shot_card_version_id: null,
 };
@@ -241,6 +244,14 @@ describe("ProjectDetailFlow", () => {
     vi.mocked(api.getGenerationRuntimeLimits).mockResolvedValue({
       estimated_cost_per_task: 0.5,
     } as unknown as api.GenerationRuntimeLimits);
+    vi.mocked(api.getGenerationPriceQuote).mockResolvedValue({
+      resolution: "768P",
+      duration_seconds: 15,
+      quantity: 1,
+      unit_price_fen_per_second: 9,
+      estimated_seconds: 15,
+      estimated_price_fen: 135,
+    });
     vi.mocked(api.previewGenerationPrompt).mockResolvedValue(previewResult);
     vi.mocked(api.getProjectMainCharacter).mockResolvedValue(mainCharacter);
     vi.mocked(api.getLatestProjectSourceFrames).mockResolvedValue(
@@ -359,6 +370,112 @@ describe("ProjectDetailFlow", () => {
     expect(screen.queryByLabelText("首帧编辑提示词")).toBeNull();
   });
 
+  it("shows a generation quote failure instead of silently omitting the price", async () => {
+    vi.mocked(api.getGenerationPriceQuote).mockRejectedValue(
+      new Error("生成费用暂时无法读取"),
+    );
+
+    render(
+      <ProjectDetailFlow
+        onBack={vi.fn()}
+        onBatchCreated={vi.fn()}
+        project={project}
+        readOnly={false}
+      />,
+    );
+
+    expect(await screen.findByText("生成费用暂时无法读取")).toBeInTheDocument();
+  });
+
+  it("saves an edited reverse prompt directly to my prompts before any generation", async () => {
+    vi.mocked(api.saveGenerationPrompt).mockResolvedValue({
+      ...analysisVersion,
+      id: "saved-prompt-1",
+      kind: "saved_prompt",
+      payload: { name: "反推提示词", prompt_text: "庭院日景，镜头缓慢推进。" },
+    });
+
+    render(
+      <ProjectDetailFlow
+        onBack={vi.fn()}
+        onBatchCreated={vi.fn()}
+        project={project}
+        readOnly={false}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("提示词源码"), {
+      target: { value: "庭院日景，镜头缓慢推进。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
+
+    await waitFor(() =>
+      expect(api.saveGenerationPrompt).toHaveBeenCalledWith("project-1", {
+        name: expect.stringContaining("反推提示词"),
+        prompt_text: "庭院日景，镜头缓慢推进。",
+      }),
+    );
+    expect(api.getLatestGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
+  });
+
+  it("clears an old price while a changed generation quote is pending", async () => {
+    vi.mocked(api.getLatestProjectFirstFrames).mockResolvedValue({
+      version: firstFrameCandidatesVersion,
+      stale: false,
+    });
+    vi.mocked(api.getLatestProjectFirstFrameSelection).mockResolvedValue({
+      version: firstFrameSelectionVersion,
+      stale: false,
+    });
+    vi.mocked(api.getProjectFirstFrameHistory).mockResolvedValue([
+      firstFrameCandidatesVersion,
+    ]);
+    let resolveQuote: ((quote: api.GenerationPriceQuote) => void) | undefined;
+    vi.mocked(api.getGenerationPriceQuote)
+      .mockResolvedValueOnce({
+        resolution: "768P",
+        duration_seconds: 15,
+        quantity: 1,
+        unit_price_fen_per_second: 9,
+        estimated_seconds: 15,
+        estimated_price_fen: 135,
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveQuote = resolve;
+        }),
+      );
+
+    render(
+      <ProjectDetailFlow
+        onBack={vi.fn()}
+        onBatchCreated={vi.fn()}
+        project={project}
+        readOnly={false}
+      />,
+    );
+
+    expect(await screen.findByText(/约 ¥1\.35/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("生成数量"), {
+      target: { value: "2" },
+    });
+    expect(screen.queryByText(/约 ¥1\.35/)).toBeNull();
+    expect(screen.getByText(/预计消耗 30 秒额度/)).toBeInTheDocument();
+
+    await act(async () => {
+      resolveQuote?.({
+        resolution: "768P",
+        duration_seconds: 15,
+        quantity: 2,
+        unit_price_fen_per_second: 9,
+        estimated_seconds: 30,
+        estimated_price_fen: 270,
+      });
+    });
+  });
+
   it("uses the full source duration for automatic frame extraction", async () => {
     vi.mocked(api.getLatestProjectAnalysis).mockResolvedValue({
       ...analysisVersion,
@@ -379,8 +496,9 @@ describe("ProjectDetailFlow", () => {
       />,
     );
 
-    await screen.findByText("源画面自动处理");
-    fireEvent.click(screen.getByRole("button", { name: "重新自动取帧" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "重新自动取帧" }),
+    );
     await waitFor(() =>
       expect(api.extractSourceFrames).toHaveBeenCalledWith(
         "project-1",
@@ -606,9 +724,9 @@ describe("ProjectDetailFlow", () => {
     fireEvent.change(screen.getByLabelText("提示词源码"), {
       target: { value: "保存过但已过时的手工 Prompt" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "另存 Prompt 新版本" }));
+    fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
     await waitFor(() =>
-      expect(api.reviseGenerationPrompt).toHaveBeenCalledOnce(),
+      expect(api.saveGenerationPrompt).toHaveBeenCalledOnce(),
     );
 
     fireEvent.change(await screen.findByLabelText("自定义文案"), {
@@ -617,7 +735,7 @@ describe("ProjectDetailFlow", () => {
     expect(screen.getByText(/不会覆盖本次文案/)).toBeInTheDocument();
 
     const startButton = screen.getByRole("button", {
-      name: "开始生成（1 个付费任务）",
+      name: "提交生成（1 条）",
     });
     await waitFor(() => expect(startButton).toBeEnabled());
     fireEvent.click(startButton);
@@ -633,10 +751,11 @@ describe("ProjectDetailFlow", () => {
       script_version_id: "script-custom-1",
       shot_card_version_id: "shot-card-1",
       first_frame_asset_id: "first-frame-1",
-      output_duration_seconds: 10,
+      output_duration_seconds: 15,
       resolution: "768P",
+      ratio: "adaptive",
     });
-    expect(api.reviseGenerationPrompt).toHaveBeenCalledTimes(1);
+    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
     expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
       project.id,
       "prompt-compiled-custom-1",
@@ -646,9 +765,7 @@ describe("ProjectDetailFlow", () => {
     ).toBeInTheDocument();
     const firstIdempotencyKey = vi.mocked(api.createGenerationBatch).mock
       .calls[0]?.[1].idempotency_key;
-    fireEvent.click(
-      screen.getByRole("button", { name: "开始生成（1 个付费任务）" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "提交生成（1 条）" }));
     await waitFor(() => expect(onBatchCreated).toHaveBeenCalledWith(batch));
     const secondIdempotencyKey = vi.mocked(api.createGenerationBatch).mock
       .calls[1]?.[1].idempotency_key;

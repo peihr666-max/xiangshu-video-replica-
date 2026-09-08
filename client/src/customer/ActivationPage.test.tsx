@@ -35,9 +35,7 @@ describe("ActivationPage", () => {
     expect(
       screen.getByRole("button", { name: "激活并进入工作台" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("img", { name: "镜序 Studio" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "众墅之家" })).toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveClass("customer-access-shell");
     // FE-02 red line: the internal access-token field is not a customer
     // entrance — it must not exist on this page.

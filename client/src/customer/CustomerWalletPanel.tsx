@@ -8,13 +8,16 @@ import {
   customerGetWallet,
   customerListRechargeOrders,
   customerListWalletTransactions,
+  type GenerationPriceQuote,
+  getGenerationPriceQuote,
   type RechargeOrder,
   type WalletSnapshot,
   type WalletTransaction,
 } from "../api";
 import type { CustomerCredentialStore } from "./useCustomerSession";
+import "./customer-wallet.css";
 
-const RECHARGE_PRESETS_YUAN = [100, 200, 500, 1000] as const;
+const RECHARGE_PRESETS_YUAN = [50, 100, 200, 500, 1000] as const;
 const ORDER_POLL_INTERVAL_MS = 2_000;
 const MAX_ORDER_POLL_ATTEMPTS = 30;
 
@@ -41,6 +44,8 @@ export function CustomerWalletPanel({
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [closingOrderNo, setClosingOrderNo] = useState<string | null>(null);
+  const [priceQuotes, setPriceQuotes] = useState<GenerationPriceQuote[]>([]);
+  const [quoteError, setQuoteError] = useState("");
 
   const loadSession = useCallback(async (): Promise<{
     kind: "session";
@@ -102,6 +107,42 @@ export function CustomerWalletPanel({
   }, [refresh]);
 
   useEffect(() => {
+    let active = true;
+    Promise.all([
+      getGenerationPriceQuote({
+        resolution: "768P",
+        duration_seconds: 4,
+        quantity: 1,
+      }),
+      getGenerationPriceQuote({
+        resolution: "2K",
+        duration_seconds: 4,
+        quantity: 1,
+      }),
+    ])
+      .then((quotes) => {
+        const validQuotes = quotes.filter(
+          (quote) =>
+            (quote.resolution === "768P" || quote.resolution === "2K") &&
+            Number.isFinite(quote.unit_price_fen_per_second),
+        );
+        if (validQuotes.length !== 2) {
+          throw new Error("生成单价暂不可用，请稍后重试。");
+        }
+        if (active) setPriceQuotes(validQuotes);
+      })
+      .catch((cause: unknown) => {
+        if (active) {
+          setPriceQuotes([]);
+          setQuoteError(errorMessage(cause, "生成单价暂不可用，请稍后重试。"));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!pendingOrderNo) {
       return;
     }
@@ -132,7 +173,7 @@ export function CustomerWalletPanel({
         }
         if (order.status === "FAILED" || order.status === "CLOSED") {
           setPendingOrderNo(null);
-          setNotice("该充值订单已结束，未增加条数。");
+          setNotice("该充值订单已结束，未增加秒数额度。");
           await refresh();
           return;
         }
@@ -254,20 +295,37 @@ export function CustomerWalletPanel({
     <section className="wallet-page" aria-label="余额与充值">
       <div className="wallet-summary-grid">
         <article className="wallet-summary-card">
-          <span>单条价格</span>
-          <strong>{formatFen(wallet.internal_unit_price_fen)} / 条</strong>
+          <span>可用额度</span>
+          <strong>{wallet.available_credits} 秒</strong>
+          <small>冻结中 {wallet.reserved_credits} 秒</small>
         </article>
         <article className="wallet-summary-card">
-          <span>可用条数</span>
-          <strong>{wallet.available_credits}</strong>
-          <small>冻结 {wallet.reserved_credits} 条</small>
+          <span>价目</span>
+          {priceQuotes.length ? (
+            priceQuotes.map((quote) => (
+              <strong key={quote.resolution}>
+                {quote.resolution} {formatFen(quote.unit_price_fen_per_second)}{" "}
+                / 秒
+              </strong>
+            ))
+          ) : quoteError ? (
+            <p className="error" role="alert">
+              {quoteError}
+            </p>
+          ) : (
+            <span>正在获取生成单价…</span>
+          )}
+          <small>
+            充值换算价 {formatFen(wallet.internal_unit_price_fen)} / 秒
+          </small>
+          <small>按提交档位计费，生成失败全额退回</small>
         </article>
       </div>
 
       <section className="wallet-section" aria-labelledby="recharge-title">
         <div className="wallet-section__heading">
           <div>
-            <h2 id="recharge-title">充值条数</h2>
+            <h2 id="recharge-title">充值秒数额度</h2>
             <p>
               {formatFen(wallet.min_recharge_fen)}起充，按
               {formatFen(wallet.recharge_step_fen)}递增。
@@ -285,7 +343,8 @@ export function CustomerWalletPanel({
             >
               <strong>{amount} 元</strong>
               <span>
-                {Math.floor((amount * 100) / wallet.internal_unit_price_fen)} 条
+                约 {Math.floor((amount * 100) / wallet.internal_unit_price_fen)}{" "}
+                秒
               </span>
             </button>
           ))}
@@ -330,7 +389,7 @@ export function CustomerWalletPanel({
               <tr>
                 <th>订单号</th>
                 <th>金额</th>
-                <th>条数</th>
+                <th>到账秒数</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
@@ -372,7 +431,7 @@ export function CustomerWalletPanel({
       </section>
 
       <section className="wallet-section" aria-labelledby="ledger-title">
-        <h2 id="ledger-title">条数流水</h2>
+        <h2 id="ledger-title">额度流水</h2>
         <div className="table-scroll">
           <table className="internal-table">
             <thead>
@@ -380,6 +439,7 @@ export function CustomerWalletPanel({
                 <th>时间</th>
                 <th>类型</th>
                 <th>可用变化</th>
+                <th>计费明细</th>
               </tr>
             </thead>
             <tbody>
@@ -389,11 +449,12 @@ export function CustomerWalletPanel({
                     <td>{transaction.created_at}</td>
                     <td>{transactionTypeLabel(transaction.type)}</td>
                     <td>{signedNumber(transaction.available_delta)}</td>
+                    <td>{transactionDetail(transaction)}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={3}>暂无条数流水</td>
+                  <td colSpan={4}>暂无额度流水</td>
                 </tr>
               )}
             </tbody>
@@ -440,7 +501,15 @@ function formatFen(amountFen: number): string {
 }
 
 function signedNumber(value: number): string {
-  return value > 0 ? `+${value}` : String(value);
+  return `${value > 0 ? "+" : ""}${value} 秒`;
+}
+
+function transactionDetail(transaction: WalletTransaction): string {
+  if (transaction.task_id) {
+    return `视频生成 · ${Math.abs(transaction.available_delta || transaction.reserved_delta)} 秒`;
+  }
+  if (transaction.recharge_order_id) return "充值到账";
+  return transaction.type === "RELEASE" ? "生成失败退回" : "额度变动";
 }
 
 function orderStatusLabel(status: RechargeOrder["status"]): string {

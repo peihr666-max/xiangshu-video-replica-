@@ -48,6 +48,9 @@ describe("vocabulary", () => {
     expect(formatted).toMatch(/2026/);
     expect(formatDateTime(null)).toBe("—");
     expect(formatDateTime("not-a-date")).toBe("—");
+    expect(formatDateTime("2026-09-01 12:30:00")).toBe(
+      formatDateTime("2026-09-01T12:30:00Z"),
+    );
   });
 
   it("falls back to the raw value for unknown dictionary keys", () => {

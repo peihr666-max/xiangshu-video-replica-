@@ -15,7 +15,10 @@ from app.admin_activation_routes import router as admin_activation_router
 from app.admin_audit_routes import router as admin_audit_router
 from app.admin_auth_routes import router as admin_auth_router
 from app.admin_customer_routes import router as admin_customer_router
+from app.admin_dashboard_routes import router as admin_dashboard_router
 from app.admin_device_routes import router as admin_device_router
+from app.admin_profit_routes import router as admin_profit_router
+from app.admin_rate_routes import router as admin_rate_router
 from app.admin_runtime_routes import router as admin_runtime_router
 from app.admin_session_routes import router as admin_session_router
 from app.analysis_routes import router as analysis_router
@@ -36,6 +39,8 @@ from app.customer_session_routes import router as customer_session_router
 from app.db_pg import close_pg_pool
 from app.first_frame_routes import router as first_frame_router
 from app.generation_routes import router as generation_router
+from app.independent_routes import router as independent_router
+from app.material_routes import router as material_router
 from app.media_routes import router as media_router
 from app.ops_metrics import (
     business_http_exception_handler,
@@ -319,14 +324,19 @@ app.middleware("http")(request_observability_middleware)
 app.include_router(generation_router)
 app.include_router(studio_router)
 app.include_router(studio_draft_router)
+app.include_router(material_router)
 app.include_router(script_from_audio_router)
 app.include_router(oral_router)
+app.include_router(independent_router)
 app.include_router(rbac_router)
 app.include_router(payment_router)
 app.include_router(control_router)
 app.include_router(admin_auth_router)
+app.include_router(admin_dashboard_router)
 app.include_router(admin_customer_router)
 app.include_router(admin_session_router)
+app.include_router(admin_profit_router)
+app.include_router(admin_rate_router)
 app.include_router(admin_runtime_router)
 app.include_router(admin_audit_router)
 app.include_router(customer_activation_router)

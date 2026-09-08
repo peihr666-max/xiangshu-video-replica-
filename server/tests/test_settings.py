@@ -148,7 +148,11 @@ def test_settings_migration_creates_tables_and_defaults(tmp_path: Path, settings
             """
         ).fetchone()
 
+<<<<<<< main
+    assert version == "076_studio_notification_preferences"
+=======
     assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
     assert {"provider_settings", "runtime_settings"}.issubset(tables)
     assert dict(runtime) == {
         "max_generation_count_per_batch": 4,

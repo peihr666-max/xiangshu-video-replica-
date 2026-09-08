@@ -884,6 +884,70 @@ def test_one_invalid_view_does_not_block_the_other_six(
     assert version_status == "REVIEWING"
 
 
+def test_invalid_provider_result_keeps_completed_cost_actual(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = create_character_version(
+        client,
+        storage,
+        generation_params={"fake_behavior_by_view": {"FRONT_FACE": {"type": "invalid_response"}}},
+    )
+    assert (
+        enqueue(
+            client,
+            str(version["id"]),
+            key="invalid-cost-completion",
+            views=["FRONT_FACE"],
+        ).status_code
+        == 202
+    )
+    completions: list[int | None] = []
+
+    monkeypatch.setattr(
+        "app.character_image_generation.begin_operation_cost",
+        lambda *args, **kwargs: "cost-record",
+    )
+
+    def complete_once(*args: object, usage_amount: int | None, **kwargs: object) -> None:
+        del args, kwargs
+        completions.append(usage_amount)
+        if len(completions) > 1:
+            raise RuntimeError("ACTUAL cost must not be rewritten as UNKNOWN")
+
+    monkeypatch.setattr(
+        "app.character_image_generation.complete_operation_cost",
+        complete_once,
+    )
+
+    def reject_result(_result: CharacterImageResult) -> None:
+        raise CharacterImageProviderFailed(
+            "CHARACTER_PROVIDER_INVALID_RESPONSE",
+            "character provider returned an invalid response",
+            retriable=False,
+        )
+
+    monkeypatch.setattr(
+        "app.character_image_generation.validate_character_image_result",
+        reject_result,
+    )
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        result = run_next_character_generation_task(
+            conn,
+            worker_id="invalid-cost-worker",
+            storage=storage,
+            provider=FakeCharacterImageProvider(),
+        )
+
+    assert result is not None
+    assert result.status == "FAILED"
+    assert result.error_code == "CHARACTER_PROVIDER_INVALID_RESPONSE"
+    assert completions == [1]
+
+
 @pytest.mark.parametrize(
     ("failure_type", "error_code"),
     [

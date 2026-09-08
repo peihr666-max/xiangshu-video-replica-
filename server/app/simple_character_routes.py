@@ -52,6 +52,7 @@ from app.simple_character import (
     regenerate_simple_character_contact_sheet,
     rename_simple_character_identity,
     store_simple_character_publication,
+    update_simple_character_profile,
 )
 from app.storage import (
     StorageAdapter,
@@ -108,7 +109,13 @@ class SimpleLibraryEntryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identity_id: str
+    persona_id: str | None
+    version_number: int | None
     display_name: str
+    role: str
+    service_scope: str
+    target_audience: str
+    expression_style: str
     owner_user_id: str | None
     status: str
     contact_sheet_asset_id: str | None
@@ -158,6 +165,16 @@ class IdentityRenameRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     display_name: str
+
+
+class SimpleCharacterProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(max_length=120)
+    role: str = Field(max_length=160)
+    service_scope: str = Field(max_length=600)
+    target_audience: str = Field(max_length=600)
+    expression_style: str = Field(max_length=600)
 
 
 class CharacterSheetTaskResponse(BaseModel):
@@ -339,7 +356,13 @@ def read_simple_library(
     return [
         SimpleLibraryEntryResponse(
             identity_id=entry.identity_id,
+            persona_id=entry.persona_id,
+            version_number=entry.version_number,
             display_name=entry.display_name,
+            role=entry.role,
+            service_scope=entry.service_scope,
+            target_audience=entry.target_audience,
+            expression_style=entry.expression_style,
             owner_user_id=entry.owner_user_id,
             status=entry.status,
             contact_sheet_asset_id=entry.contact_sheet_asset_id,
@@ -495,6 +518,49 @@ def rename_identity(
         )
 
 
+@router.patch(
+    "/identities/{identity_id}/profile",
+    response_model=SimpleLibraryEntryResponse,
+)
+def update_identity_profile(
+    identity_id: str,
+    request: SimpleCharacterProfileRequest,
+    db: BusinessDbDep,
+) -> SimpleLibraryEntryResponse:
+    with db.write() as (conn, actor):
+        entry = update_simple_character_profile(
+            conn,
+            actor=actor,
+            identity_id=identity_id,
+            display_name=request.display_name,
+            role=request.role,
+            service_scope=request.service_scope,
+            target_audience=request.target_audience,
+            expression_style=request.expression_style,
+        )
+        return SimpleLibraryEntryResponse(
+            identity_id=entry.identity_id,
+            persona_id=entry.persona_id,
+            version_number=entry.version_number,
+            display_name=entry.display_name,
+            role=entry.role,
+            service_scope=entry.service_scope,
+            target_audience=entry.target_audience,
+            expression_style=entry.expression_style,
+            owner_user_id=entry.owner_user_id,
+            status=entry.status,
+            contact_sheet_asset_id=entry.contact_sheet_asset_id,
+            generation_source=entry.generation_source,
+            views=[
+                SimpleCharacterViewResponse(
+                    view_type=view.view_type,
+                    asset_id=view.asset_id,
+                )
+                for view in entry.views
+            ],
+        )
+
+
 @router.post(
     "/identities/{identity_id}/regenerate-contact-sheet",
     response_model=SimpleCharacterRegenerationResponse,
@@ -537,7 +603,7 @@ def regenerate_contact_sheet(
             raise character_error(
                 500,
                 "SIMPLE_CHARACTER_REGENERATION_FAILED",
-                "重新生成多视图失败，请稍后重试。",
+                "重新生成五视图失败，请稍后重试。",
             ) from exc
         return SimpleCharacterRegenerationResponse(
             identity_id=result.identity_id,

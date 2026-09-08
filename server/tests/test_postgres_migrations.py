@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -24,6 +25,7 @@ import pytest
 
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 SKIP_REASON = "PostgreSQL fixture not reachable; start it via scripts/pg-fixture.sh start"
+HEAD_REVISION = "076_studio_notification_preferences"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(
@@ -451,6 +453,137 @@ def _drop_database(db_name: str) -> None:
         conn.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
 
 
+def test_wallet_ledger_sequence_migration_is_reversible_on_postgres() -> None:
+    from alembic import command
+
+    database_name = "wallet_ledger_sequence_migration_test"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{database_name}"
+    sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+    _drop_database(database_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{database_name}"')
+
+    try:
+        config = _alembic_config(sqlalchemy_dsn)
+        command.upgrade(config, "062_activation_initial_free_seconds")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name) "
+                "VALUES ('ledger-user', 'ledger-user', 'Ledger User')"
+            )
+            conn.execute("INSERT INTO wallets (user_id) VALUES ('ledger-user')")
+            conn.execute(
+                "INSERT INTO recharge_orders "
+                "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, status, "
+                "pricing_scope, "
+                "base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+                "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits, "
+                "paid_at) "
+                "VALUES ('ledger-order-historical', 'ledger-user', 'ledger-merchant-historical', "
+                "'zpay', 'ledger-trade-historical', 'alipay', 'PAID', 'INTERNAL', "
+                "1000, 1000, 10000, 1000, 10000, 10, "
+                "'2026-09-05T00:00:00+00:00')"
+            )
+            conn.execute(
+                "INSERT INTO wallet_transactions "
+                "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+                "idempotency_key) VALUES ('ledger-tx-historical', 'ledger-user', 'CHARGE', 10, 0, "
+                "'ledger-order-historical', 'ledger-key-historical')"
+            )
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'wallet_transactions' AND column_name = 'ledger_sequence'"
+            ).fetchone()
+            assert conn.execute(
+                "SELECT 1 FROM pg_trigger WHERE tgname = "
+                "'trg_wallet_transactions_assign_ledger_sequence' AND NOT tgisinternal"
+            ).fetchone()
+            assert conn.execute(
+                "SELECT 1 FROM pg_indexes WHERE tablename='wallet_transactions' "
+                "AND indexname='idx_wallet_transactions_user_ledger_sequence'"
+            ).fetchone()
+            assert conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE id='ledger-tx-historical'"
+            ).fetchone() == (None,)
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for suffix in ("one", "two"):
+                conn.execute(
+                    "INSERT INTO recharge_orders "
+                    "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, "
+                    "status, pricing_scope, "
+                    "base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+                    "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits, "
+                    "paid_at) "
+                    "VALUES (%s, 'ledger-user', %s, 'zpay', %s, 'alipay', 'PAID', 'INTERNAL', "
+                    "1000, 1000, 10000, 1000, 10000, 10, '2026-09-05T00:00:00+00:00')",
+                    (
+                        f"ledger-order-{suffix}",
+                        f"ledger-merchant-{suffix}",
+                        f"ledger-trade-{suffix}",
+                    ),
+                )
+            conn.execute(
+                "INSERT INTO wallet_transactions "
+                "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+                "idempotency_key) VALUES ('ledger-tx-one', 'ledger-user', 'CHARGE', 10, 0, "
+                "'ledger-order-one', 'ledger-key-one')"
+            )
+            sequence = conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE id='ledger-tx-one'"
+            ).fetchone()[0]
+            assert sequence is not None
+            with pytest.raises(psycopg.Error, match="database assigned"):
+                conn.execute(
+                    "INSERT INTO wallet_transactions "
+                    "(id, user_id, type, available_delta, reserved_delta, recharge_order_id, "
+                    "idempotency_key, ledger_sequence) VALUES "
+                    "('ledger-tx-two', 'ledger-user', 'CHARGE', 10, 0, "
+                    "'ledger-order-two', 'ledger-key-two', 999999)"
+                )
+            with pytest.raises(psycopg.Error, match="immutable"):
+                conn.execute(
+                    "UPDATE wallet_transactions SET ledger_sequence=%s WHERE id='ledger-tx-one'",
+                    (sequence + 1,),
+                )
+
+        command.downgrade(config, "062_activation_initial_free_seconds")
+        with psycopg.connect(dsn) as conn:
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'wallet_transactions' "
+                    "AND column_name = 'ledger_sequence'"
+                ).fetchone()
+                is None
+            )
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM pg_indexes WHERE tablename='wallet_transactions' "
+                    "AND indexname='idx_wallet_transactions_user_ledger_sequence'"
+                ).fetchone()
+                is None
+            )
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM pg_trigger WHERE tgname = "
+                    "'trg_wallet_transactions_assign_ledger_sequence' AND NOT tgisinternal"
+                ).fetchone()
+                is None
+            )
+
+        command.upgrade(config, "head")
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'wallet_transactions' AND column_name = 'ledger_sequence'"
+            ).fetchone()
+    finally:
+        _drop_database(database_name)
+
+
 def test_empty_customer_bootstrap_runs_on_a_fresh_migrated_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -768,7 +901,11 @@ def test_pg_upgrade_from_published_040_head_applies_fair_queue() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+            assert version == HEAD_REVISION
+=======
             assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
             fair_queue_column = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.columns "
                 "WHERE table_name = 'runtime_settings' AND column_name = 'fair_queue_enabled'"
@@ -802,9 +939,13 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
 
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+            assert version == HEAD_REVISION, f"unexpected head revision: {version}"
+=======
             assert version == "063_script_from_audio_reconciliation", (
                 f"unexpected head revision: {version}"
             )
+>>>>>>> codex/local-main-brand-shell-20260908
 
             tables = {
                 row[0]
@@ -829,8 +970,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
                 "character_sheet_tasks",
                 "source_frame_tasks",
                 "script_rewrite_tasks",
-                "viral_videos",
-                "viral_fetch_state",
+                "studio_material_preferences",
             ):
                 assert required in tables, f"missing table {required} after upgrade head"
 
@@ -870,6 +1010,7 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
                 "idx_character_sheet_tasks_result_version",
                 "idx_source_frame_tasks_result_version",
                 "idx_generation_task_operations_reconcile_claim",
+                "idx_script_rewrite_tasks_project_identity_created",
             ):
                 assert name in index_defs, f"foreign-key support index {name} missing on PG"
             expected_partial = {
@@ -921,7 +1062,11 @@ def test_pg_full_upgrade_downgrade_reupgrade_and_indexes() -> None:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+            assert version == HEAD_REVISION
+=======
             assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
     finally:
         _drop_database("t06_migrate_test")
 
@@ -1043,7 +1188,11 @@ def test_pg_wallet_downgrade_blocked_when_ledger_has_settled_rounds() -> None:
         # The database must be left exactly at head (no partial rollback).
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+        assert version == HEAD_REVISION
+=======
         assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
     finally:
         _drop_database(db_name)
 
@@ -1157,7 +1306,11 @@ def test_pg_free_grant_downgrade_preserves_ledger(
 
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
+<<<<<<< main
+                HEAD_REVISION,
+=======
                 "063_script_from_audio_reconciliation",
+>>>>>>> codex/local-main-brand-shell-20260908
             )
             for table in tables:
                 assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]
@@ -1434,7 +1587,11 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             command.downgrade(_alembic_config(sqlalchemy_dsn), "025_postgres_runtime_compatibility")
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+        assert version == HEAD_REVISION
+=======
         assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
@@ -1536,7 +1693,11 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+            assert version == HEAD_REVISION
+=======
             assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
 
             indexes = {
                 row[0]
@@ -1717,7 +1878,11 @@ def test_t37_observability_indexes_and_fencing_audit_dimension() -> None:
         # indexes intact when the append-only evidence guard refuses rollback.
         with psycopg.connect(dsn) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+            assert version == HEAD_REVISION
+=======
             assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
             index_count = conn.execute(
                 "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
                 "AND indexname = 'idx_wallets_updated_at_user'"
@@ -1889,7 +2054,11 @@ def test_t46_scene_task_constraint_and_downgrade_guard() -> None:
 
         with psycopg.connect(dsn, autocommit=True) as conn:
             version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+<<<<<<< main
+            assert version == HEAD_REVISION
+=======
             assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-brand-shell-20260908
             conn.execute("DELETE FROM character_sheet_tasks WHERE id = 'scene-task-t46'")
 
         command.downgrade(
@@ -1902,5 +2071,305 @@ def test_t46_scene_task_constraint_and_downgrade_guard() -> None:
                 "WHERE conname = 'ck_character_sheet_tasks_operation'"
             ).fetchone()[0]
             assert "'SCENE'" not in constraint
+    finally:
+        _drop_database(db_name)
+
+
+def test_oral_submit_claim_shares_postgres_user_and_global_generation_limits() -> None:
+    from alembic import command
+
+    from app.db_portable import BusinessConnection
+    from app.generation import acquire_generation_task_lease
+    from app.oral_worker import claim_oral_work
+
+    db_name = "oral_shared_queue_limits"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+
+    try:
+        command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name, role) VALUES "
+                "('oral-owner', 'oral-owner', 'Oral Owner', 'employee'), "
+                "('other-owner', 'other-owner', 'Other Owner', 'employee')"
+            )
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES "
+                "('generation-project', 'other-owner', 'Generation')"
+            )
+            conn.execute(
+                "INSERT INTO person_identities (id, owner_user_id, display_name, status) "
+                "VALUES ('oral-identity', 'oral-owner', 'Oral', 'ACTIVE')"
+            )
+            conn.execute(
+                "INSERT INTO oral_avatars "
+                "(id, identity_id, owner_user_id, title, status, source_kind, source_asset_id) "
+                "VALUES ('oral-avatar', 'oral-identity', 'oral-owner', 'Avatar', "
+                "'READY', 'VIDEO', 'source')"
+            )
+            conn.execute(
+                "INSERT INTO oral_tasks "
+                "(id, owner_user_id, identity_id, avatar_id, mode, title, status, "
+                "estimated_cost_fen, idempotency_key, billing_round) VALUES "
+                "('oral-one', 'oral-owner', 'oral-identity', 'oral-avatar', 'AUDIO', "
+                "'One', 'QUEUED', 1000, 'oral-one-key', 1), "
+                "('oral-two', 'oral-owner', 'oral-identity', 'oral-avatar', 'AUDIO', "
+                "'Two', 'QUEUED', 1000, 'oral-two-key', 1)"
+            )
+            conn.execute(
+                "INSERT INTO user_queue_cursors "
+                "(user_id, last_dispatched_at, running_tasks_count) "
+                "VALUES ('oral-owner', now(), 0), ('other-owner', now(), 0)"
+            )
+            conn.execute(
+                "INSERT INTO generation_batches "
+                "(id, project_id, created_by_user_id, idempotency_key, request_hash, "
+                "request_snapshot_json) VALUES "
+                "('generation-batch', 'generation-project', 'oral-owner', 'batch-key', "
+                "'batch-hash', '{}')"
+            )
+            conn.execute(
+                "INSERT INTO generation_tasks (id, batch_id, provider, model, status) "
+                "VALUES ('generation-running', 'generation-batch', 'metaso', 'h3', 'PENDING')"
+            )
+            conn.execute("UPDATE runtime_settings SET max_concurrent_h3_tasks = 2 WHERE id = 1")
+
+        first_raw = psycopg.connect(dsn)
+        second_raw = psycopg.connect(dsn)
+        try:
+            first = claim_oral_work(
+                BusinessConnection.postgres(first_raw),
+                worker_id="oral-pg-a",
+            )
+            first_raw.commit()
+            second = claim_oral_work(
+                BusinessConnection.postgres(second_raw),
+                worker_id="oral-pg-b",
+            )
+            second_raw.commit()
+        finally:
+            first_raw.close()
+            second_raw.close()
+        assert first is not None and first.record_id == "oral-one"
+        assert second is None
+
+        with psycopg.connect(dsn) as raw:
+            generation_blocked = acquire_generation_task_lease(
+                BusinessConnection.postgres(raw),
+                worker_id="generation-pg-global-limit",
+            )
+            raw.commit()
+        assert generation_blocked is None
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE oral_tasks SET status = 'FAILED', queue_slot_acquired = 0 "
+                "WHERE owner_user_id = 'oral-owner'"
+            )
+            conn.execute(
+                "UPDATE user_queue_cursors SET running_tasks_count = 0 WHERE user_id = 'oral-owner'"
+            )
+            conn.execute(
+                "UPDATE generation_tasks SET status = 'RUNNING' WHERE id = 'generation-running'"
+            )
+            conn.execute(
+                "UPDATE generation_batches SET created_by_user_id = 'other-owner' "
+                "WHERE id = 'generation-batch'"
+            )
+            conn.execute(
+                "UPDATE oral_tasks SET status = 'QUEUED', submission_state = 'LOCAL_PENDING' "
+                "WHERE id = 'oral-two'"
+            )
+            conn.execute("UPDATE runtime_settings SET max_concurrent_h3_tasks = 1 WHERE id = 1")
+        with psycopg.connect(dsn) as raw:
+            blocked = claim_oral_work(
+                BusinessConnection.postgres(raw),
+                worker_id="oral-pg-global-limit",
+            )
+            raw.commit()
+        assert blocked is None
+    finally:
+        _drop_database(db_name)
+
+
+def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alembic import command
+
+    import app.generation as generation
+    import app.oral_worker as oral_worker
+    from app.db_portable import BusinessConnection
+    from app.internal_billing import release_oral_queue_slot
+
+    db_name = "oral_atomic_shared_capacity"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
+    sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+    _drop_database(db_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{db_name}"')
+
+    def claim_oral(worker_id: str) -> str | None:
+        with psycopg.connect(dsn) as raw:
+            lease = oral_worker.claim_oral_work(
+                BusinessConnection.postgres(raw), worker_id=worker_id
+            )
+            return None if lease is None else lease.record_id
+
+    def claim_generation(worker_id: str) -> str | None:
+        with psycopg.connect(dsn) as raw:
+            task = generation.acquire_generation_task_lease(
+                BusinessConnection.postgres(raw), worker_id=worker_id
+            )
+            return None if task is None else str(task["id"])
+
+    try:
+        command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name, role) VALUES "
+                "('capacity-u1','capacity-u1','U1','employee'),"
+                "('capacity-u2','capacity-u2','U2','employee')"
+            )
+            conn.execute(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES "
+                "('capacity-p1','capacity-u1','P1'),('capacity-p2','capacity-u2','P2')"
+            )
+            conn.execute(
+                "INSERT INTO person_identities (id, owner_user_id, display_name, status) VALUES "
+                "('capacity-i1','capacity-u1','I1','ACTIVE'),"
+                "('capacity-i2','capacity-u2','I2','ACTIVE')"
+            )
+            conn.execute(
+                "INSERT INTO oral_avatars "
+                "(id, identity_id, owner_user_id, title, status, source_kind, source_asset_id) "
+                "VALUES ('capacity-a1','capacity-i1','capacity-u1','A1','READY','VIDEO','s1'),"
+                "('capacity-a2','capacity-i2','capacity-u2','A2','READY','VIDEO','s2')"
+            )
+            conn.execute(
+                "INSERT INTO oral_tasks "
+                "(id, owner_user_id, identity_id, avatar_id, mode, title, status, "
+                "estimated_cost_fen, idempotency_key) VALUES "
+                "('capacity-o1','capacity-u1','capacity-i1','capacity-a1','AUDIO','O1',"
+                "'QUEUED',1000,'capacity-o1-key'),"
+                "('capacity-o2','capacity-u2','capacity-i2','capacity-a2','AUDIO','O2',"
+                "'QUEUED',1000,'capacity-o2-key')"
+            )
+            conn.execute(
+                "INSERT INTO user_queue_cursors "
+                "(user_id,last_dispatched_at,running_tasks_count) VALUES "
+                "('capacity-u1',now(),0),('capacity-u2',now(),0)"
+            )
+            conn.execute(
+                "INSERT INTO generation_batches "
+                "(id,project_id,created_by_user_id,idempotency_key,request_hash,"
+                "request_snapshot_json) VALUES "
+                "('capacity-b1','capacity-p2','capacity-u2','capacity-b-key',"
+                "'capacity-b-hash',"
+                '\'{"output_duration_seconds":4,"resolution":"480P","ratio":"adaptive"}\')'
+            )
+            # 完整快照：赛跑中无论口播还是生成赢下唯一容量槽，两个 claim
+            # 路径都必须能走完（load_worker_task 解析快照），否则测试随机
+            # 在生成侧赢锁的分支上以 JSONDecodeError 收场。
+            conn.execute(
+                "INSERT INTO generation_tasks "
+                "(id,batch_id,provider,model,status,prompt_snapshot_json) VALUES "
+                "('capacity-g1','capacity-b1','metaso','h3','PENDING',"
+                '\'{"prompt_text":"capacity","first_frame_uri":null,'
+                '"generation_mode":"I2V"}\')'
+            )
+            conn.execute("UPDATE runtime_settings SET max_concurrent_h3_tasks=1 WHERE id=1")
+
+        original_oral_limits = oral_worker.read_runtime_limits
+        oral_barrier = threading.Barrier(2)
+
+        def synchronized_oral_limits(conn: BusinessConnection) -> dict[str, int]:
+            limits = original_oral_limits(conn)
+            oral_barrier.wait(timeout=10)
+            return limits
+
+        monkeypatch.setattr(oral_worker, "read_runtime_limits", synchronized_oral_limits)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            oral_results = list(executor.map(claim_oral, ("oral-a", "oral-b")))
+        assert sum(result is not None for result in oral_results) == 1
+
+        monkeypatch.setattr(oral_worker, "read_runtime_limits", original_oral_limits)
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE oral_tasks SET status='FAILED', queue_slot_acquired=0, "
+                "lease_owner=NULL, lease_expires_at=NULL"
+            )
+            conn.execute(
+                "UPDATE oral_tasks SET status='QUEUED', submission_state='LOCAL_PENDING' "
+                "WHERE id='capacity-o1'"
+            )
+            conn.execute("UPDATE user_queue_cursors SET running_tasks_count=0")
+
+        mixed_barrier = threading.Barrier(2)
+        original_generation_limits = generation.read_runtime_limits
+
+        def synchronized_mixed_limits(conn: BusinessConnection) -> dict[str, int]:
+            limits = original_generation_limits(conn)
+            mixed_barrier.wait(timeout=10)
+            return limits
+
+        monkeypatch.setattr(oral_worker, "read_runtime_limits", synchronized_mixed_limits)
+        monkeypatch.setattr(generation, "read_runtime_limits", synchronized_mixed_limits)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            oral_future = executor.submit(claim_oral, "mixed-oral")
+            generation_future = executor.submit(claim_generation, "mixed-generation")
+            mixed_results = [oral_future.result(), generation_future.result()]
+        assert sum(result is not None for result in mixed_results) == 1
+
+        monkeypatch.setattr(oral_worker, "read_runtime_limits", original_oral_limits)
+        monkeypatch.setattr(generation, "read_runtime_limits", original_generation_limits)
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE oral_tasks SET status='FAILED', queue_slot_acquired=0, "
+                "lease_owner=NULL, lease_expires_at=NULL"
+            )
+            conn.execute(
+                "UPDATE oral_tasks SET status='ARCHIVE_FAILED', "
+                "provider_result_url='https://provider.invalid/result.mp4' "
+                "WHERE id='capacity-o2'"
+            )
+            conn.execute(
+                "UPDATE generation_tasks SET status='RUNNING', locked_by=NULL, locked_until=NULL "
+                "WHERE id='capacity-g1'"
+            )
+            conn.execute("UPDATE user_queue_cursors SET running_tasks_count=0")
+        with psycopg.connect(dsn) as raw:
+            conn = BusinessConnection.postgres(raw)
+            with pytest.raises(ValueError):
+                oral_worker.request_oral_archive_retry(
+                    conn,
+                    task_id="capacity-o2",
+                    owner_user_id="capacity-u2",
+                )
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("UPDATE generation_tasks SET status='FAILED' WHERE id='capacity-g1'")
+        with psycopg.connect(dsn) as raw:
+            conn = BusinessConnection.postgres(raw)
+            retried = oral_worker.request_oral_archive_retry(
+                conn,
+                task_id="capacity-o2",
+                owner_user_id="capacity-u2",
+            )
+            assert retried["status"] == "ARCHIVING"
+            assert retried["queue_slot_acquired"] == 1
+            release_oral_queue_slot(conn, oral_task_id="capacity-o2")
+            release_oral_queue_slot(conn, oral_task_id="capacity-o2")
+            raw.commit()
+        with psycopg.connect(dsn) as conn:
+            assert (
+                conn.execute(
+                    "SELECT running_tasks_count FROM user_queue_cursors WHERE user_id='capacity-u2'"
+                ).fetchone()[0]
+                == 0
+            )
     finally:
         _drop_database(db_name)

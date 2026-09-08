@@ -14,6 +14,7 @@ import pytest
 from app.storage import LocalStorageAdapter
 from app.viral_decrypt import keystream
 from app.viral_media import (
+    UrlFetcher,
     ViralMediaError,
     ViralMediaPipeline,
     viral_cover_key,
@@ -392,3 +393,17 @@ def test_wechat_retains_detail_statistics_for_database_feedback():
     assert pipeline.detail.forward_count == 7
     assert pipeline.detail.fav_count == 8
     assert transport.last_body_count == 1
+
+
+def test_url_fetcher_rejects_non_public_targets() -> None:
+    """上游返回的半可信 URL 不得驱动服务端 SSRF（2026-09-07 安全专项 P1）."""
+    fetcher = UrlFetcher()
+    for url in (
+        "file:///etc/passwd",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:8000/secret",
+        "http://10.0.0.8/inner.mp4",
+        "ftp://cdn.example.com/video.mp4",
+    ):
+        with pytest.raises(ViralMediaError):
+            fetcher.fetch(url)

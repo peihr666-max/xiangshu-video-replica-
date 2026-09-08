@@ -111,7 +111,10 @@ export function PaymentSettingsSection({
   }
 
   return (
-    <section aria-label="支付与价格" className="admin-panel">
+    <section
+      aria-label="支付与价格"
+      className="admin-panel admin-payment-settings"
+    >
       {error ? <PageBanner tone="error">{error}</PageBanner> : null}
       {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
 
@@ -174,10 +177,10 @@ export function PaymentSettingsSection({
         <p className="admin-hint">
           当前内部单价{" "}
           {billing ? formatFen(billing.internal_base_unit_price_fen) : "—"} /
-          条；最低充值与步长只约束 ZPay 在线充值。
+          秒；最低充值与步长只约束 ZPay 在线充值。
         </p>
         <label>
-          内部单价（分/条）
+          内部单价（分/秒）
           <input
             disabled={readOnly}
             inputMode="numeric"

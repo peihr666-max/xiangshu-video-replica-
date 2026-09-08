@@ -125,7 +125,7 @@ describe("RootApp", () => {
     render(<RootApp path="/" />);
 
     expect(
-      await screen.findByRole("heading", { name: "激活短视频复刻工作台" }),
+      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });
@@ -146,7 +146,7 @@ describe("RootApp", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "返回首次激活" }));
     expect(
-      await screen.findByRole("heading", { name: "激活短视频复刻工作台" }),
+      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
     ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([url]) => url.endsWith("/sessions/login")),
@@ -243,7 +243,7 @@ describe("RootApp", () => {
     render(<RootApp path="/customer" />);
 
     expect(
-      await screen.findByRole("heading", { name: "激活短视频复刻工作台" }),
+      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
     ).toBeInTheDocument();
     // FE-02 No-Go: the internal access-token input must never be the
     // customer's entry — the customer lane has its own activation flow.
@@ -255,7 +255,7 @@ describe("RootApp", () => {
 
     render(<RootApp path="/customer" />);
 
-    await screen.findByRole("heading", { name: "激活短视频复刻工作台" });
+    await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" });
     fireEvent.change(screen.getByLabelText("激活码"), {
       target: { value: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD" },
     });
@@ -283,7 +283,7 @@ describe("RootApp", () => {
     vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
 
     render(<RootApp path="/customer" />);
-    await screen.findByRole("heading", { name: "激活短视频复刻工作台" });
+    await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" });
     fireEvent.change(screen.getByLabelText("激活码"), {
       target: { value: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD" },
     });
