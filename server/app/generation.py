@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from math import floor
+from math import floor, isfinite
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -29,7 +29,7 @@ import psycopg
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.analysis import get_version, insert_version
+from app.analysis import get_version, insert_version, next_version_number
 from app.auth import CurrentUser, Role
 from app.bootstrap import is_customer_production
 from app.db_portable import BusinessConnection
@@ -44,6 +44,11 @@ from app.internal_billing import (
     InsufficientCreditsError,
     finalize_internal_billing,
     reserve_internal_billing,
+)
+from app.operation_costs import (
+    record_video_generation_cost,
+    record_video_generation_not_called,
+    snapshot_generation_rates,
 )
 from app.permissions import (
     insert_audit,
@@ -141,6 +146,10 @@ METASO_BASE_URL = "https://metaso.cn"
 METASO_CREATE_PATH = "/api/minimax/v2/video_generation"
 METASO_QUERY_PATH = "/api/minimax/v2/query/video_generation"
 SUPPORTED_RESOLUTIONS = {"768P", "2K"}
+SUPPORTED_RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
+CUSTOMER_DURATION_OPTIONS = {4, 15}
+CUSTOMER_QUANTITY_OPTIONS = {1, 2, 4}
+MAX_GENERATION_PROMPT_CHARS = 7_000
 # A real H3 request polls for up to five minutes. Leave headroom so another
 # worker never mistakes an active request for an abandoned lease.
 GENERATION_LEASE_SECONDS = 600
@@ -190,6 +199,7 @@ class PromptCompileRequest(BaseModel):
     first_frame_asset_id: str = Field(min_length=1)
     output_duration_seconds: int = Field(ge=4, le=15)
     resolution: Literal["768P", "2K"] = "768P"
+    ratio: Literal["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] = "adaptive"
 
 
 class PromptPreviewRequest(BaseModel):
@@ -197,6 +207,7 @@ class PromptPreviewRequest(BaseModel):
 
     output_duration_seconds: int | None = Field(default=None, ge=4, le=15)
     resolution: Literal["768P", "2K"] = "768P"
+    ratio: Literal["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] = "adaptive"
 
 
 class PromptPreviewResult(BaseModel):
@@ -205,6 +216,7 @@ class PromptPreviewResult(BaseModel):
     prompt_text: str
     output_duration_seconds: int
     resolution: Literal["768P", "2K"]
+    ratio: Literal["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
     script_source: Literal["script_version", "analysis_original"]
     shot_card_version_id: str | None
 
@@ -213,7 +225,21 @@ class PromptRevisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_prompt_version_id: str = Field(min_length=1)
-    prompt_text: str = Field(min_length=1, max_length=20_000)
+    prompt_text: str = Field(min_length=1, max_length=7_000)
+
+
+class SavedPromptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    prompt_text: str = Field(min_length=1, max_length=7_000)
+    base_prompt_version_id: str | None = Field(default=None, min_length=1)
+
+
+class ApplySavedPromptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_prompt_version_id: str = Field(min_length=1)
 
 
 class GenerationBatchRequest(BaseModel):
@@ -224,6 +250,7 @@ class GenerationBatchRequest(BaseModel):
     first_frame_asset_id: str = Field(min_length=1)
     output_duration_seconds: int = Field(ge=4, le=15)
     resolution: Literal["768P", "2K"] = "768P"
+    ratio: Literal["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] = "adaptive"
     idempotency_key: str = Field(min_length=1, max_length=128)
     provider: Literal["fake_h3", "metaso"] = "fake_h3"
     fake_audio_quality: Literal["ok", "missing"] = "ok"
@@ -272,6 +299,7 @@ class H3CreateResult(BaseModel):
     result_content: bytes
     audio_quality_status: Literal["AUDIO_OK", "AUDIO_QUALITY_FAILED", "NOT_REQUIRED"]
     quality_issue_codes: list[str]
+    output_seconds: float | None = None
 
 
 class H3QueryResult(BaseModel):
@@ -288,6 +316,7 @@ class H3QueryResult(BaseModel):
 
     status: Literal["RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
     result_url: str | None = None
+    output_seconds: float | None = None
 
 
 class SubmissionUncertain(RuntimeError):
@@ -344,6 +373,7 @@ class ReconcileOperationLease:
     actor_user_id: str
     idempotency_key: str
     worker_id: str
+    locked_until: str
     attempt: int
 
 
@@ -366,6 +396,7 @@ class ReconcileOperationOutcome:
     result_url: str | None = None
     audio_quality_status: str | None = None
     quality_issue_codes: list[str] | None = None
+    output_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -513,6 +544,7 @@ class MetasoH3Provider(H3Provider):
             return H3QueryResult(
                 status="SUCCEEDED",
                 result_url=_metaso_content_url(item, provider_task_id=provider_task_id),
+                output_seconds=_metaso_output_seconds(item),
             )
         if status == "failed":
             return H3QueryResult(status="FAILED")
@@ -537,6 +569,7 @@ class MetasoH3Provider(H3Provider):
                     result_content=b"",
                     audio_quality_status="NOT_REQUIRED",
                     quality_issue_codes=[],
+                    output_seconds=result.output_seconds,
                 )
             if result.status in {"FAILED", "CANCELLED"}:
                 raise H3ProviderFailed(
@@ -698,6 +731,17 @@ class GenerationRuntimeLimits(BaseModel):
     estimated_cost_per_task: float | None = None
 
 
+class GenerationPriceQuote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resolution: Literal["768P", "2K"]
+    duration_seconds: int
+    quantity: int
+    unit_price_fen_per_second: int
+    estimated_seconds: int
+    estimated_price_fen: int
+
+
 class TaskSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -748,7 +792,7 @@ class BatchResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    project_id: str
+    project_id: str | None = None
     prompt_version_id: str
     status: str
     quantity: int
@@ -772,7 +816,7 @@ class GenerationBatchListItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    project_id: str
+    project_id: str | None = None
     project_name: str
     created_by_user_id: str
     created_by_display_name: str
@@ -1110,6 +1154,15 @@ def compile_prompt_version(
         entity_id=project_id,
     )
     require_project_access(conn, actor=actor, project_id=project_id, action="prompt.compile")
+    if (
+        actor.role == "customer"
+        and request.output_duration_seconds not in CUSTOMER_DURATION_OPTIONS
+    ):
+        raise generation_error(
+            422,
+            "DURATION_OPTION_INVALID",
+            "Customer generation duration must be 4 or 15 seconds.",
+        )
     try:
         conn.execute("BEGIN IMMEDIATE")
         script = require_version(
@@ -1187,6 +1240,12 @@ def compile_prompt_version(
             duration_seconds=request.output_duration_seconds,
             resolution=request.resolution,
         )
+        if len(prompt_text) > MAX_GENERATION_PROMPT_CHARS:
+            raise generation_error(
+                422,
+                "PROMPT_TEXT_TOO_LONG",
+                "Generation prompt must not exceed 7000 characters.",
+            )
         payload = {
             "schema_version": GENERATION_SCHEMA_VERSION,
             "status": "SAVED",
@@ -1204,6 +1263,7 @@ def compile_prompt_version(
             "timeline_policy": "linear_scale_to_output.v1",
             "output_duration_seconds": request.output_duration_seconds,
             "resolution": request.resolution,
+            "ratio": request.ratio,
             **first_frame_sources,
         }
         row = insert_version(
@@ -1213,7 +1273,14 @@ def compile_prompt_version(
             kind=H3_PROMPT_KIND,
             created_by_user_id=actor.id,
             payload=payload,
+            commit=False,
         )
+        conn.execute(
+            "UPDATE versions SET scope = 'project', source = 'compiled', "
+            "author_user_id = %s WHERE id = %s",
+            (actor.id, str(row["id"])),
+        )
+        conn.commit()
     except Exception:
         conn.rollback()
         raise
@@ -1311,7 +1378,16 @@ def preview_prompt_text(
     source_duration_seconds = shot_timeline_duration(shot_payload)
     duration_seconds = request.output_duration_seconds
     if duration_seconds is None:
-        duration_seconds = max(4, min(15, round(source_duration_seconds)))
+        rounded_duration = max(4, min(15, round(source_duration_seconds)))
+        duration_seconds = (
+            (4 if rounded_duration <= 9 else 15) if actor.role == "customer" else rounded_duration
+        )
+    elif actor.role == "customer" and duration_seconds not in CUSTOMER_DURATION_OPTIONS:
+        raise generation_error(
+            422,
+            "DURATION_OPTION_INVALID",
+            "Customer generation duration must be 4 or 15 seconds.",
+        )
     prompt_text = compile_prompt_text(
         script_payload=script_payload,
         shot_payload=shot_payload,
@@ -1319,10 +1395,17 @@ def preview_prompt_text(
         duration_seconds=duration_seconds,
         resolution=request.resolution,
     )
+    if len(prompt_text) > MAX_GENERATION_PROMPT_CHARS:
+        raise generation_error(
+            422,
+            "PROMPT_TEXT_TOO_LONG",
+            "Generation prompt must not exceed 7000 characters.",
+        )
     return PromptPreviewResult(
         prompt_text=prompt_text,
         output_duration_seconds=duration_seconds,
         resolution=request.resolution,
+        ratio=request.ratio,
         script_source=script_source,
         shot_card_version_id=(str(shot_card["id"]) if shot_card is not None else None),
     )
@@ -1334,6 +1417,7 @@ def revise_prompt_version(
     project_id: str,
     actor: CurrentUser,
     request: PromptRevisionRequest,
+    commit: bool = True,
 ) -> sqlite3.Row:
     require_not_auditor(
         conn,
@@ -1389,22 +1473,211 @@ def revise_prompt_version(
             kind=H3_PROMPT_KIND,
             created_by_user_id=actor.id,
             payload=payload,
+            commit=False,
         )
+        conn.execute(
+            "UPDATE versions SET scope = 'project', source = 'manual_revision', "
+            "author_user_id = %s WHERE id = %s",
+            (actor.id, str(row["id"])),
+        )
+        insert_audit(
+            conn,
+            actor=actor,
+            action="prompt.revise",
+            entity_type="version",
+            entity_id=str(row["id"]),
+            metadata={
+                "project_id": project_id,
+                "base_prompt_version_id": request.base_prompt_version_id,
+            },
+        )
+        if commit:
+            conn.commit()
     except Exception:
         conn.rollback()
         raise
-    write_audit(
+    return row
+
+
+def save_prompt_to_library(
+    conn: BusinessConnection,
+    *,
+    project_id: str,
+    actor: CurrentUser,
+    request: SavedPromptRequest,
+) -> sqlite3.Row:
+    require_not_auditor(
         conn,
         actor=actor,
-        action="prompt.revise",
-        entity_type="version",
-        entity_id=str(row["id"]),
-        metadata={
-            "project_id": project_id,
-            "base_prompt_version_id": request.base_prompt_version_id,
-        },
+        action="saved_prompt.create",
+        entity_type="project",
+        entity_id=project_id,
     )
+    require_project_access(conn, actor=actor, project_id=project_id, action="saved_prompt.create")
+    base_payload: dict[str, Any] = {}
+    source_version_id: str
+    source_kind: str
+    if request.base_prompt_version_id is not None:
+        base = require_version(
+            conn,
+            version_id=request.base_prompt_version_id,
+            project_id=project_id,
+            kind=H3_PROMPT_KIND,
+        )
+        base_payload = json.loads(str(base["payload_json"]))
+        source_version_id = str(base["id"])
+        source_kind = H3_PROMPT_KIND
+    else:
+        source = latest_version(conn, project_id=project_id, kind="shot_card")
+        if source is None:
+            source = latest_version(conn, project_id=project_id, kind="analysis")
+        if source is None:
+            raise generation_error(
+                409,
+                "ANALYSIS_NOT_READY",
+                "Analyze the reference video before saving its reverse prompt.",
+            )
+        source_version_id = str(source["id"])
+        source_kind = str(source["kind"])
+    prompt_text = request.prompt_text.strip()
+    name = request.name.strip()
+    if not prompt_text:
+        raise generation_error(422, "PROMPT_TEXT_REQUIRED", "Prompt text cannot be blank.")
+    if not name:
+        raise generation_error(422, "PROMPT_NAME_REQUIRED", "Prompt name cannot be blank.")
+    payload = {
+        "schema_version": GENERATION_SCHEMA_VERSION,
+        "name": name,
+        "prompt_text": prompt_text,
+        "content_hash": content_hash(prompt_text),
+        "scope": "user",
+        "source": "reverse_prompt_revision",
+        "author_user_id": actor.id,
+        "base_prompt_version_id": request.base_prompt_version_id,
+        "source_version_id": source_version_id,
+        "source_kind": source_kind,
+        "ratio": base_payload.get("ratio", "adaptive"),
+        "output_duration_seconds": base_payload.get("output_duration_seconds"),
+        "resolution": base_payload.get("resolution"),
+    }
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        version_id = str(uuid4())
+        conn.execute(
+            """
+            INSERT INTO versions (
+                id, project_id, asset_id, kind, version_number, payload_json,
+                created_by_user_id, scope, source, author_user_id
+            ) VALUES (%s, %s, NULL, 'saved_prompt', %s, %s, %s, 'user',
+                      'reverse_prompt_revision', %s)
+            """,
+            (
+                version_id,
+                project_id,
+                next_version_number(conn, project_id=project_id, kind="saved_prompt"),
+                json.dumps(payload, ensure_ascii=True, sort_keys=True),
+                actor.id,
+                actor.id,
+            ),
+        )
+        row = get_version(conn, version_id)
+        insert_audit(
+            conn,
+            actor=actor,
+            action="saved_prompt.create",
+            entity_type="version",
+            entity_id=str(row["id"]),
+            metadata={
+                "project_id": project_id,
+                "base_prompt_version_id": request.base_prompt_version_id,
+                "source_version_id": source_version_id,
+                "source": "reverse_prompt_revision",
+            },
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return row
+
+
+def list_saved_prompts(
+    conn: BusinessConnection,
+    *,
+    project_id: str,
+    actor: CurrentUser,
+) -> list[sqlite3.Row]:
+    require_project_access(conn, actor=actor, project_id=project_id, action="saved_prompt.read")
+    return list(
+        conn.execute(
+            """
+            SELECT id, project_id, asset_id, kind, version_number, payload_json,
+                   created_by_user_id, created_at
+            FROM versions
+            WHERE project_id = %s AND kind = 'saved_prompt' AND author_user_id = %s
+            ORDER BY created_at DESC, version_number DESC
+            """,
+            (project_id, actor.id),
+        ).fetchall()
+    )
+
+
+def apply_saved_prompt(
+    conn: BusinessConnection,
+    *,
+    project_id: str,
+    saved_prompt_id: str,
+    actor: CurrentUser,
+    request: ApplySavedPromptRequest,
+) -> sqlite3.Row:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="saved_prompt.apply",
+        entity_type="version",
+        entity_id=saved_prompt_id,
+    )
+    require_project_access(conn, actor=actor, project_id=project_id, action="saved_prompt.apply")
+    saved = require_version(
+        conn,
+        version_id=saved_prompt_id,
+        project_id=project_id,
+        kind="saved_prompt",
+    )
+    owner = conn.execute(
+        "SELECT author_user_id FROM versions WHERE id = %s",
+        (saved_prompt_id,),
+    ).fetchone()
+    if owner is None or str(owner["author_user_id"]) != actor.id:
+        raise generation_error(404, "SAVED_PROMPT_NOT_FOUND", "Saved prompt does not exist.")
+    saved_payload = json.loads(str(saved["payload_json"]))
+    try:
+        revised = revise_prompt_version(
+            conn,
+            project_id=project_id,
+            actor=actor,
+            request=PromptRevisionRequest(
+                base_prompt_version_id=request.base_prompt_version_id,
+                prompt_text=str(saved_payload["prompt_text"]),
+            ),
+            commit=False,
+        )
+        insert_audit(
+            conn,
+            actor=actor,
+            action="saved_prompt.apply",
+            entity_type="version",
+            entity_id=saved_prompt_id,
+            metadata={
+                "project_id": project_id,
+                "created_prompt_version_id": str(revised["id"]),
+            },
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return revised
 
 
 def lock_prompt_version(
@@ -1471,19 +1744,43 @@ def lock_prompt_version(
 
 
 def _find_idempotent_batch(
-    conn: BusinessConnection, *, actor_id: str, project_id: str, key: str
+    conn: BusinessConnection, *, actor_id: str, project_id: str | None, key: str
 ) -> sqlite3.Row | None:
+    # 独立批次（project_id NULL）在 SQL 等值比较下永远不命中，须用 IS NULL。
+    if project_id is None:
+        clause = "created_by_user_id = %s AND project_id IS NULL AND idempotency_key = %s"
+        params: tuple[object, ...] = (actor_id, key)
+    else:
+        clause = "created_by_user_id = %s AND project_id = %s AND idempotency_key = %s"
+        params = (actor_id, project_id, key)
     return cast(
         sqlite3.Row | None,
         conn.execute(
-            """
+            f"""
             SELECT id, request_hash
             FROM generation_batches
-            WHERE created_by_user_id = %s AND project_id = %s AND idempotency_key = %s
+            WHERE {clause}
             """,
-            (actor_id, project_id, key),
+            params,
         ).fetchone(),
     )
+
+
+def _seconds_from_prompt_snapshot(snapshot: object) -> int:
+    """W11：从锁定提示词快照读取提交档位秒数；缺失或不可解析回退 1。"""
+    if not snapshot:
+        return 1
+    try:
+        payload = json.loads(str(snapshot))
+    except (TypeError, ValueError):
+        return 1
+    if not isinstance(payload, dict):
+        return 1
+    seconds = payload.get("output_duration_seconds")
+    try:
+        return max(1, int(seconds)) if seconds is not None else 1
+    except (TypeError, ValueError):
+        return 1
 
 
 def _reserve_generation_credit(
@@ -1492,6 +1789,7 @@ def _reserve_generation_credit(
     user_id: str,
     task_id: str,
     billing_round: int | None = 1,
+    seconds: int = 1,
 ) -> int:
     try:
         return reserve_internal_billing(
@@ -1499,6 +1797,7 @@ def _reserve_generation_credit(
             user_id=user_id,
             task_id=task_id,
             billing_round=billing_round,
+            seconds=seconds,
         )
     except InsufficientCreditsError as exc:
         raise generation_error(
@@ -1691,13 +1990,31 @@ def create_generation_batch(
             )
         frozen_duration = prompt_snapshot.get("output_duration_seconds")
         frozen_resolution = prompt_snapshot.get("resolution")
-        if (frozen_duration is not None and frozen_duration != request.output_duration_seconds) or (
-            frozen_resolution is not None and frozen_resolution != request.resolution
+        frozen_ratio = prompt_snapshot.get("ratio", "adaptive")
+        if (
+            (frozen_duration is not None and frozen_duration != request.output_duration_seconds)
+            or (frozen_resolution is not None and frozen_resolution != request.resolution)
+            or frozen_ratio != request.ratio
         ):
             raise generation_error(
                 409,
                 "PROMPT_PARAMETERS_MISMATCH",
                 "Generation parameters must match the locked prompt snapshot.",
+            )
+        if (
+            actor.role == "customer"
+            and request.output_duration_seconds not in CUSTOMER_DURATION_OPTIONS
+        ):
+            raise generation_error(
+                422,
+                "DURATION_OPTION_INVALID",
+                "Customer generation duration must be 4 or 15 seconds.",
+            )
+        if actor.role == "customer" and request.quantity not in CUSTOMER_QUANTITY_OPTIONS:
+            raise generation_error(
+                422,
+                "QUANTITY_OPTION_INVALID",
+                "Customer generation quantity must be 1, 2, or 4.",
             )
         first_frame = require_asset_access(
             conn,
@@ -1729,6 +2046,12 @@ def create_generation_batch(
             )
 
         request_snapshot = generation_request_snapshot(request, prompt_snapshot)
+        task_prompt_snapshot = {
+            **prompt_snapshot,
+            "output_duration_seconds": request.output_duration_seconds,
+            "resolution": request.resolution,
+            "ratio": request.ratio,
+        }
         batch_id = str(uuid4())
         used_prompt_snapshot = {**prompt_snapshot, "status": "USED"}
         cursor = conn.execute(
@@ -1791,9 +2114,10 @@ def create_generation_batch(
                     quality_status,
                     prompt_version_id,
                     prompt_snapshot_json,
-                    next_poll_at
+                    next_poll_at,
+                    billed_seconds
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
                 """,
                 (
                     task_id,
@@ -1805,13 +2129,21 @@ def create_generation_batch(
                     "PENDING",
                     "PENDING",
                     request.prompt_version_id,
-                    json.dumps(prompt_snapshot, ensure_ascii=True, sort_keys=True),
+                    json.dumps(task_prompt_snapshot, ensure_ascii=True, sort_keys=True),
+                    request.output_duration_seconds,
                 ),
+            )
+            snapshot_generation_rates(
+                conn,
+                task_id=task_id,
+                resolution=request.resolution,
+                billed_seconds=request.output_duration_seconds,
             )
             _reserve_generation_credit(
                 conn,
                 user_id=actor.id,
                 task_id=task_id,
+                seconds=request.output_duration_seconds,
             )
         # Pattern D: this batch makes the user a queue participant; the cursor
         # row is upserted in the same transaction so rotation can serve them.
@@ -1861,7 +2193,7 @@ def regenerate_generation_batch(
     ).fetchone()
     if source_context is None:
         raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
-    project_id = str(source_context["project_id"])
+    project_id = None if source_context["project_id"] is None else str(source_context["project_id"])
     require_not_auditor(
         conn,
         actor=actor,
@@ -1869,10 +2201,11 @@ def regenerate_generation_batch(
         entity_type="generation_batch",
         entity_id=batch_id,
     )
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
         project_id=project_id,
+        created_by_user_id=str(source_context["created_by_user_id"]),
         action="generation_batch.regenerate",
     )
 
@@ -1881,7 +2214,8 @@ def regenerate_generation_batch(
         conn.execute("BEGIN IMMEDIATE")
         source_batch = conn.execute(
             """
-            SELECT id, project_id, created_by_user_id, request_snapshot_json
+            SELECT id, project_id, created_by_user_id, creation_kind,
+                   request_snapshot_json
             FROM generation_batches
             WHERE id = %s
             """,
@@ -1947,10 +2281,10 @@ def regenerate_generation_batch(
             """
             INSERT INTO generation_batches (
                 id, project_id, created_by_user_id, idempotency_key,
-                request_hash, request_snapshot_json, status,
+                request_hash, request_snapshot_json, creation_kind, status,
                 source_batch_id, source_task_id, generation_reason
             )
-            VALUES (%s, %s, %s, %s, %s, %s, 'QUEUED', %s, NULL, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'QUEUED', %s, NULL, %s)
             """,
             (
                 new_batch_id,
@@ -1959,6 +2293,7 @@ def regenerate_generation_batch(
                 request.idempotency_key,
                 request_hash,
                 request_snapshot,
+                str(source_batch["creation_kind"]),
                 batch_id,
                 request.generation_reason,
             ),
@@ -1976,10 +2311,10 @@ def regenerate_generation_batch(
                     status, archive_status, quality_status,
                     prompt_version_id, prompt_snapshot_json, next_poll_at,
                     estimated_cost, retry_of_task_id, retry_reason,
-                    retry_requested_by_user_id, retry_requested_at
+                    retry_requested_by_user_id, retry_requested_at, billed_seconds
                 )
                 VALUES (%s, %s, %s, %s, %s, 'PENDING', 'PENDING', 'PENDING',
-                        %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
                 """,
                 (
                     replacement_task_id,
@@ -1993,12 +2328,21 @@ def regenerate_generation_batch(
                     str(source_task["id"]),
                     request.generation_reason,
                     actor.id,
+                    _seconds_from_prompt_snapshot(prompt_snapshot),
                 ),
+            )
+            replacement_snapshot = json.loads(prompt_snapshot)
+            snapshot_generation_rates(
+                conn,
+                task_id=replacement_task_id,
+                resolution=str(replacement_snapshot.get("resolution", "768P")),
+                billed_seconds=_seconds_from_prompt_snapshot(prompt_snapshot),
             )
             _reserve_generation_credit(
                 conn,
                 user_id=billed_user_id,
                 task_id=replacement_task_id,
+                seconds=_seconds_from_prompt_snapshot(prompt_snapshot),
             )
         insert_audit(
             conn,
@@ -2046,7 +2390,7 @@ def regenerate_generation_task(
     ).fetchone()
     if source_context is None:
         raise generation_error(404, "TASK_NOT_FOUND", "Generation task does not exist.")
-    project_id = str(source_context["project_id"])
+    project_id = None if source_context["project_id"] is None else str(source_context["project_id"])
     require_not_auditor(
         conn,
         actor=actor,
@@ -2054,10 +2398,11 @@ def regenerate_generation_task(
         entity_type="generation_task",
         entity_id=task_id,
     )
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
         project_id=project_id,
+        created_by_user_id=str(source_context["created_by_user_id"]),
         action="generation_task.regenerate",
     )
 
@@ -2156,10 +2501,10 @@ def regenerate_generation_task(
                 status, archive_status, quality_status,
                 prompt_version_id, prompt_snapshot_json, next_poll_at,
                 estimated_cost, retry_of_task_id, retry_reason,
-                retry_requested_by_user_id, retry_requested_at
+                retry_requested_by_user_id, retry_requested_at, billed_seconds
             )
             VALUES (%s, %s, %s, %s, %s, 'PENDING', 'PENDING', 'PENDING',
-                    %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
             """,
             (
                 replacement_task_id,
@@ -2173,12 +2518,21 @@ def regenerate_generation_task(
                 task_id,
                 request.generation_reason,
                 actor.id,
+                _seconds_from_prompt_snapshot(prompt_snapshot),
             ),
+        )
+        replacement_snapshot = json.loads(prompt_snapshot)
+        snapshot_generation_rates(
+            conn,
+            task_id=replacement_task_id,
+            resolution=str(replacement_snapshot.get("resolution", "768P")),
+            billed_seconds=_seconds_from_prompt_snapshot(prompt_snapshot),
         )
         _reserve_generation_credit(
             conn,
             user_id=billed_user_id,
             task_id=replacement_task_id,
+            seconds=_seconds_from_prompt_snapshot(prompt_snapshot),
         )
         cursor = conn.execute(
             """
@@ -2473,18 +2827,16 @@ def run_next_generation_task(
         return None
 
     task_id = str(lease["id"])
-    batch_id = str(lease["batch_id"])
     source_storage = first_frame_storage or storage
     archive_retry = bool(
         lease.get("archive_status") == "ARCHIVE_FAILED" and lease.get("provider_result_url")
     )
     if archive_retry:
-        return _retry_archive(conn, task_id=task_id, batch_id=batch_id)
+        return _retry_archive(conn, lease=lease)
     if str(lease["provider"]) == "metaso" and source_storage.provider != "cos":
         mark_task_provider_settings_unavailable(
             conn,
-            task_id=task_id,
-            batch_id=batch_id,
+            lease=lease,
         )
         return get_task_result(conn, task_id)
     if provider is None:
@@ -2493,8 +2845,7 @@ def run_next_generation_task(
         except H3ProviderSettingsUnavailable:
             mark_task_provider_settings_unavailable(
                 conn,
-                task_id=task_id,
-                batch_id=batch_id,
+                lease=lease,
             )
             return get_task_result(conn, task_id)
     if isinstance(provider, MetasoH3Provider) and provider.task_created_observer is None:
@@ -2511,25 +2862,47 @@ def run_next_generation_task(
 
         provider.task_created_observer = _record_created_provider_task
     try:
-        first_frame = storage_object_ref_from_uri(str(lease["first_frame_uri"]))
-        require_storage_match(source_storage, first_frame)
-        first_frame_url = source_storage.create_download_intent(
-            first_frame.key,
-            expires_in=FIRST_FRAME_URL_EXPIRES_IN,
-            can_read=True,
-        ).url
+        first_frame_uri = lease.get("first_frame_uri")
+        last_frame_uri = lease.get("last_frame_uri")
+
+        def _signed_url(storage_uri: str) -> str:
+            ref = storage_object_ref_from_uri(storage_uri)
+            require_storage_match(source_storage, ref)
+            return source_storage.create_download_intent(
+                ref.key,
+                expires_in=FIRST_FRAME_URL_EXPIRES_IN,
+                can_read=True,
+            ).url
+
+        first_frame_url = (
+            _signed_url(str(first_frame_uri))
+            if isinstance(first_frame_uri, str) and first_frame_uri
+            else None
+        )
+        last_frame_url = (
+            _signed_url(str(last_frame_uri))
+            if isinstance(last_frame_uri, str) and last_frame_uri
+            else None
+        )
+        reference_images = [
+            {"name": str(image.get("name", "")), "url": _signed_url(str(image["uri"]))}
+            for image in (lease.get("reference_images") or [])
+            if isinstance(image, dict) and image.get("uri")
+        ]
     except (StorageBackendUnavailable, StoragePermissionError, ValueError):
         mark_task_first_frame_url_sign_failed(
             conn,
-            task_id=task_id,
-            batch_id=str(lease["batch_id"]),
+            lease=lease,
         )
         return get_task_result(conn, task_id)
     provider_request = build_h3_request(
         prompt_text=str(lease["prompt_text"]),
         first_frame_url=first_frame_url,
+        last_frame_url=last_frame_url,
+        reference_images=reference_images,
         duration_seconds=int(lease["output_duration_seconds"]),
         resolution=str(lease["resolution"]),
+        ratio=str(lease["ratio"]),
     )
     request_hash = content_hash(json.dumps(provider_request, ensure_ascii=True, sort_keys=True))
     try:
@@ -2548,8 +2921,7 @@ def run_next_generation_task(
             return get_task_result(conn, task_id)
         mark_task_provider_failed(
             conn,
-            task_id=task_id,
-            batch_id=str(lease["batch_id"]),
+            lease=lease,
             provider_task_id=exc.provider_task_id,
         )
         return get_task_result(conn, task_id)
@@ -2562,25 +2934,26 @@ def run_next_generation_task(
             provider_task_id=provider_result.provider_task_id,
             provider_request=provider_request,
             request_hash=request_hash,
+            release_lease=False,
         )
         mark_generation_task_archiving(conn, lease=lease, result_url=provider_result.result_url)
-
-    with conn:
         return finalize_generation_direct_result(
             conn,
             lease=lease,
             quality_status="NOT_REQUIRED",
             quality_issue_codes=[],
+            output_seconds=provider_result.output_seconds,
         )
 
 
 def _retry_archive(
     conn: BusinessConnection,
     *,
-    task_id: str,
-    batch_id: str,
+    lease: dict[str, Any],
 ) -> TaskResult:
     """Finish a saved paid result without downloading or processing its media."""
+    task_id = str(lease["id"])
+    batch_id = str(lease["batch_id"])
     row = conn.execute(
         """
         SELECT generation_tasks.provider_result_url
@@ -2594,12 +2967,10 @@ def _retry_archive(
     result_url = str(row["provider_result_url"])
     try:
         with conn:
-            mark_generation_task_archiving(
-                conn, lease={"id": task_id, "batch_id": batch_id}, result_url=result_url
-            )
+            mark_generation_task_archiving(conn, lease=lease, result_url=result_url)
             return finalize_generation_direct_result(
                 conn,
-                lease={"id": task_id, "batch_id": batch_id},
+                lease=lease,
                 quality_status="NOT_REQUIRED",
                 quality_issue_codes=[],
             )
@@ -2866,7 +3237,8 @@ def retry_generation_task(
                 task.archive_retry_count,
                 task.error_code,
                 task.submitted_at,
-                task.superseded_by_task_id
+                task.superseded_by_task_id,
+                task.prompt_snapshot_json
             FROM generation_tasks AS task
             JOIN generation_batches AS batch ON batch.id = task.batch_id
             WHERE task.id = %s
@@ -2951,11 +3323,21 @@ def retry_generation_task(
                 )
             retry_path = "PRE_PROVIDER"
             audit_action = "generation_task.retry_queued"
+            retry_seconds = _seconds_from_prompt_snapshot(row["prompt_snapshot_json"])
+            conn.execute(
+                """
+                UPDATE generation_tasks
+                SET billed_seconds = COALESCE(billed_seconds, %s)
+                WHERE id = %s
+                """,
+                (retry_seconds, task_id),
+            )
             _reserve_generation_credit(
                 conn,
                 user_id=str(row["created_by_user_id"]),
                 task_id=task_id,
                 billing_round=None,
+                seconds=retry_seconds,
             )
             conn.execute(
                 """
@@ -3326,9 +3708,15 @@ def acquire_generation_reconcile_operation(
                 error_message_redacted = 'The reconciliation actor is unavailable.',
                 retryable = 0, locked_by = NULL, locked_until = NULL,
                 completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s AND locked_by = %s
+            WHERE id = %s AND locked_by = %s AND locked_until = %s
+              AND attempt = %s
             """,
-            (str(row["id"]), worker_id),
+            (
+                str(row["id"]),
+                worker_id,
+                str(row["locked_until"]),
+                int(row["attempt"]),
+            ),
         )
         conn.commit()
         return None
@@ -3338,6 +3726,7 @@ def acquire_generation_reconcile_operation(
         actor_user_id=actor_user_id,
         idempotency_key=str(row["idempotency_key"]),
         worker_id=worker_id,
+        locked_until=str(row["locked_until"]),
         attempt=int(row["attempt"]),
     )
 
@@ -3397,7 +3786,7 @@ def prepare_generation_reconcile_operation(
         task_status=task_status,
         provider_task_id=provider_task_id,
         provider=provider,
-        first_frame_uri=str(prompt_snapshot["first_frame_uri"]),
+        first_frame_uri=str(prompt_snapshot.get("first_frame_uri") or ""),
     )
 
 
@@ -3440,6 +3829,7 @@ def perform_generation_reconcile_operation(
         result_url=query.result_url,
         audio_quality_status="NOT_REQUIRED",
         quality_issue_codes=[],
+        output_seconds=query.output_seconds,
     )
 
 
@@ -3463,6 +3853,7 @@ def complete_generation_reconcile_operation(
                     locked_by = NULL, locked_until = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s AND status = 'SUBMISSION_UNCERTAIN'
+                  AND superseded_by_task_id IS NULL
                 """,
                 (
                     f"Provider reports the task finished with {outcome.status.lower()}",
@@ -3471,6 +3862,11 @@ def complete_generation_reconcile_operation(
             )
             if task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
+            record_video_generation_cost(
+                conn,
+                task_id=lease.task_id,
+                output_seconds=None,
+            )
             finalize_internal_billing(
                 conn,
                 task_id=lease.task_id,
@@ -3492,6 +3888,7 @@ def complete_generation_reconcile_operation(
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s AND status = 'SUBMISSION_UNCERTAIN'
                   AND result_asset_id IS NULL
+                  AND superseded_by_task_id IS NULL
                 """,
                 (
                     outcome.audio_quality_status,
@@ -3502,6 +3899,11 @@ def complete_generation_reconcile_operation(
             )
             if task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
+            record_video_generation_cost(
+                conn,
+                task_id=lease.task_id,
+                output_seconds=outcome.output_seconds,
+            )
             finalize_internal_billing(conn, task_id=lease.task_id, outcome="success")
             _refresh_batch_status_in_transaction(conn, batch_id=work.batch_id)
             result = get_task_result(conn, lease.task_id)
@@ -3512,7 +3914,7 @@ def complete_generation_reconcile_operation(
                 locked_by = NULL, locked_until = NULL, retryable = 0,
                 completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
             WHERE id = %s AND action = 'RECONCILE' AND result_status = 'PENDING'
-              AND locked_by = %s
+              AND locked_by = %s AND locked_until = %s AND attempt = %s
             """,
             (
                 json.dumps(
@@ -3526,6 +3928,8 @@ def complete_generation_reconcile_operation(
                 ),
                 lease.id,
                 lease.worker_id,
+                lease.locked_until,
+                lease.attempt,
             ),
         )
         if operation_update.rowcount != 1:
@@ -3573,9 +3977,17 @@ def fail_generation_reconcile_operation(
             locked_by = NULL, locked_until = NULL,
             completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
         WHERE id = %s AND action = 'RECONCILE' AND result_status = 'PENDING'
-          AND locked_by = %s
+          AND locked_by = %s AND locked_until = %s AND attempt = %s
         """,
-        (code, message, 1 if retryable else 0, lease.id, lease.worker_id),
+        (
+            code,
+            message,
+            1 if retryable else 0,
+            lease.id,
+            lease.worker_id,
+            lease.locked_until,
+            lease.attempt,
+        ),
     )
     conn.commit()
 
@@ -3633,6 +4045,8 @@ def _require_owned_reconcile_operation(
         row is None
         or str(row["result_status"]) != "PENDING"
         or str(row["locked_by"]) != lease.worker_id
+        or str(row["locked_until"]) != lease.locked_until
+        or int(row["attempt"]) != lease.attempt
     ):
         raise _reconcile_reservation_lost()
     return cast(sqlite3.Row, row)
@@ -3935,6 +4349,11 @@ def reconcile_submission_uncertain_task(
             )
             if reconcile_reservation is not None and task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
+            record_video_generation_cost(
+                conn,
+                task_id=task_id,
+                output_seconds=_metaso_output_seconds(item),
+            )
             finalize_internal_billing(conn, task_id=task_id, outcome="success")
             _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
             if reconcile_reservation is None:
@@ -3974,6 +4393,7 @@ def reconcile_submission_uncertain_task(
             )
             if reconcile_reservation is not None and task_update.rowcount != 1:
                 raise _reconcile_reservation_lost()
+            record_video_generation_cost(conn, task_id=task_id, output_seconds=None)
             finalize_internal_billing(
                 conn,
                 task_id=task_id,
@@ -4352,6 +4772,14 @@ def _acquire_global_fifo_lease(
                     OR locked_until::timestamptz <= now()
                 )
                 AND (next_poll_at IS NULL OR next_poll_at::timestamptz <= now())
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM oral_tasks AS oral
+                    JOIN generation_batches AS owner_batch
+                      ON owner_batch.id = generation_tasks.batch_id
+                    WHERE oral.owner_user_id = owner_batch.created_by_user_id
+                      AND oral.status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+                )
             ORDER BY created_at, id
             LIMIT 1
             FOR UPDATE SKIP LOCKED
@@ -4375,14 +4803,10 @@ def acquire_generation_task_lease(
     try:
         conn.execute("BEGIN IMMEDIATE")
         runtime = read_runtime_limits(conn)
-        active_count = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM generation_tasks
-            WHERE status IN ('SUBMITTING', 'QUEUED', 'RUNNING', 'ARCHIVING')
-            """
-        ).fetchone()[0]
-        if int(active_count) >= runtime["max_concurrent_h3_tasks"]:
+        if not shared_generation_capacity_available(
+            conn,
+            max_concurrent_tasks=runtime["max_concurrent_h3_tasks"],
+        ):
             conn.commit()
             return None
         if _fair_queue_enabled(conn):
@@ -4448,6 +4872,8 @@ def load_worker_task(conn: BusinessConnection, task_id: str) -> dict[str, Any]:
             generation_tasks.provider_request_json,
             generation_tasks.submitted_at,
             generation_tasks.started_at,
+            generation_tasks.locked_by,
+            generation_tasks.locked_until,
             generation_tasks.archive_retry_count,
             generation_batches.project_id,
             generation_batches.created_by_user_id,
@@ -4466,9 +4892,13 @@ def load_worker_task(conn: BusinessConnection, task_id: str) -> dict[str, Any]:
     request_snapshot = json.loads(str(row["request_snapshot_json"]))
     payload = dict(row)
     payload["prompt_text"] = prompt_snapshot["prompt_text"]
-    payload["first_frame_uri"] = prompt_snapshot["first_frame_uri"]
+    payload["first_frame_uri"] = prompt_snapshot.get("first_frame_uri")
+    payload["generation_mode"] = prompt_snapshot.get("generation_mode", "I2V")
+    payload["last_frame_uri"] = prompt_snapshot.get("last_frame_uri")
+    payload["reference_images"] = prompt_snapshot.get("reference_images", [])
     payload["output_duration_seconds"] = request_snapshot["output_duration_seconds"]
     payload["resolution"] = request_snapshot["resolution"]
+    payload["ratio"] = request_snapshot.get("ratio", "adaptive")
     return payload
 
 
@@ -4485,18 +4915,35 @@ def prepare_generation_submission(
     if provider_name == "metaso" and first_frame_storage.provider != "cos":
         raise H3ProviderSettingsUnavailable("METASO requires COS first-frame storage")
     selected_provider = provider or h3_provider_for_task(conn, provider_name)
-    first_frame = storage_object_ref_from_uri(str(lease["first_frame_uri"]))
-    require_storage_match(first_frame_storage, first_frame)
-    first_frame_url = first_frame_storage.create_download_intent(
-        first_frame.key,
-        expires_in=FIRST_FRAME_URL_EXPIRES_IN,
-        can_read=True,
-    ).url
+
+    def _signed_url(storage_uri: str) -> str:
+        ref = storage_object_ref_from_uri(storage_uri)
+        require_storage_match(first_frame_storage, ref)
+        return first_frame_storage.create_download_intent(
+            ref.key,
+            expires_in=FIRST_FRAME_URL_EXPIRES_IN,
+            can_read=True,
+        ).url
+
+    first_frame_uri = lease.get("first_frame_uri")
+    last_frame_uri = lease.get("last_frame_uri")
+    reference_images = lease.get("reference_images") or []
     provider_request = build_h3_request(
         prompt_text=str(lease["prompt_text"]),
-        first_frame_url=first_frame_url,
+        first_frame_url=_signed_url(str(first_frame_uri))
+        if isinstance(first_frame_uri, str) and first_frame_uri
+        else None,
+        last_frame_url=_signed_url(str(last_frame_uri))
+        if isinstance(last_frame_uri, str) and last_frame_uri
+        else None,
+        reference_images=[
+            {"name": str(image.get("name", "")), "url": _signed_url(str(image["uri"]))}
+            for image in reference_images
+            if isinstance(image, dict) and image.get("uri")
+        ],
         duration_seconds=int(lease["output_duration_seconds"]),
         resolution=str(lease["resolution"]),
+        ratio=str(lease["ratio"]),
     )
     return GenerationSubmissionWork(
         provider=selected_provider,
@@ -4512,6 +4959,7 @@ def mark_generation_task_running(
     provider_task_id: str,
     provider_request: dict[str, Any],
     request_hash: str,
+    release_lease: bool = True,
 ) -> None:
     """Durably record the paid provider id before any polling starts."""
 
@@ -4527,14 +4975,16 @@ def mark_generation_task_running(
             error_message_redacted = NULL,
             started_at = COALESCE(started_at::timestamptz, CURRENT_TIMESTAMP),
             next_poll_at = now() + interval '5 seconds',
-            locked_by = NULL,
-            locked_until = NULL,
+            locked_by = %s,
+            locked_until = %s,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s AND status = 'SUBMITTING' AND superseded_by_task_id IS NULL
         """,
         (
             provider_task_id,
             json.dumps(provider_request, ensure_ascii=True, sort_keys=True),
+            None if release_lease else str(lease["locked_by"]),
+            None if release_lease else str(lease["locked_until"]),
             task_id,
         ),
     )
@@ -4659,9 +5109,16 @@ def mark_generation_task_archiving(
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
           AND status IN ('RUNNING', 'SUBMITTING')
+          AND locked_by = %s
+          AND locked_until = %s
           AND superseded_by_task_id IS NULL
         """,
-        (result_url, str(lease["id"])),
+        (
+            result_url,
+            str(lease["id"]),
+            str(lease["locked_by"]),
+            str(lease["locked_until"]),
+        ),
     )
     if update.rowcount != 1:
         row = conn.execute(
@@ -4680,6 +5137,7 @@ def finalize_generation_direct_result(
     lease: dict[str, Any],
     quality_status: str,
     quality_issue_codes: list[str],
+    output_seconds: float | None = None,
 ) -> TaskResult:
     """Settle a provider-hosted result without copying video bytes to storage."""
 
@@ -4702,9 +5160,17 @@ def finalize_generation_direct_result(
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s AND status = 'ARCHIVING'
           AND provider_result_url IS NOT NULL
+          AND (%s <> 'ARCHIVING' OR (locked_by = %s AND locked_until = %s))
           AND superseded_by_task_id IS NULL
         """,
-        (quality_status, json.dumps(quality_issue_codes, ensure_ascii=True), task_id),
+        (
+            quality_status,
+            json.dumps(quality_issue_codes, ensure_ascii=True),
+            task_id,
+            str(lease["status"]),
+            str(lease["locked_by"]),
+            str(lease["locked_until"]),
+        ),
     )
     if update.rowcount != 1:
         row = conn.execute(
@@ -4713,6 +5179,7 @@ def finalize_generation_direct_result(
         if row is not None and row["superseded_by_task_id"] is not None:
             raise GenerationTaskSupersededError(task_id)
         raise RuntimeError("generation result lease was lost before direct delivery")
+    record_video_generation_cost(conn, task_id=task_id, output_seconds=output_seconds)
     finalize_internal_billing(conn, task_id=task_id, outcome="success")
     _refresh_batch_status_in_transaction(conn, batch_id=str(lease["batch_id"]))
     release_user_queue_slot_for_task(conn, task_id=task_id)
@@ -4786,11 +5253,12 @@ def mark_task_submission_uncertain(
 def mark_task_provider_settings_unavailable(
     conn: BusinessConnection,
     *,
-    task_id: str,
-    batch_id: str,
+    lease: dict[str, Any],
 ) -> None:
+    task_id = str(lease["id"])
+    batch_id = str(lease["batch_id"])
     with conn:
-        conn.execute(
+        update = conn.execute(
             """
             UPDATE generation_tasks
             SET
@@ -4801,10 +5269,19 @@ def mark_task_provider_settings_unavailable(
                 locked_by = NULL,
                 locked_until = NULL,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
+            WHERE id = %s AND status = %s AND locked_by = %s AND locked_until = %s
+              AND superseded_by_task_id IS NULL
             """,
-            (task_id,),
+            (
+                task_id,
+                str(lease["status"]),
+                str(lease["locked_by"]),
+                str(lease["locked_until"]),
+            ),
         )
+        if update.rowcount != 1:
+            raise GenerationTaskSupersededError(task_id)
+        record_video_generation_not_called(conn, task_id=task_id)
         finalize_internal_billing(conn, task_id=task_id, outcome="failed")
         _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
         release_user_queue_slot_for_task(conn, task_id=task_id)
@@ -4813,10 +5290,11 @@ def mark_task_provider_settings_unavailable(
 def mark_task_provider_failed(
     conn: BusinessConnection,
     *,
-    task_id: str,
-    batch_id: str,
+    lease: dict[str, Any],
     provider_task_id: str | None,
 ) -> None:
+    task_id = str(lease["id"])
+    batch_id = str(lease["batch_id"])
     with conn:
         provider_failed_update = conn.execute(
             """
@@ -4830,14 +5308,22 @@ def mark_task_provider_failed(
                 locked_until = NULL,
                 completed_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s AND superseded_by_task_id IS NULL
+            WHERE id = %s AND status = %s AND locked_by = %s AND locked_until = %s
+              AND superseded_by_task_id IS NULL
             """,
-            (provider_task_id, task_id),
+            (
+                provider_task_id,
+                task_id,
+                str(lease["status"]),
+                str(lease["locked_by"]),
+                str(lease["locked_until"]),
+            ),
         )
         if provider_failed_update.rowcount != 1:
             # L1 (M4M5 review): the replacement flow owns the terminal
             # state, the billing settlement and the slot release now.
             raise GenerationTaskSupersededError(task_id)
+        record_video_generation_cost(conn, task_id=task_id, output_seconds=None)
         finalize_internal_billing(conn, task_id=task_id, outcome="failed")
         _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
         release_user_queue_slot_for_task(conn, task_id=task_id)
@@ -4846,10 +5332,11 @@ def mark_task_provider_failed(
 def mark_task_first_frame_url_sign_failed(
     conn: BusinessConnection,
     *,
-    task_id: str,
-    batch_id: str,
+    lease: dict[str, Any],
 ) -> None:
     """A provider call never started, so this is safe to mark as a normal failure."""
+    task_id = str(lease["id"])
+    batch_id = str(lease["batch_id"])
     with conn:
         url_sign_failed_update = conn.execute(
             """
@@ -4862,14 +5349,21 @@ def mark_task_first_frame_url_sign_failed(
                 locked_by = NULL,
                 locked_until = NULL,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s AND superseded_by_task_id IS NULL
+            WHERE id = %s AND status = %s AND locked_by = %s AND locked_until = %s
+              AND superseded_by_task_id IS NULL
             """,
-            (task_id,),
+            (
+                task_id,
+                str(lease["status"]),
+                str(lease["locked_by"]),
+                str(lease["locked_until"]),
+            ),
         )
         if url_sign_failed_update.rowcount != 1:
             # L1 (M4M5 review): the replacement flow owns the terminal
             # state, the billing settlement and the slot release now.
             raise GenerationTaskSupersededError(task_id)
+        record_video_generation_not_called(conn, task_id=task_id)
         finalize_internal_billing(conn, task_id=task_id, outcome="failed")
         _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
         # Terminal failure: the per-user concurrency slot is free again.
@@ -5159,8 +5653,11 @@ def list_generation_batches(
         clauses.append("batch.project_id = %s")
         parameters.append(project_id)
     elif actor.role in {"employee", "customer"}:
-        clauses.append("project.owner_user_id = %s")
-        parameters.append(actor.id)
+        clauses.append(
+            "(project.owner_user_id = %s OR (batch.project_id IS NULL "
+            "AND batch.created_by_user_id = %s))"
+        )
+        parameters.extend([actor.id, actor.id])
     if created_by_user_id is not None:
         clauses.append("batch.created_by_user_id = %s")
         parameters.append(created_by_user_id)
@@ -5194,7 +5691,7 @@ def list_generation_batches(
         SELECT
             batch.id,
             batch.project_id,
-            project.name AS project_name,
+            COALESCE(project.name, '') AS project_name,
             batch.created_by_user_id,
             creator.display_name AS created_by_display_name,
             batch.request_snapshot_json,
@@ -5207,7 +5704,7 @@ def list_generation_batches(
             batch.generation_reason,
             batch.creation_kind
         FROM generation_batches AS batch
-        JOIN projects AS project ON project.id = batch.project_id
+        LEFT JOIN projects AS project ON project.id = batch.project_id
         JOIN users AS creator ON creator.id = batch.created_by_user_id
         WHERE {" AND ".join(clauses)}
         ORDER BY batch.created_at DESC, batch.id DESC
@@ -5267,7 +5764,7 @@ def list_generation_batches(
         items.append(
             GenerationBatchListItem(
                 id=batch_id,
-                project_id=str(row["project_id"]),
+                project_id=(None if row["project_id"] is None else str(row["project_id"])),
                 project_name=str(row["project_name"]),
                 created_by_user_id=str(row["created_by_user_id"]),
                 created_by_display_name=str(row["created_by_display_name"]),
@@ -5285,7 +5782,10 @@ def list_generation_batches(
                 total_estimated_cost=optional_cost_total([task.estimated_cost for task in tasks]),
                 total_actual_cost=optional_cost_total([task.actual_cost for task in tasks]),
                 needs_attention_count=progress.counts["needs_attention"],
-                has_results=any(task.result_asset_id is not None for task in tasks),
+                has_results=any(
+                    task.result_asset_id is not None or task.direct_result_available
+                    for task in tasks
+                ),
                 tasks=tasks,
             )
         )
@@ -5375,8 +5875,9 @@ def get_generation_batch(
 ) -> BatchResult:
     batch = conn.execute(
         """
-        SELECT id, project_id, request_snapshot_json, status, display_name,
-               source_batch_id, source_task_id, generation_reason, creation_kind
+        SELECT id, project_id, created_by_user_id, request_snapshot_json, status,
+               display_name, source_batch_id, source_task_id, generation_reason,
+               creation_kind
         FROM generation_batches
         WHERE id = %s
         """,
@@ -5384,24 +5885,29 @@ def get_generation_batch(
     ).fetchone()
     if batch is None:
         raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
-    try:
-        require_project_access(
-            conn,
-            actor=actor,
-            project_id=str(batch["project_id"]),
-            action="generation_batch.read",
-        )
-    except HTTPException as exc:
-        if exc.status_code == 404:
-            raise remap_security_denial(
-                exc,
-                status_code=404,
-                detail={
-                    "code": "BATCH_NOT_FOUND",
-                    "message": "Generation batch does not exist.",
-                },
-            ) from exc
-        raise
+    if batch["project_id"] is None:
+        # 独立创作批次：归属人是唯一可见方（管理员除外），不存在项目门禁。
+        if actor.role != "admin" and str(batch["created_by_user_id"]) != actor.id:
+            raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
+    else:
+        try:
+            require_project_access(
+                conn,
+                actor=actor,
+                project_id=str(batch["project_id"]),
+                action="generation_batch.read",
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise remap_security_denial(
+                    exc,
+                    status_code=404,
+                    detail={
+                        "code": "BATCH_NOT_FOUND",
+                        "message": "Generation batch does not exist.",
+                    },
+                ) from exc
+            raise
     rows = conn.execute(
         """
         SELECT
@@ -5444,7 +5950,7 @@ def get_generation_batch(
     except json.JSONDecodeError:
         request_snapshot = {}
     prompt_version_id = request_snapshot.get("prompt_version_id")
-    stale = True
+    stale = False
     if isinstance(prompt_version_id, str):
         try:
             prompt = require_version(
@@ -5461,7 +5967,7 @@ def get_generation_batch(
         prompt_version_id = "unknown"
     return BatchResult(
         id=str(batch["id"]),
-        project_id=str(batch["project_id"]),
+        project_id=(None if batch["project_id"] is None else str(batch["project_id"])),
         prompt_version_id=prompt_version_id,
         status=status,
         quantity=len(tasks),
@@ -5571,10 +6077,11 @@ def cancel_generation_batch(
             "BATCH_NOT_FOUND",
             "Generation batch does not exist.",
         )
-    require_project_access(
+    require_batch_access(
         conn,
         actor=actor,
-        project_id=str(batch["project_id"]),
+        project_id=(None if batch["project_id"] is None else str(batch["project_id"])),
+        created_by_user_id=str(batch["created_by_user_id"]),
         action="generation_batch.cancel",
     )
     if str(batch["status"]) in TERMINAL_STATUSES:
@@ -5666,45 +6173,135 @@ def cancel_generation_batch(
 def build_h3_request(
     *,
     prompt_text: str,
-    first_frame_url: str,
+    first_frame_url: str | None = None,
     duration_seconds: int,
     resolution: str,
+    ratio: str = "adaptive",
+    last_frame_url: str | None = None,
+    reference_images: Sequence[Mapping[str, str]] = (),
 ) -> dict[str, Any]:
+    """Build an H3 request for any generation mode.
+
+    I2V (default, 复刻流契约): text + first_frame（可选 last_frame）。
+    T2V: 仅 text。R2V: text + reference_image 对象编排，不得携带首尾帧
+    （docs/短视频复刻桌面端开发说明.md §21 H3 输入互斥规则）。
+    """
     if not prompt_text.strip():
         raise ValueError("prompt_text is required")
     if duration_seconds < 4 or duration_seconds > 15:
         raise ValueError("duration must be between 4 and 15 seconds")
     if resolution not in SUPPORTED_RESOLUTIONS:
         raise ValueError("resolution must be 768P or 2K")
-    return {
-        "model": H3_MODEL,
-        "content": [
-            {"type": "text", "text": prompt_text},
+    if ratio not in SUPPORTED_RATIOS:
+        raise ValueError("ratio is unsupported")
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt_text}]
+    if reference_images:
+        if first_frame_url or last_frame_url:
+            raise ValueError("reference mode must not carry first/last frame")
+        for image in reference_images:
+            name = str(image.get("name", "")).strip()
+            url = str(image.get("url", "")).strip()
+            if not name or not url:
+                raise ValueError("reference image requires a name and a url")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": url},
+                    "role": "reference_image",
+                    "name": name,
+                }
+            )
+    else:
+        if not first_frame_url:
+            return {
+                "model": H3_MODEL,
+                "content": content,
+                "resolution": resolution,
+                "duration": duration_seconds,
+                "ratio": ratio,
+            }
+        content.append(
             {
                 "type": "image_url",
                 "image_url": {"url": first_frame_url},
                 "role": "first_frame",
-            },
-        ],
+            }
+        )
+        if last_frame_url:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": last_frame_url},
+                    "role": "last_frame",
+                }
+            )
+    return {
+        "model": H3_MODEL,
+        "content": content,
         "resolution": resolution,
         "duration": duration_seconds,
-        "ratio": "adaptive",
+        "ratio": ratio,
     }
 
 
 def validate_h3_request(request: dict[str, Any]) -> None:
     content = request.get("content")
-    if not isinstance(content, list) or len(content) != 2:
+    if not isinstance(content, list) or not content:
         raise ValueError("H3 I2V content must contain text and first_frame only")
     if content[0].get("type") != "text" or not str(content[0].get("text", "")).strip():
         raise ValueError("H3 I2V content requires non-empty text")
-    if content[1].get("role") != "first_frame":
-        raise ValueError("H3 I2V image must use first_frame role")
-    if request.get("ratio") != "adaptive":
-        raise ValueError("H3 I2V ratio must be adaptive")
+    roles = [str(item.get("role")) if isinstance(item, dict) else None for item in content[1:]]
     duration = request.get("duration")
     if not isinstance(duration, int) or duration < 4 or duration > 15:
-        raise ValueError("H3 I2V duration must be 4-15 seconds")
+        raise ValueError("H3 duration must be 4-15 seconds")
+    if request.get("ratio") not in SUPPORTED_RATIOS:
+        raise ValueError("H3 ratio is unsupported")
+    if not roles:
+        return  # T2V：仅文本。
+    if roles == ["first_frame"]:
+        _validate_h3_image_element(content[1], expected_role="first_frame")
+        return
+    if roles == ["first_frame", "last_frame"]:
+        _validate_h3_image_element(content[1], expected_role="first_frame")
+        _validate_h3_image_element(content[2], expected_role="last_frame")
+        return
+    if "reference_image" in roles:
+        _validate_h3_reference_request(request, content, roles)
+        return
+    raise ValueError("H3 I2V content must contain text and first_frame only")
+
+
+def _validate_h3_image_element(element: Any, *, expected_role: str) -> None:
+    # HTTPS 强校验只在真实 metaso 提交路径（_h3_request_has_https_first_frame）；
+    # 本地/fake 存储的签名 URL 走 fake:// 协议，这里只校验角色契约。
+    if not isinstance(element, dict) or element.get("role") != expected_role:
+        raise ValueError(f"H3 I2V image must use {expected_role} role")
+    if not isinstance(element.get("image_url"), dict):
+        raise ValueError(f"H3 {expected_role} image requires an image_url object")
+
+
+def _validate_h3_reference_request(
+    request: dict[str, Any],
+    content: list[Any],
+    roles: list[str | None],
+) -> None:
+    if "first_frame" in roles or "last_frame" in roles:
+        raise ValueError("H3 R2V content must not mix reference objects with first/last frame")
+    if len(content) < 2:
+        raise ValueError("H3 R2V content requires at least one reference object")
+    for element, role in zip(content[1:], roles):
+        if role != "reference_image":
+            raise ValueError("H3 R2V supports reference_image objects only")
+        if not isinstance(element, dict) or not str(element.get("name", "")).strip():
+            raise ValueError("H3 R2V reference object requires a name")
+        image_url = element.get("image_url")
+        if not isinstance(image_url, dict) or not str(image_url.get("url", "")).strip():
+            raise ValueError("H3 R2V reference object requires a url")
+    if request.get("ratio") not in SUPPORTED_RATIOS:
+        raise ValueError("H3 R2V ratio is unsupported")
+    duration = request.get("duration")
+    if not isinstance(duration, int) or duration < 4 or duration > 15:
+        raise ValueError("H3 R2V duration must be 4-15 seconds")
 
 
 def _metaso_json_object(content: bytes) -> dict[str, Any]:
@@ -5771,15 +6368,34 @@ def _metaso_content_url(item: dict[str, Any], *, provider_task_id: str) -> str:
     return result_url
 
 
+def _metaso_output_seconds(item: dict[str, Any]) -> float | None:
+    usage = item.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    value = usage.get("output_seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    return seconds if isfinite(seconds) and seconds >= 0 else None
+
+
 def _h3_request_has_https_first_frame(request: dict[str, Any]) -> bool:
+    """Every image element must be HTTPS; a text-only T2V request passes."""
     content = request.get("content")
-    if not isinstance(content, list) or len(content) < 2:
+    if not isinstance(content, list):
         return False
-    image = content[1]
-    image_url = image.get("image_url") if isinstance(image, dict) else None
-    value = image_url.get("url") if isinstance(image_url, dict) else None
-    parsed = urlparse(value) if isinstance(value, str) else None
-    return bool(parsed and parsed.scheme == "https" and parsed.hostname)
+    image_elements = [
+        item for item in content[1:] if isinstance(item, dict) and item.get("type") == "image_url"
+    ]
+    if not image_elements:
+        return True
+    for image in image_elements:
+        image_url = image.get("image_url") if isinstance(image, dict) else None
+        value = image_url.get("url") if isinstance(image_url, dict) else None
+        parsed = urlparse(value) if isinstance(value, str) else None
+        if not (parsed and parsed.scheme == "https" and parsed.hostname):
+            return False
+    return True
 
 
 def inspect_generated_video_quality(
@@ -6152,6 +6768,7 @@ def generation_request_snapshot(
         "first_frame_asset_id": request.first_frame_asset_id,
         "output_duration_seconds": request.output_duration_seconds,
         "resolution": request.resolution,
+        "ratio": request.ratio,
         "provider": request.provider,
         "model": H3_MODEL,
         "fake_audio_quality": request.fake_audio_quality,
@@ -6179,10 +6796,82 @@ def read_runtime_limits(conn: BusinessConnection) -> dict[str, int]:
     }
 
 
+def lock_shared_generation_capacity(conn: BusinessConnection) -> None:
+    """Take the first lock in every oral/generation slot transition."""
+    if conn.is_postgres:
+        row = conn.execute("SELECT id FROM runtime_settings WHERE id = 1 FOR UPDATE").fetchone()
+        if row is None:
+            raise RuntimeError("runtime settings capacity row is missing")
+    else:
+        updated = conn.execute("UPDATE runtime_settings SET id = id WHERE id = 1")
+        if updated.rowcount != 1:
+            raise RuntimeError("runtime settings capacity row is missing")
+
+
+def shared_generation_capacity_available(
+    conn: BusinessConnection,
+    *,
+    max_concurrent_tasks: int,
+) -> bool:
+    """Serialize capacity checks before taking any cursor or task lock.
+
+    Both generation and oral claims use the lock order ``capacity row -> user
+    cursor -> task``. PostgreSQL cannot let two workers observe the same last
+    slot; SQLite's no-op UPDATE acquires its single-writer lock.
+    """
+    lock_shared_generation_capacity(conn)
+    active_count = conn.execute(
+        """
+        SELECT (
+            SELECT COUNT(*) FROM generation_tasks
+            WHERE status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+        ) + (
+            SELECT COUNT(*) FROM oral_tasks
+            WHERE status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+        )
+        """
+    ).fetchone()[0]
+    return int(active_count) < max_concurrent_tasks
+
+
 def generation_runtime_limits(conn: BusinessConnection) -> GenerationRuntimeLimits:
     runtime = read_runtime_limits(conn)
     return GenerationRuntimeLimits(
         max_quantity=runtime["max_generation_count_per_batch"],
+    )
+
+
+def generation_price_quote(
+    conn: BusinessConnection,
+    *,
+    resolution: Literal["768P", "2K"],
+    duration_seconds: int,
+    quantity: int,
+) -> GenerationPriceQuote:
+    # 按秒单价线性外推，任意 4–15 秒档位均可计价。
+    row = conn.execute(
+        """
+        SELECT unit_price_fen
+        FROM operation_cost_rates
+        WHERE subject = %s AND kind = 'external_price'
+        """,
+        (f"external_price_{resolution.lower()}",),
+    ).fetchone()
+    if row is None:
+        raise generation_error(
+            503,
+            "EXTERNAL_PRICE_UNAVAILABLE",
+            "The customer generation price is not configured.",
+        )
+    unit_price = int(row["unit_price_fen"])
+    estimated_seconds = duration_seconds * quantity
+    return GenerationPriceQuote(
+        resolution=resolution,
+        duration_seconds=duration_seconds,
+        quantity=quantity,
+        unit_price_fen_per_second=unit_price,
+        estimated_seconds=estimated_seconds,
+        estimated_price_fen=unit_price * estimated_seconds,
     )
 
 
@@ -6474,3 +7163,24 @@ def content_hash(text: str) -> str:
 
 def generation_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def require_batch_access(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    project_id: str | None,
+    created_by_user_id: str | None,
+    action: str,
+) -> None:
+    """批次/任务访问门禁：项目批走项目 ACL；独立批（project_id NULL）仅创建者与 admin。
+
+    所有按批次行（或任务上下文行）做 ``require_project_access`` 的路径都应
+    改走本助手——``str(None)`` 得到字面量 ``"None"``，会让独立批次在取消/
+    预览/隐藏/重试/对账等复用端点上系统性 404。
+    """
+    if project_id is None:
+        if not created_by_user_id or (actor.role != "admin" and created_by_user_id != actor.id):
+            raise generation_error(404, "BATCH_NOT_FOUND", "Generation batch does not exist.")
+        return
+    require_project_access(conn, actor=actor, project_id=project_id, action=action)

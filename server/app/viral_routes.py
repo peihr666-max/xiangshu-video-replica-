@@ -16,9 +16,9 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
 from typing import Annotated, Any, Literal, cast
@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from app.auth import Database
 from app.customer_fence import BusinessDbDep
 from app.db import connect_database
-from app.db_pg import DATABASE_URL_ENV, pg_transaction
+from app.db_pg import DATABASE_URL_ENV, get_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media_routes import api_base_url, get_media_storage
 from app.permissions import require_not_auditor
@@ -213,6 +213,27 @@ def _open_worker_connection() -> tuple[BusinessConnection, Callable[[], None]]:
     return conn, conn.close
 
 
+@contextmanager
+def _refresh_connection(request_conn: Database) -> Iterator[BusinessConnection]:
+    """回源期间改用独立连接，请求事务内不做外呼与平台锁等待.
+
+    上游回源是数十秒级外呼：若在请求级 PG 事务内等待平台锁/承载回源，
+    锁队列里的每个请求都会钉住一条 idle-in-transaction 的池连接，一次冷
+    回源即可占满默认连接池（2026-09-07 安全专项 P1）。PG 通道借出独立池
+    连接并置 autocommit——每条语句独立提交，写入语义与原单事务版本一致
+    （重试状态与部分刷新本就按 category 粒度落库）；SQLite 桌面单机通道
+    直接复用请求连接。
+    """
+    if os.environ.get(DATABASE_URL_ENV, "").strip():
+        pool = get_pg_pool()
+        with pool.connection() as raw:
+            borrowed = BusinessConnection.postgres(raw)
+            borrowed.raw.autocommit = True
+            yield borrowed
+        return
+    yield request_conn
+
+
 def _spawn_cover_enrich(enricher: CoverEnricher, videos: list[ViralVideo]) -> None:
     pending = [video for video in videos if not video.cover_key and video.cover_url]
     if not pending:
@@ -251,6 +272,83 @@ def _fetch_list_jobs_without_database(
     client: ViralSourceClient,
     platform: str,
     sort: str,
+<<<<<<< main
+    max_age: timedelta,
+    enricher: CoverEnricher | None = None,
+) -> list[ViralVideo]:
+    """响应始终从库读取；同平台冷请求等待首轮落库，随后复用。"""
+    with _REFRESH_LOCKS[platform], _refresh_connection(conn) as refresh_conn:
+        # 回源/落库全部走独立连接；请求事务内不承载外呼（安全专项 P1）。
+        conn = refresh_conn
+        if not fetch_state_is_fresh(conn, platform=platform, sort=sort, max_age=max_age):
+            failures: list[ViralSourceError] = []
+            jobs: list[tuple[str, str]] = []
+            for category in viral_categories():
+                keyword = viral_keyword(category, platform)
+                if not keyword or fetch_state_is_fresh(
+                    conn, platform=platform, sort=f"{sort}:category:{category}", max_age=max_age
+                ):
+                    continue
+                if fetch_state_is_fresh(
+                    conn,
+                    platform=platform,
+                    sort=f"{sort}:retry:{category}",
+                    max_age=timedelta(minutes=1),
+                ):
+                    failures.append(ViralSourceError("爆款数据源暂时不可用，请稍后重试"))
+                else:
+                    jobs.append((category, keyword))
+            if client is None:
+                failures.append(ViralSourceUnavailable("爆款数据源尚未配置"))
+            else:
+                # 分类独立回源并分别记成功状态；一类失败不丢掉已付费取得的数据。
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    futures = {
+                        pool.submit(
+                            _fetch_videos, client, platform, category, keyword, sort
+                        ): category
+                        for category, keyword in jobs
+                    }
+                    outcomes: dict[str, list[ViralVideo] | ViralSourceError] = {}
+                    for future in as_completed(futures):
+                        category = futures[future]
+                        try:
+                            outcomes[category] = future.result()
+                        except ViralSourceError as exc:
+                            outcomes[category] = exc
+                        except (ValueError, TypeError):
+                            outcomes[category] = ViralSourceError("爆款数据源返回异常，请稍后重试")
+
+                    # HTTP 保持并行，数据库按配置顺序串行写入；跨分类同 video_id
+                    # 时，最终归属不受 future 完成先后影响。
+                    for category, _keyword in jobs:
+                        outcome = outcomes[category]
+                        if isinstance(outcome, ViralSourceError):
+                            failure = outcome
+                            failures.append(failure)
+                            mark_fetch_state(
+                                conn, platform=platform, sort=f"{sort}:retry:{category}"
+                            )
+                            logger.warning(
+                                "Viral refresh failed for %s/%s: %s",
+                                platform,
+                                category,
+                                type(failure).__name__,
+                            )
+                            continue
+                        upsert_viral_videos(conn, outcome)
+                        mark_fetch_state(
+                            conn, platform=platform, sort=f"{sort}:category:{category}"
+                        )
+            if not failures:
+                mark_fetch_state(conn, platform=platform, sort=sort)
+            elif not list_stored_viral_videos(conn, platform=platform, sort=sort):
+                raise failures[0]
+        videos = list_stored_viral_videos(conn, platform=platform, sort=sort)
+    if enricher is not None:
+        _spawn_cover_enrich(enricher, videos)
+    return videos
+=======
     jobs: list[tuple[str, str]],
 ) -> dict[str, list[ViralVideo] | ViralSourceError]:
     outcomes: dict[str, list[ViralVideo] | ViralSourceError] = {}
@@ -268,6 +366,7 @@ def _fetch_list_jobs_without_database(
             except (ValueError, TypeError):
                 outcomes[category] = ViralSourceError("爆款数据源返回异常，请稍后重试")
     return outcomes
+>>>>>>> codex/local-main-pg-timeouts-20260908
 
 
 def _item(video: ViralVideo) -> ViralVideoItem:
@@ -483,6 +582,68 @@ def _fetch_viral_video_media_unlocked(
             status_code=400,
             detail={"code": "VIRAL_PLATFORM_INVALID", "message": "不支持的视频平台"},
         )
+<<<<<<< main
+    storage = get_media_storage(conn)
+    needs_video = payload.kind == "video" or not video.audio_url
+    cached_video = (
+        storage.head_object(viral_media_key(video.platform, video.video_id, "video"))
+        if video.platform == PLATFORM_DOUYIN and needs_video
+        else None
+    )
+    if (
+        video.platform == PLATFORM_DOUYIN
+        and needs_video
+        and cached_video is None
+        and video.native.get("_playback_version") != 1
+    ):
+        if client is None:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "VIRAL_SOURCE_UNAVAILABLE", "message": "爆款数据源尚未配置"},
+            )
+        scope = f"playback:{video.video_id}"
+        retry_scope = f"playback:retry:{video.video_id}"
+        try:
+            with (
+                _REFRESH_LOCKS[video.platform],
+                _refresh_connection(conn) as refresh_conn,
+            ):
+                # 回源走独立连接（安全专项 P1）；请求事务内只做读写收尾。
+                # 等锁期间另一请求可能已经修复；数据库里的版本才是可播放依据。
+                video = (
+                    get_viral_video(refresh_conn, platform=video.platform, video_id=video.video_id)
+                    or video
+                )
+                if video.native.get("_playback_version") != 1:
+                    if fetch_state_is_fresh(
+                        refresh_conn,
+                        platform=video.platform,
+                        sort=retry_scope,
+                        max_age=timedelta(minutes=1),
+                    ):
+                        raise ViralSourceError("爆款视频源暂时无法刷新，请稍后重试")
+                    try:
+                        refreshed = _fetch_videos(
+                            client,
+                            video.platform,
+                            video.category,
+                            viral_keyword(video.category, video.platform) or "自建房",
+                            SORT_HOT,
+                        )
+                    except (ViralSourceError, ValueError, TypeError) as exc:
+                        mark_fetch_state(refresh_conn, platform=video.platform, sort=retry_scope)
+                        raise ViralSourceError("爆款视频源暂时无法刷新，请稍后重试") from exc
+                    upsert_viral_videos(refresh_conn, refreshed)
+                    repaired = get_viral_video(
+                        refresh_conn, platform=video.platform, video_id=video.video_id
+                    )
+                    if repaired is None or repaired.native.get("_playback_version") != 1:
+                        mark_fetch_state(refresh_conn, platform=video.platform, sort=retry_scope)
+                        raise ViralSourceError("爆款视频源暂时无法刷新，请稍后重试")
+                    mark_fetch_state(refresh_conn, platform=video.platform, sort=scope)
+                    video = repaired
+        except ViralSourceError as exc:
+=======
     catalog_claim: tuple[str, str, str] | None = None
     with db.write() as (conn, actor):
         require_not_auditor(
@@ -546,6 +707,7 @@ def _fetch_viral_video_media_unlocked(
         claim_scope = f"viral:media:{payload.platform}:{payload.videoId}:{kind}"
         claim_token = claim_viral_work(conn, claim_scope)
         if claim_token is None:
+>>>>>>> codex/local-main-pg-timeouts-20260908
             raise HTTPException(
                 status_code=409,
                 detail={"code": "VIRAL_MEDIA_BUSY", "message": "素材正在归档，请稍后重试"},

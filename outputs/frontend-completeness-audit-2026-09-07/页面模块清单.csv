@@ -1,0 +1,53 @@
+﻿范围,页面/模块,已实现或证据,判定及缺口
+Studio 工作台,`workbench` 工作台,真实项目上传、上传后 ASR、最近任务/爆款、创作入口；[client/src/studio/MainPages.tsx:166](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/MainPages.tsx:166)、[client/src/studio/live.ts:606](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/live.ts:606),部分完成：链接解析只提示；累计发布为“—”；统计漏口播；新项目同步问题见 G01。
+Studio 工作台,`tasks` 任务中心,合并普通批次与口播，状态/类型筛选、取消、详情、历史任务；[client/src/studio/live.ts:576](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/live.ts:576),主体已接；新页只取各 20 条，筛选/数量受已加载范围限制；普通历史可转旧任务面板，口播没有完整历史翻页。
+Studio 工作台,`task-detail` 任务详情,预览、下载、口播重试/归档重试、结果复用；[client/src/studio/MainPages.tsx:737](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/MainPages.tsx:737),主体已接；依赖内存 selectedTaskId；缺少详情深链接恢复。普通生成下载通过历史任务面板桥接，不能算无下载。
+Studio 工作台,`viral` 爆款视频,抖音/视频号后端列表、热门/最新、播放、前端分类搜索；[server/app/viral_routes.py:318](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/viral_routes.py:318),部分完成：12 条之后的滚动加载失效；收藏仅会话；转复刻没有接入素材和项目。
+Studio 工作台,`viral-detail` 爆款详情,真实媒体/指标、重试、返回列表；[client/src/studio/ContentPages.tsx:665](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/ContentPages.tsx:665),部分完成：提取文案/复刻只跳页，没有带入可继续处理的媒体或项目。
+Studio 工作台,`copy` 文案工坊,编辑、云端自动草稿、保存文案版本、确认终稿、去口播；[server/app/studio_draft_routes.py:40](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/studio_draft_routes.py:40),部分完成：“按 IP 二创”跳旧分析区，未就当前人物直接改写；爆款来源提取断链。上传项目的 ASR 已有真实后端。
+Studio 工作台,`replica` 视频复刻,上传、分析分镜、Prompt 保存/编译/修订/锁定、建批；[client/src/studio/live.ts:1083](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/live.ts:1083),部分完成：首次上传后不进入可拆解状态；离页返回丢局部分镜状态；直接送生成缺少同页费用确认。
+Studio 工作台,`replacement` 人物替换,选人物、提取/确认源帧、匹配参考、生成/确认置换首帧；[client/src/studio/CreationPages.tsx:1074](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/CreationPages.tsx:1074),部分完成：参考匹配重试不触发；新首帧未并入可选资产，去视频生成可能被拦。
+Studio 工作台,`video` 文/图生视频,capabilities、报价、Prompt/首尾帧/比例/分辨率/时长/数量提交；[server/app/independent_routes.py:31](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/independent_routes.py:31),后端已接；上游首帧交接缺陷；报价未就绪仍可提交；T2V/尾帧受扩展能力开关约束。
+Studio 工作台,`reference` 参考生视频,reference_asset_ids 提交同一独立生成后端,后端已接、条件开放；前端可选音视频和超过 4 张图片，后端只收最多 4 张图片。
+Studio 工作台,`oral` 文案数字人口播,人物/分身/声音/终稿校验、报价、创建任务、轮询和下载；[server/app/oral_routes.py:344](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/oral_routes.py:344),主链已接；字幕/网感模板未进入创建请求；实际克隆/出片待供应商验收。
+Studio 工作台,`oral-audio` 音频数字人口播,AUDIO 模式传 audio_asset_id；[client/src/studio/StudioWorkspace.tsx:353](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/StudioWorkspace.tsx:353),从已加载音频发起已接；“上传音频”仅提示，完整云端音频选择也未覆盖。
+Studio 工作台,`people` 人物库,人物列表、角色过滤、新增/管理桥接、详情；[client/src/studio/PeoplePages.tsx:116](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/PeoplePages.tsx:116),部分完成：截断前 8 人，无更多入口；照片数量懒加载前显示 0；未保留占位来源标记。
+Studio 工作台,`person-ip` IP 定位,姓名/身份/受众/范围/表达保存；[server/app/simple_character_routes.py:521](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/simple_character_routes.py:521),定位 CRUD 已接；定位驱动当前文案的二创链未闭环。
+Studio 工作台,`person-photos` 形象照片,合成图、场景照片、管理/生成/下载旧组件桥接；[client/src/studio/PeoplePages.tsx:417](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/PeoplePages.tsx:417),部分完成：照片→分身没带正确字段；场景只取前 12 套；存在占位切片分支。
+Studio 工作台,`person-avatars` 口播分身,选照/上传视频、授权、克隆、轮询、使用；[server/app/oral_routes.py:133](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/oral_routes.py:133),主接口已接；照片交接缺陷；需真实 Hifly 任务回执/结果验收。
+Studio 工作台,`person-voices` 声音档案,上传样本、授权、克隆、试听、确认、使用；[server/app/oral_routes.py:239](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/oral_routes.py:239),主接口已接；从素材选择只用已加载资产；真实克隆验收未在本轮执行。
+Studio 工作台,`materials` 素材库,上传、服务端筛选分页、改名分组、移除下载、跨创作复用；[server/app/material_routes.py:43](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/material_routes.py:43),主体已接；卡片未加载实际缩略图，选中后才签名预览；全部页码无上限渲染。
+Studio 工作台,`publishing` 发布管理,作品预览、标题/描述/标签/平台编辑、本会话草稿,**未完成核心发布**：账号授权、自定义封面、正式发布、云端发布草稿均未完成。
+Studio 工作台,`analytics` 数据看板,7/30 天 DB 聚合、趋势、类型、作品；[server/app/studio_routes.py:285](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/studio_routes.py:285),部分完成：查看作品传错 task/batch ID；口播未计入；在工作台停留时趋势数据没有随任务轮询更新。
+Studio 工作台,`profile` 用户档案,真实用户展示、通知偏好保存、钱包和设备桥接；[client/src/studio/MainPages.tsx:1072](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/studio/MainPages.tsx:1072),部分完成：发布账号禁用；余额概览是说明文本、侧栏积分“—”；通知偏好保存不等于完整通知投递系统。
+管理后台,登录/密码恢复/退出,session exchange、密码登录/恢复、读会话、退出,源码已接；[server/app/admin_auth_routes.py:877](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/admin_auth_routes.py:877)。
+管理后台,总览,真实汇总、待办与快捷导航,部分：生成量漏口播，“失败去处理”只到只读记录列表。
+管理后台,经营分析 / 利润总览,标准售价、每日录价、确认、日明细、CSV,部分：“实收收入”选项 disabled，不能当实际到账利润。
+管理后台,经营分析 / 成本明细,日期/科目/分辨率查询、未知成本标记、导出,源码已接；[server/app/admin_profit_routes.py:558](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/admin_profit_routes.py:558)。
+管理后台,资金流水 / 充值订单,搜索、分页、查单同步、对账、自动刷新、CSV,源码已接；真实 ZPay 到账另验。
+管理后台,资金流水 / 额度流水,用户/类型/时间过滤、分页、刷新,源码已接；[server/app/control_routes.py:593](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/control_routes.py:593)。
+管理后台,客户管理 / 列表和详情,客户查询、分页、CSV、360 详情、定价、免费秒数/调账,主体已接；设备/会话跨客户上下文不一致。
+管理后台,客户管理 / 激活码,批次、生成、展示/复制、查询、挂起/恢复/吊销/归档、配对审批,源码已接；真实发码和角色验收未在本轮执行。
+管理后台,客户管理 / 设备,查询、过滤、分页、解绑、强制退出,源码已接；与客户会话页面的上下文交接需修。
+管理后台,客户管理 / 会话,全局在线/单客户会话、强制下线、调账,源码已接；单客户是一条当前会话，不能误报为缺分页。
+管理后台,生成记录,类型/状态/时间查询、分页、刷新,部分：漏口播、缺可点击详情/处理入口。
+管理后台,审计中心 / 审计日志,操作人/事件/目标/时间过滤、分页,源码已接；[server/app/admin_audit_routes.py:137](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/admin_audit_routes.py:137)。
+管理后台,审计中心 / 调账记录,全局/客户记录、来源和人员过滤、分页,源码已接；旧注释“等待全局接口”已过时。
+管理后台,系统设置 / 支付与价格,商户、渠道、最低充值/步长/价格保存,源码已接；配置保存不等于支付验收。
+管理后台,系统设置 / 费率管理,上游/对外单价修改、确认、历史展示,源码已接；[server/app/admin_rate_routes.py:161](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/admin_rate_routes.py:161)。
+管理后台,系统设置 / 服务配置与公平队列,7 个服务配置、连接检查、并发参数、队列开关,部分：6 项连接检查仅校验配置；Hifly 配置缺 UI。
+客户及内部入口,内部启动/登录,健康检查、身份读取、内部 token 登录与重试,源码已接；[client/src/App.tsx:55](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/App.tsx:55)。
+客户及内部入口,客户激活,激活、错误/忙态、进入第二设备配对,源码已接；[server/app/activation_code_routes.py:801](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/activation_code_routes.py:801)。
+客户及内部入口,客户登录 / 冲突 / 切换,设备登录、显式确认切换、取消和重试,源码已接；[server/app/customer_session_routes.py:729](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/server/app/customer_session_routes.py:729)。
+客户及内部入口,第二设备配对 / 等待 / 成功 / 过期,提交、轮询、退避、存凭据、进入登录,源码已接；[client/src/RootApp.tsx:32](/Users/honor.pei/Documents/订单项目/乡墅爆款短视频复刻/client/src/RootApp.tsx:32)。
+客户及内部入口,客户资料 / 昵称 / 重置激活码,资料读取、编辑、重置、设备/钱包入口,部分：非 401 读取错误吞掉；缺主动退出入口。
+客户及内部入口,客户设备 / 配对批准,列表、刷新、批准、解绑、移除无效请求,部分：在线状态恒 true；“暂不处理”在设备页为空回调。
+客户及内部入口,客户余额 / 额度流水 / 订单,钱包查询、查单、关闭订单、充值入口,部分：只有前 20 条，无完整历史翻页。
+客户及内部入口,充值二维码弹窗,金额、订单、二维码、失败重试、查单和完成通知,源码已接；真实到账本轮未验。
+客户及内部入口,心跳 / 租约 / 被顶替 / 过期 / 设备撤销,服务器租约、续期、终态和恢复动作,源码已接；不是随机计时模拟。
+复用工作区,项目列表,"`openLive(""projects"")` → ProjectsPage → 分析/详情",创建/上传/项目选择等已接后端。
+复用工作区,分镜分析工作区,复刻“进入分镜工作区”、文案二创桥接 → AnalysisWorkspace,拆解、保存、改写、源帧/人物/首帧、Prompt、生成链存在。
+复用工作区,项目详情生成流,项目列表 → ProjectDetailFlow,首帧、脚本、Prompt、报价、批次均有实现。
+复用工作区,历史任务与下载,任务中心/普通生成结果 → TaskRecordsPanel/VideoResultStage,普通生成的进度、重试、下载保存/取消反馈、隐藏记录已有实现。
+复用工作区,人物管理与场景生成,人物库新增/管理 → CharacterLibrary,上传、生成、恢复、重命名、删除、下载、场景生成已有接口；占位切片另见 D02。
+复用工作区,内部/客户钱包,用户档案使用记录 → WalletPanel / CustomerWalletPanel / 充值弹窗,钱包真实调用已接；客户历史分页缺失另列。

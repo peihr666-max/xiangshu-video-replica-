@@ -37,7 +37,8 @@ EXCLUDED_TABLES = frozenset({"alembic_version"})
 # audit, T18/DEV-03; the append-only audited admin adjustments, T23/BILL-02;
 # the per-user fair-queue cursors, T25/041; committed customer-write fencing
 # evidence, T37/042; the admin password-credential registry, T38/043; and the
-# per-customer unit-price overrides, T39/044). They have no SQLite counterpart
+# per-customer unit-price overrides, T39/044; and the cost/price ledgers,
+# W8/W10/056/058/059). They have no SQLite counterpart
 # in the T07 import source, so an empty such table on the target is expected;
 # a non-empty one is divergent state and must fail closed.
 PG_ONLY_TABLES: frozenset[str] = frozenset(
@@ -65,7 +66,26 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "security_rate_limit_counters",
         "security_auth_failures",
         "user_queue_cursors",
+        "daily_external_prices",
+        "operation_cost_rates",
+        "operation_cost_records",
     }
+)
+
+# Most PG-only tables must be empty before cutover. Rate configuration is the
+# one exception: revision 056 seeds these exact defaults. Any edit, omission,
+# or extra subject is pre-existing target state and must still fail closed.
+PG_ONLY_SEEDED_TABLES: frozenset[str] = frozenset({"operation_cost_rates"})
+_OPERATION_COST_RATE_SEEDS = (
+    ("character_sheet_image", "upstream_cost", "image", None, 5, None),
+    ("context_ir", "upstream_cost", "call", None, 5, None),
+    ("external_price_2k", "external_price", "second", "2K", 20, None),
+    ("external_price_768p", "external_price", "second", "768P", 12, None),
+    ("first_frame_image", "upstream_cost", "image", None, 5, None),
+    ("video_analysis_2k", "upstream_cost", "second", "2K", 15, None),
+    ("video_analysis_768p", "upstream_cost", "second", "768P", 9, None),
+    ("video_generation_2k", "upstream_cost", "second", "2K", 15, None),
+    ("video_generation_768p", "upstream_cost", "second", "768P", 9, None),
 )
 
 # Shared tables may carry columns that exist only on the PostgreSQL lane
@@ -652,6 +672,39 @@ def _count_rows(
     return int(value)  # type: ignore[arg-type]
 
 
+def pg_only_table_has_divergent_state(conn: psycopg.Connection[Any], table: str) -> bool:
+    if table not in PG_ONLY_SEEDED_TABLES:
+        query = sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table))
+        return bool(_count_rows(conn, query))
+    rows = conn.execute(
+        """
+        SELECT subject, kind, unit, resolution, unit_price_fen, updated_by_user_id
+        FROM operation_cost_rates
+        ORDER BY subject
+        """
+    ).fetchall()
+    actual = tuple(
+        (
+            str(_row_value(row, "subject", 0)),
+            str(_row_value(row, "kind", 1)),
+            str(_row_value(row, "unit", 2)),
+            (
+                None
+                if _row_value(row, "resolution", 3) is None
+                else str(_row_value(row, "resolution", 3))
+            ),
+            int(str(_row_value(row, "unit_price_fen", 4))),
+            (
+                None
+                if _row_value(row, "updated_by_user_id", 5) is None
+                else str(_row_value(row, "updated_by_user_id", 5))
+            ),
+        )
+        for row in rows
+    )
+    return actual != _OPERATION_COST_RATE_SEEDS
+
+
 _WALLET_AGGREGATE_MISMATCH_QUERY = """
 SELECT COUNT(*) AS bad
 FROM wallets AS w
@@ -1121,7 +1174,7 @@ def reconcile_connection_pair(
     divergent_pg_only = [
         table
         for table in extra
-        if table in PG_ONLY_TABLES and _count_rows(pg_conn, f'SELECT COUNT(*) FROM "{table}"')
+        if table in PG_ONLY_TABLES and pg_only_table_has_divergent_state(pg_conn, table)
     ]
     if unexpected_extra or divergent_pg_only:
         issues.append(

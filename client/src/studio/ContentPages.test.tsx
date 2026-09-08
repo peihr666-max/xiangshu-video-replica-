@@ -8,12 +8,30 @@ const {
   fetchViralVideoStatistics,
   importViralVideoToProject,
   listViralVideos,
+  listMaterials,
+  createMaterialUploadIntent,
+  uploadMaterial,
+  completeMaterialUpload,
+  updateMaterial,
+  hideMaterial,
+  downloadMaterialAsset,
+  getAssetDownloadUrl,
+  createGenerationTaskPreviewUrl,
 } = vi.hoisted(() => ({
   useStudio: vi.fn(),
   fetchViralVideoMedia: vi.fn(),
   fetchViralVideoStatistics: vi.fn(),
   importViralVideoToProject: vi.fn(),
   listViralVideos: vi.fn(),
+  listMaterials: vi.fn(),
+  createMaterialUploadIntent: vi.fn(),
+  uploadMaterial: vi.fn(),
+  completeMaterialUpload: vi.fn(),
+  updateMaterial: vi.fn(),
+  hideMaterial: vi.fn(),
+  downloadMaterialAsset: vi.fn(),
+  getAssetDownloadUrl: vi.fn(),
+  createGenerationTaskPreviewUrl: vi.fn(),
 }));
 vi.mock("./context", () => ({ useStudio }));
 vi.mock("../api", () => ({
@@ -21,6 +39,15 @@ vi.mock("../api", () => ({
   fetchViralVideoStatistics,
   importViralVideoToProject,
   listViralVideos,
+  listMaterials,
+  createMaterialUploadIntent,
+  uploadMaterial,
+  completeMaterialUpload,
+  updateMaterial,
+  hideMaterial,
+  downloadMaterialAsset,
+  getAssetDownloadUrl,
+  createGenerationTaskPreviewUrl,
 }));
 
 class IntersectionObserverStub {
@@ -127,8 +154,11 @@ function studio(
       tasks: [],
       projects: [],
       errors: [],
+      materials: [],
       loading: false,
       stats: null,
+      analytics7: null,
+      analytics30: null,
     },
     review: true,
     user: {} as StudioContextValue["user"],
@@ -163,6 +193,21 @@ describe("V1.4 内容与运营页面", () => {
       items: [],
       fetchedAt: null,
     });
+    listMaterials.mockReset();
+    createMaterialUploadIntent.mockReset();
+    uploadMaterial.mockReset();
+    completeMaterialUpload.mockReset();
+    updateMaterial.mockReset();
+    hideMaterial.mockReset();
+    downloadMaterialAsset.mockReset();
+    getAssetDownloadUrl.mockReset();
+    createGenerationTaskPreviewUrl.mockReset();
+    getAssetDownloadUrl.mockResolvedValue({
+      url: "https://storage.test/material",
+    });
+    createGenerationTaskPreviewUrl.mockResolvedValue(
+      "https://provider.test/direct-result.mp4",
+    );
   });
 
   it("爆款视频按平台过滤、收藏并在导入项目资产后进入复刻", async () => {
@@ -1175,6 +1220,244 @@ describe("V1.4 内容与运营页面", () => {
     expect(
       screen.getByRole("button", { name: "选择素材 乡墅素材 1" }),
     ).toBeInTheDocument();
+  });
+
+  it("非审核素材页读取服务端素材并把真实资产 ID 带入口播草稿", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        {
+          id: "asset:audio-cloud-1",
+          owner_user_id: "employee_1",
+          asset_id: "audio-cloud-1",
+          generation_task_id: null,
+          project_id: null,
+          person_id: "person-1",
+          title: "云端讲解.mp3",
+          group: "口播素材",
+          media_type: "audio",
+          source: "upload",
+          status: "ready",
+          delivery: "stored",
+          content_type: "audio/mpeg",
+          size_bytes: 1024,
+          duration_seconds: 18,
+          created_at: "2026-09-06 10:00:00",
+          hidden: false,
+          saved: true,
+          allowed_uses: ["oral_audio", "reference"],
+          allowed_actions: ["preview", "download", "rename", "hide"],
+        },
+      ],
+      page: 1,
+      page_size: 6,
+      total: 1,
+    });
+    const value = studio({
+      review: false,
+      data: { ...studio().data, assets: [] },
+    });
+    useStudio.mockReturnValue(value);
+    render(<MaterialsPage />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "选择素材 云端讲解.mp3" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "用于音频口播" }));
+
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      audioId: "audio-cloud-1",
+      ipId: "person-1",
+      voiceId: undefined,
+    });
+    expect(value.updateData).toHaveBeenCalled();
+    expect(value.navigate).toHaveBeenCalledWith("oral-audio", {
+      returnTo: "materials",
+    });
+  });
+
+  it("素材页完成上传、重命名和移除的服务端闭环", async () => {
+    listMaterials.mockResolvedValue({
+      items: [],
+      page: 1,
+      page_size: 6,
+      total: 0,
+    });
+    createMaterialUploadIntent.mockResolvedValue({
+      material_id: "asset:image-cloud-1",
+      asset_id: "image-cloud-1",
+      storage_key: "materials/employee_1/image-cloud-1/original.png",
+      method: "PUT",
+      url: "https://storage.test/upload",
+      headers: { "Content-Type": "image/png" },
+      expires_at: "2026-09-06T10:10:00Z",
+    });
+    uploadMaterial.mockImplementation(
+      (_intent, _file, onProgress: (progress: number) => void) => {
+        onProgress(100);
+        return Promise.resolve();
+      },
+    );
+    const uploaded = {
+      id: "asset:image-cloud-1",
+      owner_user_id: "employee_1",
+      asset_id: "image-cloud-1",
+      generation_task_id: null,
+      project_id: null,
+      person_id: null,
+      title: "庭院.png",
+      group: "我的上传",
+      media_type: "image",
+      source: "upload",
+      status: "ready",
+      delivery: "stored",
+      content_type: "image/png",
+      size_bytes: 8,
+      duration_seconds: null,
+      created_at: "2026-09-06 10:00:00",
+      hidden: false,
+      saved: true,
+      allowed_uses: [
+        "original_frame",
+        "first_frame",
+        "tail_frame",
+        "reference",
+      ],
+      allowed_actions: ["preview", "download", "rename", "hide"],
+    } as const;
+    completeMaterialUpload.mockResolvedValue(uploaded);
+    updateMaterial.mockResolvedValue({ ...uploaded, title: "新庭院首帧" });
+    hideMaterial.mockResolvedValue(undefined);
+    const value = studio({
+      review: false,
+      data: { ...studio().data, assets: [] },
+    });
+    useStudio.mockReturnValue(value);
+    render(<MaterialsPage />);
+
+    const file = new File([new Uint8Array(8)], "庭院.png", {
+      type: "image/png",
+    });
+    fireEvent.change(screen.getByLabelText("选择上传素材"), {
+      target: { files: [file] },
+    });
+    await waitFor(() =>
+      expect(completeMaterialUpload).toHaveBeenCalledWith("image-cloud-1"),
+    );
+    expect(
+      screen.getByRole("heading", { name: "庭院.png" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "用作尾帧" }));
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      tailFrameId: "image-cloud-1",
+    });
+    expect(value.navigate).toHaveBeenCalledWith("video", {
+      returnTo: "materials",
+    });
+
+    fireEvent.change(screen.getByLabelText("素材名称"), {
+      target: { value: "新庭院首帧" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存名称" }));
+    await waitFor(() =>
+      expect(updateMaterial).toHaveBeenCalledWith("asset:image-cloud-1", {
+        title: "新庭院首帧",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "从素材库移除" }));
+    await waitFor(() =>
+      expect(hideMaterial).toHaveBeenCalledWith("asset:image-cloud-1"),
+    );
+  });
+
+  it("非审核素材页把搜索和来源筛选交给服务端", async () => {
+    listMaterials.mockResolvedValue({
+      items: [],
+      page: 1,
+      page_size: 6,
+      total: 0,
+    });
+    useStudio.mockReturnValue(
+      studio({ review: false, data: { ...studio().data, assets: [] } }),
+    );
+    render(<MaterialsPage />);
+    await waitFor(() => expect(listMaterials).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("搜索素材"), {
+      target: { value: "庭院" },
+    });
+    fireEvent.change(screen.getByLabelText("素材来源"), {
+      target: { value: "upload" },
+    });
+    fireEvent.submit(screen.getByRole("form", { name: "素材筛选" }));
+
+    await waitFor(() =>
+      expect(listMaterials).toHaveBeenLastCalledWith({
+        mediaType: undefined,
+        source: "upload",
+        query: "庭院",
+        page: 1,
+        pageSize: 6,
+      }),
+    );
+  });
+
+  it("已归档素材支持修改分组和直接下载", async () => {
+    const material = {
+      id: "asset:image-cloud-2",
+      owner_user_id: "employee_1",
+      asset_id: "image-cloud-2",
+      generation_task_id: null,
+      project_id: null,
+      person_id: null,
+      title: "院门.png",
+      group: "我的上传",
+      media_type: "image",
+      source: "upload",
+      status: "ready",
+      delivery: "stored",
+      content_type: "image/png",
+      size_bytes: 8,
+      duration_seconds: null,
+      created_at: "2026-09-06 10:00:00",
+      hidden: false,
+      saved: true,
+      allowed_uses: ["reference"],
+      allowed_actions: ["preview", "download", "rename", "hide"],
+    } as const;
+    listMaterials.mockResolvedValue({
+      items: [material],
+      page: 1,
+      page_size: 6,
+      total: 1,
+    });
+    updateMaterial.mockResolvedValue({ ...material, group: "庭院案例" });
+    downloadMaterialAsset.mockResolvedValue(undefined);
+    useStudio.mockReturnValue(
+      studio({ review: false, data: { ...studio().data, assets: [] } }),
+    );
+    render(<MaterialsPage />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "选择素材 院门.png" }),
+    );
+    fireEvent.change(screen.getByLabelText("素材分组"), {
+      target: { value: "庭院案例" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存分组" }));
+    await waitFor(() =>
+      expect(updateMaterial).toHaveBeenCalledWith("asset:image-cloud-2", {
+        group: "庭院案例",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "下载素材" }));
+    await waitFor(() =>
+      expect(downloadMaterialAsset).toHaveBeenCalledWith(
+        "image-cloud-2",
+        "院门.png",
+      ),
+    );
   });
 
   it("发布草稿独立保存于当前会话，不覆盖口播脚本", () => {

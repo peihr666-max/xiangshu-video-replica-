@@ -1,6 +1,6 @@
 // 统一分页条：offset 驱动，文案固定为"第 X / Y 页（共 N 条）"。
 // 两种模式：
-// - 已知 total（多数列表）：total 不足以翻页时整条不渲染；
+// - 已知 total（多数列表）：单页也展示实际总数，翻页按钮禁用；
 // - 未知 total（服务端暂未返回 total 的端点，如 /devices）：传 hasMore，
 //   只显示"第 X 页"，"下一页"按 hasMore 启用——不伪造总数。
 export function Pagination({
@@ -23,10 +23,7 @@ export function Pagination({
   onPageChange: (nextOffset: number) => void;
 }) {
   const knownTotal = typeof total === "number";
-  const totalPages = knownTotal ? Math.ceil(total / limit) : null;
-  if (knownTotal && !(totalPages !== null && totalPages > 1)) {
-    return null;
-  }
+  const totalPages = knownTotal ? Math.max(1, Math.ceil(total / limit)) : null;
   const currentPage = Math.floor(offset / limit) + 1;
   const hasNext = knownTotal
     ? offset + limit < (total as number)

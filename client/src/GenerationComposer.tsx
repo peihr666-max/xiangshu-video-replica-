@@ -62,16 +62,19 @@ export function GenerationComposer({
         onDurationChange={drafts.setOutputDuration}
         onLockPrompt={drafts.lockPrompt}
         onPromptTextChange={drafts.setPromptText}
+        onRatioChange={drafts.setRatio}
         onQuantityChange={drafts.setQuantityInput}
         onRecoverBatch={() => drafts.recoverBatch(onBatchCreated)}
         onResolutionChange={drafts.setResolution}
         onSavePromptRevision={drafts.savePromptRevision}
+        onApplySavedPrompt={drafts.applySavedPrompt}
         outputDuration={drafts.outputDuration}
         promptDirty={drafts.promptDirty}
         promptParametersMatch={drafts.promptParametersMatch}
         promptStale={drafts.promptStale}
         promptText={drafts.promptText}
         promptVersion={drafts.promptVersion}
+        priceQuote={drafts.priceQuote}
         quantity={drafts.quantity}
         quantityError={drafts.quantityError}
         quantityInput={drafts.quantityInput}
@@ -80,6 +83,8 @@ export function GenerationComposer({
         recoveryRecordConflicts={drafts.recoveryRecordConflicts}
         referenceSelectionId={referenceSelectionId}
         resolution={drafts.resolution}
+        ratio={drafts.ratio}
+        savedPrompts={drafts.savedPrompts}
         savedPromptText={drafts.savedPromptText}
         scriptStale={drafts.scriptStale}
         shotCardVersionId={shotCardVersionId}

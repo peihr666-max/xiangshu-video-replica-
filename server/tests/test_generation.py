@@ -30,17 +30,23 @@ from app.generation import (
     H3ProviderFailed,
     MetasoH3Provider,
     SubmissionUncertain,
+    _require_owned_reconcile_operation,
     acquire_generation_reconcile_operation,
     acquire_generation_task_lease,
     build_h3_request,
     compile_prompt_text,
+    complete_generation_reconcile_operation,
+    generation_price_quote,
     generation_task_operation_hash,
     h3_provider_for_task,
     inspect_generated_video_quality,
     map_script_to_shots,
     mark_expired_active_leases_needing_attention,
+    mark_generation_task_archiving,
     mark_task_provider_failed,
     mark_task_submission_uncertain,
+    perform_generation_reconcile_operation,
+    prepare_generation_reconcile_operation,
     reconcile_submission_uncertain_task,
     run_next_generation_task,
 )
@@ -392,6 +398,7 @@ def test_metaso_h3_provider_creates_polls_and_returns_url_without_downloading(
                             "id": provider_task_id,
                             "status": "succeeded",
                             "content": {"url": result_url},
+                            "usage": {"output_seconds": 12.5},
                         }
                     ],
                     "total": 1,
@@ -424,6 +431,7 @@ def test_metaso_h3_provider_creates_polls_and_returns_url_without_downloading(
     assert result.result_content == b""
     assert result.audio_quality_status == "NOT_REQUIRED"
     assert result.quality_issue_codes == []
+    assert result.output_seconds == 12.5
     assert waits == [0.25]
     create_method, create_url, create_headers, create_body = transport.requests[0]
     assert create_method == "POST"
@@ -470,6 +478,29 @@ def test_metaso_h3_provider_submit_returns_task_id_without_polling() -> None:
     assert provider_task_id == "provider-task-submit-only"
     assert len(transport.requests) == 1
     assert transport.requests[0][0] == "POST"
+
+
+def test_generation_price_quote_exposes_external_price_only() -> None:
+    class QuoteCursor:
+        def fetchone(self) -> dict[str, int]:
+            return {"unit_price_fen": 25}
+
+    class QuoteConnection:
+        def execute(self, query: str, params: tuple[str]) -> QuoteCursor:
+            assert "kind = 'external_price'" in query
+            assert params == ("external_price_2k",)
+            return QuoteCursor()
+
+    quote = generation_price_quote(
+        QuoteConnection(),  # type: ignore[arg-type]
+        resolution="2K",
+        duration_seconds=15,
+        quantity=4,
+    )
+
+    assert quote.estimated_seconds == 60
+    assert quote.estimated_price_fen == 1500
+    assert "cost" not in quote.model_dump()
 
 
 def test_metaso_h3_provider_query_reports_running_without_sleeping_or_downloading() -> None:
@@ -960,8 +991,8 @@ def test_admin_regeneration_bills_source_creator_and_audits_requester(
         ).fetchone()
     assert batch is not None and batch["created_by_user_id"] == "employee_1"
     assert after["employee_1"] == (
-        before["employee_1"][0] - 1,
-        before["employee_1"][1] + 1,
+        before["employee_1"][0] - 10,
+        before["employee_1"][1] + 10,
     )
     assert after["admin_1"] == before["admin_1"]
     assert audit is not None
@@ -2369,8 +2400,7 @@ def test_worker_terminal_writes_respect_supersession_guard(
         with pytest.raises(GenerationTaskSupersededError):
             mark_task_provider_failed(
                 conn,
-                task_id=task_id,
-                batch_id="batch-l1-guard",
+                lease=lease,
                 provider_task_id="provider-l1",
             )
         row = conn.execute(
@@ -2378,6 +2408,100 @@ def test_worker_terminal_writes_respect_supersession_guard(
             (task_id,),
         ).fetchone()
         assert row["status"] != "FAILED"
+
+
+def test_late_provider_failure_cannot_overwrite_success(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    del client
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        insert_generation_history(
+            conn,
+            batch_id="batch-terminal-cas",
+            batch_status="QUEUED",
+            task_status="PENDING",
+            error_code=None,
+        )
+        conn.commit()
+        lease = acquire_generation_task_lease(conn, worker_id="stale-worker")
+        assert lease is not None
+        assert lease["locked_by"] == "stale-worker"
+        assert lease["locked_until"] is not None
+        task_id = str(lease["id"])
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET status = 'SUCCEEDED', archive_status = 'DIRECT',
+                locked_by = NULL, locked_until = NULL
+            WHERE id = ?
+            """,
+            (task_id,),
+        )
+        conn.commit()
+
+        with pytest.raises(GenerationTaskSupersededError):
+            mark_task_provider_failed(
+                conn,
+                lease=lease,
+                provider_task_id="late-provider-result",
+            )
+
+        row = conn.execute(
+            "SELECT status, archive_status, error_code FROM generation_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        assert dict(row) == {
+            "status": "SUCCEEDED",
+            "archive_status": "DIRECT",
+            "error_code": None,
+        }
+
+
+def test_stale_worker_cannot_move_reassigned_task_to_archiving(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    del client
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        insert_generation_history(
+            conn,
+            batch_id="batch-archiving-cas",
+            batch_status="QUEUED",
+            task_status="PENDING",
+            error_code=None,
+        )
+        conn.commit()
+        lease = acquire_generation_task_lease(conn, worker_id="stale-worker")
+        assert lease is not None
+        task_id = str(lease["id"])
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET locked_by = 'replacement-worker',
+                locked_until = datetime('now', '+10 minutes')
+            WHERE id = ?
+            """,
+            (task_id,),
+        )
+        conn.commit()
+
+        with pytest.raises(RuntimeError, match="lease was lost"):
+            mark_generation_task_archiving(
+                conn,
+                lease=lease,
+                result_url="https://example.com/stale-result.mp4",
+            )
+
+        row = conn.execute(
+            "SELECT status, provider_result_url, locked_by FROM generation_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        assert dict(row) == {
+            "status": "SUBMITTING",
+            "provider_result_url": None,
+            "locked_by": "replacement-worker",
+        }
 
 
 def test_prompt_compile_rejects_a_superseded_script(client: TestClient) -> None:
@@ -2879,6 +3003,243 @@ def test_h3_request_contract_is_i2v_text_first_frame_adaptive_and_duration_guard
         )
 
 
+@pytest.mark.parametrize(
+    "ratio",
+    ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+)
+def test_h3_request_accepts_each_customer_ratio(ratio: str) -> None:
+    request = build_h3_request(
+        prompt_text="生成一条短视频",
+        first_frame_url="https://storage.example.test/first-frame.png",
+        duration_seconds=15,
+        resolution="2K",
+        ratio=ratio,
+    )
+
+    assert request["ratio"] == ratio
+
+
+def test_saved_prompt_library_is_owner_scoped_and_can_create_generation_revision(
+    client: TestClient,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    saved = client.post(
+        "/api/projects/project_owned/saved-prompts",
+        headers=auth_headers("employee_1"),
+        json={
+            "name": "乡墅日景·推镜",
+            "prompt_text": "庭院日景，镜头缓慢推进。",
+            "base_prompt_version_id": prompt_id,
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["payload"]["scope"] == "user"
+    assert saved.json()["payload"]["source"] == "reverse_prompt_revision"
+    assert saved.json()["payload"]["author_user_id"] == "employee_1"
+
+    listed = client.get(
+        "/api/projects/project_owned/saved-prompts",
+        headers=auth_headers("employee_1"),
+    )
+    admin_listed = client.get(
+        "/api/projects/project_owned/saved-prompts",
+        headers=auth_headers("admin_1"),
+    )
+    assert [item["id"] for item in listed.json()] == [saved.json()["id"]]
+    assert admin_listed.json() == []
+
+    applied = client.post(
+        f"/api/projects/project_owned/saved-prompts/{saved.json()['id']}/apply",
+        headers=auth_headers("employee_1"),
+        json={"base_prompt_version_id": prompt_id},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["kind"] == "h3_prompt"
+    assert applied.json()["payload"]["prompt_text"] == "庭院日景，镜头缓慢推进。"
+
+
+def test_reverse_prompt_can_be_saved_before_generation_from_a_real_project_source(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    saved = client.post(
+        "/api/projects/project_owned/saved-prompts",
+        headers=auth_headers("employee_1"),
+        json={
+            "name": "首次反推",
+            "prompt_text": "庭院日景，镜头缓慢推进。",
+        },
+    )
+
+    assert saved.status_code == 200, saved.text
+    payload = saved.json()["payload"]
+    assert payload["base_prompt_version_id"] is None
+    assert payload["source_kind"] in {"shot_card", "analysis"}
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        source = conn.execute(
+            "SELECT project_id, kind FROM versions WHERE id = ?",
+            (payload["source_version_id"],),
+        ).fetchone()
+    assert source is not None
+    assert str(source["project_id"]) == "project_owned"
+    assert str(source["kind"]) == payload["source_kind"]
+
+
+def test_prompt_revision_rejects_text_above_7000_characters(client: TestClient) -> None:
+    prompt_id = create_locked_prompt(client)
+    response = client.post(
+        "/api/projects/project_owned/prompts/revise",
+        headers=auth_headers("employee_1"),
+        json={"base_prompt_version_id": prompt_id, "prompt_text": "景" * 7001},
+    )
+
+    assert response.status_code == 422
+
+
+def test_legacy_locked_prompt_uses_validated_request_seconds_for_task_and_reservation(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM versions WHERE id = ?", (prompt_id,)
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(str(row["payload_json"]))
+        payload.pop("output_duration_seconds", None)
+        conn.execute(
+            "UPDATE versions SET payload_json = ? WHERE id = ?",
+            (json.dumps(payload, ensure_ascii=True, sort_keys=True), prompt_id),
+        )
+        conn.commit()
+
+    response = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 15,
+            "resolution": "768P",
+            "idempotency_key": "legacy-prompt-request-seconds",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    task_id = response.json()["tasks"][0]["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        task = conn.execute(
+            "SELECT billed_seconds, prompt_snapshot_json FROM generation_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        reservation = conn.execute(
+            "SELECT reserved_delta FROM wallet_transactions WHERE task_id = ? AND type = 'RESERVE'",
+            (task_id,),
+        ).fetchone()
+    assert task is not None
+    assert int(task["billed_seconds"]) == 15
+    assert json.loads(str(task["prompt_snapshot_json"]))["output_duration_seconds"] == 15
+    assert reservation is not None
+    assert int(reservation["reserved_delta"]) == 15
+
+
+def test_saved_prompt_create_rolls_back_when_audit_insert_fails(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+
+    def fail_audit(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr("app.generation.insert_audit", fail_audit)
+    with pytest.raises((RuntimeError, BaseExceptionGroup)):
+        client.post(
+            "/api/projects/project_owned/saved-prompts",
+            headers=auth_headers("employee_1"),
+            json={
+                "name": "不会孤立保存",
+                "prompt_text": "庭院日景。",
+                "base_prompt_version_id": prompt_id,
+            },
+        )
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        count = conn.execute(
+            "SELECT count(*) AS count FROM versions WHERE kind = 'saved_prompt'"
+        ).fetchone()
+    assert count is not None
+    assert int(count["count"]) == 0
+
+
+def test_saved_prompt_schema_requires_owner_metadata(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    saved = client.post(
+        "/api/projects/project_owned/saved-prompts",
+        headers=auth_headers("employee_1"),
+        json={
+            "name": "庭院日景",
+            "prompt_text": "庭院日景。",
+            "base_prompt_version_id": prompt_id,
+        },
+    ).json()
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE versions SET author_user_id = NULL WHERE id = ?",
+                (saved["id"],),
+            )
+
+
+def test_saved_prompt_apply_rolls_back_revision_when_audit_insert_fails(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt_id = create_locked_prompt(client)
+    saved = client.post(
+        "/api/projects/project_owned/saved-prompts",
+        headers=auth_headers("employee_1"),
+        json={
+            "name": "庭院日景",
+            "prompt_text": "庭院日景。",
+            "base_prompt_version_id": prompt_id,
+        },
+    ).json()
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        before = conn.execute(
+            "SELECT count(*) AS count FROM versions WHERE kind = 'h3_prompt'"
+        ).fetchone()
+
+    def fail_apply_audit(conn: object, *, action: str, **kwargs: object) -> None:
+        del conn, kwargs
+        if action == "saved_prompt.apply":
+            raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr("app.generation.insert_audit", fail_apply_audit)
+    with pytest.raises((RuntimeError, BaseExceptionGroup)):
+        client.post(
+            f"/api/projects/project_owned/saved-prompts/{saved['id']}/apply",
+            headers=auth_headers("employee_1"),
+            json={"base_prompt_version_id": prompt_id},
+        )
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        after = conn.execute(
+            "SELECT count(*) AS count FROM versions WHERE kind = 'h3_prompt'"
+        ).fetchone()
+    assert before is not None and after is not None
+    assert int(after["count"]) == int(before["count"])
+
+
 def test_generation_batch_quantity_limits_idempotency_and_fake_archive(
     client: TestClient,
     db_path: Path,
@@ -3226,6 +3587,7 @@ def test_batch_detail_exposes_direct_result_availability_but_not_provider_url(
     assert summary.status_code == 200
     listed = next(item for item in summary.json()["items"] if item["id"] == "batch-direct-play-01")
     assert "provider_result_url" not in listed["tasks"][0]
+    assert listed["has_results"] is True
 
 
 def test_fake_direct_preview_returns_fixture_bytes_after_authorization(
@@ -3993,6 +4355,7 @@ def test_worker_marks_submission_uncertain_without_auto_retry(
 def test_worker_fails_immediately_when_first_frame_url_cannot_be_signed(
     db_path: Path,
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompt_id = create_locked_prompt(client)
     batch = client.post(
@@ -4016,6 +4379,12 @@ def test_worker_fails_immediately_when_first_frame_url_cannot_be_signed(
         def create_image_to_video(self, request: dict[str, Any]) -> H3CreateResult:
             raise AssertionError("provider must not be called before the first-frame URL is signed")
 
+    no_call_costs: list[str] = []
+    monkeypatch.setattr(
+        "app.generation.record_video_generation_not_called",
+        lambda _conn, *, task_id: no_call_costs.append(task_id),
+    )
+
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         result = run_next_generation_task(
             conn,
@@ -4038,6 +4407,7 @@ def test_worker_fails_immediately_when_first_frame_url_cannot_be_signed(
     assert row["locked_until"] is None
     assert row["submitted_at"] is None
     assert row["provider_task_id"] is None
+    assert no_call_costs == [str(batch["tasks"][0]["id"])]
 
     batch_status = client.get(
         f"/api/generation-batches/{batch['id']}",
@@ -4573,7 +4943,7 @@ def test_reconcile_submission_uncertain_recovers_succeeded_result(
     assert row["status"] == "SUCCEEDED"
     assert row["archive_status"] == "DIRECT"
     assert row["result_asset_id"] is None
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
+    assert dict(wallet) == {"available_credits": 990, "reserved_credits": 0}
     assert billing_rows == [("RESERVE", 1), ("SETTLE", 1)]
 
 
@@ -4793,12 +5163,28 @@ def test_reconcile_worker_reclaims_an_expired_preflight_lease(
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         first_lease = acquire_generation_reconcile_operation(
             conn,
-            worker_id="crashed-reconcile-worker",
+            worker_id="same-reconcile-worker",
         )
         assert first_lease is not None
+        assert first_lease.locked_until
         conn.execute(
             "UPDATE generation_task_operations SET locked_until = %s WHERE id = %s",
             ("2000-01-01 00:00:00", first_lease.id),
+        )
+        conn.commit()
+        second_lease = acquire_generation_reconcile_operation(
+            conn,
+            worker_id="same-reconcile-worker",
+        )
+        assert second_lease is not None
+        assert second_lease.id == first_lease.id
+        assert second_lease.locked_until
+        assert second_lease.attempt == first_lease.attempt + 1
+        with pytest.raises(HTTPException):
+            _require_owned_reconcile_operation(conn, first_lease)
+        conn.execute(
+            "UPDATE generation_task_operations SET locked_until = %s WHERE id = %s",
+            ("2000-01-01 00:00:00", second_lease.id),
         )
         conn.commit()
 
@@ -4821,8 +5207,83 @@ def test_reconcile_worker_reclaims_an_expired_preflight_lease(
             "SELECT status FROM generation_tasks WHERE id = %s",
             (task_id,),
         ).fetchone()[0]
-    assert dict(operation) == {"result_status": "COMPLETED", "attempt": 2}
+    assert dict(operation) == {
+        "result_status": "COMPLETED",
+        "attempt": second_lease.attempt + 1,
+    }
     assert task_status == "SUCCEEDED"
+
+
+def test_reconcile_completion_rejects_task_superseded_during_provider_query(
+    db_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
+    prompt_id = create_locked_prompt(client)
+    created = client.post(
+        "/api/projects/project_owned/generation-batches",
+        headers=auth_headers("employee_1"),
+        json={
+            "quantity": 1,
+            "prompt_version_id": prompt_id,
+            "first_frame_asset_id": "first_frame_owned",
+            "output_duration_seconds": 10,
+            "resolution": "768P",
+            "idempotency_key": "reconcile-superseded-during-query",
+        },
+    )
+    task_id = created.json()["tasks"][0]["id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            """
+            UPDATE generation_tasks
+            SET status = 'SUBMISSION_UNCERTAIN', error_code = 'SUBMISSION_UNCERTAIN',
+                provider_task_id = 'provider-superseded-during-query'
+            WHERE id = %s
+            """,
+            (task_id,),
+        )
+        conn.commit()
+    queued = client.post(
+        f"/api/generation-tasks/{task_id}/reconcile",
+        headers=auth_headers("employee_1"),
+        json={"idempotency_key": "reconcile-superseded-operation"},
+    )
+    assert queued.status_code == 202
+
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        lease = acquire_generation_reconcile_operation(conn, worker_id="reconcile-worker")
+        assert lease is not None
+        work = prepare_generation_reconcile_operation(
+            conn,
+            lease=lease,
+            provider_factory=lambda _conn, _name: ReconcileSucceededProvider(api_key="test-key"),
+        )
+        outcome = perform_generation_reconcile_operation(
+            work,
+            storage=FakeStorageAdapter(provider="cos", bucket="generation-results"),
+        )
+        conn.execute(
+            "UPDATE generation_tasks SET superseded_by_task_id = %s WHERE id = %s",
+            ("replacement-task", task_id),
+        )
+        conn.commit()
+
+        with pytest.raises(HTTPException):
+            complete_generation_reconcile_operation(conn, work=work, outcome=outcome)
+
+        task = conn.execute(
+            "SELECT status, superseded_by_task_id FROM generation_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+        billing_rows = _task_billing_rows(conn, task_id)
+
+    assert dict(task) == {
+        "status": "SUBMISSION_UNCERTAIN",
+        "superseded_by_task_id": "replacement-task",
+    }
+    assert billing_rows == [("RESERVE", 1)]
 
 
 def test_reconcile_provider_failure_does_not_require_storage_settings(
@@ -5722,7 +6183,7 @@ def _task_billing_rows(conn: sqlite3.Connection, task_id: str) -> list[tuple[str
     ]
 
 
-def test_generation_batch_reserves_one_credit_per_task_and_replay_is_free(
+def test_generation_batch_reserves_seconds_per_task_and_replay_is_free(
     client: TestClient,
     db_path: Path,
 ) -> None:
@@ -5766,7 +6227,7 @@ def test_generation_batch_reserves_one_credit_per_task_and_replay_is_free(
         ).fetchone()[0]
         task_rows = {task_id: _task_billing_rows(conn, task_id) for task_id in task_ids}
 
-    assert dict(wallet) == {"available_credits": 998, "reserved_credits": 2}
+    assert dict(wallet) == {"available_credits": 980, "reserved_credits": 20}
     assert reserve_count == 2
     assert all(rows == [("RESERVE", 1)] for rows in task_rows.values())
 
@@ -5906,7 +6367,7 @@ def test_direct_generation_settles_once_even_when_storage_is_unavailable(
     assert first is not None
     assert first.archive_status == "DIRECT"
     assert second is None
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
+    assert dict(wallet) == {"available_credits": 990, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 
     second_prompt_id = create_locked_prompt(client, script_text="另一个归档失败任务。")
@@ -5946,7 +6407,7 @@ def test_direct_generation_settles_once_even_when_storage_is_unavailable(
 
     assert result is not None
     assert result.archive_status == "DIRECT"
-    assert dict(wallet) == {"available_credits": 998, "reserved_credits": 0}
+    assert dict(wallet) == {"available_credits": 980, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 
 
@@ -5999,7 +6460,7 @@ def test_direct_generation_does_not_depend_on_storage_download_urls(
 
     assert result is not None
     assert dict(task) == {"archive_status": "DIRECT", "result_asset_id": None}
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 0}
+    assert dict(wallet) == {"available_credits": 990, "reserved_credits": 0}
     assert rows == [("RESERVE", 1), ("SETTLE", 1)]
 
 
@@ -6051,6 +6512,7 @@ def test_terminal_provider_failure_releases_reserved_credit(
 def test_metaso_worker_rejects_non_cos_storage_before_provider_call(
     client: TestClient,
     db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompt_id = create_locked_prompt(client)
     created = client.post(
@@ -6076,6 +6538,11 @@ def test_metaso_worker_rejects_non_cos_storage_before_provider_call(
             raise AssertionError("provider must not be called with non-COS storage")
 
     provider = CountingProvider()
+    no_call_costs: list[str] = []
+    monkeypatch.setattr(
+        "app.generation.record_video_generation_not_called",
+        lambda _conn, *, task_id: no_call_costs.append(task_id),
+    )
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         with conn:
             conn.execute(
@@ -6102,6 +6569,7 @@ def test_metaso_worker_rejects_non_cos_storage_before_provider_call(
 
     assert result is not None
     assert provider.calls == 0
+    assert no_call_costs == [task_id]
     assert dict(task) == {"status": "FAILED", "error_code": "METASO_SETTINGS_UNAVAILABLE"}
     assert dict(wallet) == {"available_credits": 1000, "reserved_credits": 0}
     assert rows == [("RELEASE", 1), ("RESERVE", 1)]
@@ -6181,10 +6649,12 @@ def test_pre_provider_retry_reserves_a_new_round_after_release(
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         from app.generation import mark_task_first_frame_url_sign_failed
 
+        lease = acquire_generation_task_lease(conn, worker_id="pre-provider-retry")
+        assert lease is not None
+        assert str(lease["id"]) == task_id
         mark_task_first_frame_url_sign_failed(
             conn,
-            task_id=task_id,
-            batch_id=str(created.json()["id"]),
+            lease=lease,
         )
 
     retried = client.post(
@@ -6203,7 +6673,7 @@ def test_pre_provider_retry_reserves_a_new_round_after_release(
         ).fetchone()
         rows = _task_billing_rows(conn, task_id)
 
-    assert dict(wallet) == {"available_credits": 999, "reserved_credits": 1}
+    assert dict(wallet) == {"available_credits": 990, "reserved_credits": 10}
     assert rows == [("RELEASE", 1), ("RESERVE", 1), ("RESERVE", 2)]
 
 
@@ -6274,7 +6744,7 @@ def test_cancel_queued_batch_cancels_tasks_and_releases_credits(
             FROM wallets WHERE user_id = 'employee_1'
             """
         ).fetchone()
-        assert tuple(reserved) == (999, 1)
+        assert tuple(reserved) == (990, 10)
 
     response = client.post(
         f"/api/generation-batches/{batch['id']}/cancel",

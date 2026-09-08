@@ -1,0 +1,6666 @@
+[
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 307,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"username\"",
+      "value": "{loginUsername}",
+      "onChange": "{(event) => setLoginUsername(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 315,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"current-password\"",
+      "type": "\"password\"",
+      "value": "{loginPassword}",
+      "onChange": "{(event) => setLoginPassword(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 322,
+    "tag": "button",
+    "label": "登录后台",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 324,
+    "tag": "button",
+    "label": "首次设置或找回密码",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => {\n                setError(\"\");\n                setNotice(\"\");\n                setAuthPhase(\"recovery\");\n              }}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 346,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"off\"",
+      "placeholder": "\"ASX1.…\"",
+      "type": "\"password\"",
+      "value": "{recoveryCredential}",
+      "onChange": "{(event) =>\n                    setRecoveryCredential(event.target.value)\n                  }"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 356,
+    "tag": "button",
+    "label": "验证恢复凭据",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 358,
+    "tag": "button",
+    "label": "返回账号密码登录",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => setAuthPhase(\"anonymous\")}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 373,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"new-password\"",
+      "type": "\"password\"",
+      "value": "{newPassword}",
+      "onChange": "{(event) => setNewPassword(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 382,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"new-password\"",
+      "type": "\"password\"",
+      "value": "{confirmPassword}",
+      "onChange": "{(event) => setConfirmPassword(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 389,
+    "tag": "button",
+    "label": "保存新密码",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 411,
+    "tag": "button",
+    "label": "菜单",
+    "attributes": {
+      "aria-controls": "\"admin-navigation\"",
+      "aria-expanded": "{isNavigationOpen}",
+      "aria-label": "{isNavigationOpen ? \"关闭导航\" : \"展开导航\"}",
+      "className": "\"admin-nav-toggle\"",
+      "type": "\"button\"",
+      "onClick": "{() => setIsNavigationOpen((current) => !current)}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 434,
+    "tag": "button",
+    "label": "退出登录",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => void signOut()}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 442,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"关闭导航遮罩\"",
+      "className": "\"admin-sidebar-backdrop\"",
+      "type": "\"button\"",
+      "onClick": "{() => setIsNavigationOpen(false)}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 485,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-current": "{activeTab === tab.id ? \"page\" : undefined}",
+      "aria-label": "{tab.label}",
+      "className": "{\n                          activeTab === tab.id\n                            ? \"admin-tab is-active\"\n                            : \"admin-tab\"\n                        }",
+      "key": "{tab.id}",
+      "type": "\"button\"",
+      "onClick": "{() => {\n                          setActiveTab(tab.id);\n                          setNavigationIntent(\"\");\n                          // C3：切标签清掉上一页残留的全局提示。\n                          setError(\"\");\n                          setNotice(\"\");\n                          if (isCompactNavigation) {\n                            setIsNavigationOpen(false);\n                          }\n                        }}"
+    }
+  },
+  {
+    "file": "client/src/AdminApp.tsx",
+    "line": 541,
+    "tag": "TabBar",
+    "label": "",
+    "attributes": {
+      "ariaLabel": "\"运营概览快捷导航\"",
+      "items": "{tabGroups[0].tabs}",
+      "active": "{activeTab}",
+      "onChange": "{(tab) => setActiveTab(tab as AdminTab)}"
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1257,
+    "tag": "button",
+    "label": "返回",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isWorkspaceBusy}",
+      "onClick": "{handleClose}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1265,
+    "tag": "button",
+    "label": "开始生成",
+    "attributes": {
+      "disabled": "{\n              readOnly ||\n              isWorkspaceBusy ||\n              isFirstFrameBusy ||\n              generationDrafts.isLoading\n            }",
+      "onClick": "{handleStartGeneration}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1324,
+    "tag": "button",
+    "label": "前往处理",
+    "attributes": {
+      "onClick": "{() => handleGoFixMissing(item)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1334,
+    "tag": "button",
+    "label": "关闭",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => setMissingModalOpen(false)}",
+      "ref": "{missingModalCloseRef}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1349,
+    "tag": "button",
+    "label": "重新加载",
+    "attributes": {
+      "className": "\"secondary-button analysis-retry-button\"",
+      "onClick": "{reloadWorkspace}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1374,
+    "tag": "button",
+    "label": "重新检查",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{reloadWorkspace}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1383,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{\n                isStartingAnalysis ||\n                isAnalysisPending ||\n                !project.reference_asset_id\n              }",
+      "onClick": "{handleStartAnalysis}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1501,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{ariaLabel}",
+      "className": "\"shot-table-input\"",
+      "disabled": "{readOnly}",
+      "min": "{type === \"number\" ? 0 : undefined}",
+      "onChange": "{(event) => onChange(event.target.value)}",
+      "step": "{type === \"number\" ? \"0.1\" : undefined}",
+      "type": "{type}",
+      "value": "{value}"
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1530,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`${ariaPrefix} 人物运动`}",
+      "className": "\"shot-table-select\"",
+      "disabled": "{readOnly}",
+      "onChange": "{(event) => {\n          const next = event.target.value as ShotMotion[\"subject_motion_state\"];\n          if (next) {\n            onChange({ subject_motion_state: next });\n          }\n        }}",
+      "value": "\"\""
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1553,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`${ariaPrefix} 人物运动`}",
+      "className": "\"shot-table-select\"",
+      "disabled": "{readOnly}",
+      "onChange": "{(event) =>\n          onChange({\n            subject_motion_state: event.target\n              .value as ShotMotion[\"subject_motion_state\"],\n          })\n        }",
+      "value": "{motion.subject_motion_state}"
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1571,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`${ariaPrefix} 位移方向`}",
+      "className": "\"shot-table-select\"",
+      "disabled": "{readOnly}",
+      "onChange": "{(event) =>\n          onChange({\n            subject_direction: event.target\n              .value as ShotMotion[\"subject_direction\"],\n          })\n        }",
+      "value": "{motion.subject_direction}"
+    }
+  },
+  {
+    "file": "client/src/AnalysisWorkspace.tsx",
+    "line": 1589,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`${ariaPrefix} 运镜方式`}",
+      "className": "\"shot-table-select\"",
+      "disabled": "{readOnly}",
+      "onChange": "{(event) =>\n          onChange({\n            camera_motion: event.target.value as ShotMotion[\"camera_motion\"],\n          })\n        }",
+      "value": "{motion.camera_motion}"
+    }
+  },
+  {
+    "file": "client/src/App.tsx",
+    "line": 118,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"off\"",
+      "onChange": "{(event) => setAccessToken(event.target.value)}",
+      "placeholder": "\"本地桌面模式可留空\"",
+      "type": "\"password\"",
+      "value": "{accessToken}"
+    }
+  },
+  {
+    "file": "client/src/App.tsx",
+    "line": 126,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "disabled": "{isLoginLoading}",
+      "onClick": "{handleLogin}"
+    }
+  },
+  {
+    "file": "client/src/App.tsx",
+    "line": 592,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-current": "{activePage === item.page ? \"page\" : undefined}",
+      "className": "{\n              activePage === item.page\n                ? \"nav-button nav-button--active\"\n                : \"nav-button\"\n            }",
+      "disabled": "{navigationDisabled}",
+      "key": "{item.page}",
+      "onClick": "{() => onNavigate(item.page)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/App.tsx",
+    "line": 611,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-current": "{activePage === \"profile\" ? \"page\" : undefined}",
+      "aria-label": "\"打开个人中心\"",
+      "className": "{\n              isUserPage ? \"sidebar-user sidebar-user--active\" : \"sidebar-user\"\n            }",
+      "disabled": "{navigationDisabled}",
+      "onClick": "{() => onNavigate(\"profile\")}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/App.tsx",
+    "line": 632,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-controls": "\"sidebar-user-actions\"",
+      "aria-expanded": "{isUserMenuOpen}",
+      "aria-label": "\"用户菜单\"",
+      "className": "{\n              isUserPage ? \"sidebar-user sidebar-user--active\" : \"sidebar-user\"\n            }",
+      "disabled": "{navigationDisabled}",
+      "onClick": "{() => setIsUserMenuOpen((isOpen) => !isOpen)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/App.tsx",
+    "line": 665,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-current": "{activePage === item.page ? \"page\" : undefined}",
+      "className": "{\n                    activePage === item.page\n                      ? \"sidebar-user__menu-item sidebar-user__menu-item--active\"\n                      : \"sidebar-user__menu-item\"\n                  }",
+      "disabled": "{navigationDisabled}",
+      "key": "{item.page}",
+      "onClick": "{() => navigateFromUserMenu(item.page)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 525,
+    "tag": "button",
+    "label": "重新读取人物库",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isLoading}",
+      "onClick": "{() => void loadLibrary()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 558,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`查看人物 ${entry.display_name} 大图`}",
+      "className": "\"character-preview-card__cover\"",
+      "disabled": "{coverStatus === \"loading\"}",
+      "onClick": "{() => {\n                    if (cover && coverStatus === \"error\") {\n                      void loadPreviewUrls([cover.assetId], true);\n                      return;\n                    }\n                    setLightboxId(entry.identity_id);\n                  }}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 592,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"修改人物名称\"",
+      "onChange": "{(event) => setEditingName(event.target.value)}",
+      "type": "\"text\"",
+      "value": "{editingName}"
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 598,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{isRenaming}",
+      "onClick": "{() => void saveRename(entry)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 605,
+    "tag": "button",
+    "label": "取消",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isRenaming}",
+      "onClick": "{cancelRename}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 631,
+    "tag": "button",
+    "label": "改名",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => startRename(entry)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 640,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`重新生成人物 ${entry.display_name} 的五视图`}",
+      "className": "\"secondary-button\"",
+      "disabled": "{busyRegenerateId !== \"\"}",
+      "onClick": "{() => void handleRegenerate(entry)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 653,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`删除人物 ${entry.display_name}`}",
+      "className": "\"secondary-button\"",
+      "disabled": "{busyDeleteId !== \"\"}",
+      "onClick": "{() => void handleDelete(entry)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 742,
+    "tag": "button",
+    "label": "移除失败任务",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{onClear}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 927,
+    "tag": "button",
+    "label": "关闭",
+    "attributes": {
+      "aria-label": "\"关闭人物预览\"",
+      "className": "\"secondary-button\"",
+      "onClick": "{onClose}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 941,
+    "tag": "button",
+    "label": "人物基准",
+    "attributes": {
+      "aria-selected": "{activeTab === \"base\"}",
+      "className": "{activeTab === \"base\" ? \"is-active\" : undefined}",
+      "onClick": "{() => setActiveTab(\"base\")}",
+      "role": "\"tab\"",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 950,
+    "tag": "button",
+    "label": "场景造型",
+    "attributes": {
+      "aria-selected": "{activeTab === \"scenes\"}",
+      "className": "{activeTab === \"scenes\" ? \"is-active\" : undefined}",
+      "onClick": "{() => setActiveTab(\"scenes\")}",
+      "role": "\"tab\"",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 968,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"primary-button\"",
+      "onClick": "{() => setSceneFormOpen((open) => !open)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 984,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "maxLength": "{80}",
+      "placeholder": "\"例如：工地巡检\"",
+      "value": "{sceneName}",
+      "onChange": "{(event) => setSceneName(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 993,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "maxLength": "{600}",
+      "placeholder": "\"例如：乡村别墅施工现场，白天自然光\"",
+      "value": "{sceneDescription}",
+      "onChange": "{(event) =>\n                      setSceneDescription(event.target.value)\n                    }"
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 1004,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "maxLength": "{600}",
+      "placeholder": "\"例如：黄色安全帽、深蓝色工装和反光背心\"",
+      "value": "{costumeDescription}",
+      "onChange": "{(event) =>\n                      setCostumeDescription(event.target.value)\n                    }"
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 1014,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"primary-button\"",
+      "disabled": "{sceneGenerating}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 1061,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`查看${look.scene_name}五视图`}",
+      "className": "\"secondary-button\"",
+      "onClick": "{() =>\n                            setExpandedSceneId((current) =>\n                              current === look.persona_id\n                                ? \"\"\n                                : look.persona_id,\n                            )\n                          }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 1097,
+    "tag": "button",
+    "label": "收起",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => setExpandedSceneId(\"\")}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 1132,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{Boolean(busyDownloadKey) || !sheetUrl}",
+      "onClick": "{() => void onDownloadSheet(entry)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 1152,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{Boolean(busyDownloadKey)}",
+      "onClick": "{() => void onDownloadAll(entry)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterLibrary.tsx",
+    "line": 1186,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{Boolean(busyDownloadKey) || !previewUrl}",
+      "onClick": "{() => void onDownloadView(entry, view)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterReferenceSelection.tsx",
+    "line": 330,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{checked}",
+      "disabled": "{\n                    readOnly ||\n                    automaticReference ||\n                    isSubmitting ||\n                    (!checked && !previewUrls[candidate.asset_id])\n                  }",
+      "onChange": "{() => toggleAsset(candidate.asset_id)}",
+      "type": "\"checkbox\""
+    }
+  },
+  {
+    "file": "client/src/CharacterReferenceSelection.tsx",
+    "line": 372,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"source-frame-confirm\"",
+      "disabled": "{\n            isLoading ||\n            isSubmitting ||\n            selectedAssetIds.length < 1 ||\n            selectedAssetIds.length > 4 ||\n            selectedAssetIds.some((assetId) => !previewUrls[assetId])\n          }",
+      "onClick": "{handleConfirm}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterSelection.tsx",
+    "line": 351,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"角色版本\"",
+      "disabled": "{readOnly || isRestoring || isSaving || isAutoSelecting}",
+      "onChange": "{(event) => void handleInlineChange(event.target.value)}",
+      "value": "{selectedVersionId}"
+    }
+  },
+  {
+    "file": "client/src/CharacterSelection.tsx",
+    "line": 387,
+    "tag": "button",
+    "label": "切换到 V",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isSaving || isAutoSelecting}",
+      "onClick": "{() =>\n                  void handleInlineChange(newerVersion.character_version_id)\n                }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterSelection.tsx",
+    "line": 435,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isRestoring}",
+      "onClick": "{openSelection}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterSelection.tsx",
+    "line": 450,
+    "tag": "button",
+    "label": "更换",
+    "attributes": {
+      "onClick": "{openSelection}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterSelection.tsx",
+    "line": 465,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => setIsUploadOpen((open) => !open)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/CharacterSelection.tsx",
+    "line": 474,
+    "tag": "button",
+    "label": "关闭",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"secondary-button\"",
+      "onClick": "{() => setIsOpen(false)}"
+    }
+  },
+  {
+    "file": "client/src/CharacterSelection.tsx",
+    "line": 523,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{isSelected}",
+      "disabled": "{readOnly}",
+      "name": "\"main-character-version\"",
+      "onChange": "{() => {\n                        setSelectedVersionId(version.character_version_id);\n                        setMessage(\"\");\n                      }}",
+      "type": "\"radio\"",
+      "value": "{version.character_version_id}"
+    }
+  },
+  {
+    "file": "client/src/CharacterSelection.tsx",
+    "line": 579,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{\n                isLoading ||\n                isSaving ||\n                isAutoSelecting ||\n                !selectedVersionId ||\n                selectedOption?.assets.length !== 7\n              }",
+      "onClick": "{saveSelection}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/FirstFrameSelection.tsx",
+    "line": 488,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"首帧生成模式\"",
+      "disabled": "{readOnly || isSubmitting || !canGenerate}",
+      "onChange": "{(event) =>\n                setModel(event.target.value as FirstFrameModel)\n              }",
+      "value": "{model}"
+    }
+  },
+  {
+    "file": "client/src/FirstFrameSelection.tsx",
+    "line": 502,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"候选数量\"",
+      "disabled": "{readOnly || isSubmitting || !canGenerate}",
+      "max": "\"3\"",
+      "min": "\"1\"",
+      "onChange": "{(event) => setQuantity(Number(event.target.value))}",
+      "type": "\"number\"",
+      "value": "{quantity}"
+    }
+  },
+  {
+    "file": "client/src/FirstFrameSelection.tsx",
+    "line": 517,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"首帧编辑提示词\"",
+      "disabled": "{readOnly || isSubmitting || !canGenerate}",
+      "onChange": "{(event) => setPrompt(event.target.value)}",
+      "rows": "{5}",
+      "value": "{prompt}"
+    }
+  },
+  {
+    "file": "client/src/FirstFrameSelection.tsx",
+    "line": 527,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly || isSubmitting || !canGenerate}",
+      "onClick": "{handleGenerate}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/FirstFrameSelection.tsx",
+    "line": 538,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{\n            readOnly ||\n            isSubmitting ||\n            !selectedAssetId ||\n            !selectedPreview ||\n            isHistoryVersion\n          }",
+      "onClick": "{handleConfirm}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/FirstFrameSelection.tsx",
+    "line": 655,
+    "tag": "button",
+    "label": "版本 #",
+    "attributes": {
+      "className": "{\n                historyVersion.id === version?.id\n                  ? \"history-version history-version--active\"\n                  : \"history-version\"\n              }",
+      "key": "{historyVersion.id}",
+      "disabled": "{isSubmitting}",
+      "onClick": "{() => void load(historyVersion)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/FirstFrameSelection.tsx",
+    "line": 723,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{checked}",
+      "disabled": "{disabled}",
+      "name": "\"first-frame\"",
+      "onChange": "{onSelect}",
+      "type": "\"radio\"",
+      "value": "{candidate.asset_id}"
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 154,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{ratio === value}",
+      "disabled": "{readOnly || busy}",
+      "name": "\"generation-ratio\"",
+      "onChange": "{() => onRatioChange?.(value)}",
+      "type": "\"radio\"",
+      "value": "{value}"
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 169,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"成片时长\"",
+      "disabled": "{readOnly || busy}",
+      "onChange": "{(event) => onDurationChange(event.target.value)}",
+      "value": "{outputDuration}"
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 181,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"分辨率\"",
+      "disabled": "{readOnly || busy}",
+      "onChange": "{(event) =>\n                onResolutionChange(event.target.value as \"768P\" | \"2K\")\n              }",
+      "value": "{resolution}"
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 197,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{!canCompile}",
+      "onClick": "{onCompilePrompt}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 204,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"视频生成提示词内容\"",
+      "onChange": "{(event) => onPromptTextChange(event.target.value)}",
+      "readOnly": "{\n                  readOnly ||\n                  busyAction === \"compile\" ||\n                  busyAction === \"prompt\" ||\n                  promptStatus === \"LOCKED\" ||\n                  promptStatus === \"USED\"\n                }",
+      "rows": "{10}",
+      "maxLength": "{7000}",
+      "value": "{promptText}"
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 235,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly || !promptDirty || busy || promptStale}",
+      "onClick": "{onSavePromptRevision}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 242,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{\n                  readOnly ||\n                  promptDirty ||\n                  promptStale ||\n                  busy ||\n                  promptStatus === \"LOCKED\" ||\n                  promptStatus === \"USED\"\n                }",
+      "onClick": "{onLockPrompt}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 267,
+    "tag": "button",
+    "label": "应用",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{readOnly || busy}",
+      "key": "{saved.id}",
+      "onClick": "{() => onApplySavedPrompt?.(saved.id)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 290,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"生成数量\"",
+      "disabled": "{readOnly || busy}",
+      "onChange": "{(event) => onQuantityChange(event.target.value)}",
+      "value": "{quantityInput}"
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 323,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{!canCreateBatch}",
+      "onClick": "{onCreateBatch}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/GenerationLauncher.tsx",
+    "line": 333,
+    "tag": "button",
+    "label": "恢复已提交批次",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{readOnly || busy}",
+      "onClick": "{onRecoverBatch}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectDetailFlow.tsx",
+    "line": 488,
+    "tag": "button",
+    "label": "重试匹配",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{retryReferenceMatch}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectDetailFlow.tsx",
+    "line": 520,
+    "tag": "button",
+    "label": "返回项目列表",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isBusy}",
+      "onClick": "{onBack}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectDetailFlow.tsx",
+    "line": 613,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"自定义文案\"",
+      "disabled": "{readOnly}",
+      "onChange": "{(event) => setScriptText(event.target.value)}",
+      "value": "{scriptText}"
+    }
+  },
+  {
+    "file": "client/src/ProjectDetailFlow.tsx",
+    "line": 647,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"画面比例\"",
+      "onChange": "{(event) =>\n                    setGenerationRatio(event.target.value as GenerationRatio)\n                  }",
+      "value": "{generationRatio}"
+    }
+  },
+  {
+    "file": "client/src/ProjectDetailFlow.tsx",
+    "line": 665,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"成片时长\"",
+      "onChange": "{(event) =>\n                    setGenerationDuration(Number(event.target.value) as 4 | 15)\n                  }",
+      "value": "{generationDuration}"
+    }
+  },
+  {
+    "file": "client/src/ProjectDetailFlow.tsx",
+    "line": 678,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"生成数量\"",
+      "onChange": "{(event) =>\n                    setGenerationQuantity(\n                      Number(event.target.value) as 1 | 2 | 4,\n                    )\n                  }",
+      "value": "{generationQuantity}"
+    }
+  },
+  {
+    "file": "client/src/ProjectDetailFlow.tsx",
+    "line": 709,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{!canStart}",
+      "onClick": "{() => void handleStartGeneration()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 404,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "accept": "\".mp4,.mov,video/mp4,video/quicktime\"",
+      "aria-label": "\"选择一个或多个参考视频\"",
+      "hidden": "true",
+      "multiple": "true",
+      "onChange": "{handleFileChange}",
+      "ref": "{fileInputRef}",
+      "type": "\"file\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 413,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "accept": "\".mp4,.mov,video/mp4,video/quicktime\"",
+      "aria-label": "\"重新上传参考视频\"",
+      "hidden": "true",
+      "onChange": "{handleRebindFileChange}",
+      "ref": "{rebindFileInputRef}",
+      "type": "\"file\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 428,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{isUploading}",
+      "onClick": "{() => fileInputRef.current?.click()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 497,
+    "tag": "button",
+    "label": "取消上传",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() =>\n                      abortControllersRef.current.get(item.key)?.abort()\n                    }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 508,
+    "tag": "button",
+    "label": "知道了",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() =>\n                    setUploads((current) =>\n                      current.filter((entry) => entry.key !== item.key),\n                    )\n                  }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 548,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"修改项目名称\"",
+      "onChange": "{(event) =>\n                            setEditingProjectName(event.target.value)\n                          }",
+      "type": "\"text\"",
+      "value": "{editingProjectName}"
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 556,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{isRenaming}",
+      "onClick": "{() => void saveRename(project)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 563,
+    "tag": "button",
+    "label": "取消",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isRenaming}",
+      "onClick": "{cancelRename}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 574,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`打开项目 ${project.name}`}",
+      "className": "\"projects-list__main\"",
+      "onClick": "{() => onOpenAnalysis(project)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 593,
+    "tag": "button",
+    "label": "生成视频",
+    "attributes": {
+      "className": "\"projects-generate-button\"",
+      "onClick": "{() => onOpenDetail(project)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 602,
+    "tag": "button",
+    "label": "查看流程",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => onOpenDetail(project)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 613,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"projects-generate-button\"",
+      "disabled": "{\n                                retryingAnalysisProjectId === project.id\n                              }",
+      "onClick": "{() => void handleRetryAnalysis(project)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 628,
+    "tag": "button",
+    "label": "重新上传",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{\n                                isUploading || Boolean(deletingProjectId)\n                              }",
+      "onClick": "{() => requestRebind(project)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 640,
+    "tag": "button",
+    "label": "重命名",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => startRename(project)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ProjectsPage.tsx",
+    "line": 649,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`删除项目 ${project.name}`}",
+      "className": "\"secondary-button project-delete-button\"",
+      "disabled": "{\n                                isUploading || Boolean(deletingProjectId)\n                              }",
+      "onClick": "{() => void handleDeleteProject(project)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/PromptMarkdown.tsx",
+    "line": 104,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => void handleCopy()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/PromptMarkdown.tsx",
+    "line": 112,
+    "tag": "button",
+    "label": "编辑",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{startEditing}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/PromptMarkdown.tsx",
+    "line": 129,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"提示词源码\"",
+      "maxLength": "{7000}",
+      "onChange": "{(event) => setDraft(event.target.value)}",
+      "spellCheck": "{false}",
+      "value": "{draft}"
+    }
+  },
+  {
+    "file": "client/src/PromptMarkdown.tsx",
+    "line": 138,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{isSaving}",
+      "onClick": "{() => void handleSave()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/PromptMarkdown.tsx",
+    "line": 145,
+    "tag": "button",
+    "label": "取消",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isSaving}",
+      "onClick": "{cancelEditing}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/RootApp.tsx",
+    "line": 197,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{onAction}"
+    }
+  },
+  {
+    "file": "client/src/ScriptEditor.tsx",
+    "line": 45,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{scriptSource === \"original\"}",
+      "disabled": "{readOnly || busy}",
+      "name": "\"script-source\"",
+      "onChange": "{() => onChooseSource(\"original\")}",
+      "type": "\"radio\""
+    }
+  },
+  {
+    "file": "client/src/ScriptEditor.tsx",
+    "line": 55,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"自定义稿\"",
+      "checked": "{scriptSource === \"custom\"}",
+      "disabled": "{readOnly || busy}",
+      "name": "\"script-source\"",
+      "onChange": "{() => onChooseSource(\"custom\")}",
+      "type": "\"radio\""
+    }
+  },
+  {
+    "file": "client/src/ScriptEditor.tsx",
+    "line": 68,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"口播稿内容\"",
+      "onChange": "{(event) => onScriptTextChange(event.target.value)}",
+      "readOnly": "{readOnly || scriptSource === \"original\"}",
+      "rows": "{6}",
+      "value": "{scriptText}"
+    }
+  },
+  {
+    "file": "client/src/ScriptEditor.tsx",
+    "line": 77,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly || busy || !scriptText.trim()}",
+      "onClick": "{onRewriteScript}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/ScriptEditor.tsx",
+    "line": 84,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly || busy || !scriptText.trim()}",
+      "onClick": "{onSaveScript}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/SettingsPanel.tsx",
+    "line": 314,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "type": "{field.secret && !isVisible ? \"password\" : \"text\"}",
+      "value": "{values[field.name] ?? \"\"}",
+      "placeholder": "{\n                    field.secret && settings.configured\n                      ? \"已保存，留空不修改\"\n                      : field.placeholder\n                  }",
+      "onChange": "{(event) =>\n                    setValues((current) => ({\n                      ...current,\n                      [field.name]: event.target.value,\n                    }))\n                  }"
+    }
+  },
+  {
+    "file": "client/src/SettingsPanel.tsx",
+    "line": 331,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "type": "\"button\"",
+      "className": "\"secret-toggle\"",
+      "aria-label": "{\n                      isVisible ? `隐藏${field.label}` : `显示${field.label}`\n                    }",
+      "aria-pressed": "{isVisible}",
+      "onClick": "{() => toggleSecretVisibility(field.name)}"
+    }
+  },
+  {
+    "file": "client/src/SettingsPanel.tsx",
+    "line": 350,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"submit\"",
+      "disabled": "{readOnly || isSaving || isTesting}"
+    }
+  },
+  {
+    "file": "client/src/SettingsPanel.tsx",
+    "line": 353,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"secondary-button\"",
+      "onClick": "{handleTest}",
+      "disabled": "{readOnly || isSaving || isTesting}"
+    }
+  },
+  {
+    "file": "client/src/SettingsPanel.tsx",
+    "line": 430,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly || isSaving}",
+      "type": "\"number\"",
+      "min": "\"1\"",
+      "value": "{values.max_generation_count_per_batch}",
+      "onChange": "{(event) =>\n              setValues((current) => ({\n                ...current,\n                max_generation_count_per_batch: Number(event.target.value),\n              }))\n            }"
+    }
+  },
+  {
+    "file": "client/src/SettingsPanel.tsx",
+    "line": 445,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly || isSaving}",
+      "type": "\"number\"",
+      "min": "\"1\"",
+      "value": "{values.max_concurrent_h3_tasks}",
+      "onChange": "{(event) =>\n              setValues((current) => ({\n                ...current,\n                max_concurrent_h3_tasks: Number(event.target.value),\n              }))\n            }"
+    }
+  },
+  {
+    "file": "client/src/SettingsPanel.tsx",
+    "line": 464,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly || isSaving}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/SimpleCharacterUpload.tsx",
+    "line": 110,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "onChange": "{(event) => setDisplayName(event.target.value)}",
+      "placeholder": "\"例如：荣哥\"",
+      "type": "\"text\"",
+      "value": "{displayName}"
+    }
+  },
+  {
+    "file": "client/src/SimpleCharacterUpload.tsx",
+    "line": 118,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "accept": "{ALLOWED_TYPES.join(\",\")}",
+      "aria-label": "\"授权图片\"",
+      "hidden": "true",
+      "onChange": "{(event) => pickFile(event.target.files?.[0])}",
+      "ref": "{fileInputRef}",
+      "type": "\"file\""
+    }
+  },
+  {
+    "file": "client/src/SimpleCharacterUpload.tsx",
+    "line": 126,
+    "tag": "button",
+    "label": "选择图片",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{busy}",
+      "onClick": "{() => fileInputRef.current?.click()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/SimpleCharacterUpload.tsx",
+    "line": 138,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"simple-character-upload__submit\"",
+      "disabled": "{busy}",
+      "onClick": "{submit}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/SourceFrameSelection.tsx",
+    "line": 482,
+    "tag": "button",
+    "label": "重新检查状态",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => void loadCandidates()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/SourceFrameSelection.tsx",
+    "line": 490,
+    "tag": "button",
+    "label": "停止并重新取帧",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => void handleRestart()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/SourceFrameSelection.tsx",
+    "line": 501,
+    "tag": "button",
+    "label": "重新开始取帧",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isSubmitting || !referenceAssetId}",
+      "onClick": "{() => void handleRestart()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/SourceFrameSelection.tsx",
+    "line": 526,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isSubmitting || !referenceAssetId}",
+      "onClick": "{handleExtract}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/SourceFrameSelection.tsx",
+    "line": 536,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{isSubmitting}",
+      "max": "{\n                      videoDurationSeconds === null\n                        ? undefined\n                        : Math.max(0, videoDurationSeconds - 0.1)\n                    }",
+      "min": "\"0\"",
+      "onChange": "{(event) =>\n                      setManualTimestamp(Number(event.target.value))\n                    }",
+      "step": "\"0.1\"",
+      "type": "\"number\"",
+      "value": "{manualTimestamp}"
+    }
+  },
+  {
+    "file": "client/src/SourceFrameSelection.tsx",
+    "line": 552,
+    "tag": "button",
+    "label": "从该时间取帧",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isSubmitting || !referenceAssetId}",
+      "onClick": "{() => void handleManualExtract()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/SourceFrameSelection.tsx",
+    "line": 573,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{selectedAssetId === candidate.asset_id}",
+      "disabled": "{\n                      readOnly ||\n                      isSubmitting ||\n                      !previewUrls[candidate.asset_id]\n                    }",
+      "name": "\"source-frame\"",
+      "onChange": "{() => {\n                      setSelectedAssetId(candidate.asset_id);\n                      setStatus(\"已选择其他源画面，点击下方按钮应用。\");\n                    }}",
+      "type": "\"radio\"",
+      "value": "{candidate.asset_id}"
+    }
+  },
+  {
+    "file": "client/src/SourceFrameSelection.tsx",
+    "line": 618,
+    "tag": "button",
+    "label": "确认源画面并继续",
+    "attributes": {
+      "className": "\"source-frame-confirm\"",
+      "disabled": "{\n                  isSubmitting ||\n                  !selectedAssetId ||\n                  !previewUrls[selectedAssetId]\n                }",
+      "onClick": "{handleConfirm}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 847,
+    "tag": "button",
+    "label": "刷新",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isHistoryLoading}",
+      "onClick": "{() => {\n                void loadHistory();\n                setPollingRevision((current) => current + 1);\n              }}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 882,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"修改批次名称\"",
+      "onChange": "{(event) =>\n                          setEditingBatchName(event.target.value)\n                        }",
+      "type": "\"text\"",
+      "value": "{editingBatchName}"
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 890,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{isRenaming}",
+      "onClick": "{() => void saveBatchRename(item)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 897,
+    "tag": "button",
+    "label": "取消",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{isRenaming}",
+      "onClick": "{cancelBatchRename}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 914,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`打开批次 ${item.id}`}",
+      "aria-pressed": "{item.id === activeBatchId}",
+      "className": "\"batch-history-card__main\"",
+      "onClick": "{() => selectBatch(item.id)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 943,
+    "tag": "button",
+    "label": "重命名",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => startBatchRename(item)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 950,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`删除批次 ${displayName}`}",
+      "className": "\"secondary-button batch-delete-button\"",
+      "disabled": "{isDeleting}",
+      "onClick": "{() => void handleDeleteBatch(item)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 968,
+    "tag": "button",
+    "label": "加载更多任务记录",
+    "attributes": {
+      "className": "\"load-more-button\"",
+      "disabled": "{isHistoryLoading}",
+      "onClick": "{() => void loadHistory(nextCursor, true)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1020,
+    "tag": "button",
+    "label": "返回生成结果",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => setViewMode(\"stage\")}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1079,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "id": "\"batch-id\"",
+      "value": "{batchIdInput}",
+      "placeholder": "\"粘贴 generation batch id\"",
+      "onChange": "{(event) => setBatchIdInput(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1085,
+    "tag": "button",
+    "label": "查询任务记录",
+    "attributes": {
+      "type": "\"submit\"",
+      "disabled": "{!batchIdInput.trim()}"
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1117,
+    "tag": "button",
+    "label": "立即刷新",
+    "attributes": {
+      "onClick": "{onRetry}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1282,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"整批重生成原因\"",
+      "disabled": "{batchActionBusy}",
+      "maxLength": "{500}",
+      "onChange": "{(event) =>\n                  onBatchRegenerationReasonChange(event.target.value)\n                }",
+      "placeholder": "\"说明为什么需要再生成整批视频\"",
+      "value": "{batchRegenerationReason}"
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1294,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`确认新建 ${batch.quantity} 个付费任务`}",
+      "checked": "{batchPaymentConfirmed}",
+      "disabled": "{batchActionBusy}",
+      "onChange": "{(event) =>\n                  onBatchPaymentConfirmationChange(event.target.checked)\n                }",
+      "type": "\"checkbox\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1305,
+    "tag": "button",
+    "label": "整批付费再次生成",
+    "attributes": {
+      "disabled": "{\n                !batchReason || !batchPaymentConfirmed || batchActionBusy\n              }",
+      "onClick": "{onRegenerateBatch}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1453,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{activeResultAction === previewAction}",
+      "onClick": "{() => void onPreview(task)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1460,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{downloadFeedback?.status === \"pending\"}",
+      "onClick": "{() => void onDownload(task)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1569,
+    "tag": "button",
+    "label": "对账",
+    "attributes": {
+      "aria-label": "{`对账 ${task.id}`}",
+      "disabled": "{taskActionBusy}",
+      "type": "\"button\"",
+      "onClick": "{() => onReconcile(task.id)}"
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1581,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`处理原因 ${task.id}`}",
+      "disabled": "{taskActionBusy}",
+      "maxLength": "{500}",
+      "onChange": "{(event) =>\n                          onTaskActionReasonChange(task.id, event.target.value)\n                        }",
+      "placeholder": "\"填写本次处理依据\"",
+      "value": "{taskActionReason}"
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1594,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`${task.archive_status === \"ARCHIVE_FAILED\" ? \"重试归档\" : \"安全重试\"} ${task.id}`}",
+      "disabled": "{!actionReason || taskActionBusy}",
+      "onClick": "{() => onRetry(task)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1606,
+    "tag": "button",
+    "label": "确认未计费并重新入队",
+    "attributes": {
+      "aria-label": "{`确认未计费 ${task.id}`}",
+      "disabled": "{!actionReason || taskActionBusy}",
+      "onClick": "{() => onConfirmNotCharged(task)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1634,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`重新生成原因 ${task.id}`}",
+      "disabled": "{taskActionBusy}",
+      "maxLength": "{500}",
+      "onChange": "{(event) =>\n                        onTaskActionReasonChange(task.id, event.target.value)\n                      }",
+      "placeholder": "\"填写本次新增付费生成的原因\"",
+      "value": "{taskActionReason}"
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1646,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`确认为任务 ${task.id} 新增一次付费生成`}",
+      "checked": "{taskPaymentConfirmed}",
+      "disabled": "{taskActionBusy}",
+      "onChange": "{(event) =>\n                        onTaskPaymentConfirmationChange(\n                          task.id,\n                          event.target.checked,\n                        )\n                      }",
+      "type": "\"checkbox\""
+    }
+  },
+  {
+    "file": "client/src/TaskRecordsPanel.tsx",
+    "line": 1660,
+    "tag": "button",
+    "label": "付费重新生成",
+    "attributes": {
+      "aria-label": "{`付费重新生成 ${task.id}`}",
+      "disabled": "{\n                      !actionReason || !taskPaymentConfirmed || taskActionBusy\n                    }",
+      "onClick": "{() => onRegenerate(task)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 81,
+    "tag": "button",
+    "label": "打开文件夹",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => onOpenFolder(feedback.downloadId)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 254,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"下载 MP4\"",
+      "disabled": "{downloadBusy}",
+      "onClick": "{() => onDownload(activeTask)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 264,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{regenerateBusy}",
+      "onClick": "{() => {\n                setIsRegenerateOpen(!isRegenerateOpen);\n                setRegenerateReason(\"\");\n                setRegenerateDetail(\"\");\n                setRegenerateConfirmed(false);\n              }}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 366,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{regenerateReason === reason}",
+      "name": "{`regenerate-reason-${activeTask.id}`}",
+      "onChange": "{() => setRegenerateReason(reason)}",
+      "type": "\"radio\"",
+      "value": "{reason}"
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 379,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`再次生成补充说明 ${activeTask.id}`}",
+      "disabled": "{regenerateBusy}",
+      "maxLength": "{200}",
+      "onChange": "{(event) => setRegenerateDetail(event.target.value)}",
+      "value": "{regenerateDetail}"
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 388,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`确认为任务 ${activeTask.id} 新增一次付费生成`}",
+      "checked": "{regenerateConfirmed}",
+      "disabled": "{regenerateBusy}",
+      "onChange": "{(event) => setRegenerateConfirmed(event.target.checked)}",
+      "type": "\"checkbox\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 397,
+    "tag": "button",
+    "label": "确认再次生成",
+    "attributes": {
+      "disabled": "{\n              !regenerateReason || !regenerateConfirmed || regenerateBusy\n            }",
+      "onClick": "{handleRegenerateSubmit}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 422,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`查看结果 ${index + 1}：${task.id}`}",
+      "aria-pressed": "{isActive}",
+      "className": "{\n                    isActive\n                      ? \"video-stage-cell video-stage-cell--active\"\n                      : \"video-stage-cell\"\n                  }",
+      "key": "{task.id}",
+      "onClick": "{() => setActiveTaskId(task.id)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 576,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`播放 ${taskLabel}`}",
+      "className": "\"stage-video-player__bigplay\"",
+      "onClick": "{togglePlay}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 586,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{isPlaying ? \"暂停\" : \"播放\"}",
+      "onClick": "{togglePlay}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 596,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"播放进度\"",
+      "className": "\"stage-video-player__seek\"",
+      "max": "{duration || 0}",
+      "min": "{0}",
+      "onChange": "{(event) => handleSeek(Number(event.target.value))}",
+      "step": "{0.1}",
+      "type": "\"range\"",
+      "value": "{Math.min(currentTime, duration || 0)}"
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 606,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{isMuted ? \"取消静音\" : \"静音\"}",
+      "onClick": "{toggleMute}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 613,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"音量\"",
+      "className": "\"stage-video-player__volume\"",
+      "max": "{1}",
+      "min": "{0}",
+      "onChange": "{(event) => handleVolumeChange(Number(event.target.value))}",
+      "step": "{0.05}",
+      "type": "\"range\"",
+      "value": "{isMuted ? 0 : volume}"
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 623,
+    "tag": "button",
+    "label": "全屏",
+    "attributes": {
+      "onClick": "{() => void toggleFullscreen()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 680,
+    "tag": "button",
+    "label": "查看运维详情",
+    "attributes": {
+      "className": "\"link-button\"",
+      "onClick": "{onOpenOpsDetail}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 746,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{retryBusy}",
+      "onClick": "{onRetry}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 750,
+    "tag": "button",
+    "label": "下载原文件",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{downloadBusy}",
+      "onClick": "{onDownload}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 760,
+    "tag": "button",
+    "label": "查看技术详情",
+    "attributes": {
+      "className": "\"link-button\"",
+      "onClick": "{onOpenOpsDetail}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/VideoResultStage.tsx",
+    "line": 871,
+    "tag": "button",
+    "label": "任务操作",
+    "attributes": {
+      "aria-label": "\"运维详情\"",
+      "className": "\"link-button video-stage-ops-entry\"",
+      "onClick": "{onOpenOpsDetail}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/WalletPanel.tsx",
+    "line": 203,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`充值${amount}元`}",
+      "disabled": "{isCreating}",
+      "key": "{amount}",
+      "onClick": "{() => void startRecharge(amount)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/WalletPanel.tsx",
+    "line": 224,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "inputMode": "\"numeric\"",
+      "min": "{wallet.min_recharge_fen / 100}",
+      "step": "{wallet.recharge_step_fen / 100}",
+      "type": "\"number\"",
+      "value": "{customAmount}",
+      "onChange": "{(event) => setCustomAmount(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/WalletPanel.tsx",
+    "line": 233,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{isCreating}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/WorkspaceTabs.tsx",
+    "line": 47,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-controls": "{`workspace-tabpanel-${tab.key}`}",
+      "aria-selected": "{isActive}",
+      "className": "{\n                isActive\n                  ? \"workspace-tab workspace-tab--active\"\n                  : \"workspace-tab\"\n              }",
+      "disabled": "{readOnly || busy}",
+      "id": "{`workspace-tab-${tab.key}`}",
+      "key": "{tab.key}",
+      "onClick": "{() => onTabChange(tab.key)}",
+      "role": "\"tab\"",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/admin/AccountsPage.tsx",
+    "line": 71,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-pressed": "{autoRefresh}",
+      "type": "\"button\"",
+      "onClick": "{toggleAutoRefresh}"
+    }
+  },
+  {
+    "file": "client/src/admin/AccountsPage.tsx",
+    "line": 91,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"流水账号\"",
+      "value": "{username}",
+      "onChange": "{(event) => setUsername(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AccountsPage.tsx",
+    "line": 99,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"流水类型\"",
+      "value": "{typeFilter}",
+      "onChange": "{(event) => setTypeFilter(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AccountsPage.tsx",
+    "line": 113,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"流水起始时间\"",
+      "type": "\"date\"",
+      "value": "{createdFrom}",
+      "onChange": "{(event) => setCreatedFrom(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AccountsPage.tsx",
+    "line": 122,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"流水截止时间\"",
+      "type": "\"date\"",
+      "value": "{createdTo}",
+      "onChange": "{(event) => setCreatedTo(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AccountsPage.tsx",
+    "line": 129,
+    "tag": "button",
+    "label": "查询",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 300,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"搜索\"",
+      "placeholder": "\"请输入激活码或绑定账号\"",
+      "value": "{searchDraft}",
+      "onChange": "{(event) => setSearchDraft(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 309,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"状态\"",
+      "value": "{filterStatus}",
+      "onChange": "{(event) => {\n                  setOffset(0);\n                  setFilterStatus(event.target.value);\n                }}"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 327,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{includeArchived}",
+      "type": "\"checkbox\"",
+      "onChange": "{(event) => {\n                  setOffset(0);\n                  setIncludeArchived(event.target.checked);\n                }}"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 337,
+    "tag": "button",
+    "label": "搜索",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 367,
+    "tag": "button",
+    "label": "复制",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() =>\n                              openAction({ kind: \"copy\", codeId: item.code_id })\n                            }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 395,
+    "tag": "button",
+    "label": "台设备",
+    "attributes": {
+      "className": "\"activation-device-toggle\"",
+      "type": "\"button\"",
+      "aria-expanded": "{expanded}",
+      "onClick": "{() =>\n                            setExpandedCodeId(expanded ? null : item.code_id)\n                          }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 411,
+    "tag": "button",
+    "label": "暂停",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() =>\n                                  openAction({\n                                    kind: \"code\",\n                                    action: \"suspend\",\n                                    codeId: item.code_id,\n                                    status: item.status,\n                                  })\n                                }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 426,
+    "tag": "button",
+    "label": "恢复",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() =>\n                                  openAction({\n                                    kind: \"code\",\n                                    action: \"resume\",\n                                    codeId: item.code_id,\n                                    status: item.status,\n                                  })\n                                }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 441,
+    "tag": "button",
+    "label": "删除激活码",
+    "attributes": {
+      "className": "\"admin-action--danger\"",
+      "type": "\"button\"",
+      "onClick": "{() =>\n                                  openAction({\n                                    kind: \"code\",\n                                    action: \"archive\",\n                                    codeId: item.code_id,\n                                    status: item.status,\n                                  })\n                                }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 458,
+    "tag": "button",
+    "label": "撤销激活码",
+    "attributes": {
+      "className": "\"admin-action--danger\"",
+      "type": "\"button\"",
+      "onClick": "{() =>\n                                  openAction({\n                                    kind: \"code\",\n                                    action: \"revoke\",\n                                    codeId: item.code_id,\n                                    status: item.status,\n                                  })\n                                }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 634,
+    "tag": "button",
+    "label": "批准",
+    "attributes": {
+      "aria-label": "\"批准设备\"",
+      "type": "\"button\"",
+      "onClick": "{() =>\n                    onAction({\n                      kind: \"pairing\",\n                      codeId,\n                      pairingId: pairing.pairing_request_id,\n                      candidateName: pairing.display_name,\n                    })\n                  }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 650,
+    "tag": "button",
+    "label": "替换",
+    "attributes": {
+      "aria-label": "{\n                    boundDevices.length === 1\n                      ? `替换为${pairing.display_name}`\n                      : `用${pairing.display_name}替换${device.display_name || `设备 #${device.slot_no}`}`\n                  }",
+      "type": "\"button\"",
+      "key": "{device.device_id}",
+      "onClick": "{() =>\n                    onAction({\n                      kind: \"pairing\",\n                      codeId,\n                      pairingId: pairing.pairing_request_id,\n                      candidateName: pairing.display_name,\n                      replaceDeviceId: device.device_id,\n                      replaceDeviceName:\n                        device.display_name || `设备 #${device.slot_no}`,\n                    })\n                  }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 726,
+    "tag": "button",
+    "label": "解绑设备",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() =>\n                          onAction({\n                            kind: \"device\",\n                            action: \"unbind\",\n                            codeId,\n                            deviceId: device.device_id,\n                            deviceName,\n                          })\n                        }"
+    }
+  },
+  {
+    "file": "client/src/admin/ActivationCodesPage.tsx",
+    "line": 740,
+    "tag": "button",
+    "label": "强制退出",
+    "attributes": {
+      "className": "\"admin-action--danger\"",
+      "type": "\"button\"",
+      "onClick": "{() =>\n                          onAction({\n                            kind: \"device\",\n                            action: \"revoke\",\n                            codeId,\n                            deviceId: device.device_id,\n                            deviceName,\n                          })\n                        }"
+    }
+  },
+  {
+    "file": "client/src/admin/AdjustmentsPage.tsx",
+    "line": 87,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"调账操作人\"",
+      "value": "{actorUsername}",
+      "onChange": "{(event) => setActorUsername(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AdjustmentsPage.tsx",
+    "line": 95,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"调账目标客户\"",
+      "value": "{targetUsername}",
+      "onChange": "{(event) => setTargetUsername(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AdjustmentsPage.tsx",
+    "line": 103,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"调账来源类型\"",
+      "value": "{sourceType}",
+      "onChange": "{(event) => setSourceType(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AdjustmentsPage.tsx",
+    "line": 116,
+    "tag": "button",
+    "label": "查询",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/AdminActivationSection.tsx",
+    "line": 256,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"off\"",
+      "disabled": "{locked}",
+      "max": "{MAX_CODES_PER_REQUEST}",
+      "min": "{1}",
+      "type": "\"number\"",
+      "value": "{quantity}",
+      "onChange": "{(event) => setQuantity(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AdminActivationSection.tsx",
+    "line": 268,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{locked}",
+      "type": "\"date\"",
+      "value": "{expiresDate}",
+      "onChange": "{(event) => setExpiresDate(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AdminActivationSection.tsx",
+    "line": 277,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"off\"",
+      "disabled": "{locked}",
+      "min": "{0}",
+      "type": "\"number\"",
+      "value": "{credits}",
+      "onChange": "{(event) => {\n                setCredits(event.target.value);\n                setConfirmGrant(false);\n              }}"
+    }
+  },
+  {
+    "file": "client/src/admin/AdminActivationSection.tsx",
+    "line": 291,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"off\"",
+      "disabled": "{locked}",
+      "type": "\"text\"",
+      "value": "{reason}",
+      "onChange": "{(event) => setReason(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AdminActivationSection.tsx",
+    "line": 301,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "type": "\"checkbox\"",
+      "checked": "{confirmGrant}",
+      "disabled": "{locked}",
+      "onChange": "{(event) => setConfirmGrant(event.target.checked)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AdminActivationSection.tsx",
+    "line": 310,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{locked}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/AdminActivationSection.tsx",
+    "line": 322,
+    "tag": "button",
+    "label": "复制全部",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => void copyAllCodes()}"
+    }
+  },
+  {
+    "file": "client/src/admin/AnalyticsPage.tsx",
+    "line": 26,
+    "tag": "TabBar",
+    "label": "",
+    "attributes": {
+      "active": "{tab}",
+      "ariaLabel": "\"经营分析页签\"",
+      "items": "{tabs}",
+      "onChange": "{setTab}"
+    }
+  },
+  {
+    "file": "client/src/admin/AuditCenterPage.tsx",
+    "line": 20,
+    "tag": "TabBar",
+    "label": "",
+    "attributes": {
+      "active": "{tab}",
+      "ariaLabel": "\"审计中心页签\"",
+      "items": "{tabs}",
+      "onChange": "{setTab}"
+    }
+  },
+  {
+    "file": "client/src/admin/AuditEventsPage.tsx",
+    "line": 186,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"事件类型\"",
+      "value": "{typeDraft}",
+      "onChange": "{(event) => setTypeDraft(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AuditEventsPage.tsx",
+    "line": 200,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"操作人用户名\"",
+      "placeholder": "\"例如：admin_u\"",
+      "value": "{actorDraft}",
+      "onChange": "{(event) => setActorDraft(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AuditEventsPage.tsx",
+    "line": 209,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"目标客户用户名\"",
+      "placeholder": "\"例如：customer_u\"",
+      "value": "{targetDraft}",
+      "onChange": "{(event) => setTargetDraft(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AuditEventsPage.tsx",
+    "line": 218,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "type": "\"date\"",
+      "value": "{fromDraft}",
+      "onChange": "{(event) => setFromDraft(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AuditEventsPage.tsx",
+    "line": 226,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "type": "\"date\"",
+      "value": "{toDraft}",
+      "onChange": "{(event) => setToDraft(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/AuditEventsPage.tsx",
+    "line": 233,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{loading}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/AuditEventsPage.tsx",
+    "line": 236,
+    "tag": "button",
+    "label": "重置",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{loading}",
+      "type": "\"button\"",
+      "onClick": "{handleReset}"
+    }
+  },
+  {
+    "file": "client/src/admin/CostDetails.tsx",
+    "line": 88,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "value": "{draft.lookbackDays}",
+      "onChange": "{(event) =>\n              setDraft({ ...draft, lookbackDays: Number(event.target.value) })\n            }"
+    }
+  },
+  {
+    "file": "client/src/admin/CostDetails.tsx",
+    "line": 101,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "value": "{draft.subject ?? \"\"}",
+      "onChange": "{(event) =>\n              setDraft({ ...draft, subject: event.target.value || undefined })\n            }"
+    }
+  },
+  {
+    "file": "client/src/admin/CostDetails.tsx",
+    "line": 116,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "value": "{draft.resolution ?? \"\"}",
+      "onChange": "{(event) =>\n              setDraft({\n                ...draft,\n                resolution: event.target.value || undefined,\n              })\n            }"
+    }
+  },
+  {
+    "file": "client/src/admin/CostDetails.tsx",
+    "line": 130,
+    "tag": "button",
+    "label": "查询",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => setFilters(draft)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CostDetails.tsx",
+    "line": 133,
+    "tag": "button",
+    "label": "重置",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => {\n            const reset = { lookbackDays: 30 };\n            setDraft(reset);\n            setFilters(reset);\n          }}"
+    }
+  },
+  {
+    "file": "client/src/admin/CostDetails.tsx",
+    "line": 143,
+    "tag": "a",
+    "label": "导出成本 CSV",
+    "attributes": {
+      "className": "\"admin-button-link\"",
+      "href": "{operationCostsCsvUrl(filters)}",
+      "download": "true"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersManagementPage.tsx",
+    "line": 44,
+    "tag": "TabBar",
+    "label": "",
+    "attributes": {
+      "active": "{tab}",
+      "ariaLabel": "\"客户管理页签\"",
+      "items": "{tabs}",
+      "onChange": "{setTab}",
+      "actions": "{\n          tab === \"codes\" && !readOnly ? (\n            <button\n              type=\"button\"\n              onClick={() => setShowGenerator((open) => !open)}\n            >\n              {showGenerator ? \"收起生成表单\" : \"生成激活码\"}\n            </button>\n          ) : undefined\n        }"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersManagementPage.tsx",
+    "line": 51,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => setShowGenerator((open) => !open)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 137,
+    "tag": "button",
+    "label": "← 返回客户列表",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-secondary\"",
+      "onClick": "{() => setDetailUserId(null)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 207,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "placeholder": "\"按用户名筛选\"",
+      "type": "\"text\"",
+      "value": "{usernameDraft}",
+      "onChange": "{(e) => setUsernameDraft(e.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 216,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"注册起始\"",
+      "type": "\"date\"",
+      "value": "{createdFrom}",
+      "onChange": "{(event) => setCreatedFrom(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 225,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"注册截止\"",
+      "type": "\"date\"",
+      "value": "{createdTo}",
+      "onChange": "{(event) => setCreatedTo(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 234,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"最低余额\"",
+      "min": "\"0\"",
+      "type": "\"number\"",
+      "value": "{balanceMin}",
+      "onChange": "{(event) => setBalanceMin(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 244,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"最高余额\"",
+      "min": "\"0\"",
+      "type": "\"number\"",
+      "value": "{balanceMax}",
+      "onChange": "{(event) => setBalanceMax(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 254,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"客户状态\"",
+      "value": "{statusFilter}",
+      "onChange": "{(event) => setStatusFilter(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 265,
+    "tag": "button",
+    "label": "筛选",
+    "attributes": {
+      "className": "\"admin-toolbar__secondary\"",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 268,
+    "tag": "button",
+    "label": "导出列表 CSV",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{exportList}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 372,
+    "tag": "button",
+    "label": "展开详情",
+    "attributes": {
+      "aria-controls": "{`customer-detail-${customer.user_id}`}",
+      "aria-expanded": "\"false\"",
+      "type": "\"button\"",
+      "onClick": "{() => setExpandedUserId(customer.user_id)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 592,
+    "tag": "button",
+    "label": "← 返回客户列表",
+    "attributes": {
+      "className": "\"customer-detail-back btn-secondary\"",
+      "type": "\"button\"",
+      "onClick": "{onBack}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 619,
+    "tag": "button",
+    "label": "后台加款",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() =>\n                document\n                  .getElementById(\"customer-free-grant\")\n                  ?.scrollIntoView({ behavior: \"smooth\", block: \"start\" })\n              }"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 630,
+    "tag": "button",
+    "label": "调账历史",
+    "attributes": {
+      "className": "\"btn-secondary\"",
+      "type": "\"button\"",
+      "onClick": "{onOpenAdjustments}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 638,
+    "tag": "button",
+    "label": "查看设备",
+    "attributes": {
+      "className": "\"btn-secondary\"",
+      "type": "\"button\"",
+      "onClick": "{() => onOpenDevices(customer.user_id)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 647,
+    "tag": "button",
+    "label": "查看会话",
+    "attributes": {
+      "className": "\"btn-secondary\"",
+      "type": "\"button\"",
+      "onClick": "{() => onOpenSessions(customer.user_id)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 838,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "inputMode": "\"decimal\"",
+      "min": "\"0.01\"",
+      "step": "\"0.01\"",
+      "type": "\"number\"",
+      "value": "{priceYuan}",
+      "onChange": "{(event) => setPriceYuan(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 848,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{saving}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 851,
+    "tag": "button",
+    "label": "恢复全局默认",
+    "attributes": {
+      "className": "\"btn-secondary\"",
+      "disabled": "{saving || pricing.custom_unit_price_fen === null}",
+      "type": "\"button\"",
+      "onClick": "{requestReset}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 994,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "min": "{1}",
+      "placeholder": "\"例如：10\"",
+      "step": "{1}",
+      "type": "\"number\"",
+      "value": "{credits}",
+      "onChange": "{(event) => setCredits(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 1005,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "placeholder": "\"必填，例如：PROMO-2026-09-001\"",
+      "value": "{sourceRef}",
+      "onChange": "{(event) => setSourceRef(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/CustomersPage.tsx",
+    "line": 1011,
+    "tag": "button",
+    "label": "发放免费秒数",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/DevicesPage.tsx",
+    "line": 173,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"设备状态\"",
+      "value": "{statusFilter}",
+      "onChange": "{(event) => setStatusFilter(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/DevicesPage.tsx",
+    "line": 186,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"设备平台\"",
+      "value": "{platformFilter}",
+      "onChange": "{(event) => setPlatformFilter(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/DevicesPage.tsx",
+    "line": 197,
+    "tag": "button",
+    "label": "查询",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/DevicesPage.tsx",
+    "line": 267,
+    "tag": "button",
+    "label": "下线设备",
+    "attributes": {
+      "aria-label": "{`下线设备：${device.display_name || device.device_id}`}",
+      "type": "\"button\"",
+      "onClick": "{() => beginAction(device, \"unbind\")}"
+    }
+  },
+  {
+    "file": "client/src/admin/DevicesPage.tsx",
+    "line": 274,
+    "tag": "button",
+    "label": "强制退出",
+    "attributes": {
+      "aria-label": "{`强制退出：${device.display_name || device.device_id}`}",
+      "className": "\"admin-action--danger\"",
+      "type": "\"button\"",
+      "onClick": "{() => beginAction(device, \"revoke\")}"
+    }
+  },
+  {
+    "file": "client/src/admin/FundsPage.tsx",
+    "line": 20,
+    "tag": "TabBar",
+    "label": "",
+    "attributes": {
+      "active": "{tab}",
+      "ariaLabel": "\"资金流水页签\"",
+      "items": "{tabs}",
+      "onChange": "{setTab}"
+    }
+  },
+  {
+    "file": "client/src/admin/GenerationRecordsPage.tsx",
+    "line": 87,
+    "tag": "TabBar",
+    "label": "",
+    "attributes": {
+      "active": "\"records\"",
+      "ariaLabel": "\"生成记录页签\"",
+      "items": "{[{ id: \"records\", label: \"生成记录\" }]}",
+      "onChange": "{() => {}}"
+    }
+  },
+  {
+    "file": "client/src/admin/GenerationRecordsPage.tsx",
+    "line": 94,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => void loadRecords()}"
+    }
+  },
+  {
+    "file": "client/src/admin/GenerationRecordsPage.tsx",
+    "line": 114,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"生成账号\"",
+      "value": "{username}",
+      "onChange": "{(event) => setUsername(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/GenerationRecordsPage.tsx",
+    "line": 122,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"生成类型\"",
+      "value": "{recordType}",
+      "onChange": "{(event) => setRecordType(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/GenerationRecordsPage.tsx",
+    "line": 138,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"生成状态\"",
+      "value": "{status}",
+      "onChange": "{(event) => setStatus(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/GenerationRecordsPage.tsx",
+    "line": 153,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"生成起始时间\"",
+      "type": "\"date\"",
+      "value": "{createdFrom}",
+      "onChange": "{(event) => setCreatedFrom(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/GenerationRecordsPage.tsx",
+    "line": 162,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"生成截止时间\"",
+      "type": "\"date\"",
+      "value": "{createdTo}",
+      "onChange": "{(event) => setCreatedTo(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/GenerationRecordsPage.tsx",
+    "line": 169,
+    "tag": "button",
+    "label": "查询",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 167,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-pressed": "{autoRefresh}",
+      "type": "\"button\"",
+      "onClick": "{toggleAutoRefresh}"
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 174,
+    "tag": "button",
+    "label": "导出充值订单 CSV",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => void exportRechargeOrders()}"
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 177,
+    "tag": "button",
+    "label": "导出账务流水 CSV",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => void exportWalletTransactions()}"
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 211,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "value": "{statusDraft}",
+      "onChange": "{(event) => setStatusDraft(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 224,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"订单账号\"",
+      "value": "{usernameFilter}",
+      "onChange": "{(event) => setUsernameFilter(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 232,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"支付渠道\"",
+      "value": "{channelFilter}",
+      "onChange": "{(event) => setChannelFilter(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 244,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"订单起始时间\"",
+      "type": "\"date\"",
+      "value": "{createdFrom}",
+      "onChange": "{(event) => setCreatedFrom(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 253,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"订单截止时间\"",
+      "type": "\"date\"",
+      "value": "{createdTo}",
+      "onChange": "{(event) => setCreatedTo(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 260,
+    "tag": "button",
+    "label": "筛选",
+    "attributes": {
+      "disabled": "{loading}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/OrdersPage.tsx",
+    "line": 304,
+    "tag": "button",
+    "label": "查单同步",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => setPendingSyncOrderNo(order.order_no)}"
+    }
+  },
+  {
+    "file": "client/src/admin/OverviewPage.tsx",
+    "line": 60,
+    "tag": "button",
+    "label": "去处理",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{onOpen}"
+    }
+  },
+  {
+    "file": "client/src/admin/OverviewPage.tsx",
+    "line": 344,
+    "tag": "button",
+    "label": "快速发码",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => onNavigate?.(\"issueCodes\")}"
+    }
+  },
+  {
+    "file": "client/src/admin/OverviewPage.tsx",
+    "line": 347,
+    "tag": "button",
+    "label": "后台加款",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => onNavigate?.(\"customerAdjustments\")}"
+    }
+  },
+  {
+    "file": "client/src/admin/OverviewPage.tsx",
+    "line": 353,
+    "tag": "button",
+    "label": "发放免费秒数",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => onNavigate?.(\"customerAdjustments\")}"
+    }
+  },
+  {
+    "file": "client/src/admin/OverviewPage.tsx",
+    "line": 359,
+    "tag": "button",
+    "label": "成本核对",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => onNavigate?.(\"costDetails\")}"
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 125,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "value": "{zpayPid}",
+      "onChange": "{(event) => setZpayPid(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 139,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "autoComplete": "\"new-password\"",
+      "disabled": "{readOnly}",
+      "placeholder": "\"留空则保留当前密钥\"",
+      "type": "\"password\"",
+      "value": "{zpayKey}",
+      "onChange": "{(event) => setZpayKey(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 151,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{channels.includes(\"alipay\")}",
+      "disabled": "{readOnly}",
+      "type": "\"checkbox\"",
+      "onChange": "{() => toggleChannel(\"alipay\")}"
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 160,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{channels.includes(\"wxpay\")}",
+      "disabled": "{readOnly}",
+      "type": "\"checkbox\"",
+      "onChange": "{() => toggleChannel(\"wxpay\")}"
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 170,
+    "tag": "button",
+    "label": "保存 ZPay 设置",
+    "attributes": {
+      "disabled": "{readOnly || saving}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 184,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "inputMode": "\"numeric\"",
+      "type": "\"number\"",
+      "value": "{billing?.internal_base_unit_price_fen ?? 0}",
+      "onChange": "{(event) =>\n              updateBilling(\"internal_base_unit_price_fen\", event.target.value)\n            }"
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 196,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "inputMode": "\"numeric\"",
+      "type": "\"number\"",
+      "value": "{billing?.min_recharge_fen ?? 0}",
+      "onChange": "{(event) =>\n              updateBilling(\"min_recharge_fen\", event.target.value)\n            }"
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 208,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "inputMode": "\"numeric\"",
+      "type": "\"number\"",
+      "value": "{billing?.recharge_step_fen ?? 0}",
+      "onChange": "{(event) =>\n              updateBilling(\"recharge_step_fen\", event.target.value)\n            }"
+    }
+  },
+  {
+    "file": "client/src/admin/PaymentSettingsSection.tsx",
+    "line": 218,
+    "tag": "button",
+    "label": "保存内部价格",
+    "attributes": {
+      "disabled": "{readOnly || saving}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 222,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "type": "\"date\"",
+      "value": "{form.priceDate}",
+      "onChange": "{(event) =>\n                setForm({ ...form, priceDate: event.target.value })\n              }"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 233,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "autoComplete": "\"off\"",
+      "min": "{0}",
+      "step": "\"0.01\"",
+      "type": "\"number\"",
+      "value": "{form.price768pYuan}",
+      "onChange": "{(event) =>\n                setForm({ ...form, price768pYuan: event.target.value })\n              }"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 247,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "autoComplete": "\"off\"",
+      "min": "{0}",
+      "step": "\"0.01\"",
+      "type": "\"number\"",
+      "value": "{form.price2kYuan}",
+      "onChange": "{(event) =>\n                setForm({ ...form, price2kYuan: event.target.value })\n              }"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 261,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "autoComplete": "\"off\"",
+      "type": "\"text\"",
+      "value": "{form.note}",
+      "onChange": "{(event) =>\n                setForm({ ...form, note: event.target.value })\n              }"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 273,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "disabled": "{readOnly}",
+      "autoComplete": "\"off\"",
+      "type": "\"text\"",
+      "value": "{form.reason}",
+      "onChange": "{(event) =>\n                setForm({ ...form, reason: event.target.value })\n              }"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 284,
+    "tag": "button",
+    "label": "保存售价",
+    "attributes": {
+      "disabled": "{saving}",
+      "type": "\"button\"",
+      "onClick": "{requestPriceSave}"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 305,
+    "tag": "a",
+    "label": "导出 CSV",
+    "attributes": {
+      "className": "\"admin-button-link\"",
+      "href": "\"/api/control/profit/overview.csv?lookback_days=30\"",
+      "download": "true"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 374,
+    "tag": "button",
+    "label": "查看明细",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"table-link-button\"",
+      "onClick": "{() => setSelectedDay(row)}"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 396,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "type": "\"radio\"",
+      "checked": "true",
+      "readOnly": "true"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 401,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "type": "\"radio\"",
+      "disabled": "true"
+    }
+  },
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 478,
+    "tag": "button",
+    "label": "关闭",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => setSelectedDay(null)}"
+    }
+  },
+  {
+    "file": "client/src/admin/QueueModeSection.tsx",
+    "line": 89,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{loading || enabled === null || saving}",
+      "type": "\"button\"",
+      "onClick": "{() => setConfirmOpen(true)}"
+    }
+  },
+  {
+    "file": "client/src/admin/RatesManager.tsx",
+    "line": 184,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`新单价（元）：${rateLabel(rate.subject)}`}",
+      "type": "\"number\"",
+      "min": "{0}",
+      "step": "\"0.01\"",
+      "value": "{editing.valueYuan}",
+      "onChange": "{(event) =>\n                          setEditing({\n                            ...editing,\n                            valueYuan: event.target.value,\n                          })\n                        }"
+    }
+  },
+  {
+    "file": "client/src/admin/RatesManager.tsx",
+    "line": 200,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`操作原因：${rateLabel(rate.subject)}`}",
+      "type": "\"text\"",
+      "value": "{editing.reason}",
+      "onChange": "{(event) =>\n                          setEditing({ ...editing, reason: event.target.value })\n                        }"
+    }
+  },
+  {
+    "file": "client/src/admin/RatesManager.tsx",
+    "line": 214,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`确认知晓大幅调价：${rateLabel(rate.subject)}`}",
+      "checked": "{editing.ack}",
+      "type": "\"checkbox\"",
+      "onChange": "{(event) =>\n                            setEditing({\n                              ...editing,\n                              ack: event.target.checked,\n                            })\n                          }"
+    }
+  },
+  {
+    "file": "client/src/admin/RatesManager.tsx",
+    "line": 230,
+    "tag": "button",
+    "label": "保存",
+    "attributes": {
+      "disabled": "{saving}",
+      "type": "\"button\"",
+      "onClick": "{() => void save()}"
+    }
+  },
+  {
+    "file": "client/src/admin/RatesManager.tsx",
+    "line": 237,
+    "tag": "button",
+    "label": "取消",
+    "attributes": {
+      "disabled": "{saving}",
+      "type": "\"button\"",
+      "onClick": "{cancelEdit}"
+    }
+  },
+  {
+    "file": "client/src/admin/RatesManager.tsx",
+    "line": 259,
+    "tag": "button",
+    "label": "调整",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => startEdit(rate)}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 252,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "placeholder": "\"输入客户 ID\"",
+      "value": "{queryUserId}",
+      "onChange": "{(event) => setQueryUserId(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 258,
+    "tag": "button",
+    "label": "查看客户",
+    "attributes": {
+      "disabled": "{loading}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 261,
+    "tag": "button",
+    "label": "全部在线",
+    "attributes": {
+      "disabled": "{loading}",
+      "type": "\"button\"",
+      "onClick": "{showAllLive}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 309,
+    "tag": "button",
+    "label": "选择客户",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{() => selectCustomer(item)}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 314,
+    "tag": "button",
+    "label": "强制下线",
+    "attributes": {
+      "aria-label": "{`强制下线 ${item.username}`}",
+      "className": "\"admin-sessions__revoke\"",
+      "type": "\"button\"",
+      "onClick": "{() => beginRevoke(item)}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 342,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-expanded": "{adjustOpen}",
+      "className": "\"admin-sessions__adjust-toggle\"",
+      "type": "\"button\"",
+      "onClick": "{() => setAdjustOpen((open) => !open)}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 355,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "min": "{1}",
+      "step": "{1}",
+      "type": "\"number\"",
+      "value": "{credits}",
+      "onChange": "{(event) => setCredits(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 365,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "value": "{sourceType}",
+      "onChange": "{(event) => setSourceType(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 378,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{sourceRef}",
+      "onChange": "{(event) => setSourceRef(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/SessionsPage.tsx",
+    "line": 383,
+    "tag": "button",
+    "label": "执行后台加秒",
+    "attributes": {
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/SystemSettingsPage.tsx",
+    "line": 28,
+    "tag": "TabBar",
+    "label": "",
+    "attributes": {
+      "active": "{tab}",
+      "ariaLabel": "\"系统设置页签\"",
+      "items": "{tabs}",
+      "onChange": "{setTab}"
+    }
+  },
+  {
+    "file": "client/src/admin/ui/ConfirmDialog.tsx",
+    "line": 123,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "placeholder": "\"请填写可审计的操作原因\"",
+      "ref": "{reasonInputRef}",
+      "value": "{reason}",
+      "onChange": "{(event) => setReason(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/admin/ui/ConfirmDialog.tsx",
+    "line": 133,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "checked": "{acknowledged}",
+      "type": "\"checkbox\"",
+      "onChange": "{(event) => setAcknowledged(event.target.checked)}"
+    }
+  },
+  {
+    "file": "client/src/admin/ui/ConfirmDialog.tsx",
+    "line": 147,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{busy}",
+      "ref": "{confirmButtonRef}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/admin/ui/ConfirmDialog.tsx",
+    "line": 150,
+    "tag": "button",
+    "label": "取消",
+    "attributes": {
+      "disabled": "{busy}",
+      "type": "\"button\"",
+      "onClick": "{onClose}"
+    }
+  },
+  {
+    "file": "client/src/admin/ui/Pagination.tsx",
+    "line": 33,
+    "tag": "button",
+    "label": "上一页",
+    "attributes": {
+      "disabled": "{disabled || offset <= 0}",
+      "type": "\"button\"",
+      "onClick": "{() => onPageChange(Math.max(0, offset - limit))}"
+    }
+  },
+  {
+    "file": "client/src/admin/ui/Pagination.tsx",
+    "line": 45,
+    "tag": "button",
+    "label": "下一页",
+    "attributes": {
+      "disabled": "{disabled || !hasNext}",
+      "type": "\"button\"",
+      "onClick": "{() => onPageChange(offset + limit)}"
+    }
+  },
+  {
+    "file": "client/src/admin/ui/TabBar.tsx",
+    "line": 31,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-selected": "{active === item.id}",
+      "className": "{\n              active === item.id ? \"admin-page-tab is-active\" : \"admin-page-tab\"\n            }",
+      "key": "{item.id}",
+      "role": "\"tab\"",
+      "type": "\"button\"",
+      "onClick": "{() => onChange(item.id)}"
+    }
+  },
+  {
+    "file": "client/src/customer/ActivationPage.tsx",
+    "line": 68,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{activationCode}",
+      "onChange": "{(event) => setActivationCode(event.target.value)}",
+      "autoComplete": "\"off\"",
+      "placeholder": "\"XS04-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX\"",
+      "disabled": "{isBusy}"
+    }
+  },
+  {
+    "file": "client/src/customer/ActivationPage.tsx",
+    "line": 82,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{deviceName}",
+      "onChange": "{(event) => setDeviceName(event.target.value)}",
+      "autoComplete": "\"off\"",
+      "placeholder": "\"例如：工作电脑\"",
+      "disabled": "{isBusy}"
+    }
+  },
+  {
+    "file": "client/src/customer/ActivationPage.tsx",
+    "line": 94,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"submit\"",
+      "disabled": "{isBusy}"
+    }
+  },
+  {
+    "file": "client/src/customer/ActivationPage.tsx",
+    "line": 98,
+    "tag": "button",
+    "label": "已有账号，添加或更换设备",
+    "attributes": {
+      "type": "\"button\"",
+      "disabled": "{isBusy}",
+      "onClick": "{onPairDevice}"
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerPairingFlow.tsx",
+    "line": 211,
+    "tag": "button",
+    "label": "返回修改",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-secondary\"",
+      "onClick": "{() => {\n                // A re-submitted form starts a fresh pairing attempt with a\n                // fresh waiting-stage key.\n                setPollKey(\"\");\n                setStage(\"form\");\n              }}"
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerPairingFlow.tsx",
+    "line": 240,
+    "tag": "button",
+    "label": "进入客户工作区",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-primary\"",
+      "onClick": "{onPaired}"
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerProfilePanel.tsx",
+    "line": 141,
+    "tag": "button",
+    "label": "充值秒数",
+    "attributes": {
+      "onClick": "{() => onRecharge()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerProfilePanel.tsx",
+    "line": 154,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-current": "{tab === value ? \"page\" : undefined}",
+      "className": "{tab === value ? \"is-active\" : \"\"}",
+      "key": "{value}",
+      "onClick": "{() => {\n              setTab(value);\n              if (value === \"devices\") {\n                void onRefreshDevices();\n              }\n            }}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerProfilePanel.tsx",
+    "line": 190,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "maxLength": "{50}",
+      "onChange": "{(event) => setDisplayName(event.target.value)}",
+      "value": "{displayName}"
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerProfilePanel.tsx",
+    "line": 196,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{isSavingProfile}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerProfilePanel.tsx",
+    "line": 247,
+    "tag": "button",
+    "label": "复制授权编号",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{!profile?.activation_code_masked}",
+      "onClick": "{() =>\n                  void copyText(\n                    profile?.activation_code_masked ?? \"\",\n                    \"授权编号已复制。\",\n                  )\n                }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerProfilePanel.tsx",
+    "line": 260,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{\n                  isResettingCode || profile?.activation_status !== \"ACTIVE\"\n                }",
+      "onClick": "{() => void resetActivationCode()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerProfilePanel.tsx",
+    "line": 270,
+    "tag": "button",
+    "label": "管理关联设备",
+    "attributes": {
+      "onClick": "{() => {\n                  setTab(\"devices\");\n                  void onRefreshDevices();\n                }}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerProfilePanel.tsx",
+    "line": 289,
+    "tag": "button",
+    "label": "复制新激活码",
+    "attributes": {
+      "onClick": "{() =>\n                  void copyText(replacementCode, \"新激活码已复制。\")\n                }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerRechargeDialog.tsx",
+    "line": 239,
+    "tag": "button",
+    "label": "关闭",
+    "attributes": {
+      "aria-label": "\"关闭充值窗口\"",
+      "className": "\"secondary-button\"",
+      "onClick": "{onClose}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerRechargeDialog.tsx",
+    "line": 253,
+    "tag": "button",
+    "label": "完成",
+    "attributes": {
+      "onClick": "{onClose}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerRechargeDialog.tsx",
+    "line": 278,
+    "tag": "button",
+    "label": "无法扫码？打开支付页面",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() =>\n                  window.open(\n                    paymentCode.payment_url,\n                    \"_blank\",\n                    \"noopener,noreferrer\",\n                  )\n                }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerRechargeDialog.tsx",
+    "line": 302,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{!wallet || paymentState === \"creating\"}",
+      "key": "{amount}",
+      "onClick": "{() => void createPayment(amount)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerRechargeDialog.tsx",
+    "line": 320,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "inputMode": "\"numeric\"",
+      "onChange": "{(event) => setAmountYuan(event.target.value)}",
+      "type": "\"number\"",
+      "value": "{amountYuan}"
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerRechargeDialog.tsx",
+    "line": 327,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{!wallet || paymentState === \"creating\"}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerRechargeDialog.tsx",
+    "line": 337,
+    "tag": "button",
+    "label": "重新获取上一订单二维码",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{() => void retryPaymentCode()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerWalletPanel.tsx",
+    "line": 337,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`充值${amount}元`}",
+      "disabled": "{isCreating}",
+      "key": "{amount}",
+      "onClick": "{() => void startRecharge(amount)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerWalletPanel.tsx",
+    "line": 359,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "inputMode": "\"numeric\"",
+      "min": "{wallet.min_recharge_fen / 100}",
+      "step": "{wallet.recharge_step_fen / 100}",
+      "type": "\"number\"",
+      "value": "{customAmount}",
+      "onChange": "{(event) => setCustomAmount(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerWalletPanel.tsx",
+    "line": 368,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "disabled": "{isCreating}",
+      "type": "\"submit\""
+    }
+  },
+  {
+    "file": "client/src/customer/CustomerWalletPanel.tsx",
+    "line": 407,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"table-action-button table-action-button--danger\"",
+      "disabled": "{closingOrderNo === order.order_no}",
+      "onClick": "{() => void closePendingOrder(order.order_no)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/DeviceManagementPage.tsx",
+    "line": 77,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "disabled": "{!isOnline}",
+      "onClick": "{() => onUnbind(device.id)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/DeviceManagementPage.tsx",
+    "line": 89,
+    "tag": "a",
+    "label": "绑定第二台设备",
+    "attributes": {
+      "href": "\"/customer/pairing\""
+    }
+  },
+  {
+    "file": "client/src/customer/DeviceManagementPage.tsx",
+    "line": 101,
+    "tag": "button",
+    "label": "充值秒数",
+    "attributes": {
+      "onClick": "{onRecharge}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/DevicePairingPage.tsx",
+    "line": 87,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "type": "\"text\"",
+      "id": "\"activation-code\"",
+      "value": "{activationCode}",
+      "onChange": "{(e) => setActivationCode(e.target.value)}",
+      "placeholder": "\"XS04-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX\"",
+      "autoComplete": "\"off\"",
+      "required": "true",
+      "aria-required": "\"true\""
+    }
+  },
+  {
+    "file": "client/src/customer/DevicePairingPage.tsx",
+    "line": 103,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "type": "\"text\"",
+      "id": "\"device-name\"",
+      "value": "{deviceName}",
+      "onChange": "{(e) => setDeviceName(e.target.value)}",
+      "placeholder": "\"例如：家庭电脑\"",
+      "required": "true",
+      "aria-required": "\"true\""
+    }
+  },
+  {
+    "file": "client/src/customer/DevicePairingPage.tsx",
+    "line": 114,
+    "tag": "button",
+    "label": "返回首次激活",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-secondary\"",
+      "onClick": "{onCancel}",
+      "disabled": "{isBusy}"
+    }
+  },
+  {
+    "file": "client/src/customer/DevicePairingPage.tsx",
+    "line": 123,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"submit\"",
+      "className": "\"btn-primary\"",
+      "disabled": "{\n                  isBusy ||\n                  !activationCode.trim() ||\n                  !deviceName.trim() ||\n                  !deviceFingerprint\n                }"
+    }
+  },
+  {
+    "file": "client/src/customer/HeartbeatStatus.tsx",
+    "line": 51,
+    "tag": "button",
+    "label": "立即续约",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-refresh\"",
+      "onClick": "{onRefresh}",
+      "disabled": "{isExpired}",
+      "aria-label": "\"立即发送心跳\""
+    }
+  },
+  {
+    "file": "client/src/customer/LeaseCountdown.tsx",
+    "line": 52,
+    "tag": "button",
+    "label": "立即续约",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-renew\"",
+      "onClick": "{onRefresh}",
+      "disabled": "{status === \"expired\"}",
+      "aria-label": "\"续约会话\""
+    }
+  },
+  {
+    "file": "client/src/customer/LoginPage.tsx",
+    "line": 50,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{onRetryLogin}",
+      "disabled": "{isBusy}"
+    }
+  },
+  {
+    "file": "client/src/customer/PairingApprovalCard.tsx",
+    "line": 28,
+    "tag": "button",
+    "label": "删除无效请求",
+    "attributes": {
+      "className": "\"danger-button\"",
+      "onClick": "{() => onDelete(pairing.id)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/PairingApprovalCard.tsx",
+    "line": 35,
+    "tag": "button",
+    "label": "暂不处理",
+    "attributes": {
+      "className": "\"secondary-button\"",
+      "onClick": "{onReject}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/PairingApprovalCard.tsx",
+    "line": 38,
+    "tag": "button",
+    "label": "确认绑定",
+    "attributes": {
+      "onClick": "{() => onApprove(pairing.id)}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/customer/SessionConflictDialog.tsx",
+    "line": 103,
+    "tag": "button",
+    "label": "取消",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-secondary\"",
+      "ref": "{cancelRef}",
+      "onClick": "{onCancel}",
+      "disabled": "{isProcessing}"
+    }
+  },
+  {
+    "file": "client/src/customer/SessionConflictDialog.tsx",
+    "line": 113,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-primary\"",
+      "onClick": "{handleSwitch}",
+      "disabled": "{isProcessing}"
+    }
+  },
+  {
+    "file": "client/src/customer/SessionDisplacedNotice.tsx",
+    "line": 33,
+    "tag": "button",
+    "label": "View My Session",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"btn-primary\"",
+      "onClick": "{onRestart}",
+      "aria-label": "\"View My Session\""
+    }
+  },
+  {
+    "file": "client/src/studio/AnalyticsPage.tsx",
+    "line": 212,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"时间筛选\"",
+      "value": "{range}",
+      "onChange": "{(event) => setRange(event.target.value as Range)}"
+    }
+  },
+  {
+    "file": "client/src/studio/AnalyticsPage.tsx",
+    "line": 353,
+    "tag": "Button",
+    "label": "查看视频",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => viewWork(work)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 285,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"viral-card-cover-trigger\"",
+      "onClick": "{error ? onRetry : onPlay}",
+      "aria-label": "{`${error ? \"重试播放\" : \"播放\"} ${video.title}`}",
+      "disabled": "{loading}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 404,
+    "tag": "Button",
+    "label": "查看详情",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "onClick": "{openDetail}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 407,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"outline\"",
+      "aria-label": "{`收藏 ${video.title}`}",
+      "onClick": "{toggleFavorite}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 414,
+    "tag": "Button",
+    "label": "复刻",
+    "attributes": {
+      "variant": "\"outline\"",
+      "aria-label": "{`复刻 ${video.title}`}",
+      "onClick": "{() => {\n              patchDraft({ sourceId: video.id });\n              navigate(\"replica\", {\n                selectedVideoId: video.id,\n                returnTo: \"viral\",\n              });\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 537,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"搜索视频标题\"",
+      "value": "{query}",
+      "onChange": "{(event) => {\n              setQuery(event.target.value);\n            }}",
+      "placeholder": "\"在已加载的爆款中搜索\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 554,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-selected": "{item.id === platform}",
+      "className": "{item.id === platform ? \"is-active\" : \"\"}",
+      "key": "{item.id}",
+      "onClick": "{() => setPlatform(item.id)}",
+      "role": "\"tab\"",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 568,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"排序方式\"",
+      "value": "{sort}",
+      "onChange": "{(event) =>\n              setSort(event.target.value as \"热门优先\" | \"最新\")\n            }"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 582,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "key": "{item}",
+      "variant": "{item === category ? \"primary\" : \"outline\"}",
+      "onClick": "{() => setCategory(item)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 680,
+    "tag": "Button",
+    "label": "返回爆款视频",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => navigate(\"viral\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 717,
+    "tag": "Button",
+    "label": "‹ 返回列表",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "onClick": "{() => navigate(state.returnTo ?? \"viral\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 737,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"content-player-viral-trigger\"",
+      "onClick": "{playback.status === \"error\" ? retry : play}",
+      "aria-label": "{`${playback.status === \"error\" ? \"重试播放\" : \"播放\"} ${video.title}`}",
+      "disabled": "{playback.status === \"loading\"}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 818,
+    "tag": "Button",
+    "label": "提取文案",
+    "attributes": {
+      "disabled": "{media.status === \"loading\"}",
+      "variant": "\"outline\"",
+      "onClick": "{() => prepare(video, goExtract)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 827,
+    "tag": "Button",
+    "label": "视频复刻",
+    "attributes": {
+      "disabled": "{media.status === \"loading\"}",
+      "variant": "\"outline\"",
+      "onClick": "{() => prepare(video, goReplica)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 836,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() =>\n                  patchState({\n                    favorites: saved\n                      ? state.favorites.filter((id) => id !== video.id)\n                      : [...state.favorites, video.id],\n                  })\n                }"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 866,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "{`content-asset ${selected ? \"is-selected\" : \"\"} ${asset.composite ? \"content-asset--composite\" : \"\"}`}",
+      "onClick": "{onSelect}",
+      "aria-label": "{`选择素材 ${asset.name}`}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1171,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "accept": "\".jpg,.jpeg,.png,.mp3,.mp4,.mov\"",
+      "aria-label": "\"选择上传素材\"",
+      "hidden": "true",
+      "onChange": "{(event) => {\n            const file = event.target.files?.[0];\n            if (file) void handleUpload(file);\n          }}",
+      "ref": "{uploadInputRef}",
+      "type": "\"file\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1182,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "className": "\"content-title-action\"",
+      "disabled": "{busyAction === \"upload\"}",
+      "variant": "\"primary\"",
+      "onClick": "{() =>\n            review\n              ? notify(\"审核模式保留示例素材，不执行真实上传\")\n              : uploadInputRef.current?.click()\n          }"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1197,
+    "tag": "Tabs",
+    "label": "",
+    "attributes": {
+      "items": "{[\n          { id: \"全部\", label: \"全部\" },\n          { id: \"video\", label: \"视频\" },\n          { id: \"image\", label: \"图片\" },\n          { id: \"audio\", label: \"音频\" },\n        ]}",
+      "value": "{kind}",
+      "onChange": "{(value) => {\n          setKind(value as typeof kind);\n          setPage(1);\n        }}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1220,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"搜索素材\"",
+      "maxLength": "{120}",
+      "placeholder": "\"搜索素材名称\"",
+      "value": "{queryInput}",
+      "onChange": "{(event) => setQueryInput(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1227,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"素材来源\"",
+      "value": "{source}",
+      "onChange": "{(event) => {\n              setSource(event.target.value as typeof source);\n              setPage(1);\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1242,
+    "tag": "Button",
+    "label": "搜索",
+    "attributes": {
+      "type": "\"submit\"",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1272,
+    "tag": "Button",
+    "label": "‹",
+    "attributes": {
+      "aria-label": "\"上一页\"",
+      "disabled": "{page === 1}",
+      "variant": "\"outline\"",
+      "onClick": "{() => setPage((currentPage) => currentPage - 1)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1282,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "key": "{pageNumber}",
+      "variant": "{page === pageNumber ? \"primary\" : \"quiet\"}",
+      "onClick": "{() => setPage(pageNumber)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1291,
+    "tag": "Button",
+    "label": "›",
+    "attributes": {
+      "aria-label": "\"下一页\"",
+      "disabled": "{page === pages}",
+      "variant": "\"outline\"",
+      "onClick": "{() => setPage((currentPage) => currentPage + 1)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1325,
+    "tag": "Button",
+    "label": "用于音频口播",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => {\n                    retainForDraft(selected);\n                    patchDraft({\n                      audioId: selected.id,\n                      ipId: selected.personId,\n                      voiceId: undefined,\n                    });\n                    navigate(\"oral-audio\", { returnTo: \"materials\" });\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1342,
+    "tag": "Button",
+    "label": "用作原画面",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n                    retainForDraft(selected);\n                    patchDraft({\n                      originalImageId: selected.id,\n                      frameConfirmed: false,\n                    });\n                    navigate(\"replica\", { returnTo: \"materials\" });\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1358,
+    "tag": "Button",
+    "label": "用作首帧",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n                    retainForDraft(selected);\n                    patchDraft({ firstFrameId: selected.id });\n                    navigate(\"video\", { returnTo: \"materials\" });\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1371,
+    "tag": "Button",
+    "label": "用作尾帧",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n                    retainForDraft(selected);\n                    patchDraft({ tailFrameId: selected.id });\n                    navigate(\"video\", { returnTo: \"materials\" });\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1383,
+    "tag": "Button",
+    "label": "用于参考生视频",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => applyAsReference(selected)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1395,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"素材名称\"",
+      "maxLength": "{120}",
+      "onChange": "{(event) => setRenameValue(event.target.value)}",
+      "value": "{renameValue}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1402,
+    "tag": "Button",
+    "label": "保存名称",
+    "attributes": {
+      "disabled": "{busyAction === \"rename\" || !renameValue.trim()}",
+      "onClick": "{() => void saveName()}",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1412,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"素材分组\"",
+      "maxLength": "{80}",
+      "onChange": "{(event) => setGroupValue(event.target.value)}",
+      "value": "{groupValue}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1419,
+    "tag": "Button",
+    "label": "保存分组",
+    "attributes": {
+      "disabled": "{busyAction === \"group\" || !groupValue.trim()}",
+      "onClick": "{() => void saveGroup()}",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1431,
+    "tag": "Button",
+    "label": "下载素材",
+    "attributes": {
+      "disabled": "{busyAction === \"download\"}",
+      "onClick": "{() => void downloadSelected()}",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1441,
+    "tag": "Button",
+    "label": "从素材库移除",
+    "attributes": {
+      "disabled": "{busyAction === \"hide\"}",
+      "onClick": "{() => void removeSelected()}",
+      "variant": "\"quiet\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1591,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"content-publish-draft-card\"",
+      "key": "{draft.id}",
+      "onClick": "{() => {\n                    setForm(draft);\n                    setSaveNotice(false);\n                    patchState({ selectedAssetId: draft.assetId });\n                  }}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1655,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`选择封面 ${asset.name}`}",
+      "className": "{\n                        selectedCover?.id === asset.id ? \"is-selected\" : \"\"\n                      }",
+      "key": "{asset.id}",
+      "onClick": "{() => updateForm({ coverId: asset.id })}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1674,
+    "tag": "Button",
+    "label": "上传自定义封面（接口待接通）",
+    "attributes": {
+      "disabled": "true",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1683,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "aria-pressed": "{form.platform === platform}",
+      "key": "{platform}",
+      "onClick": "{() => updateForm({ platform })}",
+      "variant": "{form.platform === platform ? \"primary\" : \"outline\"}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1697,
+    "tag": "Button",
+    "label": "张工说乡墅",
+    "attributes": {
+      "aria-pressed": "{form.account === \"张工说乡墅\"}",
+      "onClick": "{() => updateForm({ account: \"张工说乡墅\" })}",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1709,
+    "tag": "Button",
+    "label": "前往用户档案管理账号",
+    "attributes": {
+      "onClick": "{() => navigate(\"profile\")}",
+      "variant": "\"quiet\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1716,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "onChange": "{(event) => updateForm({ title: event.target.value })}",
+      "placeholder": "\"填写发布标题\"",
+      "value": "{form.title}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1723,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "onChange": "{(event) =>\n                  updateForm({ description: event.target.value })\n                }",
+      "placeholder": "\"填写发布说明\"",
+      "value": "{form.description}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1736,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"添加标签\"",
+      "onChange": "{(event) => setTagInput(event.target.value)}",
+      "onKeyDown": "{(event) => {\n                    if (event.key !== \"Enter\") return;\n                    event.preventDefault();\n                    addTag();\n                  }}",
+      "placeholder": "\"输入标签后按 Enter\"",
+      "value": "{tagInput}"
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1756,
+    "tag": "Button",
+    "label": "保存草稿",
+    "attributes": {
+      "disabled": "{!selectedAsset}",
+      "onClick": "{savePublishDraft}",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/ContentPages.tsx",
+    "line": 1763,
+    "tag": "Button",
+    "label": "正式发布（接口未接通）",
+    "attributes": {
+      "aria-label": "\"正式发布（接口未接通）\"",
+      "disabled": "true",
+      "variant": "\"primary\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationNavigation.tsx",
+    "line": 15,
+    "tag": "Tabs",
+    "label": "",
+    "attributes": {
+      "value": "{page}",
+      "onChange": "{navigate}",
+      "items": "{[\n          { id: \"replica\", label: \"视频复刻\" },\n          { id: \"replacement\", label: \"人物置换\" },\n          { id: \"video\", label: \"视频生成\" },\n          { id: \"oral\", label: \"数字人口播\" },\n        ]}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 148,
+    "tag": "Tabs",
+    "label": "",
+    "attributes": {
+      "items": "{[\n          { id: \"rewrite\", label: \"文案改写\" },\n          { id: \"saved\", label: \"我的文案\" },\n        ]}",
+      "value": "{tab}",
+      "onChange": "{(value) => setTab(value as \"rewrite\" | \"saved\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 161,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"creation-script-row\"",
+      "key": "{script.id}",
+      "onClick": "{() => patchDraft({ script })}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 195,
+    "tag": "Button",
+    "label": "打开来源分析",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openLive(\"analysis\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 213,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"作品名称\"",
+      "className": "\"creation-input\"",
+      "onChange": "{(event) =>\n                  patchDraft({\n                    script: {\n                      ...state.draft.script,\n                      title: event.target.value,\n                      confirmed: false,\n                    },\n                  })\n                }",
+      "placeholder": "\"作品名称\"",
+      "value": "{state.draft.script.title}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 228,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"二创文案\"",
+      "className": "\"creation-textarea creation-copy-textarea\"",
+      "onChange": "{(event) =>\n                  patchDraft({\n                    script: {\n                      ...state.draft.script,\n                      text: event.target.value,\n                      confirmed: false,\n                    },\n                  })\n                }",
+      "placeholder": "\"在这里编辑乡墅口播文案\"",
+      "value": "{state.draft.script.text}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 282,
+    "tag": "Button",
+    "label": "按 IP 二创",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openLive(\"analysis\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 285,
+    "tag": "Button",
+    "label": "更换人物",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openPicker(\"person\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 288,
+    "tag": "Button",
+    "label": "确认终稿",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "onClick": "{confirmFinalDraft}",
+      "disabled": "{!state.draft.script.text.trim()}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 298,
+    "tag": "Button",
+    "label": "保存版本",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{saveDraft}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 301,
+    "tag": "Button",
+    "label": "用于数字人口播",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{!state.draft.script.confirmed || !state.draft.ipId}",
+      "onClick": "{() => navigate(\"oral\", { returnTo: \"copy\" })}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 655,
+    "tag": "Button",
+    "label": "上传参考视频",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => uploadInputRef.current?.click()}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 662,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"选择已有项目\"",
+      "className": "\"creation-project-select\"",
+      "defaultValue": "\"\"",
+      "onChange": "{(event) => {\n                      if (event.target.value) {\n                        selectExistingProject(event.target.value);\n                      }\n                    }}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 700,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{analysisBusy}",
+      "onClick": "{() => void startAnalysis()}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 711,
+    "tag": "Button",
+    "label": "更换来源视频",
+    "attributes": {
+      "disabled": "{analysisBusy}",
+      "variant": "\"outline\"",
+      "onClick": "{() => uploadInputRef.current?.click()}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 757,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"拆解 Prompt\"",
+      "className": "\"creation-textarea\"",
+      "onChange": "{(event) => {\n                setPromptText(event.target.value);\n                patchDraft({ prompt: event.target.value });\n              }}",
+      "placeholder": "\"完成 AI 拆解后，这里会生成逐镜头的反推提示词；也可手动撰写。\"",
+      "rows": "{10}",
+      "value": "{promptText}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 771,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"自定义提示词名称\"",
+      "className": "\"creation-project-select\"",
+      "onChange": "{(event) => setPromptName(event.target.value)}",
+      "placeholder": "\"提示词名称\"",
+      "value": "{promptName}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 778,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "disabled": "{savingPrompt}",
+      "onClick": "{() => void saveAsCustomPrompt()}",
+      "variant": "\"primary\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 785,
+    "tag": "Button",
+    "label": "取消",
+    "attributes": {
+      "onClick": "{() => setPromptNameOpen(false)}",
+      "variant": "\"quiet\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 794,
+    "tag": "Button",
+    "label": "保存为自定义提示词",
+    "attributes": {
+      "onClick": "{() => setPromptNameOpen(true)}",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 800,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "disabled": "{\n                      generating || analysisBusy || displayShots.length === 0\n                    }",
+      "onClick": "{() => void sendToGeneration()}",
+      "variant": "\"primary\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 824,
+    "tag": "Button",
+    "label": "保存草稿",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{saveDraft}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 827,
+    "tag": "Button",
+    "label": "进入分镜工作区",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openLive(\"analysis\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 831,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "accept": "\"video/mp4,video/quicktime\"",
+      "aria-label": "\"上传参考视频\"",
+      "hidden": "true",
+      "onChange": "{(event) => {\n          const file = event.target.files?.[0];\n          if (file) void handleUpload(file);\n          event.target.value = \"\";\n        }}",
+      "ref": "{uploadInputRef}",
+      "type": "\"file\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1034,
+    "tag": "select",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"选择项目\"",
+      "className": "\"creation-project-select\"",
+      "defaultValue": "\"\"",
+      "onChange": "{(event) => {\n                    const selected = data.projects.find(\n                      (item) => item.id === event.target.value,\n                    );\n                    if (selected) {\n                      patchDraft({ projectId: selected.id });\n                      notify(`已切换到项目「${selected.name}」。`);\n                    }\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1099,
+    "tag": "Button",
+    "label": "重试匹配人物参考",
+    "attributes": {
+      "onClick": "{retryReferenceMatch}",
+      "variant": "\"outline\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1127,
+    "tag": "Button",
+    "label": "用于文/图生视频",
+    "attributes": {
+      "disabled": "{leafBusy}",
+      "variant": "\"primary\"",
+      "onClick": "{() => navigate(\"video\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1150,
+    "tag": "Button",
+    "label": "保存草稿",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{saveDraft}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1173,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "{draft.resolution === resolution ? \"active\" : \"\"}",
+      "key": "{resolution}",
+      "onClick": "{() => patchDraft({ resolution })}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1185,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"时长\"",
+      "max": "{15}",
+      "min": "{4}",
+      "onChange": "{(event) =>\n            patchDraft({ duration: Number(event.target.value) })\n          }",
+      "type": "\"range\"",
+      "value": "{draft.duration}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1199,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "{draft.ratio === ratio ? \"active\" : \"\"}",
+      "key": "{ratio}",
+      "onClick": "{() => patchDraft({ ratio })}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1213,
+    "tag": "button",
+    "label": "个",
+    "attributes": {
+      "className": "{draft.count === count ? \"active\" : \"\"}",
+      "key": "{count}",
+      "onClick": "{() => patchDraft({ count })}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1344,
+    "tag": "Button",
+    "label": "导入提示词",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "onClick": "{toggle}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1365,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "key": "{item.id}",
+      "type": "\"button\"",
+      "onClick": "{() => {\n                  onImport(item.prompt_text);\n                  notify(`已导入「${item.name}」，可继续修改。`);\n                  setOpen(false);\n                }}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1417,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"creation-upload-mini\"",
+      "disabled": "{progress !== undefined}",
+      "onClick": "{() => inputRef.current?.click()}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1425,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "accept": "\"image/png,image/jpeg\"",
+      "aria-label": "{`上传${label}`}",
+      "hidden": "true",
+      "onChange": "{(event) => {\n          const file = event.target.files?.[0];\n          if (file) void upload(file);\n          event.target.value = \"\";\n        }}",
+      "ref": "{inputRef}",
+      "type": "\"file\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1485,
+    "tag": "Tabs",
+    "label": "",
+    "attributes": {
+      "items": "{[\n          { id: \"video\", label: \"文/图生视频\" },\n          { id: \"reference\", label: \"参考生视频\" },\n        ]}",
+      "value": "{referenceMode ? \"reference\" : \"video\"}",
+      "onChange": "{(value) =>\n          navigate(value === \"reference\" ? \"reference\" : \"video\")\n        }"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1500,
+    "tag": "textarea",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"提示词\"",
+      "className": "\"creation-textarea\"",
+      "onChange": "{(event) => patchDraft({ prompt: event.target.value })}",
+      "placeholder": "\"描述镜头、场景、运动与光线\"",
+      "value": "{state.draft.prompt}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1514,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "\"creation-upload\"",
+      "onClick": "{() => openPicker(\"reference\")}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1546,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "aria-label": "{`移除 ${asset.name}`}",
+      "className": "\"creation-reference-remove\"",
+      "onClick": "{() =>\n                        patchDraft({\n                          referenceIds: state.draft.referenceIds.filter(\n                            (id) => id !== asset.id,\n                          ),\n                        })\n                      }",
+      "variant": "\"quiet\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1569,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "onClick": "{() => openPicker(\"first-frame\")}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1587,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "onClick": "{() => openPicker(\"tail-frame\")}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1611,
+    "tag": "Button",
+    "label": "保存草稿",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{saveDraft}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1614,
+    "tag": "Button",
+    "label": "生成视频",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{!ready}",
+      "onClick": "{() => requestGeneration(\"视频生成\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1670,
+    "tag": "Button",
+    "label": "更换 IP",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openPicker(\"person\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1717,
+    "tag": "Button",
+    "label": "← 返回",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "onClick": "{() => navigate(state.returnTo ?? \"workbench\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1730,
+    "tag": "Tabs",
+    "label": "",
+    "attributes": {
+      "items": "{[\n              { id: \"oral\", label: \"用文案生成\" },\n              { id: \"oral-audio\", label: \"用已有音频生成\" },\n            ]}",
+      "value": "{audioMode ? \"oral-audio\" : \"oral\"}",
+      "onChange": "{(value) =>\n              navigate(value === \"oral-audio\" ? \"oral-audio\" : \"oral\")\n            }"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1764,
+    "tag": "Button",
+    "label": "从素材库选择",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openPicker(\"audio\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1767,
+    "tag": "Button",
+    "label": "上传音频",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() =>\n                      notify(\"音频上传服务尚未接通，请先从素材库选择\")\n                    }"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1791,
+    "tag": "button",
+    "label": "去文案工坊修改",
+    "attributes": {
+      "onClick": "{() => navigate(\"copy\", { returnTo: \"oral\" })}",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1803,
+    "tag": "Button",
+    "label": "更换",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openPicker(\"voice\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1810,
+    "tag": "button",
+    "label": "管理声音",
+    "attributes": {
+      "className": "\"creation-text-link\"",
+      "onClick": "{() =>\n                      navigate(\"person-voices\", {\n                        returnTo: state.page,\n                        selectedPersonId: state.draft.ipId,\n                      })\n                    }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1831,
+    "tag": "Button",
+    "label": "更换分身",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openPicker(\"avatar\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1846,
+    "tag": "button",
+    "label": "去人物库管理口播分身",
+    "attributes": {
+      "className": "\"creation-text-link\"",
+      "onClick": "{() =>\n                  navigate(\"person-avatars\", {\n                    returnTo: state.page,\n                    selectedPersonId: state.draft.ipId,\n                  })\n                }",
+      "type": "\"button\""
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1864,
+    "tag": "Button",
+    "label": "去人物库制作口播分身",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() =>\n                    navigate(\"person-avatars\", {\n                      returnTo: state.page,\n                      selectedPersonId: state.draft.ipId,\n                    })\n                  }"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1884,
+    "tag": "Button",
+    "label": "标准口播",
+    "attributes": {
+      "variant": "{state.draft.style === \"standard\" ? \"outline\" : \"quiet\"}",
+      "onClick": "{() => patchDraft({ style: \"standard\" })}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1890,
+    "tag": "Button",
+    "label": "网感模板",
+    "attributes": {
+      "variant": "{state.draft.style === \"template\" ? \"outline\" : \"quiet\"}",
+      "onClick": "{() => patchDraft({ style: \"template\" })}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1899,
+    "tag": "Button",
+    "label": "不添加",
+    "attributes": {
+      "variant": "{!state.draft.subtitles ? \"outline\" : \"quiet\"}",
+      "onClick": "{() => patchDraft({ subtitles: false })}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1905,
+    "tag": "Button",
+    "label": "添加",
+    "attributes": {
+      "variant": "{state.draft.subtitles ? \"outline\" : \"quiet\"}",
+      "onClick": "{() => patchDraft({ subtitles: true })}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1915,
+    "tag": "Button",
+    "label": "保存草稿",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{saveDraft}"
+    }
+  },
+  {
+    "file": "client/src/studio/CreationPages.tsx",
+    "line": 1918,
+    "tag": "Button",
+    "label": "生成口播视频",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{!ready}",
+      "onClick": "{() => requestGeneration(\"数字人口播\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/LiveWorkspacePanel.tsx",
+    "line": 96,
+    "tag": "button",
+    "label": "返回新工作台",
+    "attributes": {
+      "type": "\"button\"",
+      "onClick": "{onClose}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 128,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"studio-row-menu-trigger\"",
+      "aria-label": "{`更多操作：${task.title}`}",
+      "aria-haspopup": "\"menu\"",
+      "aria-expanded": "{open}",
+      "onClick": "{() => setOpen((value) => !value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 140,
+    "tag": "button",
+    "label": "打开任务中心",
+    "attributes": {
+      "type": "\"button\"",
+      "role": "\"menuitem\"",
+      "onClick": "{() => {\n              setOpen(false);\n              navigate(\"tasks\");\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 150,
+    "tag": "button",
+    "label": "复制任务编号",
+    "attributes": {
+      "type": "\"button\"",
+      "role": "\"menuitem\"",
+      "onClick": "{() => {\n              setOpen(false);\n              void copyTaskId();\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 251,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"studio-upload-icon\"",
+      "aria-label": "\"上传视频\"",
+      "onClick": "{() => {\n              if (review) {\n                notify(\"审核示例不执行真实上传。\");\n                return;\n              }\n              fileInputRef.current?.click();\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 265,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"视频链接\"",
+      "placeholder": "\"粘贴视频链接，如抖音、视频号、小红书链接等\"",
+      "value": "{sourceLink}",
+      "onChange": "{(event) => setSourceLink(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 271,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "ref": "{fileInputRef}",
+      "type": "\"file\"",
+      "aria-label": "\"选择视频文件\"",
+      "accept": "\".mp4,.mov,video/mp4,video/quicktime\"",
+      "hidden": "true",
+      "onChange": "{(event) => {\n              const file = event.target.files?.[0];\n              if (file) handleUploadFile(file);\n              event.target.value = \"\";\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 283,
+    "tag": "Button",
+    "label": "提取文案",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => begin(\"copy\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 287,
+    "tag": "Button",
+    "label": "开始复刻",
+    "attributes": {
+      "onClick": "{() => begin(\"replica\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 353,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "key": "{metric.label}",
+      "type": "\"button\"",
+      "className": "\"studio-panel\"",
+      "onClick": "{() => navigate(metric.page)}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 402,
+    "tag": "Button",
+    "label": "查看详情",
+    "attributes": {
+      "onClick": "{() =>\n                      navigate(\"task-detail\", { selectedTaskId: task.id })\n                    }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 421,
+    "tag": "Button",
+    "label": "查看全部爆款",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "aria-label": "\"查看全部爆款\"",
+      "onClick": "{() => navigate(\"viral\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 434,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"studio-home-viral-cover\"",
+      "aria-label": "{`查看详情：${video.title}`}",
+      "onClick": "{() =>\n                      navigate(\"viral-detail\", {\n                        selectedVideoId: video.id,\n                        returnTo: \"workbench\",\n                      })\n                    }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 459,
+    "tag": "Button",
+    "label": "用它复刻",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "aria-label": "{`用它复刻：${video.title}`}",
+      "onClick": "{() => {\n                        patchDraft({ sourceId: video.id });\n                        navigate(\"replica\", {\n                          selectedVideoId: video.id,\n                          returnTo: \"workbench\",\n                        });\n                      }}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 489,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "key": "{task.id}",
+      "onClick": "{() =>\n                  navigate(\"task-detail\", { selectedTaskId: task.id })\n                }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 507,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "aria-label": "\"快捷入口：文案工坊\"",
+      "onClick": "{() => navigate(\"copy\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 518,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "aria-label": "\"快捷入口：人物库\"",
+      "onClick": "{() => navigate(\"people\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 529,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "aria-label": "\"快捷入口：素材库\"",
+      "onClick": "{() => navigate(\"materials\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 540,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "aria-label": "\"快捷入口：数据看板\"",
+      "onClick": "{() => navigate(\"analytics\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 626,
+    "tag": "Button",
+    "label": "历史任务与下载",
+    "attributes": {
+      "onClick": "{() => openLive(\"tasks\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 628,
+    "tag": "Button",
+    "label": "视频复刻",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => navigate(\"replica\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 634,
+    "tag": "Tabs",
+    "label": "",
+    "attributes": {
+      "value": "{status}",
+      "onChange": "{setStatus}",
+      "items": "{[\n            { id: \"all\", label: \"全部\" },\n            { id: \"active\", label: `进行中 ${activeCount}` },\n            { id: \"attention\", label: `待处理 ${attentionCount}` },\n            { id: \"completed\", label: \"已完成\" },\n          ]}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 644,
+    "tag": "FilterSelect",
+    "label": "",
+    "attributes": {
+      "label": "\"类型\"",
+      "items": "{kindItems}",
+      "value": "{kind}",
+      "onChange": "{setKind}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 687,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "disabled": "{cancellingId === task.id}",
+      "onClick": "{() => void cancelTask(task)}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 695,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "onClick": "{() =>\n                        navigate(\"task-detail\", { selectedTaskId: task.id })\n                      }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 715,
+    "tag": "Button",
+    "label": "清除筛选",
+    "attributes": {
+      "onClick": "{() => {\n                    setStatus(\"all\");\n                    setKind(\"全部\");\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 762,
+    "tag": "Button",
+    "label": "返回任务中心",
+    "attributes": {
+      "onClick": "{() => navigate(\"tasks\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 890,
+    "tag": "Button",
+    "label": "返回任务中心",
+    "attributes": {
+      "onClick": "{() => navigate(\"tasks\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 942,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{previewResult}",
+      "disabled": "{previewStatus === \"loading\"}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 957,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "onClick": "{() => void downloadResult()}",
+      "disabled": "{\n                task.status !== \"completed\" || actionBusy === \"download\"\n              }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 966,
+    "tag": "Button",
+    "label": "查看素材",
+    "attributes": {
+      "disabled": "{!result || task.status !== \"completed\"}",
+      "onClick": "{() =>\n                navigate(\"materials\", {\n                  selectedAssetId: task.resultId,\n                  returnTo: \"task-detail\",\n                })\n              }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 978,
+    "tag": "Button",
+    "label": "去发布管理",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{!result || task.status !== \"completed\"}",
+      "onClick": "{() =>\n                navigate(\"publishing\", { selectedAssetId: task.resultId })\n              }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1000,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "disabled": "{actionBusy === \"retry\"}",
+      "onClick": "{() => void retryTask()}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1008,
+    "tag": "Button",
+    "label": "核对任务状态",
+    "attributes": {
+      "onClick": "{() => openLive(\"tasks\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1014,
+    "tag": "Button",
+    "label": "调整脚本",
+    "attributes": {
+      "onClick": "{() => recreate(\"copy\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1018,
+    "tag": "Button",
+    "label": "更换素材",
+    "attributes": {
+      "onClick": "{() =>\n                navigate(\"materials\", {\n                  returnTo: \"task-detail\",\n                  selectedTaskId: task.id,\n                })\n              }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1029,
+    "tag": "Button",
+    "label": "新建草稿",
+    "attributes": {
+      "onClick": "{() =>\n                recreate(task.type === \"数字人口播\" ? \"oral\" : \"replica\")\n              }"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1112,
+    "tag": "Tabs",
+    "label": "",
+    "attributes": {
+      "value": "{profileTab}",
+      "onChange": "{(id) =>\n          id === \"billing\"\n            ? openLive(\"wallet\")\n            : id === \"devices\"\n              ? openLive(\"profile\")\n              : setProfileTab(id)\n        }",
+      "items": "{[\n          { id: \"overview\", label: \"账户资料\" },\n          { id: \"publishing\", label: \"发布账号\" },\n          { id: \"billing\", label: \"使用记录\" },\n          { id: \"devices\", label: \"设备管理\" },\n        ]}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1151,
+    "tag": "Button",
+    "label": "连接发布账号",
+    "attributes": {
+      "disabled": "true"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1164,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{name}",
+      "onChange": "{(event) => setName(event.target.value)}",
+      "readOnly": "{!review}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1184,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"studio-switch\"",
+      "aria-label": "\"通知偏好\"",
+      "aria-pressed": "{notificationsEnabled === true}",
+      "disabled": "{\n                        notificationsEnabled === null || savingNotifications\n                      }",
+      "onClick": "{() => void toggleNotifications()}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1222,
+    "tag": "Button",
+    "label": "管理发布账号",
+    "attributes": {
+      "onClick": "{() => setProfileTab(\"publishing\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1239,
+    "tag": "Button",
+    "label": "查看使用记录",
+    "attributes": {
+      "onClick": "{() => openLive(\"wallet\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1254,
+    "tag": "Button",
+    "label": "管理设备",
+    "attributes": {
+      "onClick": "{() => openLive(\"profile\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/MainPages.tsx",
+    "line": 1259,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() =>\n                review\n                  ? notify(\"示例账户，不保存真实资料。\")\n                  : openLive(\"profile\")\n              }"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 131,
+    "tag": "Button",
+    "label": "＋ 新增人物",
+    "attributes": {
+      "aria-label": "\"新增人物\"",
+      "variant": "\"primary\"",
+      "onClick": "{() => openLive(\"characters\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 141,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "className": "{\n              label === roleFilter ? \"people-filter is-active\" : \"people-filter\"\n            }",
+      "key": "{label}",
+      "type": "\"button\"",
+      "onClick": "{() => setRoleFilter(label)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 158,
+    "tag": "Button",
+    "label": "新增人物",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => openLive(\"characters\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 224,
+    "tag": "Button",
+    "label": "查看人物",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{onOpen}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 227,
+    "tag": "Button",
+    "label": "用于创作",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() =>\n              navigate(\"person-photos\", { selectedPersonId: person.id })\n            }"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 251,
+    "tag": "button",
+    "label": "← 返回",
+    "attributes": {
+      "className": "\"people-back\"",
+      "type": "\"button\"",
+      "onClick": "{() =>\n          navigate(state.returnTo ?? \"people\", { returnTo: undefined })\n        }"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 261,
+    "tag": "Tabs",
+    "label": "",
+    "attributes": {
+      "items": "{personTabs}",
+      "value": "{tab}",
+      "onChange": "{(next) =>\n          navigate(next as StudioPage, { selectedPersonId: person.id })\n        }"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 361,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{draft.name}",
+      "onChange": "{(event) => update(\"name\", event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 367,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{draft.role}",
+      "onChange": "{(event) => update(\"role\", event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 373,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{draft.scope}",
+      "onChange": "{(event) => update(\"scope\", event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 379,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{draft.audience}",
+      "onChange": "{(event) => update(\"audience\", event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 385,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{draft.expression}",
+      "onChange": "{(event) => update(\"expression\", event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 400,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{saving}",
+      "onClick": "{() => void save()}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 403,
+    "tag": "Button",
+    "label": "去文案工坊创作",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n            patchDraft({ ipId: person.id });\n            navigate(\"copy\", { selectedPersonId: person.id });\n          }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 430,
+    "tag": "Button",
+    "label": "管理形象照",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n              notify(`正在打开${person.name}的五视图与场景造型。`);\n              openLive(\"characters\");\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 439,
+    "tag": "Button",
+    "label": "AI 生成场景照",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => {\n              notify(`将在人物管理中为${person.name}选择并生成场景形象照。`);\n              openLive(\"characters\");\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 473,
+    "tag": "Button",
+    "label": "打开人物管理",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => openLive(\"characters\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 489,
+    "tag": "Button",
+    "label": "制作口播分身",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n                    patchDraft({ ipId: person.id });\n                    navigate(\"person-avatars\", {\n                      selectedPersonId: person.id,\n                      selectedAssetId: asset.id,\n                    });\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 501,
+    "tag": "Button",
+    "label": "用于人物置换",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => {\n                    patchDraft({ ipId: person.id, imageId: asset.id });\n                    navigate(\"replacement\", {\n                      selectedPersonId: person.id,\n                      selectedAssetId: asset.id,\n                    });\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 682,
+    "tag": "Button",
+    "label": "用于数字人口播",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n                  patchDraft({ ipId: person.id, avatarId: avatar.id });\n                  navigate(state.returnTo ?? \"oral\", {\n                    selectedPersonId: person.id,\n                  });\n                }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 711,
+    "tag": "Button",
+    "label": "刷新制作状态",
+    "attributes": {
+      "variant": "\"outline\"",
+      "disabled": "{busy}",
+      "onClick": "{() => void refreshClone(avatar.id)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 725,
+    "tag": "Button",
+    "label": "用形象照片制作",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n            patchDraft({ ipId: person.id });\n            openPicker(\"avatar-photo\");\n          }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 735,
+    "tag": "Button",
+    "label": "上传人物视频制作",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => notify(\"审核模式保留示例素材，不执行真实上传\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 743,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "accept": "\".mp4,.mov,video/mp4,video/quicktime\"",
+      "aria-label": "\"选择人物视频\"",
+      "disabled": "{busy}",
+      "type": "\"file\"",
+      "onChange": "{(event) => {\n                const file = event.target.files?.[0];\n                if (file) void handleVideoUpload(file);\n              }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 756,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{title}",
+      "onChange": "{(event) => {\n              setTitle(event.target.value);\n              cloneSubmissionRef.current = undefined;\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 774,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"确认分身克隆授权\"",
+      "checked": "{consented}",
+      "disabled": "{review || busy}",
+      "type": "\"checkbox\"",
+      "onChange": "{(event) => {\n              cloneSubmissionRef.current = undefined;\n              setConsentedSourceId(\n                event.target.checked ? source?.id : undefined,\n              );\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 789,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{review || busy || !source || !consented}",
+      "onClick": "{() => void startClone()}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1007,
+    "tag": "Button",
+    "label": "试听",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => notify(\"该声音暂无可播放样本\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1015,
+    "tag": "Button",
+    "label": "使用此声音",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => {\n                    patchDraft({ ipId: person.id, voiceId: voice.id });\n                    navigate(state.returnTo ?? \"oral\", {\n                      selectedPersonId: person.id,\n                      returnTo: undefined,\n                    });\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1030,
+    "tag": "Button",
+    "label": "刷新克隆状态",
+    "attributes": {
+      "variant": "\"outline\"",
+      "disabled": "{busy}",
+      "onClick": "{() => void refreshClone(voice.id)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1039,
+    "tag": "Button",
+    "label": "确认使用此声音",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{busy}",
+      "onClick": "{() => void confirmVoice(voice.id)}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1061,
+    "tag": "Button",
+    "label": "从素材选择声音样本",
+    "attributes": {
+      "variant": "\"outline\"",
+      "onClick": "{() => {\n            patchDraft({ ipId: person.id });\n            openPicker(\"audio\");\n          }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1072,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "accept": "\".mp3,audio/mpeg\"",
+      "aria-label": "\"选择声音样本\"",
+      "disabled": "{busy}",
+      "type": "\"file\"",
+      "onChange": "{(event) => {\n                const file = event.target.files?.[0];\n                if (file) void handleAudioUpload(file);\n              }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1085,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "value": "{title}",
+      "onChange": "{(event) => {\n              setTitle(event.target.value);\n              cloneSubmissionRef.current = undefined;\n            }}",
+      "placeholder": "\"例如：张工本人音色 V2\""
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1104,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"确认声音克隆授权\"",
+      "checked": "{consented}",
+      "disabled": "{review || busy}",
+      "type": "\"checkbox\"",
+      "onChange": "{(event) => {\n              cloneSubmissionRef.current = undefined;\n              setConsentedSourceId(\n                event.target.checked ? source?.id : undefined,\n              );\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/PeoplePages.tsx",
+    "line": 1118,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{review || busy || !source || !consented}",
+      "onClick": "{() => void startClone()}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 864,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"studio-brand\"",
+      "onClick": "{() => {\n              navigate(\"workbench\");\n            }}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 877,
+    "tag": "Button",
+    "label": "新建创作",
+    "attributes": {
+      "variant": "\"primary\"",
+      "className": "\"studio-new-button\"",
+      "onClick": "{() => setNewCreation(true)}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 895,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "key": "{item.id}",
+      "aria-current": "{activeNav === item.id ? \"page\" : undefined}",
+      "className": "{activeNav === item.id ? \"is-active\" : \"\"}",
+      "onClick": "{() => navigate(item.id)}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 912,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "{`studio-account-entry ${state.page === \"profile\" ? \"is-active\" : \"\"}`}",
+      "aria-label": "{`用户档案，积分 ${review ? \"2680\" : \"—\"}`}",
+      "onClick": "{() => navigate(\"profile\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 927,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "aria-label": "\"展开导航\"",
+      "className": "\"studio-menu-button\"",
+      "onClick": "{() => setMenuOpen((value) => !value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 942,
+    "tag": "input",
+    "label": "",
+    "attributes": {
+      "aria-label": "\"搜索工作区\"",
+      "placeholder": "\"搜索乡墅视频、文案、人物、素材\"",
+      "value": "{search}",
+      "onChange": "{(event) => setSearch(event.target.value)}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 948,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"submit\"",
+      "aria-label": "\"搜索\""
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 952,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "\"studio-notifications\"",
+      "aria-label": "\"查看任务动态\"",
+      "onClick": "{() => navigate(\"tasks\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 961,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "aria-label": "\"用户档案\"",
+      "className": "\"studio-top-avatar\"",
+      "onClick": "{() => navigate(\"profile\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 974,
+    "tag": "Button",
+    "label": "重试加载",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "onClick": "{refresh}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1021,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "aria-label": "\"关闭提示\"",
+      "onClick": "{() => setNotice(\"\")}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1040,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "key": "{page}",
+      "onClick": "{() => {\n                    navigate(page);\n                    setNewCreation(false);\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1052,
+    "tag": "Button",
+    "label": "从空白创作开始",
+    "attributes": {
+      "variant": "\"quiet\"",
+      "onClick": "{() => {\n                setState((previous) => ({ ...previous, draft: createDraft() }));\n                navigate(\"workbench\");\n                setNewCreation(false);\n              }}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1101,
+    "tag": "Button",
+    "label": "确认费用并提交",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "true"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1105,
+    "tag": "Button",
+    "label": "确认费用并提交",
+    "attributes": {
+      "variant": "\"primary\"",
+      "disabled": "{videoSubmitting}",
+      "onClick": "{() => void submitVideoTask()}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1113,
+    "tag": "Button",
+    "label": "确认费用并提交",
+    "attributes": {
+      "variant": "\"primary\"",
+      "onClick": "{() => void submitOralTask()}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1120,
+    "tag": "Button",
+    "label": "进入项目生成流程",
+    "attributes": {
+      "onClick": "{() => {\n                    setGeneration(undefined);\n                    openLive(\"analysis\");\n                  }}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1138,
+    "tag": "Button",
+    "label": "",
+    "attributes": {
+      "key": "{id}",
+      "onClick": "{() => navigate(id as StudioPage)}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1146,
+    "tag": "Button",
+    "label": "·",
+    "attributes": {
+      "key": "{person.id}",
+      "onClick": "{() =>\n                      navigate(\"person-ip\", { selectedPersonId: person.id })\n                    }"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1239,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "aria-label": "\"关闭\"",
+      "onClick": "{onClose}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1297,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "key": "{item.id}",
+      "onClick": "{() => select({ ipId: item.id })}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1315,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "key": "{voice.id}",
+      "onClick": "{() => select({ voiceId: voice.id })}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1329,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "key": "{avatar.id}",
+      "onClick": "{() => select({ avatarId: avatar.id })}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1345,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "key": "{asset.id}",
+      "onClick": "{() => {\n                      if (kind === \"avatar-photo\") {\n                        select({ imageId: asset.id });\n                        navigate(\"person-avatars\", {\n                          selectedPersonId: person?.id,\n                          returnTo: state.page,\n                        });\n                        notify(\n                          \"已选择单张照片作为制作原料。照片尚不是口播分身，需完成制作后才能使用。\",\n                        );\n                      } else\n                        select(\n                          kind === \"image\"\n                            ? { imageId: asset.id }\n                            : kind === \"original-frame\"\n                              ? {\n                                  originalImageId: asset.id,\n                                  frameConfirmed: false,\n                                }\n                              : kind === \"first-frame\"\n                                ? { firstFrameId: asset.id }\n                                : kind === \"tail-frame\"\n                                  ? { tailFrameId: asset.id }\n                                  : kind === \"audio\"\n                                    ? { audioId: asset.id, voiceId: undefined }\n                                    : {\n                                        referenceIds: [\n                                          ...new Set([\n                                            ...state.draft.referenceIds,\n                                            asset.id,\n                                          ]),\n                                        ],\n                                      },\n                        );\n                    }}"
+    }
+  },
+  {
+    "file": "client/src/studio/StudioWorkspace.tsx",
+    "line": 1403,
+    "tag": "Button",
+    "label": "前往人物库",
+    "attributes": {
+      "onClick": "{() => {\n                onClose();\n                navigate(\n                  kind === \"voice\"\n                    ? \"person-voices\"\n                    : kind === \"avatar\"\n                      ? \"person-avatars\"\n                      : \"people\",\n                  { selectedPersonId: person?.id, returnTo: state.page },\n                );\n              }}"
+    }
+  },
+  {
+    "file": "client/src/studio/ui.tsx",
+    "line": 84,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "{`studio-button studio-button--${variant} ${className}`}"
+    }
+  },
+  {
+    "file": "client/src/studio/ui.tsx",
+    "line": 159,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "key": "{item.id}",
+      "id": "{`${id}-${item.id}`}",
+      "type": "\"button\"",
+      "role": "\"tab\"",
+      "aria-selected": "{value === item.id}",
+      "className": "{value === item.id ? \"is-active\" : \"\"}",
+      "onClick": "{() => onChange(item.id)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ui.tsx",
+    "line": 213,
+    "tag": "button",
+    "label": "：",
+    "attributes": {
+      "type": "\"button\"",
+      "className": "{`studio-filter-select-trigger${\n          value === items[0].id ? \"\" : \" is-active\"\n        }`}",
+      "aria-haspopup": "\"listbox\"",
+      "aria-expanded": "{open}",
+      "onClick": "{() => setOpen((current) => !current)}"
+    }
+  },
+  {
+    "file": "client/src/studio/ui.tsx",
+    "line": 232,
+    "tag": "button",
+    "label": "",
+    "attributes": {
+      "key": "{item.id}",
+      "type": "\"button\"",
+      "role": "\"option\"",
+      "aria-selected": "{item.id === value}",
+      "onClick": "{() => {\n                setOpen(false);\n                onChange(item.id);\n              }}"
+    }
+  }
+]

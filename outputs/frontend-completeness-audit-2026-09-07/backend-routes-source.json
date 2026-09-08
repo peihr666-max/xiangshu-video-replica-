@@ -1,0 +1,1822 @@
+[
+  {
+    "method": "GET",
+    "route": "/api/control/audit-log",
+    "file": "server/app/admin_audit_routes.py",
+    "line": 137,
+    "function": "list_audit_log"
+  },
+  {
+    "method": "GET",
+    "route": "/api/customer/devices",
+    "file": "server/app/customer_device_routes.py",
+    "line": 434,
+    "function": "list_devices"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/customer/devices/{device_id}",
+    "file": "server/app/customer_device_routes.py",
+    "line": 517,
+    "function": "unbind_device_route"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/devices/enroll",
+    "file": "server/app/customer_device_routes.py",
+    "line": 980,
+    "function": "enroll_second_device"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/device-pairings/{pairing_id}/approve",
+    "file": "server/app/customer_device_routes.py",
+    "line": 1414,
+    "function": "approve_device_pairing"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/customer/device-pairings/{pairing_id}",
+    "file": "server/app/customer_device_routes.py",
+    "line": 1501,
+    "function": "dismiss_device_pairing"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/activation-code/reset",
+    "file": "server/app/customer_device_routes.py",
+    "line": 1604,
+    "function": "reset_customer_activation_code"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-code-batches",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 185,
+    "function": "create_activation_code_batch"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-code-batches/{batch_id}/generate",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 278,
+    "function": "generate_activation_codes"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-code-exports/{export_id}/download",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 402,
+    "function": "download_activation_code_export"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-codes/{code_id}/deliver",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 512,
+    "function": "deliver_activation_code"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-codes/{code_id}/suspend",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 624,
+    "function": "suspend_activation_code"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-codes/{code_id}/resume",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 683,
+    "function": "resume_activation_code"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-codes/{code_id}/revoke",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 735,
+    "function": "revoke_activation_code"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-codes/{code_id}/archive",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 791,
+    "function": "archive_activation_code"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/activation-codes/{code_id}/reveal",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 889,
+    "function": "reveal_activation_code"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/activation-codes",
+    "file": "server/app/admin_activation_routes.py",
+    "line": 1032,
+    "function": "list_activation_codes"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/admin/session/exchange",
+    "file": "server/app/admin_auth_routes.py",
+    "line": 877,
+    "function": "exchange_admin_session"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/admin/session/password",
+    "file": "server/app/admin_auth_routes.py",
+    "line": 933,
+    "function": "login_admin_with_password"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/control/admin/password",
+    "file": "server/app/admin_auth_routes.py",
+    "line": 1008,
+    "function": "recover_admin_password"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/admin/session",
+    "file": "server/app/admin_auth_routes.py",
+    "line": 1067,
+    "function": "get_current_admin_session"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/control/admin/session",
+    "file": "server/app/admin_auth_routes.py",
+    "line": 1088,
+    "function": "logout_admin_session"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/settings/rates/history",
+    "file": "server/app/admin_profit_routes.py",
+    "line": 144,
+    "function": "list_daily_prices"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/control/profit/daily-price",
+    "file": "server/app/admin_profit_routes.py",
+    "line": 174,
+    "function": "upsert_daily_price"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/profit/overview",
+    "file": "server/app/admin_profit_routes.py",
+    "line": 274,
+    "function": "profit_overview"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/profit/overview.csv",
+    "file": "server/app/admin_profit_routes.py",
+    "line": 407,
+    "function": "export_profit_csv"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/profit/costs",
+    "file": "server/app/admin_profit_routes.py",
+    "line": 558,
+    "function": "cost_overview"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/profit/costs.csv",
+    "file": "server/app/admin_profit_routes.py",
+    "line": 570,
+    "function": "export_costs_csv"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/dashboard/summary",
+    "file": "server/app/admin_dashboard_routes.py",
+    "line": 46,
+    "function": "dashboard_summary"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/analysis",
+    "file": "server/app/analysis_routes.py",
+    "line": 210,
+    "function": "create_project_analysis"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/analysis-tasks",
+    "file": "server/app/analysis_routes.py",
+    "line": 353,
+    "function": "create_project_analysis_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/analysis-tasks/{task_id}",
+    "file": "server/app/analysis_routes.py",
+    "line": 401,
+    "function": "read_analysis_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/analysis/{analysis_id}",
+    "file": "server/app/analysis_routes.py",
+    "line": 426,
+    "function": "read_analysis"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/analysis/latest",
+    "file": "server/app/analysis_routes.py",
+    "line": 454,
+    "function": "read_latest_project_analysis"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/shot-cards/latest",
+    "file": "server/app/analysis_routes.py",
+    "line": 480,
+    "function": "read_latest_project_shot_card"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/analysis/{analysis_id}/shots",
+    "file": "server/app/analysis_routes.py",
+    "line": 503,
+    "function": "update_analysis_shots"
+  },
+  {
+    "method": "GET",
+    "route": "/api/admin/settings",
+    "file": "server/app/settings_routes.py",
+    "line": 263,
+    "function": "read_settings"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/admin/settings/providers/{provider}",
+    "file": "server/app/settings_routes.py",
+    "line": 276,
+    "function": "update_provider_settings"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/admin/settings/runtime",
+    "file": "server/app/settings_routes.py",
+    "line": 324,
+    "function": "update_runtime_settings"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/admin/settings/billing",
+    "file": "server/app/settings_routes.py",
+    "line": 364,
+    "function": "update_billing_settings"
+  },
+  {
+    "method": "POST",
+    "route": "/api/admin/settings/providers/{provider}/connection-test",
+    "file": "server/app/settings_routes.py",
+    "line": 394,
+    "function": "connection_test"
+  },
+  {
+    "method": "POST",
+    "route": "/api/admin/settings/providers/{provider}/paid-test",
+    "file": "server/app/settings_routes.py",
+    "line": 406,
+    "function": "paid_test"
+  },
+  {
+    "method": "POST",
+    "route": "/api/admin/settings/diagnostic-test",
+    "file": "server/app/settings_routes.py",
+    "line": 418,
+    "function": "run_settings_diagnostic"
+  },
+  {
+    "method": "GET",
+    "route": "/api/admin/settings/diagnostic-reports/{report_id}/download",
+    "file": "server/app/settings_routes.py",
+    "line": 544,
+    "function": "download_settings_diagnostic"
+  },
+  {
+    "method": "GET",
+    "route": "/api/viral/videos",
+    "file": "server/app/viral_routes.py",
+    "line": 318,
+    "function": "list_viral_videos"
+  },
+  {
+    "method": "POST",
+    "route": "/api/viral/videos/statistics",
+    "file": "server/app/viral_routes.py",
+    "line": 366,
+    "function": "fetch_viral_video_statistics"
+  },
+  {
+    "method": "POST",
+    "route": "/api/viral/videos/media",
+    "file": "server/app/viral_routes.py",
+    "line": 377,
+    "function": "fetch_viral_video_media"
+  },
+  {
+    "method": "GET",
+    "route": "/api/viral/covers/{platform}/{video_id:path}",
+    "file": "server/app/viral_routes.py",
+    "line": 557,
+    "function": "get_viral_cover"
+  },
+  {
+    "method": "GET",
+    "route": "/api/viral/videos/media/file",
+    "file": "server/app/viral_routes.py",
+    "line": 606,
+    "function": "download_viral_media_file"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/source-frames/extract",
+    "file": "server/app/source_frame_routes.py",
+    "line": 107,
+    "function": "extract_project_source_frames"
+  },
+  {
+    "method": "GET",
+    "route": "/api/source-frame-tasks/{task_id}",
+    "file": "server/app/source_frame_routes.py",
+    "line": 131,
+    "function": "read_source_frame_task"
+  },
+  {
+    "method": "POST",
+    "route": "/api/source-frame-tasks/{task_id}/cancel",
+    "file": "server/app/source_frame_routes.py",
+    "line": 159,
+    "function": "cancel_project_source_frame_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/source-frame-tasks/latest",
+    "file": "server/app/source_frame_routes.py",
+    "line": 172,
+    "function": "read_latest_source_frame_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/source-frames/latest",
+    "file": "server/app/source_frame_routes.py",
+    "line": 196,
+    "function": "read_latest_source_frames"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/source-frames/confirm",
+    "file": "server/app/source_frame_routes.py",
+    "line": 209,
+    "function": "confirm_project_source_frame"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/source-frames/selection/latest",
+    "file": "server/app/source_frame_routes.py",
+    "line": 230,
+    "function": "read_latest_source_frame_selection"
+  },
+  {
+    "method": "GET",
+    "route": "/api/independent/capabilities",
+    "file": "server/app/independent_routes.py",
+    "line": 25,
+    "function": "read_capabilities"
+  },
+  {
+    "method": "POST",
+    "route": "/api/independent/video-tasks",
+    "file": "server/app/independent_routes.py",
+    "line": 31,
+    "function": "create_video_task"
+  },
+  {
+    "method": "POST",
+    "route": "/api/assets/upload-intent",
+    "file": "server/app/media_routes.py",
+    "line": 410,
+    "function": "create_asset_upload_intent"
+  },
+  {
+    "method": "POST",
+    "route": "/api/assets/{asset_id}/complete",
+    "file": "server/app/media_routes.py",
+    "line": 453,
+    "function": "complete_asset_upload"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/assets/local-objects/{object_key:path}",
+    "file": "server/app/media_routes.py",
+    "line": 486,
+    "function": "put_local_object"
+  },
+  {
+    "method": "GET",
+    "route": "/api/assets/local-objects/{object_key:path}",
+    "file": "server/app/media_routes.py",
+    "line": 577,
+    "function": "get_local_object"
+  },
+  {
+    "method": "GET",
+    "route": "/api/assets/signed-objects/{object_key:path}",
+    "file": "server/app/media_routes.py",
+    "line": 602,
+    "function": "get_signed_object"
+  },
+  {
+    "method": "GET",
+    "route": "/api/studio/materials",
+    "file": "server/app/material_routes.py",
+    "line": 43,
+    "function": "read_materials"
+  },
+  {
+    "method": "POST",
+    "route": "/api/studio/materials/resolve",
+    "file": "server/app/material_routes.py",
+    "line": 64,
+    "function": "read_materials_by_id"
+  },
+  {
+    "method": "POST",
+    "route": "/api/studio/materials/upload-intent",
+    "file": "server/app/material_routes.py",
+    "line": 73,
+    "function": "create_upload_intent"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/studio/materials/uploads/{asset_id}/content",
+    "file": "server/app/material_routes.py",
+    "line": 98,
+    "function": "put_local_material"
+  },
+  {
+    "method": "POST",
+    "route": "/api/studio/materials/uploads/{asset_id}/complete",
+    "file": "server/app/material_routes.py",
+    "line": 132,
+    "function": "complete_upload"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/studio/materials/{material_id}",
+    "file": "server/app/material_routes.py",
+    "line": 151,
+    "function": "patch_material"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/studio/materials/{material_id}",
+    "file": "server/app/material_routes.py",
+    "line": 166,
+    "function": "remove_material"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/first-frames/generate",
+    "file": "server/app/first_frame_routes.py",
+    "line": 247,
+    "function": "generate_project_first_frames"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/first-frame-tasks",
+    "file": "server/app/first_frame_routes.py",
+    "line": 300,
+    "function": "create_project_first_frame_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/first-frame-tasks/{task_id}",
+    "file": "server/app/first_frame_routes.py",
+    "line": 327,
+    "function": "read_first_frame_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/first-frame-tasks/active-or-latest",
+    "file": "server/app/first_frame_routes.py",
+    "line": 347,
+    "function": "read_latest_first_frame_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/first-frames/latest",
+    "file": "server/app/first_frame_routes.py",
+    "line": 366,
+    "function": "read_latest_first_frames"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/first-frames/history",
+    "file": "server/app/first_frame_routes.py",
+    "line": 386,
+    "function": "read_first_frame_history"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/first-frames/confirm",
+    "file": "server/app/first_frame_routes.py",
+    "line": 407,
+    "function": "confirm_project_first_frame"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/first-frames/selection/latest",
+    "file": "server/app/first_frame_routes.py",
+    "line": 425,
+    "function": "read_latest_first_frame_selection"
+  },
+  {
+    "method": "GET",
+    "route": "/api/payments/zpay/notify",
+    "file": "server/app/payment_routes.py",
+    "line": 50,
+    "function": "zpay_notify"
+  },
+  {
+    "method": "GET",
+    "route": "/api/payments/zpay/return",
+    "file": "server/app/payment_routes.py",
+    "line": 95,
+    "function": "zpay_return"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/recharge-orders/{order_no}/sync",
+    "file": "server/app/payment_routes.py",
+    "line": 104,
+    "function": "sync_recharge_order_with_zpay"
+  },
+  {
+    "method": "GET",
+    "route": "/api/studio/stats",
+    "file": "server/app/studio_routes.py",
+    "line": 111,
+    "function": "read_studio_stats"
+  },
+  {
+    "method": "GET",
+    "route": "/api/studio/analytics",
+    "file": "server/app/studio_routes.py",
+    "line": 285,
+    "function": "read_studio_analytics"
+  },
+  {
+    "method": "GET",
+    "route": "/api/studio/notification-preferences",
+    "file": "server/app/studio_routes.py",
+    "line": 324,
+    "function": "read_studio_notification_preferences"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/studio/notification-preferences",
+    "file": "server/app/studio_routes.py",
+    "line": 335,
+    "function": "update_studio_notification_preferences"
+  },
+  {
+    "method": "GET",
+    "route": "/api/studio/saved-prompts",
+    "file": "server/app/studio_routes.py",
+    "line": 378,
+    "function": "read_user_saved_prompts"
+  },
+  {
+    "method": "POST",
+    "route": "/api/simple-characters/upload-intent",
+    "file": "server/app/simple_character_routes.py",
+    "line": 222,
+    "function": "create_simple_upload_intent"
+  },
+  {
+    "method": "POST",
+    "route": "/api/simple-characters/generate",
+    "file": "server/app/simple_character_routes.py",
+    "line": 242,
+    "function": "generate_global_simple_character"
+  },
+  {
+    "method": "POST",
+    "route": "/api/simple-characters/tasks/generate",
+    "file": "server/app/simple_character_routes.py",
+    "line": 301,
+    "function": "enqueue_global_simple_character"
+  },
+  {
+    "method": "POST",
+    "route": "/api/simple-characters/tasks/{project_id}/generate",
+    "file": "server/app/simple_character_routes.py",
+    "line": 325,
+    "function": "enqueue_project_simple_character"
+  },
+  {
+    "method": "GET",
+    "route": "/api/simple-characters/library",
+    "file": "server/app/simple_character_routes.py",
+    "line": 350,
+    "function": "read_simple_library"
+  },
+  {
+    "method": "GET",
+    "route": "/api/simple-characters/identities/{identity_id}/scene-looks",
+    "file": "server/app/simple_character_routes.py",
+    "line": 382,
+    "function": "read_scene_looks"
+  },
+  {
+    "method": "POST",
+    "route": "/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+    "file": "server/app/simple_character_routes.py",
+    "line": 414,
+    "function": "enqueue_scene_look"
+  },
+  {
+    "method": "GET",
+    "route": "/api/simple-characters/identities/{identity_id}/scene-looks/tasks/active-or-latest",
+    "file": "server/app/simple_character_routes.py",
+    "line": 489,
+    "function": "read_latest_scene_look_task"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/simple-characters/identities/{identity_id}/name",
+    "file": "server/app/simple_character_routes.py",
+    "line": 505,
+    "function": "rename_identity"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/simple-characters/identities/{identity_id}/profile",
+    "file": "server/app/simple_character_routes.py",
+    "line": 521,
+    "function": "update_identity_profile"
+  },
+  {
+    "method": "POST",
+    "route": "/api/simple-characters/identities/{identity_id}/regenerate-contact-sheet",
+    "file": "server/app/simple_character_routes.py",
+    "line": 564,
+    "function": "regenerate_contact_sheet"
+  },
+  {
+    "method": "POST",
+    "route": "/api/simple-characters/identities/{identity_id}/regenerate-contact-sheet-task",
+    "file": "server/app/simple_character_routes.py",
+    "line": 627,
+    "function": "enqueue_regenerate_contact_sheet"
+  },
+  {
+    "method": "GET",
+    "route": "/api/simple-characters/task-status/{task_id}",
+    "file": "server/app/simple_character_routes.py",
+    "line": 677,
+    "function": "read_character_sheet_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/simple-characters/tasks/active-or-latest",
+    "file": "server/app/simple_character_routes.py",
+    "line": 688,
+    "function": "read_latest_character_sheet_task"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/simple-characters/identities/{identity_id}",
+    "file": "server/app/simple_character_routes.py",
+    "line": 697,
+    "function": "delete_identity"
+  },
+  {
+    "method": "POST",
+    "route": "/api/simple-characters/{project_id}/generate",
+    "file": "server/app/simple_character_routes.py",
+    "line": 713,
+    "function": "generate_simple_character"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/main-character",
+    "file": "server/app/character_routes.py",
+    "line": 89,
+    "function": "read_project_main_character_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/characters",
+    "file": "server/app/character_routes.py",
+    "line": 117,
+    "function": "read_characters"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/character-versions/available",
+    "file": "server/app/character_routes.py",
+    "line": 134,
+    "function": "read_available_project_character_versions"
+  },
+  {
+    "method": "POST",
+    "route": "/api/characters",
+    "file": "server/app/character_routes.py",
+    "line": 152,
+    "function": "create_character_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/characters/{character_id}",
+    "file": "server/app/character_routes.py",
+    "line": 178,
+    "function": "read_character_route"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/characters/{character_id}",
+    "file": "server/app/character_routes.py",
+    "line": 196,
+    "function": "update_character_route"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/characters/{character_id}",
+    "file": "server/app/character_routes.py",
+    "line": 225,
+    "function": "delete_character_route"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/projects/{project_id}/main-character",
+    "file": "server/app/character_routes.py",
+    "line": 243,
+    "function": "choose_main_character_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/person-identities",
+    "file": "server/app/character_identity_routes.py",
+    "line": 194,
+    "function": "read_person_identities"
+  },
+  {
+    "method": "POST",
+    "route": "/api/person-identities",
+    "file": "server/app/character_identity_routes.py",
+    "line": 202,
+    "function": "create_person_identity_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/person-identities/{identity_id}",
+    "file": "server/app/character_identity_routes.py",
+    "line": 222,
+    "function": "read_person_identity"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/person-identities/{identity_id}",
+    "file": "server/app/character_identity_routes.py",
+    "line": 231,
+    "function": "update_person_identity_route"
+  },
+  {
+    "method": "POST",
+    "route": "/api/person-identities/{identity_id}/authorization-upload-intent",
+    "file": "server/app/character_identity_routes.py",
+    "line": 268,
+    "function": "create_authorization_upload_intent"
+  },
+  {
+    "method": "POST",
+    "route": "/api/person-identities/{identity_id}/authorization-upload-complete",
+    "file": "server/app/character_identity_routes.py",
+    "line": 289,
+    "function": "complete_authorization_upload_route"
+  },
+  {
+    "method": "POST",
+    "route": "/api/person-identities/{identity_id}/source-upload-intent",
+    "file": "server/app/character_identity_routes.py",
+    "line": 309,
+    "function": "create_source_upload_intent"
+  },
+  {
+    "method": "POST",
+    "route": "/api/person-identities/{identity_id}/source-upload-complete",
+    "file": "server/app/character_identity_routes.py",
+    "line": 330,
+    "function": "complete_source_upload_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/person-identities/{identity_id}/personas",
+    "file": "server/app/character_identity_routes.py",
+    "line": 352,
+    "function": "read_character_personas"
+  },
+  {
+    "method": "POST",
+    "route": "/api/person-identities/{identity_id}/personas",
+    "file": "server/app/character_identity_routes.py",
+    "line": 364,
+    "function": "create_character_persona_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/character-personas/{persona_id}",
+    "file": "server/app/character_identity_routes.py",
+    "line": 383,
+    "function": "read_character_persona"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/character-personas/{persona_id}",
+    "file": "server/app/character_identity_routes.py",
+    "line": 392,
+    "function": "update_character_persona_route"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/character-personas/{persona_id}",
+    "file": "server/app/character_identity_routes.py",
+    "line": 407,
+    "function": "delete_character_persona_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/character-personas/{persona_id}/versions",
+    "file": "server/app/character_identity_routes.py",
+    "line": 420,
+    "function": "read_character_versions"
+  },
+  {
+    "method": "POST",
+    "route": "/api/character-personas/{persona_id}/versions",
+    "file": "server/app/character_identity_routes.py",
+    "line": 432,
+    "function": "create_character_version_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/character-versions/{version_id}",
+    "file": "server/app/character_identity_routes.py",
+    "line": 453,
+    "function": "read_character_version"
+  },
+  {
+    "method": "POST",
+    "route": "/api/character-versions/{version_id}/archive",
+    "file": "server/app/character_identity_routes.py",
+    "line": 462,
+    "function": "archive_character_version_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/settings/rates",
+    "file": "server/app/admin_rate_routes.py",
+    "line": 161,
+    "function": "read_rates"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/control/settings/rates",
+    "file": "server/app/admin_rate_routes.py",
+    "line": 171,
+    "function": "update_rates"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/devices",
+    "file": "server/app/admin_device_routes.py",
+    "line": 92,
+    "function": "list_devices"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/device-pairings/{pairing_id}",
+    "file": "server/app/admin_device_routes.py",
+    "line": 200,
+    "function": "get_device_pairing"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/device-pairings/{pairing_id}/approve",
+    "file": "server/app/admin_device_routes.py",
+    "line": 320,
+    "function": "admin_approve_device_pairing"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/device-pairings/{pairing_id}/replace-device",
+    "file": "server/app/admin_device_routes.py",
+    "line": 395,
+    "function": "admin_replace_device_pairing"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/devices/{device_id}/unbind",
+    "file": "server/app/admin_device_routes.py",
+    "line": 462,
+    "function": "admin_unbind_device_route"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/devices/{device_id}/revoke-credential",
+    "file": "server/app/admin_device_routes.py",
+    "line": 514,
+    "function": "admin_revoke_device_credential"
+  },
+  {
+    "method": "POST",
+    "route": "/api/recharge-orders",
+    "file": "server/app/recharge_routes.py",
+    "line": 263,
+    "function": "create_recharge_order"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/recharge-orders",
+    "file": "server/app/recharge_routes.py",
+    "line": 325,
+    "function": "create_customer_recharge_order"
+  },
+  {
+    "method": "GET",
+    "route": "/api/customer/recharge-orders/{order_no}",
+    "file": "server/app/recharge_routes.py",
+    "line": 534,
+    "function": "read_customer_recharge_order_status"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/customer/recharge-orders/{order_no}",
+    "file": "server/app/recharge_routes.py",
+    "line": 568,
+    "function": "close_customer_recharge_order"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/recharge-orders/{order_no}/payment-code",
+    "file": "server/app/recharge_routes.py",
+    "line": 619,
+    "function": "create_customer_payment_code"
+  },
+  {
+    "method": "GET",
+    "route": "/api/customer/profile",
+    "file": "server/app/recharge_routes.py",
+    "line": 784,
+    "function": "read_customer_profile"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/customer/profile",
+    "file": "server/app/recharge_routes.py",
+    "line": 791,
+    "function": "update_customer_profile"
+  },
+  {
+    "method": "GET",
+    "route": "/api/customer/wallet",
+    "file": "server/app/recharge_routes.py",
+    "line": 830,
+    "function": "read_customer_wallet"
+  },
+  {
+    "method": "GET",
+    "route": "/api/customer/wallet/transactions",
+    "file": "server/app/recharge_routes.py",
+    "line": 880,
+    "function": "list_customer_wallet_transactions"
+  },
+  {
+    "method": "GET",
+    "route": "/api/customer/recharge-orders",
+    "file": "server/app/recharge_routes.py",
+    "line": 935,
+    "function": "list_customer_recharge_orders"
+  },
+  {
+    "method": "GET",
+    "route": "/api/recharge-orders",
+    "file": "server/app/recharge_routes.py",
+    "line": 987,
+    "function": "list_recharge_orders"
+  },
+  {
+    "method": "GET",
+    "route": "/api/recharge-orders/{order_no}",
+    "file": "server/app/recharge_routes.py",
+    "line": 1020,
+    "function": "read_recharge_order_status"
+  },
+  {
+    "method": "GET",
+    "route": "/api/auth/me",
+    "file": "server/app/rbac_routes.py",
+    "line": 392,
+    "function": "read_me"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects",
+    "file": "server/app/rbac_routes.py",
+    "line": 455,
+    "function": "list_projects"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects",
+    "file": "server/app/rbac_routes.py",
+    "line": 591,
+    "function": "create_project"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/projects/{project_id}/name",
+    "file": "server/app/rbac_routes.py",
+    "line": 643,
+    "function": "rename_project"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/projects/{project_id}",
+    "file": "server/app/rbac_routes.py",
+    "line": 693,
+    "function": "delete_project"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}",
+    "file": "server/app/rbac_routes.py",
+    "line": 799,
+    "function": "read_project"
+  },
+  {
+    "method": "GET",
+    "route": "/api/assets/{asset_id}",
+    "file": "server/app/rbac_routes.py",
+    "line": 882,
+    "function": "read_asset"
+  },
+  {
+    "method": "POST",
+    "route": "/api/assets/{asset_id}/download-url",
+    "file": "server/app/rbac_routes.py",
+    "line": 901,
+    "function": "create_download_url"
+  },
+  {
+    "method": "POST",
+    "route": "/api/assets/{asset_id}/cached-url",
+    "file": "server/app/rbac_routes.py",
+    "line": 961,
+    "function": "create_cached_character_url"
+  },
+  {
+    "method": "GET",
+    "route": "/api/assets/character-cache/{cache_name}",
+    "file": "server/app/rbac_routes.py",
+    "line": 1030,
+    "function": "read_cached_character_asset"
+  },
+  {
+    "method": "GET",
+    "route": "/api/audit-logs",
+    "file": "server/app/rbac_routes.py",
+    "line": 1129,
+    "function": "read_audit_logs"
+  },
+  {
+    "method": "GET",
+    "route": "/api/studio/drafts/{draft_kind}",
+    "file": "server/app/studio_draft_routes.py",
+    "line": 40,
+    "function": "read_studio_draft"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/studio/drafts/{draft_kind}",
+    "file": "server/app/studio_draft_routes.py",
+    "line": 49,
+    "function": "upsert_studio_draft"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/studio/drafts/{draft_kind}",
+    "file": "server/app/studio_draft_routes.py",
+    "line": 59,
+    "function": "remove_studio_draft"
+  },
+  {
+    "method": "GET",
+    "route": "/api/studio/saved-scripts",
+    "file": "server/app/studio_draft_routes.py",
+    "line": 69,
+    "function": "read_saved_scripts"
+  },
+  {
+    "method": "POST",
+    "route": "/api/studio/saved-scripts",
+    "file": "server/app/studio_draft_routes.py",
+    "line": 77,
+    "function": "create_saved_script"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/studio/saved-scripts/{script_id}",
+    "file": "server/app/studio_draft_routes.py",
+    "line": 86,
+    "function": "remove_saved_script"
+  },
+  {
+    "method": "GET",
+    "route": "/api/oral/price",
+    "file": "server/app/oral_routes.py",
+    "line": 115,
+    "function": "read_oral_price"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/consents",
+    "file": "server/app/oral_routes.py",
+    "line": 133,
+    "function": "create_clone_consent"
+  },
+  {
+    "method": "GET",
+    "route": "/api/oral/consents",
+    "file": "server/app/oral_routes.py",
+    "line": 152,
+    "function": "read_clone_consents"
+  },
+  {
+    "method": "GET",
+    "route": "/api/oral/avatars",
+    "file": "server/app/oral_routes.py",
+    "line": 169,
+    "function": "list_oral_avatars"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/avatars",
+    "file": "server/app/oral_routes.py",
+    "line": 189,
+    "function": "create_avatar_clone"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/avatars/{avatar_id}/refresh",
+    "file": "server/app/oral_routes.py",
+    "line": 221,
+    "function": "refresh_avatar"
+  },
+  {
+    "method": "GET",
+    "route": "/api/oral/voices",
+    "file": "server/app/oral_routes.py",
+    "line": 239,
+    "function": "list_oral_voices"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/voices",
+    "file": "server/app/oral_routes.py",
+    "line": 258,
+    "function": "create_voice_clone"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/voices/{voice_id}/refresh",
+    "file": "server/app/oral_routes.py",
+    "line": 289,
+    "function": "refresh_voice"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/voices/{voice_id}/confirm",
+    "file": "server/app/oral_routes.py",
+    "line": 302,
+    "function": "confirm_voice"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/tasks",
+    "file": "server/app/oral_routes.py",
+    "line": 344,
+    "function": "create_oral_generation_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/oral/tasks",
+    "file": "server/app/oral_routes.py",
+    "line": 381,
+    "function": "list_oral_generation_tasks"
+  },
+  {
+    "method": "GET",
+    "route": "/api/oral/tasks/{task_id}",
+    "file": "server/app/oral_routes.py",
+    "line": 390,
+    "function": "read_oral_generation_task"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/tasks/{task_id}/refresh",
+    "file": "server/app/oral_routes.py",
+    "line": 403,
+    "function": "refresh_oral_generation_task"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/tasks/{task_id}/archive-retry",
+    "file": "server/app/oral_routes.py",
+    "line": 416,
+    "function": "retry_oral_archive"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/tasks/{task_id}/retry",
+    "file": "server/app/oral_routes.py",
+    "line": 433,
+    "function": "retry_oral_submission"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/tasks/{task_id}/cancel",
+    "file": "server/app/oral_routes.py",
+    "line": 450,
+    "function": "cancel_oral_generation_task"
+  },
+  {
+    "method": "POST",
+    "route": "/api/oral/tasks/{task_id}/billing-reconcile",
+    "file": "server/app/oral_routes.py",
+    "line": 463,
+    "function": "reconcile_oral_generation_billing"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/customers/{user_id}/unit-price",
+    "file": "server/app/admin_customer_routes.py",
+    "line": 280,
+    "function": "read_customer_unit_price"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/control/customers/{user_id}/unit-price",
+    "file": "server/app/admin_customer_routes.py",
+    "line": 300,
+    "function": "update_customer_unit_price"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/customers/{user_id}/adjustments",
+    "file": "server/app/admin_customer_routes.py",
+    "line": 396,
+    "function": "create_admin_adjustment"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/customers/{user_id}/adjustments",
+    "file": "server/app/admin_customer_routes.py",
+    "line": 636,
+    "function": "list_admin_adjustments"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/adjustments",
+    "file": "server/app/admin_customer_routes.py",
+    "line": 698,
+    "function": "list_all_admin_adjustments"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/customers",
+    "file": "server/app/admin_customer_routes.py",
+    "line": 810,
+    "function": "list_customers"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/customers.csv",
+    "file": "server/app/admin_customer_routes.py",
+    "line": 960,
+    "function": "export_customers_csv"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/scripts",
+    "file": "server/app/generation_routes.py",
+    "line": 139,
+    "function": "create_project_script"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/script-rewrite",
+    "file": "server/app/generation_routes.py",
+    "line": 150,
+    "function": "rewrite_project_script"
+  },
+  {
+    "method": "GET",
+    "route": "/api/script-rewrite-tasks/{task_id}",
+    "file": "server/app/generation_routes.py",
+    "line": 172,
+    "function": "read_script_rewrite_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/script-rewrite-tasks/latest",
+    "file": "server/app/generation_routes.py",
+    "line": 191,
+    "function": "read_latest_script_rewrite_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/scripts/latest",
+    "file": "server/app/generation_routes.py",
+    "line": 295,
+    "function": "read_latest_project_script"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/prompts/compile",
+    "file": "server/app/generation_routes.py",
+    "line": 309,
+    "function": "compile_project_prompt"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/prompts/preview",
+    "file": "server/app/generation_routes.py",
+    "line": 320,
+    "function": "preview_project_prompt"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/prompts/revise",
+    "file": "server/app/generation_routes.py",
+    "line": 335,
+    "function": "revise_project_prompt"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/saved-prompts",
+    "file": "server/app/generation_routes.py",
+    "line": 351,
+    "function": "create_saved_prompt"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/saved-prompts",
+    "file": "server/app/generation_routes.py",
+    "line": 367,
+    "function": "read_saved_prompts"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/saved-prompts/{saved_prompt_id}/apply",
+    "file": "server/app/generation_routes.py",
+    "line": 378,
+    "function": "apply_project_saved_prompt"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/prompts/latest",
+    "file": "server/app/generation_routes.py",
+    "line": 399,
+    "function": "read_latest_project_prompt"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/prompts/{prompt_version_id}/lock",
+    "file": "server/app/generation_routes.py",
+    "line": 413,
+    "function": "lock_project_prompt"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/generation-batches",
+    "file": "server/app/generation_routes.py",
+    "line": 432,
+    "function": "create_project_generation_batch"
+  },
+  {
+    "method": "GET",
+    "route": "/api/generation-batches",
+    "file": "server/app/generation_routes.py",
+    "line": 456,
+    "function": "list_generation_batch_records"
+  },
+  {
+    "method": "GET",
+    "route": "/api/generation-batches/{batch_id}",
+    "file": "server/app/generation_routes.py",
+    "line": 479,
+    "function": "read_generation_batch"
+  },
+  {
+    "method": "POST",
+    "route": "/api/generation-batches/{batch_id}/cancel",
+    "file": "server/app/generation_routes.py",
+    "line": 488,
+    "function": "cancel_generation_batch_record"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/generation-batches/{batch_id}/name",
+    "file": "server/app/generation_routes.py",
+    "line": 497,
+    "function": "rename_generation_batch_record"
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/generation-batches/{batch_id}",
+    "file": "server/app/generation_routes.py",
+    "line": 512,
+    "function": "delete_generation_batch_record"
+  },
+  {
+    "method": "POST",
+    "route": "/api/generation-batches/{batch_id}/regenerate",
+    "file": "server/app/generation_routes.py",
+    "line": 573,
+    "function": "regenerate_batch"
+  },
+  {
+    "method": "GET",
+    "route": "/api/generation/runtime-limits",
+    "file": "server/app/generation_routes.py",
+    "line": 616,
+    "function": "read_generation_runtime_limits"
+  },
+  {
+    "method": "GET",
+    "route": "/api/generation/price-quote",
+    "file": "server/app/generation_routes.py",
+    "line": 624,
+    "function": "read_generation_price_quote"
+  },
+  {
+    "method": "GET",
+    "route": "/api/generation-tasks/{task_id}/preview-url",
+    "file": "server/app/generation_routes.py",
+    "line": 660,
+    "function": "read_generation_task_preview_url"
+  },
+  {
+    "method": "POST",
+    "route": "/api/generation-tasks/{task_id}/retry",
+    "file": "server/app/generation_routes.py",
+    "line": 707,
+    "function": "retry_task"
+  },
+  {
+    "method": "POST",
+    "route": "/api/generation-tasks/{task_id}/regenerate",
+    "file": "server/app/generation_routes.py",
+    "line": 734,
+    "function": "regenerate_task"
+  },
+  {
+    "method": "POST",
+    "route": "/api/generation-tasks/{task_id}/confirm-not-charged",
+    "file": "server/app/generation_routes.py",
+    "line": 772,
+    "function": "confirm_task_not_charged"
+  },
+  {
+    "method": "POST",
+    "route": "/api/generation-tasks/{task_id}/reconcile",
+    "file": "server/app/generation_routes.py",
+    "line": 811,
+    "function": "reconcile_uncertain_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/generation-reconcile-operations/{operation_id}",
+    "file": "server/app/generation_routes.py",
+    "line": 851,
+    "function": "read_generation_reconcile_operation"
+  },
+  {
+    "method": "GET",
+    "route": "/api/generation-tasks/{task_id}/reconcile/latest",
+    "file": "server/app/generation_routes.py",
+    "line": 871,
+    "function": "read_latest_generation_reconcile_operation"
+  },
+  {
+    "method": "POST",
+    "route": "/api/character-versions/{version_id}/generate-assets",
+    "file": "server/app/character_generation_routes.py",
+    "line": 59,
+    "function": "generate_character_assets"
+  },
+  {
+    "method": "GET",
+    "route": "/api/character-versions/{version_id}/generation-tasks",
+    "file": "server/app/character_generation_routes.py",
+    "line": 80,
+    "function": "read_character_generation_tasks"
+  },
+  {
+    "method": "GET",
+    "route": "/api/character-versions/{version_id}/assets",
+    "file": "server/app/character_generation_routes.py",
+    "line": 96,
+    "function": "read_character_assets"
+  },
+  {
+    "method": "POST",
+    "route": "/api/character-assets/{character_asset_id}/review",
+    "file": "server/app/character_generation_routes.py",
+    "line": 112,
+    "function": "create_character_asset_review"
+  },
+  {
+    "method": "GET",
+    "route": "/api/character-assets/{character_asset_id}/reviews",
+    "file": "server/app/character_generation_routes.py",
+    "line": 133,
+    "function": "read_character_asset_reviews"
+  },
+  {
+    "method": "POST",
+    "route": "/api/character-versions/{version_id}/publish",
+    "file": "server/app/character_generation_routes.py",
+    "line": 149,
+    "function": "publish_character_version_route"
+  },
+  {
+    "method": "POST",
+    "route": "/api/character-assets/{character_asset_id}/regenerate",
+    "file": "server/app/character_generation_routes.py",
+    "line": 169,
+    "function": "regenerate_character_asset_route"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/settings/queue-mode",
+    "file": "server/app/admin_runtime_routes.py",
+    "line": 59,
+    "function": "read_queue_mode"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/control/settings/queue-mode",
+    "file": "server/app/admin_runtime_routes.py",
+    "line": 69,
+    "function": "update_queue_mode"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/customer-sessions/{session_id}/revoke",
+    "file": "server/app/admin_session_routes.py",
+    "line": 41,
+    "function": "revoke_customer_session"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/customer-sessions/live",
+    "file": "server/app/admin_session_routes.py",
+    "line": 87,
+    "function": "list_live_sessions"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/customers/{user_id}/sessions",
+    "file": "server/app/admin_session_routes.py",
+    "line": 166,
+    "function": "list_customer_sessions"
+  },
+  {
+    "method": "GET",
+    "route": "/api/wallet",
+    "file": "server/app/wallet_routes.py",
+    "line": 48,
+    "function": "read_wallet"
+  },
+  {
+    "method": "GET",
+    "route": "/api/wallet/transactions",
+    "file": "server/app/wallet_routes.py",
+    "line": 91,
+    "function": "list_wallet_transactions"
+  },
+  {
+    "method": "GET",
+    "route": "/health",
+    "file": "server/app/main.py",
+    "line": 362,
+    "function": "health"
+  },
+  {
+    "method": "GET",
+    "route": "/live",
+    "file": "server/app/main.py",
+    "line": 367,
+    "function": "live"
+  },
+  {
+    "method": "GET",
+    "route": "/ready",
+    "file": "server/app/main.py",
+    "line": 373,
+    "function": "ready"
+  },
+  {
+    "method": "GET",
+    "route": "/metrics",
+    "file": "server/app/main.py",
+    "line": 419,
+    "function": "metrics"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/character-reference-recommendation",
+    "file": "server/app/character_reference_routes.py",
+    "line": 26,
+    "function": "read_character_reference_recommendation"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/character-reference-selection",
+    "file": "server/app/character_reference_routes.py",
+    "line": 42,
+    "function": "select_character_references"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/character-reference-selection/latest",
+    "file": "server/app/character_reference_routes.py",
+    "line": 63,
+    "function": "read_latest_character_reference_selection"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/sessions/login",
+    "file": "server/app/customer_session_routes.py",
+    "line": 729,
+    "function": "login"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/sessions/switch",
+    "file": "server/app/customer_session_routes.py",
+    "line": 751,
+    "function": "switch"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/sessions/heartbeat",
+    "file": "server/app/customer_session_routes.py",
+    "line": 782,
+    "function": "heartbeat"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/sessions/logout",
+    "file": "server/app/customer_session_routes.py",
+    "line": 830,
+    "function": "logout"
+  },
+  {
+    "method": "POST",
+    "route": "/api/customer/activate",
+    "file": "server/app/activation_code_routes.py",
+    "line": 801,
+    "function": "activate_first_device"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/accounts",
+    "file": "server/app/control_routes.py",
+    "line": 484,
+    "function": "list_accounts"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/recharge-orders",
+    "file": "server/app/control_routes.py",
+    "line": 534,
+    "function": "list_recharge_orders"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/wallet-transactions",
+    "file": "server/app/control_routes.py",
+    "line": 593,
+    "function": "list_wallet_transactions"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/generation-records",
+    "file": "server/app/control_routes.py",
+    "line": 664,
+    "function": "list_generation_records"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/billing-reconciliation",
+    "file": "server/app/control_routes.py",
+    "line": 1034,
+    "function": "read_reconciliation"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/settings",
+    "file": "server/app/control_routes.py",
+    "line": 1083,
+    "function": "read_control_settings"
+  },
+  {
+    "method": "PUT",
+    "route": "/api/control/settings/providers/{provider}",
+    "file": "server/app/control_routes.py",
+    "line": 1098,
+    "function": "update_control_provider_settings"
+  },
+  {
+    "method": "POST",
+    "route": "/api/control/settings/providers/{provider}/connection-test",
+    "file": "server/app/control_routes.py",
+    "line": 1135,
+    "function": "test_control_provider_connection"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/control/settings/runtime",
+    "file": "server/app/control_routes.py",
+    "line": 1150,
+    "function": "update_control_runtime_settings"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/control/settings/zpay",
+    "file": "server/app/control_routes.py",
+    "line": 1180,
+    "function": "update_zpay_settings"
+  },
+  {
+    "method": "PATCH",
+    "route": "/api/control/settings/billing",
+    "file": "server/app/control_routes.py",
+    "line": 1210,
+    "function": "update_control_billing_settings"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/recharge-orders.csv",
+    "file": "server/app/control_routes.py",
+    "line": 1240,
+    "function": "export_recharge_orders_csv"
+  },
+  {
+    "method": "GET",
+    "route": "/api/control/wallet-transactions.csv",
+    "file": "server/app/control_routes.py",
+    "line": 1299,
+    "function": "export_wallet_transactions_csv"
+  },
+  {
+    "method": "POST",
+    "route": "/api/projects/{project_id}/script-from-audio",
+    "file": "server/app/script_from_audio_routes.py",
+    "line": 24,
+    "function": "extract_script_from_audio"
+  },
+  {
+    "method": "GET",
+    "route": "/api/script-from-audio-tasks/{task_id}",
+    "file": "server/app/script_from_audio_routes.py",
+    "line": 45,
+    "function": "read_script_from_audio_task"
+  },
+  {
+    "method": "GET",
+    "route": "/api/projects/{project_id}/script-from-audio-tasks/latest",
+    "file": "server/app/script_from_audio_routes.py",
+    "line": 64,
+    "function": "read_latest_script_from_audio_task"
+  }
+]

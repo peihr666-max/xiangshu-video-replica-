@@ -40,6 +40,7 @@ from app.character_identity import (
     require_identity_active,
 )
 from app.db_portable import BusinessConnection
+from app.operation_costs import begin_operation_cost, complete_operation_cost
 from app.permissions import require_role, write_audit
 from app.storage import (
     StorageAdapter,
@@ -582,6 +583,8 @@ def run_next_character_generation_task(
         return None
     started = time.monotonic()
     request_hash = str(task["request_hash"] or "")
+    cost_record_id = ""
+    cost_completed = False
     try:
         request = load_character_image_request(conn, task=task, storage=storage)
         selected_provider = provider or character_provider_for_name(str(task["provider"]))
@@ -591,7 +594,17 @@ def run_next_character_generation_task(
                 "character image provider does not match the queued task",
                 retriable=False,
             )
+        cost_record_id = begin_operation_cost(
+            conn,
+            source_type="character_generation_task",
+            source_id=f"{task['id']}:{task['attempt']}",
+            subject="character_sheet_image",
+            user_id=str(task["created_by"]),
+            metadata={"view_type": str(task["view_type"])},
+        )
         result = selected_provider.generate_view(request)
+        complete_operation_cost(conn, record_id=cost_record_id, usage_amount=1)
+        cost_completed = True
         validate_character_image_result(result)
         try:
             auto_quality = inspect_fake_character_asset(result.content, view_type=request.view_type)
@@ -602,6 +615,8 @@ def run_next_character_generation_task(
                 retriable=False,
             ) from exc
     except CharacterImageProviderFailed as exc:
+        if not cost_completed:
+            complete_operation_cost(conn, record_id=cost_record_id, usage_amount=None)
         return finish_character_generation_failure(
             conn,
             task=task,
@@ -611,6 +626,8 @@ def run_next_character_generation_task(
             request_hash=request_hash,
         )
     except (KeyError, OSError, StorageBackendUnavailable, ValueError) as exc:
+        if not cost_completed:
+            complete_operation_cost(conn, record_id=cost_record_id, usage_amount=None)
         logger.warning("Character source asset could not be read: %s", type(exc).__name__)
         return finish_character_generation_failure(
             conn,

@@ -745,3 +745,182 @@
     margin-top: 16px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * C2 独立创作：提示词导入 / 素材双通道 / 生成进度视图
+ * ------------------------------------------------------------------------- */
+.creation-prompt-import {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.creation-prompt-list {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--line, #ddd);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.creation-prompt-list button {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--line, #ddd);
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  cursor: pointer;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.creation-prompt-list button:hover {
+  border-color: var(--accent-strong, #c6a45f);
+}
+
+.creation-prompt-list p {
+  margin: 4px 6px;
+  color: var(--text-muted, #777);
+  font-size: 12.5px;
+}
+
+.creation-upload-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.creation-upload-row .creation-upload {
+  flex: 1;
+}
+
+.creation-upload-mini {
+  align-self: stretch;
+  border: 1px dashed var(--line, #bbb);
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.creation-upload-mini:hover:not(:disabled) {
+  border-color: var(--accent-strong, #c6a45f);
+}
+
+.creation-frame-slot {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+}
+
+.creation-progress {
+  display: grid;
+  gap: 10px;
+}
+
+.creation-progress.failed {
+  gap: 6px;
+}
+
+.creation-progress-headline {
+  font-weight: 600;
+}
+
+.creation-progress-stages {
+  display: flex;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.creation-progress-stages li {
+  flex: 1;
+  border: 1px solid var(--line, #ddd);
+  border-radius: 999px;
+  color: var(--text-muted, #777);
+  font-size: 12.5px;
+  padding: 5px 10px;
+  text-align: center;
+}
+
+.creation-progress-stages li.is-done {
+  border-color: rgba(74, 222, 128, 0.45);
+  color: #4ade80;
+}
+
+.creation-progress-stages li.is-active {
+  border-color: var(--accent-strong, #c6a45f);
+  color: var(--accent-strong, #c6a45f);
+  font-weight: 600;
+}
+
+.creation-progress-bar {
+  width: 100%;
+  height: 10px;
+}
+
+.creation-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted, #777);
+  font-size: 12.5px;
+}
+
+.creation-progress-copy {
+  color: var(--text-muted, #777);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * C2-复刻：项目选择 / 分镜行 / 拆解面板
+ * ------------------------------------------------------------------------- */
+.creation-project-select {
+  border: 1px solid var(--line, #ddd);
+  border-radius: 10px;
+  background: var(--panel, #fff);
+  color: var(--text, #333);
+  padding: 9px 12px;
+  font-size: 13.5px;
+}
+
+.creation-replica-analyze {
+  display: grid;
+  gap: 10px;
+}
+
+.creation-shot-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  border: 1px solid var(--line, #e2e2e2);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.creation-shot-index {
+  font-family: var(--mono, monospace);
+  color: var(--text-muted, #777);
+  font-size: 13px;
+  padding-top: 2px;
+}
+
+.creation-shot-body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.creation-shot-body strong {
+  font-size: 13.5px;
+}
+
+.creation-shot-body small {
+  color: var(--text-muted, #777);
+  font-size: 12.5px;
+}

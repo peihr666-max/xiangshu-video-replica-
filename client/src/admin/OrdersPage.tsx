@@ -7,22 +7,21 @@ import {
 } from "react";
 
 import {
-  type ControlRechargeOrder,
   type ControlReconciliation,
   downloadControlRechargeOrdersCsv,
   downloadControlWalletTransactionsCsv,
-  getControlRechargeOrders,
   getControlReconciliation,
   type RechargeOrderStatus,
   syncControlRechargeOrder,
 } from "../api";
+import { type AdminRechargeOrder, listAdminRechargeOrders } from "../api.admin";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { DataTable } from "./ui/DataTable";
 import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
 import { OrderStatusBadge } from "./ui/StatusBadge";
 import { useAutoRefresh } from "./ui/useAutoRefresh";
-import { formatFen } from "./ui/vocabulary";
+import { formatDateTime, formatFen } from "./ui/vocabulary";
 
 const PAGE_SIZE = 20;
 
@@ -39,11 +38,15 @@ const STATUS_FILTERS = [
  * 均已支持）；手动查单改为说明性确认——它会向 ZPay 查单并可能入账。
  */
 export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
-  const [orders, setOrders] = useState<ControlRechargeOrder[]>([]);
+  const [orders, setOrders] = useState<AdminRechargeOrder[]>([]);
   const [orderTotal, setOrderTotal] = useState(0);
   const [orderOffset, setOrderOffset] = useState(0);
   const [statusDraft, setStatusDraft] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [usernameFilter, setUsernameFilter] = useState("");
+  const [channelFilter, setChannelFilter] = useState("");
+  const [createdFrom, setCreatedFrom] = useState("");
+  const [createdTo, setCreatedTo] = useState("");
   const [reconciliation, setReconciliation] =
     useState<ControlReconciliation | null>(null);
   const [loading, setLoading] = useState(false);
@@ -62,12 +65,16 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
     setError("");
     try {
       const [orderPage, nextReconciliation] = await Promise.all([
-        getControlRechargeOrders({
+        listAdminRechargeOrders({
           status: (statusFilter || undefined) as
             | RechargeOrderStatus
             | undefined,
           limit: PAGE_SIZE,
           offset: orderOffset,
+          username: usernameFilter || undefined,
+          channel: channelFilter || undefined,
+          createdFrom: createdFrom || undefined,
+          createdTo: createdTo || undefined,
         }),
         getControlReconciliation(),
       ]);
@@ -83,7 +90,14 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
     } finally {
       setLoading(false);
     }
-  }, [orderOffset, statusFilter]);
+  }, [
+    channelFilter,
+    createdFrom,
+    createdTo,
+    orderOffset,
+    statusFilter,
+    usernameFilter,
+  ]);
 
   const loadOrdersRef = useRef<(() => void) | null>(null);
   loadOrdersRef.current = () => void loadOrders();
@@ -148,7 +162,7 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
   }
 
   return (
-    <section aria-label="充值订单" className="admin-panel">
+    <section aria-label="充值订单" className="admin-panel admin-orders-page">
       <div className="admin-actions">
         <button
           aria-pressed={autoRefresh}
@@ -170,19 +184,28 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
 
       {reconciliation ? (
         <div className="admin-metrics">
-          <span>钱包数 {reconciliation.wallet_count}</span>
-          <span>待支付订单 {reconciliation.pending_order_count}</span>
-          <span>钱包不一致 {reconciliation.wallet_mismatch_count}</span>
-          <span>
-            已支付未入账 {reconciliation.paid_order_without_charge_count}
-          </span>
-          <span>
-            入账但订单未支付 {reconciliation.charge_without_paid_order_count}
-          </span>
+          {[
+            ["钱包数", reconciliation.wallet_count],
+            ["待支付订单", reconciliation.pending_order_count],
+            ["钱包不一致", reconciliation.wallet_mismatch_count],
+            ["已支付未入账", reconciliation.paid_order_without_charge_count],
+            [
+              "入账但订单未支付",
+              reconciliation.charge_without_paid_order_count,
+            ],
+          ].map(([label, value]) => (
+            <span key={label}>
+              <small>{label} </small>
+              <strong>{value}</strong>
+            </span>
+          ))}
         </div>
       ) : null}
 
-      <form className="admin-form" onSubmit={handleFilterSubmit}>
+      <form
+        className="admin-form admin-filter-grid"
+        onSubmit={handleFilterSubmit}
+      >
         <label>
           订单状态
           <select
@@ -195,6 +218,44 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
               </option>
             ))}
           </select>
+        </label>
+        <label>
+          账号
+          <input
+            aria-label="订单账号"
+            value={usernameFilter}
+            onChange={(event) => setUsernameFilter(event.target.value)}
+          />
+        </label>
+        <label>
+          支付渠道
+          <select
+            aria-label="支付渠道"
+            value={channelFilter}
+            onChange={(event) => setChannelFilter(event.target.value)}
+          >
+            <option value="">全部渠道</option>
+            <option value="alipay">支付宝</option>
+            <option value="wxpay">微信支付</option>
+          </select>
+        </label>
+        <label>
+          起始时间
+          <input
+            aria-label="订单起始时间"
+            type="date"
+            value={createdFrom}
+            onChange={(event) => setCreatedFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          截止时间
+          <input
+            aria-label="订单截止时间"
+            type="date"
+            value={createdTo}
+            onChange={(event) => setCreatedTo(event.target.value)}
+          />
         </label>
         <button disabled={loading} type="submit">
           筛选
@@ -211,8 +272,12 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
               <th>订单号</th>
               <th>账号</th>
               <th>金额</th>
-              <th>条数</th>
+              <th>额度</th>
               <th>状态</th>
+              <th>支付渠道</th>
+              <th>第三方单号</th>
+              <th>下单时间</th>
+              <th>支付时间</th>
               <th>操作</th>
             </>
           }
@@ -224,10 +289,16 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
               </td>
               <td>{order.username}</td>
               <td>{formatFen(order.amount_fen)}</td>
-              <td>{order.credits}</td>
+              <td>+{order.credits} 秒</td>
               <td>
                 <OrderStatusBadge status={order.status} />
               </td>
+              <td>{order.channel || "—"}</td>
+              <td>
+                <code>{order.provider_trade_no ?? "—"}</code>
+              </td>
+              <td>{formatDateTime(order.created_at)}</td>
+              <td>{formatDateTime(order.paid_at)}</td>
               <td>
                 {order.status === "PENDING" && !readOnly ? (
                   <button

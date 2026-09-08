@@ -42,7 +42,7 @@ TOOL_CREATE_UPLOAD_URL_PATH = "/api/v2/hifly/tool/create_upload_url"
 ACCOUNT_CREDIT_PATH = "/api/v2/hifly/account/credit"
 
 # Vendor task-status integers (docs §2): 1 waiting / 2 processing / 3 done / 4 failed.
-VendorTaskStatus = Literal["WAITING", "PROCESSING", "DONE", "FAILED"]
+VendorTaskStatus = Literal["WAITING", "PROCESSING", "DONE", "FAILED", "UNKNOWN"]
 
 _MAX_TITLE_CHARS = 20
 _MAX_TTS_TEXT_CHARS = 10_000
@@ -93,6 +93,10 @@ class HiflyError(RuntimeError):
         super().__init__(message)
         self.vendor_code = vendor_code
         self.business_rejection = business_rejection
+
+
+class HiflySubmissionUncertain(HiflyError):
+    """A create POST may have reached the vendor but no receipt was obtained."""
 
 
 class HiflySettingsUnavailable(RuntimeError):
@@ -215,7 +219,7 @@ def _vendor_status(status: Any) -> VendorTaskStatus:
     try:
         return _VENDOR_STATUS_NAMES[int(status)]
     except (KeyError, TypeError, ValueError):
-        return "WAITING"
+        return "UNKNOWN"
 
 
 def _require_text(value: Any, field: str) -> str:
@@ -285,6 +289,14 @@ class HiflyClient:
         data = envelope.get("data")
         return data if isinstance(data, dict) else {}
 
+    def _creation_request(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return self._request("POST", path, payload=payload)
+        except HiflyError as exc:
+            if exc.vendor_code is not None:
+                raise
+            raise HiflySubmissionUncertain(str(exc)) from exc
+
     # -- 数字人（分身） -------------------------------------------------------
 
     def create_avatar_by_video(
@@ -339,10 +351,10 @@ class HiflyClient:
             payload["video_url"] = video_url
         if file_id:
             payload["file_id"] = file_id
-        data = self._request("POST", path, payload=payload)
+        data = self._creation_request(path, payload)
         task_id = data.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            raise HiflyError("数字人服务克隆任务创建成功但缺少 task_id")
+            raise HiflySubmissionUncertain("数字人服务未返回克隆任务凭证")
         return task_id
 
     def avatar_task(self, task_id: str) -> HiflyAvatarTaskSnapshot:
@@ -382,10 +394,10 @@ class HiflyClient:
             payload["audio_url"] = audio_url
         if file_id:
             payload["file_id"] = file_id
-        data = self._request("POST", VOICE_CREATE_PATH, payload=payload)
+        data = self._creation_request(VOICE_CREATE_PATH, payload)
         task_id = data.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            raise HiflyError("数字人服务声音克隆任务创建成功但缺少 task_id")
+            raise HiflySubmissionUncertain("数字人服务未返回声音任务凭证")
         return task_id
 
     def edit_voice(self, *, voice: str, rate: str, volume: str, pitch: str) -> None:
@@ -446,7 +458,7 @@ class HiflyClient:
             payload["audio_url"] = audio_url
         if file_id:
             payload["file_id"] = file_id
-        data = self._request("POST", VIDEO_CREATE_BY_AUDIO_PATH, payload=payload)
+        data = self._creation_request(VIDEO_CREATE_BY_AUDIO_PATH, payload)
         return self._extract_task_id(data)
 
     def create_video_by_tts(
@@ -473,8 +485,13 @@ class HiflyClient:
             "aigc_flag": bool(aigc_flag),
         }
         if subtitle:
+<<<<<<< main
+            payload.update(dict(subtitle))
+        data = self._creation_request(VIDEO_CREATE_BY_TTS_PATH, payload)
+=======
             payload.update(validate_tts_subtitle(subtitle))
         data = self._request("POST", VIDEO_CREATE_BY_TTS_PATH, payload=payload)
+>>>>>>> codex/local-main-pg-timeouts-20260908
         return self._extract_task_id(data)
 
     def create_audio_by_tts(self, *, voice: str, text: str, title: str) -> str:
@@ -484,10 +501,9 @@ class HiflyClient:
         clean_text = _require_text(text, "text")
         if len(clean_text) > _MAX_TTS_TEXT_CHARS:
             raise ValueError(f"text must be at most {_MAX_TTS_TEXT_CHARS} characters")
-        data = self._request(
-            "POST",
+        data = self._creation_request(
             AUDIO_CREATE_BY_TTS_PATH,
-            payload={
+            {
                 "voice": _require_text(voice, "voice"),
                 "text": clean_text,
                 "title": clean_title,
@@ -554,7 +570,7 @@ class HiflyClient:
     def _extract_task_id(self, data: Mapping[str, Any]) -> str:
         task_id = data.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            raise HiflyError("数字人服务创作任务创建成功但缺少 task_id")
+            raise HiflySubmissionUncertain("数字人服务未返回创作任务凭证")
         return task_id
 
 

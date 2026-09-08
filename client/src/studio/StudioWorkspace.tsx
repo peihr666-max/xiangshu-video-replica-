@@ -8,11 +8,18 @@ import {
 } from "react";
 import type { WorkspaceShell } from "../App";
 import {
+  createIndependentVideoTask,
   createOralTask,
   customerVisibleErrorMessage,
+  defaultBatchProvider,
   type GenerationBatch,
+  type GenerationPriceQuote,
+  type GenerationRatio,
   getGenerationBatch,
+  getGenerationPriceQuote,
+  getIndependentCapabilities,
   getOralPrice,
+  type IndependentCapabilities,
   type Project,
 } from "../api";
 import { AnalyticsPage } from "./AnalyticsPage";
@@ -34,6 +41,7 @@ import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
 import {
   extractScriptFromUpload as extractScriptFromUploadLive,
   loadCloudDraft,
+  loadDraftMaterials,
   loadPersonAssets,
   loadProjectDraft,
   loadSavedScriptList,
@@ -57,12 +65,15 @@ import {
   createState,
   pageTitles,
   patchStudioDraft,
+  resolveVideoMode,
   routeFromHash,
+  SUPPORTED_VIDEO_RATIOS,
   withImportedProject,
 } from "./state";
 import type {
   LivePanel,
   PickerKind,
+  StudioAsset,
   StudioContextValue,
   StudioData,
   StudioDraft,
@@ -77,15 +88,35 @@ type Props = ComponentProps<typeof WorkspaceShell> & {
   reviewData?: StudioData;
   initialState?: StudioState;
 };
+
+function mergeStudioAssets(
+  current: StudioAsset[],
+  incoming: StudioAsset[],
+): StudioAsset[] {
+  const merged = new Map(current.map((asset) => [asset.id, asset]));
+  for (const asset of incoming) {
+    const existing = merged.get(asset.id);
+    merged.set(asset.id, {
+      ...existing,
+      ...asset,
+      url: existing?.url ?? asset.url,
+    });
+  }
+  return [...merged.values()];
+}
+
 const emptyData: StudioData = {
   people: [],
   assets: [],
+  materials: [],
   videos: [],
   tasks: [],
   projects: [],
   errors: [],
   loading: true,
   stats: null,
+  analytics7: null,
+  analytics30: null,
 };
 const TASKS_POLL_INTERVAL_MS = 20_000;
 const creationPages = new Set<StudioPage>([
@@ -188,9 +219,19 @@ function StudioWorkspaceSession({
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [oralPriceFen, setOralPriceFen] = useState<number | null>(null);
+  // ---- 视频生成（C2 独立创作）----
+  const [videoCapabilities, setVideoCapabilities] =
+    useState<IndependentCapabilities>();
+  const [videoQuote, setVideoQuote] = useState<GenerationPriceQuote | null>(
+    null,
+  );
+  const [videoSubmitting, setVideoSubmitting] = useState(false);
   const busyRef = useRef(false);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
+<<<<<<< main
+  const restoredAssetsRef = useRef<StudioAsset[]>([]);
+=======
   const loadUserRef = useRef(currentUser);
   if (
     loadUserRef.current.id !== currentUser.id ||
@@ -199,6 +240,7 @@ function StudioWorkspaceSession({
     loadUserRef.current = currentUser;
   }
   const loadUser = loadUserRef.current;
+>>>>>>> codex/local-main-pg-timeouts-20260908
   const notify = useCallback((message: string) => setNotice(message), []);
 
   // ---- 云端草稿（C7）----
@@ -231,6 +273,18 @@ function StudioWorkspaceSession({
           latestDraftRef.current = restore.draft;
           setState((previous) => ({ ...previous, draft: restore.draft }));
           notify("已恢复上次云端草稿，请核对内容并确认终稿。");
+          const restored = await loadDraftMaterials(restore.draft).catch(
+            () => null,
+          );
+          if (!active || !restored) return;
+          restoredAssetsRef.current = restored.assets;
+          setData((previous) => ({
+            ...previous,
+            assets: mergeStudioAssets(previous.assets, restored.assets),
+          }));
+          if (restored.unavailableIds.length) {
+            notify("草稿已恢复，部分原素材已不可用，请重新选择。");
+          }
         }
       })
       .catch(() => {});
@@ -262,6 +316,54 @@ function StudioWorkspaceSession({
       active = false;
     };
   }, [review, generation]);
+
+  // 视频生成能力探测（扩展模式是否开放、单批上限）；审核模式不探测。
+  useEffect(() => {
+    if (review) return;
+    let active = true;
+    void getIndependentCapabilities()
+      .then((capabilities) => {
+        if (active) setVideoCapabilities(capabilities);
+      })
+      .catch(() => {
+        if (active) setVideoCapabilities(undefined);
+      });
+    return () => {
+      active = false;
+    };
+  }, [review]);
+
+  // 视频生成确认弹窗：按分辨率/时长/条数拉取按秒报价；草稿参数变化自动刷新。
+  const videoDuration = state.draft.duration;
+  const videoResolution = state.draft.resolution;
+  const videoCount = state.draft.count;
+  useEffect(() => {
+    if (review || generation !== "视频生成") {
+      setVideoQuote(null);
+      return;
+    }
+    let active = true;
+    setVideoQuote(null);
+    void getGenerationPriceQuote({
+      resolution: videoResolution === "2K" ? "2K" : "768P",
+      duration_seconds: (videoDuration >= 4 && videoDuration <= 15
+        ? Math.round(videoDuration)
+        : 8) as 4 | 15,
+      quantity: (videoCount === 2 || videoCount === 4 ? videoCount : 1) as
+        | 1
+        | 2
+        | 4,
+    })
+      .then((quote) => {
+        if (active) setVideoQuote(quote);
+      })
+      .catch(() => {
+        if (active) setVideoQuote(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [review, generation, videoDuration, videoResolution, videoCount]);
 
   const submitOralTask = async () => {
     if (currentUser.role === "auditor") {
@@ -298,6 +400,56 @@ function StudioWorkspaceSession({
   };
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
 
+  const submitVideoTask = async () => {
+    if (currentUser.role === "auditor") {
+      notify("当前账号为只读权限，不能提交生成。");
+      return;
+    }
+    if (videoSubmitting) return;
+    setVideoSubmitting(true);
+    try {
+      const draft = latestDraftRef.current;
+      const mode = resolveVideoMode(state.page, Boolean(draft.firstFrameId));
+      const result = await createIndependentVideoTask({
+        mode,
+        prompt_text: draft.prompt,
+        first_frame_asset_id:
+          mode === "i2v" ? (draft.firstFrameId ?? null) : null,
+        last_frame_asset_id:
+          mode === "i2v" && videoCapabilities?.last_frame_enabled !== false
+            ? (draft.tailFrameId ?? null)
+            : null,
+        reference_asset_ids: mode === "r2v" ? draft.referenceIds : [],
+        output_duration_seconds:
+          draft.duration >= 4 && draft.duration <= 15
+            ? Math.round(draft.duration)
+            : 8,
+        resolution: draft.resolution === "2K" ? "2K" : "768P",
+        ratio: (SUPPORTED_VIDEO_RATIOS as readonly string[]).includes(
+          draft.ratio,
+        )
+          ? (draft.ratio as GenerationRatio)
+          : "adaptive",
+        quantity: draft.count === 2 || draft.count === 4 ? draft.count : 1,
+        idempotency_key: crypto.randomUUID(),
+        provider: defaultBatchProvider(),
+      });
+      setGeneration(undefined);
+      patchDraft({ videoBatchId: result.id });
+      notify("视频生成任务已提交，可在预览区查看进度。");
+      refresh();
+    } catch (cause: unknown) {
+      notify(
+        customerVisibleErrorMessage(
+          cause,
+          "视频生成任务提交失败，请稍后重试。",
+        ),
+      );
+    } finally {
+      setVideoSubmitting(false);
+    }
+  };
+
   useEffect(() => {
     if (review) return;
     // The explicit refresh key intentionally reruns the same read-only requests.
@@ -306,8 +458,16 @@ function StudioWorkspaceSession({
     setData((previous) => ({ ...previous, loading: true }));
     void loadStudioData(loadUser)
       .then((result) => {
+<<<<<<< main
+        if (active)
+          setData({
+            ...result,
+            assets: mergeStudioAssets(result.assets, restoredAssetsRef.current),
+          });
+=======
         if (!active) return;
         setData(result);
+>>>>>>> codex/local-main-pg-timeouts-20260908
       })
       .catch((cause: unknown) => {
         if (active)
@@ -548,6 +708,45 @@ function StudioWorkspaceSession({
           )
         )
           throw new Error("完整口播音频已失效，请重新选择");
+      }
+      if (kind === "视频生成") {
+        const mode = resolveVideoMode(
+          state.page,
+          Boolean(state.draft.firstFrameId),
+        );
+        if (!state.draft.prompt.trim()) {
+          throw new Error("请先填写提示词");
+        }
+        if (mode === "i2v") {
+          const firstFrameId = state.draft.firstFrameId;
+          const frame =
+            data.assets.find((asset) => asset.id === firstFrameId) ??
+            data.materials.find((asset) => asset.id === firstFrameId);
+          if (!frame) throw new Error("请选择首帧图片");
+          if (
+            videoCapabilities &&
+            state.draft.tailFrameId &&
+            !videoCapabilities.last_frame_enabled
+          ) {
+            throw new Error("尾帧需要完成供应商核对后开放，敬请期待。");
+          }
+        }
+        if (mode === "r2v" && state.draft.referenceIds.length === 0) {
+          throw new Error("请至少选择一张参考图");
+        }
+        if (videoCapabilities) {
+          const gated =
+            (mode === "t2v" && !videoCapabilities.t2v_enabled) ||
+            (mode === "r2v" && !videoCapabilities.r2v_enabled);
+          if (gated) {
+            throw new Error("该模式需要完成供应商核对后开放，敬请期待。");
+          }
+          if (state.draft.count > videoCapabilities.max_quantity) {
+            throw new Error(
+              `单批最多生成 ${videoCapabilities.max_quantity} 条视频`,
+            );
+          }
+        }
       }
       setGeneration(kind);
     } catch (cause) {
@@ -815,6 +1014,10 @@ function StudioWorkspaceSession({
               <LiveWorkspacePanel
                 panel={livePanel}
                 currentUser={currentUser}
+                characterIdentityId={state.selectedPersonId ?? state.draft.ipId}
+                characterInitialTab={
+                  state.page === "person-photos" ? "scenes" : "base"
+                }
                 customerAccount={customerAccount}
                 customerWallet={customerWallet}
                 project={liveProject}
@@ -902,7 +1105,9 @@ function StudioWorkspaceSession({
                 ? "当前为效果审核，不会创建真实生成任务，也不会扣费。"
                 : generation === "数字人口播"
                   ? "将创建一条数字人口播任务，提交前请核对文案与声音。"
-                  : "此独立创作接口尚未接入。现有项目复刻可通过已实现的生成流程报价与提交。"}
+                  : generation === "视频生成"
+                    ? "将按提示词与参数创建视频生成任务，按秒计费，提交前请核对。"
+                    : "此独立创作接口尚未接入。现有项目复刻可通过已实现的生成流程报价与提交。"}
             </Hint>
             <dl className="studio-details">
               <div>
@@ -914,7 +1119,9 @@ function StudioWorkspaceSession({
                 <dd>
                   {generation === "数字人口播" && oralPriceFen !== null
                     ? `${(oralPriceFen / 100).toFixed(2)} 元/条`
-                    : "待服务端报价"}
+                    : generation === "视频生成" && videoQuote !== null
+                      ? `${(videoQuote.estimated_price_fen / 100).toFixed(2)} 元（${videoQuote.unit_price_fen_per_second} 分/秒 × ${videoQuote.estimated_seconds} 秒）`
+                      : "待服务端报价"}
                 </dd>
               </div>
               <div>
@@ -922,8 +1129,18 @@ function StudioWorkspaceSession({
                 <dd>尚未提交 · 未扣费</dd>
               </div>
             </dl>
-            {review || generation !== "数字人口播" ? (
+            {review ||
+            generation === "人物置换" ||
+            generation === "视频复刻" ? (
               <Button variant="primary" disabled>
+                确认费用并提交
+              </Button>
+            ) : generation === "视频生成" ? (
+              <Button
+                variant="primary"
+                disabled={videoSubmitting}
+                onClick={() => void submitVideoTask()}
+              >
                 确认费用并提交
               </Button>
             ) : (
@@ -931,16 +1148,18 @@ function StudioWorkspaceSession({
                 确认费用并提交
               </Button>
             )}
-            {!review && generation !== "数字人口播" && (
-              <Button
-                onClick={() => {
-                  setGeneration(undefined);
-                  openLive("analysis");
-                }}
-              >
-                进入项目生成流程
-              </Button>
-            )}
+            {!review &&
+              generation !== "数字人口播" &&
+              generation !== "视频生成" && (
+                <Button
+                  onClick={() => {
+                    setGeneration(undefined);
+                    openLive("analysis");
+                  }}
+                >
+                  进入项目生成流程
+                </Button>
+              )}
           </StudioDialog>
         )}
         {showSearch && (
@@ -1085,7 +1304,14 @@ function StudioPicker({
     patchDraft(patch);
     onClose();
   };
-  const assets = data.assets.filter((asset) =>
+  // 视频生成的帧/参考选择额外提供素材库图片（C9 通道，用户归属）。
+  const materials =
+    kind === "reference" || kind === "first-frame" || kind === "tail-frame"
+      ? data.materials.filter(
+          (material) => !data.assets.some((asset) => asset.id === material.id),
+        )
+      : [];
+  const assets = [...materials, ...data.assets].filter((asset) =>
     kind === "audio"
       ? asset.kind === "audio"
       : kind === "reference"

@@ -31,6 +31,7 @@ from app.db_pg import (
     DatabaseMode,
     MissingDatabaseConfigError,
     check_pg_ready,
+    close_pg_pool,
     pg_server_now,
     pg_transaction,
     resolve_database_config,
@@ -460,6 +461,28 @@ def test_pg_transaction_commits() -> None:
                 "SELECT COUNT(*) FROM t05_tx WHERE value = %s", ("committed",)
             ).fetchone()[0]
             assert count == 1
+
+
+@pytestmark_pg
+def test_pg_pool_sets_leaked_transaction_guardrails() -> None:
+    """2026-09-07 评审 §7-0：泄漏的未提交 claim 事务曾在共享容量行锁上
+    挂住并发 worker 19 分钟。池连接必须携带 statement / idle-in-transaction
+    超时，把这类故障从无限排队变成数据库侧快速失败。"""
+    with _env(**{DATABASE_URL_ENV: PG_DSN}):
+        close_pg_pool()
+        try:
+            with pg_transaction() as conn:
+                # pg_settings.setting 是 GUC 基础单位（ms）的原始值；SHOW /
+                # current_setting 会把它单位化成 "5min" 这类显示串。
+                rows = conn.execute(
+                    "SELECT name, setting FROM pg_settings WHERE name = ANY(%s)",
+                    (["statement_timeout", "idle_in_transaction_session_timeout"],),
+                ).fetchall()
+        finally:
+            close_pg_pool()
+    values = {str(row[0]): int(row[1]) for row in rows}
+    assert values["statement_timeout"] == PG_STATEMENT_TIMEOUT_MS
+    assert values["idle_in_transaction_session_timeout"] == (PG_IDLE_IN_TRANSACTION_TIMEOUT_MS)
 
 
 @pytestmark_pg

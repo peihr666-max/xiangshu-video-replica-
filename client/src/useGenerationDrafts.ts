@@ -1,22 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  applySavedGenerationPrompt,
   compileGenerationPrompt,
   createGenerationBatch,
   createScriptVersion,
   defaultBatchProvider,
   type GenerationBatch,
   type GenerationBatchInput,
+  type GenerationPriceQuote,
+  type GenerationRatio,
   type GenerationRuntimeLimits,
   type GenerationVersion,
+  getGenerationPriceQuote,
   getGenerationRuntimeLimits,
   getLatestGenerationPrompt,
   getLatestScriptRewriteTask,
   getLatestScriptVersion,
+  listSavedGenerationPrompts,
   lockGenerationPrompt,
   reviseGenerationPrompt,
   rewriteProjectScript,
   type ScriptRewriteTask,
+  saveGenerationPrompt,
   waitForScriptRewriteTask,
 } from "./api";
 
@@ -55,6 +61,7 @@ type UseGenerationDraftsInput = {
   // 逻辑容忍 null：无首帧时 prompt 必然 stale、不可编译/建批）。
   firstFrameAssetId: string | null;
   firstFrameSelectionVersionId: string;
+  identityId?: string | null;
   originalScript: string;
   projectId: string;
   readOnly: boolean;
@@ -68,6 +75,7 @@ export function useGenerationDrafts({
   durationSeconds,
   firstFrameAssetId,
   firstFrameSelectionVersionId,
+  identityId,
   originalScript,
   projectId,
   readOnly,
@@ -89,9 +97,14 @@ export function useGenerationDrafts({
   const [limits, setLimits] = useState(DEFAULT_LIMITS);
   const [quantityInput, setQuantityInput] = useState("1");
   const [outputDuration, setOutputDuration] = useState(() =>
-    String(Math.min(15, Math.max(4, Math.round(durationSeconds)))),
+    String(normalizeDurationOption(durationSeconds)),
   );
   const [resolution, setResolution] = useState<"768P" | "2K">("768P");
+  const [ratio, setRatio] = useState<GenerationRatio>("adaptive");
+  const [priceQuote, setPriceQuote] = useState<GenerationPriceQuote | null>(
+    null,
+  );
+  const [savedPrompts, setSavedPrompts] = useState<GenerationVersion[]>([]);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -100,6 +113,8 @@ export function useGenerationDrafts({
   const [busyAction, setBusyAction] = useState<GenerationBusyAction>(null);
   const loadGenerationRef = useRef(0);
   const actionGenerationRef = useRef(0);
+  const identityIdRef = useRef(identityId);
+  identityIdRef.current = identityId;
   const isCreatingBatchRef = useRef(false);
   const idempotencyRecordRef = useRef<IdempotencyRecord | null>(null);
 
@@ -122,7 +137,7 @@ export function useGenerationDrafts({
       getLatestScriptVersion(projectId),
       getLatestGenerationPrompt(projectId),
       getGenerationRuntimeLimits(),
-      getLatestScriptRewriteTask(projectId),
+      getLatestScriptRewriteTask(projectId, identityId),
     ])
       .then(([scriptState, promptState, runtime, latestRewriteTask]) => {
         if (!active || loadGeneration !== loadGenerationRef.current) {
@@ -169,10 +184,7 @@ export function useGenerationDrafts({
         // 无已保存时长时跟随参考时长（P0-02-03 提升后 Hook 在工作区挂载，
         // durationSeconds 需等拆解加载完成，不能只用 useState 初始值）。
         setOutputDuration(
-          String(
-            restoredDuration ??
-              Math.min(15, Math.max(4, Math.round(durationSeconds))),
-          ),
+          String(normalizeDurationOption(restoredDuration ?? durationSeconds)),
         );
         const restoredResolution = readPayloadString(
           restoredPrompt,
@@ -181,14 +193,20 @@ export function useGenerationDrafts({
         if (restoredResolution === "768P" || restoredResolution === "2K") {
           setResolution(restoredResolution);
         }
+        const restoredRatio = readPayloadString(restoredPrompt, "ratio");
+        if (isGenerationRatio(restoredRatio)) {
+          setRatio(restoredRatio);
+        }
 
         if (
           latestRewriteTask &&
+          rewriteTaskMatchesIdentity(latestRewriteTask, identityId) &&
           shouldRecoverScriptRewrite(latestRewriteTask, restoredScript)
         ) {
           if (latestRewriteTask.status === "SUCCEEDED") {
             applyRecoveredScriptRewrite(
               latestRewriteTask,
+              identityId,
               setScriptSource,
               setScriptText,
               setMessage,
@@ -205,12 +223,17 @@ export function useGenerationDrafts({
                   : "AI 改写失败，请重新提交。"),
             );
           } else {
-            setMessage("AI 改写正在后台执行，可离开本页继续其他操作。");
+            setMessage(rewriteRunningMessage(latestRewriteTask, identityId));
             void waitForScriptRewriteTask(latestRewriteTask.id)
               .then((completedTask) => {
-                if (active && loadGeneration === loadGenerationRef.current) {
+                if (
+                  active &&
+                  loadGeneration === loadGenerationRef.current &&
+                  rewriteTaskMatchesIdentity(completedTask, identityId)
+                ) {
                   applyRecoveredScriptRewrite(
                     completedTask,
+                    identityId,
                     setScriptSource,
                     setScriptText,
                     setMessage,
@@ -250,11 +273,32 @@ export function useGenerationDrafts({
     durationSeconds,
     firstFrameAssetId,
     firstFrameSelectionVersionId,
+    identityId,
     originalScript,
     projectId,
     referenceSelectionId,
     shotCardVersionId,
   ]);
+
+  useEffect(() => {
+    let active = true;
+    if (typeof listSavedGenerationPrompts !== "function") {
+      return;
+    }
+    listSavedGenerationPrompts(projectId)
+      .then((items) => {
+        if (active) setSavedPrompts(items);
+      })
+      .catch((requestError: unknown) => {
+        if (active) {
+          setSavedPrompts([]);
+          setError(errorMessage(requestError, "读取我的提示词失败。"));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
 
   const promptStatus = readPayloadString(promptVersion, "status");
   const scriptDirty = Boolean(
@@ -269,8 +313,7 @@ export function useGenerationDrafts({
   const quantity = parseQuantity(quantityInput, limits);
   const quantityError = quantityValidationError(quantityInput, limits);
   const duration = Number(outputDuration);
-  const durationValid =
-    Number.isInteger(duration) && duration >= 4 && duration <= 15;
+  const durationValid = duration === 4 || duration === 15;
   const provider = defaultBatchProvider();
   const batchRequest: Omit<GenerationBatchInput, "idempotency_key"> | null =
     promptVersion && quantity !== null && durationValid && firstFrameAssetId
@@ -280,6 +323,7 @@ export function useGenerationDrafts({
           first_frame_asset_id: firstFrameAssetId,
           output_duration_seconds: duration,
           resolution,
+          ratio,
           provider,
           fake_audio_quality: "ok",
         }
@@ -296,8 +340,37 @@ export function useGenerationDrafts({
         "output_duration_seconds",
         duration,
       ) &&
-      payloadMatchesOrMissing(promptVersion, "resolution", resolution),
+      payloadMatchesOrMissing(promptVersion, "resolution", resolution) &&
+      payloadMatchesOrMissing(promptVersion, "ratio", ratio),
   );
+
+  useEffect(() => {
+    let active = true;
+    if (
+      typeof getGenerationPriceQuote !== "function" ||
+      !durationValid ||
+      quantity === null ||
+      !isCustomerQuantity(quantity)
+    ) {
+      setPriceQuote(null);
+      return;
+    }
+    setPriceQuote(null);
+    getGenerationPriceQuote({
+      resolution,
+      duration_seconds: duration as 4 | 15,
+      quantity,
+    })
+      .then((quote) => {
+        if (active) setPriceQuote(quote);
+      })
+      .catch(() => {
+        if (active) setPriceQuote(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [duration, durationValid, quantity, resolution]);
   const canCompile = Boolean(
     !readOnly &&
       scriptVersion &&
@@ -347,31 +420,51 @@ export function useGenerationDrafts({
     setError("");
     setMessage("");
     try {
-      const task = await rewriteProjectScript(projectId, text);
-      if (actionGeneration !== actionGenerationRef.current) {
+      const task = identityId
+        ? await rewriteProjectScript(projectId, text, identityId)
+        : await rewriteProjectScript(projectId, text);
+      if (
+        actionGeneration !== actionGenerationRef.current ||
+        !sameIdentity(identityIdRef.current, identityId)
+      ) {
+        return;
+      }
+      if (!rewriteTaskMatchesIdentity(task, identityId)) {
+        setError("改写任务的人物与当前选择不一致，已停止回填。");
         return;
       }
       // 任务已持久化后立即释放页面级 busy；Provider 调用由 Worker 完成，
       // 不应再阻止切换标签、项目或页面。
       setBusyAction(null);
-      setMessage("AI 改写正在后台执行，可离开本页继续其他操作。");
+      setMessage(rewriteRunningMessage(task, identityId));
       const completedTask = await waitForScriptRewriteTask(task.id);
-      if (actionGeneration !== actionGenerationRef.current) {
+      if (
+        actionGeneration !== actionGenerationRef.current ||
+        !sameIdentity(identityIdRef.current, identityId) ||
+        !rewriteTaskMatchesIdentity(completedTask, identityId)
+      ) {
         return;
       }
       applyRecoveredScriptRewrite(
         completedTask,
+        identityId,
         setScriptSource,
         setScriptText,
         setMessage,
         setError,
       );
     } catch (requestError) {
-      if (actionGeneration === actionGenerationRef.current) {
+      if (
+        actionGeneration === actionGenerationRef.current &&
+        sameIdentity(identityIdRef.current, identityId)
+      ) {
         setError(errorMessage(requestError, "AI 改写失败。"));
       }
     } finally {
-      if (actionGeneration === actionGenerationRef.current) {
+      if (
+        actionGeneration === actionGenerationRef.current &&
+        sameIdentity(identityIdRef.current, identityId)
+      ) {
         setBusyAction(null);
       }
     }
@@ -433,6 +526,7 @@ export function useGenerationDrafts({
         first_frame_asset_id: firstFrameAssetId,
         output_duration_seconds: duration,
         resolution,
+        ratio,
       });
       if (actionGeneration !== actionGenerationRef.current) {
         return;
@@ -476,7 +570,21 @@ export function useGenerationDrafts({
       setPromptText(revisedText);
       setSavedPromptText(revisedText);
       setPromptStale(false);
-      setMessage(`Prompt 已另存为版本 #${revised.version_number}。`);
+      try {
+        const saved = await saveGenerationPrompt(projectId, {
+          name: `我的提示词 ${new Date().toLocaleString("zh-CN")}`,
+          prompt_text: revisedText,
+          base_prompt_version_id: revised.id,
+        });
+        setSavedPrompts((current) => [saved, ...current]);
+        setMessage(
+          `Prompt 已另存为版本 #${revised.version_number}，并加入我的提示词。`,
+        );
+      } catch (libraryError) {
+        setMessage(
+          `Prompt 已另存为版本 #${revised.version_number}；${errorMessage(libraryError, "加入我的提示词失败。")}`,
+        );
+      }
     } catch (requestError) {
       if (actionGeneration === actionGenerationRef.current) {
         setError(errorMessage(requestError, "保存视频生成提示词失败。"));
@@ -518,6 +626,29 @@ export function useGenerationDrafts({
       if (actionGeneration === actionGenerationRef.current) {
         setBusyAction(null);
       }
+    }
+  }
+
+  async function applySavedPrompt(savedPromptId: string) {
+    if (!promptVersion || readOnly || busyAction) return;
+    setBusyAction("prompt");
+    setError("");
+    try {
+      const applied = await applySavedGenerationPrompt(
+        projectId,
+        savedPromptId,
+        promptVersion.id,
+      );
+      const text = readPayloadString(applied, "prompt_text") ?? "";
+      setPromptVersion(applied);
+      setPromptText(text);
+      setSavedPromptText(text);
+      setPromptStale(false);
+      setMessage("已将我的提示词应用到本次生成。");
+    } catch (requestError) {
+      setError(errorMessage(requestError, "应用我的提示词失败。"));
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -660,6 +791,7 @@ export function useGenerationDrafts({
           first_frame_asset_id: firstFrameAssetId,
           output_duration_seconds: duration,
           resolution,
+          ratio,
         });
         if (!isCurrent()) {
           return;
@@ -699,6 +831,7 @@ export function useGenerationDrafts({
           first_frame_asset_id: firstFrameAssetId,
           output_duration_seconds: duration,
           resolution,
+          ratio,
           provider,
           fake_audio_quality: "ok",
         },
@@ -794,6 +927,9 @@ export function useGenerationDrafts({
     quantityError,
     outputDuration,
     resolution,
+    ratio,
+    priceQuote,
+    savedPrompts,
     duration,
     durationValid,
     // 派生与恢复
@@ -819,6 +955,8 @@ export function useGenerationDrafts({
     setQuantityInput,
     setOutputDuration,
     setResolution,
+    setRatio,
+    applySavedPrompt,
     createBatch,
     recoverBatch,
     runGenerationPipeline,
@@ -851,6 +989,7 @@ function timestampMs(value: string): number {
 
 function applyRecoveredScriptRewrite(
   task: ScriptRewriteTask,
+  expectedIdentityId: string | null | undefined,
   setScriptSource: (source: ScriptSource) => void,
   setScriptText: (text: string) => void,
   setMessage: (message: string) => void,
@@ -864,7 +1003,44 @@ function applyRecoveredScriptRewrite(
   setScriptSource("custom");
   setScriptText(task.result.rewritten_text);
   setError("");
-  setMessage("AI 改写完成，请确认后点击「保存口播稿」存为二创稿。");
+  const identity = rewriteIdentityLabel(task, expectedIdentityId);
+  setMessage(
+    `AI 改写完成${identity ? `（人物：${identity}）` : ""}，请确认后点击「保存口播稿」存为二创稿。`,
+  );
+}
+
+function rewriteTaskMatchesIdentity(
+  task: ScriptRewriteTask,
+  identityId: string | null | undefined,
+): boolean {
+  return sameIdentity(task.identity_id, identityId);
+}
+
+function sameIdentity(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  return (left ?? null) === (right ?? null);
+}
+
+function rewriteIdentityLabel(
+  task: ScriptRewriteTask,
+  identityId: string | null | undefined,
+): string | undefined {
+  return (
+    task.ip_profile_snapshot?.display_name ||
+    task.identity_id ||
+    identityId ||
+    undefined
+  );
+}
+
+function rewriteRunningMessage(
+  task: ScriptRewriteTask,
+  identityId: string | null | undefined,
+): string {
+  const identity = rewriteIdentityLabel(task, identityId);
+  return `AI 改写正在后台执行${identity ? `（人物：${identity}）` : ""}，可离开本页继续其他操作。`;
 }
 
 // P0-02-03：状态提升后由 AnalysisWorkspace 持有，注入标签页①的
@@ -955,7 +1131,9 @@ function parseQuantity(
     return null;
   }
   const parsed = Number(value);
-  return parsed >= limits.min_quantity && parsed <= limits.max_quantity
+  return parsed >= limits.min_quantity &&
+    parsed <= limits.max_quantity &&
+    isCustomerQuantity(parsed)
     ? parsed
     : null;
 }
@@ -971,7 +1149,30 @@ function quantityValidationError(
   if (parsed < limits.min_quantity || parsed > limits.max_quantity) {
     return `生成数量必须在 ${limits.min_quantity}–${limits.max_quantity} 之间`;
   }
+  if (!isCustomerQuantity(parsed)) {
+    return "生成数量请选择 1、2 或 4";
+  }
   return "";
+}
+
+function isCustomerQuantity(value: number): value is 1 | 2 | 4 {
+  return value === 1 || value === 2 || value === 4;
+}
+
+function normalizeDurationOption(value: number): 4 | 15 {
+  return value <= 9 ? 4 : 15;
+}
+
+function isGenerationRatio(value: string | null): value is GenerationRatio {
+  return (
+    value === "adaptive" ||
+    value === "21:9" ||
+    value === "16:9" ||
+    value === "4:3" ||
+    value === "1:1" ||
+    value === "3:4" ||
+    value === "9:16"
+  );
 }
 
 function idempotencyStorageKey(

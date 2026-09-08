@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -64,6 +65,13 @@ GenerationRecordType = Literal[
 ]
 ProviderCostStatus = Literal["KNOWN", "ESTIMATED", "UNAVAILABLE", "NOT_APPLICABLE"]
 RecordDataStatus = Literal["VALID", "UNAVAILABLE", "CORRUPTED"]
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _inclusive_created_to(value: str) -> str:
+    if _DATE_ONLY.match(value):
+        return f"{value} 23:59:59.999999+00:00"
+    return value
 
 
 class AccountWallet(BaseModel):
@@ -127,6 +135,9 @@ class ControlWalletTransaction(BaseModel):
     task_id: str | None
     billing_round: int | None
     created_at: str
+    available_balance_after: int | None
+    reserved_balance_after: int | None
+    oral_task_id: str | None = None
 
 
 class ControlWalletTransactionPage(BaseModel):
@@ -526,13 +537,25 @@ def list_recharge_orders(
     _actor: ControlUser,
     status: OrderStatus | None = None,
     user_id: str | None = None,
+    username: str | None = None,
+    channel: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> ControlRechargeOrderPage:
-    where, params = _order_filters(status=status, user_id=user_id)
+    where, params = _order_filters(
+        status=status,
+        user_id=user_id,
+        username=username,
+        channel=channel,
+        created_from=created_from,
+        created_to=created_to,
+    )
     total = int(
         conn.execute(
-            f"SELECT COUNT(*) FROM recharge_orders AS orders {where}",  # noqa: S608
+            f"SELECT COUNT(*) FROM recharge_orders AS orders "
+            f"JOIN users ON users.id = orders.user_id {where}",  # noqa: S608
             params,
         ).fetchone()[0]
     )
@@ -573,13 +596,23 @@ def list_wallet_transactions(
     _actor: ControlUser,
     user_id: str | None = None,
     type: TransactionType | None = None,
+    username: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> ControlWalletTransactionPage:
-    where, params = _transaction_filters(user_id=user_id, transaction_type=type)
+    where, params = _transaction_filters(
+        user_id=user_id,
+        transaction_type=type,
+        username=username,
+        created_from=created_from,
+        created_to=created_to,
+    )
     total = int(
         conn.execute(
-            f"SELECT COUNT(*) FROM wallet_transactions AS tx {where}",  # noqa: S608
+            f"SELECT COUNT(*) FROM wallet_transactions AS tx "
+            f"JOIN users ON users.id = tx.user_id {where}",  # noqa: S608
             params,
         ).fetchone()[0]
     )
@@ -594,12 +627,28 @@ def list_wallet_transactions(
             tx.reserved_delta,
             tx.recharge_order_id,
             tx.task_id,
+            tx.oral_task_id,
             tx.billing_round,
-            tx.created_at
+            tx.created_at,
+            CASE WHEN tx.ledger_sequence IS NULL THEN NULL ELSE
+                (SELECT COALESCE(SUM(prev.available_delta), 0)
+                 FROM wallet_transactions prev
+                 WHERE prev.user_id = tx.user_id
+                   AND (prev.ledger_sequence IS NULL
+                        OR prev.ledger_sequence <= tx.ledger_sequence))
+            END AS available_balance_after,
+            CASE WHEN tx.ledger_sequence IS NULL THEN NULL ELSE
+                (SELECT COALESCE(SUM(prev.reserved_delta), 0)
+                 FROM wallet_transactions prev
+                 WHERE prev.user_id = tx.user_id
+                   AND (prev.ledger_sequence IS NULL
+                        OR prev.ledger_sequence <= tx.ledger_sequence))
+            END AS reserved_balance_after
         FROM wallet_transactions AS tx
         JOIN users ON users.id = tx.user_id
         {where}
-        ORDER BY tx.created_at DESC, tx.id DESC
+        ORDER BY (tx.ledger_sequence IS NULL), tx.ledger_sequence DESC,
+                 tx.created_at DESC, tx.id DESC
         LIMIT %s OFFSET %s
         """,  # noqa: S608
         (*params, limit, offset),
@@ -616,27 +665,103 @@ def list_wallet_transactions(
 def list_generation_records(
     conn: Database,
     _actor: ControlUser,
+    username: str | None = None,
+    status: str | None = None,
+    record_type: GenerationRecordType | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> ControlGenerationRecordPage:
     records: list[ControlGenerationRecord] = []
     scan_limit = offset + limit
+    video_where, video_params = _generation_record_filters(
+        record_types=("VIDEO",),
+        username=username,
+        status=status,
+        record_type=record_type,
+        created_from=created_from,
+        created_to=created_to,
+    )
+    first_where, first_params = _generation_record_filters(
+        record_types=("FIRST_FRAME_IMAGE",),
+        username=username,
+        status=status,
+        record_type=record_type,
+        created_from=created_from,
+        created_to=created_to,
+    )
+    sheet_where, sheet_params = _generation_record_filters(
+        record_types=("CHARACTER_SHEET_IMAGE",),
+        username=username,
+        status=status,
+        record_type=record_type,
+        created_from=created_from,
+        created_to=created_to,
+    )
+    view_where, view_params = _generation_record_filters(
+        record_types=("CHARACTER_VIEW_IMAGE",),
+        username=username,
+        status=status,
+        record_type=record_type,
+        created_from=created_from,
+        created_to=created_to,
+    )
+    source_where, source_params = _generation_record_filters(
+        record_types=("SOURCE_FRAME_PROCESS", "SOURCE_FRAME_AI_SCORE"),
+        username=username,
+        status=status,
+        record_type=record_type,
+        created_from=created_from,
+        created_to=created_to,
+    )
+    if record_type in {"SOURCE_FRAME_PROCESS", "SOURCE_FRAME_AI_SCORE"}:
+        semantic_requested_sql = """
+            (
+              CASE WHEN json_valid(versions.payload_json)
+                THEN json_extract(
+                  versions.payload_json, '$.semantic_quality_status'
+                ) IN ('VERIFIED', 'UNAVAILABLE')
+                ELSE 0
+              END
+              OR EXISTS (
+                SELECT 1 FROM audit_logs quality_audit
+                WHERE quality_audit.action = 'source_frame.semantic_quality_started'
+                  AND quality_audit.entity_id = task.id
+              )
+            )
+        """
+        source_type_clause = (
+            semantic_requested_sql
+            if record_type == "SOURCE_FRAME_AI_SCORE"
+            else f"NOT {semantic_requested_sql}"
+        )
+        conjunction = "AND" if source_where else "WHERE"
+        source_where = f"{source_where} {conjunction} {source_type_clause}"
     total = int(
         conn.execute(
-            """
+            f"""
             SELECT
-                (SELECT COUNT(*) FROM generation_tasks)
-              + (SELECT COUNT(*) FROM first_frame_tasks)
-              + (SELECT COUNT(*) FROM character_sheet_tasks)
-              + (SELECT COUNT(*) FROM character_generation_tasks)
-              + (SELECT COUNT(*) FROM source_frame_tasks)
+                (SELECT COUNT(*) FROM generation_tasks task
+                 JOIN generation_batches batch ON batch.id = task.batch_id
+                 JOIN users ON users.id = batch.created_by_user_id {video_where})
+              + (SELECT COUNT(*) FROM first_frame_tasks task
+                 JOIN users ON users.id = task.created_by_user_id {first_where})
+              + (SELECT COUNT(*) FROM character_sheet_tasks task
+                 JOIN users ON users.id = task.created_by_user_id {sheet_where})
+              + (SELECT COUNT(*) FROM character_generation_tasks task
+                 JOIN users ON users.id = task.created_by {view_where})
+              + (SELECT COUNT(*) FROM source_frame_tasks task
+                 JOIN users ON users.id = task.created_by_user_id
+                 LEFT JOIN versions ON versions.id = task.result_version_id {source_where})
                 AS total
-            """
+            """,  # noqa: S608
+            (*video_params, *first_params, *sheet_params, *view_params, *source_params),
         ).fetchone()["total"]
     )
 
     video_rows = conn.execute(
-        """
+        f"""
         SELECT
             task.id, task.generation_mode AS operation, task.status,
             task.provider, task.model, task.actual_cost, task.estimated_cost,
@@ -654,10 +779,11 @@ def list_generation_records(
         JOIN generation_batches AS batch ON batch.id = task.batch_id
         JOIN users ON users.id = batch.created_by_user_id
         JOIN projects ON projects.id = batch.project_id
+        {video_where}
         ORDER BY task.created_at DESC, task.id DESC
         LIMIT %s
-        """,
-        (scan_limit,),
+        """,  # noqa: S608
+        (*video_params, scan_limit),
     ).fetchall()
     for row in video_rows:
         provider_cost = row["actual_cost"]
@@ -694,17 +820,18 @@ def list_generation_records(
         )
 
     first_frame_rows = conn.execute(
-        """
+        f"""
         SELECT task.*, users.username, users.display_name,
                projects.name AS project_name, versions.payload_json
         FROM first_frame_tasks AS task
         JOIN users ON users.id = task.created_by_user_id
         JOIN projects ON projects.id = task.project_id
         LEFT JOIN versions ON versions.id = task.result_version_id
+        {first_where}
         ORDER BY task.created_at DESC, task.id DESC
         LIMIT %s
-        """,
-        (scan_limit,),
+        """,  # noqa: S608
+        (*first_params, scan_limit),
     ).fetchall()
     for row in first_frame_rows:
         request, request_status = _json_object(
@@ -742,16 +869,17 @@ def list_generation_records(
         )
 
     sheet_rows = conn.execute(
-        """
+        f"""
         SELECT task.*, users.username, users.display_name,
                projects.name AS project_name
         FROM character_sheet_tasks AS task
         JOIN users ON users.id = task.created_by_user_id
         LEFT JOIN projects ON projects.id = task.project_id
+        {sheet_where}
         ORDER BY task.created_at DESC, task.id DESC
         LIMIT %s
-        """,
-        (scan_limit,),
+        """,  # noqa: S608
+        (*sheet_params, scan_limit),
     ).fetchall()
     for row in sheet_rows:
         result, result_status = _json_object(
@@ -777,14 +905,15 @@ def list_generation_records(
         )
 
     character_view_rows = conn.execute(
-        """
+        f"""
         SELECT task.*, users.username, users.display_name
         FROM character_generation_tasks AS task
         JOIN users ON users.id = task.created_by
+        {view_where}
         ORDER BY task.created_at DESC, task.id DESC
         LIMIT %s
-        """,
-        (scan_limit,),
+        """,  # noqa: S608
+        (*view_params, scan_limit),
     ).fetchall()
     for row in character_view_rows:
         cost = None if row["cost_amount"] is None else float(row["cost_amount"])
@@ -813,17 +942,18 @@ def list_generation_records(
         )
 
     source_rows = conn.execute(
-        """
+        f"""
         SELECT task.*, users.username, users.display_name,
                projects.name AS project_name, versions.payload_json
         FROM source_frame_tasks AS task
         JOIN users ON users.id = task.created_by_user_id
         JOIN projects ON projects.id = task.project_id
         LEFT JOIN versions ON versions.id = task.result_version_id
+        {source_where}
         ORDER BY task.created_at DESC, task.id DESC
         LIMIT %s
-        """,
-        (scan_limit,),
+        """,  # noqa: S608
+        (*source_params, scan_limit),
     ).fetchall()
     source_task_ids = [str(row["id"]) for row in source_rows]
     source_quality_audits = []
@@ -1200,6 +1330,7 @@ def export_wallet_transactions_csv(
             tx.reserved_delta,
             COALESCE(tx.recharge_order_id, '') AS recharge_order_id,
             COALESCE(tx.task_id, '') AS task_id,
+            COALESCE(tx.oral_task_id, '') AS oral_task_id,
             COALESCE(tx.billing_round, '') AS billing_round,
             tx.created_at
         FROM wallet_transactions AS tx
@@ -1221,6 +1352,7 @@ def export_wallet_transactions_csv(
             "reserved_delta",
             "recharge_order_id",
             "task_id",
+            "oral_task_id",
             "billing_round",
             "created_at",
         ),
@@ -1277,6 +1409,10 @@ def _order_filters(
     *,
     status: OrderStatus | None,
     user_id: str | None,
+    username: str | None = None,
+    channel: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     clauses: list[str] = []
     params: list[str] = []
@@ -1286,6 +1422,18 @@ def _order_filters(
     if user_id is not None:
         clauses.append("orders.user_id = %s")
         params.append(user_id)
+    if username:
+        clauses.append("users.username LIKE %s")
+        params.append(f"%{username}%")
+    if channel:
+        clauses.append("orders.channel = %s")
+        params.append(channel)
+    if created_from:
+        clauses.append("orders.created_at >= %s")
+        params.append(created_from)
+    if created_to:
+        clauses.append("orders.created_at <= %s")
+        params.append(_inclusive_created_to(created_to))
     return (f"WHERE {' AND '.join(clauses)}" if clauses else "", tuple(params))
 
 
@@ -1293,6 +1441,9 @@ def _transaction_filters(
     *,
     user_id: str | None,
     transaction_type: TransactionType | None,
+    username: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     clauses: list[str] = []
     params: list[str] = []
@@ -1302,6 +1453,43 @@ def _transaction_filters(
     if transaction_type is not None:
         clauses.append("tx.type = %s")
         params.append(transaction_type)
+    if username:
+        clauses.append("users.username LIKE %s")
+        params.append(f"%{username}%")
+    if created_from:
+        clauses.append("tx.created_at >= %s")
+        params.append(created_from)
+    if created_to:
+        clauses.append("tx.created_at <= %s")
+        params.append(_inclusive_created_to(created_to))
+    return (f"WHERE {' AND '.join(clauses)}" if clauses else "", tuple(params))
+
+
+def _generation_record_filters(
+    *,
+    record_types: tuple[GenerationRecordType, ...],
+    username: str | None,
+    status: str | None,
+    record_type: GenerationRecordType | None,
+    created_from: str | None,
+    created_to: str | None,
+) -> tuple[str, tuple[str, ...]]:
+    clauses: list[str] = []
+    params: list[str] = []
+    if record_type is not None and record_type not in record_types:
+        clauses.append("1 = 0")
+    if username:
+        clauses.append("users.username LIKE %s")
+        params.append(f"%{username}%")
+    if status:
+        clauses.append("task.status = %s")
+        params.append(status)
+    if created_from:
+        clauses.append("task.created_at >= %s")
+        params.append(created_from)
+    if created_to:
+        clauses.append("task.created_at <= %s")
+        params.append(_inclusive_created_to(created_to))
     return (f"WHERE {' AND '.join(clauses)}" if clauses else "", tuple(params))
 
 

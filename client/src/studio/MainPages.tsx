@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  getStudioNotificationPreferences,
+  updateStudioNotificationPreferences,
+} from "../api";
 import { useStudio } from "./context";
 import {
   cancelStudioTask,
+  downloadStudioTaskResult,
   loadTaskPreview,
+  retryStudioTask,
   uploadWorkbenchSourceVideo,
 } from "./live";
 import { draftFromTask } from "./state";
@@ -108,7 +114,9 @@ function RunningRowMenu({ task }: { task: StudioTask }) {
 
   const copyTaskId = async () => {
     try {
-      await navigator.clipboard.writeText(task.batchId || task.id);
+      await navigator.clipboard.writeText(
+        task.backendId || task.batchId || task.id,
+      );
       notify("任务编号已复制");
     } catch {
       notify("复制失败，请手动复制任务编号。");
@@ -590,8 +598,15 @@ export function TasksPage() {
     }
     setCancellingId(task.id);
     try {
-      await cancelStudioTask(task);
-      notify("任务已取消，预扣积分已退回。");
+      const result = await cancelStudioTask(task);
+      notify(
+        result.billingStatus === "RELEASED" ||
+          result.billingStatus === "RELEASE"
+          ? "任务已取消，预扣积分已退回。"
+          : result.billingStatus
+            ? "任务已取消，计费状态处理中，请稍后刷新核对。"
+            : "任务已取消，请刷新核对计费状态。",
+      );
       refresh();
     } catch (error) {
       notify(
@@ -666,7 +681,13 @@ export function TasksPage() {
                 </td>
                 <td>{formatTaskTime(task.submitted)}</td>
                 <td>
+<<<<<<< main
+                  {task.status === "queued" &&
+                  (task.backendKind !== "oral_task" ||
+                    task.backendStatus === "QUEUED") ? (
+=======
                   {task.status === "queued" && task.cancelAllowed !== false ? (
+>>>>>>> codex/local-main-pg-timeouts-20260908
                     <Button
                       variant="quiet"
                       disabled={cancellingId === task.id}
@@ -727,7 +748,9 @@ export function TaskDetailPage() {
     patchState,
     updateData,
     notify,
+    refresh,
   } = useStudio();
+  const [actionBusy, setActionBusy] = useState<"download" | "retry">();
   const [previewLoad, setPreviewLoad] = useState<{
     taskId?: string;
     status: "idle" | "loading" | "empty" | "error" | "ready";
@@ -821,6 +844,50 @@ export function TaskDetailPage() {
         setPreviewLoad({ taskId: requestedTask.id, status: "error" });
     }
   };
+  const downloadResult = async () => {
+    if (review) {
+      notify(
+        "这是效果审核示例，未提供可下载成片；真实任务通过原有下载接口获取。",
+      );
+      return;
+    }
+    if (task.backendKind !== "oral_task") {
+      openLive("tasks");
+      return;
+    }
+    setActionBusy("download");
+    try {
+      await downloadStudioTaskResult(task);
+    } catch (error) {
+      notify(
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "口播成片下载失败，请重试。",
+      );
+    } finally {
+      setActionBusy(undefined);
+    }
+  };
+  const retryTask = async () => {
+    setActionBusy("retry");
+    try {
+      await retryStudioTask(task);
+      notify(
+        task.retryAction === "archive-retry"
+          ? "已提交成片归档重试。"
+          : "已提交口播任务重试。",
+      );
+      refresh();
+    } catch (error) {
+      notify(
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "重试失败，请刷新后再试。",
+      );
+    } finally {
+      setActionBusy(undefined);
+    }
+  };
   return (
     <section className="studio-task-detail">
       <h1>任务详情与结果</h1>
@@ -892,17 +959,13 @@ export function TaskDetailPage() {
               </Button>
             )}
             <Button
-              onClick={() =>
-                review
-                  ? notify(
-                      "这是效果审核示例，未提供可下载成片；真实任务通过原有下载接口获取。",
-                    )
-                  : openLive("tasks")
+              onClick={() => void downloadResult()}
+              disabled={
+                task.status !== "completed" || actionBusy === "download"
               }
-              disabled={task.status !== "completed"}
             >
               <Icon name="download" />
-              下载成片
+              {actionBusy === "download" ? "正在下载…" : "下载成片"}
             </Button>
             <Button
               disabled={!result || task.status !== "completed"}
@@ -937,7 +1000,15 @@ export function TaskDetailPage() {
             </Hint>
           )}
           <Hint>进入发布管理仅创建发布草稿，不会自动发布。</Hint>
-          {task.status === "uncertain" && (
+          {!review && task.retryAction && (
+            <Button
+              disabled={actionBusy === "retry"}
+              onClick={() => void retryTask()}
+            >
+              {task.retryAction === "archive-retry" ? "重试归档" : "重试提交"}
+            </Button>
+          )}
+          {task.status === "uncertain" && !task.retryAction && (
             <Button onClick={() => openLive("tasks")}>核对任务状态</Button>
           )}
         </Panel>
@@ -978,6 +1049,50 @@ export function ProfilePage() {
   const { user, review, openLive, notify } = useStudio();
   const [name, setName] = useState(user.display_name || user.username);
   const [profileTab, setProfileTab] = useState("overview");
+  // C10b 通知偏好：进页拉取，乐观保存、失败回退；审核模式只演示不落库。
+  const [notificationsEnabled, setNotificationsEnabled] = useState<
+    boolean | null
+  >(null);
+  const [savingNotifications, setSavingNotifications] = useState(false);
+
+  useEffect(() => {
+    if (review) {
+      setNotificationsEnabled(true);
+      return;
+    }
+    let cancelled = false;
+    getStudioNotificationPreferences()
+      .then((prefs) => {
+        if (!cancelled) setNotificationsEnabled(prefs.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setNotificationsEnabled(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [review]);
+
+  async function toggleNotifications() {
+    if (review) {
+      notify("审核模式下为演示开关，不保存设置。");
+      return;
+    }
+    if (notificationsEnabled === null || savingNotifications) return;
+    const previous = notificationsEnabled;
+    const next = !previous;
+    setNotificationsEnabled(next);
+    setSavingNotifications(true);
+    try {
+      await updateStudioNotificationPreferences(next);
+      notify(next ? "已开启通知。" : "已关闭通知。");
+    } catch (cause) {
+      setNotificationsEnabled(previous);
+      notify(cause instanceof Error ? cause.message : "保存通知偏好失败");
+    } finally {
+      setSavingNotifications(false);
+    }
+  }
   return (
     <section className="studio-profile">
       <h1>用户档案</h1>
@@ -1074,11 +1189,17 @@ export function ProfilePage() {
                       type="button"
                       className="studio-switch"
                       aria-label="通知偏好"
-                      onClick={() =>
-                        notify("通知偏好接口尚未接入，当前设置未更改。")
+                      aria-pressed={notificationsEnabled === true}
+                      disabled={
+                        notificationsEnabled === null || savingNotifications
                       }
+                      onClick={() => void toggleNotifications()}
                     >
-                      开启
+                      {notificationsEnabled === false
+                        ? "关闭"
+                        : notificationsEnabled === null
+                          ? "—"
+                          : "开启"}
                     </button>
                   </dd>
                 </div>

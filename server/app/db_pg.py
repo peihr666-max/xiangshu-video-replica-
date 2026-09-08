@@ -38,6 +38,9 @@ POOL_MAX_ENV = "VIDEO_REPLICA_PG_POOL_MAX"
 # A misconfigured POOL_MAX must not drain the server's connection budget
 # (shared by the multi-instance API/Worker fleet, M1 review LOW).
 POOL_MAX_CEILING = 64
+# 空闲事务护栏（2026-09-07 梳理）：业务侧纪律是短事务，一个连接停留在
+# "事务开着但不发语句"超过阈值即是缺陷（持锁泄漏会串住整个容量/队列路径）。
+# 默认 5 分钟——高于最长的合法请求内外呼窗口，仍能把真实泄漏变成快速失败。
 
 DEFAULT_POOL_MIN = 1
 DEFAULT_POOL_MAX = 8
@@ -46,6 +49,12 @@ DEFAULT_POOL_MAX = 8
 DEFAULT_POOL_MAX_LIFETIME = 3600.0
 DEFAULT_POOL_MAX_IDLE = 600.0
 DEFAULT_POOL_TIMEOUT = 30.0
+<<<<<<< main
+# 2026-09-07 评审 §7-0：claim 事务的提交权在外层 fenced 块，一旦有调用方把
+# 未提交事务长期搁置（实测曾持容量行锁 19 分钟拖停公平队列），必须由数据库
+# 侧护栏快速失败，而不是无限排队。单语句 5 分钟、事务内闲置 60 秒。
+=======
+>>>>>>> codex/local-main-pg-timeouts-20260908
 PG_STATEMENT_TIMEOUT_MS = 300_000
 PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000
 PG_POOL_OPTIONS = (

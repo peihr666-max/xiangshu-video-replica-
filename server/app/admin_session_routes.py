@@ -10,12 +10,19 @@ instead of falling back to legacy control identity (the T12/T18 precedent).
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import logging
 
-from app.admin_auth_routes import AdminReader
+import psycopg
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import Field, StrictInt
+
+from app.admin_auth_routes import AdminReader, AdminWriter
+from app.admin_write_contract import AdminWriteContract, transaction_now_iso, write_with_idempotency
+from app.customer_session_service import revoke_session
 from app.db_pg import MissingDatabaseConfigError, pg_transaction
 
 router = APIRouter(prefix="/api/control", tags=["admin-sessions"])
+logger = logging.getLogger(__name__)
 
 DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
@@ -25,6 +32,56 @@ SESSION_SERVICE_UNAVAILABLE_MESSAGE = "Session management requires the PostgreSQ
 
 def _http(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
+class SessionRevokeRequest(AdminWriteContract):
+    session_epoch: StrictInt = Field(ge=1)
+
+
+@router.post("/customer-sessions/{session_id}/revoke")
+def revoke_customer_session(
+    session_id: str,
+    body: SessionRevokeRequest,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        row = conn.execute(
+            "SELECT user_id, device_id, session_epoch FROM customer_session_state "
+            "WHERE session_id=%s FOR UPDATE",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            raise _http(404, "CUSTOMER_SESSION_NOT_FOUND", "Customer session no longer exists.")
+        if int(row[2]) != body.session_epoch:
+            raise _http(
+                409, "CUSTOMER_SESSION_CHANGED", "Session changed; refresh before retrying."
+            )
+        revoke_session(
+            conn,
+            user_id=str(row[0]),
+            device_id=str(row[1]),
+            actor_user_id=actor.user_id,
+            reason=body.reason.strip(),
+            request_id=request_id,
+            now_iso=transaction_now_iso(conn),
+        )
+        logger.warning(
+            "customer session ended: user=%s actor=%s request=%s", row[0], actor.user_id, request_id
+        )
+        return {"user_id": str(row[0]), "session_epoch": int(row[2]) + 1, "request_id": request_id}
+
+    return write_with_idempotency(
+        request,
+        response,
+        actor,
+        body,
+        business,
+        success_status=200,
+        unavailable_code=SESSION_SERVICE_UNAVAILABLE,
+        unavailable_message=SESSION_SERVICE_UNAVAILABLE_MESSAGE,
+    )
 
 
 @router.get("/customer-sessions/live")
@@ -54,7 +111,8 @@ def list_live_sessions(
                 FROM customer_session_state css
                 JOIN customer_devices cd ON cd.id = css.device_id
                 JOIN users u ON u.id = css.user_id
-                WHERE css.lease_until::timestamptz > clock_timestamp()
+                WHERE cd.status = 'BOUND'
+                  AND css.lease_until::timestamptz > clock_timestamp()
                 ORDER BY css.created_at DESC, css.session_id
                 LIMIT %s OFFSET %s
                 """,
@@ -65,7 +123,8 @@ def list_live_sessions(
                 """
                 SELECT COUNT(*) FROM customer_session_state css
                 JOIN customer_devices cd ON cd.id = css.device_id
-                WHERE css.lease_until::timestamptz > clock_timestamp()
+                WHERE cd.status = 'BOUND'
+                  AND css.lease_until::timestamptz > clock_timestamp()
                 """
             ).fetchone()
     except (RuntimeError, MissingDatabaseConfigError) as exc:
@@ -130,6 +189,7 @@ def list_customer_sessions(
 
     clauses: list[str] = [
         "css.user_id = %s",
+        "cd.status = 'BOUND'",
         # Logout/revocation/expiry pull lease_until into the past instead of
         # deleting the row; without this predicate administrators would see
         # a supposedly live session indefinitely. The column is text holding

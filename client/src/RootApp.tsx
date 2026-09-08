@@ -88,7 +88,7 @@ function CustomerSessionShell({
       return (
         <main className="centered-shell">
           <section className="login-card" aria-live="polite">
-            <span className="eyebrow">JINGXU STUDIO</span>
+            <span className="eyebrow">众墅之家 · AI 即创</span>
             <p className="login-hint">正在检查本机登录状态…</p>
           </section>
         </main>
@@ -191,7 +191,7 @@ function CustomerTerminalScreen({
   return (
     <main className="centered-shell">
       <section className="login-card" aria-labelledby="customer-terminal-title">
-        <span className="eyebrow">JINGXU STUDIO</span>
+        <span className="eyebrow">众墅之家 · AI 即创</span>
         <h1 id="customer-terminal-title">{title}</h1>
         <p className="login-hint">{description}</p>
         <button type="button" onClick={onAction}>

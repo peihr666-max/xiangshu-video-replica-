@@ -44,11 +44,13 @@ describe("StatusBadge", () => {
 });
 
 describe("Pagination", () => {
-  it("hides itself when there is only one page", () => {
+  it("shows the real total even when there is only one page", () => {
     render(
       <Pagination limit={50} offset={0} total={30} onPageChange={() => {}} />,
     );
-    expect(screen.queryByRole("navigation")).toBeNull();
+    expect(screen.getByText("第 1 / 1 页（共 30 条）")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下一页" })).toBeDisabled();
   });
 
   it("shows unified page text and drives offset changes", () => {

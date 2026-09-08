@@ -23,8 +23,9 @@ function promptVersionWith(
     payload: {
       prompt_text: "编译后的 Prompt",
       status: "LOCKED",
-      output_duration_seconds: 8,
+      output_duration_seconds: 15,
       resolution: "768P",
+      ratio: "adaptive",
       first_frame_asset_id: "ff-asset-1",
       ...payload,
     },
@@ -40,6 +41,7 @@ function renderLauncher(overrides: Record<string, unknown> = {}) {
     onDurationChange: vi.fn(),
     onLockPrompt: vi.fn(),
     onQuantityChange: vi.fn(),
+    onRatioChange: vi.fn(),
     onRecoverBatch: vi.fn(),
     onResolutionChange: vi.fn(),
     onSavePromptRevision: vi.fn(),
@@ -60,11 +62,12 @@ function renderLauncher(overrides: Record<string, unknown> = {}) {
     onDurationChange: callbacks.onDurationChange,
     onLockPrompt: callbacks.onLockPrompt,
     onQuantityChange: callbacks.onQuantityChange,
+    onRatioChange: callbacks.onRatioChange,
     onRecoverBatch: callbacks.onRecoverBatch,
     onResolutionChange: callbacks.onResolutionChange,
     onSavePromptRevision: callbacks.onSavePromptRevision,
     onPromptTextChange: callbacks.onPromptTextChange,
-    outputDuration: "8",
+    outputDuration: "15",
     promptDirty: false,
     promptParametersMatch: true,
     promptStale: false,
@@ -101,10 +104,10 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
     ).not.toBeInTheDocument();
   });
 
-  it("时长非法时显示错误提示", () => {
+  it("时长非法时提示只能选择最终档位", () => {
     renderLauncher({ durationValid: false, canCompile: false });
     expect(
-      screen.getByText("成片时长必须是 4–15 秒的整数。"),
+      screen.getByText("成片时长请选择 4 秒或 15 秒。"),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "编译视频生成提示词" }),
@@ -135,13 +138,16 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
     ).toBeInTheDocument();
   });
 
-  it("编辑时长/分辨率上抛回调", () => {
+  it("编辑比例、时长和分辨率上抛回调", () => {
     const { callbacks } = renderLauncher();
 
     fireEvent.change(screen.getByLabelText("成片时长"), {
-      target: { value: "10" },
+      target: { value: "4" },
     });
-    expect(callbacks.onDurationChange).toHaveBeenCalledWith("10");
+    expect(callbacks.onDurationChange).toHaveBeenCalledWith("4");
+
+    fireEvent.click(screen.getByLabelText("9:16"));
+    expect(callbacks.onRatioChange).toHaveBeenCalledWith("9:16");
 
     fireEvent.change(screen.getByLabelText("分辨率"), {
       target: { value: "2K" },
@@ -168,7 +174,7 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
     ).toBeEnabled();
   });
 
-  it("数量区显示付费提醒与预计费用", () => {
+  it("数量区显示付费提醒与预计秒数", () => {
     renderLauncher({
       canCreateBatch: true,
       promptVersion: promptVersionWith({}),
@@ -176,7 +182,7 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
     });
 
     expect(screen.getByText("将创建 2 个付费生成任务")).toBeInTheDocument();
-    expect(screen.getByText("预计费用：¥5.00")).toBeInTheDocument();
+    expect(screen.getByText("预计消耗 30 秒额度")).toBeInTheDocument();
   });
 
   it("数量错误显示提示", () => {
@@ -261,6 +267,26 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
 
     fireEvent.click(screen.getByRole("button", { name: "另存 Prompt 新版本" }));
     expect(callbacks.onSavePromptRevision).toHaveBeenCalledTimes(1);
+  });
+
+  it("我的提示词仅通过显式应用进入本次生成", () => {
+    const onApplySavedPrompt = vi.fn();
+    const { callbacks } = renderLauncher({
+      onApplySavedPrompt,
+      promptVersion: promptVersionWith({}),
+      savedPrompts: [
+        {
+          ...promptVersionWith({}),
+          id: "saved-1",
+          kind: "saved_prompt",
+          payload: { name: "庭院推镜", prompt_text: "庭院日景，缓慢推进。" },
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /应用\s+庭院推镜/ }));
+    expect(onApplySavedPrompt).toHaveBeenCalledWith("saved-1");
+    expect(callbacks.onPromptTextChange).not.toHaveBeenCalled();
   });
 
   it("冻结来源摘要展示六项输入", () => {

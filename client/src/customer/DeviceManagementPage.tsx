@@ -99,7 +99,7 @@ export function DeviceManagementPage({
           发现陌生设备时请立即下线；解绑当前设备后，需要使用激活码重新绑定。
         </p>
         <button onClick={onRecharge} type="button">
-          充值条数
+          充值秒数
         </button>
       </div>
     </section>

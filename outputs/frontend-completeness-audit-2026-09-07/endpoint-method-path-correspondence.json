@@ -1,0 +1,4643 @@
+[
+  {
+    "file": "client/src/admin/ProfitOverview.tsx",
+    "line": 307,
+    "function": "ProfitOverview",
+    "route": "/api/control/profit/overview.csv",
+    "caller": "",
+    "source": "\"/api/control/profit/overview.csv?lookback_days=30\"",
+    "method": "GET",
+    "methodBasis": "URL literal; GET inferred",
+    "expandedRoute": "/api/control/profit/overview.csv",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/profit/overview.csv",
+        "file": "server/app/admin_profit_routes.py",
+        "line": 407,
+        "function": "export_profit_csv"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/admin/api.economics.ts",
+    "line": 60,
+    "function": "listOperationCosts",
+    "route": "/api/control/profit/costs",
+    "caller": "adminRead",
+    "source": "`/api/control/profit/costs?${query(filters)}`",
+    "method": "GET",
+    "methodBasis": "adminRead",
+    "expandedRoute": "/api/control/profit/costs",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/profit/costs",
+        "file": "server/app/admin_profit_routes.py",
+        "line": 558,
+        "function": "cost_overview"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/admin/api.economics.ts",
+    "line": 66,
+    "function": "operationCostsCsvUrl",
+    "route": "/api/control/profit/costs.csv",
+    "caller": "",
+    "source": "`/api/control/profit/costs.csv?${query(filters)}`",
+    "method": "GET",
+    "methodBasis": "URL literal; GET inferred",
+    "expandedRoute": "/api/control/profit/costs.csv",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/profit/costs.csv",
+        "file": "server/app/admin_profit_routes.py",
+        "line": 570,
+        "function": "export_costs_csv"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 247,
+    "function": "listAdminRechargeOrders",
+    "route": "/api/control/recharge-orders",
+    "caller": "adminRead",
+    "source": "`/api/control/recharge-orders?${params}`",
+    "method": "GET",
+    "methodBasis": "adminRead",
+    "expandedRoute": "/api/control/recharge-orders",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/recharge-orders",
+        "file": "server/app/control_routes.py",
+        "line": 534,
+        "function": "list_recharge_orders"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 273,
+    "function": "listAdminWalletTransactions",
+    "route": "/api/control/wallet-transactions",
+    "caller": "adminRead",
+    "source": "`/api/control/wallet-transactions?${params}`",
+    "method": "GET",
+    "methodBasis": "adminRead",
+    "expandedRoute": "/api/control/wallet-transactions",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/wallet-transactions",
+        "file": "server/app/control_routes.py",
+        "line": 593,
+        "function": "list_wallet_transactions"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 308,
+    "function": "loginAdminWithPassword",
+    "route": "/api/control/admin/session/password",
+    "caller": "requestControl",
+    "source": "\"/api/control/admin/session/password\"",
+    "method": "POST",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/admin/session/password",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/admin/session/password",
+        "file": "server/app/admin_auth_routes.py",
+        "line": 933,
+        "function": "login_admin_with_password"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 323,
+    "function": "exchangeAdminSession",
+    "route": "/api/control/admin/session/exchange",
+    "caller": "requestControl",
+    "source": "\"/api/control/admin/session/exchange\"",
+    "method": "POST",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/admin/session/exchange",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/admin/session/exchange",
+        "file": "server/app/admin_auth_routes.py",
+        "line": 877,
+        "function": "exchange_admin_session"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 337,
+    "function": "fetchAdminSession",
+    "route": "/api/control/admin/session",
+    "caller": "requestControl",
+    "source": "\"/api/control/admin/session\"",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/admin/session",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/admin/session",
+        "file": "server/app/admin_auth_routes.py",
+        "line": 1067,
+        "function": "get_current_admin_session"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 354,
+    "function": "recoverAdminPassword",
+    "route": "/api/control/admin/password",
+    "caller": "requestControl",
+    "source": "\"/api/control/admin/password\"",
+    "method": "PUT",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/admin/password",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/control/admin/password",
+        "file": "server/app/admin_auth_routes.py",
+        "line": 1008,
+        "function": "recover_admin_password"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 367,
+    "function": "deleteAdminSession",
+    "route": "/api/control/admin/session",
+    "caller": "requestControl",
+    "source": "\"/api/control/admin/session\"",
+    "method": "DELETE",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/admin/session",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/control/admin/session",
+        "file": "server/app/admin_auth_routes.py",
+        "line": 1088,
+        "function": "logout_admin_session"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 500,
+    "function": "createActivationCodeBatch",
+    "route": "/api/control/activation-code-batches",
+    "caller": "adminWrite",
+    "source": "\"/api/control/activation-code-batches\"",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-code-batches",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-code-batches",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 185,
+        "function": "create_activation_code_batch"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 523,
+    "function": "generateActivationCodes",
+    "route": "/api/control/activation-code-batches/{encodeURIComponent(batchId)}/generate",
+    "caller": "adminWrite",
+    "source": "`/api/control/activation-code-batches/${encodeURIComponent(batchId)}/generate`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-code-batches/{encodeURIComponent(batchId)}/generate",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-code-batches/{batch_id}/generate",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 278,
+        "function": "generate_activation_codes"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 537,
+    "function": "downloadActivationCodeExport",
+    "route": "/api/control/activation-code-exports/{encodeURIComponent(exportId)}/download",
+    "caller": "adminWrite",
+    "source": "`/api/control/activation-code-exports/${encodeURIComponent(exportId)}/download`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-code-exports/{encodeURIComponent(exportId)}/download",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-code-exports/{export_id}/download",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 402,
+        "function": "download_activation_code_export"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 578,
+    "function": "listActivationCodes",
+    "route": "/api/control/activation-codes",
+    "caller": "requestControl",
+    "source": "`/api/control/activation-codes?${query}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/activation-codes",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/activation-codes",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 1032,
+        "function": "list_activation_codes"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 593,
+    "function": "revealActivationCode",
+    "route": "/api/control/activation-codes/{encodeURIComponent(codeId)}/reveal",
+    "caller": "adminWrite",
+    "source": "`/api/control/activation-codes/${encodeURIComponent(codeId)}/reveal`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-codes/{encodeURIComponent(codeId)}/reveal",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-codes/{code_id}/reveal",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 889,
+        "function": "reveal_activation_code"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 612,
+    "function": "deliverActivationCode",
+    "route": "/api/control/activation-codes/{encodeURIComponent(codeId)}/deliver",
+    "caller": "adminWrite",
+    "source": "`/api/control/activation-codes/${encodeURIComponent(codeId)}/deliver`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-codes/{encodeURIComponent(codeId)}/deliver",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-codes/{code_id}/deliver",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 512,
+        "function": "deliver_activation_code"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 630,
+    "function": "suspendActivationCode",
+    "route": "/api/control/activation-codes/{encodeURIComponent(codeId)}/suspend",
+    "caller": "adminWrite",
+    "source": "`/api/control/activation-codes/${encodeURIComponent(codeId)}/suspend`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-codes/{encodeURIComponent(codeId)}/suspend",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-codes/{code_id}/suspend",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 624,
+        "function": "suspend_activation_code"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 644,
+    "function": "resumeActivationCode",
+    "route": "/api/control/activation-codes/{encodeURIComponent(codeId)}/resume",
+    "caller": "adminWrite",
+    "source": "`/api/control/activation-codes/${encodeURIComponent(codeId)}/resume`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-codes/{encodeURIComponent(codeId)}/resume",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-codes/{code_id}/resume",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 683,
+        "function": "resume_activation_code"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 658,
+    "function": "revokeActivationCode",
+    "route": "/api/control/activation-codes/{encodeURIComponent(codeId)}/revoke",
+    "caller": "adminWrite",
+    "source": "`/api/control/activation-codes/${encodeURIComponent(codeId)}/revoke`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-codes/{encodeURIComponent(codeId)}/revoke",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-codes/{code_id}/revoke",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 735,
+        "function": "revoke_activation_code"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 672,
+    "function": "archiveActivationCode",
+    "route": "/api/control/activation-codes/{encodeURIComponent(codeId)}/archive",
+    "caller": "adminWrite",
+    "source": "`/api/control/activation-codes/${encodeURIComponent(codeId)}/archive`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/activation-codes/{encodeURIComponent(codeId)}/archive",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/activation-codes/{code_id}/archive",
+        "file": "server/app/admin_activation_routes.py",
+        "line": 791,
+        "function": "archive_activation_code"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 686,
+    "function": "approveDevicePairing",
+    "route": "/api/control/device-pairings/{encodeURIComponent(pairingId)}/approve",
+    "caller": "adminWrite",
+    "source": "`/api/control/device-pairings/${encodeURIComponent(pairingId)}/approve`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/device-pairings/{encodeURIComponent(pairingId)}/approve",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/device-pairings/{pairing_id}/approve",
+        "file": "server/app/admin_device_routes.py",
+        "line": 320,
+        "function": "admin_approve_device_pairing"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 701,
+    "function": "replaceDeviceForPairing",
+    "route": "/api/control/device-pairings/{encodeURIComponent(pairingId)}/replace-device",
+    "caller": "adminWrite",
+    "source": "`/api/control/device-pairings/${encodeURIComponent(pairingId)}/replace-device`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/device-pairings/{encodeURIComponent(pairingId)}/replace-device",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/device-pairings/{pairing_id}/replace-device",
+        "file": "server/app/admin_device_routes.py",
+        "line": 395,
+        "function": "admin_replace_device_pairing"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 833,
+    "function": "listCustomers",
+    "route": "/api/control/customers",
+    "caller": "requestControl",
+    "source": "`/api/control/customers?${params.toString()}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/customers",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/customers",
+        "file": "server/app/admin_customer_routes.py",
+        "line": 810,
+        "function": "list_customers"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 860,
+    "function": "fetchCustomerUnitPrice",
+    "route": "/api/control/customers/{encodeURIComponent(userId)}/unit-price",
+    "caller": "requestControl",
+    "source": "`/api/control/customers/${encodeURIComponent(userId)}/unit-price`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/customers/{encodeURIComponent(userId)}/unit-price",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/customers/{user_id}/unit-price",
+        "file": "server/app/admin_customer_routes.py",
+        "line": 280,
+        "function": "read_customer_unit_price"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 881,
+    "function": "updateCustomerUnitPrice",
+    "route": "/api/control/customers/{encodeURIComponent(userId)}/unit-price",
+    "caller": "requestControl",
+    "source": "`/api/control/customers/${encodeURIComponent(userId)}/unit-price`",
+    "method": "PUT",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/customers/{encodeURIComponent(userId)}/unit-price",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/control/customers/{user_id}/unit-price",
+        "file": "server/app/admin_customer_routes.py",
+        "line": 300,
+        "function": "update_customer_unit_price"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 964,
+    "function": "listDevices",
+    "route": "/api/control/devices",
+    "caller": "requestControl",
+    "source": "`/api/control/devices?${params.toString()}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/devices",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/devices",
+        "file": "server/app/admin_device_routes.py",
+        "line": 92,
+        "function": "list_devices"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 987,
+    "function": "unbindDevice",
+    "route": "/api/control/devices/{encodeURIComponent(deviceId)}/unbind",
+    "caller": "adminWrite",
+    "source": "`/api/control/devices/${encodeURIComponent(deviceId)}/unbind`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/devices/{encodeURIComponent(deviceId)}/unbind",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/devices/{device_id}/unbind",
+        "file": "server/app/admin_device_routes.py",
+        "line": 462,
+        "function": "admin_unbind_device_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 999,
+    "function": "revokeDeviceCredential",
+    "route": "/api/control/devices/{encodeURIComponent(deviceId)}/revoke-credential",
+    "caller": "adminWrite",
+    "source": "`/api/control/devices/${encodeURIComponent(deviceId)}/revoke-credential`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/devices/{encodeURIComponent(deviceId)}/revoke-credential",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/devices/{device_id}/revoke-credential",
+        "file": "server/app/admin_device_routes.py",
+        "line": 514,
+        "function": "admin_revoke_device_credential"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1056,
+    "function": "listAllAdminAdjustments",
+    "route": "/api/control/adjustments",
+    "caller": "adminRead",
+    "source": "`/api/control/adjustments?${params.toString()}`",
+    "method": "GET",
+    "methodBasis": "adminRead",
+    "expandedRoute": "/api/control/adjustments",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/adjustments",
+        "file": "server/app/admin_customer_routes.py",
+        "line": 698,
+        "function": "list_all_admin_adjustments"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1090,
+    "function": "listAdminAdjustments",
+    "route": "/api/control/customers/{encodeURIComponent(userId)}/adjustments",
+    "caller": "requestControl",
+    "source": "`/api/control/customers/${encodeURIComponent(userId)}/adjustments?${params.toString()}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/customers/{encodeURIComponent(userId)}/adjustments",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/customers/{user_id}/adjustments",
+        "file": "server/app/admin_customer_routes.py",
+        "line": 636,
+        "function": "list_admin_adjustments"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1165,
+    "function": "listLiveSessions",
+    "route": "/api/control/customer-sessions/live",
+    "caller": "requestControl",
+    "source": "`/api/control/customer-sessions/live?${params.toString()}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/customer-sessions/live",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/customer-sessions/live",
+        "file": "server/app/admin_session_routes.py",
+        "line": 87,
+        "function": "list_live_sessions"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1192,
+    "function": "listCustomerSessions",
+    "route": "/api/control/customers/{encodeURIComponent(userId)}/sessions",
+    "caller": "requestControl",
+    "source": "`/api/control/customers/${encodeURIComponent(userId)}/sessions?${params.toString()}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/customers/{encodeURIComponent(userId)}/sessions",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/customers/{user_id}/sessions",
+        "file": "server/app/admin_session_routes.py",
+        "line": 166,
+        "function": "list_customer_sessions"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1210,
+    "function": "revokeCustomerSession",
+    "route": "/api/control/customer-sessions/{encodeURIComponent(sessionId)}/revoke",
+    "caller": "requestControl",
+    "source": "`/api/control/customer-sessions/${encodeURIComponent(sessionId)}/revoke`",
+    "method": "POST",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/customer-sessions/{encodeURIComponent(sessionId)}/revoke",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/customer-sessions/{session_id}/revoke",
+        "file": "server/app/admin_session_routes.py",
+        "line": 41,
+        "function": "revoke_customer_session"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1292,
+    "function": "listAuditLog",
+    "route": "/api/control/audit-log",
+    "caller": "requestControl",
+    "source": "`/api/control/audit-log?${params.toString()}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/audit-log",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/audit-log",
+        "file": "server/app/admin_audit_routes.py",
+        "line": 137,
+        "function": "list_audit_log"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1333,
+    "function": "getAdminGenerationRecords",
+    "route": "/api/control/generation-records",
+    "caller": "requestControl",
+    "source": "`/api/control/generation-records?${params.toString()}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/generation-records",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/generation-records",
+        "file": "server/app/control_routes.py",
+        "line": 664,
+        "function": "list_generation_records"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1378,
+    "function": "createCustomerAdjustment",
+    "route": "/api/control/customers/{encodeURIComponent(userId)}/adjustments",
+    "caller": "adminWrite",
+    "source": "`/api/control/customers/${encodeURIComponent(userId)}/adjustments`",
+    "method": "POST",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/customers/{encodeURIComponent(userId)}/adjustments",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/customers/{user_id}/adjustments",
+        "file": "server/app/admin_customer_routes.py",
+        "line": 396,
+        "function": "create_admin_adjustment"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1396,
+    "function": "fetchQueueMode",
+    "route": "/api/control/settings/queue-mode",
+    "caller": "requestControl",
+    "source": "\"/api/control/settings/queue-mode\"",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/settings/queue-mode",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/settings/queue-mode",
+        "file": "server/app/admin_runtime_routes.py",
+        "line": 59,
+        "function": "read_queue_mode"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1412,
+    "function": "updateQueueMode",
+    "route": "/api/control/settings/queue-mode",
+    "caller": "adminWrite",
+    "source": "\"/api/control/settings/queue-mode\"",
+    "method": "PATCH",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/settings/queue-mode",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/control/settings/queue-mode",
+        "file": "server/app/admin_runtime_routes.py",
+        "line": 69,
+        "function": "update_queue_mode"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1451,
+    "function": "listOperationRates",
+    "route": "/api/control/settings/rates",
+    "caller": "requestControl",
+    "source": "\"/api/control/settings/rates\"",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/settings/rates",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/settings/rates",
+        "file": "server/app/admin_rate_routes.py",
+        "line": 161,
+        "function": "read_rates"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1464,
+    "function": "updateOperationRates",
+    "route": "/api/control/settings/rates",
+    "caller": "adminWrite",
+    "source": "\"/api/control/settings/rates\"",
+    "method": "PUT",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/settings/rates",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/control/settings/rates",
+        "file": "server/app/admin_rate_routes.py",
+        "line": 171,
+        "function": "update_rates"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1505,
+    "function": "listProfitOverview",
+    "route": "/api/control/profit/overview",
+    "caller": "requestControl",
+    "source": "`/api/control/profit/overview?lookback_days=${lookbackDays}`",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/profit/overview",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/profit/overview",
+        "file": "server/app/admin_profit_routes.py",
+        "line": 274,
+        "function": "profit_overview"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1525,
+    "function": "upsertDailyPrice",
+    "route": "/api/control/profit/daily-price",
+    "caller": "adminWrite",
+    "source": "\"/api/control/profit/daily-price\"",
+    "method": "PUT",
+    "methodBasis": "adminWrite",
+    "expandedRoute": "/api/control/profit/daily-price",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/control/profit/daily-price",
+        "file": "server/app/admin_profit_routes.py",
+        "line": 174,
+        "function": "upsert_daily_price"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.admin.ts",
+    "line": 1577,
+    "function": "getDashboardSummary",
+    "route": "/api/control/dashboard/summary",
+    "caller": "requestControl",
+    "source": "\"/api/control/dashboard/summary\"",
+    "method": "GET",
+    "methodBasis": "requestControl",
+    "expandedRoute": "/api/control/dashboard/summary",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/dashboard/summary",
+        "file": "server/app/admin_dashboard_routes.py",
+        "line": 46,
+        "function": "dashboard_summary"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 695,
+    "function": "getHealth",
+    "route": "/health",
+    "caller": "requestJson",
+    "source": "\"/health\"",
+    "method": "GET",
+    "methodBasis": "requestJson",
+    "expandedRoute": "/health",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/health",
+        "file": "server/app/main.py",
+        "line": 362,
+        "function": "health"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 709,
+    "function": "getStudioStats",
+    "route": "/api/studio/stats",
+    "caller": "requestApiJson",
+    "source": "\"/api/studio/stats\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/stats",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/studio/stats",
+        "file": "server/app/studio_routes.py",
+        "line": 111,
+        "function": "read_studio_stats"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 746,
+    "function": "getStudioAnalytics",
+    "route": "/api/studio/analytics",
+    "caller": "requestApiJson",
+    "source": "`/api/studio/analytics?days=${days}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/analytics",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/studio/analytics",
+        "file": "server/app/studio_routes.py",
+        "line": 285,
+        "function": "read_studio_analytics"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 757,
+    "function": "getStudioNotificationPreferences",
+    "route": "/api/studio/notification-preferences",
+    "caller": "requestApiJson",
+    "source": "\"/api/studio/notification-preferences\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/notification-preferences",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/studio/notification-preferences",
+        "file": "server/app/studio_routes.py",
+        "line": 324,
+        "function": "read_studio_notification_preferences"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 766,
+    "function": "updateStudioNotificationPreferences",
+    "route": "/api/studio/notification-preferences",
+    "caller": "requestApiJson",
+    "source": "\"/api/studio/notification-preferences\"",
+    "method": "PUT",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/notification-preferences",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/studio/notification-preferences",
+        "file": "server/app/studio_routes.py",
+        "line": 335,
+        "function": "update_studio_notification_preferences"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 814,
+    "function": "getStudioDraft",
+    "route": "/api/studio/drafts/{encodeURIComponent(kind)}",
+    "caller": "requestApiJson",
+    "source": "`/api/studio/drafts/${encodeURIComponent(kind)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/drafts/{encodeURIComponent(kind)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/studio/drafts/{draft_kind}",
+        "file": "server/app/studio_draft_routes.py",
+        "line": 40,
+        "function": "read_studio_draft"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 826,
+    "function": "saveStudioDraft",
+    "route": "/api/studio/drafts/{encodeURIComponent(kind)}",
+    "caller": "requestApiJson",
+    "source": "`/api/studio/drafts/${encodeURIComponent(kind)}`",
+    "method": "PUT",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/drafts/{encodeURIComponent(kind)}",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/studio/drafts/{draft_kind}",
+        "file": "server/app/studio_draft_routes.py",
+        "line": 49,
+        "function": "upsert_studio_draft"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 838,
+    "function": "deleteStudioDraft",
+    "route": "/api/studio/drafts/{encodeURIComponent(kind)}",
+    "caller": "requestApiJson",
+    "source": "`/api/studio/drafts/${encodeURIComponent(kind)}`",
+    "method": "DELETE",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/drafts/{encodeURIComponent(kind)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/studio/drafts/{draft_kind}",
+        "file": "server/app/studio_draft_routes.py",
+        "line": 59,
+        "function": "remove_studio_draft"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 849,
+    "function": "listStudioSavedScripts",
+    "route": "/api/studio/saved-scripts",
+    "caller": "requestApiJson",
+    "source": "\"/api/studio/saved-scripts\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/saved-scripts",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/studio/saved-scripts",
+        "file": "server/app/studio_draft_routes.py",
+        "line": 69,
+        "function": "read_saved_scripts"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 860,
+    "function": "saveStudioSavedScript",
+    "route": "/api/studio/saved-scripts",
+    "caller": "requestApiJson",
+    "source": "\"/api/studio/saved-scripts\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/saved-scripts",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/studio/saved-scripts",
+        "file": "server/app/studio_draft_routes.py",
+        "line": 77,
+        "function": "create_saved_script"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 869,
+    "function": "deleteStudioSavedScript",
+    "route": "/api/studio/saved-scripts/{encodeURIComponent(scriptId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/studio/saved-scripts/${encodeURIComponent(scriptId)}`",
+    "method": "DELETE",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/saved-scripts/{encodeURIComponent(scriptId)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/studio/saved-scripts/{script_id}",
+        "file": "server/app/studio_draft_routes.py",
+        "line": 86,
+        "function": "remove_saved_script"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 902,
+    "function": "createScriptFromAudioTask",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/script-from-audio",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/script-from-audio`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/script-from-audio",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/script-from-audio",
+        "file": "server/app/script_from_audio_routes.py",
+        "line": 24,
+        "function": "extract_script_from_audio"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 919,
+    "function": "getLatestScriptFromAudioTask",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/script-from-audio-tasks/latest",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/script-from-audio-tasks/latest`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/script-from-audio-tasks/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/script-from-audio-tasks/latest",
+        "file": "server/app/script_from_audio_routes.py",
+        "line": 64,
+        "function": "read_latest_script_from_audio_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 928,
+    "function": "getOralPrice",
+    "route": "/api/oral/price",
+    "caller": "requestApiJson",
+    "source": "\"/api/oral/price\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/price",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/oral/price",
+        "file": "server/app/oral_routes.py",
+        "line": 115,
+        "function": "read_oral_price"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 965,
+    "function": "createOralConsent",
+    "route": "/api/oral/consents",
+    "caller": "requestApiJson",
+    "source": "\"/api/oral/consents\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/consents",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/consents",
+        "file": "server/app/oral_routes.py",
+        "line": 133,
+        "function": "create_clone_consent"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 984,
+    "function": "listOralAvatars",
+    "route": "/api/oral/avatars",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/avatars?identity_id=${encodeURIComponent(identityId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/avatars",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/oral/avatars",
+        "file": "server/app/oral_routes.py",
+        "line": 169,
+        "function": "list_oral_avatars"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 994,
+    "function": "listOralVoices",
+    "route": "/api/oral/voices",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/voices?identity_id=${encodeURIComponent(identityId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/voices",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/oral/voices",
+        "file": "server/app/oral_routes.py",
+        "line": 239,
+        "function": "list_oral_voices"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1008,
+    "function": "createOralAvatarClone",
+    "route": "/api/oral/avatars",
+    "caller": "requestApiJson",
+    "source": "\"/api/oral/avatars\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/avatars",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/avatars",
+        "file": "server/app/oral_routes.py",
+        "line": 189,
+        "function": "create_avatar_clone"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1033,
+    "function": "createOralVoiceClone",
+    "route": "/api/oral/voices",
+    "caller": "requestApiJson",
+    "source": "\"/api/oral/voices\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/voices",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/voices",
+        "file": "server/app/oral_routes.py",
+        "line": 258,
+        "function": "create_voice_clone"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1053,
+    "function": "refreshOralAvatar",
+    "route": "/api/oral/avatars/{encodeURIComponent(avatarId)}/refresh",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/avatars/${encodeURIComponent(avatarId)}/refresh`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/avatars/{encodeURIComponent(avatarId)}/refresh",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/avatars/{avatar_id}/refresh",
+        "file": "server/app/oral_routes.py",
+        "line": 221,
+        "function": "refresh_avatar"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1063,
+    "function": "refreshOralVoice",
+    "route": "/api/oral/voices/{encodeURIComponent(voiceId)}/refresh",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/voices/${encodeURIComponent(voiceId)}/refresh`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/voices/{encodeURIComponent(voiceId)}/refresh",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/voices/{voice_id}/refresh",
+        "file": "server/app/oral_routes.py",
+        "line": 289,
+        "function": "refresh_voice"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1073,
+    "function": "confirmOralVoice",
+    "route": "/api/oral/voices/{encodeURIComponent(voiceId)}/confirm",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/voices/${encodeURIComponent(voiceId)}/confirm`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/voices/{encodeURIComponent(voiceId)}/confirm",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/voices/{voice_id}/confirm",
+        "file": "server/app/oral_routes.py",
+        "line": 302,
+        "function": "confirm_voice"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1103,
+    "function": "createOralTask",
+    "route": "/api/oral/tasks",
+    "caller": "requestApiJson",
+    "source": "\"/api/oral/tasks\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/tasks",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/tasks",
+        "file": "server/app/oral_routes.py",
+        "line": 344,
+        "function": "create_oral_generation_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1158,
+    "function": "listOralTasks",
+    "route": "/api/oral/tasks",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/tasks?limit=${encodeURIComponent(String(limit))}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/tasks",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/oral/tasks",
+        "file": "server/app/oral_routes.py",
+        "line": 381,
+        "function": "list_oral_generation_tasks"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1166,
+    "function": "mutateOralTask",
+    "route": "/api/oral/tasks/{encodeURIComponent(taskId)}/{action}",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/tasks/${encodeURIComponent(taskId)}/${action}`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/tasks/{encodeURIComponent(taskId)}/cancel",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/tasks/{task_id}/cancel",
+        "file": "server/app/oral_routes.py",
+        "line": 450,
+        "function": "cancel_oral_generation_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1166,
+    "function": "mutateOralTask",
+    "route": "/api/oral/tasks/{encodeURIComponent(taskId)}/{action}",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/tasks/${encodeURIComponent(taskId)}/${action}`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/tasks/{encodeURIComponent(taskId)}/retry",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/tasks/{task_id}/retry",
+        "file": "server/app/oral_routes.py",
+        "line": 433,
+        "function": "retry_oral_submission"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1166,
+    "function": "mutateOralTask",
+    "route": "/api/oral/tasks/{encodeURIComponent(taskId)}/{action}",
+    "caller": "requestApiJson",
+    "source": "`/api/oral/tasks/${encodeURIComponent(taskId)}/${action}`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/oral/tasks/{encodeURIComponent(taskId)}/archive-retry",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/oral/tasks/{task_id}/archive-retry",
+        "file": "server/app/oral_routes.py",
+        "line": 416,
+        "function": "retry_oral_archive"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1185,
+    "function": "getCurrentUser",
+    "route": "/api/auth/me",
+    "caller": "requestApiJson",
+    "source": "\"/api/auth/me\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/auth/me",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/auth/me",
+        "file": "server/app/rbac_routes.py",
+        "line": 392,
+        "function": "read_me"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1231,
+    "function": "getWallet",
+    "route": "/api/wallet",
+    "caller": "requestApiJson",
+    "source": "\"/api/wallet\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/wallet",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/wallet",
+        "file": "server/app/wallet_routes.py",
+        "line": 48,
+        "function": "read_wallet"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1245,
+    "function": "listWalletTransactions",
+    "route": "/api/wallet/transactions",
+    "caller": "requestApiJson",
+    "source": "`/api/wallet/transactions?${new URLSearchParams({\n      limit: String(limit),\n      offset: String(offset),\n    })}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/wallet/transactions",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/wallet/transactions",
+        "file": "server/app/wallet_routes.py",
+        "line": 91,
+        "function": "list_wallet_transactions"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1257,
+    "function": "createRechargeOrder",
+    "route": "/api/recharge-orders",
+    "caller": "requestApiJson",
+    "source": "\"/api/recharge-orders\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/recharge-orders",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/recharge-orders",
+        "file": "server/app/recharge_routes.py",
+        "line": 263,
+        "function": "create_recharge_order"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1271,
+    "function": "listRechargeOrders",
+    "route": "/api/recharge-orders",
+    "caller": "requestApiJson",
+    "source": "`/api/recharge-orders?${new URLSearchParams({\n      limit: String(limit),\n      offset: String(offset),\n    })}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/recharge-orders",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/recharge-orders",
+        "file": "server/app/recharge_routes.py",
+        "line": 987,
+        "function": "list_recharge_orders"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1283,
+    "function": "getRechargeOrder",
+    "route": "/api/recharge-orders/{encodeURIComponent(orderNo)}",
+    "caller": "requestApiJson",
+    "source": "`/api/recharge-orders/${encodeURIComponent(orderNo)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/recharge-orders/{encodeURIComponent(orderNo)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/recharge-orders/{order_no}",
+        "file": "server/app/recharge_routes.py",
+        "line": 1020,
+        "function": "read_recharge_order_status"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1296,
+    "function": "getControlAccounts",
+    "route": "/api/control/accounts",
+    "caller": "requestControlJson",
+    "source": "`/api/control/accounts?${new URLSearchParams({\n      limit: String(limit),\n      offset: String(offset),\n    })}`",
+    "method": "GET",
+    "methodBasis": "requestControlJson",
+    "expandedRoute": "/api/control/accounts",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/accounts",
+        "file": "server/app/control_routes.py",
+        "line": 484,
+        "function": "list_accounts"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1321,
+    "function": "getControlRechargeOrders",
+    "route": "/api/control/recharge-orders",
+    "caller": "requestControlJson",
+    "source": "`/api/control/recharge-orders?${query}`",
+    "method": "GET",
+    "methodBasis": "requestControlJson",
+    "expandedRoute": "/api/control/recharge-orders",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/recharge-orders",
+        "file": "server/app/control_routes.py",
+        "line": 534,
+        "function": "list_recharge_orders"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1334,
+    "function": "getControlWalletTransactions",
+    "route": "/api/control/wallet-transactions",
+    "caller": "requestControlJson",
+    "source": "`/api/control/wallet-transactions?${new URLSearchParams({\n      limit: String(limit),\n      offset: String(offset),\n    })}`",
+    "method": "GET",
+    "methodBasis": "requestControlJson",
+    "expandedRoute": "/api/control/wallet-transactions",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/wallet-transactions",
+        "file": "server/app/control_routes.py",
+        "line": 593,
+        "function": "list_wallet_transactions"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1344,
+    "function": "getControlReconciliation",
+    "route": "/api/control/billing-reconciliation",
+    "caller": "requestControlJson",
+    "source": "\"/api/control/billing-reconciliation\"",
+    "method": "GET",
+    "methodBasis": "requestControlJson",
+    "expandedRoute": "/api/control/billing-reconciliation",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/billing-reconciliation",
+        "file": "server/app/control_routes.py",
+        "line": 1034,
+        "function": "read_reconciliation"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1351,
+    "function": "getControlSettings",
+    "route": "/api/control/settings",
+    "caller": "requestControlJson",
+    "source": "\"/api/control/settings\"",
+    "method": "GET",
+    "methodBasis": "requestControlJson",
+    "expandedRoute": "/api/control/settings",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/settings",
+        "file": "server/app/control_routes.py",
+        "line": 1083,
+        "function": "read_control_settings"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1388,
+    "function": "updateControlZPaySettings",
+    "route": "/api/control/settings/zpay",
+    "caller": "requestControlJson",
+    "source": "\"/api/control/settings/zpay\"",
+    "method": "PATCH",
+    "methodBasis": "经源码核对 controlWriteInit 或 endpoint 变量后的真实 method",
+    "expandedRoute": "/api/control/settings/zpay",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/control/settings/zpay",
+        "file": "server/app/control_routes.py",
+        "line": 1180,
+        "function": "update_zpay_settings"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1400,
+    "function": "updateControlBillingSettings",
+    "route": "/api/control/settings/billing",
+    "caller": "requestControlJson",
+    "source": "\"/api/control/settings/billing\"",
+    "method": "PATCH",
+    "methodBasis": "经源码核对 controlWriteInit 或 endpoint 变量后的真实 method",
+    "expandedRoute": "/api/control/settings/billing",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/control/settings/billing",
+        "file": "server/app/control_routes.py",
+        "line": 1210,
+        "function": "update_control_billing_settings"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1411,
+    "function": "updateControlProviderSettings",
+    "route": "/api/control/settings/providers/{provider}",
+    "caller": "requestControlJson",
+    "source": "`/api/control/settings/providers/${provider}`",
+    "method": "PUT",
+    "methodBasis": "经源码核对 controlWriteInit 或 endpoint 变量后的真实 method",
+    "expandedRoute": "/api/control/settings/providers/{provider}",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/control/settings/providers/{provider}",
+        "file": "server/app/control_routes.py",
+        "line": 1098,
+        "function": "update_control_provider_settings"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1421,
+    "function": "testControlProviderConnection",
+    "route": "/api/control/settings/providers/{provider}/connection-test",
+    "caller": "requestControlJson",
+    "source": "`/api/control/settings/providers/${provider}/connection-test`",
+    "method": "POST",
+    "methodBasis": "requestControlJson",
+    "expandedRoute": "/api/control/settings/providers/{provider}/connection-test",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/settings/providers/{provider}/connection-test",
+        "file": "server/app/control_routes.py",
+        "line": 1135,
+        "function": "test_control_provider_connection"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1432,
+    "function": "updateControlRuntimeSettings",
+    "route": "/api/control/settings/runtime",
+    "caller": "requestControlJson",
+    "source": "\"/api/control/settings/runtime\"",
+    "method": "PATCH",
+    "methodBasis": "经源码核对 controlWriteInit 或 endpoint 变量后的真实 method",
+    "expandedRoute": "/api/control/settings/runtime",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/control/settings/runtime",
+        "file": "server/app/control_routes.py",
+        "line": 1150,
+        "function": "update_control_runtime_settings"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1445,
+    "function": "syncControlRechargeOrder",
+    "route": "/api/control/recharge-orders/{encodeURIComponent(orderNo)}/sync",
+    "caller": "requestControlJson",
+    "source": "`/api/control/recharge-orders/${encodeURIComponent(orderNo)}/sync`",
+    "method": "POST",
+    "methodBasis": "经源码核对 controlWriteInit 或 endpoint 变量后的真实 method",
+    "expandedRoute": "/api/control/recharge-orders/{encodeURIComponent(orderNo)}/sync",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/control/recharge-orders/{order_no}/sync",
+        "file": "server/app/payment_routes.py",
+        "line": 104,
+        "function": "sync_recharge_order_with_zpay"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1473,
+    "function": "downloadCustomersCsv",
+    "route": "/api/control/customers.csv{suffix}",
+    "caller": "downloadControlCsv",
+    "source": "`/api/control/customers.csv${suffix}`",
+    "method": "GET",
+    "methodBasis": "downloadControlCsv",
+    "expandedRoute": "/api/control/customers.csv",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/customers.csv",
+        "file": "server/app/admin_customer_routes.py",
+        "line": 960,
+        "function": "export_customers_csv"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1480,
+    "function": "downloadControlRechargeOrdersCsv",
+    "route": "/api/control/recharge-orders.csv",
+    "caller": "downloadControlCsv",
+    "source": "\"/api/control/recharge-orders.csv\"",
+    "method": "GET",
+    "methodBasis": "downloadControlCsv",
+    "expandedRoute": "/api/control/recharge-orders.csv",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/recharge-orders.csv",
+        "file": "server/app/control_routes.py",
+        "line": 1240,
+        "function": "export_recharge_orders_csv"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1487,
+    "function": "downloadControlWalletTransactionsCsv",
+    "route": "/api/control/wallet-transactions.csv",
+    "caller": "downloadControlCsv",
+    "source": "\"/api/control/wallet-transactions.csv\"",
+    "method": "GET",
+    "methodBasis": "downloadControlCsv",
+    "expandedRoute": "/api/control/wallet-transactions.csv",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/control/wallet-transactions.csv",
+        "file": "server/app/control_routes.py",
+        "line": 1299,
+        "function": "export_wallet_transactions_csv"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1497,
+    "function": "createScriptVersion",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/scripts",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/scripts`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/scripts",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/scripts",
+        "file": "server/app/generation_routes.py",
+        "line": 139,
+        "function": "create_project_script"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1507,
+    "function": "getLatestScriptVersion",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/scripts/latest",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/scripts/latest`",
+    "method": "GET",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/scripts/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/scripts/latest",
+        "file": "server/app/generation_routes.py",
+        "line": 295,
+        "function": "read_latest_project_script"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1517,
+    "function": "compileGenerationPrompt",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/prompts/compile",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/prompts/compile`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/prompts/compile",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/prompts/compile",
+        "file": "server/app/generation_routes.py",
+        "line": 309,
+        "function": "compile_project_prompt"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1528,
+    "function": "reviseGenerationPrompt",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/prompts/revise",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/prompts/revise`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/prompts/revise",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/prompts/revise",
+        "file": "server/app/generation_routes.py",
+        "line": 335,
+        "function": "revise_project_prompt"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1539,
+    "function": "saveGenerationPrompt",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/saved-prompts",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/saved-prompts`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/saved-prompts",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/saved-prompts",
+        "file": "server/app/generation_routes.py",
+        "line": 351,
+        "function": "create_saved_prompt"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1549,
+    "function": "listSavedGenerationPrompts",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/saved-prompts",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/saved-prompts`",
+    "method": "GET",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/saved-prompts",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/saved-prompts",
+        "file": "server/app/generation_routes.py",
+        "line": 367,
+        "function": "read_saved_prompts"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1560,
+    "function": "applySavedGenerationPrompt",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/saved-prompts/{encodeURIComponent(savedPromptId)}/apply",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/saved-prompts/${encodeURIComponent(savedPromptId)}/apply`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/saved-prompts/{encodeURIComponent(savedPromptId)}/apply",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/saved-prompts/{saved_prompt_id}/apply",
+        "file": "server/app/generation_routes.py",
+        "line": 378,
+        "function": "apply_project_saved_prompt"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1590,
+    "function": "previewGenerationPrompt",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/prompts/preview",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/prompts/preview`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/prompts/preview",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/prompts/preview",
+        "file": "server/app/generation_routes.py",
+        "line": 320,
+        "function": "preview_project_prompt"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1621,
+    "function": "getLatestGenerationPrompt",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/prompts/latest",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/prompts/latest`",
+    "method": "GET",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/prompts/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/prompts/latest",
+        "file": "server/app/generation_routes.py",
+        "line": 399,
+        "function": "read_latest_project_prompt"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1631,
+    "function": "lockGenerationPrompt",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/prompts/{encodeURIComponent(promptVersionId)}/lock",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptVersionId)}/lock`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/prompts/{encodeURIComponent(promptVersionId)}/lock",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/prompts/{prompt_version_id}/lock",
+        "file": "server/app/generation_routes.py",
+        "line": 413,
+        "function": "lock_project_prompt"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1639,
+    "function": "getGenerationRuntimeLimits",
+    "route": "/api/generation/runtime-limits",
+    "caller": "requestGenerationJson",
+    "source": "\"/api/generation/runtime-limits\"",
+    "method": "GET",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/generation/runtime-limits",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/generation/runtime-limits",
+        "file": "server/app/generation_routes.py",
+        "line": 616,
+        "function": "read_generation_runtime_limits"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1655,
+    "function": "getGenerationPriceQuote",
+    "route": "/api/generation/price-quote",
+    "caller": "requestGenerationJson",
+    "source": "`/api/generation/price-quote?${query.toString()}`",
+    "method": "GET",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/generation/price-quote",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/generation/price-quote",
+        "file": "server/app/generation_routes.py",
+        "line": 624,
+        "function": "read_generation_price_quote"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1686,
+    "function": "getIndependentCapabilities",
+    "route": "/api/independent/capabilities",
+    "caller": "requestApiJson",
+    "source": "\"/api/independent/capabilities\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/independent/capabilities",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/independent/capabilities",
+        "file": "server/app/independent_routes.py",
+        "line": 25,
+        "function": "read_capabilities"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1710,
+    "function": "createIndependentVideoTask",
+    "route": "/api/independent/video-tasks",
+    "caller": "requestGenerationJson",
+    "source": "\"/api/independent/video-tasks\"",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/independent/video-tasks",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/independent/video-tasks",
+        "file": "server/app/independent_routes.py",
+        "line": 31,
+        "function": "create_video_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1731,
+    "function": "listUserSavedPrompts",
+    "route": "/api/studio/saved-prompts",
+    "caller": "requestApiJson",
+    "source": "\"/api/studio/saved-prompts\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/saved-prompts",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/studio/saved-prompts",
+        "file": "server/app/studio_routes.py",
+        "line": 378,
+        "function": "read_user_saved_prompts"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1742,
+    "function": "createGenerationBatch",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/generation-batches",
+    "caller": "requestGenerationJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/generation-batches`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/generation-batches",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/generation-batches",
+        "file": "server/app/generation_routes.py",
+        "line": 432,
+        "function": "create_project_generation_batch"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1752,
+    "function": "getGenerationBatch",
+    "route": "/api/generation-batches/{encodeURIComponent(batchId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/generation-batches/${encodeURIComponent(batchId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/generation-batches/{encodeURIComponent(batchId)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/generation-batches/{batch_id}",
+        "file": "server/app/generation_routes.py",
+        "line": 479,
+        "function": "read_generation_batch"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1762,
+    "function": "regenerateGenerationBatch",
+    "route": "/api/generation-batches/{encodeURIComponent(batchId)}/regenerate",
+    "caller": "requestGenerationJson",
+    "source": "`/api/generation-batches/${encodeURIComponent(batchId)}/regenerate`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/generation-batches/{encodeURIComponent(batchId)}/regenerate",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/generation-batches/{batch_id}/regenerate",
+        "file": "server/app/generation_routes.py",
+        "line": 573,
+        "function": "regenerate_batch"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1773,
+    "function": "renameGenerationBatch",
+    "route": "/api/generation-batches/{encodeURIComponent(batchId)}/name",
+    "caller": "requestApiJson",
+    "source": "`/api/generation-batches/${encodeURIComponent(batchId)}/name`",
+    "method": "PATCH",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/generation-batches/{encodeURIComponent(batchId)}/name",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/generation-batches/{batch_id}/name",
+        "file": "server/app/generation_routes.py",
+        "line": 497,
+        "function": "rename_generation_batch_record"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1781,
+    "function": "deleteGenerationBatch",
+    "route": "/api/generation-batches/{encodeURIComponent(batchId)}",
+    "caller": "requestApi",
+    "source": "`/api/generation-batches/${encodeURIComponent(batchId)}`",
+    "method": "DELETE",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/generation-batches/{encodeURIComponent(batchId)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/generation-batches/{batch_id}",
+        "file": "server/app/generation_routes.py",
+        "line": 512,
+        "function": "delete_generation_batch_record"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1813,
+    "function": "listGenerationBatches",
+    "route": "/api/generation-batches{suffix}",
+    "caller": "requestApiJson",
+    "source": "`/api/generation-batches${suffix}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/generation-batches",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/generation-batches",
+        "file": "server/app/generation_routes.py",
+        "line": 456,
+        "function": "list_generation_batch_records"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1823,
+    "function": "retryGenerationTask",
+    "route": "/api/generation-tasks/{encodeURIComponent(taskId)}/retry",
+    "caller": "requestGenerationJson",
+    "source": "`/api/generation-tasks/${encodeURIComponent(taskId)}/retry`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/generation-tasks/{encodeURIComponent(taskId)}/retry",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/generation-tasks/{task_id}/retry",
+        "file": "server/app/generation_routes.py",
+        "line": 707,
+        "function": "retry_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1834,
+    "function": "regenerateGenerationTask",
+    "route": "/api/generation-tasks/{encodeURIComponent(taskId)}/regenerate",
+    "caller": "requestGenerationJson",
+    "source": "`/api/generation-tasks/${encodeURIComponent(taskId)}/regenerate`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/generation-tasks/{encodeURIComponent(taskId)}/regenerate",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/generation-tasks/{task_id}/regenerate",
+        "file": "server/app/generation_routes.py",
+        "line": 734,
+        "function": "regenerate_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1845,
+    "function": "confirmGenerationTaskNotCharged",
+    "route": "/api/generation-tasks/{encodeURIComponent(taskId)}/confirm-not-charged",
+    "caller": "requestGenerationJson",
+    "source": "`/api/generation-tasks/${encodeURIComponent(taskId)}/confirm-not-charged`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/generation-tasks/{encodeURIComponent(taskId)}/confirm-not-charged",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/generation-tasks/{task_id}/confirm-not-charged",
+        "file": "server/app/generation_routes.py",
+        "line": 772,
+        "function": "confirm_task_not_charged"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1855,
+    "function": "getGenerationResultDownloadUrl",
+    "route": "/api/assets/{encodeURIComponent(assetId)}/download-url",
+    "caller": "requestGenerationJson",
+    "source": "`/api/assets/${encodeURIComponent(assetId)}/download-url`",
+    "method": "POST",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/assets/{encodeURIComponent(assetId)}/download-url",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/assets/{asset_id}/download-url",
+        "file": "server/app/rbac_routes.py",
+        "line": 901,
+        "function": "create_download_url"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 1883,
+    "function": "createGenerationTaskPreviewUrl",
+    "route": "/api/generation-tasks/{encodeURIComponent(taskId)}/preview-url",
+    "caller": "requestGenerationJson",
+    "source": "`/api/generation-tasks/${encodeURIComponent(taskId)}/preview-url`",
+    "method": "GET",
+    "methodBasis": "requestGenerationJson",
+    "expandedRoute": "/api/generation-tasks/{encodeURIComponent(taskId)}/preview-url",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/generation-tasks/{task_id}/preview-url",
+        "file": "server/app/generation_routes.py",
+        "line": 660,
+        "function": "read_generation_task_preview_url"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2116,
+    "function": "reconcileUncertainTask",
+    "route": "/api/generation-tasks/{encodeURIComponent(taskId)}/reconcile",
+    "caller": "requestApiJson",
+    "source": "`/api/generation-tasks/${encodeURIComponent(taskId)}/reconcile`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/generation-tasks/{encodeURIComponent(taskId)}/reconcile",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/generation-tasks/{task_id}/reconcile",
+        "file": "server/app/generation_routes.py",
+        "line": 811,
+        "function": "reconcile_uncertain_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2125,
+    "function": "cancelGenerationBatch",
+    "route": "/api/generation-batches/{encodeURIComponent(batchId)}/cancel",
+    "caller": "requestApiJson",
+    "source": "`/api/generation-batches/${encodeURIComponent(batchId)}/cancel`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/generation-batches/{encodeURIComponent(batchId)}/cancel",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/generation-batches/{batch_id}/cancel",
+        "file": "server/app/generation_routes.py",
+        "line": 488,
+        "function": "cancel_generation_batch_record"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2140,
+    "function": "getGenerationReconcileOperation",
+    "route": "/api/generation-reconcile-operations/{encodeURIComponent(operationId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/generation-reconcile-operations/${encodeURIComponent(operationId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/generation-reconcile-operations/{encodeURIComponent(operationId)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/generation-reconcile-operations/{operation_id}",
+        "file": "server/app/generation_routes.py",
+        "line": 851,
+        "function": "read_generation_reconcile_operation"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2149,
+    "function": "getLatestGenerationReconcileOperation",
+    "route": "/api/generation-tasks/{encodeURIComponent(taskId)}/reconcile/latest",
+    "caller": "requestApi",
+    "source": "`/api/generation-tasks/${encodeURIComponent(taskId)}/reconcile/latest`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/generation-tasks/{encodeURIComponent(taskId)}/reconcile/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/generation-tasks/{task_id}/reconcile/latest",
+        "file": "server/app/generation_routes.py",
+        "line": 871,
+        "function": "read_latest_generation_reconcile_operation"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2197,
+    "function": "listProjects",
+    "route": "/api/projects",
+    "caller": "requestApiJson",
+    "source": "\"/api/projects\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects",
+        "file": "server/app/rbac_routes.py",
+        "line": 455,
+        "function": "list_projects"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2201,
+    "function": "createProject",
+    "route": "/api/projects",
+    "caller": "requestApiJson",
+    "source": "\"/api/projects\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects",
+        "file": "server/app/rbac_routes.py",
+        "line": 591,
+        "function": "create_project"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2209,
+    "function": "deleteProject",
+    "route": "/api/projects/{encodeURIComponent(projectId)}",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}`",
+    "method": "DELETE",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/projects/{project_id}",
+        "file": "server/app/rbac_routes.py",
+        "line": 693,
+        "function": "delete_project"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2222,
+    "function": "renameProject",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/name",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/name`",
+    "method": "PATCH",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/name",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/projects/{project_id}/name",
+        "file": "server/app/rbac_routes.py",
+        "line": 643,
+        "function": "rename_project"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2234,
+    "function": "createVideoUploadIntent",
+    "route": "/api/assets/upload-intent",
+    "caller": "requestApiJson",
+    "source": "\"/api/assets/upload-intent\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/assets/upload-intent",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/assets/upload-intent",
+        "file": "server/app/media_routes.py",
+        "line": 410,
+        "function": "create_asset_upload_intent"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2301,
+    "function": "listMaterials",
+    "route": "/api/studio/materials{suffix}",
+    "caller": "requestApiJson",
+    "source": "`/api/studio/materials${suffix}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/materials",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/studio/materials",
+        "file": "server/app/material_routes.py",
+        "line": 43,
+        "function": "read_materials"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2310,
+    "function": "resolveMaterials",
+    "route": "/api/studio/materials/resolve",
+    "caller": "requestApiJson",
+    "source": "\"/api/studio/materials/resolve\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/materials/resolve",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/studio/materials/resolve",
+        "file": "server/app/material_routes.py",
+        "line": 64,
+        "function": "read_materials_by_id"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2322,
+    "function": "createMaterialUploadIntent",
+    "route": "/api/studio/materials/upload-intent",
+    "caller": "requestApiJson",
+    "source": "\"/api/studio/materials/upload-intent\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/materials/upload-intent",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/studio/materials/upload-intent",
+        "file": "server/app/material_routes.py",
+        "line": 73,
+        "function": "create_upload_intent"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2350,
+    "function": "completeMaterialUpload",
+    "route": "/api/studio/materials/uploads/{encodeURIComponent(assetId)}/complete",
+    "caller": "requestApiJson",
+    "source": "`/api/studio/materials/uploads/${encodeURIComponent(assetId)}/complete`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/materials/uploads/{encodeURIComponent(assetId)}/complete",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/studio/materials/uploads/{asset_id}/complete",
+        "file": "server/app/material_routes.py",
+        "line": 132,
+        "function": "complete_upload"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2362,
+    "function": "updateMaterial",
+    "route": "/api/studio/materials/{encodeURIComponent(materialId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/studio/materials/${encodeURIComponent(materialId)}`",
+    "method": "PATCH",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/studio/materials/{encodeURIComponent(materialId)}",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/studio/materials/{material_id}",
+        "file": "server/app/material_routes.py",
+        "line": 151,
+        "function": "patch_material"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2370,
+    "function": "hideMaterial",
+    "route": "/api/studio/materials/{encodeURIComponent(materialId)}",
+    "caller": "requestApi",
+    "source": "`/api/studio/materials/${encodeURIComponent(materialId)}`",
+    "method": "DELETE",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/studio/materials/{encodeURIComponent(materialId)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/studio/materials/{material_id}",
+        "file": "server/app/material_routes.py",
+        "line": 166,
+        "function": "remove_material"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2469,
+    "function": "listPersonIdentities",
+    "route": "/api/person-identities",
+    "caller": "requestApiJson",
+    "source": "\"/api/person-identities\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/person-identities",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/person-identities",
+        "file": "server/app/character_identity_routes.py",
+        "line": 194,
+        "function": "read_person_identities"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2480,
+    "function": "createPersonIdentity",
+    "route": "/api/person-identities",
+    "caller": "requestApiJson",
+    "source": "\"/api/person-identities\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/person-identities",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/person-identities",
+        "file": "server/app/character_identity_routes.py",
+        "line": 202,
+        "function": "create_person_identity_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2492,
+    "function": "createIdentityUploadIntent",
+    "route": "/api/person-identities/{encodeURIComponent(identityId)}/{purpose}-upload-intent",
+    "caller": "requestApiJson",
+    "source": "`/api/person-identities/${encodeURIComponent(identityId)}/${purpose}-upload-intent`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/person-identities/{encodeURIComponent(identityId)}/authorization-upload-intent",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/person-identities/{identity_id}/authorization-upload-intent",
+        "file": "server/app/character_identity_routes.py",
+        "line": 268,
+        "function": "create_authorization_upload_intent"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2492,
+    "function": "createIdentityUploadIntent",
+    "route": "/api/person-identities/{encodeURIComponent(identityId)}/{purpose}-upload-intent",
+    "caller": "requestApiJson",
+    "source": "`/api/person-identities/${encodeURIComponent(identityId)}/${purpose}-upload-intent`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/person-identities/{encodeURIComponent(identityId)}/source-upload-intent",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/person-identities/{identity_id}/source-upload-intent",
+        "file": "server/app/character_identity_routes.py",
+        "line": 309,
+        "function": "create_source_upload_intent"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2510,
+    "function": "completeIdentityAuthorizationUpload",
+    "route": "/api/person-identities/{encodeURIComponent(identityId)}/authorization-upload-complete",
+    "caller": "requestApiJson",
+    "source": "`/api/person-identities/${encodeURIComponent(identityId)}/authorization-upload-complete`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/person-identities/{encodeURIComponent(identityId)}/authorization-upload-complete",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/person-identities/{identity_id}/authorization-upload-complete",
+        "file": "server/app/character_identity_routes.py",
+        "line": 289,
+        "function": "complete_authorization_upload_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2522,
+    "function": "completeIdentitySourceUpload",
+    "route": "/api/person-identities/{encodeURIComponent(identityId)}/source-upload-complete",
+    "caller": "requestApiJson",
+    "source": "`/api/person-identities/${encodeURIComponent(identityId)}/source-upload-complete`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/person-identities/{encodeURIComponent(identityId)}/source-upload-complete",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/person-identities/{identity_id}/source-upload-complete",
+        "file": "server/app/character_identity_routes.py",
+        "line": 330,
+        "function": "complete_source_upload_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2533,
+    "function": "listCharacterPersonas",
+    "route": "/api/person-identities/{encodeURIComponent(identityId)}/personas",
+    "caller": "requestApiJson",
+    "source": "`/api/person-identities/${encodeURIComponent(identityId)}/personas`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/person-identities/{encodeURIComponent(identityId)}/personas",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/person-identities/{identity_id}/personas",
+        "file": "server/app/character_identity_routes.py",
+        "line": 352,
+        "function": "read_character_personas"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2543,
+    "function": "createCharacterPersona",
+    "route": "/api/person-identities/{encodeURIComponent(identityId)}/personas",
+    "caller": "requestApiJson",
+    "source": "`/api/person-identities/${encodeURIComponent(identityId)}/personas`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/person-identities/{encodeURIComponent(identityId)}/personas",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/person-identities/{identity_id}/personas",
+        "file": "server/app/character_identity_routes.py",
+        "line": 364,
+        "function": "create_character_persona_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2554,
+    "function": "updateCharacterPersona",
+    "route": "/api/character-personas/{encodeURIComponent(personaId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/character-personas/${encodeURIComponent(personaId)}`",
+    "method": "PATCH",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-personas/{encodeURIComponent(personaId)}",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/character-personas/{persona_id}",
+        "file": "server/app/character_identity_routes.py",
+        "line": 392,
+        "function": "update_character_persona_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2564,
+    "function": "listCharacterVersions",
+    "route": "/api/character-personas/{encodeURIComponent(personaId)}/versions",
+    "caller": "requestApiJson",
+    "source": "`/api/character-personas/${encodeURIComponent(personaId)}/versions`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-personas/{encodeURIComponent(personaId)}/versions",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/character-personas/{persona_id}/versions",
+        "file": "server/app/character_identity_routes.py",
+        "line": 420,
+        "function": "read_character_versions"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2574,
+    "function": "createCharacterVersion",
+    "route": "/api/character-personas/{encodeURIComponent(personaId)}/versions",
+    "caller": "requestApiJson",
+    "source": "`/api/character-personas/${encodeURIComponent(personaId)}/versions`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-personas/{encodeURIComponent(personaId)}/versions",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/character-personas/{persona_id}/versions",
+        "file": "server/app/character_identity_routes.py",
+        "line": 432,
+        "function": "create_character_version_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2584,
+    "function": "listCharacterGenerationTasks",
+    "route": "/api/character-versions/{encodeURIComponent(versionId)}/generation-tasks",
+    "caller": "requestApiJson",
+    "source": "`/api/character-versions/${encodeURIComponent(versionId)}/generation-tasks`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-versions/{encodeURIComponent(versionId)}/generation-tasks",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/character-versions/{version_id}/generation-tasks",
+        "file": "server/app/character_generation_routes.py",
+        "line": 80,
+        "function": "read_character_generation_tasks"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2593,
+    "function": "listCharacterAssets",
+    "route": "/api/character-versions/{encodeURIComponent(versionId)}/assets",
+    "caller": "requestApiJson",
+    "source": "`/api/character-versions/${encodeURIComponent(versionId)}/assets`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-versions/{encodeURIComponent(versionId)}/assets",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/character-versions/{version_id}/assets",
+        "file": "server/app/character_generation_routes.py",
+        "line": 96,
+        "function": "read_character_assets"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2607,
+    "function": "generateCharacterAssets",
+    "route": "/api/character-versions/{encodeURIComponent(versionId)}/generate-assets",
+    "caller": "requestApiJson",
+    "source": "`/api/character-versions/${encodeURIComponent(versionId)}/generate-assets`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-versions/{encodeURIComponent(versionId)}/generate-assets",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/character-versions/{version_id}/generate-assets",
+        "file": "server/app/character_generation_routes.py",
+        "line": 59,
+        "function": "generate_character_assets"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2619,
+    "function": "regenerateCharacterAsset",
+    "route": "/api/character-assets/{encodeURIComponent(characterAssetId)}/regenerate",
+    "caller": "requestApiJson",
+    "source": "`/api/character-assets/${encodeURIComponent(characterAssetId)}/regenerate`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-assets/{encodeURIComponent(characterAssetId)}/regenerate",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/character-assets/{character_asset_id}/regenerate",
+        "file": "server/app/character_generation_routes.py",
+        "line": 169,
+        "function": "regenerate_character_asset_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2635,
+    "function": "reviewCharacterAsset",
+    "route": "/api/character-assets/{encodeURIComponent(characterAssetId)}/review",
+    "caller": "requestApiJson",
+    "source": "`/api/character-assets/${encodeURIComponent(characterAssetId)}/review`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-assets/{encodeURIComponent(characterAssetId)}/review",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/character-assets/{character_asset_id}/review",
+        "file": "server/app/character_generation_routes.py",
+        "line": 112,
+        "function": "create_character_asset_review"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2653,
+    "function": "publishCharacterVersion",
+    "route": "/api/character-versions/{encodeURIComponent(versionId)}/publish",
+    "caller": "requestApiJson",
+    "source": "`/api/character-versions/${encodeURIComponent(versionId)}/publish`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/character-versions/{encodeURIComponent(versionId)}/publish",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/character-versions/{version_id}/publish",
+        "file": "server/app/character_generation_routes.py",
+        "line": 149,
+        "function": "publish_character_version_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2667,
+    "function": "completeVideoUpload",
+    "route": "/api/assets/{encodeURIComponent(assetId)}/complete",
+    "caller": "requestApiJson",
+    "source": "`/api/assets/${encodeURIComponent(assetId)}/complete`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/assets/{encodeURIComponent(assetId)}/complete",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/assets/{asset_id}/complete",
+        "file": "server/app/media_routes.py",
+        "line": 453,
+        "function": "complete_asset_upload"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2684,
+    "function": "startVideoAnalysis",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/analysis-tasks",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/analysis-tasks`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/analysis-tasks",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/analysis-tasks",
+        "file": "server/app/analysis_routes.py",
+        "line": 353,
+        "function": "create_project_analysis_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2700,
+    "function": "getAnalysisTask",
+    "route": "/api/analysis-tasks/{encodeURIComponent(taskId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/analysis-tasks/${encodeURIComponent(taskId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/analysis-tasks/{encodeURIComponent(taskId)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/analysis-tasks/{task_id}",
+        "file": "server/app/analysis_routes.py",
+        "line": 401,
+        "function": "read_analysis_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2742,
+    "function": "getLatestProjectAnalysis",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/analysis/latest",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/analysis/latest`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/analysis/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/analysis/latest",
+        "file": "server/app/analysis_routes.py",
+        "line": 454,
+        "function": "read_latest_project_analysis"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2751,
+    "function": "getLatestProjectShotCards",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/shot-cards/latest",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/shot-cards/latest`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/shot-cards/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/shot-cards/latest",
+        "file": "server/app/analysis_routes.py",
+        "line": 480,
+        "function": "read_latest_project_shot_card"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2769,
+    "function": "saveShotCards",
+    "route": "/api/analysis/{encodeURIComponent(analysisId)}/shots",
+    "caller": "requestApiJson",
+    "source": "`/api/analysis/${encodeURIComponent(analysisId)}/shots`",
+    "method": "PUT",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/analysis/{encodeURIComponent(analysisId)}/shots",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/analysis/{analysis_id}/shots",
+        "file": "server/app/analysis_routes.py",
+        "line": 503,
+        "function": "update_analysis_shots"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2779,
+    "function": "listProjectCharacters",
+    "route": "/api/characters",
+    "caller": "requestApiJson",
+    "source": "`/api/characters?project_id=${encodeURIComponent(projectId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/characters",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/characters",
+        "file": "server/app/character_routes.py",
+        "line": 117,
+        "function": "read_characters"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2788,
+    "function": "listProjectCharacterVersions",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/character-versions/available",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/character-versions/available`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/character-versions/available",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/character-versions/available",
+        "file": "server/app/character_routes.py",
+        "line": 134,
+        "function": "read_available_project_character_versions"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2837,
+    "function": "rewriteProjectScript",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/script-rewrite",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/script-rewrite`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/script-rewrite",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/script-rewrite",
+        "file": "server/app/generation_routes.py",
+        "line": 150,
+        "function": "rewrite_project_script"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2854,
+    "function": "getScriptRewriteTask",
+    "route": "/api/script-rewrite-tasks/{encodeURIComponent(taskId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/script-rewrite-tasks/${encodeURIComponent(taskId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/script-rewrite-tasks/{encodeURIComponent(taskId)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/script-rewrite-tasks/{task_id}",
+        "file": "server/app/generation_routes.py",
+        "line": 172,
+        "function": "read_script_rewrite_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 2868,
+    "function": "getLatestScriptRewriteTask",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/script-rewrite-tasks/latest",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/script-rewrite-tasks/latest?${query}`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/script-rewrite-tasks/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/script-rewrite-tasks/latest",
+        "file": "server/app/generation_routes.py",
+        "line": 191,
+        "function": "read_latest_script_rewrite_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3026,
+    "function": "uploadSimpleCharacter",
+    "route": "/api/simple-characters/tasks/{encodeURIComponent(projectId)}/generate",
+    "caller": "",
+    "source": "`/api/simple-characters/tasks/${encodeURIComponent(projectId)}/generate`",
+    "method": "POST",
+    "methodBasis": "经源码核对 controlWriteInit 或 endpoint 变量后的真实 method",
+    "expandedRoute": "/api/simple-characters/tasks/{encodeURIComponent(projectId)}/generate",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/simple-characters/tasks/{project_id}/generate",
+        "file": "server/app/simple_character_routes.py",
+        "line": 325,
+        "function": "enqueue_project_simple_character"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3027,
+    "function": "uploadSimpleCharacter",
+    "route": "/api/simple-characters/tasks/generate",
+    "caller": "",
+    "source": "\"/api/simple-characters/tasks/generate\"",
+    "method": "POST",
+    "methodBasis": "经源码核对 controlWriteInit 或 endpoint 变量后的真实 method",
+    "expandedRoute": "/api/simple-characters/tasks/generate",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/simple-characters/tasks/generate",
+        "file": "server/app/simple_character_routes.py",
+        "line": 301,
+        "function": "enqueue_global_simple_character"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3045,
+    "function": "renamePersonIdentity",
+    "route": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/name",
+    "caller": "requestApiJson",
+    "source": "`/api/simple-characters/identities/${encodeURIComponent(identityId)}/name`",
+    "method": "PATCH",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/name",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/simple-characters/identities/{identity_id}/name",
+        "file": "server/app/simple_character_routes.py",
+        "line": 505,
+        "function": "rename_identity"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3062,
+    "function": "updateSimpleCharacterProfile",
+    "route": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/profile",
+    "caller": "requestApiJson",
+    "source": "`/api/simple-characters/identities/${encodeURIComponent(identityId)}/profile`",
+    "method": "PATCH",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/profile",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/simple-characters/identities/{identity_id}/profile",
+        "file": "server/app/simple_character_routes.py",
+        "line": 521,
+        "function": "update_identity_profile"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3076,
+    "function": "deleteSimpleCharacterIdentity",
+    "route": "/api/simple-characters/identities/{encodeURIComponent(identityId)}",
+    "caller": "requestApi",
+    "source": "`/api/simple-characters/identities/${encodeURIComponent(identityId)}`",
+    "method": "DELETE",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/simple-characters/identities/{encodeURIComponent(identityId)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/simple-characters/identities/{identity_id}",
+        "file": "server/app/simple_character_routes.py",
+        "line": 697,
+        "function": "delete_identity"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3119,
+    "function": "regenerateContactSheet",
+    "route": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/regenerate-contact-sheet-task",
+    "caller": "requestApiJson",
+    "source": "`/api/simple-characters/identities/${encodeURIComponent(identityId)}/regenerate-contact-sheet-task`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/regenerate-contact-sheet-task",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/simple-characters/identities/{identity_id}/regenerate-contact-sheet-task",
+        "file": "server/app/simple_character_routes.py",
+        "line": 627,
+        "function": "enqueue_regenerate_contact_sheet"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3134,
+    "function": "getCharacterSheetTask",
+    "route": "/api/simple-characters/task-status/{encodeURIComponent(taskId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/simple-characters/task-status/${encodeURIComponent(taskId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/task-status/{encodeURIComponent(taskId)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/simple-characters/task-status/{task_id}",
+        "file": "server/app/simple_character_routes.py",
+        "line": 677,
+        "function": "read_character_sheet_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3141,
+    "function": "getLatestCharacterSheetTask",
+    "route": "/api/simple-characters/tasks/active-or-latest",
+    "caller": "requestApiJson",
+    "source": "\"/api/simple-characters/tasks/active-or-latest\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/tasks/active-or-latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/simple-characters/tasks/active-or-latest",
+        "file": "server/app/simple_character_routes.py",
+        "line": 688,
+        "function": "read_latest_character_sheet_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3150,
+    "function": "getLatestSceneLookTask",
+    "route": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/scene-looks/tasks/active-or-latest",
+    "caller": "requestApiJson",
+    "source": "`/api/simple-characters/identities/${encodeURIComponent(identityId)}/scene-looks/tasks/active-or-latest`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/scene-looks/tasks/active-or-latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/simple-characters/identities/{identity_id}/scene-looks/tasks/active-or-latest",
+        "file": "server/app/simple_character_routes.py",
+        "line": 489,
+        "function": "read_latest_scene_look_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3195,
+    "function": "listSimpleCharacterLibrary",
+    "route": "/api/simple-characters/library",
+    "caller": "requestApiJson",
+    "source": "\"/api/simple-characters/library\"",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/library",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/simple-characters/library",
+        "file": "server/app/simple_character_routes.py",
+        "line": 350,
+        "function": "read_simple_library"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3204,
+    "function": "listCharacterSceneLooks",
+    "route": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/scene-looks",
+    "caller": "requestApiJson",
+    "source": "`/api/simple-characters/identities/${encodeURIComponent(identityId)}/scene-looks`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/scene-looks",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/simple-characters/identities/{identity_id}/scene-looks",
+        "file": "server/app/simple_character_routes.py",
+        "line": 382,
+        "function": "read_scene_looks"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3218,
+    "function": "createCharacterSceneLook",
+    "route": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/scene-looks/tasks/generate",
+    "caller": "requestApiJson",
+    "source": "`/api/simple-characters/identities/${encodeURIComponent(identityId)}/scene-looks/tasks/generate`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/simple-characters/identities/{encodeURIComponent(identityId)}/scene-looks/tasks/generate",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/simple-characters/identities/{identity_id}/scene-looks/tasks/generate",
+        "file": "server/app/simple_character_routes.py",
+        "line": 414,
+        "function": "enqueue_scene_look"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3260,
+    "function": "getProjectMainCharacter",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/main-character",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/main-character`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/main-character",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/main-character",
+        "file": "server/app/character_routes.py",
+        "line": 89,
+        "function": "read_project_main_character_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3277,
+    "function": "chooseProjectMainCharacter",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/main-character",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/main-character`",
+    "method": "PUT",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/main-character",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/projects/{project_id}/main-character",
+        "file": "server/app/character_routes.py",
+        "line": 243,
+        "function": "choose_main_character_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3288,
+    "function": "chooseProjectMainCharacterVersion",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/main-character",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/main-character`",
+    "method": "PUT",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/main-character",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/projects/{project_id}/main-character",
+        "file": "server/app/character_routes.py",
+        "line": 243,
+        "function": "choose_main_character_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3301,
+    "function": "getLatestProjectSourceFrames",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/source-frames/latest",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/source-frames/latest`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/source-frames/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/source-frames/latest",
+        "file": "server/app/source_frame_routes.py",
+        "line": 196,
+        "function": "read_latest_source_frames"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3318,
+    "function": "getLatestProjectSourceFrameSelection",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/source-frames/selection/latest",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/source-frames/selection/latest`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/source-frames/selection/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/source-frames/selection/latest",
+        "file": "server/app/source_frame_routes.py",
+        "line": 230,
+        "function": "read_latest_source_frame_selection"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3343,
+    "function": "extractSourceFrames",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/source-frames/extract",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/source-frames/extract`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/source-frames/extract",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/source-frames/extract",
+        "file": "server/app/source_frame_routes.py",
+        "line": 107,
+        "function": "extract_project_source_frames"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3360,
+    "function": "getSourceFrameTask",
+    "route": "/api/source-frame-tasks/{encodeURIComponent(taskId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/source-frame-tasks/${encodeURIComponent(taskId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/source-frame-tasks/{encodeURIComponent(taskId)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/source-frame-tasks/{task_id}",
+        "file": "server/app/source_frame_routes.py",
+        "line": 131,
+        "function": "read_source_frame_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3369,
+    "function": "cancelSourceFrameTask",
+    "route": "/api/source-frame-tasks/{encodeURIComponent(taskId)}/cancel",
+    "caller": "requestApiJson",
+    "source": "`/api/source-frame-tasks/${encodeURIComponent(taskId)}/cancel`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/source-frame-tasks/{encodeURIComponent(taskId)}/cancel",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/source-frame-tasks/{task_id}/cancel",
+        "file": "server/app/source_frame_routes.py",
+        "line": 159,
+        "function": "cancel_project_source_frame_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3380,
+    "function": "getLatestProjectSourceFrameTask",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/source-frame-tasks/latest",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/source-frame-tasks/latest?asset_id=${encodeURIComponent(assetId)}`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/source-frame-tasks/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/source-frame-tasks/latest",
+        "file": "server/app/source_frame_routes.py",
+        "line": 172,
+        "function": "read_latest_source_frame_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3431,
+    "function": "confirmSourceFrame",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/source-frames/confirm",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/source-frames/confirm`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/source-frames/confirm",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/source-frames/confirm",
+        "file": "server/app/source_frame_routes.py",
+        "line": 209,
+        "function": "confirm_project_source_frame"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3447,
+    "function": "getCharacterReferenceRecommendation",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/character-reference-recommendation",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/character-reference-recommendation`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/character-reference-recommendation",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/character-reference-recommendation",
+        "file": "server/app/character_reference_routes.py",
+        "line": 26,
+        "function": "read_character_reference_recommendation"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3456,
+    "function": "getLatestCharacterReferenceSelection",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/character-reference-selection/latest",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/character-reference-selection/latest`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/character-reference-selection/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/character-reference-selection/latest",
+        "file": "server/app/character_reference_routes.py",
+        "line": 63,
+        "function": "read_latest_character_reference_selection"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3473,
+    "function": "selectCharacterReferences",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/character-reference-selection",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/character-reference-selection`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/character-reference-selection",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/character-reference-selection",
+        "file": "server/app/character_reference_routes.py",
+        "line": 42,
+        "function": "select_character_references"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3486,
+    "function": "getLatestProjectFirstFrames",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/first-frames/latest",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/first-frames/latest`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/first-frames/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/first-frames/latest",
+        "file": "server/app/first_frame_routes.py",
+        "line": 366,
+        "function": "read_latest_first_frames"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3509,
+    "function": "getProjectFirstFrameHistory",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/first-frames/history",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/first-frames/history`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/first-frames/history",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/first-frames/history",
+        "file": "server/app/first_frame_routes.py",
+        "line": 386,
+        "function": "read_first_frame_history"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3521,
+    "function": "getLatestProjectFirstFrameSelection",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/first-frames/selection/latest",
+    "caller": "requestApi",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/first-frames/selection/latest`",
+    "method": "GET",
+    "methodBasis": "requestApi",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/first-frames/selection/latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/first-frames/selection/latest",
+        "file": "server/app/first_frame_routes.py",
+        "line": 425,
+        "function": "read_latest_first_frame_selection"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3546,
+    "function": "generateFirstFrames",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/first-frame-tasks",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/first-frame-tasks`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/first-frame-tasks",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/first-frame-tasks",
+        "file": "server/app/first_frame_routes.py",
+        "line": 300,
+        "function": "create_project_first_frame_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3581,
+    "function": "getFirstFrameTask",
+    "route": "/api/first-frame-tasks/{encodeURIComponent(taskId)}",
+    "caller": "requestApiJson",
+    "source": "`/api/first-frame-tasks/${encodeURIComponent(taskId)}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/first-frame-tasks/{encodeURIComponent(taskId)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/first-frame-tasks/{task_id}",
+        "file": "server/app/first_frame_routes.py",
+        "line": 327,
+        "function": "read_first_frame_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3590,
+    "function": "getLatestFirstFrameTask",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/first-frame-tasks/active-or-latest",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/first-frame-tasks/active-or-latest`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/first-frame-tasks/active-or-latest",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/projects/{project_id}/first-frame-tasks/active-or-latest",
+        "file": "server/app/first_frame_routes.py",
+        "line": 347,
+        "function": "read_latest_first_frame_task"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3653,
+    "function": "confirmFirstFrame",
+    "route": "/api/projects/{encodeURIComponent(projectId)}/first-frames/confirm",
+    "caller": "requestApiJson",
+    "source": "`/api/projects/${encodeURIComponent(projectId)}/first-frames/confirm`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/projects/{encodeURIComponent(projectId)}/first-frames/confirm",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/projects/{project_id}/first-frames/confirm",
+        "file": "server/app/first_frame_routes.py",
+        "line": 407,
+        "function": "confirm_project_first_frame"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3669,
+    "function": "getAssetDownloadUrl",
+    "route": "/api/assets/{encodeURIComponent(assetId)}/download-url",
+    "caller": "requestApiJson",
+    "source": "`/api/assets/${encodeURIComponent(assetId)}/download-url`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/assets/{encodeURIComponent(assetId)}/download-url",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/assets/{asset_id}/download-url",
+        "file": "server/app/rbac_routes.py",
+        "line": 901,
+        "function": "create_download_url"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3680,
+    "function": "getCachedCharacterAssetUrl",
+    "route": "/api/assets/{encodeURIComponent(assetId)}/cached-url",
+    "caller": "requestApiJson",
+    "source": "`/api/assets/${encodeURIComponent(assetId)}/cached-url`",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/assets/{encodeURIComponent(assetId)}/cached-url",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/assets/{asset_id}/cached-url",
+        "file": "server/app/rbac_routes.py",
+        "line": 961,
+        "function": "create_cached_character_url"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3881,
+    "function": "getSettings",
+    "route": "/api/admin/settings",
+    "caller": "requestAdminJson",
+    "source": "\"/api/admin/settings\"",
+    "method": "GET",
+    "methodBasis": "requestAdminJson",
+    "expandedRoute": "/api/admin/settings",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/admin/settings",
+        "file": "server/app/settings_routes.py",
+        "line": 263,
+        "function": "read_settings"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3891,
+    "function": "updateProviderSettings",
+    "route": "/api/admin/settings/providers/{provider}",
+    "caller": "requestAdminJson",
+    "source": "`/api/admin/settings/providers/${provider}`",
+    "method": "PUT",
+    "methodBasis": "requestAdminJson",
+    "expandedRoute": "/api/admin/settings/providers/{provider}",
+    "backend": [
+      {
+        "method": "PUT",
+        "route": "/api/admin/settings/providers/{provider}",
+        "file": "server/app/settings_routes.py",
+        "line": 276,
+        "function": "update_provider_settings"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3901,
+    "function": "updateRuntimeSettings",
+    "route": "/api/admin/settings/runtime",
+    "caller": "requestAdminJson",
+    "source": "\"/api/admin/settings/runtime\"",
+    "method": "PATCH",
+    "methodBasis": "requestAdminJson",
+    "expandedRoute": "/api/admin/settings/runtime",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/admin/settings/runtime",
+        "file": "server/app/settings_routes.py",
+        "line": 324,
+        "function": "update_runtime_settings"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3909,
+    "function": "runSettingsDiagnostic",
+    "route": "/api/admin/settings/diagnostic-test",
+    "caller": "requestAdminJson",
+    "source": "\"/api/admin/settings/diagnostic-test\"",
+    "method": "POST",
+    "methodBasis": "requestAdminJson",
+    "expandedRoute": "/api/admin/settings/diagnostic-test",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/admin/settings/diagnostic-test",
+        "file": "server/app/settings_routes.py",
+        "line": 418,
+        "function": "run_settings_diagnostic"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 3920,
+    "function": "testProviderConnection",
+    "route": "/api/admin/settings/providers/{provider}/connection-test",
+    "caller": "requestAdminJson",
+    "source": "`/api/admin/settings/providers/${provider}/connection-test`",
+    "method": "POST",
+    "methodBasis": "requestAdminJson",
+    "expandedRoute": "/api/admin/settings/providers/{provider}/connection-test",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/admin/settings/providers/{provider}/connection-test",
+        "file": "server/app/settings_routes.py",
+        "line": 394,
+        "function": "connection_test"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 4895,
+    "function": "customerActivate",
+    "route": "/api/customer/activate",
+    "caller": "customerJson",
+    "source": "\"/api/customer/activate\"",
+    "method": "POST",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/activate",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/activate",
+        "file": "server/app/activation_code_routes.py",
+        "line": 801,
+        "function": "activate_first_device"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 4965,
+    "function": "customerLogin",
+    "route": "/api/customer/sessions/login",
+    "caller": "customerEstablishSession",
+    "source": "\"/api/customer/sessions/login\"",
+    "method": "POST",
+    "methodBasis": "customerEstablishSession",
+    "expandedRoute": "/api/customer/sessions/login",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/sessions/login",
+        "file": "server/app/customer_session_routes.py",
+        "line": 729,
+        "function": "login"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 4978,
+    "function": "customerSwitch",
+    "route": "/api/customer/sessions/switch",
+    "caller": "customerEstablishSession",
+    "source": "\"/api/customer/sessions/switch\"",
+    "method": "POST",
+    "methodBasis": "customerEstablishSession",
+    "expandedRoute": "/api/customer/sessions/switch",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/sessions/switch",
+        "file": "server/app/customer_session_routes.py",
+        "line": 751,
+        "function": "switch"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 4989,
+    "function": "customerHeartbeat",
+    "route": "/api/customer/sessions/heartbeat",
+    "caller": "customerJson",
+    "source": "\"/api/customer/sessions/heartbeat\"",
+    "method": "POST",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/sessions/heartbeat",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/sessions/heartbeat",
+        "file": "server/app/customer_session_routes.py",
+        "line": 782,
+        "function": "heartbeat"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5000,
+    "function": "customerLogout",
+    "route": "/api/customer/sessions/logout",
+    "caller": "customerJson",
+    "source": "\"/api/customer/sessions/logout\"",
+    "method": "POST",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/sessions/logout",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/sessions/logout",
+        "file": "server/app/customer_session_routes.py",
+        "line": 830,
+        "function": "logout"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5013,
+    "function": "customerListDevices",
+    "route": "/api/customer/devices",
+    "caller": "customerJson",
+    "source": "\"/api/customer/devices\"",
+    "method": "GET",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/devices",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/customer/devices",
+        "file": "server/app/customer_device_routes.py",
+        "line": 434,
+        "function": "list_devices"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5027,
+    "function": "customerUnbindDevice",
+    "route": "/api/customer/devices/{encodeURIComponent(deviceId)}",
+    "caller": "customerJson",
+    "source": "`/api/customer/devices/${encodeURIComponent(deviceId)}`",
+    "method": "DELETE",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/devices/{encodeURIComponent(deviceId)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/customer/devices/{device_id}",
+        "file": "server/app/customer_device_routes.py",
+        "line": 517,
+        "function": "unbind_device_route"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5064,
+    "function": "customerEnrollDevice",
+    "route": "/api/customer/devices/enroll",
+    "caller": "customerJson",
+    "source": "\"/api/customer/devices/enroll\"",
+    "method": "POST",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/devices/enroll",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/devices/enroll",
+        "file": "server/app/customer_device_routes.py",
+        "line": 980,
+        "function": "enroll_second_device"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5097,
+    "function": "customerApproveDevicePairing",
+    "route": "/api/customer/device-pairings/{encodeURIComponent(pairingId)}/approve",
+    "caller": "customerJson",
+    "source": "`/api/customer/device-pairings/${encodeURIComponent(pairingId)}/approve`",
+    "method": "POST",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/device-pairings/{encodeURIComponent(pairingId)}/approve",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/device-pairings/{pairing_id}/approve",
+        "file": "server/app/customer_device_routes.py",
+        "line": 1414,
+        "function": "approve_device_pairing"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5110,
+    "function": "customerDismissDevicePairing",
+    "route": "/api/customer/device-pairings/{encodeURIComponent(pairingId)}",
+    "caller": "customerJson",
+    "source": "`/api/customer/device-pairings/${encodeURIComponent(pairingId)}`",
+    "method": "DELETE",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/device-pairings/{encodeURIComponent(pairingId)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/customer/device-pairings/{pairing_id}",
+        "file": "server/app/customer_device_routes.py",
+        "line": 1501,
+        "function": "dismiss_device_pairing"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5124,
+    "function": "customerResetActivationCode",
+    "route": "/api/customer/activation-code/reset",
+    "caller": "customerJson",
+    "source": "\"/api/customer/activation-code/reset\"",
+    "method": "POST",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/activation-code/reset",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/activation-code/reset",
+        "file": "server/app/customer_device_routes.py",
+        "line": 1604,
+        "function": "reset_customer_activation_code"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5135,
+    "function": "customerGetWallet",
+    "route": "/api/customer/wallet",
+    "caller": "customerJson",
+    "source": "\"/api/customer/wallet\"",
+    "method": "GET",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/wallet",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/customer/wallet",
+        "file": "server/app/recharge_routes.py",
+        "line": 830,
+        "function": "read_customer_wallet"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5161,
+    "function": "customerGetProfile",
+    "route": "/api/customer/profile",
+    "caller": "customerJson",
+    "source": "\"/api/customer/profile\"",
+    "method": "GET",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/profile",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/customer/profile",
+        "file": "server/app/recharge_routes.py",
+        "line": 784,
+        "function": "read_customer_profile"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5172,
+    "function": "customerUpdateProfile",
+    "route": "/api/customer/profile",
+    "caller": "customerJson",
+    "source": "\"/api/customer/profile\"",
+    "method": "PATCH",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/profile",
+    "backend": [
+      {
+        "method": "PATCH",
+        "route": "/api/customer/profile",
+        "file": "server/app/recharge_routes.py",
+        "line": 791,
+        "function": "update_customer_profile"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5187,
+    "function": "customerListWalletTransactions",
+    "route": "/api/customer/wallet/transactions",
+    "caller": "customerJson",
+    "source": "\"/api/customer/wallet/transactions\"",
+    "method": "GET",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/wallet/transactions",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/customer/wallet/transactions",
+        "file": "server/app/recharge_routes.py",
+        "line": 880,
+        "function": "list_customer_wallet_transactions"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5198,
+    "function": "customerListRechargeOrders",
+    "route": "/api/customer/recharge-orders",
+    "caller": "customerJson",
+    "source": "\"/api/customer/recharge-orders\"",
+    "method": "GET",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/recharge-orders",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/customer/recharge-orders",
+        "file": "server/app/recharge_routes.py",
+        "line": 935,
+        "function": "list_customer_recharge_orders"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5212,
+    "function": "customerCreateRechargeOrder",
+    "route": "/api/customer/recharge-orders",
+    "caller": "customerJson",
+    "source": "\"/api/customer/recharge-orders\"",
+    "method": "POST",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/recharge-orders",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/recharge-orders",
+        "file": "server/app/recharge_routes.py",
+        "line": 325,
+        "function": "create_customer_recharge_order"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5234,
+    "function": "customerCreateRechargePaymentCode",
+    "route": "/api/customer/recharge-orders/{encodeURIComponent(orderNo)}/payment-code",
+    "caller": "customerJson",
+    "source": "`/api/customer/recharge-orders/${encodeURIComponent(orderNo)}/payment-code`",
+    "method": "POST",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/recharge-orders/{encodeURIComponent(orderNo)}/payment-code",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/customer/recharge-orders/{order_no}/payment-code",
+        "file": "server/app/recharge_routes.py",
+        "line": 619,
+        "function": "create_customer_payment_code"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5247,
+    "function": "customerGetRechargeOrder",
+    "route": "/api/customer/recharge-orders/{encodeURIComponent(orderNo)}",
+    "caller": "customerJson",
+    "source": "`/api/customer/recharge-orders/${encodeURIComponent(orderNo)}`",
+    "method": "GET",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/recharge-orders/{encodeURIComponent(orderNo)}",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/customer/recharge-orders/{order_no}",
+        "file": "server/app/recharge_routes.py",
+        "line": 534,
+        "function": "read_customer_recharge_order_status"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5260,
+    "function": "customerCloseRechargeOrder",
+    "route": "/api/customer/recharge-orders/{encodeURIComponent(orderNo)}",
+    "caller": "customerJson",
+    "source": "`/api/customer/recharge-orders/${encodeURIComponent(orderNo)}`",
+    "method": "DELETE",
+    "methodBasis": "customerJson",
+    "expandedRoute": "/api/customer/recharge-orders/{encodeURIComponent(orderNo)}",
+    "backend": [
+      {
+        "method": "DELETE",
+        "route": "/api/customer/recharge-orders/{order_no}",
+        "file": "server/app/recharge_routes.py",
+        "line": 568,
+        "function": "close_customer_recharge_order"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5329,
+    "function": "listViralVideos",
+    "route": "/api/viral/videos",
+    "caller": "requestApiJson",
+    "source": "`/api/viral/videos?${query}`",
+    "method": "GET",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/viral/videos",
+    "backend": [
+      {
+        "method": "GET",
+        "route": "/api/viral/videos",
+        "file": "server/app/viral_routes.py",
+        "line": 318,
+        "function": "list_viral_videos"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5343,
+    "function": "fetchViralVideoMedia",
+    "route": "/api/viral/videos/media",
+    "caller": "requestApiJson",
+    "source": "\"/api/viral/videos/media\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/viral/videos/media",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/viral/videos/media",
+        "file": "server/app/viral_routes.py",
+        "line": 377,
+        "function": "fetch_viral_video_media"
+      }
+    ],
+    "status": "匹配"
+  },
+  {
+    "file": "client/src/api.ts",
+    "line": 5360,
+    "function": "fetchViralVideoStatistics",
+    "route": "/api/viral/videos/statistics",
+    "caller": "requestApiJson",
+    "source": "\"/api/viral/videos/statistics\"",
+    "method": "POST",
+    "methodBasis": "requestApiJson",
+    "expandedRoute": "/api/viral/videos/statistics",
+    "backend": [
+      {
+        "method": "POST",
+        "route": "/api/viral/videos/statistics",
+        "file": "server/app/viral_routes.py",
+        "line": 366,
+        "function": "fetch_viral_video_statistics"
+      }
+    ],
+    "status": "匹配"
+  }
+]

@@ -11,6 +11,8 @@ import pytest
 from app import backup as backup_module
 from app.backup import create_readonly_snapshot
 from scripts.reconcile_customer_billing import (
+    PG_ONLY_SEEDED_TABLES,
+    PG_ONLY_TABLES,
     ColumnSpec,
     canonical_value,
     compute_table_digest,
@@ -558,6 +560,11 @@ def test_revision_dependency_and_maintenance_guards() -> None:
     require_maintenance_window(True)
 
 
+def test_pg_only_cost_tables_have_explicit_cutover_contracts() -> None:
+    assert {"daily_external_prices", "operation_cost_records"} <= PG_ONLY_TABLES
+    assert "operation_cost_rates" in PG_ONLY_SEEDED_TABLES
+
+
 class _ScalarCursor:
     def __init__(self, value: int) -> None:
         self.value = value
@@ -810,8 +817,12 @@ def test_real_pg_migration_advisory_lock_blocks_concurrent_cutover(
 
 
 @pg_only
-def test_real_pg_import_reconcile_repeat_and_rollback(tmp_path: Path) -> None:
+def test_real_pg_import_reconcile_repeat_and_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import psycopg
+
+    from scripts import sqlite_to_postgres as importer
 
     source = tmp_path / "source.db"
     snapshot_path = tmp_path / "snapshot.db"
@@ -826,9 +837,35 @@ def test_real_pg_import_reconcile_repeat_and_rollback(tmp_path: Path) -> None:
         assert result.reconciliation.ok
         repeated = migrate_snapshot(snapshot, dsn, batch_size=2)
         assert repeated.status == "already_reconciled"
+        with sqlite3.connect(source) as conn:
+            source_sequence = conn.execute(
+                "SELECT ledger_sequence FROM wallet_transactions WHERE id = 'tx-t07'"
+            ).fetchone()[0]
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT count(*) FROM users").fetchone()[0] == 1
             assert conn.execute("SELECT available_credits FROM wallets").fetchone()[0] == 10
+            assert (
+                conn.execute(
+                    "SELECT ledger_sequence FROM wallet_transactions WHERE id = 'tx-t07'"
+                ).fetchone()[0]
+                == source_sequence
+            )
+            assert (
+                conn.execute(
+                    "SELECT tgenabled FROM pg_trigger "
+                    "WHERE tgrelid = 'wallet_transactions'::regclass "
+                    "AND tgname = 'trg_wallet_transactions_assign_ledger_sequence'"
+                ).fetchone()[0]
+                == "O"
+            )
+            with pytest.raises(psycopg.Error, match="database assigned"):
+                conn.execute(
+                    "INSERT INTO wallet_transactions "
+                    "(id, user_id, type, available_delta, reserved_delta, idempotency_key, "
+                    "ledger_sequence) VALUES "
+                    "('tx-explicit', 'u-t07', 'CHARGE', 1, 0, 'explicit-sequence', 999)"
+                )
+            conn.rollback()
     finally:
         _drop_database(name)
 
@@ -836,11 +873,30 @@ def test_real_pg_import_reconcile_repeat_and_rollback(tmp_path: Path) -> None:
     rollback_dsn = _create_database(rollback_name)
     try:
         _upgrade_pg(rollback_dsn)
-        with pytest.raises(RuntimeError, match="injected failure"):
-            migrate_snapshot(snapshot, rollback_dsn, fail_after_table="users")
+        original_insert = importer._insert_table_rows
+
+        def fail_during_wallet_import(*args, **kwargs):
+            count = original_insert(*args, **kwargs)
+            if args[2] == "wallet_transactions":
+                raise RuntimeError("injected failure while ledger trigger is disabled")
+            return count
+
+        with monkeypatch.context() as patch:
+            patch.setattr(importer, "_insert_table_rows", fail_during_wallet_import)
+            with pytest.raises(RuntimeError, match="injected failure"):
+                migrate_snapshot(snapshot, rollback_dsn)
         with psycopg.connect(rollback_dsn) as conn:
             assert conn.execute("SELECT count(*) FROM users").fetchone()[0] == 0
             assert conn.execute("SELECT count(*) FROM runtime_settings").fetchone()[0] == 1
+            assert (
+                conn.execute(
+                    "SELECT tgenabled FROM pg_trigger "
+                    "WHERE tgrelid = 'wallet_transactions'::regclass "
+                    "AND tgname = 'trg_wallet_transactions_assign_ledger_sequence'"
+                ).fetchone()[0]
+                == "O"
+            )
+        assert migrate_snapshot(snapshot, rollback_dsn).reconciliation.ok
     finally:
         _drop_database(rollback_name)
 
@@ -1003,6 +1059,31 @@ def test_real_pg_import_rejects_non_empty_target_only_table(tmp_path: Path) -> N
             conn.commit()
         with pytest.raises(MigrationSafetyError, match="table contract differs"):
             migrate_snapshot(snapshot, dsn)
+    finally:
+        _drop_database(name)
+
+
+@pg_only
+def test_real_pg_import_rejects_modified_cost_rate_seed(tmp_path: Path) -> None:
+    import psycopg
+
+    source = tmp_path / "source.db"
+    _create_head_source(source)
+    snapshot = create_readonly_snapshot(source, tmp_path / "snapshot.db")
+    name = "w10_pg_seed_guard"
+    dsn = _create_database(name)
+    try:
+        _upgrade_pg(dsn)
+        with psycopg.connect(dsn) as conn:
+            conn.execute(
+                "UPDATE operation_cost_rates SET unit_price_fen = 999 "
+                "WHERE subject = 'video_generation_768p'"
+            )
+            conn.commit()
+        with pytest.raises(MigrationSafetyError, match="table contract differs"):
+            migrate_snapshot(snapshot, dsn)
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("SELECT count(*) FROM users").fetchone()[0] == 0
     finally:
         _drop_database(name)
 

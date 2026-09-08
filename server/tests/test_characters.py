@@ -143,7 +143,11 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
+<<<<<<< main
+    assert version == "076_studio_notification_preferences"
+=======
     assert version == "063_script_from_audio_reconciliation"
+>>>>>>> codex/local-main-pg-timeouts-20260908
     assert {
         "characters",
         "project_main_characters",

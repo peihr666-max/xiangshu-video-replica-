@@ -271,10 +271,18 @@ def test_list_audit_log_returns_adjustments(client: TestClient, route_state: str
     assert {item["event_type"] for item in data["items"]} == {"ADMIN_ADJUSTMENT"}
     assert {item["actor_username"] for item in data["items"]} == {"admin_u"}
     assert {item["target_user_id"] for item in data["items"]} == {"customer_u"}
+    assert {item["target_username"] for item in data["items"]} == {"customer_u"}
     assert {item["reason"] for item in data["items"]} == {
         "客户补偿：拆解失败两次",
         "退款",
     }
+
+    by_username = client.get(
+        AUDIT_PATH,
+        params={"actor_username": "admin", "target_username": "customer"},
+    )
+    assert by_username.status_code == 200, by_username.text
+    assert by_username.json()["total"] == 2
 
 
 @pytest.mark.pg
@@ -473,6 +481,60 @@ def test_customer_price_audit_events_are_filterable_by_customer(
     assert other_customer.status_code == 200, other_customer.text
     assert other_customer.json()["total"] == 0
     assert other_customer.json()["items"] == []
+
+
+@pytest.mark.pg
+def test_rate_change_fields_are_whitelisted_without_exposing_other_metadata(
+    client: TestClient, route_state: str
+) -> None:
+    _admin_session(client)
+    event_id = str(uuid.uuid4())
+    with psycopg.connect(route_state, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO audit_logs "
+            "(id, actor_user_id, action, entity_type, entity_id, metadata_json) "
+            "VALUES (%s, 'admin_u', 'operation_rate.update', "
+            "'operation_cost_rate', 'video_generation_768p', %s)",
+            (
+                event_id,
+                '{"subject":"video_generation_768p","old_unit_price_fen":9,'
+                '"new_unit_price_fen":12,"reason":"供应商调价",'
+                '"request_id":"req-rate-change","api_key":"fake-secret-must-not-leak"}',
+            ),
+        )
+
+    response = client.get(AUDIT_PATH, params={"event_type": "operation_rate.update"})
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 1
+    item = response.json()["items"][0]
+    assert item["change_subject"] == "video_generation_768p"
+    assert item["old_unit_price_fen"] == 9
+    assert item["new_unit_price_fen"] == 12
+    assert "fake-secret-must-not-leak" not in response.text
+    assert "api_key" not in response.text
+
+
+@pytest.mark.pg
+def test_historical_price_event_without_old_value_keeps_it_unknown(
+    client: TestClient, route_state: str
+) -> None:
+    _admin_session(client)
+    event_id = str(uuid.uuid4())
+    with psycopg.connect(route_state, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO audit_logs "
+            "(id, actor_user_id, action, entity_type, entity_id, metadata_json) "
+            "VALUES (%s, 'admin_u', 'customer_unit_price.update', "
+            "'customer_unit_price', 'customer_u', %s)",
+            (event_id, '{"new_unit_price_fen":15,"reason":"历史导入"}'),
+        )
+
+    response = client.get(AUDIT_PATH, params={"event_type": "customer_unit_price.update"})
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["change_subject"] == "customer_unit_price"
+    assert item["old_unit_price_fen"] is None
+    assert item["new_unit_price_fen"] == 15
 
 
 @pytest.mark.pg

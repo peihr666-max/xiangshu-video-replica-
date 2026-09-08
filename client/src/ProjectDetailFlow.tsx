@@ -8,9 +8,9 @@ import {
   createScriptVersion,
   defaultBatchProvider,
   type GenerationBatch,
-  type GenerationRuntimeLimits,
-  getGenerationRuntimeLimits,
-  getLatestGenerationPrompt,
+  type GenerationPriceQuote,
+  type GenerationRatio,
+  getGenerationPriceQuote,
   getLatestProjectAnalysis,
   getLatestProjectShotCards,
   getLatestScriptVersion,
@@ -22,6 +22,7 @@ import {
   readAnalysisPayload,
   readFirstFrameSelectionPayload,
   reviseGenerationPrompt,
+  saveGenerationPrompt,
   saveShotCards,
   selectCharacterReferences,
 } from "./api";
@@ -65,7 +66,6 @@ export function ProjectDetailFlow({
   const [analysisVersion, setAnalysisVersion] =
     useState<AnalysisVersion | null>(null);
   const [analysisError, setAnalysisError] = useState("");
-  const [limits, setLimits] = useState<GenerationRuntimeLimits | null>(null);
   const [preview, setPreview] = useState<PromptPreviewResult | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
@@ -84,6 +84,13 @@ export function ProjectDetailFlow({
     useState(false);
   const [generationPhase, setGenerationPhase] =
     useState<GenerationPhase>("idle");
+  const [generationRatio, setGenerationRatio] =
+    useState<GenerationRatio>("adaptive");
+  const [generationDuration, setGenerationDuration] = useState<4 | 15>(15);
+  const [generationQuantity, setGenerationQuantity] = useState<1 | 2 | 4>(1);
+  const [priceQuote, setPriceQuote] = useState<GenerationPriceQuote | null>(
+    null,
+  );
   const [generationError, setGenerationError] = useState("");
   const [generationMessage, setGenerationMessage] = useState("");
   // 用户在第一段编辑并另存过的提示词文本。自定义文案未变时提交会复用；
@@ -143,19 +150,38 @@ export function ProjectDetailFlow({
           setAnalysisError("该项目还没有可用的拆解结果，请先等待拆解完成。");
         }
       });
-    getGenerationRuntimeLimits()
-      .then((nextLimits) => {
-        if (active) {
-          setLimits(nextLimits);
-        }
-      })
-      .catch(() => {
-        // 费用上限读取失败不阻断生成，仅缺少预计费用展示。
-      });
     return () => {
       active = false;
     };
   }, [project.id]);
+
+  useEffect(() => {
+    let active = true;
+    if (typeof getGenerationPriceQuote !== "function") return;
+    setPriceQuote(null);
+    setGenerationError("");
+    getGenerationPriceQuote({
+      resolution: "768P",
+      duration_seconds: generationDuration,
+      quantity: generationQuantity,
+    })
+      .then((quote) => {
+        if (active) setPriceQuote(quote);
+      })
+      .catch((quoteError: unknown) => {
+        if (active) {
+          setPriceQuote(null);
+          setGenerationError(
+            quoteError instanceof Error && quoteError.message.trim()
+              ? quoteError.message
+              : "读取生成费用失败，请稍后重试。",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [generationDuration, generationQuantity]);
 
   // 第一段提示词预览：进入页面即由拆解结果自动编译，不依赖首帧。
   useEffect(() => {
@@ -290,17 +316,9 @@ export function ProjectDetailFlow({
     [],
   );
 
-  // 第一段「另存 Prompt 新版本」：基于服务端最新已编译版本 revise；
-  // 尚无编译版本（首次流程未提交过）时提示先完成提交或直接使用预览。
   async function handleSavePrompt(text: string) {
-    const latest = await getLatestGenerationPrompt(project.id);
-    if (!latest.version) {
-      throw new Error(
-        "还没有已编译的 Prompt 版本。可先在第五段提交一次生成，之后再编辑另存。",
-      );
-    }
-    await reviseGenerationPrompt(project.id, {
-      base_prompt_version_id: latest.version.id,
+    await saveGenerationPrompt(project.id, {
+      name: `反推提示词 ${new Date().toLocaleString("zh-CN")}`,
       prompt_text: text,
     });
     setRevisedPromptText(text);
@@ -384,13 +402,14 @@ export function ProjectDetailFlow({
     try {
       const shotCardVersionId = await ensureShotCardVersion();
       const scriptVersionId = await ensureScriptVersion(shotCardVersionId);
-      const duration = defaultDurationSeconds();
+      const duration = generationDuration;
       const compiled = await compileGenerationPrompt(project.id, {
         script_version_id: scriptVersionId,
         shot_card_version_id: shotCardVersionId,
         first_frame_asset_id: firstFrameAssetId,
         output_duration_seconds: duration,
         resolution: "768P",
+        ratio: generationRatio,
       });
       // 只有文案未改时才复用第一段保存的完整 Prompt。自定义文案变化后，
       // compiled 已包含新文本，不能再被此前保存的旧 Prompt 覆盖。
@@ -404,11 +423,12 @@ export function ProjectDetailFlow({
       }
       const locked = await lockGenerationPrompt(project.id, promptVersionId);
       const batchRequest = {
-        quantity: 1,
+        quantity: generationQuantity,
         prompt_version_id: locked.id,
         first_frame_asset_id: firstFrameAssetId,
         output_duration_seconds: duration,
         resolution: "768P" as const,
+        ratio: generationRatio,
         provider: defaultBatchProvider(),
         fake_audio_quality: "ok" as const,
       };
@@ -439,14 +459,13 @@ export function ProjectDetailFlow({
   }
 
   function renderPaidWarning() {
-    if (!limits) {
-      return <p className="flow-cost">本次将创建 1 个付费视频生成任务。</p>;
-    }
-    const cost = limits.estimated_cost_per_task;
     return (
       <p className="flow-cost">
-        本次将创建 1 个付费视频生成任务
-        {cost == null ? "" : `，预计费用 ¥${cost.toFixed(2)}`}。
+        预计消耗 {generationDuration * generationQuantity} 秒额度
+        {priceQuote
+          ? `，约 ¥${(priceQuote.estimated_price_fen / 100).toFixed(2)}`
+          : ""}
+        。
       </p>
     );
   }
@@ -615,8 +634,62 @@ export function ProjectDetailFlow({
 
       <fieldset className="flow-step" disabled={!firstFrameAssetId}>
         <legend>⑤ 提交生成</legend>
+        {generationError ? (
+          <p className="settings-error" role="alert">
+            {generationError}
+          </p>
+        ) : null}
         {firstFrameAssetId ? (
           <>
+            <div className="generation-parameter-grid">
+              <label>
+                画面比例
+                <select
+                  aria-label="画面比例"
+                  onChange={(event) =>
+                    setGenerationRatio(event.target.value as GenerationRatio)
+                  }
+                  value={generationRatio}
+                >
+                  <option value="adaptive">自动</option>
+                  <option value="21:9">21:9</option>
+                  <option value="16:9">16:9</option>
+                  <option value="4:3">4:3</option>
+                  <option value="1:1">1:1</option>
+                  <option value="3:4">3:4</option>
+                  <option value="9:16">9:16</option>
+                </select>
+              </label>
+              <label>
+                成片时长
+                <select
+                  aria-label="成片时长"
+                  onChange={(event) =>
+                    setGenerationDuration(Number(event.target.value) as 4 | 15)
+                  }
+                  value={generationDuration}
+                >
+                  <option value={4}>4 秒</option>
+                  <option value={15}>15 秒</option>
+                </select>
+              </label>
+              <label>
+                生成数量
+                <select
+                  aria-label="生成数量"
+                  onChange={(event) =>
+                    setGenerationQuantity(
+                      Number(event.target.value) as 1 | 2 | 4,
+                    )
+                  }
+                  value={generationQuantity}
+                >
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={4}>4</option>
+                </select>
+              </label>
+            </div>
             {scriptWasEdited ? (
               <p className="status-note">
                 将以当前自定义文案重新编译视频 Prompt；第一步保存过的旧 Prompt
@@ -628,11 +701,6 @@ export function ProjectDetailFlow({
               </p>
             ) : null}
             {renderPaidWarning()}
-            {generationError ? (
-              <p className="settings-error" role="alert">
-                {generationError}
-              </p>
-            ) : null}
             {generationMessage ? (
               <p className="setup-success" role="status">
                 {generationMessage}
@@ -645,7 +713,7 @@ export function ProjectDetailFlow({
             >
               {generationPhase === "running"
                 ? "正在创建生成任务"
-                : "开始生成（1 个付费任务）"}
+                : `提交生成（${generationQuantity} 条）`}
             </button>
           </>
         ) : (

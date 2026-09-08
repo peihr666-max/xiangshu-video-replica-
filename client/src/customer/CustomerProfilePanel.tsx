@@ -139,7 +139,7 @@ export function CustomerProfilePanel({
           </p>
         </div>
         <button onClick={() => onRecharge()} type="button">
-          充值条数
+          充值秒数
         </button>
       </header>
 

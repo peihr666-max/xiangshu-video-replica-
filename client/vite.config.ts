@@ -11,6 +11,23 @@ export default defineConfig({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
+    // 浏览器端联调：同源代理到本地后端，避免跨源凭据请求
+    // （管理端 fetch 带 credentials: "include"，跨源时需要
+    //  allow_credentials，开发期统一走同源代理更简单）。
+    // 控制面路由（内部通道）依赖反代注入 X-Control-Proxy-Token，
+    // 本地联调由该代理以开发令牌代为注入（须与后端
+    // CONTROL_PROXY_TOKEN_DIGEST 配对）。
+    proxy: {
+      "/api": {
+        target:
+          process.env.VITE_DEV_API_PROXY_TARGET ?? "http://127.0.0.1:8000",
+        changeOrigin: true,
+        headers: {
+          "X-Control-Proxy-Token":
+            process.env.VITE_DEV_CONTROL_PROXY_TOKEN ?? "dev-proxy-token-1234",
+        },
+      },
+    },
   },
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   build: {
