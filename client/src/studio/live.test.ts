@@ -4,7 +4,9 @@ import type {
   GenerationBatch,
   GenerationBatchListPage,
   GenerationTask,
+  OralAvatarRecord,
   OralTaskRecord,
+  OralVoiceRecord,
   Project,
   ScriptFromAudioTask,
   SimpleLibraryEntry,
@@ -26,7 +28,9 @@ const api = vi.hoisted(() => ({
   getScriptFromAudioTask: vi.fn<() => Promise<ScriptFromAudioTask>>(),
   listCharacterSceneLooks: vi.fn(),
   listGenerationBatches: vi.fn(),
+  listOralAvatars: vi.fn<() => Promise<OralAvatarRecord[]>>(async () => []),
   listOralTasks: vi.fn(async (): Promise<OralTaskRecord[]> => []),
+  listOralVoices: vi.fn<() => Promise<OralVoiceRecord[]>>(async () => []),
   listViralVideos: vi.fn(),
   listProjects: vi.fn(),
   listSimpleCharacterLibrary: vi.fn(),
@@ -198,6 +202,8 @@ describe("真实 Studio 只读适配器", () => {
     vi.resetAllMocks();
     api.listProjects.mockResolvedValue([project]);
     api.listSimpleCharacterLibrary.mockResolvedValue([person]);
+    api.listOralAvatars.mockResolvedValue([]);
+    api.listOralVoices.mockResolvedValue([]);
     api.listViralVideos.mockImplementation((platform: string) =>
       Promise.resolve({
         platform,
@@ -431,6 +437,72 @@ describe("真实 Studio 只读适配器", () => {
     ]);
     expect(data.stats).toBeNull();
     expect(data.errors).toEqual([]);
+  });
+
+  it("把当前账号人物的已归档口播分身和音色映射为可预览档案", async () => {
+    api.listOralAvatars.mockResolvedValue([
+      {
+        id: "avatar-ready",
+        identity_id: "person-1",
+        title: "张工讲解分身",
+        status: "READY",
+        source_kind: "VIDEO",
+        source_asset_id: "avatar-source-1",
+      },
+    ]);
+    api.listOralVoices.mockResolvedValue([
+      {
+        id: "voice-ready",
+        identity_id: "person-1",
+        title: "张工本人音色",
+        status: "READY",
+        demo_asset_id: "voice-demo-1",
+        confirmed: true,
+      },
+    ]);
+    api.getAssetDownloadUrl.mockImplementation(async (assetId: string) => ({
+      url: `https://signed/${assetId}`,
+    }));
+
+    const data = await loadStudioData(user);
+
+    expect(api.listOralAvatars).toHaveBeenCalledWith("person-1");
+    expect(api.listOralVoices).toHaveBeenCalledWith("person-1");
+    expect(data.people[0]).toMatchObject({
+      avatars: [
+        {
+          id: "avatar-ready",
+          name: "张工讲解分身",
+          imageId: "avatar-source-1",
+          ready: true,
+          origin: "视频制作",
+        },
+      ],
+      voices: [
+        {
+          id: "voice-ready",
+          name: "张工本人音色",
+          confirmed: true,
+          url: "https://signed/voice-demo-1",
+        },
+      ],
+    });
+    expect(data.assets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "avatar-source-1",
+          personId: "person-1",
+          kind: "video",
+          url: "https://signed/avatar-source-1",
+        }),
+        expect.objectContaining({
+          id: "voice-demo-1",
+          personId: "person-1",
+          kind: "audio",
+          url: "https://signed/voice-demo-1",
+        }),
+      ]),
+    );
   });
 
   it("基础工作区加载不等待爆款平台冷拉取", async () => {

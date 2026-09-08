@@ -241,6 +241,7 @@ export type ProviderName =
   | "deepseek"
   | "tikhub"
   | "dashscope"
+  | "hifly"
   | "douyidou";
 
 export type ProviderSettings = {
@@ -839,6 +840,44 @@ export type OralPrice = { unit_price_fen: number };
 /** 数字人口播单价（每条）。 */
 export async function getOralPrice(): Promise<OralPrice> {
   return requestApiJson<OralPrice>("/api/oral/price", "读取口播报价失败");
+}
+
+export type OralAvatarRecord = {
+  id: string;
+  identity_id: string;
+  title: string;
+  status: string;
+  source_kind: "VIDEO" | "IMAGE";
+  source_asset_id: string;
+};
+
+export type OralVoiceRecord = {
+  id: string;
+  identity_id: string;
+  title: string;
+  status: string;
+  demo_asset_id: string | null;
+  confirmed: boolean | number;
+};
+
+/** 当前登录账号指定人物的数字人分身。 */
+export async function listOralAvatars(
+  identityId: string,
+): Promise<OralAvatarRecord[]> {
+  return requestApiJson<OralAvatarRecord[]>(
+    `/api/oral/avatars?identity_id=${encodeURIComponent(identityId)}`,
+    "读取口播分身失败",
+  );
+}
+
+/** 当前登录账号指定人物的克隆音色。 */
+export async function listOralVoices(
+  identityId: string,
+): Promise<OralVoiceRecord[]> {
+  return requestApiJson<OralVoiceRecord[]>(
+    `/api/oral/voices?identity_id=${encodeURIComponent(identityId)}`,
+    "读取口播声音失败",
+  );
 }
 
 export type OralTaskRequest = {

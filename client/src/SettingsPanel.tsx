@@ -78,6 +78,11 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
     note: "上传视频提取文案 · 只需 API Key",
     fields: [{ name: "api_key", label: "API Key", secret: true }],
   },
+  hifly: {
+    title: "数字人口播",
+    note: "Hifly 分身、声音克隆与口播成片 · 只需 API Key",
+    fields: [{ name: "api_key", label: "API Key", secret: true }],
+  },
   douyidou: {
     title: "链接解析",
     note: "抖音 / 快手 / 小红书链接去水印与文案提取",
@@ -95,6 +100,7 @@ const PROVIDER_ORDER: ProviderName[] = [
   "deepseek",
   "tikhub",
   "dashscope",
+  "hifly",
   "douyidou",
 ];
 

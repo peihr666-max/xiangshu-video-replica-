@@ -20,7 +20,9 @@ import {
   getStudioStats,
   listCharacterSceneLooks,
   listGenerationBatches,
+  listOralAvatars,
   listOralTasks,
+  listOralVoices,
   listProjects,
   listSimpleCharacterLibrary,
   listStudioSavedScripts,
@@ -249,6 +251,8 @@ async function loadPeople(): Promise<{
       entry.contact_sheet_asset_id
         ? signedUrl(entry.contact_sheet_asset_id, getCachedCharacterAssetUrl)
         : Promise.resolve(undefined),
+      listOralAvatars(entry.identity_id),
+      listOralVoices(entry.identity_id),
     ]);
     const portrait =
       requests[0].status === "fulfilled" ? requests[0].value : undefined;
@@ -264,7 +268,85 @@ async function loadPeople(): Promise<{
         `读取人物五视图“${entry.display_name}”失败：${errorText(requests[1].reason)}`,
       );
     }
-    people.push(basePerson(entry, portrait));
+    const oralAvatars =
+      requests[2].status === "fulfilled" ? requests[2].value : [];
+    const oralVoices =
+      requests[3].status === "fulfilled" ? requests[3].value : [];
+    if (requests[2].status === "rejected") {
+      errors.push(
+        `读取人物分身“${entry.display_name}”失败：${errorText(requests[2].reason)}`,
+      );
+    }
+    if (requests[3].status === "rejected") {
+      errors.push(
+        `读取人物声音“${entry.display_name}”失败：${errorText(requests[3].reason)}`,
+      );
+    }
+
+    const previewIds = [
+      ...oralAvatars.map((avatar) => avatar.source_asset_id),
+      ...oralVoices.flatMap((voice) =>
+        voice.demo_asset_id ? [voice.demo_asset_id] : [],
+      ),
+    ];
+    const previewResults = await Promise.allSettled(
+      previewIds.map((assetId) => signedUrl(assetId, getAssetDownloadUrl)),
+    );
+    const previewUrls = new Map<string, string>();
+    previewIds.forEach((assetId, index) => {
+      const result = previewResults[index];
+      if (result?.status === "fulfilled" && result.value) {
+        previewUrls.set(assetId, result.value);
+      }
+    });
+
+    const person = basePerson(entry, portrait);
+    person.avatars = oralAvatars.map((avatar) => ({
+      id: avatar.id,
+      name: avatar.title,
+      imageId: avatar.source_asset_id,
+      ready: avatar.status === "READY",
+      origin: avatar.source_kind === "IMAGE" ? "照片制作" : "视频制作",
+      duration: "",
+    }));
+    person.voices = oralVoices.map((voice, index) => ({
+      id: voice.id,
+      name: voice.title,
+      confirmed:
+        voice.status === "READY" &&
+        Boolean(voice.demo_asset_id) &&
+        Boolean(voice.confirmed),
+      isDefault: index === 0 && Boolean(voice.confirmed),
+      url: voice.demo_asset_id
+        ? previewUrls.get(voice.demo_asset_id)
+        : undefined,
+    }));
+    people.push(person);
+    for (const avatar of oralAvatars) {
+      assets.push({
+        id: avatar.source_asset_id,
+        name: `${avatar.title} · 分身预览`,
+        kind: avatar.source_kind === "IMAGE" ? "image" : "video",
+        url: previewUrls.get(avatar.source_asset_id),
+        group: "口播分身",
+        personId: entry.identity_id,
+        source: "人物库",
+        saved: true,
+      });
+    }
+    for (const voice of oralVoices) {
+      if (!voice.demo_asset_id) continue;
+      assets.push({
+        id: voice.demo_asset_id,
+        name: `${voice.title} · 声音试听`,
+        kind: "audio",
+        url: previewUrls.get(voice.demo_asset_id),
+        group: "口播声音",
+        personId: entry.identity_id,
+        source: "人物库",
+        saved: true,
+      });
+    }
     if (entry.contact_sheet_asset_id) {
       assets.push({
         id: entry.contact_sheet_asset_id,

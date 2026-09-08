@@ -35,6 +35,8 @@ import {
   getSettings,
   importViralVideoToProject,
   listGenerationBatches,
+  listOralAvatars,
+  listOralVoices,
   listProjectCharacterVersions,
   listProjects,
   lockGenerationPrompt,
@@ -373,6 +375,22 @@ describe("generation workflow API", () => {
       identity_id: "person-1",
       mode: "TTS",
     });
+  });
+
+  it("按人物 ID 读取当前账号的口播分身与声音", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listOralAvatars("person/a b");
+    await listOralVoices("person/a b");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "http://127.0.0.1:8000/api/oral/avatars?identity_id=person%2Fa%20b",
+      "http://127.0.0.1:8000/api/oral/voices?identity_id=person%2Fa%20b",
+    ]);
   });
 
   it("downloads a direct result using task authorization without forwarding credentials", async () => {

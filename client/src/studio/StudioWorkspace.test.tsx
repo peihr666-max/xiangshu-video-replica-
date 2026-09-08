@@ -409,6 +409,78 @@ describe("V1.4 workspace integration", () => {
     vi.unstubAllGlobals();
   });
 
+  it("同一次口播提交阻止并发双击并在不确定失败后复用幂等键", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    let rejectFirst: ((reason?: unknown) => void) | undefined;
+    const firstSubmission = new Promise<Response>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    let oralCalls = 0;
+    const fetchMock = vi.fn(
+      (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+        const url = String(input);
+        if (url.endsWith("/api/oral/price")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ unit_price_fen: 100 }),
+          } as Response);
+        }
+        if (url.endsWith("/api/oral/tasks")) {
+          oralCalls += 1;
+          if (oralCalls === 1) return firstSubmission;
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              id: `oral-${oralCalls}`,
+              status: oralCalls === 2 ? "FAILED" : "QUEUED",
+              estimated_cost_fen: 100,
+              replayed: false,
+            }),
+          } as Response);
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const state = createReviewState("oral");
+    state.draft.projectId = "project-oral";
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "生成口播视频" }),
+    );
+    const confirm = await screen.findByRole("button", {
+      name: "确认费用并提交",
+    });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(oralCalls).toBe(1));
+    expect(confirm).toBeDisabled();
+    rejectFirst?.(new TypeError("network unavailable"));
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    fireEvent.click(confirm);
+    const generateAgain = await screen.findByRole("button", {
+      name: "生成口播视频",
+    });
+    fireEvent.click(generateAgain);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并提交" }),
+    );
+    await waitFor(() => expect(oralCalls).toBe(3));
+
+    const bodies = fetchMock.mock.calls
+      .filter(([input]) => String(input).endsWith("/api/oral/tasks"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies[0].idempotency_key).toBe(bodies[1].idempotency_key);
+    expect(bodies[2].idempotency_key).not.toBe(bodies[1].idempotency_key);
+    vi.unstubAllGlobals();
+  });
+
   it("关闭已有项目工作区不会再次导入并覆盖当前草稿", async () => {
     const imported = createReviewState("workbench").draft;
     live.loadStudioData.mockResolvedValue({

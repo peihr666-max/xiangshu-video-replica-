@@ -26,6 +26,7 @@ const settingsSnapshot = {
     },
     deepseek: { provider: "deepseek", configured: false, config: {} },
     tikhub: { provider: "tikhub", configured: false, config: {} },
+    hifly: { provider: "hifly", configured: false, config: {} },
   },
   runtime: {
     max_generation_count_per_batch: 5,
@@ -51,6 +52,12 @@ function installFetch(options?: { providerSave?: "ok" | "fail" }) {
         configured: true,
         config: {},
       });
+    }
+    if (
+      url.endsWith("/api/admin/settings/providers/hifly") &&
+      init?.method === "PUT"
+    ) {
+      return jsonResponse({ provider: "hifly", configured: true, config: {} });
     }
     if (
       url.endsWith("/api/admin/settings/providers/metaso/connection-test") &&
@@ -144,6 +151,29 @@ describe("SettingsPanel", () => {
     expect(saveCall?.[1]?.body).toBe(
       JSON.stringify({ config: { api_key: DUMMY_KEY } }),
     );
+  });
+
+  it("提供 Hifly 口播密钥入口并在保存后清空明文", async () => {
+    const fetchMock = installFetch();
+    const { container } = render(<SettingsPanel />);
+
+    await screen.findByText("数字人口播");
+    const hifly = providerCard(container, "hifly");
+    const keyInput = hifly.getByLabelText("API Key");
+    expect(keyInput).toHaveAttribute("type", "password");
+
+    fireEvent.change(keyInput, { target: { value: DUMMY_KEY } });
+    fireEvent.click(hifly.getByRole("button", { name: "保存" }));
+
+    expect(await hifly.findByText("已保存")).toBeInTheDocument();
+    expect(keyInput).toHaveValue("");
+    expect(
+      fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url).endsWith("/api/admin/settings/providers/hifly") &&
+          init?.method === "PUT",
+      )?.[1]?.body,
+    ).toBe(JSON.stringify({ config: { api_key: DUMMY_KEY } }));
   });
 
   it("reports a provider save failure inline without crashing", async () => {

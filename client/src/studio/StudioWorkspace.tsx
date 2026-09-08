@@ -13,6 +13,7 @@ import {
   type GenerationBatch,
   getGenerationBatch,
   getOralPrice,
+  type OralTaskRequest,
   type Project,
 } from "../api";
 import { AnalyticsPage } from "./AnalyticsPage";
@@ -188,6 +189,9 @@ function StudioWorkspaceSession({
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [oralPriceFen, setOralPriceFen] = useState<number | null>(null);
+  const [oralSubmitting, setOralSubmitting] = useState(false);
+  const oralSubmissionRef = useRef<OralTaskRequest | undefined>(undefined);
+  const oralSubmittingRef = useRef(false);
   const busyRef = useRef(false);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
@@ -268,20 +272,28 @@ function StudioWorkspaceSession({
       notify("当前账号为只读权限，不能提交生成。");
       return;
     }
+    if (oralSubmittingRef.current) return;
+    oralSubmittingRef.current = true;
+    setOralSubmitting(true);
     try {
       const mode = state.page === "oral-audio" ? "audio" : "text";
       const input = buildOralInput(state.draft, mode);
-      const result = await createOralTask({
-        projectId: state.draft.projectId,
-        identityId: input.ipId,
-        avatarId: input.avatarId,
-        voiceId: input.voiceId,
-        mode: mode === "audio" ? "AUDIO" : "TTS",
-        title: state.draft.script.title || "未命名口播",
-        scriptText: state.draft.script.text,
-        audioAssetId: input.audioAssetId,
-        idempotencyKey: crypto.randomUUID(),
-      });
+      const request =
+        oralSubmissionRef.current ??
+        ({
+          projectId: state.draft.projectId,
+          identityId: input.ipId,
+          avatarId: input.avatarId,
+          voiceId: input.voiceId,
+          mode: mode === "audio" ? "AUDIO" : "TTS",
+          title: state.draft.script.title || "未命名口播",
+          scriptText: state.draft.script.text,
+          audioAssetId: input.audioAssetId,
+          idempotencyKey: crypto.randomUUID(),
+        } satisfies OralTaskRequest);
+      oralSubmissionRef.current = request;
+      const result = await createOralTask(request);
+      oralSubmissionRef.current = undefined;
       setGeneration(undefined);
       if (result.status === "FAILED") {
         notify("口播任务提交未成功，请核对素材后重试。");
@@ -291,9 +303,19 @@ function StudioWorkspaceSession({
         refresh();
       }
     } catch (cause: unknown) {
+      if (
+        typeof cause === "object" &&
+        cause !== null &&
+        typeof (cause as { status?: unknown }).status === "number"
+      ) {
+        oralSubmissionRef.current = undefined;
+      }
       notify(
         customerVisibleErrorMessage(cause, "口播任务提交失败，请稍后重试。"),
       );
+    } finally {
+      oralSubmittingRef.current = false;
+      setOralSubmitting(false);
     }
   };
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
@@ -927,8 +949,12 @@ function StudioWorkspaceSession({
                 确认费用并提交
               </Button>
             ) : (
-              <Button variant="primary" onClick={() => void submitOralTask()}>
-                确认费用并提交
+              <Button
+                variant="primary"
+                disabled={oralSubmitting}
+                onClick={() => void submitOralTask()}
+              >
+                {oralSubmitting ? "正在提交" : "确认费用并提交"}
               </Button>
             )}
             {!review && generation !== "数字人口播" && (
