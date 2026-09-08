@@ -182,6 +182,9 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert "valid audio stream failed full decode" in workflow
     assert "valid H.264 video stream failed full decode" in workflow
     assert "truncated H.264 video unexpectedly passed full decode" in workflow
+    assert "$truncatedStatus = $LASTEXITCODE" in workflow
+    assert "if ($truncatedStatus -eq 0)" in workflow
+    assert "exit 0" in workflow.split("truncated H.264 video unexpectedly passed", 1)[1]
     assert "payload hash mismatch" in workflow
     assert ".cargo-target/release/bundle/nsis/*.exe" in workflow
 

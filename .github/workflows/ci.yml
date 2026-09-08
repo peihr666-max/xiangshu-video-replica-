@@ -298,9 +298,13 @@ jobs:
           [Array]::Copy($validVideoBytes, $truncatedVideoBytes, $truncatedVideoBytes.Length)
           [System.IO.File]::WriteAllBytes($truncatedVideoPath, $truncatedVideoBytes)
           $truncatedOutput = & $ffmpeg -v error -xerror -i $truncatedVideoPath -map '0:v:0' -f null - -progress pipe:1 -nostats 2>&1 | Out-String
-          if ($LASTEXITCODE -eq 0) {
+          $truncatedStatus = $LASTEXITCODE
+          if ($truncatedStatus -eq 0) {
             throw "truncated H.264 video unexpectedly passed full decode: $truncatedOutput"
           }
+          # The non-zero status above is the expected result. Reset the step
+          # exit code only after every positive and negative assertion passed.
+          exit 0
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
