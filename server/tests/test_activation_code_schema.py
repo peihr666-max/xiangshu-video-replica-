@@ -28,7 +28,7 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
-_HEAD_REVISION = "063_script_from_audio_reconciliation"
+_HEAD_REVISION = "068_wallet_ledger_sequence"
 
 
 def _pg_dsn() -> str:
@@ -324,7 +324,9 @@ def test_batch_shapes_enforced(catalog_dsn: str) -> None:
             unit_price_fen_snapshot=0,
             credits_snapshot=0,
         )
-        rejected(11, face_value_fen=0, credits_snapshot=1)
+        # The database permits the new shape; the admin API separately requires
+        # confirm_grant and a nonblank reason before it can be created.
+        _insert_batch(conn, 11, face_value_fen=0, credits_snapshot=1)
         rejected(12, face_value_fen=1, credits_snapshot=0)
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             _insert_batch(conn, 7, created_by_user_id="u-ghost")

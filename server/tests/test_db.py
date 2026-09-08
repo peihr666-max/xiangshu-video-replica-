@@ -99,7 +99,7 @@ def test_initialize_database_applies_sqlite_pragmas_and_migrations(tmp_path: Pat
     assert journal_mode == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5000
-    assert alembic_versions == ["063_script_from_audio_reconciliation"]
+    assert alembic_versions == ["068_wallet_ledger_sequence"]
     assert "provider_task_id" in script_from_audio_columns
     assert "schema_migrations" not in tables
     assert {
@@ -248,7 +248,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             for row in conn.execute("PRAGMA index_list(generation_task_operations)").fetchall()
         }
 
-    assert version == "063_script_from_audio_reconciliation"
+    assert version == "068_wallet_ledger_sequence"
     assert {
         "locked_by",
         "locked_until",
@@ -360,7 +360,7 @@ def test_retry_lineage_revision_is_reversible(tmp_path: Path) -> None:
 
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "063_script_from_audio_reconciliation"
+            "068_wallet_ledger_sequence"
         )
 
 
@@ -416,7 +416,7 @@ def test_remove_oss_migration_purges_settings_and_selects_safe_fallback(
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE runtime_settings SET active_storage_provider = 'oss' WHERE id = 1")
 
-    assert version == "063_script_from_audio_reconciliation"
+    assert version == "068_wallet_ledger_sequence"
     assert "oss" not in providers
     assert active_provider == expected_provider
 
@@ -520,7 +520,7 @@ def test_runtime_bootstrap_upgrades_an_existing_database_before_startup(
     assert result.returncode == 0, result.stderr
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "063_script_from_audio_reconciliation"
+            "068_wallet_ledger_sequence"
         )
         assert (
             conn.execute(

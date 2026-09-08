@@ -2198,6 +2198,7 @@ def regenerate_generation_task(
                 request.generation_reason,
             ),
         )
+        billed_seconds = _seconds_from_prompt_snapshot(prompt_snapshot)
         conn.execute(
             """
             INSERT INTO generation_tasks (
@@ -2218,7 +2219,7 @@ def regenerate_generation_task(
                 str(source["model"]),
                 source["prompt_version_id"],
                 prompt_snapshot,
-                _seconds_from_prompt_snapshot(prompt_snapshot),
+                billed_seconds,
                 request.estimated_cost_snapshot,
                 task_id,
                 request.generation_reason,
@@ -2230,13 +2231,13 @@ def regenerate_generation_task(
             conn,
             task_id=replacement_task_id,
             resolution=str(replacement_snapshot.get("resolution", "768P")),
-            billed_seconds=_seconds_from_prompt_snapshot(prompt_snapshot),
+            billed_seconds=billed_seconds,
         )
         _reserve_generation_credit(
             conn,
             user_id=billed_user_id,
             task_id=replacement_task_id,
-            seconds=_seconds_from_prompt_snapshot(prompt_snapshot),
+            seconds=billed_seconds,
         )
         cursor = conn.execute(
             """

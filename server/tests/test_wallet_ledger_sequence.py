@@ -52,11 +52,16 @@ def ledger_dsn() -> Iterator[str]:
 def _seed_order(conn: psycopg.Connection, suffix: str) -> None:
     conn.execute(
         "INSERT INTO recharge_orders "
-        "(id,user_id,merchant_order_no,provider,status,pricing_scope,"
+        "(id,user_id,merchant_order_no,provider,provider_trade_no,channel,status,pricing_scope,"
         "base_unit_price_fen_snapshot,charged_unit_price_fen_snapshot,"
         "min_recharge_fen_snapshot,recharge_step_fen_snapshot,amount_fen,credits,paid_at) "
-        "VALUES (%s,'ledger-user',%s,'zpay','PAID','INTERNAL',1000,1000,1,1,1000,10,now())",
-        (f"ledger-order-{suffix}", f"ledger-merchant-{suffix}"),
+        "VALUES (%s,'ledger-user',%s,'zpay',%s,'alipay','PAID','INTERNAL',"
+        "1000,1000,1,1,10000,10,now())",
+        (
+            f"ledger-order-{suffix}",
+            f"ledger-merchant-{suffix}",
+            f"ledger-trade-{suffix}",
+        ),
     )
 
 
