@@ -135,6 +135,7 @@ class BatchCreateRequest(AdminWriteContract):
     credits: int
     quantity: int
     activation_expires_at: str
+    confirm_grant: bool = False
 
 
 def _validate_batch_payload(body: BatchCreateRequest) -> None:
@@ -143,10 +144,12 @@ def _validate_batch_payload(body: BatchCreateRequest) -> None:
         problems.append("name must not be blank")
     if body.face_value_fen < 0:
         problems.append("face_value_fen must not be negative")
-    if body.credits < 0:
-        problems.append("credits must not be negative")
-    if (body.face_value_fen == 0) != (body.credits == 0):
-        problems.append("face_value_fen and credits must both be zero or both be positive")
+    if body.credits < 0 or body.credits > 2147483647:
+        problems.append("credits must be within the nonnegative ledger integer range")
+    if body.face_value_fen > 0 and body.credits == 0:
+        problems.append("paid batches require positive credits")
+    if body.face_value_fen == 0 and body.credits > 0 and not body.confirm_grant:
+        problems.append("initial free seconds require confirm_grant")
     if body.quantity <= 0:
         problems.append("quantity must be positive")
     try:
@@ -193,6 +196,20 @@ def create_activation_code_batch(
         _validate_batch_payload(body)
         batch_id = str(uuid.uuid4())
         name = body.name.strip()
+        unit_price = body.face_value_fen
+        if body.face_value_fen == 0 and body.credits > 0:
+            snapshot = conn.execute(
+                "SELECT internal_base_unit_price_fen FROM runtime_settings WHERE id=1"
+            ).fetchone()
+            if snapshot is None:
+                raise _http(503, "BILLING_SNAPSHOT_UNAVAILABLE", "Billing snapshot not configured.")
+            unit_price = int(snapshot[0])
+        if body.credits * unit_price > 2147483647:
+            raise _http(
+                400,
+                "BATCH_VALIDATION_FAILED",
+                "The credit calculation exceeds the ledger integer range.",
+            )
         conn.execute(
             "INSERT INTO activation_code_batches "
             "(id, name, face_value_fen, unit_price_fen_snapshot, credits_snapshot, "
@@ -203,9 +220,8 @@ def create_activation_code_batch(
                 batch_id,
                 name,
                 body.face_value_fen,
-                # The unit price is the face value at creation time — the
-                # frozen snapshot later price changes can never rewrite.
-                body.face_value_fen,
+                # 免费赠送保留基础价作审计快照，收款金额仍由面值 0 决定。
+                unit_price,
                 body.credits,
                 body.quantity,
                 body.activation_expires_at,
@@ -228,7 +244,7 @@ def create_activation_code_batch(
             "batch_id": batch_id,
             "name": name,
             "face_value_fen": body.face_value_fen,
-            "unit_price_fen_snapshot": body.face_value_fen,
+            "unit_price_fen_snapshot": unit_price,
             "credits_snapshot": body.credits,
             "quantity": body.quantity,
             "activation_expires_at": body.activation_expires_at,

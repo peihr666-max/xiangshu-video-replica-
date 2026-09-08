@@ -28,7 +28,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.activation_code_service import (
@@ -54,6 +54,25 @@ IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 REQUEST_ID_HEADER = "X-Request-Id"
 REPLAY_HEADER = "X-Idempotent-Replay"
 BATCH_CREATION_ENV = "VIDEO_REPLICA_ALLOW_ACTIVATION_BATCH_CREATION"
+
+
+def test_zero_price_initial_seconds_require_explicit_grant_confirmation() -> None:
+    from app.admin_activation_routes import BatchCreateRequest, _validate_batch_payload
+
+    payload = BatchCreateRequest(
+        name="免费体验秒数",
+        face_value_fen=0,
+        credits=600,
+        quantity=1,
+        activation_expires_at="2099-01-01T00:00:00+00:00",
+        reason="活动赠送，未收款",
+        confirm=True,
+        confirm_grant=True,
+    )
+    _validate_batch_payload(payload)
+
+    with pytest.raises(HTTPException, match="400"):
+        _validate_batch_payload(payload.model_copy(update={"confirm_grant": False}))
 
 
 def _b64key(raw: bytes) -> str:
@@ -272,6 +291,27 @@ def test_create_batch_rejects_auditor_writer(
     response = _create_batch(client, auditor_headers)
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "AUDITOR_READ_ONLY"
+
+
+def test_initial_grant_response_matches_frozen_price(
+    client: TestClient, admin_headers: dict[str, str], clean_state: str
+) -> None:
+    response = _create_batch(
+        client,
+        admin_headers,
+        face_value_fen=0,
+        credits=600,
+        confirm_grant=True,
+        reason="活动赠送，未收款",
+    )
+    assert response.status_code == 201, response.text
+    with psycopg.connect(clean_state) as conn:
+        configured = conn.execute(
+            "SELECT internal_base_unit_price_fen FROM runtime_settings WHERE id=1"
+        ).fetchone()[0]
+    assert response.json()["face_value_fen"] == 0
+    assert response.json()["unit_price_fen_snapshot"] == configured
+    assert response.json()["credits_snapshot"] == 600
 
 
 def test_write_rejects_missing_csrf_header(

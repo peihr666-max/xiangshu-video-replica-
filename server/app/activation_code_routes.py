@@ -565,7 +565,7 @@ def _run_activation(
     code_row = conn.execute(
         "SELECT c.id, c.status, "
         "b.unit_price_fen_snapshot, b.credits_snapshot, b.activation_expires_at, "
-        "c.bound_user_id "
+        "c.bound_user_id, b.face_value_fen, b.created_by_user_id, b.creation_reason "
         "FROM activation_codes c "
         "JOIN activation_code_batches b ON b.id = c.batch_id "
         "WHERE c.code_digest = ANY(%s) "
@@ -671,21 +671,30 @@ def _run_activation(
     order_id: str | None = None
     now_iso = server_now.replace(microsecond=0).isoformat()
     if credits > 0:
+        is_free_grant = int(code_row[6]) == 0
+        grant_reason = str(code_row[8] or "").strip()
+        if is_free_grant and not grant_reason:
+            raise _http(
+                503,
+                "ACTIVATION_SERVICE_UNAVAILABLE",
+                "Initial grant authorization is incomplete.",
+            )
         order_id = str(uuid.uuid4())
         merchant_order_no = f"ACT-{uuid.uuid4().hex}"
-        amount_fen = credits * unit_price_fen
+        amount_fen = 0 if is_free_grant else credits * unit_price_fen
         conn.execute(
             "INSERT INTO recharge_orders "
             "(id, user_id, merchant_order_no, provider, provider_trade_no, channel, "
             " status, pricing_scope, base_unit_price_fen_snapshot, "
             " charged_unit_price_fen_snapshot, min_recharge_fen_snapshot, "
             " recharge_step_fen_snapshot, amount_fen, credits, paid_at) "
-            "VALUES (%s, %s, %s, 'activation_code', NULL, NULL, 'PAID', "
+            "VALUES (%s, %s, %s, %s, NULL, NULL, 'PAID', "
             " 'CUSTOMER_STANDARD', %s, %s, %s, %s, %s, %s, %s)",
             (
                 order_id,
                 user_id,
                 merchant_order_no,
+                "admin_adjustment" if is_free_grant else "activation_code",
                 unit_price_fen,
                 unit_price_fen,
                 1,
@@ -708,6 +717,32 @@ def _run_activation(
                 f"activation_code:charge:{order_id}",
             ),
         )
+        if is_free_grant:
+            conn.execute(
+                "INSERT INTO admin_adjustments "
+                "(id,recharge_order_id,target_user_id,admin_user_id,source_document_type,"
+                "source_document_ref,reason,request_id,created_at) "
+                "VALUES (%s,%s,%s,%s,'FREE_GRANT',%s,%s,%s,%s)",
+                (
+                    str(uuid.uuid4()),
+                    order_id,
+                    user_id,
+                    str(code_row[7]),
+                    f"activation-code:{code_id}",
+                    grant_reason,
+                    request_id,
+                    now_iso,
+                ),
+            )
+            logger.warning(
+                "activation initial grant recorded: user=%s order=%s credits=%s "
+                "actor=%s request=%s",
+                user_id,
+                order_id,
+                credits,
+                code_row[7],
+                request_id,
+            )
 
     conn.execute(
         "INSERT INTO activation_code_activations "
