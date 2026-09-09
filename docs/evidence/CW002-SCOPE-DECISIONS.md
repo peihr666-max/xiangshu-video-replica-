@@ -6,7 +6,7 @@
 | --- | --- |
 | 任务/工作包 | CW-002 补齐平台与条件业务范围决议 |
 | Owner / Reviewer | Owner：ZCode 代理（hlong026 会话，2026-09-09）；Reviewer：独立复核子代理 + 待产品负责人/架构负责人签认 |
-| 分支 / 基线 SHA | `feat/customer-v3-cw02-platform-scope` / 基线 `origin/main@b211095` |
+| 分支 / 基线 SHA | `feat/customer-v3-cw02-platform-scope`（draft 钉 b211095）→ W0 批次 cherry-pick 到发布基线 `origin/main@df7020c`；2026-09-09 核实平台/范围/公平各项**决策**对 df7020c 仍成立，唯 client studio 三文件（types.ts/ContentPages.tsx/MainPages.tsx）与 test_customer_queue_fairness.py 经 b211095→df7020c 漂移，§3/§6 相关行号已按 df7020c 校正（generation.py:4491/4600/4644 与 oral_worker.py 未变动、行号仍准） |
 | 上游规格段落 | V3 清单 §4 CW-002；§5 客户业务验收矩阵；§8 可量化阈值 |
 | 改动文件 | `docs/evidence/CW002-SCOPE-DECISIONS.md`（新增） |
 | 失败测试或回归锁定 | 不适用（决策与静态核验层） |
@@ -38,7 +38,7 @@
 
 ## 3. 保留功能范围 — F01–F12 映射（CW-018 自动化与 CW-049 UAT 共同最小覆盖）
 
-页面枚举依据 `client/src/studio/types.ts:3-24`（`StudioPage` 21 个页面值）。
+页面枚举依据 `client/src/studio/types.ts:8-29`（`StudioPage` 21 个页面值；df7020c 校正，draft 钉 b211095 时为 :3-24，types.ts +36/-3 漂移后移位，21 值不变）。
 
 | ID | 业务 | 保留页面/入口 | 当前状态 | 范围结论 |
 | --- | --- | --- | --- | --- |
@@ -54,7 +54,7 @@
 | F10 | 任务和结果 | `tasks`、`task-detail` | 已实现 | 保留 |
 | F11 | 钱包与充值 | `profile` 内客户钱包两个入口 | **已知缺陷**（两入口上下文不一致，CW-016 修复） | 保留（先红后绿） |
 | F12 | 管理和经营看板 | `analytics`（客户仅本人）+ `client/src/admin/`（管理员） | 已实现 | 保留 |
-| — | 发布管理（`publishing`） | `publishing` 页 | **未接通**：按钮为诚实提示"正式发布（接口未接通）"（`client/src/studio/ContentPages.tsx:1764-1768`）、"发布账号服务尚未接入"（`client/src/studio/MainPages.tsx:1220`） | **不纳入本轮完工口径**：保留诚实提示或按确认范围隐藏（V3 §5 发布管理条款）；若纳入须先补专用验收矩阵 |
+| — | 发布管理（`publishing`） | `publishing` 页 | **未接通**：按钮为诚实提示"正式发布（接口未接通）"（`client/src/studio/ContentPages.tsx:2653-2657`；df7020c 校正，draft b211095 时为 :1764-1768，+1055/-166 漂移后移位，字符串不变）、"尚未连接发布账号 / 平台账号授权接口尚未接入"（`client/src/studio/MainPages.tsx:1782-1783`；df7020c 校正，draft b211095 时为 :1220 的"发布账号服务尚未接入"，+736/-61 漂移后移位且提示文案改写为 Empty 组件 title/description） | **不纳入本轮完工口径**：保留诚实提示或按确认范围隐藏（V3 §5 发布管理条款）；若纳入须先补专用验收矩阵 |
 
 ## 4. 游客浏览门禁决议（CW-014 条件依据）
 
@@ -79,7 +79,7 @@
 
 当前代码实际覆盖（CW-030 按此范围逐类验证，未覆盖类别如实登记限制）：
 
-- **H3/独立视频队列**：每用户 running≤1（`server/app/generation.py:4600,4644` 调度条件 `running_tasks_count = 0`，超限时 `LEAST(...,1)` 收敛）、全局并发上限 `max_concurrent_h3_tasks=100`（runtime seed，`server/tests/test_customer_queue_fairness.py:148`）、公平轮转 cursor（`server/app/generation.py:4491` 附近，轮次上限见 `test_customer_queue_fairness.py:544`）。
+- **H3/独立视频队列**：每用户 running≤1（`server/app/generation.py:4600,4644` 调度条件 `running_tasks_count = 0`，超限时 `LEAST(...,1)` 收敛；generation.py 该二行 b211095→df7020c 未变动、仍准）、全局并发上限 `max_concurrent_h3_tasks=100`（runtime seed，`server/tests/test_customer_queue_fairness.py:138`；df7020c 校正，draft b211095 时为 :148，+2/-12 漂移后移位）、公平轮转 cursor（`server/app/generation.py:4491` 附近 = `_FAIR_QUEUE_MAX_ROUNDS = 8`@4492，未变动仍准；轮次上限测试见 `test_customer_queue_fairness.py:534`，df7020c 校正，draft b211095 时为 :544）。
 - **口播队列**：`server/app/oral_worker.py:178,306,940` 复用同一 `user_queue_cursors` 轮转与 running≤1 模式。
 - **未纳入公平队列的类别**：图片生成（character_image_generation）、分析/文案/ASR（analysis、script_rewrite、script_from_audio）当前无公平队列租约/轮转代码——本轮不扩展，CW-030 验收时逐类登记"无公平机制"的现状限制，不得以 H3 覆盖冒充。
 - V3 §8/CW-047 的"A=1000/B=100/C=10"为 staging 负载验收的**建议基线数值**（未在代码中固化为常量），与本节代码现状机制分属两层，不得混写。
