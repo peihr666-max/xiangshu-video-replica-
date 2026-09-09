@@ -25,7 +25,11 @@ import pytest
 from pg_test_kit import require_pg_or_explicit_skip
 
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
-HEAD_REVISION = "080_viral_link_resolution_receipts"
+# PR#103(df7020c) 引入 pg_test_kit.require_pg_or_explicit_skip 模块级 autouse fixture，
+# 取代旧的 SKIP_REASON 常量（已无引用，随 main 基线删除）。
+# HEAD_REVISION 取本分支链尾 081：本分支 = main(→080) + 人物库线 081_oral_unit_price，
+# 迁移后 alembic 版本头即 081，9 处 assert version == HEAD_REVISION 依赖此值。
+HEAD_REVISION = "081_oral_unit_price"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(
@@ -1732,6 +1736,7 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
     import app.oral_worker as oral_worker
     from app.db_portable import BusinessConnection
     from app.internal_billing import release_oral_queue_slot
+    from app.oral_worker import OralLeaseLostError, OralWorkLease, OralWorkResult
 
     db_name = "oral_atomic_shared_capacity"
     dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{db_name}"
@@ -1790,6 +1795,17 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
                 "INSERT INTO user_queue_cursors "
                 "(user_id,last_dispatched_at,running_tasks_count) VALUES "
                 "('capacity-u1',now(),0),('capacity-u2',now(),0)"
+            )
+            conn.execute(
+                "INSERT INTO wallets (user_id,available_credits,reserved_credits) VALUES "
+                "('capacity-u1',19,1),('capacity-u2',20,0)"
+            )
+            conn.execute(
+                "INSERT INTO wallet_transactions "
+                "(id,user_id,type,available_delta,reserved_delta,oral_task_id,billing_round,"
+                "idempotency_key) VALUES "
+                "('capacity-reserve','capacity-u1','RESERVE',-1,1,'capacity-o1',1,"
+                "'capacity-reserve-key')"
             )
             conn.execute(
                 "INSERT INTO generation_batches "
@@ -1898,5 +1914,97 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
                 ).fetchone()[0]
                 == 0
             )
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE oral_tasks SET status='SUBMITTING', "
+                "submission_state='SUBMITTING', provider_charge_state='NOT_SUBMITTED', "
+                "queue_slot_acquired=1, lease_owner='uncertain-token', "
+                "lease_expires_at=now() + interval '1 minute', attempt_count=7 "
+                "WHERE id='capacity-o1'"
+            )
+            conn.execute(
+                "UPDATE user_queue_cursors SET running_tasks_count=1 WHERE user_id='capacity-u1'"
+            )
+        uncertain_lease = OralWorkLease(
+            kind="task_submit",
+            record_id="capacity-o1",
+            worker_id="uncertain-worker",
+            lease_token="uncertain-token",
+            attempt_count=7,
+            row={},
+        )
+        with psycopg.connect(dsn) as raw:
+            oral_worker.finalize_oral_work(
+                BusinessConnection.postgres(raw),
+                lease=uncertain_lease,
+                result=OralWorkResult(outcome="uncertain", message="provider response unknown"),
+            )
+            raw.commit()
+        with psycopg.connect(dsn) as conn:
+            task_row = conn.execute(
+                "SELECT status,submission_state,provider_charge_state,queue_slot_acquired "
+                "FROM oral_tasks WHERE id='capacity-o1'"
+            ).fetchone()
+            cursor_count = conn.execute(
+                "SELECT running_tasks_count FROM user_queue_cursors WHERE user_id='capacity-u1'"
+            ).fetchone()[0]
+            wallet = conn.execute(
+                "SELECT available_credits,reserved_credits FROM wallets WHERE user_id='capacity-u1'"
+            ).fetchone()
+            transaction_types = conn.execute(
+                "SELECT type FROM wallet_transactions WHERE oral_task_id='capacity-o1' "
+                "ORDER BY created_at,id"
+            ).fetchall()
+            assert task_row == ("SUBMISSION_UNCERTAIN", "SUBMISSION_UNKNOWN", "UNKNOWN", 0)
+            assert cursor_count == 0
+            assert wallet == (19, 1)
+            assert transaction_types == [("RESERVE",)]
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE oral_tasks SET status='SUBMITTING', "
+                "submission_state='SUBMITTING', provider_charge_state='NOT_SUBMITTED', "
+                "queue_slot_acquired=1, lease_owner='winner-token', "
+                "lease_expires_at=now() + interval '1 minute', attempt_count=8 "
+                "WHERE id='capacity-o1'"
+            )
+            conn.execute(
+                "UPDATE user_queue_cursors SET running_tasks_count=1 WHERE user_id='capacity-u1'"
+            )
+        stale_lease = OralWorkLease(
+            kind="task_submit",
+            record_id="capacity-o1",
+            worker_id="stale-worker",
+            lease_token="stale-token",
+            attempt_count=8,
+            row={},
+        )
+        with psycopg.connect(dsn) as raw:
+            with pytest.raises(OralLeaseLostError):
+                oral_worker.finalize_oral_work(
+                    BusinessConnection.postgres(raw),
+                    lease=stale_lease,
+                    result=OralWorkResult(outcome="uncertain", message="stale response"),
+                )
+            raw.commit()
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT status,lease_owner,queue_slot_acquired FROM oral_tasks "
+                "WHERE id='capacity-o1'"
+            ).fetchone() == ("SUBMITTING", "winner-token", 1)
+            assert (
+                conn.execute(
+                    "SELECT running_tasks_count FROM user_queue_cursors WHERE user_id='capacity-u1'"
+                ).fetchone()[0]
+                == 1
+            )
+            assert conn.execute(
+                "SELECT available_credits,reserved_credits FROM wallets WHERE user_id='capacity-u1'"
+            ).fetchone() == (19, 1)
+            assert conn.execute(
+                "SELECT type FROM wallet_transactions WHERE oral_task_id='capacity-o1' "
+                "ORDER BY created_at,id"
+            ).fetchall() == [("RESERVE",)]
     finally:
         _drop_database(db_name)

@@ -56,6 +56,7 @@ DEFAULT_RUNTIME_SETTINGS: dict[str, int | str] = {
 DEFAULT_BILLING_SETTINGS: dict[str, int] = {
     "internal_base_unit_price_fen": 1000,
     "charged_unit_price_fen": 1000,
+    "oral_unit_price_fen": 1000,
     "min_recharge_fen": 10000,
     "recharge_step_fen": 1000,
 }
@@ -290,12 +291,14 @@ class SettingsRepository:
         self,
         *,
         internal_base_unit_price_fen: int,
+        oral_unit_price_fen: int,
         min_recharge_fen: int,
         recharge_step_fen: int,
         actor_user_id: str | None,
     ) -> dict[str, int]:
         validate_billing_settings(
             internal_base_unit_price_fen=internal_base_unit_price_fen,
+            oral_unit_price_fen=oral_unit_price_fen,
             min_recharge_fen=min_recharge_fen,
             recharge_step_fen=recharge_step_fen,
         )
@@ -304,6 +307,7 @@ class SettingsRepository:
                 """
                 UPDATE runtime_settings
                 SET internal_base_unit_price_fen = %s,
+                    oral_unit_price_fen = %s,
                     min_recharge_fen = %s,
                     recharge_step_fen = %s,
                     updated_by_user_id = %s,
@@ -312,6 +316,7 @@ class SettingsRepository:
                 """,
                 (
                     internal_base_unit_price_fen,
+                    oral_unit_price_fen,
                     min_recharge_fen,
                     recharge_step_fen,
                     actor_user_id,
@@ -322,7 +327,8 @@ class SettingsRepository:
     def read_billing_settings(self) -> dict[str, int]:
         row = self.conn.execute(
             """
-            SELECT internal_base_unit_price_fen, min_recharge_fen, recharge_step_fen
+            SELECT internal_base_unit_price_fen, oral_unit_price_fen,
+                   min_recharge_fen, recharge_step_fen
             FROM runtime_settings
             WHERE id = 1
             """
@@ -333,6 +339,7 @@ class SettingsRepository:
         return {
             "internal_base_unit_price_fen": base_price,
             "charged_unit_price_fen": base_price,
+            "oral_unit_price_fen": int(row["oral_unit_price_fen"]),
             "min_recharge_fen": int(row["min_recharge_fen"]),
             "recharge_step_fen": int(row["recharge_step_fen"]),
         }
@@ -435,11 +442,13 @@ def validate_runtime_settings(
 def validate_billing_settings(
     *,
     internal_base_unit_price_fen: int,
+    oral_unit_price_fen: int,
     min_recharge_fen: int,
     recharge_step_fen: int,
 ) -> None:
     values = (
         internal_base_unit_price_fen,
+        oral_unit_price_fen,
         min_recharge_fen,
         recharge_step_fen,
     )
@@ -447,6 +456,8 @@ def validate_billing_settings(
         raise ValueError("billing settings must use integer fen values")
     if internal_base_unit_price_fen <= 0:
         raise ValueError("internal_base_unit_price_fen must be positive")
+    if oral_unit_price_fen <= 0:
+        raise ValueError("oral_unit_price_fen must be positive")
     if min_recharge_fen < 10000:
         raise ValueError("min_recharge_fen must be at least 10000")
     if recharge_step_fen < 1000:

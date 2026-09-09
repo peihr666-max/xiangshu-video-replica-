@@ -28,6 +28,7 @@ export const pageTitles: Record<StudioPage, string> = {
   materials: "素材库",
   publishing: "发布管理",
   analytics: "数据看板",
+  settings: "系统设置",
   profile: "用户档案",
 };
 
@@ -340,8 +341,8 @@ export function buildOralInput(draft: StudioDraft, mode: "text" | "audio") {
     voiceId: draft.voiceId,
     scriptId: draft.script.id,
     scriptVersion: draft.script.version,
-    style: draft.style,
-    subtitles: draft.style === "standard" && draft.subtitles,
+    style: "standard",
+    subtitles: draft.subtitles,
   };
 }
 

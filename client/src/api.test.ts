@@ -67,7 +67,6 @@ import {
   resolveApiBaseUrl,
   resolveViralLink,
   retryGenerationTask,
-  retryOralTask,
   retryOralTaskArchive,
   reviseGenerationPrompt,
   rewriteProjectScript,
@@ -244,6 +243,26 @@ describe("素材库 API", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
       "http://127.0.0.1:8000/api/studio/materials/uploads/image-1/complete",
     );
+  });
+
+  it("取消完成素材请求时中止底层 fetch 而不误报超时", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    const request = completeMaterialUpload("image-1", controller.signal);
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(requestSignal?.aborted).toBe(true);
   });
 
   it("音频上传意图携带用途与浏览器读取的时长", async () => {
@@ -540,7 +559,7 @@ describe("人物 IP 口播资产 API", () => {
     expect(enabledBody.subtitle).toEqual({ st_show: true, st_font_size: 30 });
   });
 
-  it("调用口播任务取消与两种重试合同", async () => {
+  it("调用口播任务取消与归档重试合同", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ id: "oral-1", status: "QUEUED" }),
@@ -548,12 +567,10 @@ describe("人物 IP 口播资产 API", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await cancelOralTask("oral 1");
-    await retryOralTask("oral 1");
     await retryOralTaskArchive("oral 1");
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "http://127.0.0.1:8000/api/oral/tasks/oral%201/cancel",
-      "http://127.0.0.1:8000/api/oral/tasks/oral%201/retry",
       "http://127.0.0.1:8000/api/oral/tasks/oral%201/archive-retry",
     ]);
     for (const call of fetchMock.mock.calls) {

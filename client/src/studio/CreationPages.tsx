@@ -3287,32 +3287,21 @@ export function OralPage() {
             >
               标准口播
             </Button>
+            <span>字幕</span>
             <Button
               disabled={readOnly}
-              variant={state.draft.style === "template" ? "outline" : "quiet"}
-              onClick={() => patchDraft({ style: "template" })}
+              variant={!state.draft.subtitles ? "outline" : "quiet"}
+              onClick={() => patchDraft({ subtitles: false })}
             >
-              网感模板
+              不添加
             </Button>
-            {state.draft.style === "standard" && (
-              <>
-                <span>字幕</span>
-                <Button
-                  disabled={readOnly}
-                  variant={!state.draft.subtitles ? "outline" : "quiet"}
-                  onClick={() => patchDraft({ subtitles: false })}
-                >
-                  不添加
-                </Button>
-                <Button
-                  disabled={readOnly}
-                  variant={state.draft.subtitles ? "outline" : "quiet"}
-                  onClick={() => patchDraft({ subtitles: true })}
-                >
-                  添加
-                </Button>
-              </>
-            )}
+            <Button
+              disabled={readOnly}
+              variant={state.draft.subtitles ? "outline" : "quiet"}
+              onClick={() => patchDraft({ subtitles: true })}
+            >
+              添加
+            </Button>
           </div>
         )}
         <Button

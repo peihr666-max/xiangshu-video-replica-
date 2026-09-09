@@ -214,6 +214,7 @@ class SimpleLibraryEntry:
     status: str
     contact_sheet_asset_id: str | None
     generation_source: str | None
+    scene_look_count: int
     views: tuple[SimpleCharacterView, ...]
 
 
@@ -883,6 +884,17 @@ def _load_simple_library_entries(
         constraints = (
             {} if base is None else decode_scene_constraints(base["appearance_constraints_json"])
         )
+        scene_look_count = len(
+            {
+                str(row["persona_id"])
+                for row in identity_rows
+                if row["version_id"] is not None
+                and decode_scene_constraints(row["appearance_constraints_json"]).get(
+                    "appearance_type"
+                )
+                == "scene"
+            }
+        )
         views = tuple(
             SimpleCharacterView(
                 view_type=cast(RequiredCharacterViewType, str(row["view_type"])),
@@ -913,6 +925,7 @@ def _load_simple_library_entries(
                 status=str(identity_rows[0]["identity_status"]),
                 contact_sheet_asset_id=_snapshot_contact_sheet_asset_id(latest),
                 generation_source=_snapshot_generation_source(latest),
+                scene_look_count=scene_look_count,
                 views=views,
             )
         )
@@ -1748,20 +1761,48 @@ def _next_version_number(conn: BusinessConnection, *, persona_id: str) -> int:
 StorageResolver = Callable[[BusinessConnection, str], StorageAdapter]
 
 
+@dataclass(frozen=True)
+class CharacterStorageCleanupTarget:
+    asset_id: str
+    storage: StorageAdapter
+    key: str
+
+
+@dataclass(frozen=True)
+class CharacterStorageCleanupPlan:
+    identity_id: str
+    actor_id: str
+    targets: tuple[CharacterStorageCleanupTarget, ...]
+    resolution_failed_count: int
+
+
+@dataclass(frozen=True)
+class CharacterStorageCleanupResult:
+    deleted_count: int
+    failed_count: int
+
+
 def delete_simple_character_identity(
     conn: BusinessConnection,
     *,
     actor: CurrentUser,
     identity_id: str,
     storage_for_uri: StorageResolver,
-) -> None:
+) -> CharacterStorageCleanupPlan:
     """Delete an identity together with every derived character record.
 
-    Mirrors project deletion: in-flight character generation tasks and project
-    character selections block the delete (409), storage object cleanup is
-    best-effort so an unavailable backend never blocks the operator, and the
-    outcome is recorded in the audit log.
+    In-flight tasks and project selections block deletion. Storage targets are
+    resolved while their rows still exist, but object I/O is deliberately
+    returned to the route so it runs only after the database transaction has
+    committed.
     """
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="simple_character.delete",
+        entity_type="person_identity",
+        entity_id=identity_id,
+    )
     row = read_identity_row(conn, identity_id)
     if actor.role != "admin" and str(row["owner_user_id"]) != actor.id:
         raise character_error(
@@ -1865,17 +1906,21 @@ def delete_simple_character_identity(
         else []
     )
 
-    # Best-effort object cleanup before removing the rows, mirroring project
-    # deletion: an unavailable backend (e.g. cloud credentials removed) must
-    # not block the delete; failures are counted into the audit log.
-    storage_cleanup_failed_count = 0
+    cleanup_targets: list[CharacterStorageCleanupTarget] = []
+    storage_resolution_failed_count = 0
     for asset in asset_rows:
         uri = str(asset["storage_uri"])
         try:
             storage = storage_for_uri(conn, uri)
-            storage.delete_object(storage_key_from_uri(uri), actor_id=actor.id)
+            cleanup_targets.append(
+                CharacterStorageCleanupTarget(
+                    asset_id=str(asset["id"]),
+                    storage=storage,
+                    key=storage_key_from_uri(uri),
+                )
+            )
         except (HTTPException, StorageBackendUnavailable, OSError, ValueError):
-            storage_cleanup_failed_count += 1
+            storage_resolution_failed_count += 1
 
     version_ids_sql = """
         SELECT version.id
@@ -1931,8 +1976,39 @@ def delete_simple_character_identity(
         entity_id=identity_id,
         metadata={
             "deleted_asset_count": len(asset_rows),
-            "storage_cleanup_failed_count": storage_cleanup_failed_count,
+            "storage_cleanup_planned_count": len(cleanup_targets),
+            "storage_resolution_failed_count": storage_resolution_failed_count,
         },
+    )
+    return CharacterStorageCleanupPlan(
+        identity_id=identity_id,
+        actor_id=actor.id,
+        targets=tuple(cleanup_targets),
+        resolution_failed_count=storage_resolution_failed_count,
+    )
+
+
+def cleanup_deleted_character_objects(
+    plan: CharacterStorageCleanupPlan,
+) -> CharacterStorageCleanupResult:
+    """Best-effort post-commit object cleanup for a deleted identity."""
+    deleted_count = 0
+    failed_count = plan.resolution_failed_count
+    for target in plan.targets:
+        try:
+            target.storage.delete_object(target.key, actor_id=plan.actor_id)
+            deleted_count += 1
+        except Exception:  # noqa: BLE001 - DB deletion already committed
+            failed_count += 1
+            logger.warning(
+                "character storage cleanup failed identity=%s asset=%s",
+                plan.identity_id,
+                target.asset_id,
+                exc_info=True,
+            )
+    return CharacterStorageCleanupResult(
+        deleted_count=deleted_count,
+        failed_count=failed_count,
     )
 
 

@@ -71,6 +71,7 @@ vi.mock("./context", () => ({
           scope: "乡墅方案",
           audience: "准备建房的家庭",
           expression: "专业",
+          sceneLookCount: 1,
           photoIds: ["scene"],
           avatars: [
             {
@@ -90,19 +91,27 @@ vi.mock("./context", () => ({
               origin: "视频制作",
               duration: "制作中",
             },
+            {
+              id: "avatar-unknown",
+              name: "待核对分身",
+              imageId: "avatar-image",
+              ready: false,
+              status: "RUNNING",
+              submissionState: "SUBMISSION_UNKNOWN",
+              origin: "照片制作",
+              duration: "提交结果待核对",
+            },
           ],
           voices: [
             {
               id: "voice-ok",
               name: "已确认音色",
               confirmed: true,
-              isDefault: true,
             },
             {
               id: "voice-pending",
               name: "待确认音色",
               confirmed: false,
-              isDefault: false,
               status: "READY",
               url: "/voice-preview.mp3",
             },
@@ -110,15 +119,20 @@ vi.mock("./context", () => ({
               id: "voice-running",
               name: "克隆中音色",
               confirmed: false,
-              isDefault: false,
               status: "RUNNING",
             },
             {
               id: "voice-archiving",
               name: "待归档音色",
               confirmed: false,
-              isDefault: false,
               status: "READY",
+            },
+            {
+              id: "voice-unknown",
+              name: "待核对音色",
+              confirmed: false,
+              status: "RUNNING",
+              submissionState: "SUBMISSION_UNKNOWN",
             },
           ],
         },
@@ -131,6 +145,7 @@ vi.mock("./context", () => ({
           scope: "施工管理",
           audience: "在建家庭",
           expression: "清晰",
+          sceneLookCount: 0,
           photoIds: ["other-scene"],
           avatars: [],
           voices: [],
@@ -164,7 +179,7 @@ vi.mock("./context", () => ({
           url: "/scene.png",
           group: "人物素材",
           personId: "p1",
-          source: "AI生成",
+          source: "人物库场景造型",
           saved: true,
         },
         {
@@ -269,6 +284,35 @@ describe("PeoplePages", () => {
       "src",
       "/people/test-person.png",
     );
+  });
+
+  it("未知提交态明确警示且不提供普通刷新动作", () => {
+    currentPage = "person-avatars";
+    const avatarView = render(<PersonPage />);
+    const avatar = screen.getByText("待核对分身").closest("article");
+    expect(avatar).not.toBeNull();
+    expect(
+      within(avatar as HTMLElement).getByText(/禁止重复提交/),
+    ).toBeInTheDocument();
+    expect(
+      within(avatar as HTMLElement).queryByRole("button", {
+        name: "刷新制作状态",
+      }),
+    ).not.toBeInTheDocument();
+
+    avatarView.unmount();
+    currentPage = "person-voices";
+    render(<PersonPage />);
+    const voice = screen.getByText("待核对音色").closest("article");
+    expect(voice).not.toBeNull();
+    expect(
+      within(voice as HTMLElement).getByText(/禁止重复提交/),
+    ).toBeInTheDocument();
+    expect(
+      within(voice as HTMLElement).queryByRole("button", {
+        name: "刷新克隆状态",
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it("filters people by role", async () => {
@@ -842,6 +886,19 @@ describe("PeoplePages", () => {
     expect(patchDraft).toHaveBeenCalledWith({
       ipId: "p1",
       imageId: "scene",
+    });
+  });
+
+  it("从场景卡制作口播分身时保留选中图片", () => {
+    currentPage = "person-photos";
+    render(<PersonPage />);
+
+    screen.getByRole("button", { name: "制作口播分身" }).click();
+
+    expect(patchDraft).toHaveBeenCalledWith({ ipId: "p1", imageId: "scene" });
+    expect(navigate).toHaveBeenCalledWith("person-avatars", {
+      selectedPersonId: "p1",
+      selectedAssetId: "scene",
     });
   });
 

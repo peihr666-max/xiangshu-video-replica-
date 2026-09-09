@@ -26,6 +26,7 @@ export type StudioPage =
   | "materials"
   | "publishing"
   | "analytics"
+  | "settings"
   | "profile";
 export type AssetKind = "image" | "video" | "audio";
 export type StudioAsset = {
@@ -53,6 +54,12 @@ export type StudioAvatar = {
   imageId: string;
   ready: boolean;
   status?: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  submissionState?:
+    | "LOCAL_PENDING"
+    | "SUBMITTING"
+    | "SUBMITTED"
+    | "SUBMISSION_UNKNOWN"
+    | "FAILED";
   error?: string;
   origin: "视频制作" | "照片制作";
   duration: string;
@@ -61,8 +68,14 @@ export type StudioVoice = {
   id: string;
   name: string;
   confirmed: boolean;
-  isDefault: boolean;
+  isDefault?: boolean;
   status?: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  submissionState?:
+    | "LOCAL_PENDING"
+    | "SUBMITTING"
+    | "SUBMITTED"
+    | "SUBMISSION_UNKNOWN"
+    | "FAILED";
   error?: string;
   url?: string;
 };
@@ -76,6 +89,7 @@ export type StudioPerson = {
   audience: string;
   expression: string;
   sheetId?: string;
+  sceneLookCount: number;
   photoIds: string[];
   photoCount?: number;
   avatars: StudioAvatar[];
@@ -114,7 +128,7 @@ export type StudioTask = {
   backendId?: string;
   backendStatus?: string;
   billingStatus?: string;
-  retryAction?: "retry" | "archive-retry";
+  retryAction?: "archive-retry";
   title: string;
   type: "视频复刻" | "人物置换" | "视频生成" | "数字人口播";
   status:
@@ -210,7 +224,7 @@ export type StudioDraft = {
   duration: number;
   count: number;
   frameConfirmed: boolean;
-  style: "standard" | "template";
+  style: "standard";
   subtitles: boolean;
   quoteRevision: number;
   /** 最近一次独立创作提交的批次 id：预览区就地展示生成进度。 */

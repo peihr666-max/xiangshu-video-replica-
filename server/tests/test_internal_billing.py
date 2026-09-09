@@ -11,7 +11,7 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository
 
-HEAD_REVISION = "080_viral_link_resolution_receipts"
+HEAD_REVISION = "081_oral_unit_price"
 
 
 def seed_subjects(conn: sqlite3.Connection) -> None:
@@ -230,6 +230,7 @@ def test_billing_defaults_and_order_snapshot_are_internal_p0_prices(tmp_path: Pa
     assert settings == {
         "internal_base_unit_price_fen": 1000,
         "charged_unit_price_fen": 1000,
+        "oral_unit_price_fen": 1000,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
     }
@@ -263,6 +264,7 @@ def test_billing_settings_reject_invalid_internal_p0_rules(
         with pytest.raises(ValueError):
             repo.save_billing_settings(
                 internal_base_unit_price_fen=base_price,
+                oral_unit_price_fen=1000,
                 min_recharge_fen=minimum,
                 recharge_step_fen=step,
                 actor_user_id=None,

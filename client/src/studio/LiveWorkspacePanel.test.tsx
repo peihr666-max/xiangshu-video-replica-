@@ -1,9 +1,16 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { GenerationBatch } from "../api";
-import * as api from "../api";
-import type { CustomerCredentialStore } from "../customer/useCustomerSession";
 import { reviewUser } from "./fixtures";
+
+const analysis = vi.hoisted(() => ({ props: vi.fn() }));
+
+vi.mock("../AnalysisWorkspace", () => ({
+  AnalysisWorkspace: (props: { identityId?: string }) => {
+    analysis.props(props);
+    return <p>analysis-workspace</p>;
+  },
+}));
 
 vi.mock("../TaskRecordsPanel", () => ({
   TaskRecordsPanel: ({
@@ -15,16 +22,6 @@ vi.mock("../TaskRecordsPanel", () => ({
       消费交接
     </button>
   ),
-}));
-
-vi.mock("../CharacterLibrary", () => ({
-  CharacterLibrary: ({
-    initialIdentityId,
-    initialTab,
-  }: {
-    initialIdentityId?: string;
-    initialTab?: string;
-  }) => <p>{`${initialIdentityId ?? "none"}:${initialTab ?? "base"}`}</p>,
 }));
 
 import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
@@ -51,11 +48,10 @@ it("任务面板消费交接后回传给工作区控制器清除暂存批次", (
   expect(onHandoffConsumed).toHaveBeenCalledTimes(1);
 });
 
-it("人物面板会带入 Studio 已选人物和场景造型页签", () => {
+it("分析面板会把 Studio 已选 IP 传给真实分析工作区", () => {
   render(
     <LiveWorkspacePanel
       characterIdentityId="identity-1"
-      characterInitialTab="scenes"
       currentUser={reviewUser}
       onBatchCreated={vi.fn()}
       onBusyChange={vi.fn()}
@@ -63,9 +59,13 @@ it("人物面板会带入 Studio 已选人物和场景造型页签", () => {
       onHandoffConsumed={vi.fn()}
       onProjectSelected={vi.fn()}
       onRefresh={vi.fn()}
-      panel="characters"
+      panel="analysis"
+      project={{ id: "project-1" } as never}
     />,
   );
 
-  expect(screen.getByText("identity-1:scenes")).toBeInTheDocument();
+  expect(screen.getByText("analysis-workspace")).toBeInTheDocument();
+  expect(analysis.props).toHaveBeenCalledWith(
+    expect.objectContaining({ identityId: "identity-1" }),
+  );
 });

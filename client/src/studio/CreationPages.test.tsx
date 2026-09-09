@@ -200,6 +200,7 @@ function studio(
           scope: "乡墅设计",
           audience: "自建房家庭",
           expression: "专业通俗",
+          sceneLookCount: 0,
           photoIds: [],
           avatars: [
             {
@@ -1578,6 +1579,14 @@ describe("V1.4 创作页面", () => {
     expect(screen.queryByText("声音档案")).not.toBeInTheDocument();
     expect(screen.queryByText("网感模板")).not.toBeInTheDocument();
     expect(screen.queryByText("文字转语音")).not.toBeInTheDocument();
+  });
+
+  it("文案口播不再把未实现的网感模板表现为可用", () => {
+    useStudio.mockReturnValue(studio());
+    render(<OralPage />);
+
+    expect(screen.queryByRole("button", { name: "网感模板" })).toBeNull();
+    expect(screen.getByText("标准口播")).toBeInTheDocument();
   });
 
   it("口播模式切换只占左侧输入栏，不下推右侧人物预览", () => {

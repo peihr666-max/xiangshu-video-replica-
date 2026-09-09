@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, StrictInt
 
 from app.auth import AuthenticatedUser, CurrentUser, Database
@@ -53,6 +53,7 @@ class RuntimeSettingsRequest(BaseModel):
 
 class BillingSettingsRequest(BaseModel):
     internal_base_unit_price_fen: StrictInt
+    oral_unit_price_fen: StrictInt
     min_recharge_fen: StrictInt
     recharge_step_fen: StrictInt
 
@@ -395,6 +396,55 @@ def update_provider_settings(
     return result
 
 
+@router.post("/providers/{provider}/secrets/{field}/reveal")
+def reveal_provider_secret(
+    provider: str,
+    field: str,
+    conn: Database,
+    admin: SettingsAdmin,
+) -> JSONResponse:
+    provider_name = require_supported_provider(provider)
+    if not is_secret_field(field):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SETTINGS_FIELD_NOT_SECRET",
+                "message": "该字段不是密钥。",
+            },
+        )
+
+    value = SettingsRepository(conn).load_provider_config(provider_name).get(field)
+    if not value:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "SETTINGS_SECRET_NOT_CONFIGURED",
+                "message": "该密钥尚未配置。",
+            },
+        )
+
+    # 只记录“谁查看了哪个字段”；明文密钥不进日志、审计或普通设置快照。
+    write_audit_log(
+        conn,
+        actor_user_id=admin.id,
+        action="provider_settings.secret_reveal",
+        entity_type="provider_settings",
+        entity_id=provider_name,
+        metadata_json=json.dumps(
+            {"provider": provider_name, "field": field},
+            sort_keys=True,
+        ),
+    )
+    return JSONResponse(
+        content={"value": value},
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.patch("/runtime")
 def update_runtime_settings(
     payload: RuntimeSettingsRequest,
@@ -444,6 +494,7 @@ def update_billing_settings(
     try:
         result = SettingsRepository(conn).save_billing_settings(
             internal_base_unit_price_fen=payload.internal_base_unit_price_fen,
+            oral_unit_price_fen=payload.oral_unit_price_fen,
             min_recharge_fen=payload.min_recharge_fen,
             recharge_step_fen=payload.recharge_step_fen,
             actor_user_id=admin.id,

@@ -48,7 +48,6 @@ import {
   type Project,
   readAnalysisPayload,
   resolveMaterials,
-  retryOralTask,
   retryOralTaskArchive,
   reviseGenerationPrompt,
   type SimpleLibraryEntry,
@@ -394,6 +393,7 @@ function basePerson(
     audience: entry.target_audience,
     expression: entry.expression_style,
     sheetId: entry.contact_sheet_asset_id ?? undefined,
+    sceneLookCount: entry.scene_look_count,
     photoIds: [],
     avatars,
     voices,
@@ -407,7 +407,11 @@ type OralIdentityAssets = {
   errors: string[];
 };
 
-function oralStatusLabel(status: OralAvatarRecord["status"]): string {
+function oralStatusLabel(
+  status: OralAvatarRecord["status"],
+  submissionState: OralAvatarRecord["submission_state"],
+): string {
+  if (submissionState === "SUBMISSION_UNKNOWN") return "提交结果待核对";
   if (status === "READY") return "已就绪";
   if (status === "FAILED") return "制作失败";
   return "制作中";
@@ -477,9 +481,10 @@ async function loadOralIdentityAssets(
       imageId: avatar.source_asset_id,
       ready: avatar.status === "READY",
       status: avatar.status,
+      submissionState: avatar.submission_state,
       error: avatar.error_message ?? undefined,
       origin: avatar.source_kind === "IMAGE" ? "照片制作" : "视频制作",
-      duration: oralStatusLabel(avatar.status),
+      duration: oralStatusLabel(avatar.status, avatar.submission_state),
     })),
     voices: voiceRows.map((voice) => {
       const demoUrl = voice.demo_asset_id
@@ -492,8 +497,8 @@ async function loadOralIdentityAssets(
           voice.status === "READY" &&
           Boolean(voice.confirmed) &&
           Boolean(demoUrl),
-        isDefault: false,
         status: voice.status,
+        submissionState: voice.submission_state,
         error: voice.error_message ?? undefined,
         url: demoUrl,
       };
@@ -763,14 +768,9 @@ function oralTask(row: OralTaskRecord): StudioTask {
     CANCELLED: "cancelled",
   };
   const availableActions = row.available_actions ?? [];
-  const retryAction =
-    row.status === "ARCHIVE_FAILED" ||
-    availableActions.includes("archive_retry")
-      ? "archive-retry"
-      : row.status === "SUBMISSION_UNCERTAIN" ||
-          availableActions.includes("retry")
-        ? "retry"
-        : undefined;
+  const retryAction = availableActions.includes("archive_retry")
+    ? "archive-retry"
+    : undefined;
   return {
     id: `oral-${row.id}`,
     backendKind: "oral_task",
@@ -838,7 +838,7 @@ export async function retryStudioTask(task: StudioTask): Promise<void> {
     await retryOralTaskArchive(taskId);
     return;
   }
-  await retryOralTask(taskId);
+  throw new Error("当前任务状态不支持重试。");
 }
 
 export async function downloadStudioTaskResult(
@@ -1109,6 +1109,7 @@ function draftFromPayload(payload: unknown): StudioDraft | null {
             (value) => typeof value === "string" && value.length > 0,
           ),
   };
+  merged.style = "standard";
   return merged;
 }
 

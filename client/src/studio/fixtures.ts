@@ -145,7 +145,7 @@ export function createReviewData(): StudioData {
       url: photo("zhang-studio"),
       group: "人物素材",
       personId: "zhang",
-      source: "AI生成",
+      source: "人物库场景造型",
       saved: true,
     },
     {
@@ -155,7 +155,7 @@ export function createReviewData(): StudioData {
       url: photo("zhang-courtyard"),
       group: "人物素材",
       personId: "zhang",
-      source: "AI生成",
+      source: "人物库场景造型",
       saved: true,
     },
     {
@@ -175,7 +175,7 @@ export function createReviewData(): StudioData {
       url: photo("five-views"),
       group: "人物素材",
       personId: "zhang",
-      source: "AI生成",
+      source: "人物库场景造型",
       composite: true,
       saved: true,
     },
@@ -261,6 +261,7 @@ export function createReviewData(): StudioData {
       audience: "准备建房的农村家庭",
       expression: "专业、通俗、不过度承诺",
       sheetId: "five-views",
+      sceneLookCount: 3,
       photoIds: ["zhang-courtyard", "construction", "zhang-studio"],
       avatars: [
         {
@@ -285,13 +286,11 @@ export function createReviewData(): StudioData {
           id: "voice-1",
           name: "张工本人音色 V1",
           confirmed: true,
-          isDefault: true,
         },
         {
           id: "voice-2",
           name: "张工本人音色 V2",
           confirmed: false,
-          isDefault: false,
         },
       ],
     },
@@ -304,6 +303,7 @@ export function createReviewData(): StudioData {
       scope: "建房管理 / 施工统筹",
       audience: "计划建房的业主",
       expression: "务实、可信",
+      sceneLookCount: 1,
       photoIds: ["li"],
       avatars: [
         {
@@ -320,7 +320,6 @@ export function createReviewData(): StudioData {
           id: "voice-li",
           name: "李总本人音色 V1",
           confirmed: true,
-          isDefault: true,
         },
       ],
     },
@@ -333,6 +332,7 @@ export function createReviewData(): StudioData {
       scope: "建房需求 / 客户沟通",
       audience: "准备建房的农村家庭",
       expression: "亲切、清楚",
+      sceneLookCount: 1,
       photoIds: ["wang"],
       avatars: [],
       voices: [],

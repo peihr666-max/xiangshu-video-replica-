@@ -523,30 +523,27 @@ describe("V1.4 任务详情真实成片预览", () => {
     expect(value.openLive).not.toHaveBeenCalled();
   });
 
-  it("只对后端允许的口播异常状态展示真实重试动作", async () => {
-    const retryable: StudioTask = {
+  it("提交结果不确定时只提供状态核对入口", () => {
+    const uncertain: StudioTask = {
       ...taskA,
       id: "oral-uncertain",
       backendKind: "oral_task",
       backendId: "oral-uncertain",
       backendStatus: "SUBMISSION_UNCERTAIN",
       status: "uncertain",
-      retryAction: "retry",
+      retryAction: undefined,
       resultId: undefined,
     };
-    const value = studio(retryable.id, { data: data([retryable]) });
+    const value = studio(uncertain.id, { data: data([uncertain]) });
     useStudio.mockReturnValue(value);
-    retryStudioTask.mockResolvedValue(undefined);
     render(<TaskDetailPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "重试提交" }));
+    fireEvent.click(screen.getByRole("button", { name: "核对任务状态" }));
 
-    await waitFor(() =>
-      expect(retryStudioTask).toHaveBeenCalledWith(retryable),
-    );
-    expect(value.refresh).toHaveBeenCalledOnce();
+    expect(value.openLive).toHaveBeenCalledWith("tasks");
+    expect(retryStudioTask).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole("button", { name: "重试归档" }),
+      screen.queryByRole("button", { name: "重试提交" }),
     ).not.toBeInTheDocument();
   });
 });

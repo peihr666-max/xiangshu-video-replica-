@@ -113,9 +113,14 @@ describe("AuditEventsPage", () => {
     await screen.findByText("查看激活码明文");
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some(([url]) =>
-          String(url).endsWith("/api/control/audit-log?limit=20&offset=20"),
-        ),
+        fetchMock.mock.calls.some(([url]) => {
+          const requestUrl = new URL(String(url));
+          return (
+            requestUrl.pathname.endsWith("/api/control/audit-log") &&
+            requestUrl.searchParams.get("limit") === "20" &&
+            requestUrl.searchParams.get("offset") === "20"
+          );
+        }),
       ).toBe(true);
     });
     expect(screen.getByText("req-audit-21")).toBeInTheDocument();

@@ -25,6 +25,12 @@ from app.generation import (
 from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
 from app.internal_billing import finalize_oral_billing, release_oral_queue_slot
 from app.media import storage_key_from_uri
+from app.media_tools import (
+    MediaToolFailed,
+    MediaToolUnavailable,
+    MediaValidationFailed,
+    inspect_media_bytes,
+)
 from app.storage import StorageAdapter, StoredObject
 
 logger = logging.getLogger(__name__)
@@ -429,6 +435,7 @@ def perform_oral_work(
                 demo = vendor.download(voice_snapshot.demo_url)
                 if not demo:
                     return OralWorkResult("waiting")
+                inspect_media_bytes(demo, suffix=".mp3", expected_type="audio")
                 stored = storage.put_object(
                     f"oral/voices/{lease.record_id}/attempt-{lease.attempt_count}-"
                     f"{lease.lease_token}/demo.mp3",
@@ -457,6 +464,7 @@ def perform_oral_work(
             if not result_url:
                 return OralWorkResult("failed", message="口播成片地址缺失")
             content = vendor.download(result_url)
+            inspect_media_bytes(content, suffix=".mp4", expected_type="video")
             stored = storage.put_object(
                 f"oral/results/{lease.record_id}/attempt-{lease.attempt_count}-"
                 f"{lease.lease_token}.mp4",
@@ -464,6 +472,12 @@ def perform_oral_work(
                 content_type="video/mp4",
             )
             return OralWorkResult("ready", stored=stored)
+    except MediaValidationFailed:
+        logger.warning("oral media validation failed: kind=%s", lease.kind)
+        return OralWorkResult("failed", message=_invalid_media_message(lease.kind))
+    except (MediaToolFailed, MediaToolUnavailable):
+        logger.warning("oral media validation unavailable: kind=%s", lease.kind)
+        return OralWorkResult("failed", message="媒体校验服务暂不可用，请稍后重试")
     except HiflySubmissionUncertain as exc:
         return OralWorkResult("uncertain", message=str(exc)[:500])
     except HiflyError as exc:
@@ -493,7 +507,13 @@ def _perform_submission(
     row = lease.row
     if lease.kind == "avatar_submit":
         content = _object_bytes(storage, str(row["source_storage_uri"]))
-        extension = "png" if str(row["source_kind"]) == "IMAGE" else "mp4"
+        image_source = str(row["source_kind"]) == "IMAGE"
+        extension = "png" if image_source else "mp4"
+        inspect_media_bytes(
+            content,
+            suffix=f".{extension}",
+            expected_type="image" if image_source else "video",
+        )
         target = vendor.create_upload_url(extension)
         vendor.upload_file(target, content)
         creator = (
@@ -505,6 +525,13 @@ def _perform_submission(
         return OralWorkResult("submitted", provider_task_id=task_id)
     if lease.kind == "voice_submit":
         content = _object_bytes(storage, str(row["source_storage_uri"]))
+        inspect_media_bytes(
+            content,
+            suffix=".mp3",
+            expected_type="audio",
+            min_duration_seconds=5,
+            max_duration_seconds=180,
+        )
         target = vendor.create_upload_url("mp3")
         vendor.upload_file(target, content)
         task_id = vendor.create_voice(title=str(row["title"])[:20], file_id=target.file_id)
@@ -520,6 +547,7 @@ def _perform_submission(
         )
     else:
         content = _object_bytes(storage, str(row["audio_storage_uri"]))
+        inspect_media_bytes(content, suffix=".mp3", expected_type="audio")
         target = vendor.create_upload_url("mp3")
         vendor.upload_file(target, content)
         task_id = vendor.create_video_by_audio(
@@ -529,6 +557,18 @@ def _perform_submission(
             aigc_flag=True,
         )
     return OralWorkResult("submitted", provider_task_id=task_id)
+
+
+def _invalid_media_message(kind: OralWorkKind) -> str:
+    if kind == "voice_poll":
+        return "声音克隆试听文件无效"
+    if kind == "task_archive":
+        return "口播成片文件无效"
+    if kind == "avatar_submit":
+        return "分身素材无法解码，请重新上传"
+    if kind == "voice_submit":
+        return "声音素材需为 5 至 180 秒的有效 MP3"
+    return "口播音频无法解码，请重新上传"
 
 
 def prepare_oral_work(conn: BusinessConnection, lease: OralWorkLease) -> OralWorkLease:
@@ -685,8 +725,11 @@ def finalize_oral_work(
                             lease.attempt_count,
                         ),
                     )
-                if cursor.rowcount == 1 and table == "oral_tasks" and not uncertain:
-                    finalize_oral_billing(conn, oral_task_id=lease.record_id)
+                if cursor.rowcount == 1 and table == "oral_tasks":
+                    if uncertain:
+                        release_oral_queue_slot(conn, oral_task_id=lease.record_id)
+                    else:
+                        finalize_oral_billing(conn, oral_task_id=lease.record_id)
             if cursor.rowcount != 1:
                 raise OralLeaseLostError("oral submission lease was lost")
             return
@@ -965,41 +1008,6 @@ def request_oral_archive_retry(
             )
             if acquired.rowcount != 1:
                 raise RuntimeError("oral archive retry queue slot was lost")
-    row = conn.execute(
-        "SELECT * FROM oral_tasks WHERE id = %s AND owner_user_id = %s",
-        (task_id, owner_user_id),
-    ).fetchone()
-    return dict(row)
-
-
-def request_oral_submission_retry(
-    conn: BusinessConnection,
-    *,
-    task_id: str,
-    owner_user_id: str,
-) -> dict[str, Any]:
-    """Requeue a submission-uncertain oral task for one more worker submit.
-
-    The frozen billing round intentionally stays open: the outstanding
-    RESERVE settles or releases exactly once when the retried submission
-    reaches a terminal outcome. A queue slot still held by the uncertain
-    finalize (provider answer lost after submission) is released here so the
-    per-user cursor can dispatch the task again.
-    """
-    with conn:
-        cursor = conn.execute(
-            """
-            UPDATE oral_tasks
-            SET status = 'QUEUED', submission_state = 'LOCAL_PENDING',
-                lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-                error_message = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s AND owner_user_id = %s AND status = 'SUBMISSION_UNCERTAIN'
-            """,
-            (task_id, owner_user_id),
-        )
-        if cursor.rowcount != 1:
-            raise ValueError("only a submission-uncertain oral task can be retried")
-        release_oral_queue_slot(conn, oral_task_id=task_id)
     row = conn.execute(
         "SELECT * FROM oral_tasks WHERE id = %s AND owner_user_id = %s",
         (task_id, owner_user_id),

@@ -29,8 +29,8 @@ from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
 from app.internal_billing import finalize_oral_billing, reserve_oral_billing
 from app.media_routes import get_media_storage, storage_for_asset
+from app.media_tools import inspect_media_bytes
 from app.permissions import require_asset_access, require_not_auditor, write_audit
-from app.settings import SettingsRepository
 from app.storage import StorageAdapter
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ MAX_ORAL_SCRIPT_CHARS = 10_000
 ORAL_SOURCE_MAX_BYTES = {
     "audio": 50 * 1024 * 1024,
     "image": 10 * 1024 * 1024,
-    "video": 500 * 1024 * 1024,
+    "video": 50 * 1024 * 1024,
 }
 ORAL_CONSENT_TEXT_VERSION = "2026-09-06-v1"
 ORAL_CONSENT_PURPOSES = {"AVATAR_CLONE", "VOICE_CLONE"}
@@ -64,11 +64,15 @@ class OralTaskNotFoundError(OralDomainError):
 def oral_unit_price_fen(conn: BusinessConnection) -> int:
     """Per-task list price for oral renders; admin-configurable via billing."""
     try:
-        billing = SettingsRepository(conn).read_billing_settings()
-    except Exception:  # noqa: BLE001 - pricing must never break task creation
+        row = conn.execute(
+            "SELECT oral_unit_price_fen FROM runtime_settings WHERE id = 1"
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - old databases keep the safe default
+        return ORAL_UNIT_PRICE_FEN_DEFAULT
+    if row is None:
         return ORAL_UNIT_PRICE_FEN_DEFAULT
     try:
-        price = int(billing.get("oral_unit_price_fen", ORAL_UNIT_PRICE_FEN_DEFAULT))
+        price = int(row["oral_unit_price_fen"])
     except (TypeError, ValueError):
         return ORAL_UNIT_PRICE_FEN_DEFAULT
     return price if price > 0 else ORAL_UNIT_PRICE_FEN_DEFAULT
@@ -589,6 +593,13 @@ def create_oral_task(
     idempotency_key: str,
     vendor: HiflyClient | None = None,
 ) -> OralTaskCreated:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.task.create",
+        entity_type="person_identity",
+        entity_id=identity_id,
+    )
     if mode not in {"TTS", "AUDIO"}:
         raise OralDomainError("口播模式不支持")
     if not title.strip():
@@ -867,6 +878,13 @@ def cancel_oral_task(
     task_id: str,
     actor: CurrentUser,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.task.cancel",
+        entity_type="oral_task",
+        entity_id=task_id,
+    )
     row = read_oral_task(conn, task_id=task_id, actor=actor)
     if str(row["status"]) == "CANCELLED":
         return row
@@ -901,6 +919,13 @@ def refresh_oral_task(
     actor: CurrentUser,
     vendor: HiflyClient,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.task.refresh",
+        entity_type="oral_task",
+        entity_id=task_id,
+    )
     row = _oral_task_row(conn, task_id)
     if row["owner_user_id"] != actor.id:
         raise OralDomainError("口播任务不存在")
@@ -967,6 +992,7 @@ def _archive_oral_result(
         return
     try:
         content = vendor.download(video_url)
+        inspect_media_bytes(content, suffix=".mp4", expected_type="video")
         storage: StorageAdapter = get_media_storage(conn)
         stored = storage.put_object(
             f"oral/results/{row['id']}.mp4", content, content_type="video/mp4"
@@ -1032,6 +1058,13 @@ def refresh_avatar_clone(
     actor: CurrentUser,
     vendor: HiflyClient,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.avatar.refresh",
+        entity_type="oral_avatar",
+        entity_id=avatar_id,
+    )
     row = conn.execute(
         "SELECT * FROM oral_avatars WHERE id = %s AND owner_user_id = %s",
         (avatar_id, actor.id),
@@ -1083,6 +1116,13 @@ def refresh_voice_clone(
     actor: CurrentUser,
     vendor: HiflyClient,
 ) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.voice.refresh",
+        entity_type="oral_voice",
+        entity_id=voice_id,
+    )
     row = conn.execute(
         "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s",
         (voice_id, actor.id),
@@ -1107,6 +1147,7 @@ def refresh_voice_clone(
                 if not demo_content:
                     logger.warning("oral voice demo download returned empty content")
                     return record
+                inspect_media_bytes(demo_content, suffix=".mp3", expected_type="audio")
                 storage = get_media_storage(conn)
                 stored = storage.put_object(
                     f"oral/voices/{voice_id}/demo.mp3",
@@ -1335,15 +1376,13 @@ def oral_price_quote(conn: BusinessConnection) -> dict[str, int]:
 
 
 def oral_task_available_actions(row: dict[str, Any]) -> list[str]:
-    """Retry hints for the customer task center, mirroring the route guards.
+    """Safe retry hints for the customer task center.
 
-    ``retry`` maps to POST /tasks/{id}/retry (submission-uncertain only);
     ``archive_retry`` maps to POST /tasks/{id}/archive-retry, which further
-    requires an archived provider result URL.
+    requires an archived provider result URL. Submission-uncertain work needs
+    provider evidence and manual reconciliation; it must never be re-posted.
     """
     status = str(row["status"])
-    if status == "SUBMISSION_UNCERTAIN":
-        return ["retry"]
     if status == "ARCHIVE_FAILED" and str(row.get("provider_result_url") or "").strip():
         return ["archive_retry"]
     return []

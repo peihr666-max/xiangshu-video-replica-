@@ -55,7 +55,6 @@ const api = vi.hoisted(() => ({
   readAnalysisPayload: vi.fn(),
   cancelGenerationBatch: vi.fn(),
   cancelOralTask: vi.fn(),
-  retryOralTask: vi.fn(),
   retryOralTaskArchive: vi.fn(),
   resolveMaterials: vi.fn(),
 }));
@@ -111,6 +110,7 @@ const person: SimpleLibraryEntry = {
   status: "PUBLISHED",
   contact_sheet_asset_id: "sheet-1",
   generation_source: "image_provider",
+  scene_look_count: 0,
   views: [
     { view_type: "FRONT_FACE", asset_id: "face-1" },
     { view_type: "FRONT_FULL", asset_id: "full-1" },
@@ -421,6 +421,25 @@ describe("真实 Studio 只读适配器", () => {
         text: "升级前文案",
       },
     });
+  });
+
+  it("恢复旧模板草稿时迁移到当前真实可用的标准口播", async () => {
+    api.getStudioDraft.mockResolvedValue({
+      draft_kind: "copy",
+      payload: {
+        ...createDraft(),
+        style: "template",
+        subtitles: true,
+      },
+      script_confirmed: false,
+      revision: 5,
+      updated_at: "2026-09-07T10:00:00+08:00",
+    });
+
+    const restored = await loadCloudDraft();
+
+    expect(restored?.draft.style).toBe("standard");
+    expect(restored?.draft.subtitles).toBe(true);
   });
 
   it("恢复云端草稿时批量解析其中的素材引用", async () => {
@@ -895,6 +914,7 @@ describe("真实 Studio 只读适配器", () => {
         identity_id: "person-1",
         title: "张工照片分身",
         status: "READY",
+        submission_state: "SUBMITTED",
         source_kind: "IMAGE",
         source_asset_id: "scene-asset-1",
         error_message: null,
@@ -908,6 +928,7 @@ describe("真实 Studio 只读适配器", () => {
         identity_id: "person-1",
         title: "张工本人音色",
         status: "READY",
+        submission_state: "SUBMITTED",
         source_asset_id: "voice-source-1",
         demo_asset_id: null,
         confirmed: 1,
@@ -1159,6 +1180,26 @@ describe("真实 Studio 只读适配器", () => {
     expect(result.errors).toEqual([]);
   });
 
+  it("场景形象照不静默截断人物已生成的造型", async () => {
+    api.listCharacterSceneLooks.mockResolvedValue(
+      Array.from({ length: 13 }, (_, index) => ({
+        identity_id: "person-1",
+        persona_id: `persona-scene-${index}`,
+        character_version_id: `version-scene-${index}`,
+        scene_name: `场景${index}`,
+        scene_description: "乡墅讲解",
+        costume_description: "商务休闲",
+        contact_sheet_asset_id: `scene-sheet-${index}`,
+        generation_source: "image_provider",
+        views: [{ view_type: "FRONT_FACE", asset_id: `scene-front-${index}` }],
+      })),
+    );
+
+    const result = await loadPersonAssets("person-1");
+
+    expect(result.assets).toHaveLength(13);
+  });
+
   it("场景预览签名失败仍保留资产身份并报告错误", async () => {
     api.listCharacterSceneLooks.mockResolvedValue([
       {
@@ -1312,8 +1353,8 @@ describe("批次类型映射与取消", () => {
     ["SUBMITTING", "queued", undefined],
     ["RUNNING", "running", undefined],
     ["ARCHIVING", "running", undefined],
-    ["SUBMISSION_UNCERTAIN", "uncertain", "retry"],
-    ["ARCHIVE_FAILED", "uncertain", "archive-retry"],
+    ["SUBMISSION_UNCERTAIN", "uncertain", undefined],
+    ["ARCHIVE_FAILED", "uncertain", undefined],
   ] as const)(
     "映射口播新状态 %s",
     async (backendStatus, status, retryAction) => {
@@ -1345,7 +1386,34 @@ describe("批次类型映射与取消", () => {
     },
   );
 
-  it("口播取消和重试按 backendKind/backendId 分派", async () => {
+  it("只在后端明确允许时映射口播归档重试", async () => {
+    api.listGenerationBatches.mockResolvedValue({ ...batchPage, items: [] });
+    api.listOralTasks.mockResolvedValue([
+      {
+        id: "oral-archive-retry",
+        status: "ARCHIVE_FAILED",
+        title: "归档失败",
+        mode: "TTS",
+        identity_id: "person-1",
+        avatar_id: "avatar-1",
+        voice_id: "voice-1",
+        script_text: "正文",
+        audio_asset_id: null,
+        result_asset_id: null,
+        duration_sec: null,
+        estimated_cost_fen: 100,
+        available_actions: ["archive_retry"],
+        created_at: "2026-09-06T09:00:00Z",
+        updated_at: "2026-09-06T09:01:00Z",
+      },
+    ] as OralTaskRecord[]);
+
+    const [task] = await reloadTasks(user);
+
+    expect(task.retryAction).toBe("archive-retry");
+  });
+
+  it("口播取消和归档重试按 backendKind/backendId 分派", async () => {
     const queuedOral: StudioTask = {
       id: "display-id-without-prefix",
       backendKind: "oral_task",
@@ -1368,9 +1436,7 @@ describe("批次类型映射与取消", () => {
     expect(api.cancelOralTask).toHaveBeenCalledWith("oral-real-id");
     expect(api.cancelGenerationBatch).not.toHaveBeenCalled();
 
-    await retryStudioTask({ ...queuedOral, retryAction: "retry" });
     await retryStudioTask({ ...queuedOral, retryAction: "archive-retry" });
-    expect(api.retryOralTask).toHaveBeenCalledWith("oral-real-id");
     expect(api.retryOralTaskArchive).toHaveBeenCalledWith("oral-real-id");
   });
 });

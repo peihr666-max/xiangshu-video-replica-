@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import cast
 
 import pytest
+from alembic import command
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.db import connect_database, initialize_database
+from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, HiflyTimeoutError
 from app.settings import (
@@ -151,13 +153,56 @@ def test_settings_migration_creates_tables_and_defaults(tmp_path: Path, settings
             """
         ).fetchone()
 
-    assert version == "080_viral_link_resolution_receipts"
+    assert version == "081_oral_unit_price"
     assert {"provider_settings", "runtime_settings"}.issubset(tables)
     assert dict(runtime) == {
         "max_generation_count_per_batch": 4,
         "max_concurrent_h3_tasks": 2,
         "active_storage_provider": "cos",
     }
+
+
+def test_oral_unit_price_migration_upgrades_downgrades_and_reupgrades(tmp_path: Path) -> None:
+    db_path = tmp_path / "oral-price-migration.db"
+    config = alembic_config(db_path)
+
+    command.upgrade(config, "076_studio_notification_preferences")
+    with connect_database(db_path) as conn:
+        assert "oral_unit_price_fen" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(runtime_settings)").fetchall()
+        }
+
+    command.upgrade(config, "head")
+    with connect_database(db_path) as conn:
+        assert (
+            conn.execute(
+                "SELECT oral_unit_price_fen FROM runtime_settings WHERE id = 1"
+            ).fetchone()[0]
+            == 1000
+        )
+        conn.execute("UPDATE runtime_settings SET oral_unit_price_fen = 1800 WHERE id = 1")
+        conn.commit()
+
+    command.downgrade(config, "076_studio_notification_preferences")
+    with connect_database(db_path) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "076_studio_notification_preferences"
+        )
+        assert "oral_unit_price_fen" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(runtime_settings)").fetchall()
+        }
+
+    command.upgrade(config, "head")
+    with connect_database(db_path) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "081_oral_unit_price"
+        )
+        assert (
+            conn.execute(
+                "SELECT oral_unit_price_fen FROM runtime_settings WHERE id = 1"
+            ).fetchone()[0]
+            == 1000
+        )
 
 
 def test_master_key_must_come_from_environment(
@@ -568,6 +613,91 @@ def test_admin_updates_settings_without_echoing_secret_or_authorization(
     assert "must-not-be-stored" not in audit_metadata
 
 
+def test_admin_can_reveal_one_saved_secret_without_cache_or_audit_leak(
+    client: TestClient,
+    conn: sqlite3.Connection,
+) -> None:
+    SettingsRepository(conn).save_provider_config(
+        "metaso",
+        {"api_key": "test-reveal-key"},
+        actor_user_id="admin_1",
+    )
+
+    response = client.post(
+        "/api/admin/settings/providers/metaso/secrets/api_key/reveal",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"value": "test-reveal-key"}
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+    audit = conn.execute(
+        """
+        SELECT action, metadata_json FROM audit_logs
+        WHERE action = 'provider_settings.secret_reveal'
+        ORDER BY created_at DESC LIMIT 1
+        """
+    ).fetchone()
+    assert audit is not None
+    assert json.loads(audit["metadata_json"]) == {
+        "field": "api_key",
+        "provider": "metaso",
+    }
+    assert "test-reveal-key" not in audit["metadata_json"]
+
+
+@pytest.mark.parametrize("user_id", ["employee_1", "auditor_1"])
+def test_non_admin_cannot_reveal_provider_secret(
+    client: TestClient,
+    conn: sqlite3.Connection,
+    user_id: str,
+) -> None:
+    SettingsRepository(conn).save_provider_config(
+        "metaso",
+        {"api_key": "test-reveal-key"},
+        actor_user_id="admin_1",
+    )
+
+    response = client.post(
+        "/api/admin/settings/providers/metaso/secrets/api_key/reveal",
+        headers={"X-Dev-User-Id": user_id},
+    )
+
+    assert response.status_code == 403
+    assert "test-reveal-key" not in response.text
+
+
+def test_provider_secret_reveal_rejects_non_secret_and_missing_fields(
+    client: TestClient,
+    conn: sqlite3.Connection,
+) -> None:
+    SettingsRepository(conn).save_provider_config(
+        "cos",
+        {
+            "access_key_id": "test-secret-id",
+            "secret_access_key": "test-secret-key",
+            "bucket": "test-bucket",
+            "region": "ap-shanghai",
+        },
+        actor_user_id="admin_1",
+    )
+
+    non_secret = client.post(
+        "/api/admin/settings/providers/cos/secrets/bucket/reveal",
+        headers=admin_headers(),
+    )
+    missing = client.post(
+        "/api/admin/settings/providers/cos/secrets/api_key/reveal",
+        headers=admin_headers(),
+    )
+
+    assert non_secret.status_code == 422
+    assert non_secret.json()["detail"]["code"] == "SETTINGS_FIELD_NOT_SECRET"
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "SETTINGS_SECRET_NOT_CONFIGURED"
+
+
 def test_admin_can_update_a_non_secret_field_without_reentering_a_saved_secret(
     client: TestClient,
     conn: sqlite3.Connection,
@@ -676,6 +806,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
         headers=admin_headers(),
         json={
             "internal_base_unit_price_fen": 1000,
+            "oral_unit_price_fen": 1800,
             "min_recharge_fen": 20000,
             "recharge_step_fen": 2000,
         },
@@ -685,6 +816,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
     assert initial.json()["billing"] == {
         "internal_base_unit_price_fen": 1000,
         "charged_unit_price_fen": 1000,
+        "oral_unit_price_fen": 1000,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
     }
@@ -692,6 +824,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
     assert updated.json() == {
         "internal_base_unit_price_fen": 1000,
         "charged_unit_price_fen": 1000,
+        "oral_unit_price_fen": 1800,
         "min_recharge_fen": 20000,
         "recharge_step_fen": 2000,
     }
@@ -701,6 +834,7 @@ def test_admin_can_read_and_update_internal_billing_settings(client: TestClient)
     ("field", "value"),
     [
         ("internal_base_unit_price_fen", True),
+        ("oral_unit_price_fen", 0),
         ("min_recharge_fen", "10000"),
         ("recharge_step_fen", 1000.0),
     ],
@@ -712,6 +846,7 @@ def test_billing_settings_api_rejects_coerced_integer_values(
 ) -> None:
     payload: dict[str, object] = {
         "internal_base_unit_price_fen": 1000,
+        "oral_unit_price_fen": 1000,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
     }

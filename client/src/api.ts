@@ -137,6 +137,7 @@ export type ControlWalletTransactionPage = {
 export type BillingSettings = {
   internal_base_unit_price_fen: number;
   charged_unit_price_fen: number;
+  oral_unit_price_fen: number;
   min_recharge_fen: number;
   recharge_step_fen: number;
 };
@@ -289,6 +290,7 @@ export type RuntimeSettings = {
 export type SettingsSnapshot = {
   providers: Record<ProviderName, ProviderSettings>;
   runtime: RuntimeSettings;
+  billing: BillingSettings;
 };
 
 export type DiagnosticProviderResult = {
@@ -943,6 +945,12 @@ export type OralAvatarRecord = {
   identity_id: string;
   title: string;
   status: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  submission_state:
+    | "LOCAL_PENDING"
+    | "SUBMITTING"
+    | "SUBMITTED"
+    | "SUBMISSION_UNKNOWN"
+    | "FAILED";
   source_kind: "VIDEO" | "IMAGE";
   source_asset_id: string;
   error_message: string | null;
@@ -955,6 +963,12 @@ export type OralVoiceRecord = {
   identity_id: string;
   title: string;
   status: "PENDING" | "RUNNING" | "READY" | "FAILED";
+  submission_state:
+    | "LOCAL_PENDING"
+    | "SUBMITTING"
+    | "SUBMITTED"
+    | "SUBMISSION_UNKNOWN"
+    | "FAILED";
   source_asset_id: string;
   demo_asset_id: string | null;
   confirmed: number | boolean;
@@ -1180,10 +1194,6 @@ export function cancelOralTask(taskId: string): Promise<OralTaskRecord> {
   return mutateOralTask(taskId, "cancel", "取消口播任务失败");
 }
 
-export function retryOralTask(taskId: string): Promise<OralTaskRecord> {
-  return mutateOralTask(taskId, "retry", "重试提交口播任务失败");
-}
-
 export function retryOralTaskArchive(taskId: string): Promise<OralTaskRecord> {
   return mutateOralTask(taskId, "archive-retry", "重试归档口播成片失败");
 }
@@ -1400,6 +1410,7 @@ export async function updateControlZPaySettings(input: {
 
 export async function updateControlBillingSettings(input: {
   internal_base_unit_price_fen: number;
+  oral_unit_price_fen: number;
   min_recharge_fen: number;
   recharge_step_fen: number;
 }): Promise<BillingSettings> {
@@ -2362,11 +2373,12 @@ export function uploadMaterial(
 
 export async function completeMaterialUpload(
   assetId: string,
+  signal?: AbortSignal,
 ): Promise<MaterialItem> {
   return requestApiJson<MaterialItem>(
     `/api/studio/materials/uploads/${encodeURIComponent(assetId)}/complete`,
     "完成素材上传失败",
-    { method: "POST" },
+    { method: "POST", signal },
     CLOUD_OP_TIMEOUT_MS,
   );
 }
@@ -2988,6 +3000,7 @@ export interface SimpleLibraryEntry {
   status: string;
   contact_sheet_asset_id: string | null;
   generation_source: "image_provider" | "local_placeholder" | null;
+  scene_look_count: number;
   views: SimpleCharacterView[];
 }
 
@@ -3992,6 +4005,18 @@ export async function updateProviderSettings(
   );
 }
 
+export async function revealProviderSecret(
+  provider: ProviderName,
+  field: string,
+): Promise<string> {
+  const result = await requestAdminJson<{ value: string }>(
+    `/api/admin/settings/providers/${provider}/secrets/${encodeURIComponent(field)}/reveal`,
+    "读取已保存密钥失败",
+    { method: "POST" },
+  );
+  return result.value;
+}
+
 export async function updateRuntimeSettings(
   runtime: RuntimeSettings,
 ): Promise<RuntimeSettings> {
@@ -3999,6 +4024,19 @@ export async function updateRuntimeSettings(
     "/api/admin/settings/runtime",
     "保存运行设置失败",
     { method: "PATCH", body: JSON.stringify(runtime) },
+  );
+}
+
+export async function updateBillingSettings(input: {
+  internal_base_unit_price_fen: number;
+  oral_unit_price_fen: number;
+  min_recharge_fen: number;
+  recharge_step_fen: number;
+}): Promise<BillingSettings> {
+  return requestAdminJson<BillingSettings>(
+    "/api/admin/settings/billing",
+    "保存口播价格失败",
+    { method: "PATCH", body: JSON.stringify(input) },
   );
 }
 
@@ -4421,6 +4459,10 @@ async function requestApi(
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const callerSignal = init.signal;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = new Headers(init.headers);
   const devUserId = getDevelopmentUserId();
   const customerOwnerAtStart =
@@ -4448,11 +4490,13 @@ async function requestApi(
     return response;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
+      if (callerSignal?.aborted) throw error;
       throw new Error("请求超时，请重试");
     }
     throw error;
   } finally {
     window.clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
 }
 

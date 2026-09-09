@@ -277,6 +277,7 @@ describe("V1.4 交接合同", () => {
     expect(routeFromHash("")).toBe("workbench");
     expect(routeFromHash("#projects")).toBe("replica");
     expect(routeFromHash("#studio/oral-audio")).toBe("oral-audio");
+    expect(routeFromHash("#settings")).toBe("settings");
     expect(routeFromHash("#admin")).toBe("workbench");
   });
   it("更换IP清除旧分身与声音并使报价失效", () => {

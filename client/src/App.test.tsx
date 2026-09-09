@@ -337,6 +337,12 @@ describe("App", () => {
       if (url.endsWith("/health")) {
         return Promise.resolve({ ok: true, json: async () => healthResponse });
       }
+      if (url.includes("/api/simple-characters/library")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [], next_cursor: null }),
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => [] });
     });
     vi.stubGlobal("fetch", withAuth(fetchMock, adminUser));
@@ -2053,6 +2059,13 @@ describe("App", () => {
         max_concurrent_h3_tasks: 2,
         active_storage_provider: "local",
       },
+      billing: {
+        internal_base_unit_price_fen: 1000,
+        charged_unit_price_fen: 1000,
+        oral_unit_price_fen: 1800,
+        min_recharge_fen: 10000,
+        recharge_step_fen: 1000,
+      },
     };
     const fetchMock = vi.fn((url: string) => {
       if (url.endsWith("/health")) {
@@ -2102,6 +2115,13 @@ describe("App", () => {
         max_generation_count_per_batch: 4,
         max_concurrent_h3_tasks: 2,
         active_storage_provider: "local",
+      },
+      billing: {
+        internal_base_unit_price_fen: 1000,
+        charged_unit_price_fen: 1000,
+        oral_unit_price_fen: 1800,
+        min_recharge_fen: 10000,
+        recharge_step_fen: 1000,
       },
     };
     let resolveRuntimeSave: ((response: unknown) => void) | undefined;
@@ -2156,7 +2176,7 @@ describe("App", () => {
     expect(apiKeyInput).toHaveAttribute("placeholder", "已保存，留空不修改");
     expect(apiKeyInput).toHaveAttribute("type", "password");
     fireEvent.click(screen.getAllByRole("button", { name: "显示API Key" })[0]);
-    expect(apiKeyInput).toHaveAttribute("type", "text");
+    await waitFor(() => expect(apiKeyInput).toHaveAttribute("type", "text"));
     fireEvent.click(screen.getAllByRole("button", { name: "隐藏API Key" })[0]);
     expect(apiKeyInput).toHaveAttribute("type", "password");
     expect(screen.getByText("模型服务")).toBeInTheDocument();

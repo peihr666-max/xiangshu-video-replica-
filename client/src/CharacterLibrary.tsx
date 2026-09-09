@@ -15,7 +15,7 @@ import {
   getLatestCharacterSheetTask,
   getLatestSceneLookTask,
   listCharacterSceneLooks,
-  listSimpleCharacterLibrary,
+  listSimpleCharacterLibraryPage,
   regenerateContactSheet,
   renamePersonIdentity,
   type SimpleCharacterView,
@@ -35,6 +35,7 @@ const VIEW_LABELS: Record<CharacterViewType, string> = {
   LEFT_SIDE: "左侧面",
   RIGHT_SIDE: "右侧面",
 };
+const CHARACTER_PAGE_SIZE = 12;
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -86,11 +87,15 @@ export function CharacterLibrary({
   userId,
   initialIdentityId,
   initialTab = "base",
+  onChanged,
+  onOpenProfile,
 }: {
   userRole: UserRole;
   userId: string;
   initialIdentityId?: string;
   initialTab?: "base" | "scenes";
+  onChanged?: () => void;
+  onOpenProfile?: (identityId: string) => void;
 }) {
   const canManage = userRole !== "auditor";
   const [entries, setEntries] = useState<SimpleLibraryEntry[]>([]);
@@ -111,6 +116,12 @@ export function CharacterLibrary({
   const [busyDeleteId, setBusyDeleteId] = useState("");
   const [busyRegenerateId, setBusyRegenerateId] = useState("");
   const [lightboxId, setLightboxId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const libraryRequestIdRef = useRef(0);
+  const normalizedQuery = searchQuery.trim();
+  const shownAssetKey = entries.flatMap(entryAssetIds).join("\n");
 
   const loadPreviewUrls = useCallback(
     async (assetIds: string[], retry = false) => {
@@ -157,22 +168,73 @@ export function CharacterLibrary({
   }, []);
 
   const loadLibrary = useCallback(async () => {
+    const requestId = ++libraryRequestIdRef.current;
     setIsLoading(true);
+    setIsLoadingMore(false);
     try {
-      const result = await listSimpleCharacterLibrary();
-      const visibleEntries =
+      const result = await listSimpleCharacterLibraryPage({
+        limit: CHARACTER_PAGE_SIZE,
+        query: normalizedQuery,
+      });
+      if (requestId !== libraryRequestIdRef.current) {
+        return;
+      }
+      const ownedEntries =
         userRole === "admin" || userRole === "auditor"
-          ? result
-          : result.filter((entry) => entry.owner_user_id === userId);
-      setEntries(visibleEntries);
+          ? result.items
+          : result.items.filter((entry) => entry.owner_user_id === userId);
+      setEntries(ownedEntries);
+      setNextCursor(result.next_cursor);
       setError("");
-      void loadPreviewUrls(visibleEntries.flatMap(entryAssetIds));
     } catch (loadError) {
-      setError(errorMessage(loadError, "人物库暂不可用，请重试。"));
+      if (requestId === libraryRequestIdRef.current) {
+        setError(errorMessage(loadError, "人物库暂不可用，请重试。"));
+      }
     } finally {
-      setIsLoading(false);
+      if (requestId === libraryRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
-  }, [loadPreviewUrls, userId, userRole]);
+  }, [normalizedQuery, userId, userRole]);
+
+  async function loadMoreCharacters() {
+    if (!nextCursor || isLoadingMore) {
+      return;
+    }
+    const requestId = ++libraryRequestIdRef.current;
+    setIsLoadingMore(true);
+    try {
+      const result = await listSimpleCharacterLibraryPage({
+        limit: CHARACTER_PAGE_SIZE,
+        cursor: nextCursor,
+        query: normalizedQuery,
+      });
+      if (requestId !== libraryRequestIdRef.current) {
+        return;
+      }
+      const allowedItems =
+        userRole === "admin" || userRole === "auditor"
+          ? result.items
+          : result.items.filter((entry) => entry.owner_user_id === userId);
+      setEntries((current) => {
+        const knownIds = new Set(current.map((entry) => entry.identity_id));
+        return [
+          ...current,
+          ...allowedItems.filter((entry) => !knownIds.has(entry.identity_id)),
+        ];
+      });
+      setNextCursor(result.next_cursor);
+      setError("");
+    } catch (loadError) {
+      if (requestId === libraryRequestIdRef.current) {
+        setError(errorMessage(loadError, "加载更多人物失败，请重试。"));
+      }
+    } finally {
+      if (requestId === libraryRequestIdRef.current) {
+        setIsLoadingMore(false);
+      }
+    }
+  }
 
   const releasePendingPreview = useCallback(() => {
     if (pendingPreviewUrlRef.current) {
@@ -201,6 +263,12 @@ export function CharacterLibrary({
   useEffect(() => {
     void loadLibrary();
   }, [loadLibrary]);
+
+  useEffect(() => {
+    if (shownAssetKey) {
+      void loadPreviewUrls(shownAssetKey.split("\n"));
+    }
+  }, [loadPreviewUrls, shownAssetKey]);
 
   useEffect(() => {
     if (
@@ -315,12 +383,17 @@ export function CharacterLibrary({
 
   // 上传成功后立刻把新人物置顶展示，无需等待整表刷新。
   function handleCreated(newEntry: SimpleLibraryEntry) {
+    // A slower initial/search request must not erase the newly created card.
+    libraryRequestIdRef.current += 1;
+    setIsLoading(false);
+    setIsLoadingMore(false);
     clearPendingGeneration();
     setEntries((current) => [
       newEntry,
       ...current.filter((item) => item.identity_id !== newEntry.identity_id),
     ]);
     void loadPreviewUrls(entryAssetIds(newEntry));
+    onChanged?.();
   }
 
   function viewFileName(entryName: string, view: SimpleCharacterView): string {
@@ -410,6 +483,7 @@ export function CharacterLibrary({
         `人物“${entry.display_name}”的五视图已重新生成（V${result.version_number}）。`,
       );
       await loadLibrary();
+      onChanged?.();
     } catch (regenerateError) {
       setError(
         errorMessage(regenerateError, "重新生成五视图失败，请稍后重试。"),
@@ -434,6 +508,7 @@ export function CharacterLibrary({
         current.filter((item) => item.identity_id !== entry.identity_id),
       );
       setMessage(`人物“${entry.display_name}”已删除。`);
+      onChanged?.();
     } catch (deleteError) {
       setError(errorMessage(deleteError, "删除人物失败，请稍后重试。"));
     } finally {
@@ -476,6 +551,7 @@ export function CharacterLibrary({
         ),
       );
       setMessage(`人物名称已更新为“${updated.display_name}”。`);
+      onChanged?.();
       cancelRename();
     } catch (renameError) {
       setError(errorMessage(renameError, "修改人物名称失败，请重试。"));
@@ -508,6 +584,7 @@ export function CharacterLibrary({
               status: "ACTIVE",
               contact_sheet_asset_id: result.contact_sheet_asset_id,
               generation_source: result.generation_source,
+              scene_look_count: 0,
               views: result.views,
             })
           }
@@ -533,143 +610,184 @@ export function CharacterLibrary({
         </div>
       ) : null}
       {message ? <p className="setup-success">{message}</p> : null}
+      {entries.length > 0 || normalizedQuery ? (
+        <div className="character-library-search">
+          <input
+            aria-label="搜索人物"
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="搜索人物名称、角色或服务范围"
+            type="search"
+            value={searchQuery}
+          />
+          <span>
+            {normalizedQuery
+              ? `已找到 ${entries.length} 位人物`
+              : `已加载 ${entries.length} 位人物`}
+          </span>
+        </div>
+      ) : null}
       {isLoading && !pendingCharacter ? (
         <p className="status-note">正在读取人物库…</p>
+      ) : entries.length === 0 && normalizedQuery && !pendingCharacter ? (
+        <p className="status-note">未找到匹配人物，请更换搜索词。</p>
       ) : entries.length === 0 && !pendingCharacter ? (
         <p className="status-note">还没有人物，上传一张图片开始创建。</p>
       ) : (
-        <ul className="character-preview-list">
-          {pendingCharacter ? (
-            <PendingCharacterCard
-              character={pendingCharacter}
-              onClear={clearPendingGeneration}
-            />
-          ) : null}
-          {entries.map((entry) => {
-            const isEditing = editingId === entry.identity_id;
-            const isRenaming = busyRenameId === entry.identity_id;
-            const cover = coverAsset(entry);
-            const coverUrl = cover ? previewUrls[cover.assetId] : undefined;
-            const coverStatus = cover
-              ? (previewStatuses[cover.assetId] ?? "loading")
-              : "error";
-            return (
-              <li className="character-preview-card" key={entry.identity_id}>
-                <button
-                  aria-label={`查看人物 ${entry.display_name} 大图`}
-                  className="character-preview-card__cover"
-                  disabled={coverStatus === "loading"}
-                  onClick={() => {
-                    if (cover && coverStatus === "error") {
-                      void loadPreviewUrls([cover.assetId], true);
-                      return;
-                    }
-                    setLightboxId(entry.identity_id);
-                  }}
-                  type="button"
-                >
-                  {coverUrl && cover && coverStatus === "ready" ? (
-                    <img
-                      alt={`${entry.display_name} ${cover.label}`}
-                      loading="lazy"
-                      onError={() => markPreviewError(cover.assetId)}
-                      src={coverUrl}
-                    />
-                  ) : coverStatus === "error" ? (
-                    <span className="source-frame-placeholder source-frame-placeholder--error">
-                      <strong>预览加载失败</strong>
-                      <small>点击重新加载</small>
-                    </span>
-                  ) : (
-                    <span className="source-frame-placeholder">
-                      预览加载中…
-                    </span>
-                  )}
-                </button>
-                <div className="character-preview-card__body">
-                  {isEditing ? (
-                    <div className="character-preview-card__edit">
-                      <input
-                        aria-label="修改人物名称"
-                        onChange={(event) => setEditingName(event.target.value)}
-                        type="text"
-                        value={editingName}
+        <>
+          <ul className="character-preview-list">
+            {pendingCharacter ? (
+              <PendingCharacterCard
+                character={pendingCharacter}
+                onClear={clearPendingGeneration}
+              />
+            ) : null}
+            {entries.map((entry) => {
+              const isEditing = editingId === entry.identity_id;
+              const isRenaming = busyRenameId === entry.identity_id;
+              const cover = coverAsset(entry);
+              const coverUrl = cover ? previewUrls[cover.assetId] : undefined;
+              const coverStatus = cover
+                ? (previewStatuses[cover.assetId] ?? "loading")
+                : "error";
+              return (
+                <li className="character-preview-card" key={entry.identity_id}>
+                  <button
+                    aria-label={`查看人物 ${entry.display_name} 大图`}
+                    className="character-preview-card__cover"
+                    onClick={() => {
+                      if (cover && coverStatus === "error") {
+                        void loadPreviewUrls([cover.assetId], true);
+                        return;
+                      }
+                      setLightboxId(entry.identity_id);
+                    }}
+                    type="button"
+                  >
+                    {coverUrl && cover && coverStatus === "ready" ? (
+                      <img
+                        alt={`${entry.display_name} ${cover.label}`}
+                        loading="lazy"
+                        onError={() => markPreviewError(cover.assetId)}
+                        src={coverUrl}
                       />
-                      <button
-                        disabled={isRenaming}
-                        onClick={() => void saveRename(entry)}
-                        type="button"
-                      >
-                        {isRenaming ? "正在保存…" : "保存名称"}
-                      </button>
-                      <button
-                        className="secondary-button"
-                        disabled={isRenaming}
-                        onClick={cancelRename}
-                        type="button"
-                      >
-                        取消
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="character-preview-card__title">
-                        <span className="character-preview-card__name">
-                          {entry.display_name}
-                        </span>
-                        {entry.status === "ARCHIVED" ? (
-                          <span className="status-badge">已归档</span>
-                        ) : null}
-                        {entry.generation_source === "local_placeholder" ? (
-                          <span className="status-badge status-badge--warning">
-                            本地占位结果
+                    ) : coverStatus === "error" ? (
+                      <span className="source-frame-placeholder source-frame-placeholder--error">
+                        <strong>预览加载失败</strong>
+                        <small>点击重新加载</small>
+                      </span>
+                    ) : (
+                      <span className="source-frame-placeholder">
+                        预览加载中…
+                      </span>
+                    )}
+                  </button>
+                  <div className="character-preview-card__body">
+                    {isEditing ? (
+                      <div className="character-preview-card__edit">
+                        <input
+                          aria-label="修改人物名称"
+                          onChange={(event) =>
+                            setEditingName(event.target.value)
+                          }
+                          type="text"
+                          value={editingName}
+                        />
+                        <button
+                          disabled={isRenaming}
+                          onClick={() => void saveRename(entry)}
+                          type="button"
+                        >
+                          {isRenaming ? "正在保存…" : "保存名称"}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={isRenaming}
+                          onClick={cancelRename}
+                          type="button"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="character-preview-card__title">
+                          <span className="character-preview-card__name">
+                            {entry.display_name}
                           </span>
-                        ) : null}
-                      </div>
-                      <div className="character-preview-card__actions">
-                        {canRename(entry) ? (
-                          <button
-                            className="secondary-button"
-                            onClick={() => startRename(entry)}
-                            type="button"
-                          >
-                            改名
-                          </button>
-                        ) : null}
-                        {canRename(entry) ? (
-                          <button
-                            aria-label={`重新生成人物 ${entry.display_name} 的五视图`}
-                            className="secondary-button"
-                            disabled={busyRegenerateId !== ""}
-                            onClick={() => void handleRegenerate(entry)}
-                            type="button"
-                          >
-                            {busyRegenerateId === entry.identity_id
-                              ? "正在重新生成…"
-                              : "重新生成五视图"}
-                          </button>
-                        ) : null}
-                        {canDelete(entry) ? (
-                          <button
-                            aria-label={`删除人物 ${entry.display_name}`}
-                            className="secondary-button"
-                            disabled={busyDeleteId !== ""}
-                            onClick={() => void handleDelete(entry)}
-                            type="button"
-                          >
-                            {busyDeleteId === entry.identity_id
-                              ? "正在删除…"
-                              : "删除"}
-                          </button>
-                        ) : null}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                          {entry.status === "ARCHIVED" ? (
+                            <span className="status-badge">已归档</span>
+                          ) : null}
+                          {entry.generation_source === "local_placeholder" ? (
+                            <span className="status-badge status-badge--warning">
+                              本地占位结果
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="character-preview-card__actions">
+                          {onOpenProfile ? (
+                            <button
+                              className="secondary-button"
+                              onClick={() => onOpenProfile(entry.identity_id)}
+                              type="button"
+                            >
+                              完整档案
+                            </button>
+                          ) : null}
+                          {canRename(entry) ? (
+                            <button
+                              className="secondary-button"
+                              onClick={() => startRename(entry)}
+                              type="button"
+                            >
+                              改名
+                            </button>
+                          ) : null}
+                          {canRename(entry) ? (
+                            <button
+                              aria-label={`重新生成人物 ${entry.display_name} 的五视图`}
+                              className="secondary-button"
+                              disabled={busyRegenerateId !== ""}
+                              onClick={() => void handleRegenerate(entry)}
+                              type="button"
+                            >
+                              {busyRegenerateId === entry.identity_id
+                                ? "正在重新生成…"
+                                : "重新生成五视图"}
+                            </button>
+                          ) : null}
+                          {canDelete(entry) ? (
+                            <button
+                              aria-label={`删除人物 ${entry.display_name}`}
+                              className="secondary-button"
+                              disabled={busyDeleteId !== ""}
+                              onClick={() => void handleDelete(entry)}
+                              type="button"
+                            >
+                              {busyDeleteId === entry.identity_id
+                                ? "正在删除…"
+                                : "删除"}
+                            </button>
+                          ) : null}
+                        </div>
+                        <small>场景造型 {entry.scene_look_count} 套</small>
+                      </>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {nextCursor ? (
+            <button
+              className="secondary-button"
+              disabled={isLoadingMore}
+              onClick={() => void loadMoreCharacters()}
+              type="button"
+            >
+              {isLoadingMore ? "正在加载…" : "加载更多人物"}
+            </button>
+          ) : null}
+        </>
       )}
       {lightboxEntry ? (
         <CharacterLightbox
@@ -682,6 +800,7 @@ export function CharacterLibrary({
           onDownloadView={handleDownloadView}
           onDownloadAll={handleDownloadAll}
           onLoadPreviewUrls={loadPreviewUrls}
+          onSceneCreated={onChanged}
           previewUrls={previewUrls}
         />
       ) : null}
@@ -761,6 +880,7 @@ function CharacterLightbox({
   onDownloadView,
   onDownloadAll,
   onLoadPreviewUrls,
+  onSceneCreated,
   previewUrls,
 }: {
   busyDownloadKey: string;
@@ -775,6 +895,7 @@ function CharacterLightbox({
   ) => Promise<void>;
   onDownloadAll: (entry: SimpleLibraryEntry) => Promise<void>;
   onLoadPreviewUrls: (assetIds: string[]) => Promise<void>;
+  onSceneCreated?: () => void;
   previewUrls: Record<string, string>;
 }) {
   const [activeTab, setActiveTab] = useState<"base" | "scenes">(initialTab);
@@ -889,6 +1010,7 @@ function CharacterLightbox({
       setSceneDescription("");
       setCostumeDescription("");
       setSceneFormOpen(false);
+      onSceneCreated?.();
     } catch (createError) {
       setSceneError(errorMessage(createError, "场景造型生成失败，请重试。"));
     } finally {

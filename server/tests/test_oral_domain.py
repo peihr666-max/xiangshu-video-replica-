@@ -9,8 +9,10 @@ network or real buckets.
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.auth import CurrentUser, get_current_user, get_database
+from app.character_image_generation import deterministic_png
 from app.customer_fence import get_business_db
 from app.db import initialize_database
 from app.db_portable import BusinessConnection
@@ -32,6 +35,7 @@ from app.internal_billing import (
     reconcile_oral_billing_by_evidence,
 )
 from app.main import app
+from app.media_tools import resolve_media_binary
 from app.oral import (
     ORAL_CONSENT_TEXT_VERSION,
     ORAL_UNIT_PRICE_FEN_DEFAULT,
@@ -42,34 +46,51 @@ from app.oral import (
     create_oral_consent,
     create_oral_task,
     list_oral_consents,
+    oral_price_quote,
     oral_unit_price_fen,
+    refresh_avatar_clone,
     refresh_oral_task,
+    refresh_voice_clone,
     start_avatar_clone,
     start_voice_clone,
 )
 from app.oral_routes import get_oral_vendor
 from app.oral_worker import (
     OralLeaseLostError,
+    OralWorkLease,
+    OralWorkResult,
     claim_oral_work,
     discard_uncommitted_oral_asset,
     finalize_oral_work,
     perform_oral_work,
     prepare_oral_work,
     request_oral_archive_retry,
-    request_oral_submission_retry,
 )
 from app.storage import StoredObject
 
 _NOW = "2026-09-06 03:00:00"
 
 
+@dataclass(frozen=True)
+class OralTestMedia:
+    image: bytes
+    audio: bytes
+    video: bytes
+
+
 class FakeSourceStorage:
-    def __init__(self, payload: bytes = b"FAKEMEDIA") -> None:
-        self.payload = payload
+    def __init__(self, media: OralTestMedia) -> None:
+        self.media = media
         self.objects: dict[str, bytes] = {}
 
     def get_object(self, key: str) -> bytes:
-        return self.objects.get(key, self.payload)
+        if key in self.objects:
+            return self.objects[key]
+        if key.endswith(".png"):
+            return self.media.image
+        if key.endswith(".mp3"):
+            return self.media.audio
+        return self.media.video
 
     def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject:
         self.objects[key] = content
@@ -104,9 +125,63 @@ def run_oral_worker_step(
     return result
 
 
+@pytest.fixture(scope="session")
+def oral_test_media(tmp_path_factory: pytest.TempPathFactory) -> OralTestMedia:
+    directory = tmp_path_factory.mktemp("oral-media")
+    audio_path = directory / "voice.mp3"
+    video_path = directory / "avatar.mp4"
+    ffmpeg = resolve_media_binary("ffmpeg")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=16000:cl=mono",
+            "-t",
+            "6",
+            "-codec:a",
+            "mp3",
+            str(audio_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=64x64:r=10",
+            "-t",
+            "1",
+            "-codec:v",
+            "mpeg4",
+            "-pix_fmt",
+            "yuv420p",
+            str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return OralTestMedia(
+        image=deterministic_png(b"oral-source"),
+        audio=audio_path.read_bytes(),
+        video=video_path.read_bytes(),
+    )
+
+
 @pytest.fixture()
-def fake_source_storage(monkeypatch: pytest.MonkeyPatch) -> FakeSourceStorage:
-    storage = FakeSourceStorage()
+def fake_source_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    oral_test_media: OralTestMedia,
+) -> FakeSourceStorage:
+    storage = FakeSourceStorage(oral_test_media)
     monkeypatch.setattr("app.oral.storage_for_asset", lambda _conn, _uri: storage)
     return storage
 
@@ -333,6 +408,147 @@ def test_consent_read_keeps_foreign_and_missing_identity_indistinguishable(
         list_oral_consents(conn, actor=actor("employee_2"), identity_id="missing")
 
     assert str(foreign.value) == str(missing.value)
+
+
+def test_auditor_is_denied_from_every_oral_write_service(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-auditor-write-denial.db")
+    vendor, _ = make_vendor()
+    auditor = actor("auditor_1", "auditor")
+    operations: list[tuple[str, Callable[[], object]]] = [
+        (
+            "oral.consent.create",
+            lambda: create_oral_consent(
+                conn,
+                actor=auditor,
+                identity_id="ident-1",
+                source_asset_id="asset-audio",
+                purpose="VOICE_CLONE",
+                consent_text_version=ORAL_CONSENT_TEXT_VERSION,
+            ),
+        ),
+        (
+            "oral.avatar.create",
+            lambda: start_avatar_clone(
+                conn,
+                actor=auditor,
+                identity_id="ident-1",
+                title="auditor avatar",
+                source_asset_id="asset-image",
+                source_kind="IMAGE",
+                consent_id="missing",
+                idempotency_key="auditor-avatar",
+            ),
+        ),
+        (
+            "oral.voice.create",
+            lambda: start_voice_clone(
+                conn,
+                actor=auditor,
+                identity_id="ident-1",
+                title="auditor voice",
+                source_asset_id="asset-audio",
+                consent_id="missing",
+                idempotency_key="auditor-voice",
+            ),
+        ),
+        (
+            "oral.task.create",
+            lambda: create_oral_task(
+                conn,
+                actor=auditor,
+                identity_id="ident-1",
+                avatar_id="missing",
+                voice_id=None,
+                mode="AUDIO",
+                title="auditor oral",
+                script_text=None,
+                audio_asset_id="asset-audio",
+                subtitle=None,
+                idempotency_key="auditor-oral-task",
+            ),
+        ),
+        (
+            "oral.task.cancel",
+            lambda: cancel_oral_task(conn, task_id="missing", actor=auditor),
+        ),
+        (
+            "oral.task.refresh",
+            lambda: refresh_oral_task(
+                conn,
+                task_id="missing",
+                actor=auditor,
+                vendor=vendor,
+            ),
+        ),
+        (
+            "oral.avatar.refresh",
+            lambda: refresh_avatar_clone(
+                conn,
+                avatar_id="missing",
+                actor=auditor,
+                vendor=vendor,
+            ),
+        ),
+        (
+            "oral.voice.refresh",
+            lambda: refresh_voice_clone(
+                conn,
+                voice_id="missing",
+                actor=auditor,
+                vendor=vendor,
+            ),
+        ),
+        (
+            "oral.voice.confirm",
+            lambda: confirm_voice_clone(conn, voice_id="missing", actor=auditor),
+        ),
+    ]
+
+    for _expected_action, operation in operations:
+        with pytest.raises(HTTPException) as denied:
+            operation()
+        assert denied.value.status_code == 403
+        assert denied.value.detail["code"] == "ROLE_FORBIDDEN"
+    audited_actions = {
+        json.loads(str(row["metadata_json"]))["attempted_action"]
+        for row in conn.execute(
+            """
+            SELECT metadata_json FROM audit_logs
+            WHERE actor_user_id = 'auditor_1' AND action = 'security.role_denied'
+            """
+        ).fetchall()
+    }
+    assert audited_actions == {action for action, _operation in operations}
+
+
+def test_auditor_cannot_request_oral_archive_retry(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-auditor-archive-retry.db")
+
+    class TestBusinessDb:
+        @contextmanager
+        def write(self) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+            yield conn, actor("auditor_1", "auditor")
+
+    app.dependency_overrides[get_business_db] = TestBusinessDb
+    try:
+        response = TestClient(app).post("/api/oral/tasks/missing/archive-retry")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "ROLE_FORBIDDEN"
+    audit = conn.execute(
+        """
+        SELECT metadata_json FROM audit_logs
+        WHERE actor_user_id = 'auditor_1' AND action = 'security.role_denied'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    assert audit is not None
+    assert json.loads(str(audit["metadata_json"]))["attempted_action"] == (
+        "oral.task.archive_retry"
+    )
 
 
 def test_auditor_cannot_write_oral_biometrics_even_as_resource_owner(
@@ -1035,7 +1251,11 @@ def test_voice_clone_ready_requires_explicit_confirmation(
             }
         ),
     )
-    transport.on("GET", "https://tmp.example/voice-demo.mp3", b"MP3DEMO")
+    transport.on(
+        "GET",
+        "https://tmp.example/voice-demo.mp3",
+        fake_source_storage.media.audio,
+    )
 
     started = start_voice_clone(
         conn,
@@ -1068,6 +1288,39 @@ def test_voice_clone_ready_requires_explicit_confirmation(
     ).fetchone()
     assert audit is not None
     assert audit["action"] == "oral.voice.confirm"
+
+
+def test_voice_clone_rejects_undecodable_audio_before_provider_submission(
+    tmp_path: Path,
+    fake_source_storage: FakeSourceStorage,
+) -> None:
+    conn = seed_scene(tmp_path, "oral-voice-invalid-media.db")
+    vendor, transport = make_vendor()
+    fake_source_storage.objects["v.mp3"] = b"ID3-not-a-decodable-audio-file"
+    started = start_voice_clone(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        title="伪音频",
+        source_asset_id="asset-audio",
+        consent_id=consent_for(conn, purpose="VOICE_CLONE", source_asset_id="asset-audio"),
+        idempotency_key="voice-invalid-media-key",
+        vendor=vendor,
+    )
+
+    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+
+    assert result is not None and result.outcome == "failed"
+    persisted = conn.execute(
+        "SELECT status, submission_state, error_message FROM oral_voices WHERE id = %s",
+        (started.task_id,),
+    ).fetchone()
+    assert tuple(persisted) == (
+        "FAILED",
+        "FAILED",
+        "声音素材需为 5 至 180 秒的有效 MP3",
+    )
+    assert transport.calls == []
 
 
 def test_voice_clone_done_without_demo_stays_running(
@@ -1738,7 +1991,9 @@ def test_audio_without_explicit_purpose_is_rejected(
 
 
 def test_refresh_oral_task_archives_result_asset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_source_storage: FakeSourceStorage,
 ) -> None:
     conn = seed_scene(tmp_path, "oral-refresh.db")
     avatar_id, voice_id = seed_ready_assets(conn)
@@ -1775,7 +2030,7 @@ def test_refresh_oral_task_archives_result_asset(
         "/api/v2/hifly/video/task",
         envelope({"status": 3, "video_Url": "https://tmp.example/v.mp4", "duration": 32}),
     )
-    transport.on("GET", "https://tmp.example/v.mp4", b"MP4BYTES")
+    transport.on("GET", "https://tmp.example/v.mp4", fake_source_storage.media.video)
 
     class FakeResultStorage:
         def put_object(self, key: str, content: bytes, *, content_type: str):
@@ -1901,6 +2156,107 @@ def test_oral_task_uncertain_submission_freezes_credit_and_never_retries(
     assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
 
 
+def test_uncertain_submit_releases_slot_only_after_successful_cas(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-uncertain-slot.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="不确定提交释放槽位",
+        script_text="保留冻结金额但释放执行容量。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-worker-uncertain-slot-key",
+    )
+    lease = claim_oral_work(conn, worker_id="uncertain-slot-worker")
+    assert lease is not None and lease.kind == "task_submit"
+    conn.execute(
+        "UPDATE oral_tasks SET queue_slot_acquired = 1 WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+
+    finalize_oral_work(
+        conn,
+        lease=lease,
+        result=OralWorkResult(outcome="uncertain", message="provider response unknown"),
+    )
+    row = conn.execute(
+        "SELECT status, submission_state, provider_charge_state, queue_slot_acquired "
+        "FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("SUBMISSION_UNCERTAIN", "SUBMISSION_UNKNOWN", "UNKNOWN", 0)
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (19, 1)
+    transactions = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY created_at, id",
+        (created.task_id,),
+    ).fetchall()
+    assert [entry["type"] for entry in transactions] == ["RESERVE"]
+
+
+def test_uncertain_submit_lease_loss_does_not_release_winner_slot(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-uncertain-lease-lost.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="旧租约不得释放赢家槽位",
+        script_text="CAS 失败必须无副作用。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-worker-uncertain-lease-lost-key",
+    )
+    lease = claim_oral_work(conn, worker_id="stale-worker")
+    assert lease is not None and lease.kind == "task_submit"
+    conn.execute(
+        "UPDATE oral_tasks SET lease_owner = 'winner-token', queue_slot_acquired = 1 WHERE id = %s",
+        (created.task_id,),
+    )
+    conn.commit()
+
+    with pytest.raises(OralLeaseLostError):
+        finalize_oral_work(
+            conn,
+            lease=OralWorkLease(
+                kind=lease.kind,
+                record_id=lease.record_id,
+                worker_id=lease.worker_id,
+                lease_token=lease.lease_token,
+                attempt_count=lease.attempt_count,
+                row=lease.row,
+            ),
+            result=OralWorkResult(outcome="uncertain", message="stale result"),
+        )
+    row = conn.execute(
+        "SELECT status, lease_owner, queue_slot_acquired FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(row) == ("SUBMITTING", "winner-token", 1)
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (19, 1)
+    transactions = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY created_at, id",
+        (created.task_id,),
+    ).fetchall()
+    assert [entry["type"] for entry in transactions] == ["RESERVE"]
+
+
 def test_dangling_oral_reservation_reconciles_only_known_not_charged_failure(
     tmp_path: Path, fake_source_storage: FakeSourceStorage
 ) -> None:
@@ -1939,6 +2295,34 @@ def test_dangling_oral_reservation_reconciles_only_known_not_charged_failure(
 def test_oral_unit_price_defaults_and_reads_settings(tmp_path: Path) -> None:
     conn = seed_scene(tmp_path, "oral-price.db")
     assert oral_unit_price_fen(conn) == ORAL_UNIT_PRICE_FEN_DEFAULT == 1000
+    conn.execute("UPDATE runtime_settings SET oral_unit_price_fen = %s WHERE id = 1", (1800,))
+    conn.commit()
+
+    assert oral_unit_price_fen(conn) == 1800
+
+
+def test_oral_task_snapshots_configured_unit_price(tmp_path: Path) -> None:
+    conn = seed_scene(tmp_path, "oral-price-snapshot.db")
+    seed_ready_assets(conn)
+    conn.execute("UPDATE runtime_settings SET oral_unit_price_fen = %s WHERE id = 1", (1800,))
+    conn.commit()
+
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id="avatar-ready",
+        voice_id="voice-ready",
+        mode="TTS",
+        title="价格快照",
+        script_text="测试口播价格快照",
+        audio_asset_id=None,
+        subtitle={"enabled": True},
+        idempotency_key="oral-price-snapshot-key",
+    )
+
+    assert created.estimated_cost_fen == 1800
+    assert oral_price_quote(conn) == {"unit_price_fen": 1800}
 
 
 def test_oral_clone_claim_is_exclusive_and_expired_submit_is_quarantined(
@@ -2004,7 +2388,11 @@ def test_expired_voice_poll_lease_cannot_delete_winner_demo(
             }
         ),
     )
-    transport.on("GET", "https://tmp.example/lease-demo.mp3", b"LEASE-DEMO")
+    transport.on(
+        "GET",
+        "https://tmp.example/lease-demo.mp3",
+        fake_source_storage.media.audio,
+    )
     started = start_voice_clone(
         conn,
         actor=actor(),
@@ -2311,7 +2699,11 @@ def test_generation_worker_completes_oral_task_and_settles_once(
             }
         ),
     )
-    transport.on("GET", "https://tmp.example/oral-result.mp4", b"ORAL-MP4")
+    transport.on(
+        "GET",
+        "https://tmp.example/oral-result.mp4",
+        fake_source_storage.media.video,
+    )
     created = create_oral_task(
         conn,
         actor=actor(),
@@ -2363,6 +2755,67 @@ def test_generation_worker_completes_oral_task_and_settles_once(
     assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
 
 
+def test_oral_worker_rejects_invalid_provider_video_without_settlement(
+    tmp_path: Path, fake_source_storage: FakeSourceStorage
+) -> None:
+    conn = seed_scene(tmp_path, "oral-worker-invalid-result.db")
+    avatar_id, voice_id = seed_ready_assets(conn)
+    vendor, transport = make_vendor()
+    transport.on(
+        "POST",
+        "/api/v2/hifly/video/create_by_tts",
+        envelope({"task_id": "oral-invalid-result"}),
+    )
+    transport.on(
+        "GET",
+        "/api/v2/hifly/video/task",
+        envelope(
+            {
+                "status": 3,
+                "video_url": "https://tmp.example/invalid-result.mp4",
+                "duration": 12,
+            }
+        ),
+    )
+    transport.on("GET", "https://tmp.example/invalid-result.mp4", b"not-a-video")
+    created = create_oral_task(
+        conn,
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id=avatar_id,
+        voice_id=voice_id,
+        mode="TTS",
+        title="伪视频结果",
+        script_text="供应商返回的内容必须先验真。",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-invalid-result-key",
+        vendor=vendor,
+    )
+
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    conn.execute("UPDATE oral_tasks SET next_attempt_at = NULL WHERE id = %s", (created.task_id,))
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+    run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
+
+    task = conn.execute(
+        "SELECT status, result_asset_id, error_message FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
+    ).fetchone()
+    assert tuple(task) == ("ARCHIVE_FAILED", None, "口播成片文件无效")
+    wallet = conn.execute(
+        "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
+        ("employee_1",),
+    ).fetchone()
+    assert tuple(wallet) == (19, 1)
+    ledger = conn.execute(
+        "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY type",
+        (created.task_id,),
+    ).fetchall()
+    assert [row["type"] for row in ledger] == ["RESERVE"]
+    assert not any(key.startswith("oral/results/") for key in fake_source_storage.objects)
+
+
 def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
     tmp_path: Path, fake_source_storage: FakeSourceStorage
 ) -> None:
@@ -2375,7 +2828,11 @@ def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
         "/api/v2/hifly/video/task",
         envelope({"status": 3, "video_url": "https://tmp.example/retry.mp4"}),
     )
-    transport.on("GET", "https://tmp.example/retry.mp4", b"RETRY-MP4")
+    transport.on(
+        "GET",
+        "https://tmp.example/retry.mp4",
+        fake_source_storage.media.video,
+    )
     created = create_oral_task(
         conn,
         actor=actor(),
@@ -2433,13 +2890,11 @@ def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
 # ---------------------------------------------------------------------------
 
 
-def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
-    tmp_path: Path, fake_source_storage: FakeSourceStorage
+def test_oral_task_retry_route_is_removed_and_keeps_uncertain_reservation(
+    tmp_path: Path,
 ) -> None:
     conn = seed_scene(tmp_path, "oral-task-retry-route.db")
     avatar_id, voice_id = seed_ready_assets(conn)
-    vendor, transport = make_vendor()
-    transport.on("POST", "/api/v2/hifly/video/create_by_tts", envelope({"task_id": "vt-retry-1"}))
     created = create_oral_task(
         conn,
         actor=actor(),
@@ -2453,12 +2908,13 @@ def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
         subtitle=None,
         idempotency_key="oral-retry-route-key",
     )
-    # 模拟 worker 侧提交结果未知：状态进不确定闸门，队列槽仍被占用。
+    # 模拟 worker 侧提交结果未知；普通用户不得再次发起付费 POST。
     conn.execute(
         """
         UPDATE oral_tasks
         SET status = 'SUBMISSION_UNCERTAIN', provider_charge_state = 'UNKNOWN',
-            queue_slot_acquired = 1
+            submission_state = 'SUBMISSION_UNKNOWN',
+            queue_slot_acquired = 0
         WHERE id = %s
         """,
         (created.task_id,),
@@ -2483,16 +2939,12 @@ def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
     finally:
         app.dependency_overrides.clear()
 
-    assert retried.status_code == 200
-    body = retried.json()
-    assert body["status"] == "QUEUED"
-    assert body["submission_state"] == "LOCAL_PENDING"
-    assert body["billing_status"] == "RESERVED"
-    assert body["available_actions"] == []
+    assert retried.status_code == 404
     row = conn.execute(
-        "SELECT queue_slot_acquired FROM oral_tasks WHERE id = %s", (created.task_id,)
+        "SELECT status, submission_state, queue_slot_acquired FROM oral_tasks WHERE id = %s",
+        (created.task_id,),
     ).fetchone()
-    assert row["queue_slot_acquired"] == 0
+    assert tuple(row) == ("SUBMISSION_UNCERTAIN", "SUBMISSION_UNKNOWN", 0)
     # 冻结的预留轮不动：仍然只有一笔 RESERVE，没有 SETTLE/RELEASE。
     ledger = conn.execute(
         "SELECT type FROM wallet_transactions WHERE oral_task_id = %s ORDER BY type",
@@ -2505,20 +2957,12 @@ def test_oral_task_retry_route_requeues_uncertain_and_keeps_reservation(
     ).fetchone()
     assert (wallet["available_credits"], wallet["reserved_credits"]) == (19, 1)
     listed = [entry for entry in listing.json()["items"] if entry["id"] == created.task_id]
-    assert listed and listed[0]["status"] == "QUEUED"
+    assert listed and listed[0]["status"] == "SUBMISSION_UNCERTAIN"
     assert listed[0]["billing_status"] == "RESERVED"
     assert listed[0]["available_actions"] == []
-    # 重新入队后 worker 正常认领并完成提交，且只重新提交这一次。
-    result = run_oral_worker_step(conn, vendor=vendor, storage=fake_source_storage)
-    assert result is not None and result.outcome == "submitted"
-    after = conn.execute(
-        "SELECT status, vendor_task_id FROM oral_tasks WHERE id = %s", (created.task_id,)
-    ).fetchone()
-    assert (after["status"], after["vendor_task_id"]) == ("RUNNING", "vt-retry-1")
-    assert sum(1 for _, url in transport.calls if url.endswith("video/create_by_tts")) == 1
 
 
-def test_oral_task_retry_rejects_non_uncertain_and_foreign_owner(tmp_path: Path) -> None:
+def test_oral_task_retry_route_is_absent_for_all_states(tmp_path: Path) -> None:
     conn = seed_scene(tmp_path, "oral-task-retry-reject.db")
     avatar_id, voice_id = seed_ready_assets(conn)
     created = create_oral_task(
@@ -2551,10 +2995,11 @@ def test_oral_task_retry_rejects_non_uncertain_and_foreign_owner(tmp_path: Path)
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "ORAL_RETRY_NOT_ALLOWED"
-    with pytest.raises(ValueError, match="submission-uncertain"):
-        request_oral_submission_retry(conn, task_id=created.task_id, owner_user_id="employee_2")
+    assert response.status_code == 404
+
+
+def test_openapi_does_not_advertise_uncertain_oral_resubmit() -> None:
+    assert "/api/oral/tasks/{task_id}/retry" not in app.openapi()["paths"]
 
 
 def test_oral_task_serialization_reports_billing_status_and_available_actions(
@@ -2632,7 +3077,7 @@ def test_oral_task_serialization_reports_billing_status_and_available_actions(
         )
         conn.commit()
         single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
-        assert single.json()["available_actions"] == ["retry"]
+        assert single.json()["available_actions"] == []
         assert single.json()["billing_status"] == "RESERVED"
 
         conn.execute(

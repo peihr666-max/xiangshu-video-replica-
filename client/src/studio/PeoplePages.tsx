@@ -585,7 +585,7 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
             onClick={() => {
               if (readOnly) return;
               notify(`正在打开${person.name}的五视图与场景造型。`);
-              openLive("characters");
+              navigate("people", { selectedPersonId: person.id });
             }}
           >
             管理形象照
@@ -596,7 +596,7 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
             onClick={() => {
               if (readOnly) return;
               notify(`将在人物管理中为${person.name}选择并生成场景形象照。`);
-              openLive("characters");
+              navigate("people", { selectedPersonId: person.id });
             }}
           >
             AI 生成场景照
@@ -748,7 +748,9 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
     !review,
     pending
       .filter(
-        (avatar) => avatar.status === "PENDING" || avatar.status === "RUNNING",
+        (avatar) =>
+          avatar.submissionState !== "SUBMISSION_UNKNOWN" &&
+          (avatar.status === "PENDING" || avatar.status === "RUNNING"),
       )
       .map((avatar) => avatar.id),
     refreshOralAvatar,
@@ -953,8 +955,13 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
               alt={avatar.name}
             />
             <h3>{avatar.name}</h3>
-            <p>{avatar.error || avatar.duration}</p>
-            {avatar.status === "PENDING" || avatar.status === "RUNNING" ? (
+            <p>
+              {avatar.submissionState === "SUBMISSION_UNKNOWN"
+                ? "提交结果待人工核对，禁止重复提交"
+                : avatar.error || avatar.duration}
+            </p>
+            {avatar.submissionState !== "SUBMISSION_UNKNOWN" &&
+            (avatar.status === "PENDING" || avatar.status === "RUNNING") ? (
               <Button
                 variant="outline"
                 disabled={busy}
@@ -1123,6 +1130,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
       .filter(
         (voice) =>
           !voice.confirmed &&
+          voice.submissionState !== "SUBMISSION_UNKNOWN" &&
           (voice.status === "PENDING" ||
             voice.status === "RUNNING" ||
             (voice.status === "READY" && !voice.url)),
@@ -1320,19 +1328,19 @@ function VoicePanel({ person }: { person: StudioPerson }) {
             key={voice.id}
           >
             <div>
-              <h3>
-                {voice.name} {voice.isDefault ? <small>默认</small> : null}
-              </h3>
+              <h3>{voice.name}</h3>
               <p>
                 {voice.confirmed
                   ? "已确认，可用于文案口播"
-                  : voice.status === "FAILED"
-                    ? voice.error || "克隆失败，请更换样本重试"
-                    : voice.status === "PENDING" || voice.status === "RUNNING"
-                      ? "声音克隆中，暂不可选用"
-                      : voice.status === "READY" && !voice.url
-                        ? "试听样例归档中"
-                        : "待试听确认，暂不可选用"}
+                  : voice.submissionState === "SUBMISSION_UNKNOWN"
+                    ? "提交结果待人工核对，禁止重复提交"
+                    : voice.status === "FAILED"
+                      ? voice.error || "克隆失败，请更换样本重试"
+                      : voice.status === "PENDING" || voice.status === "RUNNING"
+                        ? "声音克隆中，暂不可选用"
+                        : voice.status === "READY" && !voice.url
+                          ? "试听样例归档中"
+                          : "待试听确认，暂不可选用"}
               </p>
             </div>
             <div>
@@ -1370,7 +1378,9 @@ function VoicePanel({ person }: { person: StudioPerson }) {
                 </Button>
               ) : null}
               {!voice.confirmed ? (
-                voice.status === "PENDING" || voice.status === "RUNNING" ? (
+                voice.submissionState ===
+                "SUBMISSION_UNKNOWN" ? null : voice.status === "PENDING" ||
+                  voice.status === "RUNNING" ? (
                   <Button
                     variant="outline"
                     disabled={busy}

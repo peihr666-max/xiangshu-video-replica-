@@ -931,6 +931,7 @@ def test_control_billing_settings_only_update_internal_price_rules(
         headers=control_headers,
         json={
             "internal_base_unit_price_fen": 500,
+            "oral_unit_price_fen": 1800,
             "min_recharge_fen": 10000,
             "recharge_step_fen": 1000,
             "confirm": True,
@@ -942,6 +943,7 @@ def test_control_billing_settings_only_update_internal_price_rules(
     assert updated.json() == {
         "internal_base_unit_price_fen": 500,
         "charged_unit_price_fen": 500,
+        "oral_unit_price_fen": 1800,
         "min_recharge_fen": 10000,
         "recharge_step_fen": 1000,
     }
@@ -954,6 +956,7 @@ def test_control_billing_settings_only_update_internal_price_rules(
         headers=control_headers,
         json={
             "internal_base_unit_price_fen": 500,
+            "oral_unit_price_fen": 1800,
             "min_recharge_fen": 9900,
             "recharge_step_fen": 1000,
             "confirm": True,
@@ -965,6 +968,7 @@ def test_control_billing_settings_only_update_internal_price_rules(
         headers=control_headers,
         json={
             "internal_base_unit_price_fen": 500,
+            "oral_unit_price_fen": 1800,
             "charged_unit_price_fen": 1500,
             "min_recharge_fen": 10000,
             "recharge_step_fen": 1000,

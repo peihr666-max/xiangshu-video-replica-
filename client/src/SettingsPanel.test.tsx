@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SESSION_EXPIRED_EVENT } from "./api";
@@ -32,11 +38,20 @@ const settingsSnapshot = {
       config: {},
     },
     tikhub: { provider: "tikhub", configured: false, config: {} },
+    dashscope: { provider: "dashscope", configured: false, config: {} },
+    douyidou: { provider: "douyidou", configured: false, config: {} },
   },
   runtime: {
     max_generation_count_per_batch: 5,
     max_concurrent_h3_tasks: 2,
     active_storage_provider: "cos",
+  },
+  billing: {
+    internal_base_unit_price_fen: 1000,
+    charged_unit_price_fen: 1000,
+    oral_unit_price_fen: 1800,
+    min_recharge_fen: 10000,
+    recharge_step_fen: 1000,
   },
 };
 
@@ -53,6 +68,15 @@ function installFetch(options?: {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url.endsWith("/api/admin/settings")) {
       return jsonResponse(settingsSnapshot);
+    }
+    if (
+      url.endsWith("/api/admin/settings/billing") &&
+      init?.method === "PATCH"
+    ) {
+      return jsonResponse({
+        ...settingsSnapshot.billing,
+        oral_unit_price_fen: 2500,
+      });
     }
     if (
       url.endsWith("/api/admin/settings/providers/metaso") &&
@@ -76,6 +100,14 @@ function installFetch(options?: {
         provider: "metaso",
         test_kind: "metaso_h3",
       });
+    }
+    if (
+      url.endsWith(
+        "/api/admin/settings/providers/metaso/secrets/api_key/reveal",
+      ) &&
+      init?.method === "POST"
+    ) {
+      return jsonResponse({ value: DUMMY_KEY });
     }
     if (
       url.endsWith("/api/admin/settings/providers/hifly/connection-test") &&
@@ -185,6 +217,7 @@ describe("SettingsPanel", () => {
 
     const hifly = providerCard(container, "hifly");
     expect(hifly.getByText("数字人口播")).toBeInTheDocument();
+    expect(hifly.getByLabelText("API Key")).toHaveAttribute("type", "password");
     expect(
       hifly.getByText("Hifly · 只读检查账户余额，不会创建收费任务"),
     ).toBeInTheDocument();
@@ -197,6 +230,31 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("运行设置")).toBeInTheDocument();
     expect(screen.getByLabelText("单次生成数量上限")).toHaveValue(5);
     expect(screen.getByLabelText("视频生成并发数")).toHaveValue(2);
+    expect(screen.getByLabelText("数字人口播单价（元/条）")).toHaveValue(18);
+  });
+
+  it("updates the oral unit price through the admin billing route", async () => {
+    const fetchMock = installFetch();
+    render(<SettingsPanel />);
+
+    const input = await screen.findByLabelText("数字人口播单价（元/条）");
+    fireEvent.change(input, { target: { value: "25" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存口播价格" }));
+
+    expect(await screen.findByText("口播价格已保存")).toBeInTheDocument();
+    const saveCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/admin/settings/billing") &&
+        init?.method === "PATCH",
+    );
+    expect(saveCall?.[1]?.body).toBe(
+      JSON.stringify({
+        internal_base_unit_price_fen: 1000,
+        oral_unit_price_fen: 2500,
+        min_recharge_fen: 10000,
+        recharge_step_fen: 1000,
+      }),
+    );
   });
 
   it("shows a role=alert error when the settings snapshot cannot be loaded", async () => {
@@ -236,6 +294,36 @@ describe("SettingsPanel", () => {
     expect(saveCall?.[1]?.body).toBe(
       JSON.stringify({ config: { api_key: DUMMY_KEY } }),
     );
+  });
+
+  it("用星光按钮按需读取并显示已保存密钥", async () => {
+    const fetchMock = installFetch();
+    const { container } = render(<SettingsPanel />);
+
+    await screen.findByText("视频生成");
+    const metaso = providerCard(container, "metaso");
+    const input = metaso.getByLabelText("API Key");
+    const reveal = metaso.getByRole("button", { name: "显示API Key" });
+
+    expect(reveal).toHaveTextContent("✨");
+    expect(input).toHaveAttribute("type", "password");
+    expect(input).toHaveValue("");
+
+    fireEvent.click(reveal);
+
+    await waitFor(() => expect(input).toHaveValue(DUMMY_KEY));
+    expect(input).toHaveAttribute("type", "text");
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url).endsWith(
+            "/api/admin/settings/providers/metaso/secrets/api_key/reveal",
+          ) && init?.method === "POST",
+      ),
+    ).toBe(true);
+
+    fireEvent.click(metaso.getByRole("button", { name: "隐藏API Key" }));
+    expect(input).toHaveAttribute("type", "password");
   });
 
   it("reports a provider save failure inline without crashing", async () => {

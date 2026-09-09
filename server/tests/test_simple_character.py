@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 import struct
 import threading
 import time
@@ -54,10 +55,14 @@ from app.simple_character import (
     SIMPLE_CONTACT_SHEET_MODEL,
     PreparedSimpleCharacterGeneration,
     _decode_png_rgb,
+    contact_sheet_placeholder_png,
     crop_contact_sheet_views,
+    delete_simple_character_identity,
     store_simple_character_publication,
 )
 from app.storage import FakeStorageAdapter
+
+STUB_CONTACT_SHEET = contact_sheet_placeholder_png(b"stub-contact-sheet")
 
 
 @pytest.fixture()
@@ -97,7 +102,7 @@ class StubContactSheetProvider:
 
     provider_name: str = "stub"
     calls: list[dict[str, object]] = field(default_factory=list)
-    sheet_content: bytes = b"contact-sheet-image"
+    sheet_content: bytes = STUB_CONTACT_SHEET
 
     def edit(
         self,
@@ -1836,6 +1841,131 @@ def test_owner_delete_removes_identity_records_and_objects(
             storage.get_object(key)
 
 
+def test_auditor_cannot_delete_an_identity_even_when_recorded_as_owner(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        conn.execute(
+            "UPDATE person_identities SET owner_user_id = %s WHERE id = %s",
+            ("auditor_1", identity_id),
+        )
+        conn.commit()
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("auditor_1"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "ROLE_FORBIDDEN"
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM person_identities WHERE id = %s",
+                (identity_id,),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_database_delete_failure_does_not_remove_storage_objects(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        asset = conn.execute(
+            """
+            SELECT asset.storage_uri
+            FROM assets AS asset
+            JOIN person_identities AS identity ON identity.source_asset_id = asset.id
+            WHERE identity.id = %s
+            """,
+            (identity_id,),
+        ).fetchone()
+        assert asset is not None
+        source_key = storage_key_from_uri(str(asset["storage_uri"]))
+        conn.execute(
+            """
+            CREATE TRIGGER fail_identity_delete
+            BEFORE DELETE ON person_identities
+            BEGIN
+                SELECT RAISE(FAIL, 'forced identity delete failure');
+            END
+            """
+        )
+        conn.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="forced identity delete failure"):
+            delete_simple_character_identity(
+                conn,
+                actor=CurrentUser(
+                    id="employee_1",
+                    username="employee_1",
+                    display_name="Employee One",
+                    role="employee",
+                ),
+                identity_id=identity_id,
+                storage_for_uri=lambda _conn, _uri: storage,
+            )
+
+    assert storage.get_object(source_key)
+
+
+def test_storage_cleanup_failure_is_audited_after_database_delete(
+    client: TestClient,
+    db_path: Path,
+    storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = generate_global(client).json()
+    identity_id = created["identity_id"]
+    monkeypatch.setattr(
+        simple_character_routes,
+        "storage_for_asset",
+        lambda conn, uri: storage,
+    )
+
+    def fail_delete_object(key: str, *, actor_id: str | None = None) -> None:
+        raise OSError(f"storage unavailable for {key} ({actor_id})")
+
+    monkeypatch.setattr(storage, "delete_object", fail_delete_object)
+
+    response = client.delete(
+        f"/api/simple-characters/identities/{identity_id}",
+        headers=headers("employee_1"),
+    )
+
+    assert response.status_code == 204, response.text
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM person_identities WHERE id = %s",
+                (identity_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        audit = conn.execute(
+            """
+            SELECT metadata_json FROM audit_logs
+            WHERE action = 'simple_character.delete.storage_cleanup'
+              AND entity_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (identity_id,),
+        ).fetchone()
+    assert audit is not None
+    metadata = json.loads(str(audit["metadata_json"]))
+    assert metadata["failed_count"] > 0
+    assert metadata["deleted_count"] == 0
+
+
 def test_admin_can_delete_any_identity(client: TestClient) -> None:
     created = generate_global(client).json()
 
@@ -2357,6 +2487,7 @@ def test_owner_generates_and_lists_a_direct_publish_scene_look(
     ).json()["items"]
     base = next(item for item in library if item["identity_id"] == identity_id)
     assert base["contact_sheet_asset_id"] == created["contact_sheet_asset_id"]
+    assert base["scene_look_count"] == 1
 
     # The first-frame flow can select this exact scene look while the base
     # appearance remains the safe automatic default in the client.
