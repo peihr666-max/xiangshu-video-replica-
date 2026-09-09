@@ -6,7 +6,7 @@
 | --- | --- |
 | 任务/工作包 | CW-003 冻结已发版本和兼容退出窗口 |
 | Owner / Reviewer | Owner：ZCode 代理（hlong026 会话，2026-09-09）；Reviewer：独立复核子代理 + 待桌面负责人/后端负责人签认 |
-| 分支 / 基线 SHA | `feat/customer-v3-cw03-compat-window` / 基线 `origin/main@b211095` |
+| 分支 / 基线 SHA | `feat/customer-v3-cw03-compat-window`（draft 钉 b211095）→ W0 批次 cherry-pick 到发布基线 `origin/main@df7020c`；2026-09-09 核实版本号（0.1.16 四处一致）与未变文件行号断言对 df7020c 仍准确，唯 `api.ts` 经 b211095→df7020c +400/-72 漂移，§2/§4 两处 api.ts 行号已按 df7020c 校正（见下） |
 | 上游规格段落 | V3 清单 §4 CW-003；§1 规则（不整体搬入未审分叉） |
 | 改动文件 | `docs/evidence/CW003-COMPATIBILITY-WINDOW.md`（新增） |
 | 失败测试或回归锁定 | 不适用（决策与静态核验层；删除旧接口时的回归由承接任务 CW-015/020/021/041 先红后绿） |
@@ -45,7 +45,7 @@
 | `/api/customer/activate` | `useCustomerSession.ts`、`ActivationPage.tsx` | `activation_code_routes.py:801`（router prefix `/api/customer`，`main.py` 注册为 customer_activation_router） |
 | `/api/customer/sessions/{login,logout,heartbeat,switch}` | `useCustomerSession.ts`、`LoginPage.tsx` | `customer_session_routes.py`（prefix `/api/customer/sessions`）、`customer_auth.py`、`customer_session_service.py` |
 | `/api/customer/devices`、`/api/customer/device-pairings/*`（含 approve） | `DeviceManagementPage.tsx`、`CustomerPairingFlow.tsx`、`DevicePairingPage.tsx` | `customer_device_routes.py`、`customer_device_service.py` |
-| `/api/customer/profile`（GET/PATCH） | `CustomerProfilePanel.tsx`（经 `api.ts:5161/5172` 客户函数） | `recharge_routes.py:784/791`（prefix `/api`） |
+| `/api/customer/profile`（GET/PATCH） | `CustomerProfilePanel.tsx`（经 `api.ts:5311/5325` 客户函数；df7020c 校正，draft 钉 b211095 时为 5161/5172，api.ts 漂移后移位） | `recharge_routes.py:784/791`（prefix `/api`；该文件 b211095→df7020c 未变动，行号仍准） |
 | `/api/customer/wallet`、`/api/customer/wallet/transactions`、`/api/customer/recharge-orders*`（含 `/payment-code`） | `CustomerWalletPanel.tsx`、`CustomerRechargeDialog.tsx`（经 `api.ts` 客户函数） | `recharge_routes.py`（客户分支：wallet `:830`、transactions `:880`、充值订单 `:935` 一带）；注意 `wallet_routes.py` 服务的是 `/api/wallet` 共享面，并非客户钱包端点提供方 |
 | 共享业务：`/api/projects`、`/api/generation/price-quote` 及任务/素材/文案等 | `api.ts`（客户会话经 `customerSessionToken` 附带 Bearer） | 各业务路由（CW-028 做端点级消费者清单） |
 
@@ -67,7 +67,7 @@
 | --- | --- |
 | 0.1.12–0.1.15 → 当前候选后端（含未审分叉整合后） | **必须兼容**：§2 全部端点契约不变；服务端字段只增不删（客户 JSON 解析按未知字段容忍策略） |
 | 0.1.16 → 上一兼容后端（0.1.15 时代服务端） | 客户端仅消费 §2 端点组；新增端点（如后续客户功能）在旧后端缺席时客户端须给出明确升级提示而非崩溃（现状由 api.ts 错误分类承载） |
-| 不兼容组合 | 返回明确升级结果，**禁止回退内部身份**（`workspaceAccessToken = internalAccessToken ?? customerSessionToken`，`api.ts:1225-1227` 的内部 token 优先回退由 CW-015 移除） |
+| 不兼容组合 | 返回明确升级结果，**禁止回退内部身份**（`workspaceAccessToken = internalAccessToken ?? customerSessionToken`，`api.ts:1232-1233` 的内部 token 优先回退由 CW-015 移除；df7020c 校正，draft 钉 b211095 时为 1225-1227，漂移后移位） |
 | **差额：版本观测缺失** | 心跳/激活请求**不携带客户端版本号**（client/server grep `client_version|app_version` 均无命中）→ 服务端无法观测版本分布。修复（客户端上报 + 服务端记录）登记为 CW-015 合同附加项；修复前版本退出只能依赖 §5 的分发确认手段 |
 
 ## 5. 兼容退出窗口与判据（建议值，待签认）
