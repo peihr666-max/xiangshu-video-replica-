@@ -2,9 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnalysisWorkspace } from "./AnalysisWorkspace";
 import {
   type CurrentUser,
-  type CustomerActivationCodeReset,
-  type CustomerDeviceListResponse,
-  type CustomerProfile,
   type GenerationBatch,
   getCurrentUser,
   getHealth,
@@ -16,16 +13,13 @@ import { CharacterLibrary } from "./CharacterLibrary";
 import { CustomerProfilePanel } from "./customer/CustomerProfilePanel";
 import { CustomerRechargeDialog } from "./customer/CustomerRechargeDialog";
 import { CustomerWalletPanel } from "./customer/CustomerWalletPanel";
-import type {
-  CustomerCredentialStore,
-  CustomerSessionRuntime,
-} from "./customer/useCustomerSession";
 import { ProjectDetailFlow } from "./ProjectDetailFlow";
 import { ProjectsPage } from "./ProjectsPage";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioWorkspace } from "./studio/StudioWorkspace";
 import { TaskRecordsPanel } from "./TaskRecordsPanel";
 import { WalletPanel } from "./WalletPanel";
+import type { WorkspaceShellProps } from "./workspace-shell";
 import "./styles.css";
 
 type WorkspacePage =
@@ -144,34 +138,7 @@ export function WorkspaceShell({
   currentUser,
   customerAccount,
   customerWallet,
-}: {
-  currentUser: CurrentUser;
-  customerAccount?: {
-    devices: CustomerDeviceListResponse | null;
-    deviceError: string;
-    onApprovePairing: (pairingId: string) => void;
-    onDismissPairing: (pairingId: string) => void;
-    onProfileUpdated: (profile: CustomerProfile) => void;
-    onRefreshProfile: () => Promise<void>;
-    onLogout: () => Promise<void>;
-    onRefreshDevices: () => Promise<void>;
-    onResetActivationCode: () => Promise<CustomerActivationCodeReset>;
-    onUnbind: (deviceId: string) => void;
-    onUpdateProfile: (displayName: string) => Promise<CustomerProfile>;
-    profile: CustomerProfile | null;
-    profileLoadError: string;
-    store: CustomerCredentialStore;
-    onSessionExpired: () => void;
-    /** Live heartbeat/lease health from the customer session hook; absent
-     * on the internal lane. Rendered in the profile centre's device tab. */
-    sessionRuntime?: CustomerSessionRuntime | null;
-    onManualHeartbeat?: () => void;
-  };
-  customerWallet?: {
-    store: CustomerCredentialStore;
-    onSessionExpired: () => void;
-  };
-}) {
+}: WorkspaceShellProps) {
   const [page, setPage] = useState<WorkspacePage>(() =>
     workspacePageFromHash(currentUser),
   );

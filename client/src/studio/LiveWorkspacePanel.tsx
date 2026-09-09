@@ -1,6 +1,5 @@
-import { type ComponentProps, useState } from "react";
+import { useState } from "react";
 import { AnalysisWorkspace } from "../AnalysisWorkspace";
-import type { WorkspaceShell } from "../App";
 import type { CurrentUser, GenerationBatch, Project } from "../api";
 import { CharacterLibrary } from "../CharacterLibrary";
 import { CustomerProfilePanel } from "../customer/CustomerProfilePanel";
@@ -10,10 +9,11 @@ import { ProjectDetailFlow } from "../ProjectDetailFlow";
 import { ProjectsPage } from "../ProjectsPage";
 import { TaskRecordsPanel } from "../TaskRecordsPanel";
 import { WalletPanel } from "../WalletPanel";
+import type { WorkspaceShellProps } from "../workspace-shell";
 import type { LivePanel } from "./types";
 
-type CustomerAccount = ComponentProps<typeof WorkspaceShell>["customerAccount"];
-type CustomerWallet = ComponentProps<typeof WorkspaceShell>["customerWallet"];
+type CustomerAccount = WorkspaceShellProps["customerAccount"];
+type CustomerWallet = WorkspaceShellProps["customerWallet"];
 
 type ProjectView = "list" | "analysis" | "detail";
 

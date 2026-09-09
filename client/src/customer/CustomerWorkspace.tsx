@@ -13,8 +13,8 @@ import {
   customerUnbindDevice,
   customerUpdateProfile,
 } from "../api";
-import { customerToCurrentUser } from "../RootApp";
 import { StudioWorkspace } from "../studio/StudioWorkspace";
+import { customerToCurrentUser } from "./customerToCurrentUser";
 import type {
   CustomerCredentialStore,
   CustomerSessionRuntime,

@@ -1,7 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { AdminApp } from "./AdminApp";
 import { App } from "./App";
-import type { CurrentUser, CustomerProfile } from "./api";
 import { ActivationPage } from "./customer/ActivationPage";
 import { CustomerPairingFlow } from "./customer/CustomerPairingFlow";
 import { CustomerWorkspace } from "./customer/CustomerWorkspace";
@@ -9,7 +8,6 @@ import { LoginPage } from "./customer/LoginPage";
 import { SessionConflictDialog } from "./customer/SessionConflictDialog";
 import {
   type CustomerCredentialStore,
-  type CustomerWorkspaceUser,
   customerCredentialStore,
   isTauriRuntime,
   useCustomerSession,
@@ -201,16 +199,4 @@ function CustomerTerminalScreen({
       </section>
     </main>
   );
-}
-
-export function customerToCurrentUser(
-  user: CustomerWorkspaceUser,
-  profile?: CustomerProfile | null,
-): CurrentUser {
-  return {
-    id: user.userId,
-    username: profile?.username ?? user.username ?? "customer",
-    display_name: profile?.display_name ?? user.username ?? "客户",
-    role: "customer",
-  };
 }
