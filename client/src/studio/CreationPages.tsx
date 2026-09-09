@@ -43,6 +43,7 @@ import { SourceFrameSelection } from "../SourceFrameSelection";
 import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
 import {
+  loadSavedScriptList,
   readAudioDuration,
   runReplicaGeneration,
   uploadOralAudioMaterial,
@@ -67,6 +68,7 @@ import type {
   StudioAsset,
   StudioDraft,
   StudioPerson,
+  StudioScript,
   StudioTask,
   StudioVideo,
 } from "./types";
@@ -168,15 +170,21 @@ export function CopyPage() {
     confirmFinalDraft,
     openLive,
     openPicker,
-
+    patchState,
     notify,
     review,
-
     user,
+    draftSaveStatus,
   } = useStudio();
   const readOnly = user.role === "auditor";
   const [tab, setTab] = useState<"rewrite" | "saved">("rewrite");
   const [rewriting, setRewriting] = useState(false);
+  const [candidate, setCandidate] = useState("");
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [savedError, setSavedError] = useState("");
+  const savedOperation = useRef(0);
+  const current = useRef({ state, patchDraft, patchState, notify });
+  current.current = { state, patchDraft, patchState, notify };
   const rewritePendingRef = useRef(false);
   const rewriteOperationRef = useRef(0);
   const scopeGenerationRef = useRef(0);
@@ -242,6 +250,14 @@ export function CopyPage() {
                 completed.error_message || "改写未返回完整正文，请重试。",
               );
         clearScriptRewriteIdempotencyKey(requestScope, idempotencyKey);
+        if (current.script.text !== requestScope.text) {
+          // 改写期间用户手改了正文：保留人工稿，结果转候选待显式应用。
+          setCandidate(rewritten);
+          currentRef.current.notify(
+            "改写已完成，当前正文保持不变；可对照后应用候选稿。",
+          );
+          return;
+        }
         currentRef.current.patchDraft({
           script: { ...current.script, text: rewritten, confirmed: false },
           scriptEdited: true,
@@ -275,6 +291,7 @@ export function CopyPage() {
     const operation = ++rewriteOperationRef.current;
     rewritePendingRef.current = false;
     setRewriting(false);
+    setCandidate("");
     const draft = currentRef.current.state.draft;
     if (
       !review &&
@@ -337,6 +354,30 @@ export function CopyPage() {
       rewriteOperationRef.current += 1;
     };
   }, [activeScope, finishRewrite, review, user.id, user.role]);
+
+  const refreshSaved = useCallback(async () => {
+    const operation = ++savedOperation.current;
+    setSavedLoading(true);
+    setSavedError("");
+    try {
+      const scripts = await loadSavedScriptList();
+      if (savedOperation.current === operation)
+        current.current.patchState({ savedScripts: scripts });
+    } catch (cause) {
+      if (savedOperation.current === operation)
+        setSavedError(
+          customerVisibleErrorMessage(cause, "读取文案失败，请重试。"),
+        );
+    } finally {
+      if (savedOperation.current === operation) setSavedLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (tab === "saved" && !review) void refreshSaved();
+    return () => {
+      savedOperation.current += 1;
+    };
+  }, [tab, review, refreshSaved]);
 
   const rewriteUnavailableReason = review
     ? "审核示例不调用业务接口。"
@@ -414,6 +455,37 @@ export function CopyPage() {
       }
     }
   };
+  const applySavedScript = (script: StudioScript) => {
+    const project = data.projects.find(
+      (item) => item.id === script.sourceProjectId,
+    );
+    patchDraft({
+      ...createDraft(),
+      projectId: script.sourceProjectId,
+      ipId: script.ipId,
+      sourceId: project?.reference_asset_id ?? undefined,
+      sourceAssetId: project?.reference_asset_id ?? undefined,
+      originalImageId: undefined,
+      imageId: undefined,
+      firstFrameId: undefined,
+      firstFrameSelectionVersionId: undefined,
+      tailFrameId: undefined,
+      avatarId: undefined,
+      voiceId: undefined,
+      audioId: undefined,
+      videoBatchId: undefined,
+      script: { ...script, confirmed: false },
+      scriptEdited: true,
+    });
+    patchState({
+      selectedVideoId: undefined,
+      selectedTaskId: undefined,
+      selectedAssetId: undefined,
+      selectedPersonId: script.ipId,
+      returnTo: undefined,
+    });
+    setTab("rewrite");
+  };
   const source = findSource(
     data.assets,
     data.videos,
@@ -421,12 +493,25 @@ export function CopyPage() {
   );
   const person = activePerson(data.people, state.draft.ipId);
   const saved = state.savedScripts;
+  const oralLengthExceeded =
+    state.draft.script.text.length > 10000 ||
+    state.draft.script.title.length > 120;
 
   return (
     <section className="creation-page creation-copy">
       <header className="creation-heading">
         <h1>文案工坊</h1>
         <p>提取与二创文案，优化表达，匹配乡墅场景</p>
+        {state.returnTo && state.returnTo !== "copy" ? (
+          <Button
+            variant="quiet"
+            onClick={() =>
+              navigate(state.returnTo ?? "workbench", { returnTo: undefined })
+            }
+          >
+            返回上一步
+          </Button>
+        ) : null}
       </header>
       <Tabs
         items={[
@@ -439,30 +524,44 @@ export function CopyPage() {
 
       {tab === "saved" ? (
         <Panel className="creation-saved-list">
-          {saved.length ? (
+          {!review ? (
+            <Button
+              variant="outline"
+              disabled={savedLoading}
+              onClick={() => void refreshSaved()}
+            >
+              刷新文案
+            </Button>
+          ) : null}
+          {savedLoading ? <Hint>正在读取文案…</Hint> : null}
+          {savedError ? (
+            <Empty
+              title={savedError}
+              action={
+                <Button onClick={() => void refreshSaved()}>
+                  重试读取文案
+                </Button>
+              }
+            />
+          ) : saved.length ? (
             saved.map((script) => (
               <button
                 className="creation-script-row"
                 disabled={readOnly}
                 key={script.id}
-                onClick={() => {
-                  if (readOnly) return;
-                  patchDraft({ script });
-                }}
+                onClick={() => applySavedScript(script)}
                 type="button"
               >
                 <span>{script.title}</span>
-                <small>
-                  {script.confirmed ? "已确认" : "草稿"} · V{script.version}
-                </small>
+                <small>{script.confirmed ? "已确认" : "草稿"}</small>
               </button>
             ))
-          ) : (
+          ) : !savedLoading ? (
             <Empty
               title="还没有保存的文案"
-              description="完成二创后保存版本，文案会集中显示在这里。"
+              description="保存当前稿后，文案会集中显示在这里；再次保存会更新同一篇。"
             />
-          )}
+          ) : null}
         </Panel>
       ) : (
         <>
@@ -529,9 +628,41 @@ export function CopyPage() {
                 placeholder="在这里编辑乡墅口播文案"
                 value={state.draft.script.text}
               />
-              <div className="creation-saved-state">
-                内容变动后需重新确认终稿
+              <div className="creation-saved-state" aria-live="polite">
+                {draftSaveStatus === "dirty"
+                  ? "有未保存修改"
+                  : draftSaveStatus === "saving"
+                    ? "正在保存到云端…"
+                    : draftSaveStatus === "saved"
+                      ? "已保存到云端"
+                      : draftSaveStatus === "error"
+                        ? "云端保存失败，可点击保存版本重试"
+                        : "内容变动后需重新确认终稿"}
               </div>
+              <Hint>
+                {state.draft.script.text.length} / 10000
+                字符（数字人口播上限）；标题 {state.draft.script.title.length} /
+                120 字符。AI 改写最多 20000 字符。
+              </Hint>
+              {candidate ? (
+                <Panel>
+                  <p>{candidate}</p>
+                  <Button
+                    onClick={() => {
+                      patchDraft({
+                        script: {
+                          ...state.draft.script,
+                          text: candidate,
+                          confirmed: false,
+                        },
+                      });
+                      setCandidate("");
+                    }}
+                  >
+                    应用候选稿
+                  </Button>
+                </Panel>
+              ) : null}
             </Panel>
             <Panel className="creation-copy-person">
               <div className="creation-panel-title">IP 选择</div>
@@ -613,7 +744,9 @@ export function CopyPage() {
             </Button>
             <Button
               variant="primary"
-              disabled={!state.draft.script.confirmed || !state.draft.ipId}
+              disabled={
+                !state.draft.script.confirmed || !person || oralLengthExceeded
+              }
               onClick={() => navigate("oral", { returnTo: "copy" })}
             >
               用于数字人口播
@@ -1308,6 +1441,9 @@ export function ReplicaPage() {
       const request = {
         promptText,
         originalScriptText: scriptFallback,
+        confirmedScriptText: draft.script.confirmed
+          ? draft.script.text
+          : undefined,
         shotCardVersionId,
         firstFrameAssetId,
         outputDurationSeconds: quoteInput.duration_seconds,
@@ -1579,6 +1715,12 @@ export function ReplicaPage() {
               编辑后的 Prompt
               可保存为自定义提示词（视频生成页可导入）；「送生成」需要项目已有确认首帧，未确认时请先到人物置换页完成。
             </Hint>
+            {state.draft.script.confirmed && state.draft.script.text.trim() ? (
+              <Hint>
+                送生成将使用文案工坊已确认的终稿重新编译
+                Prompt，替换原片台词；当前自定义 Prompt 仍保留在编辑区。
+              </Hint>
+            ) : null}
           </Panel>
         </>
       )}

@@ -1459,7 +1459,8 @@ export function StudioWorkspace({
       ...draft.script,
       ipId: draft.ipId,
       sourceProjectId: draft.projectId,
-      sourceKind: draft.projectId ? ("project" as const) : ("manual" as const),
+      // 服务端 source_kind 契约为 viral/project/link/upload，无来源项目时归为 upload。
+      sourceKind: draft.projectId ? ("project" as const) : ("upload" as const),
     };
     const recordSavedVersion = (cloudSynced: boolean) =>
       setState((previous) => {
@@ -1540,13 +1541,14 @@ export function StudioWorkspace({
     ).catch(() => {});
     if (!state.draft.projectId) return;
     void publishScriptVersion(state.draft.projectId, script.text).then(
-      (published) => {
+      (result) => {
         if (
           currentUserRoleRef.current === "auditor" ||
           permissionGenerationRef.current !== permissionGeneration
         )
           return;
-        if (!published)
+        // not-applicable = 项目尚无分镜，属正常边界，不提示失败。
+        if (result === "failed")
           notify(
             "终稿已确认，但同步到项目脚本版本未成功，可稍后在来源分析中重试。",
           );

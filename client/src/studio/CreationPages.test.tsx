@@ -41,6 +41,7 @@ const replicaLive = vi.hoisted(() => ({
   uploadWorkbenchSourceVideo: vi.fn(),
   uploadVideoMaterial: vi.fn(),
   runReplicaGeneration: vi.fn(),
+  loadSavedScriptList: vi.fn(async () => []),
   validateOralAudioFile: vi.fn(),
 }));
 vi.mock("../api", async (importOriginal) => ({
@@ -300,6 +301,7 @@ function studio(
 describe("V1.4 创作页面", () => {
   beforeEach(() => {
     useStudio.mockReset();
+    replicaLive.loadSavedScriptList.mockReset().mockResolvedValue([]);
     replicaApi.getAssetDownloadUrl.mockReset();
     replicaApi.selectCharacterReferences.mockReset();
     replicaApi.getLatestScriptRewriteTask.mockReset();
@@ -2772,6 +2774,7 @@ describe("视频复刻（模块①）", () => {
         expect.objectContaining({
           shotCardVersionId: "scv-1",
           firstFrameAssetId: "ff-1",
+          confirmedScriptText: "已确认的乡墅口播终稿",
         }),
       ),
     );

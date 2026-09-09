@@ -789,6 +789,7 @@ function oralTask(row: OralTaskRecord): StudioTask {
     avatarId: row.avatar_id,
     voiceId: row.voice_id ?? undefined,
     audioId: row.audio_asset_id ?? undefined,
+    scriptText: row.script_text ?? undefined,
   };
 }
 
@@ -1151,9 +1152,9 @@ function savedScriptFromRecord(record: {
   text: string;
   original: string | null;
   version: number;
-  ip_id: string | null;
-  source_project_id: string | null;
-  source_kind: string | null;
+  ip_id?: string | null;
+  source_project_id?: string | null;
+  source_kind?: string | null;
 }): StudioScript {
   return {
     id: record.script_id,
@@ -1164,10 +1165,13 @@ function savedScriptFromRecord(record: {
     confirmed: false,
     ipId: record.ip_id ?? undefined,
     sourceProjectId: record.source_project_id ?? undefined,
+    // 与服务端 studio_drafts.py 的 source_kind 契约对齐：
+    // Literal["viral", "project", "link", "upload"]，其余值一律丢弃。
     sourceKind:
+      record.source_kind === "viral" ||
       record.source_kind === "project" ||
-      record.source_kind === "upload" ||
-      record.source_kind === "manual"
+      record.source_kind === "link" ||
+      record.source_kind === "upload"
         ? record.source_kind
         : undefined,
   };
@@ -1180,7 +1184,7 @@ export async function loadSavedScriptList(): Promise<StudioScript[]> {
 
 export async function persistSavedScript(
   script: StudioScript,
-  sourceProjectId?: string,
+  sourceProjectId: string | undefined = script.sourceProjectId,
   ipId?: string,
 ): Promise<void> {
   const input: StudioSavedScriptInput = {
@@ -1191,29 +1195,33 @@ export async function persistSavedScript(
     version: script.version,
     ip_id: ipId ?? script.ipId ?? null,
     source_project_id: sourceProjectId ?? null,
-    source_kind: sourceProjectId ? "project" : "upload",
+    source_kind: script.sourceKind ?? (sourceProjectId ? "project" : null),
   };
   await saveStudioSavedScript(input);
 }
 
-/** 终稿显式发布到项目脚本版本（C7 衔接点）：仅当草稿带 projectId 且项目已有
- * 镜头卡版本时可行（ScriptRequest 需要 shot_card_version_id）。任何失败都
- * 返回 false 由调用方软提示，绝不阻断"确认终稿"本身。 */
+export type ProjectScriptPublishResult =
+  | "published"
+  | "not-applicable"
+  | "failed";
+
+/** 终稿显式发布到项目脚本版本（C7 衔接点）。没有镜头卡表示当前稿只完成了
+ * 工坊确认，尚未进入复刻分镜阶段；该状态不是发布失败。 */
 export async function publishScriptVersion(
   projectId: string,
   text: string,
-): Promise<boolean> {
+): Promise<ProjectScriptPublishResult> {
   try {
     const shotCards = await getLatestProjectShotCards(projectId);
-    if (!shotCards) return false;
+    if (!shotCards) return "not-applicable";
     await createScriptVersion(projectId, {
       source: "custom",
       text,
       shot_card_version_id: shotCards.id,
     });
-    return true;
+    return "published";
   } catch {
-    return false;
+    return "failed";
   }
 }
 
@@ -1325,6 +1333,7 @@ export async function runReplicaGeneration(
   input: {
     promptText: string;
     originalScriptText: string;
+    confirmedScriptText?: string;
     shotCardVersionId: string;
     firstFrameAssetId: string;
     outputDurationSeconds: number;
@@ -1353,8 +1362,12 @@ export async function runReplicaGeneration(
     return batch;
   }
   const script = await createScriptVersion(projectId, {
-    source: input.originalScriptText.trim() ? "original" : "custom",
-    text: input.originalScriptText,
+    source: input.confirmedScriptText?.trim()
+      ? "custom"
+      : input.originalScriptText.trim()
+        ? "original"
+        : "custom",
+    text: input.confirmedScriptText?.trim() || input.originalScriptText,
     shot_card_version_id: input.shotCardVersionId,
   });
   const compiled = await compileGenerationPrompt(projectId, {
@@ -1369,7 +1382,9 @@ export async function runReplicaGeneration(
     (compiled.payload as Record<string, unknown>).prompt_text ?? "",
   );
   const finalPrompt =
-    input.promptText.trim() && input.promptText !== compiledText
+    !input.confirmedScriptText?.trim() &&
+    input.promptText.trim() &&
+    input.promptText !== compiledText
       ? await reviseGenerationPrompt(projectId, {
           base_prompt_version_id: compiled.id,
           prompt_text: input.promptText.trim(),
