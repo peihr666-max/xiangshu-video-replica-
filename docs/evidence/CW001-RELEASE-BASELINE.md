@@ -6,11 +6,11 @@
 | --- | --- |
 | 任务/工作包 | CW-001 确定整合候选、补丁来源与发布基线 |
 | Owner / Reviewer | Owner：ZCode 代理（hlong026 会话，2026-09-09）；Reviewer：独立复核子代理 + 待集成负责人签认 |
-| 分支 / 基线 SHA | `feat/customer-v3-cw001-release-baseline` / 正式候选基线 `origin/main@df7020c` |
+| 分支 / 基线 SHA | `feat/customer-v3-cw001-release-baseline` / 正式候选基线 `origin/main@df7020c`（**§1a：2026-09-09 owner 授权提升至 `origin/main@b45de8f`**） |
 | 上游规格段落 | V3 清单 §4 CW-001（line 96-109）；§1 规则 5（分支比对到固定提交再整合）；`data-deploy-audit.md`（审计输入 bffc341，非最终基线） |
 | 改动文件 | `docs/evidence/CW001-RELEASE-BASELINE.md`（新增） |
 | 失败测试或回归锁定 | 不适用（准备与决策层；迁移链核实为静态核验） |
-| 实现结果 | 见 §1–§6：发布基线冻结 df7020c；迁移单 head 080 无多父；8 分支补丁来源处置；回滚点；pre-GA 路线附件；2 待确认策略点 |
+| 实现结果 | 见 §1–§6：发布基线冻结 df7020c；迁移单 head 080 无多父；8 分支补丁来源处置；回滚点；pre-GA 路线附件；2 待确认策略点。**§1a 附录：基线提升至 b45de8f、迁移 head 080→081_oral_unit_price（78→79 文件），单 head/线性/无已发布 revision 改写仍成立** |
 | 验证命令与通过数 | 静态核验：`git ls-tree`/`git grep` 迁移链单 head 计算（§2）；`git rev-list --count`+`git merge-base` 补丁来源与 fork 基线（§3）；`git diff b4b584e df7020c --stat` tree 逐字节比对（§1）；`git cat-file -e df7020c:<doc>` 核验 6 份草案目标文件 ABSENT（§3/§4 cherry-pick 零冲突依据） |
 | 证据层级 | 决策与静态核验（签认前不得视为完成） |
 | 安全与可观测性 | 不适用（本项不含运行时改动） |
@@ -23,6 +23,8 @@
 
 正式候选 = **`df7020c`**（`Feat/customer v3 cw007 pg test foundation (#103)`），即当前 `origin/main`。
 
+> **基线提升（2026-09-09 owner 授权，详见 §1a）**：正式候选已由 df7020c 提升至 `origin/main@b45de8f`；上行“当前 origin/main”及下列 df7020c 数字为签认时点陈述，保留不改写，当前发布锚点以 §1a 为准。
+
 | 决议项 | 结论 | 依据 |
 | --- | --- | --- |
 | 应用源码基线 | `df7020c` | CW-007 已 squash merge（PR #103）；`git diff b4b584e df7020c --stat` 输出为空 → tree 与 CW-007 分支 b4b584e 逐字节一致，无夹带 |
@@ -32,6 +34,54 @@
 
 - 漂移说明：`data-deploy-audit.md` 的规模数字（103 顶层文件 / 76 迁移 / 92 测试文件）钉在 **bffc341** 审计快照，与 df7020c 存在漂移；本决议以 df7020c 实际树为准，audit 仅作裁剪边界输入（CW-053 已将 DB 语义清单重算到 df7020c 基线）。
 - **`source-baseline.json` 处置（DoD line 104 文件对象）**：位于 `outputs/customer-cloud-convergence-analysis-2026-09-08/source-baseline.json`（df7020c 内 track；独立分析目录 `乡墅爆款短视频复刻-客户版收敛分析/outputs/...` 同名文件一致）。其 `source_base_sha=bffc3419f9d89bf76fd4ad1bdad65dd824a44553`、`captured_at_utc=2026-09-08T12:20:28`、`audit_branch=codex/customer-cloud-convergence-analysis-20260908`，记录的是**分析阶段快照**（当时 origin/main=2cacc920）。**决议：作为分析输入快照保留、不改写**（改写会破坏审计可追溯性）；发布基线以本决议 §1 的 df7020c 为准，二者分属不同层（bffc341=分析起点，df7020c=整合后正式候选）。bffc341→df7020c 的演进 = viral 收敛队列3（ce40db5，PR #100–102）+ CW-007（df7020c，PR #103），均为已合并 main 的正式提交，符合 DoD line 107"不能用分析分支代替最终集成版本"。
+
+## 1a. 发布基线提升附录（2026-09-09 owner 授权）
+
+> **本附录经 owner（phlong026）2026-09-09 明确授权，将 §1 的正式候选基线由 `df7020c` 提升至当前 `origin/main@b45de8f`。** §1/§2 中 df7020c 的原始数字作为**签认时点的历史记录保留、不改写**；当前发布锚点以本附录为准。基线提升属发布决策（AGENTS.md 红线：需人工授权），已获授权。
+
+### 1a.1 提升链与 no-op 核验
+
+| 步骤 | commit | PR | tree hash | 说明 |
+| --- | --- | --- | --- | --- |
+| 原签认基线 | `df7020c` | #103 | `33e98bf` | §1 签认时点基线 |
+| 内容前进 | `26044a4` | #104 | `d4e52dc` | 人物库收口线批次5 + 口播单价迁移 081；df7020c→26044a4 = 60 文件 +3001/−536 |
+| no-op 合并 | `b45de8f` | #105 | `d4e52dc` | tree 与 26044a4 逐字节相同（`git diff 26044a4 b45de8f` 输出空）→ 合并后 main 内容零变化 |
+
+**当前正式候选基线 = `b45de8f`**（`origin/main`，tree `d4e52dc`）。#105 为空壳合并（内容已被 #104 全量吸收），故提升的实际内容增量来自 #104；#105 仅使 main head 前移、tree 不变。
+
+### 1a.2 §2 迁移图数字更新（对 b45de8f 重核）
+
+| 核查项 | df7020c（§2 原值） | b45de8f（提升后） | 依据 |
+| --- | --- | --- | --- |
+| 迁移文件总数 | 78 | **79** | `git ls-tree b45de8f -r server/migrations/versions/ \| grep -c '\.py$'` |
+| 唯一 head | `080_viral_link_resolution_receipts` | **`081_oral_unit_price`** | 悬空 head 计算（revision 集合 − down_revision 集合）仅输出 081 |
+| 无多父 merge | 确认（纯线性链） | **仍确认（纯线性链）** | 单 head、无 down_revision 元组 |
+| 已发布 revision 未改写 | 025 起点在位 | **仍在位** | 081 为线性追加，025…080 未篡改 |
+
+**结论：CW-001 DoD 验收底线“迁移无多 head、无已发布 revision 改写”在 b45de8f 依然成立**，仅 head 号与文件数按 #104 追加的 081 更新（080→081、78→79）。
+
+### 1a.3 下游 W0 文档影响评估（对 b45de8f 实测）
+
+| 文档 | df7020c 钉死项 | b45de8f 实测状态 | 处置 |
+| --- | --- | --- | --- |
+| CW-053 | 104 app + 96 test、§4/§5 行数=磁盘文件数 1:1 | **文件计数不变**（server/app 104→104、server/tests 96→96；#104/#105 未增删任何 app/test 文件，仅改约 23 个文件内容 + 加迁移 081） | 计数与 1:1 不变量仍成立，**无需重签**；被改内容文件（oral/settings/simple_character/media_tools 等）的逐文件语义随各 CW 的 TEST-PG RED→GREEN 逐项核验（CW-053 本为静态核销底稿，语义验收 defer 各 CW） |
+| CW-002/003/004/005 | 范围/版本/部署/数据处置决策（df7020c 为上下文引用，非基线依赖数字） | 决策与 #104/#105 无关（平台范围、受支持版本 0.1.12–0.1.16、部署主线、数据处置框架均不受影响） | **不受提升影响**，无需改 |
+
+### 1a.4 §3 补丁来源处置增量（对 b45de8f）
+
+- cw009-security-matrix：已由 b13d735（@df7020c）rebase 到 **d59f8d7（@b45de8f）**，merge-base=b45de8f、ahead=1/behind=0，相对 b45de8f squash 零冲突，待 owner merge。
+- W0 批次（本分支）：已由 dd95fc3 rebase 到 55381e5（@26044a4，tree 与 b45de8f 同为 d4e52dc）；本 §1a 附录提交后 head 前移，相对 b45de8f squash 零冲突。
+- 五条草案分支（cw02/03/04/05/053）：仍 fork 自 b211095，behind 数相对 b45de8f 增大（新增 #104/#105），处置不变（只 cherry-pick tip 文档 commit，已落地 W0 批次）。
+- cw007（已并入 df7020c）、cw010（堆叠暂放）：处置不变。
+
+### 1a.5 §4 回滚点更新
+
+| 对象 | 回滚点 | 恢复方式 |
+| --- | --- | --- |
+| 发布基线（提升后） | `b45de8f` | `git checkout b45de8f` / `reset --hard b45de8f` |
+| 发布基线（原签认，历史） | `df7020c` | 保留为历史回滚点 |
+| W0 §1a 前 | `backup/w0-pre-rebase-20260909` + `55381e5` | 已建备份 tag |
+| CW-009 rebase 前 | `backup/cw009-pre-rebase-20260909` + `b13d735` | 已建备份 tag |
 
 ## 2. 迁移图核实（无多 head、无已发布 revision 改写）
 
@@ -161,5 +211,6 @@
 | 角色 | 结论 | 日期 |
 | --- | --- | --- |
 | 集成负责人（发布基线/补丁来源/迁移图/pre-GA 路线/策略点 P1-P2） | 已签认（owner phlong026 代签集成负责人）：①发布基线冻结 df7020c；②P1 采纳——CW-044 依赖松绑，pre-GA 仅要求 CW-040/041/042 入口 fail-closed、物理删除延后为独立清理批次；③P2 采纳——§5.3 七锚点为 pre-GA 完成定义、“内测客户实机跑通”归 GA（CW-046/049）。W0 六份决策已 cherry-pick 落地 feat/customer-v3-w0-decisions-batch，§18 同步标记 | 2026-09-09 |
+| 集成负责人（§1a 发布基线提升 df7020c→b45de8f） | 已授权（owner phlong026）：main 经 #104（26044a4，人物库批次5+迁移081）/#105（b45de8f，no-op，tree 与 26044a4 逐字节相同）前进；发布基线提升至 b45de8f，迁移 head 080→081_oral_unit_price（78→79 文件），单 head/线性/无已发布 revision 改写仍成立；CW-053 文件计数 104 app+96 test 实测不变、CW-002/003/004/005 不受影响；§1/§2 df7020c 原值作为签认时点历史记录保留不改写 | 2026-09-09 |
 
 > 本文档决议已签认（owner phlong026，2026-09-09）；原草案约定：所有"待签认/待确认"字段由集成负责人确认后，才可将 CW-001 在任务账本 §18 标记完成；签认前不得以本文档替代 W2–W7 的逐项验收行，也不得据 §5 路线跳过任何 GA 触发项的最终实施（GA 触发条件满足时 15 项仍须逐项执行）。
