@@ -6,11 +6,11 @@
 | --- | --- |
 | 任务/工作包 | CW-053 补齐数据库语义清单与精确历史例外 |
 | Owner / Reviewer | Owner：ZCode 代理（hlong026 会话，2026-09-09）；Reviewer：独立复核子代理 + 待架构负责人/QA 签认 |
-| 分支 / 基线 SHA | `feat/customer-v3-cw053-db-inventory` / 基线 `origin/main@b211095` |
+| 分支 / 基线 SHA | `feat/customer-v3-cw053-db-inventory` / 基线 **`origin/main@df7020c`**（原 draft 钉 b211095，2026-09-09 重算到发布基线 df7020c；分支 fork 自 b211095、behind=4，落地按 CW-001 §3 机制 cherry-pick tip commit） |
 | 上游规格段落 | V3 清单 §4 CW-053；`docs/PostgreSQL唯一数据库实施与验收规范.md` PG-01—12 |
 | 改动文件 | `docs/evidence/CW053-DB-SEMANTIC-INVENTORY.md`（新增） |
 | 失败测试或回归锁定 | 不适用（静态依赖与范围核验层） |
-| 实现结果 | §2 统计、§3 例外 allowlist、§4/§5 逐文件核销表（100 app + 90 tests 全量；§4 行数=磁盘文件数 1:1） |
+| 实现结果 | §2 统计、§3 例外 allowlist、§4/§5 逐文件核销表（**104 app + 96 tests** 全量，df7020c 基线；§4/§5 行数=磁盘文件数 1:1） |
 | 验证命令与通过数 | 符号级分类脚本（import/调用级信号，非目录级豁免）；人工复核 db.py/backup.py/gate1_* 等关键行 |
 | 证据层级 | 静态依赖与范围核验（**词法/符号扫描不冒充语义完成**：本表是核销底稿，后续每项 CW 的逐调用者 RED→GREEN 是语义验收） |
 | 安全与可观测性 | 不适用 |
@@ -21,21 +21,25 @@
 
 ## 1. 方法与边界
 
-- 输入：对 `server/app/*.py`（100 个）与 `server/tests/*.py`（90 个）的 import/调用级符号分类（`sqlite3.connect(`、`sqlite3.Row/Error` 仅类型、`from .db import`、`from .db_portable import`、`from .db_pg import`、`fenced_pg_transaction`、`TEST_POSTGRESQL_URL`）；收敛分析分支 `outputs/.../v3/audit/database-signals.json`（词法信号）作为旁证，本表在其上细分**连接 vs 仅类型引用**与 **TEST 行为分类**。
+- 输入：对 `server/app/*.py`（**df7020c：104 个**）与 `server/tests/*.py`（**df7020c：96 个**）的 import/调用级符号分类（`sqlite3.connect(`、`sqlite3.Row/Error` 仅类型、`from .db import`、`from .db_portable import`、`from .db_pg import`、`fenced_pg_transaction`、`TEST_POSTGRESQL_URL`）；收敛分析分支 `outputs/.../v3/audit/database-signals.json`（词法信号）作为旁证，本表在其上细分**连接 vs 仅类型引用**与 **TEST 行为分类**。
 - 运行分支与纯类型引用**分开统计**（§4 表中 `SQLITE-TYPE-DEBT(仅类型)` 无任何连接）。
 - 无整个目录豁免：每行精确到文件；例外表精确到文件/符号并给责任与退役条件。
 - 本表不因"词法信号消失/存在"宣称完成；语义验收=后续 CW 逐项的 TEST-PG RED→GREEN。
+- **基线重算（2026-09-09）**：原 draft 钉 `b211095`（早于 viral 收敛队列3 ce40db5 与 CW-007 df7020c，behind=4）；本次按 CW-001 冻结的发布基线 **df7020c** 重算 §2/§4/§5，补入 b211095→df7020c 新增的 4 app（viral_import/import_routes/link/refresh）+ 6 test（pg_test_kit/test_pg_test_kit/test_script_from_audio_migration/test_viral_import/link/refresh）文件。
 
-## 2. 总量统计（基线 b211095）
+## 2. 总量统计（基线 df7020c = b211095 原表 + 10 新文件重算）
 
 | 分类 | server/app | server/tests |
 | --- | --- | --- |
-| PG（门面/直连/fenced） | 46 FACADE、23 DIRECT、3 FENCED（有重叠） | TEST-PG 25 |
-| 实际 SQLite 连接 | **2**（`db.py` 本体、`backup.py` 历史备份） | TEST-SQLITE-CONN 40、混合 2 |
-| 仅 sqlite3.Row/Error 类型引用 | 29 | — |
-| db.py 消费者 | 10（均并存 PG 导入，除 backup.py） | — |
-| 历史/导入 | — | TEST-IMPORT/HISTORY 2 |
-| 纯逻辑/无DB | 33 | TEST-LOGIC 21 |
+| PG（门面/直连/fenced） | 50 FACADE（+4）、23 DIRECT、3 FENCED（有重叠） | TEST-PG 26（+1）；TEST-PG-INFRA 1（+1，`pg_test_kit.py`=CW-007 `require_pg_or_explicit_skip` 硬门 harness 本体，是门禁非债务） |
+| 实际 SQLite 连接 | **2**（`db.py` 本体、`backup.py` 历史备份；+0） | TEST-SQLITE-CONN 43（**+3 新债务**）、混合 3（+1） |
+| 仅 sqlite3.Row/Error 类型引用 | 30（+1 `viral_import.py`） | — |
+| db.py 消费者 | 10（均并存 PG 导入，除 backup.py；+0） | — |
+| 历史/导入 | — | TEST-IMPORT/HISTORY 2（+0） |
+| 纯逻辑/无DB | 33（+0） | TEST-LOGIC 21（+0） |
+| **文件总数** | **104**（b211095 100 + 4 viral） | **96**（b211095 90 + 6） |
+
+> **重算 provenance（2026-09-09）**：base=原 draft 的 b211095 脚本分类；delta=10 个 df7020c 新文件（`comm -13` ls-tree 集差核验 + 逐文件 import/调用级读证归类）。既有文件分类稳定性已三维核验无漂移：type-debt 维 30→31（仅 +viral_import）、db-consumer 维 0 delta、test sqlite-conn 维仅 +3 新文件（无既有 gain/drop）。**+3 新 TEST-SQLITE-CONN 债务**：`test_viral_link`(11× `sqlite3.connect`)、`test_viral_import`(`BusinessConnection.sqlite`)、`test_script_from_audio_migration`(alembic 升 077 跑 SQLite tmp) → 归 CW-058/059（升级矩阵部分 CW-056）；`test_viral_refresh` 为混合（SQLite worker 路径 + `@pytest.mark.pg` PG 用例）。authoritative 全量脚本重跑（捕捉 queue3 对既有文件的 PG/类型细分类微调）随 W0 批次落地 / CW-043 独立复核执行。
 
 ## 3. 精确历史例外 allowlist（含责任/退役条件）
 
@@ -51,7 +55,7 @@
 
 除 E1—E7 外，**不存在目录级或"未来再说"例外**；新业务/新数据库测试禁止 SQLite。
 
-## 4. server/app 逐文件核销表（100 行）
+## 4. server/app 逐文件核销表（104 行）
 
 | 文件 | 分类 | 语义说明 | 责任任务 | 退役/核销条件 |
 | --- | --- | --- | --- | --- |
@@ -146,8 +150,12 @@
 | `server/app/studio_drafts.py` | SQLITE-TYPE-DEBT(仅类型)、PG-FACADE | 仅 sqlite3.Row/Error 类型引用（无连接） | CW-054 类型债务核销 | 逐调用者 RED→GREEN 后 |
 | `server/app/studio_routes.py` | PG-FACADE | PG 门面/直连 | — | — |
 | `server/app/viral_decrypt.py` | NO-DB | — | — | — |
+| `server/app/viral_import.py` | SQLITE-TYPE-DEBT(仅类型)、PG-FACADE | 仅 sqlite3.Row/Error 类型引用（9 处，无连接）；运行经 db_portable.BusinessConnection 门面 | CW-054 类型债务核销 | 逐调用者 RED→GREEN 后 |
+| `server/app/viral_import_routes.py` | PG-FACADE | 路由层，经 BusinessConnection + customer_fence.BusinessDbDep 门面 | — | — |
 | `server/app/viral_keywords.py` | NO-DB | — | — | — |
+| `server/app/viral_link.py` | PG-FACADE | 经 db_portable.BusinessConnection 门面（douyidou_link_client_from_settings） | — | — |
 | `server/app/viral_media.py` | NO-DB | — | — | — |
+| `server/app/viral_refresh.py` | PG-FACADE | 经 db_portable.BusinessConnection 门面（conn.execute viral_refresh_tasks；SQLite worker 步 _run_sqlite_viral_refresh_step 归 CW-030） | — | — |
 | `server/app/viral_routes.py` | SQLITE-HELPER(db.py)、PG-FACADE、PG-DIRECT | 引用 db.py（多为双导入并存） | CW-054/055 逐调用者 PG 化 → CW-042 摘除 db.py 消费 | 逐调用者先红后绿后 |
 | `server/app/viral_statistics.py` | PG-FACADE | PG 门面/直连 | — | — |
 | `server/app/viral_store.py` | PG-FACADE、SQL-TRANSLATOR-USER | PG 门面/直连 | — | — |
@@ -156,11 +164,12 @@
 | `server/app/zpay.py` | NO-DB | — | — | — |
 | `server/app/zpay_payments.py` | SQLITE-TYPE-DEBT(仅类型)、PG-FACADE | 仅 sqlite3.Row/Error 类型引用（无连接） | CW-054 类型债务核销 | 逐调用者 RED→GREEN 后 |
 
-## 5. server/tests 逐文件核销表（90 行）
+## 5. server/tests 逐文件核销表（96 行）
 
 | 文件 | 分类 | 语义说明 | 责任任务 | 退役/核销条件 |
 | --- | --- | --- | --- | --- |
 | `server/tests/conftest.py` | TEST-LOGIC | — | — | — |
+| `server/tests/pg_test_kit.py` | TEST-PG-INFRA | CW-007 `require_pg_or_explicit_skip` 硬门 harness 本体（psycopg + TEST_POSTGRESQL_URL；缺库 fail-closed） | —（PG 基座，非债务） | — |
 | `server/tests/test_activation_code_routes.py` | TEST-PG | — | — | — |
 | `server/tests/test_activation_code_schema.py` | TEST-PG | — | — | — |
 | `server/tests/test_activation_code_service.py` | TEST-PG | — | — | — |
@@ -222,12 +231,14 @@
 | `server/tests/test_optional_project_state_api.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_oral_domain.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_payments.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
+| `server/tests/test_pg_test_kit.py` | TEST-PG | 测 CW-007 硬门 harness（require_pg_or_explicit_skip fail-closed 行为） | — | — |
 | `server/tests/test_postgres_migrations.py` | TEST-PG | — | — | — |
 | `server/tests/test_project_character_selection.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_queue_load_10k.py` | TEST-PG | — | — | — |
 | `server/tests/test_rbac.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_recharge_orders.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_script_from_audio.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
+| `server/tests/test_script_from_audio_migration.py` | TEST-SQLITE-CONN(债务) | alembic upgrade 到 077_durable_script_from_audio，跑在 SQLite tmp_path（connect_database）验迁移方言/回滚 | CW-056 空/旧 PG 升级矩阵 + CW-058 迁移 | 先红后绿移植到真实 PG；缺 PG 不得 skip |
 | `server/tests/test_script_rewrite.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_security_contracts.py` | TEST-LOGIC | — | — | — |
 | `server/tests/test_settings.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
@@ -240,8 +251,11 @@
 | `server/tests/test_studio_notification_preferences.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_studio_stats.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_viral_decrypt.py` | TEST-LOGIC | — | — | — |
+| `server/tests/test_viral_import.py` | TEST-SQLITE-CONN(债务) | BusinessConnection.sqlite(connect_database(db_path)) 建库；worker/导入持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_viral_keywords.py` | TEST-LOGIC | — | — | — |
+| `server/tests/test_viral_link.py` | TEST-SQLITE-CONN(债务) | 11× sqlite3.connect(db_path) 建库；link 解析回执持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_viral_media.py` | TEST-LOGIC | — | — | — |
+| `server/tests/test_viral_refresh.py` | TEST-PG+SQLITE-CONN(混合) | SQLite worker 路径用例（BusinessConnection.sqlite + _run_sqlite_viral_refresh_step）+ @pytest.mark.pg PG 用例（psycopg/require_pg_or_explicit_skip） | CW-058/059 迁移 SQLite 部分；CW-030 worker PG 调度 | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_viral_routes.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_viral_statistics.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_viral_store.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
