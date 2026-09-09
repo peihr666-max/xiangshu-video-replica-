@@ -31,6 +31,7 @@
 | 数据库规范 | 全环境 PG 唯一（承接 CW-002 §1） | `docs/PostgreSQL唯一数据库实施与验收规范.md` |
 
 - 漂移说明：`data-deploy-audit.md` 的规模数字（103 顶层文件 / 76 迁移 / 92 测试文件）钉在 **bffc341** 审计快照，与 df7020c 存在漂移；本决议以 df7020c 实际树为准，audit 仅作裁剪边界输入（CW-053 已将 DB 语义清单重算到 df7020c 基线）。
+- **`source-baseline.json` 处置（DoD line 104 文件对象）**：位于 `outputs/customer-cloud-convergence-analysis-2026-09-08/source-baseline.json`（df7020c 内 track；独立分析目录 `乡墅爆款短视频复刻-客户版收敛分析/outputs/...` 同名文件一致）。其 `source_base_sha=bffc3419f9d89bf76fd4ad1bdad65dd824a44553`、`captured_at_utc=2026-09-08T12:20:28`、`audit_branch=codex/customer-cloud-convergence-analysis-20260908`，记录的是**分析阶段快照**（当时 origin/main=2cacc920）。**决议：作为分析输入快照保留、不改写**（改写会破坏审计可追溯性）；发布基线以本决议 §1 的 df7020c 为准，二者分属不同层（bffc341=分析起点，df7020c=整合后正式候选）。bffc341→df7020c 的演进 = viral 收敛队列3（ce40db5，PR #100–102）+ CW-007（df7020c，PR #103），均为已合并 main 的正式提交，符合 DoD line 107"不能用分析分支代替最终集成版本"。
 
 ## 2. 迁移图核实（无多 head、无已发布 revision 改写）
 
@@ -77,6 +78,13 @@
 | 本决议文档 | 纯新增 | `git revert` 即回退 |
 
 恢复抽查：df7020c、b955677、0d79622 均可 `git checkout` 找回；受保护原改动（CW-007 缺库硬门、CW-009 安全矩阵）已分别在 df7020c、b13d735 中，未丢失。
+
+**已复用 / 已剔除范围、合并要求与回归先后（DoD line 108）**：
+
+- 已复用：df7020c 已含 CW-007 缺库硬门与 PG 测试隔离成果（无需重建）；V3 清单（bf6aab8 定义）、data-deploy-audit（bffc341 审计）、source-baseline.json 与 v3/baseline.json（分析快照）作为输入复用，不重做全仓摸底。
+- 已剔除：DoD line 102"重复做未指定边界的全仓摸底"——本决议复用已有 Git/迁移基线快照，不重新扫描全仓；"已有 Git 与迁移基线生成能力"不重建。
+- 合并要求：已签认 W0 草案（CW-002/003/004）+ 本文档，签认后 cherry-pick 到 df7020c；CW-005/053 待签认后纳入；每份均为纯新增 `docs/evidence/` 文件，互不冲突（cherry-pick 预期零冲突）。
+- 回归先后记录：CW-001 为决策与静态核验层，无代码回归；在其冻结的 df7020c 基线上，后续 W2–W7 代码/测试增量遵 V3 §1 规则 3"缺陷先红后绿、数据库断言真实 PG"，CW-007 已建立的缺库硬门（require_pg_or_explicit_skip）为回归基座。
 
 ## 5. pre-GA 执行路线（发布基线之上的路线决议附件）
 
