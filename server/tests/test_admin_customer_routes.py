@@ -1746,3 +1746,47 @@ def test_customers_csv_export_uses_the_same_date_and_balance_filters(
     )
     assert response.status_code == 200, response.text
     assert "customer_u" not in response.text
+
+
+def test_customer_code_materials_never_reach_control_csv_exports(
+    client: TestClient,
+) -> None:
+    """CW-009/S2: 码明文与 digest 不得进入控制台 CSV 导出。
+
+    Positive control: the fixture-seeded *activated* row (``customer_u`` with
+    digest ``digest-cu``) must flow through the export, so the negative
+    assertions below are actually exercised — a header-only CSV must fail
+    this test.  An *unactivated* ISSUED code is additionally seeded to pin
+    the join boundary: its digest must never leak either.
+    """
+    admin = _admin_session(client)
+    raw_code = "CW09-CSV-CODE-0001"
+    code_digest = "cw09-digest-3f9c2b7a"
+
+    with psycopg.connect(_t23_dsn(), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO activation_code_batches "
+            "(id, name, face_value_fen, unit_price_fen_snapshot, credits_snapshot, "
+            "quantity, activation_expires_at, status, created_by_user_id) VALUES "
+            "('cw09-csv-batch', 'cw09-csv', 1500, 1000, 100, 1, "
+            "'2099-01-01T00:00:00+00:00', 'OPEN', 'admin_u') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        conn.execute(
+            "INSERT INTO activation_codes "
+            "(id, batch_id, code_digest, digest_key_version, masked_code, status, "
+            " issued_at, bound_user_id, activated_at) VALUES "
+            "('code-cw09-csv', 'cw09-csv-batch', %s, 1, 'CW09-****', 'ISSUED', "
+            "'2026-01-01T00:00:00+00:00', NULL, NULL) "
+            "ON CONFLICT (id) DO NOTHING",
+            (code_digest,),
+        )
+
+    response = client.get("/api/control/customers.csv", headers=admin)
+    assert response.status_code == 200, response.text
+    # Positive control — the activated fixture row really flows through.
+    assert "customer_u" in response.text
+    # Negative assertions on the material the export must never carry.
+    assert "digest-cu" not in response.text
+    assert raw_code not in response.text
+    assert code_digest not in response.text
