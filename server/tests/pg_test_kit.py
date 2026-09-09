@@ -39,6 +39,9 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "customer_v3_test",
         "cw007_kit_alpha_test",
         "cw007_kit_beta_test",
+        "cw010_wallet_billing_test",
+        "cw010_oral_domain_test",
+        "cw010_independent_creation_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):
