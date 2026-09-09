@@ -39,6 +39,12 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "customer_v3_test",
         "cw007_kit_alpha_test",
         "cw007_kit_beta_test",
+        # CW-010 per-category recovery baselines: each owns a dedicated migrated
+        # database created through create_test_database/drop_test_database, so the
+        # allowlist guard covers their DROP ... WITH (FORCE).
+        "cw010_wallet_billing_test",
+        "cw010_independent_test",
+        "cw010_oral_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):
