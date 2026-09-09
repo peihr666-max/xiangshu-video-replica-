@@ -1,5 +1,4 @@
 import {
-  type ComponentProps,
   type ReactNode,
   useCallback,
   useEffect,
@@ -8,7 +7,6 @@ import {
   useRef,
   useState,
 } from "react";
-import type { WorkspaceShell } from "../App";
 import {
   createIndependentVideoTask,
   createOralTask,
@@ -29,6 +27,7 @@ import {
   type Project,
 } from "../api";
 import { SettingsPanel } from "../SettingsPanel";
+import type { WorkspaceShellProps } from "../workspace-shell";
 import { AnalyticsPage } from "./AnalyticsPage";
 import {
   MaterialsPage,
@@ -100,7 +99,7 @@ import type {
 import { Button, Empty, Hint, Icon, Media } from "./ui";
 import "./studio.css";
 
-type Props = ComponentProps<typeof WorkspaceShell> & {
+type Props = WorkspaceShellProps & {
   reviewData?: StudioData;
   initialState?: StudioState;
 };
