@@ -11,7 +11,7 @@
 | 改动文件 | `docs/evidence/CW001-RELEASE-BASELINE.md`（新增） |
 | 失败测试或回归锁定 | 不适用（准备与决策层；迁移链核实为静态核验） |
 | 实现结果 | 见 §1–§6：发布基线冻结 df7020c；迁移单 head 080 无多父；8 分支补丁来源处置；回滚点；pre-GA 路线附件；2 待确认策略点 |
-| 验证命令与通过数 | 静态核验：`git ls-tree`/`git grep` 迁移链单 head 计算（§2）；`git log df7020c..<branch>` 补丁来源（§3）；`git diff b4b584e df7020c --stat` tree 逐字节比对（§1） |
+| 验证命令与通过数 | 静态核验：`git ls-tree`/`git grep` 迁移链单 head 计算（§2）；`git rev-list --count`+`git merge-base` 补丁来源与 fork 基线（§3）；`git diff b4b584e df7020c --stat` tree 逐字节比对（§1）；`git cat-file -e df7020c:<doc>` 核验 6 份草案目标文件 ABSENT（§3/§4 cherry-pick 零冲突依据） |
 | 证据层级 | 决策与静态核验（签认前不得视为完成） |
 | 安全与可观测性 | 不适用（本项不含运行时改动） |
 | 迁移与回滚 | 纯文档新增，revert 即回退；发布基线 df7020c 的回滚点见 §4 |
@@ -64,7 +64,11 @@
 | cw05-data-disposition | 589ad04 | 1 草案 | **呈报待签认** | 框架冻结+内部 P0 数据归档不合入+GA 触发 |
 | cw053-db-inventory | 3e67783 | 1 草案 | **呈报待签认** | 静态 DB 语义清单+精确历史例外 |
 
-- W0 草案落地方式：沿用各草案分支"单文件纯新增"模式，签认后 cherry-pick 到 df7020c（承接 W0 批次落地）。
+- **fork 基线与领先/落后披露（2026-09-09 复核修正）**：`git merge-base df7020c <branch>` + `git rev-list --count` 实测——
+  - cw02/03/04/05/053 五条草案分支 merge-base=**b211095**（早于 6268bfb/247f263/ce40db5/df7020c 四个 mainline 提交），**ahead=1（文档 tip commit）/ behind=4**。故表中“领先 df7020c=1”仅指各自的 1 个文档 commit，分支本体相对 df7020c **落后 4 个提交**（`git diff df7020c..cw02 --stat`=329 文件 / −114059 行即缺失量）。
+  - cw009-security-matrix merge-base=**df7020c**、ahead=1 / behind=0 → 已 rebase 到当前 main，**干净可直接 owner merge**（与草案分支陈旧基线不同）。
+  - cw007 merge-base=ce40db5 / ahead=2 / behind=1（其 squash 即 df7020c）；cw010 merge-base=b211095 / ahead=3 / behind=4（堆叠旧 cw007/009，需 rebase --onto df7020c，用户指令暂放）；cw001（本分支）merge-base=df7020c / ahead=2 / behind=0。
+- **W0 落地机制（据此更正 §4）**：签认后 **cherry-pick 各草案的 tip 文档 commit** 到 df7020c（cw002=898afec / cw003=a08c778 / cw004=34e8b7b / cw005=589ad04 / cw053=3e67783 各 1 commit；cw001=ff791d0+15f509e 共 2 commit）。每个 tip commit 均单文件纯新增、目标文件在 df7020c 经 `git cat-file -e` 核验为 **ABSENT** → cherry-pick 零冲突。**严禁 merge/rebase 整条草案分支**（会把 behind=4 的陈旧发散带入 df7020c）。
 - CW-001 本文档为 W0 第 6 份，前置=无（V3 line 36），是其余 W0 与 W2–W7 的发布基线锚点。
 
 ## 4. 备份与回滚点（WIP 可恢复）
@@ -83,7 +87,7 @@
 
 - 已复用：df7020c 已含 CW-007 缺库硬门与 PG 测试隔离成果（无需重建）；V3 清单（bf6aab8 定义）、data-deploy-audit（bffc341 审计）、source-baseline.json 与 v3/baseline.json（分析快照）作为输入复用，不重做全仓摸底。
 - 已剔除：DoD line 102"重复做未指定边界的全仓摸底"——本决议复用已有 Git/迁移基线快照，不重新扫描全仓；"已有 Git 与迁移基线生成能力"不重建。
-- 合并要求：已签认 W0 草案（CW-002/003/004）+ 本文档，签认后 cherry-pick 到 df7020c；CW-005/053 待签认后纳入；每份均为纯新增 `docs/evidence/` 文件，互不冲突（cherry-pick 预期零冲突）。
+- 合并要求：已签认 W0 草案（CW-002/003/004）+ 本文档 + 待签认的 CW-005/053，签认后 **cherry-pick 各自 tip 文档 commit** 到 df7020c（机制见 §3 更正：草案分支 fork 自 b211095、behind=4，故只 cherry-pick tip commit，**不 merge/rebase 整分支**）。6 份目标文件（CW001/002/003/004/005/053-*.md）在 df7020c 均 ABSENT、各 tip commit 均单文件纯新增 → cherry-pick 已核验零冲突；owner 定 PR 策略（W0 合为 1 个批次 PR 或逐份 PR，受 AGENTS.md“一 PR 一任务”约束需 owner 裁量）后落地。
 - 回归先后记录：CW-001 为决策与静态核验层，无代码回归；在其冻结的 df7020c 基线上，后续 W2–W7 代码/测试增量遵 V3 §1 规则 3"缺陷先红后绿、数据库断言真实 PG"，CW-007 已建立的缺库硬门（require_pg_or_explicit_skip）为回归基座。
 
 ## 5. pre-GA 执行路线（发布基线之上的路线决议附件）
