@@ -146,7 +146,9 @@ describe("CharacterLibrary", () => {
     expect(
       await screen.findByRole("tab", { name: "场景造型" }),
     ).toHaveAttribute("aria-selected", "true");
-    expect(api.listCharacterSceneLooks).toHaveBeenCalledWith("identity-1");
+    await waitFor(() =>
+      expect(api.listCharacterSceneLooks).toHaveBeenCalledWith("identity-1"),
+    );
   });
 
   it("separates the base appearance from scene looks and directly generates a new look", async () => {
@@ -361,7 +363,7 @@ describe("CharacterLibrary", () => {
     });
     fireEvent.change(screen.getByLabelText("授权图片"), {
       target: {
-        files: [new File(["png"], "source.png", { type: "image/png" })],
+        files: [new File(["webp"], "source.webp", { type: "image/webp" })],
       },
     });
     fireEvent.click(
@@ -374,6 +376,9 @@ describe("CharacterLibrary", () => {
         expect.any(File),
         "林夏",
       ),
+    );
+    expect(vi.mocked(api.uploadSimpleCharacter).mock.calls[0]?.[1].type).toBe(
+      "image/webp",
     );
     expect(await screen.findByAltText("林夏 正脸近景")).toBeInTheDocument();
     expect(screen.getByText(/五视图拼合图已生成/)).toBeInTheDocument();

@@ -16,6 +16,7 @@ import {
   defaultBatchProvider,
   downloadMaterialAsset,
   type GenerationBatch,
+  type GenerationBatchInput,
   type GenerationBatchListItem,
   type GenerationRatio,
   getAssetDownloadUrl,
@@ -25,17 +26,19 @@ import {
   getLatestProjectShotCards,
   getLatestScriptFromAudioTask,
   getLatestScriptVersion,
+  getOralTask,
+  getScriptFromAudioTask,
   getStudioAnalytics,
   getStudioDraft,
   getStudioStats,
-  listCharacterSceneLooks,
+  listCharacterSceneLooksPage,
   listGenerationBatches,
   listMaterials,
   listOralAvatars,
-  listOralTasks,
+  listOralTasksPage,
   listOralVoices,
   listProjects,
-  listSimpleCharacterLibrary,
+  listSimpleCharacterLibraryPage,
   listStudioSavedScripts,
   listViralVideos,
   lockGenerationPrompt,
@@ -75,6 +78,34 @@ const projectLimit = 24;
 const personLimit = 8;
 const projectPreviewLimit = 8;
 const sceneLimit = 12;
+const MAX_ORAL_SOURCE_BYTES = 50 * 1024 * 1024;
+
+type FrozenReplicaRequest = {
+  fingerprint: string;
+  idempotencyKey: string;
+  projectId: string;
+  request: GenerationBatchInput;
+};
+
+const frozenReplicaRequests = new Map<string, FrozenReplicaRequest>();
+const frozenReplicaRequestsByContext = new Map<string, FrozenReplicaRequest>();
+
+function replicaRequestContextKey(projectId: string, fingerprint: string) {
+  return `${projectId}:${fingerprint}`;
+}
+
+function clearFrozenReplicaRequest(frozen: FrozenReplicaRequest) {
+  if (frozenReplicaRequests.get(frozen.idempotencyKey) === frozen) {
+    frozenReplicaRequests.delete(frozen.idempotencyKey);
+  }
+  const contextKey = replicaRequestContextKey(
+    frozen.projectId,
+    frozen.fingerprint,
+  );
+  if (frozenReplicaRequestsByContext.get(contextKey) === frozen) {
+    frozenReplicaRequestsByContext.delete(contextKey);
+  }
+}
 
 function errorText(error: unknown) {
   return error instanceof Error && error.message.trim()
@@ -115,6 +146,38 @@ export function studioAssetFromMaterial(item: MaterialItem): StudioAsset {
     allowedUses: item.allowed_uses,
     allowedActions: item.allowed_actions,
   };
+}
+
+export type OralAudioPurpose = "oral_audio" | "voice_clone";
+
+export function validateOralAudioFile(file: File) {
+  if (!file.name.toLowerCase().endsWith(".mp3")) return "仅支持 MP3 音频。";
+  if (file.size <= 0) return "上传文件不能为空。";
+  if (file.size > MAX_ORAL_SOURCE_BYTES) return "上传文件不能超过 50 MB。";
+  return undefined;
+}
+
+export function readAudioDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const audio = document.createElement("audio");
+    const cleanup = () => {
+      audio.removeAttribute("src");
+      URL.revokeObjectURL(url);
+    };
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => {
+      const duration = audio.duration;
+      cleanup();
+      if (Number.isFinite(duration) && duration > 0) resolve(duration);
+      else reject(new Error("无法读取音频时长，请重新选择 MP3 文件。"));
+    };
+    audio.onerror = () => {
+      cleanup();
+      reject(new Error("无法读取音频时长，请重新选择 MP3 文件。"));
+    };
+    audio.src = url;
+  });
 }
 
 function draftAssetIds(draft: StudioDraft): string[] {
@@ -453,8 +516,18 @@ async function loadPeople(): Promise<{
   people: StudioPerson[];
   assets: StudioAsset[];
   errors: string[];
+  nextCursor: string | null;
+  total: number;
 }> {
-  const entries = (await listSimpleCharacterLibrary()).slice(0, personLimit);
+  const page = await listSimpleCharacterLibraryPage({ limit: personLimit });
+  return loadPeopleEntries(page.items, page.next_cursor, page.total);
+}
+
+async function loadPeopleEntries(
+  entries: SimpleLibraryEntry[],
+  nextCursor: string | null,
+  total: number,
+) {
   const errors: string[] = [];
   const people: StudioPerson[] = [];
   const assets: StudioAsset[] = [];
@@ -512,11 +585,19 @@ async function loadPeople(): Promise<{
       });
     }
   }
-  return { people, assets, errors };
+  return { people, assets, errors, nextCursor, total };
+}
+
+export async function loadMorePeople(cursor: string) {
+  const page = await listSimpleCharacterLibraryPage({
+    limit: personLimit,
+    cursor,
+  });
+  return loadPeopleEntries(page.items, page.next_cursor, page.total);
 }
 
 function studioTaskStatus(
-  batch: GenerationBatchListItem,
+  batch: Pick<GenerationBatchListItem, "status" | "needs_attention_count">,
 ): StudioTask["status"] {
   const status = batch.status.toUpperCase();
   if (status === "SUBMISSION_UNCERTAIN") return "uncertain";
@@ -557,6 +638,34 @@ function studioTask(batch: GenerationBatchListItem): StudioTask {
   };
 }
 
+function studioTaskFromBatch(batch: GenerationBatch): StudioTask {
+  const needsAttention = batch.tasks.filter((task) =>
+    ["FAILED", "NEEDS_ATTENTION", "SUBMISSION_UNCERTAIN"].includes(
+      task.status.toUpperCase(),
+    ),
+  ).length;
+  return {
+    id: batch.id,
+    backendKind: "generation_batch",
+    backendId: batch.id,
+    backendStatus: batch.status,
+    batchId: batch.id,
+    projectId: batch.project_id,
+    title: batch.display_name?.trim() || batch.id,
+    type: CREATION_KIND_LABELS[batch.creation_kind] ?? "视频生成",
+    status: studioTaskStatus({
+      status: batch.status,
+      needs_attention_count: needsAttention,
+    }),
+    progress: batch.progress.progress_percent,
+    submitted:
+      batch.tasks.find((task) => task.submitted_at)?.submitted_at ?? "—",
+    resultId:
+      batch.tasks.find((task) => task.result_asset_id)?.result_asset_id ??
+      undefined,
+  };
+}
+
 /** 任务中心"取消任务"：仅服务端判定为仍可取消（全部任务未认领）的
  * 排队批次会成功，其余状态返回明确错误由调用方提示。 */
 export async function cancelStudioTask(
@@ -573,11 +682,15 @@ export async function cancelStudioTask(
   return {};
 }
 
-async function loadTasks(_currentUser: CurrentUser): Promise<StudioTask[]> {
+async function loadTasks(_currentUser: CurrentUser) {
   // The authenticated server scope includes delegated project tasks; filtering
   // by creator here would silently hide work the current customer can access.
   const page = await listGenerationBatches({ limit: 20 });
-  return page.items.map(studioTask);
+  return {
+    items: page.items.map(studioTask),
+    nextCursor: page.next_cursor,
+    total: page.total ?? page.items.length,
+  };
 }
 
 /** 每轮同时刷新生成批次和口播任务；单边失败不丢弃另一边的有效结果。 */
@@ -595,8 +708,10 @@ export async function reloadTasks(
     throw generationResult.reason;
   }
   return [
-    ...(generationResult.status === "fulfilled" ? generationResult.value : []),
-    ...(oralResult.status === "fulfilled" ? oralResult.value : []),
+    ...(generationResult.status === "fulfilled"
+      ? generationResult.value.items
+      : []),
+    ...(oralResult.status === "fulfilled" ? oralResult.value.items : []),
   ];
 }
 
@@ -677,9 +792,40 @@ function oralTask(row: OralTaskRecord): StudioTask {
   };
 }
 
-async function loadOralTasks(): Promise<StudioTask[]> {
-  const rows = await listOralTasks(20);
-  return rows.map(oralTask);
+async function loadOralTasks() {
+  const page = await listOralTasksPage({ limit: 20 });
+  return {
+    items: page.items.map(oralTask),
+    loaded: page.items.length,
+    total: page.total ?? page.items.length,
+  };
+}
+
+export async function loadMoreGenerationTasks(cursor: string) {
+  const page = await listGenerationBatches({ limit: 20, cursor });
+  return {
+    items: page.items.map(studioTask),
+    nextCursor: page.next_cursor,
+    total: page.total ?? page.items.length,
+  };
+}
+
+export async function loadMoreOralTasks(offset: number) {
+  const page = await listOralTasksPage({ limit: 20, offset });
+  return {
+    items: page.items.map(oralTask),
+    loaded: offset + page.items.length,
+    total: page.total,
+  };
+}
+
+export async function loadStudioTaskDetail(
+  kind: "generation_batch" | "oral_task",
+  id: string,
+): Promise<StudioTask> {
+  return kind === "oral_task"
+    ? oralTask(await getOralTask(id))
+    : studioTaskFromBatch(await getGenerationBatch(id));
 }
 
 export async function retryStudioTask(task: StudioTask): Promise<void> {
@@ -722,7 +868,7 @@ export function studioVideoFromViral(item: ViralVideoItem): StudioVideo {
     likes: item.likes,
     collections: item.collects,
     shares: item.shares,
-    description: item.title,
+    description: item.sourceDescription ?? "",
     platformKey: item.platform,
     nativeId: item.videoId,
     authorAvatar: item.authorAvatar,
@@ -739,7 +885,7 @@ export function studioVideoFromViral(item: ViralVideoItem): StudioVideo {
 
 /** 爆款视频（C4 重启）：两个平台各自聚合；数据源未配置或失败时保持
  * 空态，不打断工作台其余数据的加载（与统计指标同一容错口径）。 */
-async function loadViralVideos(): Promise<{
+export async function loadViralVideos(): Promise<{
   videos: StudioVideo[];
   errors: string[];
 }> {
@@ -762,6 +908,7 @@ async function loadViralVideos(): Promise<{
 
 export async function loadStudioData(
   currentUser: CurrentUser,
+  options: { includeViral?: boolean } = {},
 ): Promise<StudioData> {
   const [
     projectsResult,
@@ -781,8 +928,10 @@ export async function loadStudioData(
     getStudioAnalytics(7),
     getStudioAnalytics(30),
     loadOralTasks(),
-    loadViralVideos(),
-    loadVideoMaterials(),
+    options.includeViral === false
+      ? Promise.resolve({ videos: [], errors: [] })
+      : loadViralVideos(),
+    loadVideoMaterialMetadata(),
   ]);
   const errors: string[] = [];
   const projectData =
@@ -792,10 +941,10 @@ export async function loadStudioData(
   const peopleData =
     peopleResult.status === "fulfilled"
       ? peopleResult.value
-      : { people: [], assets: [], errors: [] };
+      : { people: [], assets: [], errors: [], nextCursor: null, total: 0 };
   const tasks = [
-    ...(tasksResult.status === "fulfilled" ? tasksResult.value : []),
-    ...(oralResult.status === "fulfilled" ? oralResult.value : []),
+    ...(tasksResult.status === "fulfilled" ? tasksResult.value.items : []),
+    ...(oralResult.status === "fulfilled" ? oralResult.value.items : []),
   ];
   // 统计加载失败不打断工作区：指标卡回退为 "—"，重试路径会再次拉取。
   const stats = statsResult.status === "fulfilled" ? statsResult.value : null;
@@ -840,27 +989,34 @@ export async function loadStudioData(
     stats,
     analytics7,
     analytics30,
+    pagination: {
+      people: {
+        nextCursor: peopleData.nextCursor,
+        total: peopleData.total,
+      },
+      scenes: {},
+      generationTasks:
+        tasksResult.status === "fulfilled"
+          ? {
+              nextCursor: tasksResult.value.nextCursor,
+              total: tasksResult.value.total,
+            }
+          : { nextCursor: null, total: 0 },
+      oralTasks:
+        oralResult.status === "fulfilled"
+          ? {
+              loaded: oralResult.value.loaded,
+              total: oralResult.value.total,
+            }
+          : { loaded: 0, total: 0 },
+    },
   };
 }
 
-/** 素材库图片（视频生成页的首帧/尾帧/参考素材选择来源），签名后返回。 */
-export async function loadVideoMaterials(): Promise<StudioAsset[]> {
+/** 启动阶段只读取图片素材元数据；预览地址由实际可见的选择器按页签发。 */
+async function loadVideoMaterialMetadata(): Promise<StudioAsset[]> {
   const page = await listMaterials({ mediaType: "image", pageSize: 60 });
-  const assets = page.items.map(studioAssetFromMaterial);
-  const previewResults = await Promise.allSettled(
-    assets.map((asset) =>
-      asset.assetId
-        ? getAssetDownloadUrl(asset.assetId).then((result) => result.url)
-        : Promise.resolve(undefined),
-    ),
-  );
-  return assets.map((asset, index) => ({
-    ...asset,
-    url:
-      previewResults[index]?.status === "fulfilled"
-        ? previewResults[index].value
-        : undefined,
-  }));
+  return page.items.map(studioAssetFromMaterial);
 }
 
 /** 视频生成页本机上传图片：素材三步通道，返回可直接引用的签名资产。 */
@@ -868,12 +1024,37 @@ export async function uploadVideoMaterial(
   file: File,
   group: string,
   onProgress: (progress: number) => void,
+  signal?: AbortSignal,
 ): Promise<StudioAsset> {
   const intent = await createMaterialUploadIntent(file, {
     title: file.name,
     group,
   });
-  await uploadMaterial(intent, file, onProgress);
+  await uploadMaterial(intent, file, onProgress, signal);
+  const material = await completeMaterialUpload(intent.asset_id);
+  const asset = studioAssetFromMaterial(material);
+  const url = material.asset_id
+    ? await getAssetDownloadUrl(material.asset_id)
+        .then((result) => result.url)
+        .catch(() => undefined)
+    : undefined;
+  return { ...asset, url };
+}
+
+export async function uploadOralAudioMaterial(
+  file: File,
+  purpose: OralAudioPurpose,
+  durationSeconds: number,
+  onProgress: (progress: number) => void,
+  signal?: AbortSignal,
+): Promise<StudioAsset> {
+  const intent = await createMaterialUploadIntent(file, {
+    title: file.name,
+    group: purpose === "oral_audio" ? "完整口播音频" : "声音克隆样本",
+    audioPurpose: purpose,
+    durationSeconds,
+  });
+  await uploadMaterial(intent, file, onProgress, signal);
   const material = await completeMaterialUpload(intent.asset_id);
   const asset = studioAssetFromMaterial(material);
   const url = material.asset_id
@@ -970,6 +1151,9 @@ function savedScriptFromRecord(record: {
   text: string;
   original: string | null;
   version: number;
+  ip_id: string | null;
+  source_project_id: string | null;
+  source_kind: string | null;
 }): StudioScript {
   return {
     id: record.script_id,
@@ -978,6 +1162,14 @@ function savedScriptFromRecord(record: {
     text: record.text,
     version: record.version,
     confirmed: false,
+    ipId: record.ip_id ?? undefined,
+    sourceProjectId: record.source_project_id ?? undefined,
+    sourceKind:
+      record.source_kind === "project" ||
+      record.source_kind === "upload" ||
+      record.source_kind === "manual"
+        ? record.source_kind
+        : undefined,
   };
 }
 
@@ -989,6 +1181,7 @@ export async function loadSavedScriptList(): Promise<StudioScript[]> {
 export async function persistSavedScript(
   script: StudioScript,
   sourceProjectId?: string,
+  ipId?: string,
 ): Promise<void> {
   const input: StudioSavedScriptInput = {
     script_id: script.id,
@@ -996,7 +1189,7 @@ export async function persistSavedScript(
     text: script.text,
     original: script.original || null,
     version: script.version,
-    ip_id: null,
+    ip_id: ipId ?? script.ipId ?? null,
     source_project_id: sourceProjectId ?? null,
     source_kind: sourceProjectId ? "project" : "upload",
   };
@@ -1027,16 +1220,20 @@ export async function publishScriptVersion(
 export type PersonAssetLoad = {
   assets: StudioAsset[];
   errors: string[];
+  loaded: number;
+  total: number;
 };
 
 export async function loadPersonAssets(
   identityId: string,
+  offset = 0,
 ): Promise<PersonAssetLoad> {
   try {
-    const scenes = (await listCharacterSceneLooks(identityId)).slice(
-      0,
-      sceneLimit,
-    );
+    const page = await listCharacterSceneLooksPage(identityId, {
+      limit: sceneLimit,
+      offset,
+    });
+    const scenes = page.items;
     const selected = scenes
       .map((scene) => ({
         scene,
@@ -1073,12 +1270,14 @@ export async function loadPersonAssets(
         saved: Boolean(scene.published_at),
       };
     });
-    return { assets, errors };
-  } catch (error) {
     return {
-      assets: [],
-      errors: [`读取人物场景形象照失败：${errorText(error)}`],
+      assets,
+      errors,
+      loaded: offset + scenes.length,
+      total: page.total,
     };
+  } catch (error) {
+    throw new Error(`读取人物场景形象照失败：${errorText(error)}`);
   }
 }
 
@@ -1087,21 +1286,37 @@ export async function loadPersonAssets(
 export async function extractScriptFromUpload(
   projectId: string,
   assetId: string,
-): Promise<{ text: string }> {
-  await createScriptFromAudioTask(projectId, assetId, crypto.randomUUID());
+): Promise<{ text: string; taskId: string }> {
+  const submitted = await createScriptFromAudioTask(
+    projectId,
+    assetId,
+    crypto.randomUUID(),
+  );
   const maxAttempts = 150; // 2s × 150 = 5 分钟上限（长音频异步转写兜底）
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 2000));
-    const task = await getLatestScriptFromAudioTask(projectId);
-    if (!task) continue;
+    const task = await getScriptFromAudioTask(submitted.id);
     if (task.status === "SUCCEEDED" && task.result) {
-      return { text: task.result.text };
+      return { text: task.result.text, taskId: task.id };
     }
     if (task.status === "FAILED" || task.status === "SUBMISSION_UNCERTAIN") {
       throw new Error(task.error_message || "文案提取失败，请稍后重试。");
     }
   }
-  throw new Error("文案提取超时，请稍后在任务中心重试。");
+  throw new Error("文案仍在后台提取，请返回文案工坊恢复本次任务。");
+}
+
+export async function loadLatestScriptFromUpload(projectId: string) {
+  const task = await getLatestScriptFromAudioTask(projectId);
+  return task
+    ? {
+        id: task.id,
+        status: task.status,
+        result: task.result,
+        errorMessage: task.error_message ?? undefined,
+        sourceAssetId: task.source_asset_id ?? undefined,
+      }
+    : null;
 }
 
 /** 复刻一键生成：存稿 → 编译 →（编辑过则存修订）→ 锁定 → 建批。 */
@@ -1116,8 +1331,27 @@ export async function runReplicaGeneration(
     resolution: "768P" | "2K";
     ratio: GenerationRatio;
     quantity: number;
+    idempotencyKey: string;
+    isCurrent?: () => boolean;
   },
 ): Promise<GenerationBatch> {
+  const { idempotencyKey, isCurrent, ...stableInput } = input;
+  const fingerprint = JSON.stringify(stableInput);
+  const contextKey = replicaRequestContextKey(projectId, fingerprint);
+  const frozen =
+    frozenReplicaRequests.get(idempotencyKey) ??
+    frozenReplicaRequestsByContext.get(contextKey);
+  if (frozen) {
+    if (frozen.projectId !== projectId || frozen.fingerprint !== fingerprint) {
+      throw new Error("复刻提交参数已变化，请重新确认费用后再试。");
+    }
+    if (isCurrent && !isCurrent()) {
+      throw new Error("复刻页面已变化，本次旧提交已停止。");
+    }
+    const batch = await createGenerationBatch(projectId, frozen.request);
+    clearFrozenReplicaRequest(frozen);
+    return batch;
+  }
   const script = await createScriptVersion(projectId, {
     source: input.originalScriptText.trim() ? "original" : "custom",
     text: input.originalScriptText,
@@ -1142,15 +1376,29 @@ export async function runReplicaGeneration(
         })
       : compiled;
   const locked = await lockGenerationPrompt(projectId, finalPrompt.id);
-  return createGenerationBatch(projectId, {
+  if (isCurrent && !isCurrent()) {
+    throw new Error("复刻页面已变化，本次旧提交已停止。");
+  }
+  const request: GenerationBatchInput = {
     quantity: input.quantity,
     prompt_version_id: locked.id,
     first_frame_asset_id: input.firstFrameAssetId,
     output_duration_seconds: input.outputDurationSeconds,
     resolution: input.resolution,
     ratio: input.ratio,
-    idempotency_key: crypto.randomUUID(),
+    idempotency_key: idempotencyKey,
     provider: defaultBatchProvider(),
     fake_audio_quality: "ok",
-  });
+  };
+  const prepared = {
+    fingerprint,
+    idempotencyKey,
+    projectId,
+    request,
+  };
+  frozenReplicaRequests.set(idempotencyKey, prepared);
+  frozenReplicaRequestsByContext.set(contextKey, prepared);
+  const batch = await createGenerationBatch(projectId, request);
+  clearFrozenReplicaRequest(prepared);
+  return batch;
 }
