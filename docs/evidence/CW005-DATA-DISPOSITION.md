@@ -6,7 +6,7 @@
 | --- | --- |
 | 任务/工作包 | CW-005 盘点历史数据并签认处置路线 |
 | Owner / Reviewer | Owner：ZCode 代理（hlong026 会话，2026-09-09）；Reviewer：独立复核子代理 + 待数据负责人/业务负责人签认 |
-| 分支 / 基线 SHA | `feat/customer-v3-cw05-data-disposition` / 基线 `origin/main@b211095` |
+| 分支 / 基线 SHA | `feat/customer-v3-cw05-data-disposition`（draft 钉 b211095）→ W0 批次 cherry-pick 到发布基线 `origin/main@df7020c`；2026-09-09 核实 §1/§3 位置线索与行号对 df7020c 仍准确，唯 data-deploy-audit.md 存在性经 ce40db5 已变（见 §1 修正） |
 | 上游规格段落 | V3 清单 §4 CW-005；CW-033—037 条件链 |
 | 改动文件 | `docs/evidence/CW005-DATA-DISPOSITION.md`（新增） |
 | 失败测试或回归锁定 | 不适用（决策与静态核验层）；导入/对账工具既有自动化（T07）继续有效 |
@@ -28,7 +28,7 @@
 | 内部 SQLite 每日备份 | `/var/backups/video-replica`（`app.backup daily`） | `deploy/systemd/video-replica-backup.service`（ExecStart） |
 | 客户生产 PG | `VIDEO_REPLICA_DATABASE_URL` 指向的 PG16（客户生产禁 DB_PATH/sqlite://，fail-closed） | `deploy/customer.env.example:2-8` |
 | 客户生产对象存储 | 私有 COS bucket（active_storage_provider=cos） | `deploy/customer.env.example:8` |
-| 历史部署审计记录 | **`data-deploy-audit.md` 不在本仓库基线 `origin/main` 中**（V3 清单引用之）——该文件存在于收敛分析分支 `codex/customer-cloud-convergence-analysis-20260908` 的 `outputs/customer-cloud-convergence-analysis-2026-09-08/` 下（d93c088 新增），可经 git 恢复，或由部署方提供；恢复动作与候选整合一并处理，不在本任务分支内执行 | `git ls-tree` 两分支均无此文件 |
+| 历史部署审计记录 | **`data-deploy-audit.md` 已在发布基线 `df7020c` 中**（2026-09-09 核实修正）：路径 `outputs/customer-cloud-convergence-analysis-2026-09-08/data-deploy-audit.md`（187 行），经 `ce40db5`（viral 收敛队列3，PR#102）合入 main。draft 原钉 b211095 时该文件确实缺失、故原判断“须从 codex 分支 git 恢复”在 b211095 成立，但相对 CW-001 冻结的 df7020c 已过时——现无需恢复，直接读基线内文件。该文件是只读代码审计（自述“没有连接业务数据库/启动 PG fixture/执行迁移”），记录预期数据/部署拓扑，**不等于实际生产数据盘点**（§6 核心结论不变） | `git ls-tree -r df7020c` 命中；`git cat-file -e b211095:…` 缺失 |
 
 > 上表仅为**预期位置**。实际批次以现场只读盘点为准；"无遗留数据"同样必须留存盘点证据（快照命令输出/管理端导出），不得口头跳过（V3 清单 CW-005 完工标准）。
 
@@ -71,11 +71,11 @@
 
 - **实际数据批次盘点未执行**：本会话无生产/实际环境访问权限。§1 仅代码侧位置线索；§5 无实际行。
 - CW-033（快照恢复演练）、CW-034/035/036/037（条件路线）在 §5 签认前保持 conditional，不得预填路线或标 N/A。
-- `data-deploy-audit.md` 缺失须现场补齐后才能声称"历史部署数据范围已知"。
+- `data-deploy-audit.md` **已在 df7020c 基线内**（原 draft “缺失须现场补齐”判断基于 b211095、已过时，见 §1 修正）；但它是只读**代码审计**（记录预期拓扑），非实际生产数据盘点——声称“历史部署数据**范围**已知”可引用此代码审计，声称“历史部署数据**实际批次/计数**已知”仍须现场只读盘点（§6 上列各项 + §5 决议表实际行）。
 
 ## 7. 签认记录
 
 | 角色 | 结论 | 日期 |
 | --- | --- | --- |
 | 数据负责人（盘点结果+路线建议） | 已签认框架（owner phlong026 代签）：数据处置框架 + A/B/C 路线模板冻结；内部 P0 测试数据归档、不合入客户线；实际批次盘点 pre-GA 无生产访问、GA 触发（CW-033~037），不预填路线、不标 N/A | 2026-09-09 |
-| 业务负责人（批次保留业务确认） | 已签认框架（owner phlong026 代签）：批次保留业务确认待实际盘点后 GA 触发；pre-GA 不预填业务结论；data-deploy-audit.md 缺失须现场补齐后才声称“历史部署数据范围已知” | 2026-09-09 |
+| 业务负责人（批次保留业务确认） | 已签认框架（owner phlong026 代签）：批次保留业务确认待实际盘点后 GA 触发；pre-GA 不预填业务结论。**2026-09-09 事实修正（不改动上述签认决策）**：data-deploy-audit.md 经核实已在 df7020c 基线（ce40db5 合入），原“缺失须现场补齐”判断基于 draft 的 b211095 基线、已过时；该文件为只读代码审计非实际数据盘点，实际批次计数仍须现场只读盘点后 GA 触发 | 2026-09-09 |
