@@ -297,14 +297,10 @@ def test_customer_production_lane_refuses_internal_bearer_on_business_routes(
 
     response = client.get("/whoami", headers={"Authorization": f"Bearer {raw_token}"})
 
-    if customer_production == "true":
-        # 内部令牌不再能以 admin 身份走业务路由。测试环境未配客户会话密钥，
-        # 会话校验以 503 fail-closed；生产配齐密钥时同一拒绝是 401。两者都
-        # 不是"以 internal_admin_u 身份 200"。
-        assert response.status_code in (401, 503), response.text
-        body = response.json()
-        assert body.get("id") != "internal_admin_u", response.text
-    else:
-        # 非客户生产的 PG 通道（内部工具）保留内部令牌路径。
-        assert response.status_code == 200, response.text
-        assert response.json() == {"id": "internal_admin_u", "role": "admin"}
+    # CW-026: the converged PG lane refuses internal Bearer tokens in every
+    # environment, not only customer production. 测试环境未配客户会话密钥，
+    # 会话校验以 503 fail-closed；配齐密钥的环境同一拒绝是 401。两者都
+    # 不是"以 internal_admin_u 身份 200"。
+    assert response.status_code in (401, 503), response.text
+    body = response.json()
+    assert body.get("id") != "internal_admin_u", response.text

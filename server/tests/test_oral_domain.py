@@ -655,6 +655,17 @@ class _PgBusinessDb:
             raise
 
 
+def _read_actor_override(user_id: str = "employee_1", role: str = "employee") -> None:
+    """Pin the read-owner dependency to a test actor.
+
+    CW-026 removed the X-Dev-User-Id identity on the converged PG lane, so
+    route-level tests that used to rely on it now seed the actor through the
+    get_current_user dependency instead (auth itself is covered by
+    test_cw026_converged_auth.py).
+    """
+    app.dependency_overrides[get_current_user] = lambda: actor(user_id, role)
+
+
 def _make_business_db_override(
     current_actor: CurrentUser,
 ) -> tuple[Callable[[], _PgBusinessDb], _PgBusinessDb]:
@@ -2949,9 +2960,10 @@ def test_oral_task_retry_route_is_removed_and_keeps_uncertain_reservation(
 
     db_override, _holder = _make_business_db_override(actor())
     app.dependency_overrides[get_business_db] = db_override
+    _read_actor_override()
     try:
         client = TestClient(app)
-        headers = {"X-Dev-User-Id": "employee_1"}
+        headers: dict[str, str] = {}
         retried = client.post(f"/api/oral/tasks/{created.task_id}/retry", headers=headers)
         listing = client.get("/api/oral/tasks", headers=headers)
     finally:
@@ -2990,12 +3002,10 @@ def test_oral_task_retry_route_is_absent_for_all_states(scene: str) -> None:
 
     db_override, _holder = _make_business_db_override(actor())
     app.dependency_overrides[get_business_db] = db_override
+    _read_actor_override()
     try:
         client = TestClient(app)
-        response = client.post(
-            f"/api/oral/tasks/{created.task_id}/retry",
-            headers={"X-Dev-User-Id": "employee_1"},
-        )
+        response = client.post(f"/api/oral/tasks/{created.task_id}/retry")
     finally:
         app.dependency_overrides.clear()
 
@@ -3037,17 +3047,16 @@ def test_oral_task_serialization_reports_billing_status_and_available_actions(
 
     db_override, _holder = _make_business_db_override(actor())
     app.dependency_overrides[get_business_db] = db_override
+    _read_actor_override()
     try:
         client = TestClient(app)
-        headers = {"X-Dev-User-Id": "employee_1"}
+        headers: dict[str, str] = {}
         single = client.get(f"/api/oral/tasks/{uncertain.task_id}", headers=headers)
         assert single.status_code == 200
         assert single.json()["billing_status"] == "RESERVED"
         assert single.json()["available_actions"] == []
-        denied = client.get(
-            f"/api/oral/tasks/{uncertain.task_id}",
-            headers={"X-Dev-User-Id": "employee_2"},
-        )
+        app.dependency_overrides[get_current_user] = lambda: actor("employee_2")
+        denied = client.get(f"/api/oral/tasks/{uncertain.task_id}")
         assert denied.status_code == 404
         assert denied.json()["detail"]["code"] == "ORAL_TASK_NOT_FOUND"
 
