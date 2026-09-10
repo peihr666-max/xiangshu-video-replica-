@@ -153,8 +153,11 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert "npm audit --audit-level=high" in workflow
     assert "cargo test --manifest-path client/src-tauri/Cargo.toml --locked" in workflow
     assert "npm run check:tauri" in workflow
-    assert "npm run check:tauri:customer" in workflow
-    assert "npm run tauri:build -- --bundles nsis --no-sign --ci" in workflow
+    # CW-020: the customer edition is the sole default, so the default
+    # `check:tauri` / `tauri:build` already target the customer bundle and ci.yml
+    # exercises the *internal* edition through its explicit opt-in commands.
+    assert "npm run check:tauri:internal" in workflow
+    assert "npm run tauri:build:internal" in workflow
     assert "npm run tauri:build:customer" in workflow
     assert "VITE_API_BASE_URL: https://staging.example.invalid" in workflow
     windows_job = workflow.split("\n  windows-nsis:\n", 1)[1]
