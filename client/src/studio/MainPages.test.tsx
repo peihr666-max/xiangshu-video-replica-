@@ -1870,3 +1870,35 @@ describe("V1.4 个人中心通知偏好（C10b）", () => {
     unmount();
   });
 });
+
+// CW-016：客户「使用记录」有两个入口——个人中心顶部「使用记录」标签，以及
+// 账户概览里的「查看使用记录」按钮。两者都必须汇入同一个 live 钱包工作区
+// （openLive("wallet")）；配合 LiveWorkspacePanel.test.tsx 的真实挂载锁，构成
+// 「入口点击 → panel=wallet → CustomerWalletPanel」的完整链路回归保护。
+describe("CW-016 两个客户钱包入口路由到 live 钱包工作区", () => {
+  beforeEach(() => {
+    useStudio.mockReset();
+    getStudioNotificationPreferences.mockReset();
+    getStudioNotificationPreferences.mockResolvedValue({ enabled: true });
+  });
+
+  it("个人中心「使用记录」标签入口调用 openLive(wallet)", () => {
+    const value = studio();
+    useStudio.mockReturnValue(value);
+    render(<ProfilePage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "使用记录" }));
+
+    expect(value.openLive).toHaveBeenCalledWith("wallet");
+  });
+
+  it("账户概览「查看使用记录」按钮入口调用 openLive(wallet)", () => {
+    const value = studio();
+    useStudio.mockReturnValue(value);
+    render(<ProfilePage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "查看使用记录" }));
+
+    expect(value.openLive).toHaveBeenCalledWith("wallet");
+  });
+});
