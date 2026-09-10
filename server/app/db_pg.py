@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit, urlunsplit
 
 import psycopg
 from psycopg_pool import ConnectionPool
+from psycopg_pool.errors import PoolTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,14 @@ DB_PATH_ENV = "VIDEO_REPLICA_DB_PATH"
 CUSTOMER_PRODUCTION_ENV = "VIDEO_REPLICA_CUSTOMER_PRODUCTION"
 POOL_MIN_ENV = "VIDEO_REPLICA_PG_POOL_MIN"
 POOL_MAX_ENV = "VIDEO_REPLICA_PG_POOL_MAX"
+POOL_TIMEOUT_ENV = "VIDEO_REPLICA_PG_POOL_TIMEOUT"
 # A misconfigured POOL_MAX must not drain the server's connection budget
 # (shared by the multi-instance API/Worker fleet, M1 review LOW).
 POOL_MAX_CEILING = 64
+# CW-055：借用超时同样要有硬上限。它就是"池耗尽有界失败"的那个界；
+# 一个被误配成数小时的 timeout 会把有界失败退化回 2026-09-07 评审 §7-0
+# 那种无限期挂住（实测曾拖停公平队列 19 分钟），因此与单语句超时同量级。
+POOL_TIMEOUT_CEILING = 300.0
 # 空闲事务护栏（2026-09-07 梳理）：业务侧纪律是短事务，一个连接停留在
 # "事务开着但不发语句"超过阈值即是缺陷（持锁泄漏会串住整个容量/队列路径）。
 # 默认 5 分钟——高于最长的合法请求内外呼窗口，仍能把真实泄漏变成快速失败。
@@ -236,6 +242,53 @@ def _pool_bounds() -> tuple[int, int]:
     return pool_min, pool_max
 
 
+def _redacted_pool_dsn(pool: ConnectionPool) -> str:
+    """取连接池的 DSN 并脱敏，仅供日志使用。
+
+    ``ConnectionPool.conninfo`` 在 psycopg_pool 3.3 里可以是 callable（用于轮换
+    凭据），所以两种形态都要先收敛成 str 再交给唯一的脱敏器。
+    """
+    conninfo = pool.conninfo
+    return redact_postgres_dsn(conninfo() if callable(conninfo) else conninfo)
+
+
+def _pool_timeout() -> float:
+    """CW-055：池借用超时（秒）。必须可配置且带硬上限。
+
+    池耗尽时的行为完全由这个值决定：默认 30s 适合单机；多实例共用一个 PG
+    时应按实例数收紧，否则一次故障会让整机一起排队到超时。
+    非法值（非数字 / <=0）一律回落默认值而不是照单全收：0 与负值在
+    psycopg_pool 里等于"不等待"，会把容量抖动直接变成请求失败。
+    """
+    raw = os.environ.get(POOL_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_POOL_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid %s=%r, using default %.1f", POOL_TIMEOUT_ENV, raw, DEFAULT_POOL_TIMEOUT
+        )
+        return DEFAULT_POOL_TIMEOUT
+    if value <= 0:
+        logger.warning(
+            "invalid %s=%r (must be > 0), using default %.1f",
+            POOL_TIMEOUT_ENV,
+            raw,
+            DEFAULT_POOL_TIMEOUT,
+        )
+        return DEFAULT_POOL_TIMEOUT
+    if value > POOL_TIMEOUT_CEILING:
+        logger.warning(
+            "capping %s=%r to the hard ceiling %.1f",
+            POOL_TIMEOUT_ENV,
+            raw,
+            POOL_TIMEOUT_CEILING,
+        )
+        return POOL_TIMEOUT_CEILING
+    return value
+
+
 def _as_datetime(value: object) -> datetime:
     """Narrow a fetched ``now()`` value (psycopg3 already returns a
     tz-aware datetime; the str round-trip is only a fallback)."""
@@ -264,7 +317,7 @@ def get_pg_pool() -> ConnectionPool:
                 check=ConnectionPool.check_connection,
                 max_lifetime=DEFAULT_POOL_MAX_LIFETIME,
                 max_idle=DEFAULT_POOL_MAX_IDLE,
-                timeout=DEFAULT_POOL_TIMEOUT,
+                timeout=_pool_timeout(),
                 kwargs={"options": PG_POOL_OPTIONS},
             )
             _pool = pool
@@ -299,13 +352,29 @@ def pg_transaction(*, isolation: IsolationLevel | None = None) -> Iterator[psyco
                 f"{sorted(_ALLOWED_ISOLATION_LEVELS)}"
             )
     pool = get_pg_pool()
-    with pool.connection() as conn:
-        # pool.connection() returns the connection to the pool; a failed
-        # transaction was already rolled back by conn.transaction().
-        with conn.transaction():
-            if isolation is not None:
-                conn.execute(f"SET TRANSACTION ISOLATION LEVEL {level}")
-            yield conn
+    acquired = False
+    try:
+        with pool.connection() as conn:
+            acquired = True
+            # pool.connection() returns the connection to the pool; a failed
+            # transaction was already rolled back by conn.transaction().
+            with conn.transaction():
+                if isolation is not None:
+                    conn.execute(f"SET TRANSACTION ISOLATION LEVEL {level}")
+                yield conn
+    except PoolTimeout:
+        # CW-055：池耗尽必须留下可诊断且不泄密的痕迹。没有这条日志时，
+        # 运维只看到一个 PoolTimeout，分不清是"池配小了"还是"PG 不可达"；
+        # 而 pool.conninfo 带口令，绝不能原样进日志。
+        if not acquired:
+            # 只记本层借用失败：嵌套 pg_transaction 的内层耗尽已由内层记过，
+            # 逐层重复会把一次池耗尽放大成 N 条日志。
+            logger.warning(
+                "PG connection pool exhausted: no connection became available within %.1fs for %s",
+                pool.timeout,
+                _redacted_pool_dsn(pool),
+            )
+        raise
 
 
 def pg_server_now() -> datetime:

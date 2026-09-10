@@ -9,24 +9,31 @@ PG-dependent cases skip automatically when the fixture is not reachable.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Iterator
+import threading
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
+from urllib.parse import unquote, urlsplit
 
 import psycopg
 import pytest
 from fastapi import HTTPException, Request
 from pg_test_kit import require_pg_or_explicit_skip
 from psycopg_pool import ConnectionPool
+from psycopg_pool.errors import PoolTimeout
 
 from app.db_pg import (
     DATABASE_URL_ENV,
+    DEFAULT_POOL_TIMEOUT,
     PG_IDLE_IN_TRANSACTION_TIMEOUT_MS,
     PG_STATEMENT_TIMEOUT_MS,
     DatabaseMode,
@@ -34,9 +41,11 @@ from app.db_pg import (
     close_pg_pool,
     pg_server_now,
     pg_transaction,
+    redact_postgres_dsn,
     resolve_database_config,
     validate_customer_production,
 )
+from app.db_portable import BusinessConnection
 
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 
@@ -745,3 +754,534 @@ def test_check_pg_ready_redacts_dsn_credentials() -> None:
     assert ready.dsn != PG_DSN
     assert "testpass" not in ready.dsn
     assert "customer_v3_test" in ready.dsn
+
+
+# ---------------------------------------------------------------------------
+# CW-055 — 池耗尽有界失败、断连回收、异常事务复用
+# ---------------------------------------------------------------------------
+
+
+def test_pool_timeout_is_configurable_and_capped() -> None:
+    """CW-055：借用超时必须是**可配置**的运维旋钮，且带硬上限。
+
+    硬编码 30s 意味着"池耗尽"的最坏排队时间无法按部署形态收紧；而没有上限
+    同样危险——一个被误配成数小时的 timeout 会把"有界失败"退化回
+    2026-09-07 评审 §7-0 那种无限期挂住（实测曾拖停公平队列 19 分钟）。
+    """
+    from app.db_pg import POOL_TIMEOUT_CEILING, POOL_TIMEOUT_ENV, _pool_timeout
+
+    with _env(**{POOL_TIMEOUT_ENV: ""}):
+        assert _pool_timeout() == DEFAULT_POOL_TIMEOUT
+    with _env(**{POOL_TIMEOUT_ENV: "0.5"}):
+        assert _pool_timeout() == 0.5
+    with _env(**{POOL_TIMEOUT_ENV: "not-a-number"}):
+        assert _pool_timeout() == DEFAULT_POOL_TIMEOUT
+    # 0 与负值都不是合法的"有界等待"：psycopg_pool 会把它们当成不等待或异常，
+    # 因此必须回落到默认值而不是照单全收。
+    with _env(**{POOL_TIMEOUT_ENV: "0"}):
+        assert _pool_timeout() == DEFAULT_POOL_TIMEOUT
+    with _env(**{POOL_TIMEOUT_ENV: "-3"}):
+        assert _pool_timeout() == DEFAULT_POOL_TIMEOUT
+    with _env(**{POOL_TIMEOUT_ENV: "999999"}):
+        assert _pool_timeout() == POOL_TIMEOUT_CEILING
+
+
+@pytestmark_pg
+def test_pool_exhaustion_fails_within_the_configured_timeout() -> None:
+    """CW-055：池 max=N 时第 N+1 次借用必须在**配置的** timeout 内失败。"""
+    from app.db_pg import POOL_MAX_ENV, POOL_MIN_ENV, POOL_TIMEOUT_ENV
+
+    timeout = 0.4
+    with _env(
+        **{
+            DATABASE_URL_ENV: PG_DSN,
+            POOL_MIN_ENV: "1",
+            POOL_MAX_ENV: "2",
+            POOL_TIMEOUT_ENV: str(timeout),
+        }
+    ):
+        with pg_transaction(), pg_transaction():
+            started = time.monotonic()
+            with pytest.raises(PoolTimeout):
+                with pg_transaction():
+                    pytest.fail("池已耗尽，第三次借用不得拿到连接")
+            elapsed = time.monotonic() - started
+
+    assert elapsed >= timeout, f"必须真的等到配置超时才失败，实际 {elapsed:.3f}s"
+    assert elapsed < DEFAULT_POOL_TIMEOUT, (
+        f"失败必须受配置 timeout 约束，实际 {elapsed:.3f}s（默认 {DEFAULT_POOL_TIMEOUT}s）"
+    )
+
+
+@pytestmark_pg
+def test_pool_exhaustion_logs_a_redacted_diagnostic(caplog: pytest.LogCaptureFixture) -> None:
+    """CW-055：池耗尽必须留下**脱敏**的诊断日志。
+
+    没有日志时运维只看到一串 PoolTimeout，无法区分"池太小"还是"PG 不可达"；
+    而带上原始 DSN 的日志会把口令写进日志盘。这里同时钉住两侧。
+
+    NB：本文件多数断言刻意避开日志（见
+    test_worker_main_dispatches_to_pg_forever_loop 的理由：全局 logging 状态
+    可能被其他测试污染）。此处按 logger 名过滤记录，只认 app.db_pg 自己发出的
+    WARNING，不依赖 root handler 的全局配置。
+    """
+    from app.db_pg import POOL_MAX_ENV, POOL_MIN_ENV, POOL_TIMEOUT_ENV
+
+    password = unquote(urlsplit(PG_DSN).password or "")
+    assert password, "本用例要求 DSN 带口令，否则脱敏断言无意义"
+
+    with caplog.at_level(logging.WARNING, logger="app.db_pg"):
+        with _env(
+            **{
+                DATABASE_URL_ENV: PG_DSN,
+                POOL_MIN_ENV: "1",
+                POOL_MAX_ENV: "1",
+                POOL_TIMEOUT_ENV: "0.3",
+            }
+        ):
+            with pg_transaction():
+                with pytest.raises(PoolTimeout) as excinfo:
+                    with pg_transaction():
+                        pass
+
+    messages = [record.getMessage() for record in caplog.records if record.name == "app.db_pg"]
+    assert messages, "池耗尽必须记录 WARNING 级诊断日志"
+    joined = "\n".join(messages)
+    assert password not in joined, "诊断日志不得包含 DSN 口令"
+    assert password not in str(excinfo.value), "抛出的异常文本不得包含 DSN 口令"
+    assert redact_postgres_dsn(PG_DSN) in joined, "日志应携带脱敏 DSN 以定位是哪个库/主机耗尽"
+
+
+@pytestmark_pg
+def test_pool_recovers_once_connections_are_returned() -> None:
+    """CW-055：耗尽是有界失败，不是永久损坏——归还后下一请求必须成功。"""
+    from app.db_pg import POOL_MAX_ENV, POOL_MIN_ENV, POOL_TIMEOUT_ENV
+
+    with _env(
+        **{
+            DATABASE_URL_ENV: PG_DSN,
+            POOL_MIN_ENV: "1",
+            POOL_MAX_ENV: "1",
+            POOL_TIMEOUT_ENV: "0.3",
+        }
+    ):
+        with pg_transaction() as held:
+            assert held.execute("SELECT 1").fetchone()[0] == 1
+            with pytest.raises(PoolTimeout):
+                with pg_transaction():
+                    pass
+        # 上一个 with 已归还唯一连接：下一次借用必须直接成功。
+        with pg_transaction() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+@pytestmark_pg
+def test_failed_transaction_does_not_poison_the_returned_connection() -> None:
+    """CW-055：异常事务回收——失败连接不得带着 aborted transaction 返池。
+
+    max_size=1 强制下一个借用者拿到**同一条**物理连接：若池没有复位它，
+    借用者会立刻撞上 InFailedSqlTransaction（"current transaction is aborted"），
+    把一次业务失败放大成整条链路的连锁失败。
+    """
+    from app.db_pg import POOL_MAX_ENV, POOL_MIN_ENV
+
+    with _env(**{DATABASE_URL_ENV: PG_DSN, POOL_MIN_ENV: "1", POOL_MAX_ENV: "1"}):
+        # DDL 必须先在自己已提交的事务里建：否则它会随下面的失败事务
+        # 一起回滚（PG 的事务性 DDL），后续断言就变成 UndefinedTable 而非在测池。
+        with pg_transaction() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS t055_poison (id INTEGER PRIMARY KEY)")
+            conn.execute("TRUNCATE t055_poison")
+        with pytest.raises(RuntimeError, match="boom"):
+            with pg_transaction() as conn:
+                conn.execute("INSERT INTO t055_poison (id) VALUES (1)")
+                raise RuntimeError("boom")
+        with pg_transaction() as conn:
+            assert conn.info.transaction_status != psycopg.pq.TransactionStatus.INERROR
+            # 行为断言：事务已完整回滚，且这条连接仍能正常执行语句。
+            assert conn.execute("SELECT COUNT(*) FROM t055_poison").fetchone()[0] == 0
+
+
+@pytestmark_pg
+def test_pool_recycles_a_server_side_terminated_connection() -> None:
+    """CW-055：断连——被服务端终止的连接必须由池回收，而非交给下一个借用者。
+
+    模拟 PG 重启 / 网络闪断 / OOM killer 三类同构故障：连接在池里看着正常，
+    但后端已经没了。这正是 check=ConnectionPool.check_connection 要挡住的场景。
+    """
+    from app.db_pg import POOL_MAX_ENV, POOL_MIN_ENV, get_pg_pool
+
+    with _env(**{DATABASE_URL_ENV: PG_DSN, POOL_MIN_ENV: "1", POOL_MAX_ENV: "1"}):
+        pool = get_pg_pool()
+        with pool.connection() as conn:
+            killed_pid = int(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+        # 连接已归还池中；从池外终止它。
+        with psycopg.connect(PG_DSN, autocommit=True) as killer:
+            killer.execute("SELECT pg_terminate_backend(%s)", (killed_pid,))
+        with pg_transaction() as conn:
+            surviving_pid = int(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+    assert surviving_pid != killed_pid, "check=check_connection 必须换掉被终止的连接"
+
+
+# ---------------------------------------------------------------------------
+# CW-055 — SQLSTATE → 幂等恢复矩阵
+# ---------------------------------------------------------------------------
+
+# 矩阵用一张最小可复现的计费账本：UNIQUE 幂等键 + 余额行。它与真实的
+# wallet_transactions / users 同构（幂等键去重、账本与余额必须同事务），
+# 但建在共享测试库里，不污染已迁移的业务表。
+_LEDGER_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS t055_ledger ("
+    "id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, "
+    "idem TEXT NOT NULL UNIQUE, "
+    "amount INTEGER NOT NULL CHECK (amount > 0))",
+    "CREATE TABLE IF NOT EXISTS t055_balance (user_id TEXT PRIMARY KEY, balance INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS t055_lock (k TEXT PRIMARY KEY, v INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS t055_serial (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)",
+)
+_SEED_BALANCE = 1000
+_CHARGE_AMOUNT = 100
+
+
+def _seed_billing(conn: psycopg.Connection) -> None:
+    """把矩阵表复位到已知的干净起点（每个参数化用例各自调用）。"""
+    for ddl in _LEDGER_DDL:
+        conn.execute(ddl)
+    conn.execute("TRUNCATE t055_ledger RESTART IDENTITY")
+    conn.execute("TRUNCATE t055_balance")
+    conn.execute("TRUNCATE t055_lock")
+    conn.execute("TRUNCATE t055_serial")
+    conn.execute("INSERT INTO t055_balance (user_id, balance) VALUES ('u1', %s)", (_SEED_BALANCE,))
+    conn.execute("INSERT INTO t055_lock (k, v) VALUES ('a', 0), ('b', 0)")
+    conn.execute("INSERT INTO t055_serial (id, v) VALUES (1, 0)")
+
+
+def _apply_charge(conn: psycopg.Connection, idem: str, amount: int = _CHARGE_AMOUNT) -> None:
+    """在**已开启的**事务内落账：账本行与余额扣减必须同生共死。"""
+    conn.execute("INSERT INTO t055_ledger (idem, amount) VALUES (%s, %s)", (idem, amount))
+    conn.execute("UPDATE t055_balance SET balance = balance - %s WHERE user_id = 'u1'", (amount,))
+
+
+def _charge_idempotent(idem: str, amount: int = _CHARGE_AMOUNT) -> bool:
+    """幂等扣费：账本 UNIQUE 键是唯一的去重事实源。
+
+    True = 本次真正扣了费；False = 该幂等键此前已落账，本次安全跳过。
+    这就是"失败重试不重复付费"的实现形态——重试安全性不依赖调用方
+    记住上次的结果（调用方在超时/断连下根本不可能知道）。
+    """
+    try:
+        with pg_transaction() as conn:
+            _apply_charge(conn, idem, amount)
+        return True
+    except psycopg.errors.UniqueViolation:
+        return False
+
+
+def _read_billing_state() -> tuple[int, int]:
+    """返回 (u1 余额, 账本行数)。"""
+    with pg_transaction() as conn:
+        balance = int(
+            conn.execute("SELECT balance FROM t055_balance WHERE user_id = 'u1'").fetchone()[0]
+        )
+        rows = int(conn.execute("SELECT COUNT(*) FROM t055_ledger").fetchone()[0])
+    return balance, rows
+
+
+def _fail_query_canceled(idem: str) -> None:
+    """57014 QueryCanceled：写入已执行，随后被语句超时打断。
+
+    用 SET LOCAL 把超时压到 30ms 以在测试内稳定触发，不改动连接级 GUC，
+    因而不会泄漏到池里其他借用者。
+    """
+    with pg_transaction() as conn:
+        _apply_charge(conn, idem)
+        conn.execute("SET LOCAL statement_timeout = '30ms'")
+        conn.execute("SELECT pg_sleep(1)")
+
+
+def _fail_serialization(idem: str) -> None:
+    """40001 SerializationFailure：SERIALIZABLE 快照被并发已提交写作废。
+
+    必须对**同一键**先读后写才能构成 SSI 依赖环（与
+    test_pg_transaction_serializable_write_conflict 同一构型）；只读不写同键
+    不会形成环，PG 就不会报 40001。对手只动 t055_serial（不动余额/账本），
+    因此矩阵的"完整回滚"断言仍可统一为"余额未动、账本 0 行"。
+    """
+    with pg_transaction(isolation="SERIALIZABLE") as conn:
+        conn.execute("SELECT v FROM t055_serial WHERE id = 1").fetchone()
+        with pg_transaction() as other:
+            other.execute("SELECT v FROM t055_serial WHERE id = 1").fetchone()
+            other.execute("UPDATE t055_serial SET v = v + 1 WHERE id = 1")
+        # 同键写回（基于已作废快照）+ 落账 → 退出时 40001，两者均必须回滚。
+        conn.execute("UPDATE t055_serial SET v = v + 100 WHERE id = 1")
+        _apply_charge(conn, idem)
+
+
+def _fail_deadlock(idem: str) -> None:
+    """40P01 DeadlockDetected：本事务是最后进入等待的一方，由它检出并中止。
+
+    确定性构造：对手先持有 b 并阻塞在 a 上（此时尚无环），本事务再请求 b
+    才闭环。对手的 deadlock_timeout 抬到 5s，确保检出者是本事务，
+    避免"谁输"随机化而使用例变成 flaky。
+    """
+    with pg_transaction() as conn:
+        conn.execute("SET LOCAL deadlock_timeout = '20ms'")
+        conn.execute("UPDATE t055_lock SET v = v + 1 WHERE k = 'a'")
+        adversary_holds_b = threading.Event()
+
+        def adversary() -> None:
+            try:
+                with pg_transaction() as other:
+                    other.execute("SET LOCAL deadlock_timeout = '5s'")
+                    other.execute("UPDATE t055_lock SET v = v + 1 WHERE k = 'b'")
+                    adversary_holds_b.set()
+                    other.execute("UPDATE t055_lock SET v = v + 1 WHERE k = 'a'")
+            except psycopg.errors.DeadlockDetected:
+                pass
+
+        thread = threading.Thread(target=adversary, daemon=True)
+        thread.start()
+        try:
+            assert adversary_holds_b.wait(10), "对手必须先持有 b 并阻塞在 a 上"
+            conn.execute("UPDATE t055_lock SET v = v + 1 WHERE k = 'b'")
+            _apply_charge(conn, idem)
+        finally:
+            # 无论本事务是否被中止，都必须等对手退出，否则它持有的池连接
+            # 会泄漏到下一个用例（而 autouse fixture 会 close_pg_pool）。
+            thread.join(30)
+
+
+def _fail_business_error(idem: str) -> None:
+    """业务异常（无 SQLSTATE）：调用方主动放弃这次扣费。"""
+    with pg_transaction() as conn:
+        _apply_charge(conn, idem)
+        raise RuntimeError("business rule rejected the charge")
+
+
+_SQLSTATE_CASES: tuple[tuple[str, Callable[[str], None], str | None], ...] = (
+    ("57014_query_canceled", _fail_query_canceled, "57014"),
+    ("40001_serialization_failure", _fail_serialization, "40001"),
+    ("40p01_deadlock_detected", _fail_deadlock, "40P01"),
+    ("business_error", _fail_business_error, None),
+)
+
+
+@pytestmark_pg
+@pytest.mark.parametrize(
+    ("name", "attempt", "expected_sqlstate"),
+    _SQLSTATE_CASES,
+    ids=[case[0] for case in _SQLSTATE_CASES],
+)
+def test_sqlstate_recovery_matrix_rolls_back_and_recovers(
+    name: str, attempt: Callable[[str], None], expected_sqlstate: str | None
+) -> None:
+    """CW-055 核心交付：SQLSTATE → 幂等恢复矩阵。
+
+    四类失败（语句超时 / 串行化冲突 / 死锁 / 业务异常）必须一致地满足：
+    ① 完整回滚（账本 0 行、余额未动）；② 连接可复用（池未被污染）；
+    ③ 幂等重试只扣一次费；④ 再次重试仍不重复扣费。
+    """
+    idem = f"k-{name}"
+    with _env(**{DATABASE_URL_ENV: PG_DSN}):
+        with pg_transaction() as conn:
+            _seed_billing(conn)
+
+        if expected_sqlstate is None:
+            with pytest.raises(RuntimeError, match="business rule"):
+                attempt(idem)
+        else:
+            with pytest.raises(psycopg.Error) as excinfo:
+                attempt(idem)
+            assert excinfo.value.sqlstate == expected_sqlstate, (
+                f"{name}: 期望 SQLSTATE {expected_sqlstate}，实际 {excinfo.value.sqlstate}"
+            )
+
+        # ① 完整回滚：失败的尝试不得留下任何账本痕迹。
+        assert _read_billing_state() == (_SEED_BALANCE, 0), f"{name}: 失败后必须无任何落账"
+
+        # ② 连接可复用：紧接着的借用必须健康，不被 aborted transaction 污染。
+        with pg_transaction() as conn:
+            assert conn.info.transaction_status != psycopg.pq.TransactionStatus.INERROR
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+        # ③ 幂等重试只扣一次。
+        assert _charge_idempotent(idem) is True, f"{name}: 重试必须真正落账一次"
+        assert _read_billing_state() == (_SEED_BALANCE - _CHARGE_AMOUNT, 1), (
+            f"{name}: 重试后必须恰好扣一次费"
+        )
+
+        # ④ 再次重试不重复扣费。
+        assert _charge_idempotent(idem) is False, f"{name}: 重复重试不得再次扣费"
+        assert _read_billing_state() == (_SEED_BALANCE - _CHARGE_AMOUNT, 1), (
+            f"{name}: 重复重试后余额与账本行数不得变化"
+        )
+
+
+@pytestmark_pg
+def test_sequence_values_are_not_returned_by_a_rollback() -> None:
+    """CW-055 明确要求钉住的 PG 事实：序列/identity 值**不随事务回滚归还**。
+
+    回滚只丢弃行，不丢弃已分配的序列号。任何"回滚后 id 仍连续"的断言
+    都是错的：它会把正常的序列空洞当成缺陷，或反过来掩盖真正的重复分配。
+    """
+    with _env(**{DATABASE_URL_ENV: PG_DSN}):
+        with pg_transaction() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS t055_seq ("
+                "id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, v TEXT)"
+            )
+            conn.execute("TRUNCATE t055_seq RESTART IDENTITY")
+
+        def _insert(value: str) -> int:
+            with pg_transaction() as conn:
+                row = conn.execute(
+                    "INSERT INTO t055_seq (v) VALUES (%s) RETURNING id", (value,)
+                ).fetchone()
+                return int(row[0])
+
+        kept = _insert("kept")
+        with pytest.raises(RuntimeError, match="boom"):
+            with pg_transaction() as conn:
+                burned = int(
+                    conn.execute(
+                        "INSERT INTO t055_seq (v) VALUES ('burned') RETURNING id"
+                    ).fetchone()[0]
+                )
+                raise RuntimeError("boom")
+        after = _insert("after")
+
+        assert burned == kept + 1
+        assert after > burned, "回滚不得归还序列值：下一个 id 必须跳过被烧掉的号"
+        with pg_transaction() as conn:
+            values = [
+                row[0] for row in conn.execute("SELECT v FROM t055_seq ORDER BY id").fetchall()
+            ]
+        assert values == ["kept", "after"], "回滚只丢弃行，不得留下 'burned'"
+
+
+# ---------------------------------------------------------------------------
+# CW-055 — 提交边界：门面不得中途提交
+# ---------------------------------------------------------------------------
+
+
+@pytestmark_pg
+def test_pg_lane_facade_commit_never_publishes_early() -> None:
+    """CW-055：PG lane 的 BusinessConnection.commit()/rollback() 是刻意 no-op，
+    提交权只属于外层 pg_transaction / fenced_pg_transaction。
+
+    用第二条连接的可见性来证明（而非日志或桩）：外层事务未退出前，
+    门面 commit() 之后的写入对任何其他连接都不可见。
+    """
+    with _env(**{DATABASE_URL_ENV: PG_DSN}):
+        with pg_transaction() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS t055_publish (k TEXT PRIMARY KEY, v TEXT)")
+            conn.execute("TRUNCATE t055_publish")
+
+        with pg_transaction() as raw:
+            facade = BusinessConnection.postgres(raw)
+            facade.execute("INSERT INTO t055_publish (k, v) VALUES ('a', '1')")
+            facade.commit()  # no-op：不得提前发布
+            facade.rollback()  # no-op：不得废弃外层事务
+            with facade.transaction():  # PG lane no-op
+                facade.execute("INSERT INTO t055_publish (k, v) VALUES ('b', '2')")
+            with facade.transaction(isolation="SERIALIZABLE"):
+                facade.execute("INSERT INTO t055_publish (k, v) VALUES ('c', '3')")
+
+            # 外层事务仍开着 → 另一条连接什么都看不见。
+            with pg_transaction() as observer:
+                visible = observer.execute("SELECT COUNT(*) FROM t055_publish").fetchone()[0]
+                assert visible == 0, "门面 commit() 不得提前发布未完成的写入"
+            # rollback() 也没能废弃它：三行仍活在外层事务里。
+            assert raw.execute("SELECT COUNT(*) FROM t055_publish").fetchone()[0] == 3
+
+        with pg_transaction() as conn:
+            keys = [
+                row[0] for row in conn.execute("SELECT k FROM t055_publish ORDER BY k").fetchall()
+            ]
+        assert keys == ["a", "b", "c"], "只有外层事务退出才发布全部写入"
+
+
+@pytestmark_pg
+def test_pg_lane_facade_never_calls_underlying_commit_or_rollback() -> None:
+    """CW-055：结构性证明——门面在 PG lane 绥不触达底层连接的提交权。
+
+    app/ 里共 84 处 BusinessConnection.postgres 构造点（generation_worker 67、
+    recharge_routes 5 等），无法逐个跑行为测试；它们全部经由该门面，
+    因此本用例 + 下面的静态调用点扫描共同闭合"全调用链均未中途提交"。
+    """
+    calls: list[str] = []
+    with _env(**{DATABASE_URL_ENV: PG_DSN}):
+        with pg_transaction() as raw:
+            real_commit = raw.commit
+            real_rollback = raw.rollback
+
+            def spy_commit() -> None:
+                calls.append("commit")
+                real_commit()
+
+            def spy_rollback() -> None:
+                calls.append("rollback")
+                real_rollback()
+
+            raw.commit = spy_commit  # type: ignore[method-assign]
+            raw.rollback = spy_rollback  # type: ignore[method-assign]
+
+            facade = BusinessConnection.postgres(raw)
+            facade.execute("SELECT 1")
+            facade.commit()
+            facade.rollback()
+            with facade:
+                facade.execute("SELECT 1")
+            with facade.transaction():
+                facade.execute("SELECT 1")
+            with facade.transaction(isolation="SERIALIZABLE"):
+                facade.execute("SELECT 1")
+
+            # 必须在外层 pg_transaction 退出**之前**断言：退出时
+            # conn.transaction() 自己会合法地提交一次。
+            assert calls == [], f"PG lane 门面不得调用底层提交/回滚，实际: {calls}"
+
+
+_APP_PATTERN = re.compile(r"\.raw\.(commit|rollback)\(")
+_AUTOCOMMIT_PATTERN = re.compile(r"\.raw\.autocommit\s*=\s*True")
+
+
+def _scan_app_sources(pattern: re.Pattern[str]) -> list[str]:
+    """返回 app/*.py 中命中该模式的 "文件:行号" 列表。"""
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    return [
+        f"{source.name}:{lineno}"
+        for source in sorted(app_dir.glob("*.py"))
+        for lineno, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1)
+        if pattern.search(line)
+    ]
+
+
+def test_pg_lane_has_no_mid_transaction_commit_call_sites() -> None:
+    """CW-055：静态收口——app/ 里不得出现绕过门面的底层提交/回滚。
+
+    行为测试只能覆盖跑到的路径，而 84 处 PG 构造点分布在 10 个模块里。
+    因此把不变量钉在源码层面：任何新增的 .raw.commit() / .raw.rollback()
+    都必须位于门面 db_portable.py 内部（且被 SQLiteBackend 分支守卫，
+    已由上面的 spy 用例证明），否则本用例失败并列出具体调用点。
+    """
+    offenders = [
+        site for site in _scan_app_sources(_APP_PATTERN) if not site.startswith("db_portable.py:")
+    ]
+    assert offenders == [], (
+        "PG lane 的提交权只属于外层 pg_transaction / fenced_pg_transaction；"
+        f"以下调用点绕过门面直接提交: {offenders}"
+    )
+
+
+def test_pool_borrow_autocommit_escape_hatch_stays_confined() -> None:
+    """CW-055：唯一绕开 pg_transaction() 的池借用点必须可枚举。
+
+    viral_routes 的刷新 lane 直接 pool.connection() 并置 autocommit=True
+    （只读刷新，无事务可中途提交），是有意的例外。但例外必须有限：
+    新增任何 .raw.autocommit = True 都会让本用例失败，逼出显式评审。
+    """
+    files = {site.split(":", 1)[0] for site in _scan_app_sources(_AUTOCOMMIT_PATTERN)}
+    assert files == {"viral_routes.py"}, (
+        f"autocommit 逃生口集合发生变化: {sorted(files)}（需 CW-055 重新评审提交边界）"
+    )
