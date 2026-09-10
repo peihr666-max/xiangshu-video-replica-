@@ -137,6 +137,10 @@ class CustomerCharacterCachePlan:
 
 
 def _character_cache_root() -> Path:
+    # CW-031：本目录是可重建的本地临时处理中间文件缓存（原子落盘 + sha256 校验），
+    # 不是跨进程持久真源——跨进程真源始终是 COS（见 _customer_character_cache_storage
+    # 的 COS 强制）。整目录删除后业务必须能从 COS 完整恢复（不变量由
+    # test_storage_cross_instance.py 钉住）；历史 local 持久资产的搬迁归 CW-037。
     home = os.environ.get("VIDEO_REPLICA_HOME", "").strip()
     if home:
         return (Path(home) / "storage-cache" / "character-images").resolve()
