@@ -610,12 +610,12 @@ def test_t39_fault_drill_runbook_requires_staging_guards_and_business_proof() ->
 
 
 def test_customer_desktop_build_is_the_sole_default_target() -> None:
-    # CW-020: the customer cloud edition is now the *sole default* build target.
-    # `tauri.conf.json` (base) IS the customer foundation; the internal edition
-    # is demoted to an explicit opt-in overlay (`tauri.internal.conf.json`) that
-    # only builds when selected with `--config` plus `--features local-sidecar`.
-    # A bare `tauri build` / `npm run tauri:build` therefore produces the
-    # customer bundle and can never accidentally emit an internal release.
+    # CW-020 made the customer cloud edition the *sole default* build target;
+    # CW-021 went further and withdrew the internal edition entirely: the
+    # opt-in overlay, the local-sidecar Cargo feature, and every internal
+    # build/check script are gone. A bare `tauri build` / `npm run tauri:build`
+    # produces the customer bundle and no internal release can be produced at
+    # all, neither accidentally nor deliberately.
     package = _read("package.json")
     root_package = json.loads(package)
     client_package = json.loads(_read("client/package.json"))
@@ -653,43 +653,34 @@ def test_customer_desktop_build_is_the_sole_default_target() -> None:
         == "customer-installer-hooks.nsh"
     )
 
-    # --- internal edition is now an explicit opt-in overlay ---
+    # --- CW-021: the internal edition is fully withdrawn ---
+    # The opt-in internal overlay, the local-sidecar Cargo feature, and every
+    # internal build/check script are gone; no internal edition can be built,
+    # not even deliberately, and certainly not by accident.
     internal_overlay_path = REPO_ROOT / "client/src-tauri/tauri.internal.conf.json"
-    assert internal_overlay_path.exists(), (
-        "CW-020 requires the internal edition to move to an explicit overlay"
+    assert not internal_overlay_path.exists(), (
+        "CW-021 requires the internal edition overlay to be removed entirely"
     )
-    internal_overlay = json.loads(internal_overlay_path.read_text(encoding="utf-8"))
-    assert internal_overlay["identifier"] == "com.internal.video-replica"
-    assert internal_overlay["productName"] == "众墅之家"
-    assert "127.0.0.1:8000" in internal_overlay["app"]["security"]["csp"]
-    assert internal_overlay["bundle"]["resources"] == ["resources/*"]
-    # The internal window carries no `url` (loads index.html), replacing the
-    # base's customer url via Tauri's whole-array override semantics.
-    assert "url" not in internal_overlay["app"]["windows"][0]
-    # The internal overlay must NOT inherit the customer release installer hook.
-    assert "installerHooks" not in internal_overlay["bundle"]["windows"]["nsis"]
 
-    # --- Cargo: default features no longer pull in the local sidecar ---
-    cargo_features = tomllib.loads(cargo_toml)["features"]
-    assert "local-sidecar" not in cargo_features.get("default", [])
-    # The feature stays *defined* so the internal overlay can opt in; CW-021
-    # removes it entirely once the internal edition is retired.
-    assert "local-sidecar" in cargo_features
+    # --- Cargo: the local-sidecar feature no longer exists at all ---
+    cargo_features = tomllib.loads(cargo_toml).get("features", {})
+    assert "local-sidecar" not in cargo_features, (
+        "CW-021 removes the local-sidecar feature entirely"
+    )
+    assert "local-sidecar" not in cargo_toml
+    assert "default = []" in cargo_toml or "[features]" not in cargo_toml
 
-    # --- package.json: default build/check = customer; internal is opt-in ---
+    # --- package.json: default build/check = customer; no internal scripts ---
     scripts = root_package["scripts"]
     assert '"check:tauri:customer"' not in package
-    assert '"check:tauri:internal"' in package
-    assert "--features local-sidecar" in scripts["check:tauri:internal"]
+    assert '"check:tauri:internal"' not in package
+    assert '"tauri:build:internal"' not in package
+    assert '"tauri:dev:internal"' not in package
+    assert "local-sidecar" not in package
+    assert "tauri.internal.conf.json" not in package
     assert "require:customer-api-base" in scripts["tauri:build"]
     assert "--no-default-features" in scripts["tauri:build"]
     assert "--config src-tauri/tauri.customer.conf.json" in scripts["tauri:build"]
-    assert "--config src-tauri/tauri.internal.conf.json" in scripts["tauri:build:internal"]
-    assert "--features local-sidecar" in scripts["tauri:build:internal"]
-    # The internal build must NOT be gated on the customer API origin guard, nor
-    # strip default features (it opts INTO local-sidecar).
-    assert "require:customer-api-base" not in scripts["tauri:build:internal"]
-    assert "--no-default-features" not in scripts["tauri:build:internal"]
     assert '"tauri:build:customer"' in package
     assert '"require:customer-api-base"' in package
 
@@ -721,24 +712,38 @@ def test_customer_desktop_build_is_the_sole_default_target() -> None:
     assert "IntCmp $0 0 legacy_internal_done" in customer_installer_hooks
     assert "Abort" in customer_installer_hooks
 
-    # --- ci.yml exercises the internal edition via the opt-in commands ---
-    assert "npm run check:tauri:internal" in workflow
-    assert "npm run tauri:build:internal" in workflow
+    # --- ci.yml only ever builds the customer cloud bundle (CW-021) ---
+    assert "npm run check:tauri:internal" not in workflow
+    assert "npm run tauri:build:internal" not in workflow
     assert "npm run tauri:build:customer" in workflow
     assert "npm run check:tauri:customer" not in workflow
     assert "VITE_API_BASE_URL: https://staging.example.invalid" in workflow
-    assert "Archive unsigned internal NSIS installer locally" in workflow
+    assert "Archive unsigned internal NSIS installer locally" not in workflow
     assert "Archive unsigned customer cloud NSIS installer locally" in workflow
     assert "LOCAL_ARTIFACT_ROOT" in workflow
     assert "SHA256SUMS.txt" in workflow
-    assert "Verify customer installer excludes local launchers" in workflow
+    # CW-021 widened payload detection keeps enforcing the no-local-backend
+    # contract at the artifact level (launchers, server/Python runtime, FFmpeg,
+    # SQLite business database, boot command and business port markers).
+    assert "Verify customer installer excludes local backend distribution" in workflow
+    # Launcher names only appear in the payload gate's forbidden list.
+    workflow_before_payload_gate = workflow.split(
+        "Verify customer installer excludes local backend distribution", 1
+    )[0]
+    assert "start-backend" not in workflow_before_payload_gate
     assert "start-backend.bat" in workflow
     assert "start-backend.sh" in workflow
+    assert "VIDEO_REPLICA_BOOT_COMMAND" in workflow
+    assert "127.0.0.1:8000" in workflow
 
-    # --- frozen map registers both overlays and the origin guard ---
+    # --- frozen map registers the customer overlay and the origin guard ---
     assert "client/src-tauri/tauri.customer.conf.json" in frozen_map
-    assert "client/src-tauri/tauri.internal.conf.json" in frozen_map
     assert "scripts/require_customer_api_base.mjs" in frozen_map
+    # The internal overlay is deleted (CW-021): the frozen map must register
+    # the removal (a dedicated CW-021 section) instead of describing the
+    # overlay as an available opt-in file.
+    assert "### 4.7 删除桌面本地后端启动与管理资源（CW-021）" in frozen_map
+    assert "内部 edition 显式 opt-in overlay" not in frozen_map
 
 
 def test_release_desktop_uses_windows_gui_subsystem() -> None:
