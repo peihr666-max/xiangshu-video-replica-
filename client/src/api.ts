@@ -3,7 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { components } from "./generated/api";
 
-const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 5_000;
 // Cloud/storage operations (diagnostics, presigned URLs, archive prechecks)
 // may legitimately take much longer than a normal API round-trip.
@@ -44,7 +43,12 @@ export function resolveApiBaseUrl(
   if (isProduction && runtimeLocation.protocol === "https:") {
     return runtimeLocation.origin;
   }
-  return DEFAULT_API_BASE_URL;
+  // CW-015: the customer cloud build has a single address source
+  // (VITE_API_BASE_URL, validated as a routable non-loopback HTTPS origin at
+  // build time by scripts/require_customer_api_base.mjs). A missing address is
+  // a configuration error, so fail closed rather than silently falling back to
+  // a loopback origin that would point a deployed customer client at localhost.
+  throw new Error("API base URL is required (VITE_API_BASE_URL)");
 }
 
 function apiBaseUrl(): string {
@@ -1240,7 +1244,13 @@ export function attachCustomerSessionToken(token: string): () => void {
 }
 
 function workspaceAccessToken(): string | null {
-  return internalAccessToken ?? customerSessionToken;
+  // CW-015: the customer session token takes precedence — the internal access
+  // token no longer wins. In the customer build the internal App shell is
+  // unreachable (CW-013), so `internalAccessToken` is never set there and
+  // business requests authenticate solely with the customer session; the
+  // internal token remains only for the legacy internal shell until CW-041
+  // retires it. Error recovery therefore never falls back to internal identity.
+  return customerSessionToken ?? internalAccessToken;
 }
 
 export async function getWallet(): Promise<WalletSnapshot> {
@@ -2438,15 +2448,14 @@ function uploadStorageObject(
     // Scale the timeout with the payload (~200KB/s) so large 50MB uploads are
     // not cut off on slow links, while small files keep a tight bound.
     request.timeout = Math.max(60_000, Math.ceil(file.size / 200));
-    const devUserId = getDevelopmentUserId();
-    if (isLocalApiUploadUrl(intent.url)) {
-      // Mirror requestApi's auth precedence: the internal Bearer token wins in
-      // managed mode; otherwise fall back to the development identity header.
+    // CW-015: only an upload aimed at the API origin carries the workspace
+    // Bearer token; a direct-to-COS/Provider presigned upload must never
+    // receive it. The development-identity header is removed entirely, so a
+    // formal customer upload can never carry a synthetic dev identity.
+    if (isApiUploadUrl(intent.url)) {
       const accessToken = workspaceAccessToken();
       if (accessToken) {
         request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
-      } else if (devUserId) {
-        request.setRequestHeader("X-Dev-User-Id", devUserId);
       }
     }
     for (const [name, value] of Object.entries(intent.headers)) {
@@ -2463,7 +2472,7 @@ function uploadStorageObject(
         resolve();
         return;
       }
-      if (request.status === 401 && isLocalApiUploadUrl(intent.url)) {
+      if (request.status === 401 && isApiUploadUrl(intent.url)) {
         emitSessionExpired();
         reject(new Error("登录已失效，请重新进入工作台。"));
         return;
@@ -2473,8 +2482,8 @@ function uploadStorageObject(
     request.onerror = () =>
       reject(
         new Error(
-          isLocalApiUploadUrl(intent.url)
-            ? `${errorPrefix}失败（无法连接本地服务，请确认服务已启动）`
+          isApiUploadUrl(intent.url)
+            ? `${errorPrefix}失败（无法连接服务，请确认服务已启动）`
             : `${errorPrefix}失败（无法连接素材库；请检查网络以及素材库跨域访问规则）`,
         ),
       );
@@ -4464,18 +4473,18 @@ async function requestApi(
   if (callerSignal?.aborted) abortFromCaller();
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = new Headers(init.headers);
-  const devUserId = getDevelopmentUserId();
   const customerOwnerAtStart =
     internalAccessToken === null ? customerSessionOwner : null;
 
   if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
+  // CW-015: the development-identity header (X-Dev-User-Id) is removed, so a
+  // formal customer request can never carry a synthetic dev identity; auth is
+  // the workspace Bearer token only.
   const accessToken = workspaceAccessToken();
   if (accessToken) {
     headers.set("Authorization", `Bearer ${accessToken}`);
-  } else if (devUserId) {
-    headers.set("X-Dev-User-Id", devUserId);
   }
 
   try {
@@ -4498,17 +4507,6 @@ async function requestApi(
     window.clearTimeout(timeout);
     callerSignal?.removeEventListener("abort", abortFromCaller);
   }
-}
-
-function getDevelopmentUserId(): string | undefined {
-  if (!import.meta.env.DEV) {
-    return undefined;
-  }
-  const explicitUserId = import.meta.env.VITE_DEV_USER_ID;
-  if (explicitUserId?.trim()) {
-    return explicitUserId.trim();
-  }
-  return "employee_1";
 }
 
 function emitSessionExpired() {
@@ -4592,13 +4590,15 @@ function contentTypeForIdentityFile(file: File): string {
   return file.type || "application/octet-stream";
 }
 
-function isLocalApiUploadUrl(url: string): boolean {
+// CW-015: an upload URL is an "API upload" only when it targets the configured
+// API origin (the single address source). A direct-to-COS/Provider presigned
+// URL has a different origin and must not receive the workspace Bearer token.
+// apiBaseUrl() may throw when no address is configured; the catch treats that
+// as "not an API upload" so no credential is attached (fail-safe).
+function isApiUploadUrl(url: string): boolean {
   try {
     const target = new URL(url);
-    return (
-      (target.hostname === "127.0.0.1" || target.hostname === "localhost") &&
-      target.port === "8000"
-    );
+    return target.origin === new URL(apiBaseUrl()).origin;
   } catch {
     return false;
   }
