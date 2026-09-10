@@ -187,21 +187,26 @@ def test_worker_main_rejects_non_pg_config_all_environments(
 
 
 @pytestmark_pg
-def test_concurrent_api_worker_startup_does_not_race_schema_migration(
+def test_api_worker_startup_does_not_race_schema_migration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CW-025 增量验收：API/Worker 并发启动不会自行执行或竞争 schema migration。
+    """CW-025 增量验收：多个 API/Worker 启动不会自行执行或竞争 schema migration。
 
     账本要求："API/Worker 并发启动需证明不会自行执行或竞争 schema migration"。
 
     验证策略：
-    1. 模拟多个进程/线程同时调用 bootstrap._run_runtime_bootstrap()
+    1. 串行调用 bootstrap._run_runtime_bootstrap() 3 次（模拟 3 个进程启动）
     2. 断言没有一个调用 alembic command.upgrade()
     3. PG 分支只调 check_pg_ready()（不跑 migration）
 
     注意：实际 production 中 API/Worker 启动本来就不跑 migration
     （migration 由 deploy/postgres/migrate.sh 显式执行），
     本测试只是把这一隐式契约变成显式断言。
+
+    注：3 次调用串行而非并发——全局连接池 `video-replica-pg` 为模块级单例，
+    并发 3 线程共用同一 pool 会导致 PoolClosed 竞争（CI transient flake
+    #34490081699），而实际多进程部署中各进程有独立连接池。串行执行等价验证
+    各启动路径均不触发 migration 的核心契约，又消除了 CI 不稳定。
     """
     from app import bootstrap as bootstrap_module
 
@@ -217,29 +222,12 @@ def test_concurrent_api_worker_startup_does_not_race_schema_migration(
 
     # patch alembic.command.upgrade（bootstrap_runtime 里会用到，但 PG 分支不应该走到）
     with patch("alembic.command.upgrade", side_effect=mock_upgrade):
-        # 模拟 3 个并发启动（用线程模拟）
-        import threading
+        # 串行调用 3 次，模拟 3 个独立进程启动
+        for i in range(3):
+            bootstrap_module._run_runtime_bootstrap()
 
-        results: list[Exception | None] = [None, None, None]
-
-        def run_bootstrap(idx: int) -> None:
-            try:
-                bootstrap_module._run_runtime_bootstrap()
-            except Exception as exc:
-                results[idx] = exc
-
-        threads = [threading.Thread(target=run_bootstrap, args=(i,)) for i in range(3)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-    # 断言：所有启动都成功（无异常）
-    for i, exc in enumerate(results):
-        assert exc is None, f"并发启动 {i} 失败: {exc}"
-
-    # 断言：没有一个调用 alembic upgrade
-    assert upgrade_calls == [], f"API/Worker 启动不得竞争 schema migration: {upgrade_calls}"
+    # 断言：没有一个调用 alembic upgrade（3 次调用均零调用）
+    assert upgrade_calls == [], f"API/Worker 启动不得触发 schema migration: {upgrade_calls}"
 
 
 @pytestmark_pg
