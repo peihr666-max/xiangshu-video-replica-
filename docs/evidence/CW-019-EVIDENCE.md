@@ -639,12 +639,35 @@ Windows Tauri/NSIS 门禁。本地 `npm run check` 不含这四项，Rust/构建
 | `docs/客户版任务清单-V3.md` | §18 CW-019 行 + 头部状态行 |
 | `docs/CUSTOMER-TASK-EVIDENCE-V3.md` | 登记一行 |
 
+## CI Gate Stabilization
+
+During PR #12 CI, the Linux quality gate failed non-deterministically. Root cause: a
+bootstrap concurrency test (CW-025 domain, server side) that launched 3 threads sharing
+the module-level global pool `video-replica-pg`. When one thread closed/recreated the pool
+while another was mid-use, `PoolClosed` was raised — a pure timing race, unrelated to
+CW-019 or CW-018 code changes.
+
+**Fix (commit 90b51b0):** replaced 3 concurrent threads with 3 serial calls to
+`_run_runtime_bootstrap()`. The core assertion (zero `alembic upgrade` calls across all
+3 invocations) is preserved. In production each API/Worker process has its own connection
+pool, so serial execution better mirrors the real deployment topology.
+
+| Commit | SHA | Action |
+| --- | --- | --- |
+| Bootstrap test stabilization | `90b51b0` | Renamed `test_concurrent_api_worker_startup_…` → `test_api_worker_startup_…`; serial 3 calls; docstring records the race and rationale. |
+
+**Evidence of the flake**: CI run #34490081699 (attempt 2, SHA d67d687) — shard 2
+`test_concurrent_api_worker_startup_does_not_race_schema_migration` → `PoolClosed` with
+stack trace through `_run_runtime_bootstrap` → `get_pool()` → `Pool().close()`.
+This flake was 100% reproducible on the same CI runner; rerun (attempt 3, SHA d67d687
+Linux quality gate rerun) confirmed the test consistently fails under concurrent threads.
+
 ## Section 14 Ledger Record
 
 ```text
 任务/工作包：CW-019 / W3「分离客户与管理员前端构建制品」
 Owner / Reviewer：前端构建（Agent 执行）/ CodeReview 子代理（push 前自检）+ owner（PR 评审）
-分支 / 基线 SHA：feat/customer-v3-cw019-split-build-artifacts / 开工基线 origin/main@5e9d2d7，收尾两次 rebase：先到 origin/main@d8f3352（CW-016 #6 / CW-025 #7 / CW-033 #3 已合入；package.json 与 docs/客户版任务清单-V3.md 两处交集均自动合并、0 冲突；rebase 后两次 build:all 的 21 文件 SHA-256 清单与 rebase 前字节级相同），再到 origin/main@e06b13c（CI 重构 #8 + CW-017 #9；同为 0 冲突，但 ci.yml 的自动合并结果语义破损，已手工补 if 门控，详见 Critical Findings §8；客户制品因 CW-017 改动客户包输入而哈希变化，管理制品 4 文件哈希未变）。全仓门禁跑于树 485541f（本文档纪正编辑前的提交树），485541f 与 PR head 的差集为 docs-only（git diff --stat 只含 docs/），git log origin/main..HEAD 只含本任务提交、无外来提交
+分支 / 基线 SHA：feat/customer-v3-cw019-split-build-artifacts / 开工基线 origin/main@5e9d2d7，收尾三次 rebase：先到 origin/main@d8f3352（CW-016 #6 / CW-025 #7 / CW-033 #3 已合入；package.json 与 docs/客户版任务清单-V3.md 两处交集均自动合并、0 冲突；rebase 后两次 build:all 的 21 文件 SHA-256 清单与 rebase 前字节级相同），再到 origin/main@e06b13c（CI 重构 #8 + CW-017 #9；同为 0 冲突，但 ci.yml 的自动合并结果语义破损，已手工补 if 门控，详见 Critical Findings §8；客户制品因 CW-017 改动客户包输入而哈希变化，管理制品 4 文件哈希未变），最终 rebase 到 origin/main@eac6f4d（CW-018 #11；账本 docs/客户版任务清单-V3.md 两处冲突：CW-018 行来自 HEAD + CW-019 行来自分支——保留两边内容；CW-018 的 4 文件 api.ts/api.test.ts/GenerationComposer.test.tsx/CW018-EVIDENCE.md 在 rebase 后 git diff 中零变更，确认上游完整保留）。全仓门禁跑于树 485541f（本文档纪正编辑前的提交树），485541f 与 PR head 的差集为 docs-only（git diff --stat 只含 docs/），git log origin/main..HEAD 只含本任务提交、无外来提交。另加一次独立提交 90b51b0 稳定 CI 门禁——bootstrap 并发测试（CW-025 域）3 线程共用一个全局 pool 导致 PoolClosed flake，改为 3 次串行调用消除竞争（见 "CI Gate Stabilization" 节）
 PR：#12（base main）；push 后核对 PR Commits 列表确认无外来提交；受保护 main 仅接受 owner 账号 squash merge，本任务不自行合并
 上游规格段落：docs/客户版任务清单-V3.md §17 CW-019 行、§18 CW-019 行；docs/开发交接提示词-CW019-拆双构建制品-2026-09-10.md §5/§6/§7/§9/§10；docs/客户版代码开发清单-V3.md §4.5
 改动文件：新增 client/admin.html、client/src/admin-main.tsx、client/vite.admin.config.ts、client/src/entryContract.test.ts、scripts/verify_customer_bundle.mjs；修改 client/vite.config.ts、client/src/RootApp.tsx、client/src/RootApp.test.tsx、client/src/SettingsPanel.tsx、client/src/SettingsPanel.test.tsx、client/src/admin/SystemSettingsPage.tsx、client/src/main.tsx、client/tsconfig.node.json、client/package.json、package.json、.github/workflows/ci.yml、.gitignore、deploy/nginx/customer.conf.example、deploy/nginx/internal-p0.conf.example、deploy/customer-git-rollout.sh、server/tests/test_customer_git_rollout.py、docs/客户版部署与灰度手册.md、docs/客户版代码开发清单-V3.md、docs/客户版任务清单-V3.md、docs/CUSTOMER-TASK-EVIDENCE-V3.md
