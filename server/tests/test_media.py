@@ -611,8 +611,15 @@ def test_media_storage_prefers_cos_when_configured(
     db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """业务主存储（源视频/人物图片/首帧）：配置了 COS 即上云，不再依赖
-    runtime 的存储开关——拆解与付费生成都需要 HTTPS URL。"""
+    """业务主存储（源视频/人物图片/首帧）：正式服务（active_storage_provider
+    ="cos"）配置了 COS 即上云——拆解与付费生成都需要 HTTPS URL。
+
+    CW-031 改写披露：本用例原把 runtime 开关设为 ``local`` 仍断言返回 COS
+    （"配置了 COS 就无视 runtime 开关"）。CW-031 定稿后 ``local`` 是内部 P0
+    单机车道的选择器（见
+    ``test_get_media_storage_uses_local_adapter_when_provider_is_local``），
+    正式服务由 ``active_storage_provider="cos"`` 表达，故按新口径改写设置。
+    """
     monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
     selected_storage = FakeStorageAdapter(provider="cos", bucket="private-bucket")
     monkeypatch.setattr("app.media_routes.create_storage_adapter", lambda _: selected_storage)
@@ -632,7 +639,7 @@ def test_media_storage_prefers_cos_when_configured(
         repo.save_runtime_settings(
             max_generation_count_per_batch=4,
             max_concurrent_h3_tasks=2,
-            active_storage_provider="local",
+            active_storage_provider="cos",
             actor_user_id="admin_1",
         )
 
@@ -644,7 +651,13 @@ def test_media_storage_falls_back_to_local_without_cos(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """未配置 COS 时主存储退回本地盘，桌面单机场景仍可用。"""
+    """正式服务（active_storage_provider="cos"）缺 COS 配置时必须响亮 503。
+
+    CW-031 改写披露：本用例原断言"未配置 COS 时静默退回本地盘"——那正是
+    CW-031 要核销的本地持久存储回退缺口。新口径下（与
+    test_storage_cross_instance.py 的闸门用例同源，本用例保留 SQLite lane
+    上的行为覆盖）：503 STORAGE_PROVIDER_FORBIDDEN，绝不构造本地适配器。
+    """
     monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
     root = tmp_path / "local-storage"
     monkeypatch.setenv("VIDEO_REPLICA_STORAGE_ROOT", str(root))
@@ -658,9 +671,11 @@ def test_media_storage_falls_back_to_local_without_cos(
             actor_user_id="admin_1",
         )
 
-        storage = get_media_storage(conn)
-        assert isinstance(storage, LocalStorageAdapter)
-        assert storage.root == root.resolve()
+        with pytest.raises(HTTPException) as excinfo:
+            get_media_storage(conn)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.detail["code"] == "STORAGE_PROVIDER_FORBIDDEN"
+        assert not root.exists()
 
 
 def test_get_media_storage_uses_local_adapter_when_provider_is_local(
