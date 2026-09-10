@@ -39,7 +39,11 @@ from app.settings import (
     settings_encryption_key,
     validate_provider_config,
 )
-from app.storage import cloud_storage_config_from_settings, create_storage_adapter
+from app.storage import (
+    StorageAdapter,
+    cloud_storage_config_from_settings,
+    create_storage_adapter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +540,23 @@ def bootstrap_runtime(db_path: str | Path) -> None:
         persist_local_settings_key(key)
 
 
+def _probe_formal_service_write_path(storage: StorageAdapter) -> None:
+    """CW-031: prove the formal-service write path, not just bucket readability.
+
+    ``check_readiness`` only proves the bucket can be HEADed; a write-path
+    outage would otherwise surface on the first request, when the storage
+    selector could be tempted into a local fallback.  The probe writes a
+    one-byte object under a reserved ``.cw031-readiness/`` prefix (outside the
+    ``projects/`` and ``generation-results/`` business namespaces) and deletes
+    it immediately.  Audit events stay on this throwaway adapter instance and
+    are never consumed.  Any failure propagates to the caller's existing
+    ``except Exception`` branch, which fail-closes the bootstrap.
+    """
+    probe_key = f".cw031-readiness/{uuid4().hex}"
+    storage.put_object(probe_key, b"0", content_type="application/octet-stream")
+    storage.delete_object(probe_key)
+
+
 def check_customer_production_runtime_dependencies() -> PgReadyInfo | None:
     """Prove the shared database and private object store are usable.
 
@@ -543,6 +564,10 @@ def check_customer_production_runtime_dependencies() -> PgReadyInfo | None:
     readiness or entering their work loops.  The internal SQLite lane stays
     unchanged and therefore returns ``None``.
     """
+    # CW-031: the internal lane intentionally performs no storage readiness —
+    # keeping the local adapter there is the documented desktop architecture.
+    # The formal-service storage fence lives at request time in
+    # media_routes.get_media_storage.
     if not is_customer_production():
         return None
 
@@ -567,6 +592,10 @@ def check_customer_production_runtime_dependencies() -> PgReadyInfo | None:
         # are intentionally not used here because COS also returns 404 when
         # the configured bucket itself does not exist.
         storage.check_readiness()
+        # CW-031: readiness must also prove the formal-service write path so a
+        # COS outage fails here, at startup, instead of silently falling back
+        # to local persistence on the first request.
+        _probe_formal_service_write_path(storage)
     except Exception as exc:
         logger.error("Customer private COS readiness check failed: %s", type(exc).__name__)
         raise RuntimeError(

@@ -139,6 +139,17 @@ def test_customer_runtime_dependency_gate_accepts_pg_and_cos(
             events.append("cos-bucket-head")
             probes.append("bucket")
 
+        # CW-031: the readiness gate now also probes the formal-service write
+        # path (put then delete under a reserved prefix) after the bucket HEAD.
+        def put_object(self, key: str, content: bytes, *, content_type: str) -> None:
+            assert key.startswith(".cw031-readiness/")
+            assert events == ["pg-enter", "pg-exit", "cos-bucket-head"]
+            probes.append("write-probe-put")
+
+        def delete_object(self, key: str, *, actor_id: str | None = None) -> None:
+            assert key.startswith(".cw031-readiness/")
+            probes.append("write-probe-delete")
+
     monkeypatch.setattr(
         bootstrap,
         "create_storage_adapter",
@@ -146,7 +157,7 @@ def test_customer_runtime_dependency_gate_accepts_pg_and_cos(
     )
 
     assert bootstrap.check_customer_production_runtime_dependencies() is ready
-    assert probes == ["bucket"]
+    assert probes == ["bucket", "write-probe-put", "write-probe-delete"]
     assert events == ["pg-enter", "pg-exit", "cos-bucket-head"]
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import time
 from datetime import UTC, datetime
@@ -57,6 +58,8 @@ LOCAL_API_BASE_URL = "http://127.0.0.1:8000"
 PUBLIC_BASE_URL_ENV = "PUBLIC_BASE_URL"
 LOCAL_API_BASE_URL_ENV = "VIDEO_REPLICA_LOCAL_API_BASE_URL"
 AUTH_MODE_ENV = "VIDEO_REPLICA_AUTH_MODE"
+
+logger = logging.getLogger(__name__)
 
 
 def api_base_url() -> str:
@@ -146,24 +149,95 @@ class CompleteUploadResponse(BaseModel):
 
 def get_media_storage(conn: BusinessReadConn) -> StorageAdapter:
     """业务主存储：源参考视频（拆解需要 HTTPS URL）、人物图片、多视角
-    图与首帧。配置了 COS 就上云；未配置退回本地盘（桌面单机场景）。"""
+    图与首帧。
+
+    CW-031：正式服务（``active_storage_provider="cos"`` 或客户生产）只允许
+    云端存储，缺配置/配置不完整一律 503，绝不回退本地持久盘。本函数是 API
+    与 Worker 共同的存储入口（``generation_worker``/``oral``/``rbac_routes``/
+    ``viral_routes``/``analysis_routes`` 等消费），一道门禁即关闭全部正式服务
+    的本地新写。内部 P0 单机车道（``active_storage_provider="local"`` 且非
+    客户生产，见 ``gate1_bootstrap.py``）保留本地适配器——那是桌面单机场景的
+    既定架构，不是正式服务。读路径 ``storage_for_asset`` 按已持久化 URI 解析、
+    不经过这里，历史 ``local://`` 资产的只读追溯不受影响（搬迁归 CW-037）。
+    """
+    # 局部 import：bootstrap 间接依赖路由模块，顶层引入有循环依赖风险（CW-031 §8）。
+    from app.bootstrap import is_customer_production
+
     try:
         repo = SettingsRepository(conn)
-        config = repo.load_provider_config("cos")
-        if config:
-            return create_storage_adapter(cloud_storage_config_from_settings("cos", config))
-        return create_local_storage_from_environment()
+        runtime = repo.read_runtime_settings()
+        provider = str(runtime.get("active_storage_provider") or "")
+        customer_production = is_customer_production()
     except (SettingsUnavailableError, StorageBackendUnavailable, ValueError) as exc:
         raise HTTPException(
             status_code=503,
             detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
         ) from exc
 
+    if provider == "cos" or customer_production:
+        # 正式服务：COS 是唯一合法的持久存储后端，缺配置 = 明确失败，不回退。
+        # 客户生产即使 active_storage_provider 被改成 local 也走本分支（兜底闸门）。
+        try:
+            config = repo.load_provider_config("cos")
+        except (SettingsUnavailableError, StorageBackendUnavailable, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
+            ) from exc
+        if not config:
+            logger.error(
+                "Formal service storage is unconfigured (provider=%s)", provider or "<unset>"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "STORAGE_PROVIDER_FORBIDDEN"},
+            )
+        try:
+            return create_storage_adapter(cloud_storage_config_from_settings("cos", config))
+        except (StorageBackendUnavailable, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
+            ) from exc
+
+    if provider == "local":
+        # 内部 P0 单机车道（桌面场景）。走到这里说明 customer_production 为假。
+        logger.warning(
+            "Local persistent storage is only valid on the internal P0 single-machine lane"
+        )
+        try:
+            return create_local_storage_from_environment()
+        except StorageBackendUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "STORAGE_SETTINGS_UNAVAILABLE"},
+            ) from exc
+
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
+    )
+
 
 def storage_for_asset(conn: BusinessConnection, storage_uri: str) -> StorageAdapter:
     """Resolve the adapter named by a persisted asset URI, including its bucket."""
     reference = storage_object_ref_from_uri(storage_uri)
     if reference.provider == "local":
+        # CW-031：历史 local URI 只作为迁移期可追溯输入（只读），新写已被
+        # get_media_storage 的闸门禁止。客户生产不该再有本地持久资产——若有，
+        # 说明是 CW-037 未搬迁完的遗留，必须显式失败而不是静默服务。
+        from app.bootstrap import is_customer_production
+
+        if is_customer_production():
+            logger.error("Legacy local asset URI rejected on the customer production lane")
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "STORAGE_PROVIDER_FORBIDDEN"},
+            )
+        logger.warning(
+            "Serving a legacy local asset URI (provider=%s); migration to COS is owed by CW-037",
+            reference.provider,
+        )
         local_storage = LocalStorageAdapter(root=local_storage_root(), bucket=reference.bucket)
         require_storage_match(local_storage, reference)
         return local_storage

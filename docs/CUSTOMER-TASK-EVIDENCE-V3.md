@@ -1066,6 +1066,15 @@ Owner / Reviewer：账务/后端（Agent 执行）/ Codex + connector 评审（P
 Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 ```
 
+
+## CW-031 云端资产与授权下载回退核销（代码与测试证据）
+
+- 任务：CW-031（W4）核销云端资产与授权下载的剩余回退；分支 feat/customer-v3-cw031-cloud-asset-no-local-fallback，基线 origin/main@e829ad1。
+- 交付：`get_media_storage` 正式服务双闸门（active_storage_provider 主 + is_customer_production 兜底，缺 COS 配置 503 STORAGE_PROVIDER_FORBIDDEN，绝不回退本地持久盘）；`storage_for_asset` 历史 local URI 客户生产拒绝/非客户生产只读追溯（CW-037 标记）；`bootstrap._probe_formal_service_write_path` 启动期写路径探测；新增 `server/tests/test_storage_cross_instance.py` 27 用例（跨实例三独立连接/adapter、COS put/get/sign 故障本地零新增、授权签名矩阵、缓存目录删除后 COS 恢复、启动探测）。
+- 验证：专项 27 passed / 0 skip；缺 PG 硬门 3 passed / 24 errors / 0 skipped rc=1；签名护栏 ×4 全绿；既有回归 265 passed / 8 failed（ffmpeg 环境缺陷，stash 基线对照证实与本任务零关系）；ruff/format/mypy --strict 全过。
+- 证据层级：AUTOMATED_VERIFIED（真实 PG 16 + 共享内存 COS 替身；真实凭据链归 CW-050、生产执行归 CW-051，需人工授权）。
+- 详细证据：`docs/evidence/CW031-EVIDENCE.md`（§2 闸门口径、§5 跨实例披露、§6 权限矩阵、§8 交接披露）。
+
 ## 本地实现核查与去重定义V3（文档证据）
 
 - 输入：V2定义bf6aab8，应用基线bffc341；新输出与57项任务见 outputs/customer-cloud-convergence-analysis-2026-09-08/v3/。
