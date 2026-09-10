@@ -49,6 +49,12 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # iterdump / set_trace_callback / _NamedRow / type-roundtrip /
         # constraint-exception mapping tests (segment 1/N).
         "cw054_contract_test",
+        # CW-056 supported-release-head upgrade matrix: one database per run of
+        # the parameterized matrix (empty / 053 / 054 / 055 starting heads) and
+        # one dedicated to the failure-state determinism case. Each is created
+        # and dropped inside its own test, never shared across tests.
+        "cw056_head_matrix_test",
+        "cw056_failstate_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):

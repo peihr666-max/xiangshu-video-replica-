@@ -19,14 +19,6 @@ DESKTOP_USER_ID_ENV = "VIDEO_REPLICA_DESKTOP_USER_ID"
 ALLOW_DEV_IDENTITY_HEADER_ENV = "VIDEO_REPLICA_ALLOW_DEV_IDENTITY_HEADER"
 AUTH_MODE_ENV = "VIDEO_REPLICA_AUTH_MODE"
 LEGACY_AUTH_MODES = {"desktop", "development"}
-# Same flag the rest of the control plane reads (control_auth / db_pg each
-# carry their own copy; auth.py follows that precedent to stay import-light).
-CUSTOMER_PRODUCTION_ENV = "VIDEO_REPLICA_CUSTOMER_PRODUCTION"
-_TRUTHY = {"1", "true", "yes", "on"}
-
-
-def _customer_production_lane() -> bool:
-    return os.environ.get(CUSTOMER_PRODUCTION_ENV, "").strip().lower() in _TRUTHY
 
 
 @dataclass(frozen=True)
@@ -97,28 +89,25 @@ def authenticate_request(
     authorization: str | None,
     dev_user_id: str | None,
 ) -> CurrentUser:
-    # PostgreSQL is the customer-capable lane.  A customer desktop presents
-    # the same Bearer session token for the shared read routes that it uses for
-    # fenced writes; accepting only ``internal_access_tokens`` here made
-    # activation succeed while every GET in the workspace failed.  Preserve
-    # the internal-token path first, then reuse the existing session verifier
-    # for customer tokens inside this request's read transaction.
-    #
-    # A1（2026-09-02 admin-console assessment）: on the customer-production
-    # lane business routes must NOT accept internal access tokens.  Otherwise
-    # any single internal Bearer would walk straight past the admin-session
-    # + CSRF + auditor-read-only gates that guard ``/api/control/*`` and read
-    # every project, wallet and audit row.  Internal operators keep their own
-    # channels (control plane via admin session, CLI via its own endpoints);
-    # non-production PG lanes (internal tooling on VIDEO_REPLICA_DATABASE_URL
-    # without the customer flag) keep the internal-token path unchanged.
-    if authorization is not None and conn.is_postgres:
-        token = parse_bearer_token(authorization)
-        if not _customer_production_lane():
-            internal_user_id = internal_access_token_user_id(conn, token)
-            if internal_user_id is not None:
-                return authenticate_user(conn, internal_user_id)
-        return authenticate_customer_read_session(conn, token)
+    # CW-026: the converged PostgreSQL lane accepts exactly one identity —
+    # the live customer session — in every environment (customer production,
+    # staging, dev/test/CI). Internal Bearer tokens, X-Dev-User-Id and the
+    # fixed desktop identity are unreachable here: a missing header answers
+    # the customer-lane 401 instead of falling through to the internal-lane
+    # resolution, and a present header is always resolved as a customer
+    # session (fail-closed 503 when the session keys are misconfigured).
+    # The legacy internal/desktop lane below is SQLite-only and exits with
+    # CW-021/CW-040/CW-041.
+    if conn.is_postgres:
+        if authorization is None:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "SESSION_TOKEN_REQUIRED",
+                    "message": "A Bearer session token is required on the customer lane.",
+                },
+            )
+        return authenticate_customer_read_session(conn, parse_bearer_token(authorization))
     if internal_auth_required():
         if authorization is not None:
             return authenticate_access_token(conn, parse_bearer_token(authorization))

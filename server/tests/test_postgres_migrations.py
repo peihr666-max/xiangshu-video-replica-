@@ -2,10 +2,14 @@
 T03 / DB-01 - PostgreSQL 16 fixture tests (canonical path per V3 frozen file mapping).
 
 Verifies: the local/CI PG fixture is reachable, is PostgreSQL 16, and supports
-concurrent independent connections. Tests are skipped automatically when no
-PostgreSQL is available, so SQLite-only environments stay green; the Linux
-quality gate wires a postgres:16 service and sets TEST_POSTGRESQL_URL so these
-tests always run in CI (M0 review H2).
+concurrent independent connections.
+
+Missing PostgreSQL is a **hard failure**, not a skip (CW-007): the module-level
+``_require_pg`` autouse fixture calls ``pg_test_kit.require_pg_or_explicit_skip``,
+which ``pytest.fail``s unless a developer explicitly opts out with
+``VIDEO_REPLICA_TEST_ALLOW_PG_SKIP=1`` — and an opted-out run never counts as PG
+acceptance evidence. The Linux quality gate wires a postgres:16 service and sets
+TEST_POSTGRESQL_URL so these tests always run in CI (M0 review H2).
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import asyncpg  # type: ignore[import-untyped]
 import psycopg
 import pytest
 from pg_test_kit import require_pg_or_explicit_skip
+from sqlalchemy.engine import make_url
 
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # PR#103(df7020c) 引入 pg_test_kit.require_pg_or_explicit_skip 模块级 autouse fixture，
@@ -130,6 +135,26 @@ def _pg_dsn() -> str:
     return os.environ.get("TEST_POSTGRESQL_URL", DEFAULT_DSN)
 
 
+def _expected_fixture_identity() -> tuple[str, str]:
+    """(role, database) the configured fixture DSN asks to connect as.
+
+    Derived from ``TEST_POSTGRESQL_URL`` instead of hardcoding ``testuser`` /
+    ``customer_v3_test``. Those are the CI fixture's names, and pinning them made
+    these two smoke tests fail on every other legitimate base — e.g. a developer's
+    own postgres:16 container on a different port and role — even though the
+    fixture was perfectly healthy. The invariant worth asserting is that the
+    connection actually lands on the requested role and database (no redirect, no
+    silent default), not that one environment's names are baked into the suite.
+    Which DSNs may be used at all is guarded separately by
+    ``pg_test_kit.assert_safe_test_database``.
+    """
+    dsn = _pg_dsn()
+    url = make_url(dsn)
+    if not url.username or not url.database:
+        raise AssertionError(f"fixture DSN must name a role and a database: {dsn!r}")
+    return url.username, url.database
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _require_pg() -> None:
     require_pg_or_explicit_skip(_pg_dsn())
@@ -140,11 +165,13 @@ def _run(coro_fn: Callable[[], Coroutine[Any, Any, None]]) -> None:
 
 
 def test_database_creation() -> None:
+    _, expected_database = _expected_fixture_identity()
+
     async def case() -> None:
         conn = await asyncpg.connect(_pg_dsn())
         try:
             result = await conn.fetchval("SELECT current_database();")
-            assert result == "customer_v3_test", f"unexpected database {result}"
+            assert result == expected_database, f"unexpected database {result}"
         finally:
             await conn.close()
 
@@ -152,11 +179,13 @@ def test_database_creation() -> None:
 
 
 def test_user_identity() -> None:
+    expected_user, _ = _expected_fixture_identity()
+
     async def case() -> None:
         conn = await asyncpg.connect(_pg_dsn())
         try:
             result = await conn.fetchval("SELECT current_user;")
-            assert result == "testuser", f"unexpected user {result}"
+            assert result == expected_user, f"unexpected user {result}"
         finally:
             await conn.close()
 

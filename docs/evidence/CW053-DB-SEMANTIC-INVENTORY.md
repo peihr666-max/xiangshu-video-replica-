@@ -238,7 +238,7 @@
 | `server/tests/test_rbac.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_recharge_orders.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_script_from_audio.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
-| `server/tests/test_script_from_audio_migration.py` | TEST-SQLITE-CONN(债务) | alembic upgrade 到 077_durable_script_from_audio，跑在 SQLite tmp_path（connect_database）验迁移方言/回滚 | CW-056 空/旧 PG 升级矩阵 + CW-058 迁移 | 先红后绿移植到真实 PG；缺 PG 不得 skip |
+| `server/tests/test_script_from_audio_migration.py` | TEST-SQLITE-CONN(债务·升级矩阵部分已核销) | alembic upgrade 到 077_durable_script_from_audio，跑在 SQLite tmp_path（connect_database）验迁移方言/回滚 | CW-058 迁移（升级矩阵部分已由 CW-056 核销） | **升级矩阵部分已核销**（CW-056，代码提交 `dfce1d0`）：077 落在 055→081 路径上，CW-056 在真实 PG 上对空/053/054/055 四个起点跑全链，077 的 `batch_alter_table` 与方言分支 `create_index`（`sqlite_where`/`postgresql_where` 并存）均在真实 PG 上执行，产物 `script_from_audio_tasks` 已入 `HEAD_TABLE_NAMES` 冻结目录——证据 docs/evidence/CW056-EVIDENCE.md §12/§13；剩余「该测试文件本身改写为 PG-native」仍归 CW-058，缺 PG 不得 skip |
 | `server/tests/test_script_rewrite.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |
 | `server/tests/test_security_contracts.py` | TEST-LOGIC | — | — | — |
 | `server/tests/test_settings.py` | TEST-SQLITE-CONN(债务) | SQLite tmp_path 建库持久化断言 | CW-058/059 迁移为 TEST-PG | 先红后绿逐断言移植；缺 PG 不得 skip |

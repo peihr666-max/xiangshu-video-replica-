@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -139,6 +140,17 @@ def test_customer_runtime_dependency_gate_accepts_pg_and_cos(
             events.append("cos-bucket-head")
             probes.append("bucket")
 
+        # CW-031: the readiness gate now also probes the formal-service write
+        # path (put then delete under a reserved prefix) after the bucket HEAD.
+        def put_object(self, key: str, content: bytes, *, content_type: str) -> None:
+            assert key.startswith(".cw031-readiness/")
+            assert events == ["pg-enter", "pg-exit", "cos-bucket-head"]
+            probes.append("write-probe-put")
+
+        def delete_object(self, key: str, *, actor_id: str | None = None) -> None:
+            assert key.startswith(".cw031-readiness/")
+            probes.append("write-probe-delete")
+
     monkeypatch.setattr(
         bootstrap,
         "create_storage_adapter",
@@ -146,7 +158,7 @@ def test_customer_runtime_dependency_gate_accepts_pg_and_cos(
     )
 
     assert bootstrap.check_customer_production_runtime_dependencies() is ready
-    assert probes == ["bucket"]
+    assert probes == ["bucket", "write-probe-put", "write-probe-delete"]
     assert events == ["pg-enter", "pg-exit", "cos-bucket-head"]
 
 
@@ -597,54 +609,100 @@ def test_t39_fault_drill_runbook_requires_staging_guards_and_business_proof() ->
         assert required in evidence
 
 
-def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
+def test_customer_desktop_build_is_the_sole_default_target() -> None:
+    # CW-020 made the customer cloud edition the *sole default* build target;
+    # CW-021 went further and withdrew the internal edition entirely: the
+    # opt-in overlay, the local-sidecar Cargo feature, and every internal
+    # build/check script are gone. A bare `tauri build` / `npm run tauri:build`
+    # produces the customer bundle and no internal release can be produced at
+    # all, neither accidentally nor deliberately.
     package = _read("package.json")
     root_package = json.loads(package)
     client_package = json.loads(_read("client/package.json"))
     package_lock = json.loads(_read("package-lock.json"))
     cargo_toml = _read("client/src-tauri/Cargo.toml")
     cargo_lock = _read("client/src-tauri/Cargo.lock")
-    internal_config = json.loads(_read("client/src-tauri/tauri.conf.json"))
+    base_config = json.loads(_read("client/src-tauri/tauri.conf.json"))
+    customer_overlay = json.loads(_read("client/src-tauri/tauri.customer.conf.json"))
     workflow = _read(".github/workflows/ci.yml")
     origin_guard = _read("scripts/require_customer_api_base.mjs")
     frozen_map = _read("docs/客户版代码开发清单-V3.md")
-    customer_config = json.loads(_read("client/src-tauri/tauri.customer.conf.json"))
     customer_installer_hooks = _read("client/src-tauri/customer-installer-hooks.nsh")
     server_package = _read("server/pyproject.toml")
     server_main = _read("server/app/main.py")
 
-    assert '"check:tauri:customer"' in package
+    # --- base config IS the customer foundation (the sole default) ---
+    assert base_config["identifier"] == "com.xiangshu.video-replica.customer"
+    assert base_config["productName"] == "短视频复刻客户云工作台"
+    assert base_config["app"]["windows"][0]["url"] == "customer"
+    assert base_config["app"]["windows"][0]["title"] == ""
+    assert base_config["bundle"]["resources"] == []
+    assert base_config["bundle"]["publisher"] == "Xiangshu Video Replica"
+    assert base_config["bundle"]["windows"]["nsis"]["startMenuFolder"] == "短视频复刻客户云工作台"
+    # No local-API loopback in the default CSP: the customer WebView only ever
+    # talks to an explicit HTTPS backend.
+    assert "127.0.0.1:8000" not in base_config["app"]["security"]["csp"]
+    # The legacy-internal migration hook is release-specific and must NOT live in
+    # the base, else the internal overlay would silently inherit it; it stays in
+    # the customer overlay.
+    assert "installerHooks" not in base_config["bundle"]["windows"]["nsis"]
+
+    # --- customer overlay is thin: only the release-specific installer hook ---
+    assert (
+        customer_overlay["bundle"]["windows"]["nsis"]["installerHooks"]
+        == "customer-installer-hooks.nsh"
+    )
+
+    # --- CW-021: the internal edition is fully withdrawn ---
+    # The opt-in internal overlay, the local-sidecar Cargo feature, and every
+    # internal build/check script are gone; no internal edition can be built,
+    # not even deliberately, and certainly not by accident.
+    internal_overlay_path = REPO_ROOT / "client/src-tauri/tauri.internal.conf.json"
+    assert not internal_overlay_path.exists(), (
+        "CW-021 requires the internal edition overlay to be removed entirely"
+    )
+
+    # --- Cargo: the local-sidecar feature no longer exists at all ---
+    cargo_features = tomllib.loads(cargo_toml).get("features", {})
+    assert "local-sidecar" not in cargo_features, (
+        "CW-021 removes the local-sidecar feature entirely"
+    )
+    assert "local-sidecar" not in cargo_toml
+    assert "default = []" in cargo_toml or "[features]" not in cargo_toml
+
+    # --- package.json: default build/check = customer; no internal scripts ---
+    scripts = root_package["scripts"]
+    assert '"check:tauri:customer"' not in package
+    assert '"check:tauri:internal"' not in package
+    assert '"tauri:build:internal"' not in package
+    assert '"tauri:dev:internal"' not in package
+    assert "local-sidecar" not in package
+    assert "tauri.internal.conf.json" not in package
+    assert "require:customer-api-base" in scripts["tauri:build"]
+    assert "--no-default-features" in scripts["tauri:build"]
+    assert "--config src-tauri/tauri.customer.conf.json" in scripts["tauri:build"]
     assert '"tauri:build:customer"' in package
     assert '"require:customer-api-base"' in package
-    assert "--ci -- --no-default-features" in package
+
+    # --- address-failure guard (unchanged contract) ---
     assert "VITE_API_BASE_URL must be a routable, non-loopback HTTPS origin" in origin_guard
     assert 'addSubnet("127.0.0.0", 8, "ipv4")' in origin_guard
     assert 'addAddress("::1", "ipv6")' in origin_guard
     assert "url.port" in origin_guard
-    assert "--config src-tauri/tauri.customer.conf.json" in package
-    assert customer_config["productName"] == "短视频复刻客户云工作台"
-    assert customer_config["version"] == "0.1.16"
-    assert root_package["version"] == customer_config["version"]
-    assert client_package["version"] == customer_config["version"]
-    assert package_lock["version"] == customer_config["version"]
-    assert package_lock["packages"][""]["version"] == customer_config["version"]
-    assert package_lock["packages"]["client"]["version"] == customer_config["version"]
-    assert internal_config["version"] == customer_config["version"]
+
+    # --- version chain (single source: the base config) ---
+    assert base_config["version"] == "0.1.16"
+    assert root_package["version"] == base_config["version"]
+    assert client_package["version"] == base_config["version"]
+    assert package_lock["version"] == base_config["version"]
+    assert package_lock["packages"][""]["version"] == base_config["version"]
+    assert package_lock["packages"]["client"]["version"] == base_config["version"]
     assert 'name = "video-replica-desktop"\nversion = "0.1.16"' in cargo_lock
     assert 'version = "0.1.16"' in cargo_toml.split("[lib]", maxsplit=1)[0]
     assert 'version = "0.1.16"' in server_package.split("[project]", maxsplit=1)[1]
     assert 'version="0.1.16"' in server_main
-    assert customer_config["identifier"] == "com.xiangshu.video-replica.customer"
-    assert customer_config["app"]["windows"][0]["url"] == "customer"
-    assert customer_config["bundle"]["resources"] == []
-    assert customer_config["bundle"]["publisher"] == "Xiangshu Video Replica"
-    assert (
-        customer_config["bundle"]["windows"]["nsis"]["startMenuFolder"] == "短视频复刻客户云工作台"
-    )
-    assert (
-        customer_config["bundle"]["windows"]["nsis"]["installerHooks"]
-        == "customer-installer-hooks.nsh"
-    )
+
+    # --- installer hook content (unchanged) ---
     assert "$LOCALAPPDATA\\短视频复刻工作台\\uninstall.exe" in customer_installer_hooks
     assert (
         "ExecWait '\"$LOCALAPPDATA\\短视频复刻工作台\\uninstall.exe\" /S'"
@@ -653,20 +711,39 @@ def test_customer_desktop_build_is_an_explicit_no_sidecar_target() -> None:
     assert "IfErrors legacy_internal_failed" in customer_installer_hooks
     assert "IntCmp $0 0 legacy_internal_done" in customer_installer_hooks
     assert "Abort" in customer_installer_hooks
-    assert "127.0.0.1:8000" not in customer_config["app"]["security"]["csp"]
-    assert "npm run check:tauri:customer" in workflow
-    assert "npm run tauri:build -- --bundles nsis --no-sign --ci" in workflow
+
+    # --- ci.yml only ever builds the customer cloud bundle (CW-021) ---
+    assert "npm run check:tauri:internal" not in workflow
+    assert "npm run tauri:build:internal" not in workflow
     assert "npm run tauri:build:customer" in workflow
+    assert "npm run check:tauri:customer" not in workflow
     assert "VITE_API_BASE_URL: https://staging.example.invalid" in workflow
-    assert "Archive unsigned internal NSIS installer locally" in workflow
+    assert "Archive unsigned internal NSIS installer locally" not in workflow
     assert "Archive unsigned customer cloud NSIS installer locally" in workflow
     assert "LOCAL_ARTIFACT_ROOT" in workflow
     assert "SHA256SUMS.txt" in workflow
-    assert "Verify customer installer excludes local launchers" in workflow
+    # CW-021 widened payload detection keeps enforcing the no-local-backend
+    # contract at the artifact level (launchers, server/Python runtime, FFmpeg,
+    # SQLite business database, boot command and business port markers).
+    assert "Verify customer installer excludes local backend distribution" in workflow
+    # Launcher names only appear in the payload gate's forbidden list.
+    workflow_before_payload_gate = workflow.split(
+        "Verify customer installer excludes local backend distribution", 1
+    )[0]
+    assert "start-backend" not in workflow_before_payload_gate
     assert "start-backend.bat" in workflow
     assert "start-backend.sh" in workflow
+    assert "VIDEO_REPLICA_BOOT_COMMAND" in workflow
+    assert "127.0.0.1:8000" in workflow
+
+    # --- frozen map registers the customer overlay and the origin guard ---
     assert "client/src-tauri/tauri.customer.conf.json" in frozen_map
     assert "scripts/require_customer_api_base.mjs" in frozen_map
+    # The internal overlay is deleted (CW-021): the frozen map must register
+    # the removal (a dedicated CW-021 section) instead of describing the
+    # overlay as an available opt-in file.
+    assert "### 4.7 删除桌面本地后端启动与管理资源（CW-021）" in frozen_map
+    assert "内部 edition 显式 opt-in overlay" not in frozen_map
 
 
 def test_release_desktop_uses_windows_gui_subsystem() -> None:
