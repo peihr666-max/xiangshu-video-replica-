@@ -1,6 +1,5 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { AdminApp } from "./AdminApp";
-import { App } from "./App";
 import { ActivationPage } from "./customer/ActivationPage";
 import { CustomerPairingFlow } from "./customer/CustomerPairingFlow";
 import { CustomerWorkspace } from "./customer/CustomerWorkspace";
@@ -17,6 +16,16 @@ const ReviewWorkspace = import.meta.env.DEV
   ? lazy(() => import("./studio/ReviewWorkspace"))
   : null;
 
+/** The single customer entry router (CW-013): every non-admin browser path
+ * — the root, deep links, unmatched routes, and a historical internal hash
+ * — converges on the customer state machine below, so the internal `<App/>`
+ * fallback is deleted and the internal access-token shell is structurally
+ * unreachable from here. The only exceptions are `/admin` (the separate
+ * management entry, browser only — the Tauri desktop customer build has no
+ * admin lane and always mounts the customer shell) and the dev-only
+ * `/review/v1.4` review workspace. A fresh mount reads the real
+ * `window.location`, so refresh / back / deep-link stay in the customer
+ * lane. */
 export function RootApp({
   path = window.location.pathname,
 }: {
@@ -28,19 +37,11 @@ export function RootApp({
         <ReviewWorkspace />
       </Suspense>
     );
-  if (
-    isTauriRuntime() ||
-    path === "/customer" ||
-    path.startsWith("/customer/")
-  ) {
-    return (
-      <CustomerShell startInPairing={path.startsWith("/customer/pairing")} />
-    );
+  if (!isTauriRuntime() && (path === "/admin" || path.startsWith("/admin/"))) {
+    return <AdminApp />;
   }
-  return path === "/admin" || path.startsWith("/admin/") ? (
-    <AdminApp />
-  ) : (
-    <App />
+  return (
+    <CustomerShell startInPairing={path.startsWith("/customer/pairing")} />
   );
 }
 

@@ -750,19 +750,30 @@ describe("API base URL resolution", () => {
     ).toBe("https://video.example.com");
   });
 
-  it("keeps the local API fallback for desktop and development runtimes", () => {
-    expect(
+  it("throws an error when no API base URL is configured (CW-015: remove loopback fallback)", () => {
+    // CW-015: 正式客户构建必须有唯一地址来源，缺地址时 fail-closed
+    expect(() =>
       resolveApiBaseUrl(undefined, true, {
         origin: "tauri://localhost",
         protocol: "tauri:",
       }),
-    ).toBe("http://127.0.0.1:8000");
-    expect(
+    ).toThrow("API base URL is required");
+    expect(() =>
       resolveApiBaseUrl(undefined, false, {
         origin: "http://127.0.0.1:5173",
         protocol: "http:",
       }),
-    ).toBe("http://127.0.0.1:8000");
+    ).toThrow("API base URL is required");
+  });
+
+  it("fails closed at runtime when VITE_API_BASE_URL is missing (CW-015 n1: integration path)", async () => {
+    // n1: 覆盖“运行时 env 缺失 → 真实 API 调用抛错”的端到端 fail-closed 路径。
+    // 上面的用例直接调用 resolveApiBaseUrl；这里经 getHealth() → requestJson()
+    // → apiBaseUrl() 的真实调用链验证：客户构建缺唯一地址来源时，业务请求在发出
+    // 前就抛错，而不是静默回退到 loopback origin。全局 beforeEach 已 stub 地址，
+    // 这里临时置空以进入缺地址路径。
+    vi.stubEnv("VITE_API_BASE_URL", "");
+    await expect(getHealth()).rejects.toThrow("API base URL is required");
   });
 
   it("prefers and normalizes an explicitly configured API origin", () => {
@@ -1904,7 +1915,7 @@ describe("createProject", () => {
     vi.unstubAllGlobals();
   });
 
-  it("creates a project through the authenticated local API", async () => {
+  it("creates a project through the authenticated API without X-Dev-User-Id (CW-015)", async () => {
     const project = {
       id: "project-1",
       owner_user_id: "employee_1",
@@ -1928,9 +1939,8 @@ describe("createProject", () => {
       }),
     );
     const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect((options.headers as Headers).get("X-Dev-User-Id")).toBe(
-      "employee_1",
-    );
+    // CW-015: 正式客户构建不再使用开发身份路径
+    expect((options.headers as Headers).has("X-Dev-User-Id")).toBe(false);
   });
 });
 
@@ -2344,7 +2354,7 @@ describe("getCurrentUser", () => {
     releaseCurrent();
   });
 
-  it("loads the current user from auth/me using the unified development identity", async () => {
+  it("loads the current user from auth/me without X-Dev-User-Id (CW-015)", async () => {
     const user = {
       id: "employee_1",
       username: "employee_1",
@@ -2366,9 +2376,8 @@ describe("getCurrentUser", () => {
       }),
     );
     const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect((options.headers as Headers).get("X-Dev-User-Id")).toBe(
-      "employee_1",
-    );
+    // CW-015: 正式客户构建不再使用开发身份路径
+    expect((options.headers as Headers).has("X-Dev-User-Id")).toBe(false);
   });
 
   it("does not fallback to a development identity in production builds", async () => {
@@ -2413,7 +2422,7 @@ describe("admin API authentication", () => {
     vi.unstubAllEnvs();
   });
 
-  it("uses the same development identity for settings unless explicitly overridden", async () => {
+  it("does not use X-Dev-User-Id for settings (CW-015: remove development identity path)", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ providers: {}, runtime: {} }),
@@ -2423,12 +2432,11 @@ describe("admin API authentication", () => {
     await getSettings();
 
     const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect((options.headers as Headers).get("X-Dev-User-Id")).toBe(
-      "employee_1",
-    );
+    // CW-015: 正式客户构建不再使用开发身份路径
+    expect((options.headers as Headers).has("X-Dev-User-Id")).toBe(false);
   });
 
-  it("allows an explicit VITE_DEV_USER_ID to switch the local identity", async () => {
+  it("does not use VITE_DEV_USER_ID for settings (CW-015: remove development identity path)", async () => {
     vi.stubEnv("VITE_DEV_USER_ID", "admin_1");
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -2439,7 +2447,8 @@ describe("admin API authentication", () => {
     await getSettings();
 
     const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect((options.headers as Headers).get("X-Dev-User-Id")).toBe("admin_1");
+    // CW-015: 正式客户构建不再使用开发身份路径，即使设置了 VITE_DEV_USER_ID
+    expect((options.headers as Headers).has("X-Dev-User-Id")).toBe(false);
   });
 });
 
@@ -2499,7 +2508,7 @@ describe("uploadReferenceVideo", () => {
     );
   });
 
-  it("keeps the development identity header for the local upload endpoint", async () => {
+  it("does not send X-Dev-User-Id header for API uploads (CW-015: remove development identity path)", async () => {
     class LocalUploadRequest {
       static latest: LocalUploadRequest | null = null;
       headers = new Map<string, string>();
@@ -2541,12 +2550,11 @@ describe("uploadReferenceVideo", () => {
       vi.fn(),
     );
 
-    expect(LocalUploadRequest.latest?.headers.get("X-Dev-User-Id")).toBe(
-      "employee_1",
-    );
+    // CW-015: 正式客户构建不再使用开发身份路径
+    expect(LocalUploadRequest.latest?.headers.has("X-Dev-User-Id")).toBe(false);
   });
 
-  it("forwards the internal Bearer token instead of the dev header for local uploads", async () => {
+  it("uses customerSessionToken instead of internalAccessToken for API uploads (CW-015: remove internal token priority)", async () => {
     class ManagedUploadRequest {
       static latest: ManagedUploadRequest | null = null;
       headers = new Map<string, string>();
@@ -2573,7 +2581,9 @@ describe("uploadReferenceVideo", () => {
     }
 
     vi.stubGlobal("XMLHttpRequest", ManagedUploadRequest);
+    // CW-015: 即使设置了 internalAccessToken，也不应该使用它
     setInternalAccessToken("internal-token-1");
+    setCustomerSessionToken("customer-session-token-1");
 
     try {
       await uploadReferenceVideo(
@@ -2591,10 +2601,12 @@ describe("uploadReferenceVideo", () => {
       );
     } finally {
       setInternalAccessToken(null);
+      setCustomerSessionToken(null);
     }
 
+    // CW-015: 正式客户构建只使用 customerSessionToken
     expect(ManagedUploadRequest.latest?.headers.get("Authorization")).toBe(
-      "Bearer internal-token-1",
+      "Bearer customer-session-token-1",
     );
     expect(ManagedUploadRequest.latest?.headers.has("X-Dev-User-Id")).toBe(
       false,

@@ -2041,7 +2041,7 @@ describe("App", () => {
 
     expect(
       await screen.findByText(
-        /上传参考视频失败（无法连接本地服务，请确认服务已启动）/,
+        /上传参考视频失败（无法连接服务，请确认服务已启动）/,
       ),
     ).toBeInTheDocument();
   });

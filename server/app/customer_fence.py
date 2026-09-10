@@ -50,12 +50,11 @@ from app.customer_device_service import _token_digests
 from app.db import connect_database
 from app.db_pg import (
     DATABASE_URL_ENV,
+    DB_PATH_ENV,
     SQLITE_URL_SCHEMES,
     IsolationLevel,
     get_pg_pool,
     pg_transaction,
-    resolve_database_config,
-    validate_customer_production,
 )
 from app.db_portable import BusinessConnection
 from app.permissions import AuditedSecurityDenial, persist_security_denial
@@ -383,15 +382,22 @@ class BusinessDb:
                 )
                 yield bc, actor
             return
-        try:
-            config = resolve_database_config()
-            validate_customer_production(config)
-            db_path = config.sqlite_path
-        except (RuntimeError, ValueError) as exc:
-            logger.warning(
-                "Business write database configuration rejected (%s)", type(exc).__name__
+        # CW-025: internal lane 直接从 DB_PATH_ENV 读取，不经过 resolve_database_config()。
+        # resolve_database_config() 全环境 fail-closed 后不再支持 SQLite/DB_PATH；
+        # 内部 P0 遗留逻辑（internal/desktop lane）保留 DB_PATH 通道，
+        # 归 CW-030/CW-040 后续处理。
+        # 但 customer lane（DATABASE_URL_ENV=postgresql://）+ snapshot=None 时，
+        # 不能回退到 SQLite，必须抛 503（SES-04 红线：PG writer 必须有 customer session）。
+        url = os.environ.get(DATABASE_URL_ENV, "").strip()
+        if url and not url.startswith(SQLITE_URL_SCHEMES):
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "DATABASE_NOT_CONFIGURED",
+                    "message": "A PostgreSQL writer requires a customer session snapshot.",
+                },
             )
-            db_path = None
+        db_path = os.environ.get(DB_PATH_ENV, "").strip()
         if not db_path:
             raise HTTPException(
                 503,
@@ -438,13 +444,11 @@ def get_business_read_conn() -> Iterator[BusinessConnection]:
     must never resolve the legacy ``get_database`` independently — that opens
     only the SQLite path and 503s on a PG-only production (PR #56 P1)."""
     if not _customer_database_configured():
-        try:
-            config = resolve_database_config()
-            validate_customer_production(config)
-            db_path = config.sqlite_path
-        except (RuntimeError, ValueError) as exc:
-            logger.warning("Business read database configuration rejected (%s)", type(exc).__name__)
-            db_path = None
+        # CW-025: internal lane 直接从 DB_PATH_ENV 读取，不经过 resolve_database_config()。
+        # resolve_database_config() 全环境 fail-closed 后不再支持 SQLite/DB_PATH；
+        # 内部 P0 遗留逻辑（internal/desktop lane）保留 DB_PATH 通道，
+        # 归 CW-030/CW-040 后续处理。
+        db_path = os.environ.get(DB_PATH_ENV, "").strip()
         if not db_path:
             raise HTTPException(
                 503,

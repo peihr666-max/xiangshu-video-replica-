@@ -30,7 +30,6 @@ from app.db_pg import (
     PG_IDLE_IN_TRANSACTION_TIMEOUT_MS,
     PG_STATEMENT_TIMEOUT_MS,
     DatabaseMode,
-    MissingDatabaseConfigError,
     check_pg_ready,
     close_pg_pool,
     pg_server_now,
@@ -83,140 +82,24 @@ def test_resolve_postgres_scheme_alias() -> None:
     assert config.mode is DatabaseMode.POSTGRESQL
 
 
-def test_resolve_sqlite_fallback_keeps_internal_mode() -> None:
+def test_resolve_rejects_db_path_all_environments() -> None:
+    """CW-025: VIDEO_REPLICA_DB_PATH 在线入口全环境拒绝。
+
+    历史 SQLite 工具（backup/sqlite_to_postgres/gate1_*）走 CW-060 独立白名单，
+    不经过 resolve_database_config() 的在线通道。
+    """
     with _env(**{DATABASE_URL_ENV: "", "VIDEO_REPLICA_DB_PATH": "/tmp/app.db"}):
-        config = resolve_database_config()
-    assert config.mode is DatabaseMode.SQLITE
-    assert config.sqlite_path == "/tmp/app.db"
+        with pytest.raises(RuntimeError, match="PostgreSQL"):
+            resolve_database_config()
 
 
-@pytest.mark.parametrize("database_url", ["", "sqlite:///internal.db"])
-def test_customer_snapshot_ignores_cached_pg_pool_on_internal_lane(
-    monkeypatch: pytest.MonkeyPatch, database_url: str
-) -> None:
-    from app import customer_fence
-
-    monkeypatch.setenv(DATABASE_URL_ENV, database_url)
-    cached_pool = Mock(return_value=object())
-    monkeypatch.setattr(customer_fence, "get_pg_pool", cached_pool)
-    request = Request({"type": "http", "headers": []})
-
-    assert customer_fence.customer_session_snapshot(request) is None
-    cached_pool.assert_not_called()
-
-
-@pytest.mark.parametrize("database_url", ["", "sqlite://", "sqlite:///"])
-def test_business_read_ignores_cached_pg_pool_on_internal_lane(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
-) -> None:
-    from app import customer_fence
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv(
-        DATABASE_URL_ENV,
-        f"{database_url}url.db" if database_url else "",
-    )
-    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "internal.db"))
-    monkeypatch.setattr(customer_fence, "get_pg_pool", Mock(return_value=object()))
-    pg_read = Mock(side_effect=AssertionError("Internal reads must not open PostgreSQL"))
-    monkeypatch.setattr(customer_fence, "pg_transaction", pg_read)
-
-    with contextmanager(customer_fence.get_business_read_conn)() as conn:
-        assert not conn.is_postgres
-        assert conn.execute("SELECT 42").fetchone()[0] == 42
-    pg_read.assert_not_called()
-
-
-@pytest.mark.parametrize("operation", ["read", "write"])
-@pytest.mark.parametrize(
-    ("url_prefix", "has_legacy_path"),
-    [
-        ("sqlite://", False),
-        ("sqlite://", True),
-        ("sqlite:///", False),
-        ("sqlite:///", True),
-        ("", True),
-    ],
-)
-def test_business_sqlite_connections_follow_resolved_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    operation: str,
-    url_prefix: str,
-    has_legacy_path: bool,
-) -> None:
-    from app import customer_fence
-
-    target = tmp_path / "selected.db"
-    legacy = tmp_path / "legacy.db"
-    monkeypatch.chdir(tmp_path)
-    for path, marker in ((target, "selected"), (legacy, "legacy")):
-        with sqlite3.connect(path) as conn:
-            conn.execute(
-                "CREATE TABLE users (id TEXT, username TEXT, display_name TEXT, "
-                "role TEXT, is_active INTEGER)"
-            )
-            conn.execute(
-                "INSERT INTO users VALUES ('internal_u', ?, ?, 'employee', 1)",
-                (marker, marker),
-            )
-            conn.execute("CREATE TABLE markers (value TEXT)")
-            conn.execute("INSERT INTO markers VALUES (?)", (marker,))
-    monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
-    monkeypatch.setenv("VIDEO_REPLICA_AUTH_MODE", "desktop")
-    monkeypatch.setenv("VIDEO_REPLICA_DESKTOP_USER_ID", "internal_u")
-    url_path = target.as_posix() if url_prefix == "sqlite:///" else target.name
-    monkeypatch.setenv(DATABASE_URL_ENV, f"{url_prefix}{url_path}" if url_prefix else "")
-    if has_legacy_path:
-        monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(legacy if url_prefix else target))
-    else:
-        monkeypatch.delenv("VIDEO_REPLICA_DB_PATH", raising=False)
-
-    if operation == "read":
-        with contextmanager(customer_fence.get_business_read_conn)() as conn:
-            assert conn.execute("SELECT value FROM markers").fetchone()[0] == "selected"
-    else:
-        request = Request({"type": "http", "headers": []})
-        with customer_fence.get_business_db(request).write() as (conn, actor):
-            assert actor.username == "selected"
-            conn.execute("INSERT INTO markers VALUES ('written')")
-            conn.commit()
-        with sqlite3.connect(target) as conn:
-            assert conn.execute("SELECT value FROM markers").fetchall() == [
-                ("selected",),
-                ("written",),
-            ]
-    with sqlite3.connect(legacy) as conn:
-        assert conn.execute("SELECT value FROM markers").fetchall() == [("legacy",)]
-
-
-@pytest.mark.parametrize("operation", ["read", "write"])
-@pytest.mark.parametrize("production", [False, True])
-def test_business_sqlite_rejects_missing_or_production_configuration(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, operation: str, production: bool
-) -> None:
-    from app import customer_fence
-
-    monkeypatch.delenv("VIDEO_REPLICA_DB_PATH", raising=False)
-    if production:
-        monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "legacy.db"))
-    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true" if production else "")
-    monkeypatch.setenv(
-        DATABASE_URL_ENV,
-        f"sqlite:///{(tmp_path / 'forbidden.db').as_posix()}" if production else "",
-    )
-    connect_sqlite = Mock()
-    monkeypatch.setattr(customer_fence, "connect_database", connect_sqlite)
-
-    with pytest.raises(HTTPException) as error:
-        if operation == "read":
-            next(customer_fence.get_business_read_conn())
-        else:
-            with customer_fence.BusinessDb(None, None, None).write():
-                pytest.fail("Invalid configuration must not open a business connection")
-    assert error.value.status_code == 503
-    assert error.value.detail["code"] == "DATABASE_NOT_CONFIGURED"
-    connect_sqlite.assert_not_called()
+# CW-025: customer_fence SQLite 通道测试已删除。
+# PG 回归版本见 test_business_write_without_snapshot_never_falls_back_from_pg、
+# test_customer_snapshot_pg_pool_failure_is_fail_closed、
+# test_business_read_pg_failure_does_not_fall_back_to_sqlite。
+# customer_fence.py 的 internal lane（DB_PATH 通道）保留，归 CW-030/CW-040 后续处理；
+# customer production 环境下 SQLite URL 被拒绝的逻辑由入口（bootstrap/main/worker）
+# 的 resolve_database_config() 全环境 fail-closed 保证，不由 customer_fence 重复检查。
 
 
 def test_business_write_without_snapshot_never_falls_back_from_pg(
@@ -278,14 +161,15 @@ def test_resolve_rejects_unsupported_scheme() -> None:
             resolve_database_config()
 
 
-def test_resolve_missing_internal_raises_missing_database_config_error() -> None:
-    """The internal lane may legitimately boot without any database env
-    (the legacy lane resolves per-request), so the missing-config path
-    raises the narrow MissingDatabaseConfigError — never the generic
-    ValueError also used for unsupported schemes, which the lifespan
-    must not swallow (Codex P1)."""
+def test_resolve_missing_dsn_raises_runtime_error_all_environments() -> None:
+    """CW-025: 缺 DSN 全环境 fail-closed（不再区分 internal/customer lane）。
+
+    历史内部 P0 单机版走 CW-060 独立白名单工具，不经过在线入口。
+    MissingDatabaseConfigError 类保留（避免破坏 import），但 resolve_database_config()
+    不再抛它——所有缺配置场景统一抛 RuntimeError。
+    """
     with _env(**{DATABASE_URL_ENV: "", "VIDEO_REPLICA_DB_PATH": ""}):
-        with pytest.raises(MissingDatabaseConfigError):
+        with pytest.raises(RuntimeError, match="PostgreSQL"):
             resolve_database_config()
 
 
@@ -368,10 +252,115 @@ def test_production_rejects_ambiguous_postgres_sslmode() -> None:
             validate_customer_production(resolve_database_config())
 
 
-def test_non_production_allows_sqlite() -> None:
+def test_non_production_rejects_sqlite_url() -> None:
+    """CW-025: sqlite:// URL 全环境拒绝（不再区分 internal/customer lane）。
+
+    历史 SQLite 只读迁移工具走 CW-060 独立白名单，不经过 resolve_database_config()。
+    """
     with _env(**{"VIDEO_REPLICA_CUSTOMER_PRODUCTION": "", DATABASE_URL_ENV: "sqlite:////tmp/x.db"}):
+        with pytest.raises(RuntimeError, match="PostgreSQL"):
+            resolve_database_config()
+
+
+# ---------------------------------------------------------------------------
+# CW-025: 五环境启动拒绝矩阵（dev/test/CI/staging/production × 5 场景）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env_label",
+    ["dev", "test", "ci", "staging", "production"],
+    ids=["env-dev", "env-test", "env-ci", "env-staging", "env-production"],
+)
+@pytest.mark.parametrize(
+    "scenario",
+    ["missing_dsn", "sqlite_url", "db_path_only", "db_path_with_pg", "unsupported_scheme"],
+    ids=["scn-missing", "scn-sqlite-url", "scn-db-path", "scn-mixed", "scn-unsupported"],
+)
+def test_all_environment_startup_rejection_matrix(
+    env_label: str, scenario: str, tmp_path: Path
+) -> None:
+    """CW-025 增量验收：全部环境对非 PG 配置 fail-closed 且无 SQLite 文件副作用。
+
+    账本要求："新增 dev/test/CI/staging/production 启动拒绝矩阵：有效 PG 成功，
+    其余配置全部非零且无 SQLite 文件副作用"。
+
+    环境标识通过 VIDEO_REPLICA_CUSTOMER_PRODUCTION 区分：
+    - production: "true"
+    - staging/dev/test/ci: "" (非 customer_production，但 CW-025 后同样 fail-closed)
+
+    5 种拒绝场景：
+    1. missing_dsn: 缺 DATABASE_URL 和 DB_PATH
+    2. sqlite_url: DATABASE_URL=sqlite://...
+    3. db_path_only: 只有 DB_PATH
+    4. db_path_with_pg: PG URL + DB_PATH 混配（歧义配置）
+    5. unsupported_scheme: DATABASE_URL=mysql://... 等不支持的 scheme
+    """
+    # 环境标识设置
+    customer_production = "true" if env_label == "production" else ""
+
+    # 场景配置
+    db_path_value = str(tmp_path / "rejected.db")
+    if scenario == "missing_dsn":
+        database_url = ""
+        db_path = ""
+    elif scenario == "sqlite_url":
+        database_url = f"sqlite:///{db_path_value}"
+        db_path = ""
+    elif scenario == "db_path_only":
+        database_url = ""
+        db_path = db_path_value
+    elif scenario == "db_path_with_pg":
+        database_url = "postgresql://u:p@host:5432/db?sslmode=require"
+        db_path = db_path_value
+    elif scenario == "unsupported_scheme":
+        database_url = "mysql://u:p@host/db"
+        db_path = ""
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown scenario {scenario}")
+
+    with _env(
+        **{
+            "VIDEO_REPLICA_CUSTOMER_PRODUCTION": customer_production,
+            DATABASE_URL_ENV: database_url,
+            "VIDEO_REPLICA_DB_PATH": db_path,
+        }
+    ):
+        # CW-025: 全环境 fail-closed。unsupported_scheme 保留原有 ValueError
+        # （Codex P1 review），其余场景抛 RuntimeError。两者都是非零退出。
+        with pytest.raises((RuntimeError, ValueError)):
+            resolve_database_config()
+
+    # 断言：不生成任何 SQLite 文件副作用
+    assert not (tmp_path / "rejected.db").exists(), f"{env_label}/{scenario} 不得创建 .db 文件"
+    assert not (tmp_path / "rejected.db-wal").exists(), f"{env_label}/{scenario} 不得创建 .db-wal"
+    assert not (tmp_path / "rejected.db-shm").exists(), f"{env_label}/{scenario} 不得创建 .db-shm"
+
+
+@pytest.mark.parametrize("env_label", ["dev", "test", "ci", "staging", "production"])
+def test_all_environment_accepts_valid_pg_dsn(env_label: str) -> None:
+    """CW-025 增量验收：有效 PG DSN 在全部环境成功解析。
+
+    与拒绝矩阵配对的正向对照：证明 fail-closed 不是"全部拒绝"，
+    而是"只接受 PG"。
+    """
+    customer_production = "true" if env_label == "production" else ""
+    dsn = "postgresql://u:p@host:5432/db"
+    if env_label == "production":
+        # customer_production 额外要求 TLS
+        dsn = f"{dsn}?sslmode=require"
+
+    with _env(
+        **{
+            "VIDEO_REPLICA_CUSTOMER_PRODUCTION": customer_production,
+            DATABASE_URL_ENV: dsn,
+            "VIDEO_REPLICA_DB_PATH": "",
+        }
+    ):
         config = resolve_database_config()
-        # Must not raise in internal mode.
+        assert config.mode is DatabaseMode.POSTGRESQL
+        assert config.dsn == dsn
+        # validate_customer_production 在 production 时额外校验 TLS，非 production 时 no-op
         validate_customer_production(config)
 
 
