@@ -10,11 +10,17 @@ name = "video_replica_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["local-sidecar"]
-# DESK-02 (T29): the internal build keeps auto-starting the bundled local
-# FastAPI sidecar exactly as before. A customer-cloud build compiles with
-# `--no-default-features` so the shipped app can never silently boot a local
-# business source of truth behind the customer's back.
+# CW-020: the customer cloud edition is the sole default build target, so the
+# default feature set is empty and a bare `cargo check` / `tauri build` compiles
+# the customer app that can never silently boot a local business source of
+# truth. The internal edition is an explicit opt-in: build it with
+# `--features local-sidecar` (see the `check:tauri:internal` /
+# `tauri:build:internal` scripts and the `tauri.internal.conf.json` overlay).
+# CW-021 retires this feature and the local-sidecar source once the internal
+# edition is fully withdrawn.
+default = []
+# DESK-02 (T29): opt-in gate for auto-starting the bundled local FastAPI
+# sidecar; only the internal edition enables it.
 local-sidecar = []
 
 [build-dependencies]

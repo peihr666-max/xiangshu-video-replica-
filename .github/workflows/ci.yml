@@ -324,15 +324,15 @@ jobs:
       - name: Install JavaScript dependencies
         if: needs.changes.outputs.desktop == 'true'
         run: npm ci
-      - name: Check Tauri project
+      - name: Check Tauri project (customer default)
         if: needs.changes.outputs.desktop == 'true'
         run: npm run check:tauri
-      - name: Check customer cloud target without local sidecar
+      - name: Check internal opt-in target with local sidecar
         if: needs.changes.outputs.desktop == 'true'
-        run: npm run check:tauri:customer
+        run: npm run check:tauri:internal
       - name: Build unsigned internal NSIS installer
         if: needs.changes.outputs.desktop == 'true'
-        run: npm run tauri:build -- --bundles nsis --no-sign --ci
+        run: npm run tauri:build:internal
       - name: Record internal installer SHA256
         if: needs.changes.outputs.desktop == 'true'
         shell: pwsh
