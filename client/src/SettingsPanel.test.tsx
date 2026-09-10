@@ -7,8 +7,25 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SESSION_EXPIRED_EVENT } from "./api";
-import { SettingsPanel } from "./SettingsPanel";
+import {
+  getControlSettings,
+  SESSION_EXPIRED_EVENT,
+  testControlProviderConnection,
+  updateControlBillingSettings,
+  updateControlProviderSettings,
+  updateControlRuntimeSettings,
+} from "./api";
+import { type SettingsBackend, SettingsPanel } from "./SettingsPanel";
+
+// CW-019：控制面后端由管理端调用方注入，SettingsPanel 本体不再静态引用
+// `*Control*` API。测试沿用真实 api 函数 + fetch mock 验证注入后的行为等价。
+const controlTestBackend: SettingsBackend = {
+  load: getControlSettings,
+  saveProvider: updateControlProviderSettings,
+  saveRuntime: updateControlRuntimeSettings,
+  saveBilling: updateControlBillingSettings,
+  testProvider: testControlProviderConnection,
+};
 
 function jsonResponse(payload: unknown, status = 200) {
   return Promise.resolve({
@@ -480,7 +497,13 @@ describe("SettingsPanel", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
 
-      const { container } = render(<SettingsPanel source={source} />);
+      const { container } = render(
+        source === "control" ? (
+          <SettingsPanel controlBackend={controlTestBackend} source="control" />
+        ) : (
+          <SettingsPanel />
+        ),
+      );
       await screen.findByText("数字人口播");
       const hifly = providerCard(container, "hifly");
       fireEvent.click(hifly.getByRole("button", { name: "只读检查" }));

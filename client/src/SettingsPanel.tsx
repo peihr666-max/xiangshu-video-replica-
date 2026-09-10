@@ -2,7 +2,6 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import {
   type BillingSettings,
-  getControlSettings,
   getSettings,
   type ProviderName,
   type ProviderSettings,
@@ -10,15 +9,54 @@ import {
   type RuntimeSettings,
   revealProviderSecret,
   type SettingsSnapshot,
-  testControlProviderConnection,
   testProviderConnection,
   updateBillingSettings,
-  updateControlBillingSettings,
-  updateControlProviderSettings,
-  updateControlRuntimeSettings,
   updateProviderSettings,
   updateRuntimeSettings,
 } from "./api";
+
+/**
+ * 设置面板的数据后端。工作台面（`/api/admin/settings`）由本模块内置；
+ * 控制面（`/api/control/settings`，内部通道 + 反代令牌）必须由管理端调用方
+ * 注入，本模块不静态引用任何 `*Control*` API。
+ *
+ * 这样客户构建制品的依赖图不含控制面代码——`scripts/verify_customer_bundle.mjs`
+ * 对 `client/dist` 断言 `/api/control/` 与 `X-Control-Proxy-Token` 零命中。
+ * 构建层 tree-shake 无法替代本设计：客户入口经
+ * `CustomerWorkspace → StudioWorkspace → SettingsPanel` 静态复用本组件，
+ * 组件内的 `source === "control"` 运行时三元分支会让打包器保留两侧引用。
+ */
+export type SettingsBackend = {
+  load: () => Promise<SettingsSnapshot>;
+  saveProvider: (
+    provider: ProviderName,
+    config: Record<string, string>,
+  ) => Promise<ProviderSettings>;
+  saveRuntime: (runtime: RuntimeSettings) => Promise<RuntimeSettings>;
+  saveBilling: (input: {
+    internal_base_unit_price_fen: number;
+    oral_unit_price_fen: number;
+    min_recharge_fen: number;
+    recharge_step_fen: number;
+  }) => Promise<BillingSettings>;
+  testProvider: (provider: ProviderName) => Promise<ProviderTestResult>;
+};
+
+const workspaceBackend: SettingsBackend = {
+  load: getSettings,
+  saveProvider: updateProviderSettings,
+  saveRuntime: updateRuntimeSettings,
+  saveBilling: updateBillingSettings,
+  testProvider: testProviderConnection,
+};
+
+export type SettingsPanelProps =
+  | { source?: "workspace"; readOnly?: boolean }
+  | {
+      source: "control";
+      controlBackend: SettingsBackend;
+      readOnly?: boolean;
+    };
 
 function visibleErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim()
@@ -108,19 +146,18 @@ const PROVIDER_ORDER: ProviderName[] = [
   "douyidou",
 ];
 
-export function SettingsPanel({
-  source = "workspace",
-  readOnly = false,
-}: {
-  source?: "workspace" | "control";
-  readOnly?: boolean;
-}) {
+export function SettingsPanel(props: SettingsPanelProps) {
+  const source = props.source ?? "workspace";
+  const readOnly = props.readOnly ?? false;
+  const backend =
+    props.source === "control" ? props.controlBackend : workspaceBackend;
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
-    (source === "control" ? getControlSettings() : getSettings())
+    backend
+      .load()
       .then((snapshot) => {
         if (isMounted) {
           setSettings(snapshot);
@@ -141,7 +178,7 @@ export function SettingsPanel({
     return () => {
       isMounted = false;
     };
-  }, [source]);
+  }, [backend]);
 
   async function saveProvider(
     provider: ProviderName,
@@ -149,9 +186,7 @@ export function SettingsPanel({
   ) {
     const finalConfig =
       provider === "cos" ? { ...config, region: COS_REGION } : config;
-    const updated = await (source === "control"
-      ? updateControlProviderSettings(provider, finalConfig)
-      : updateProviderSettings(provider, finalConfig));
+    const updated = await backend.saveProvider(provider, finalConfig);
     setSettings((current) =>
       current
         ? {
@@ -163,9 +198,7 @@ export function SettingsPanel({
   }
 
   async function saveRuntime(runtime: RuntimeSettings) {
-    const updated = await (source === "control"
-      ? updateControlRuntimeSettings(runtime)
-      : updateRuntimeSettings(runtime));
+    const updated = await backend.saveRuntime(runtime);
     setSettings((current) =>
       current ? { ...current, runtime: updated } : current,
     );
@@ -179,15 +212,12 @@ export function SettingsPanel({
   }
 
   async function saveBilling(billing: BillingSettings) {
-    const payload = {
+    const updated = await backend.saveBilling({
       internal_base_unit_price_fen: billing.internal_base_unit_price_fen,
       oral_unit_price_fen: billing.oral_unit_price_fen,
       min_recharge_fen: billing.min_recharge_fen,
       recharge_step_fen: billing.recharge_step_fen,
-    };
-    const updated = await (source === "control"
-      ? updateControlBillingSettings(payload)
-      : updateBillingSettings(payload));
+    });
     setSettings((current) =>
       current ? { ...current, billing: updated } : current,
     );
@@ -221,11 +251,7 @@ export function SettingsPanel({
               settings={providerSettings}
               onSave={saveProvider}
               onReveal={source === "workspace" ? revealSavedSecret : undefined}
-              onTest={
-                source === "control"
-                  ? testControlProviderConnection
-                  : testProviderConnection
-              }
+              onTest={backend.testProvider}
             />
           );
         })}

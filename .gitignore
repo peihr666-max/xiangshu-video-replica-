@@ -10,6 +10,8 @@ video_reverse_runs/
 # Frontend
 node_modules/
 dist/
+# CW-019 管理端独立构建制品（npm run build:admin）
+dist-admin/
 coverage/
 *.tsbuildinfo
 client/vite.config.js

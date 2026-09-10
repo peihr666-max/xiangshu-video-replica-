@@ -241,6 +241,25 @@ jobs:
       - name: Build web client
         if: needs.changes.outputs.desktop == 'true'
         run: npm run build
+      # CW-019: the admin console is a separate artifact (client/dist-admin,
+      # base /admin/). Building it here proves the admin entry compiles and that
+      # the customer build did not silently absorb it.
+      #
+      # Gated on `desktop`, identical to the "Build web client" step above: the
+      # verify step asserts on client/dist, which only exists when that step ran.
+      # Gating on `frontend` instead would let a desktop-only change skip the
+      # build yet still run the assertion, and an ungated step would fail on a
+      # server-only PR because verify treats a missing artifact directory as a
+      # hard error (a missing bundle must never be able to pass as "clean").
+      - name: Build admin bundle
+        if: needs.changes.outputs.desktop == 'true'
+        run: npm run build:admin
+      # CW-019: artifact-level assertion that client/dist contains no admin or
+      # internal entry (file names, chunk names, management/internal feature
+      # strings). Prints the full SHA-256 manifest and exits non-zero on any hit.
+      - name: Verify customer bundle excludes admin and internal entries
+        if: needs.changes.outputs.desktop == 'true'
+        run: npm run verify:customer-bundle
       - name: Audit JavaScript dependencies
         if: needs.changes.outputs.frontend == 'true'
         shell: bash

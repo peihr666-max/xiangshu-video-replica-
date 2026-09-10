@@ -1,8 +1,38 @@
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { defineConfig, type Plugin } from "vitest/config";
+
+const scriptDir = fileURLToPath(new URL(".", import.meta.url));
+
+/**
+ * CW-019 dev-only：把 /admin 与 /admin/* 重写到 /admin.html，让本地联调
+ * 可以用客户 dev server（127.0.0.1:5173）同时访问客户壳与管理端。
+ *
+ * 生产不适用：客户构建制品物理排除 admin.html（scripts/verify_customer_bundle.mjs
+ * 断言），管理制品由 `vite build --config vite.admin.config.ts` 独立输出到
+ * client/dist-admin，nginx `location ^~ /admin/` alias 到该目录。
+ *
+ * 只在 dev server 生效（configureServer 只被 `vite dev` 调用），不影响 build。
+ */
+const adminDevRewritePlugin: Plugin = {
+  name: "cw019-admin-dev-rewrite",
+  apply: "serve",
+  configureServer(server) {
+    server.middlewares.use((req, _res, next) => {
+      const url = req.url ?? "";
+      // 精确 /admin 与 /admin/…；不匹配 /administrator 之类的其它路径。
+      if (url === "/admin" || url.startsWith("/admin/")) {
+        req.url = "/admin.html";
+      }
+      next();
+    });
+  },
+};
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), adminDevRewritePlugin],
   clearScreen: false,
   server: {
     host: "127.0.0.1",
@@ -31,10 +61,21 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   build: {
+    // CW-019: 客户构建 outDir 名字必须保持 "dist"——Tauri 双包
+    // （tauri.conf.json / tauri.customer.conf.json）的 frontendDist: "../dist"
+    // 依赖此路径；改名会同时断掉内部 NSIS 与客户云 NSIS 两条 CI 门禁。
+    outDir: "dist",
+    emptyOutDir: true,
     target:
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
     minify: process.env.TAURI_ENV_DEBUG ? false : "oxc",
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+    rollupOptions: {
+      // CW-019: 显式钉住客户唯一入口。Vite 8 在 input 缺省时以 index.html 为
+      // 入口，但同目录出现 admin.html 时可能被自动扫描卷入客户包，破坏
+      // scripts/verify_customer_bundle.mjs 的管理代码排除断言。
+      input: resolve(scriptDir, "index.html"),
+    },
   },
   test: {
     environment: "jsdom",

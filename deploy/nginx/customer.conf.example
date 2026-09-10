@@ -126,6 +126,16 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $remote_addr;
+        # CW-019: strip any client-supplied control-plane token, matching every
+        # proxy block in internal-p0.conf.example. This is a prefix location, so it
+        # does forward /api/control/* to the same upstream. Customer production
+        # authenticates those routes with the per-operator admin_session cookie and
+        # never reads this header (control_auth.get_control_route_user), so clearing
+        # it costs nothing here; it is defence in depth for a host whose
+        # VIDEO_REPLICA_CUSTOMER_PRODUCTION is misconfigured, where the legacy
+        # get_control_user path would otherwise compare an attacker-supplied token
+        # against CONTROL_PROXY_TOKEN_DIGEST.
+        proxy_set_header X-Control-Proxy-Token "";
         # Business handlers legitimately return 502/503/504 for provider or
         # storage failures. Only transport failures prove this API process is
         # unhealthy; dependency status removal belongs to /ready above.
@@ -135,8 +145,40 @@ server {
         proxy_read_timeout 300s;
     }
 
-    # Both the customer workspace and /admin are browser routes in the same
-    # compiled SPA, so auth cookies never cross an origin boundary.
+    # CW-019: customer and admin are two independent build artifacts, no longer
+    # one compiled SPA. `client/dist` (root above) is the customer shell shipped
+    # with Tauri and this ingress; `client/dist-admin` is the admin console,
+    # built by `npm run build:admin` with base `/admin/`. The customer artifact
+    # physically contains no admin entry (scripts/verify_customer_bundle.mjs
+    # asserts this in CI), so /admin must be served from dist-admin.
+    # deploy/customer-git-rollout.sh builds and replaces both artifacts in the same
+    # run; this location block must already exist before the first such release,
+    # otherwise the rollout's /admin probe fails on purpose and the run rolls back.
+    #
+    # Access control note — read before deciding to publish /admin. This example
+    # serves the admin *shell* to the public internet. The shell grants no data by
+    # itself: on a customer-production host every /api/admin and /api/control route
+    # authenticates the per-operator admin_session cookie established by the ASX1
+    # exchange (server/app/control_auth.py: get_control_route_user), and the legacy
+    # single-admin proxy-token identity is rejected outright there. But the shell
+    # still discloses the entire management API surface to unauthenticated clients:
+    # endpoint paths, field names, and the semantics of activation-code batches, the
+    # audit centre and forced sign-out. Do not assume /api/control/ is blocked at
+    # the proxy — the `location ^~ /api/` prefix above forwards it to the same
+    # upstream. If the operator does not want the console reachable publicly, add
+    # the same `allow`/`deny all` + `auth_basic` block used by
+    # internal-p0.conf.example inside `location ^~ /admin/` below.
+    location = /admin {
+        return 301 /admin/;
+    }
+
+    location ^~ /admin/ {
+        alias /opt/video-replica/app/client/dist-admin/;
+        try_files $uri $uri/ /admin/index.html;
+    }
+
+    # The customer workspace is a browser-route SPA, so auth cookies never
+    # cross an origin boundary.
     location / {
         try_files $uri $uri/ /index.html;
     }

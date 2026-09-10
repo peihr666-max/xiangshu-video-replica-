@@ -1,5 +1,4 @@
 import { lazy, Suspense, useMemo, useState } from "react";
-import { AdminApp } from "./AdminApp";
 import { ActivationPage } from "./customer/ActivationPage";
 import { CustomerPairingFlow } from "./customer/CustomerPairingFlow";
 import { CustomerWorkspace } from "./customer/CustomerWorkspace";
@@ -8,7 +7,6 @@ import { SessionConflictDialog } from "./customer/SessionConflictDialog";
 import {
   type CustomerCredentialStore,
   customerCredentialStore,
-  isTauriRuntime,
   useCustomerSession,
 } from "./customer/useCustomerSession";
 
@@ -16,16 +14,26 @@ const ReviewWorkspace = import.meta.env.DEV
   ? lazy(() => import("./studio/ReviewWorkspace"))
   : null;
 
-/** The single customer entry router (CW-013): every non-admin browser path
- * — the root, deep links, unmatched routes, and a historical internal hash
- * — converges on the customer state machine below, so the internal `<App/>`
- * fallback is deleted and the internal access-token shell is structurally
- * unreachable from here. The only exceptions are `/admin` (the separate
- * management entry, browser only — the Tauri desktop customer build has no
- * admin lane and always mounts the customer shell) and the dev-only
- * `/review/v1.4` review workspace. A fresh mount reads the real
- * `window.location`, so refresh / back / deep-link stay in the customer
- * lane. */
+/** The single customer entry router (CW-013, refined by CW-019): every
+ * browser path — the root, deep links, unmatched routes, and a historical
+ * internal hash — converges on the customer state machine below, so the
+ * internal `<App/>` fallback is deleted and the internal access-token shell
+ * is structurally unreachable from here.
+ *
+ * CW-019: `/admin` is no longer a customer route. The management console now
+ * ships as an independent build artifact (`client/dist-admin`, served by
+ * nginx `location ^~ /admin/`), and this customer bundle must not contain any
+ * admin code — the exclusion is enforced at build time by
+ * `scripts/verify_customer_bundle.mjs` and at source level by
+ * `entryContract.test.ts`. A request that still lands on the customer
+ * `index.html` with `/admin` (misconfigured proxy, stale bookmark) degrades
+ * to the customer shell rather than leaking admin UI. The only remaining
+ * exception is the dev-only `/review/v1.4` review workspace, statically
+ * eliminated in production builds.
+ *
+ * A fresh mount reads the real `window.location`, so refresh / back /
+ * deep-link stay in the customer lane. The Tauri desktop customer build has
+ * no admin lane at all and always mounts the customer shell. */
 export function RootApp({
   path = window.location.pathname,
 }: {
@@ -37,9 +45,6 @@ export function RootApp({
         <ReviewWorkspace />
       </Suspense>
     );
-  if (!isTauriRuntime() && (path === "/admin" || path.startsWith("/admin/"))) {
-    return <AdminApp />;
-  }
   return (
     <CustomerShell startInPairing={path.startsWith("/customer/pairing")} />
   );
