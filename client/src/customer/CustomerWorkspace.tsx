@@ -17,6 +17,7 @@ import { StudioWorkspace } from "../studio/StudioWorkspace";
 import { customerToCurrentUser } from "./customerToCurrentUser";
 import type {
   CustomerCredentialStore,
+  CustomerLogoutOutcome,
   CustomerSessionRuntime,
   CustomerWorkspaceUser,
 } from "./useCustomerSession";
@@ -37,7 +38,7 @@ export function CustomerWorkspace({
   user: CustomerWorkspaceUser;
   sessionRuntime?: CustomerSessionRuntime | null;
   onManualHeartbeat?: () => void;
-  onLogout: () => Promise<void>;
+  onLogout: () => Promise<CustomerLogoutOutcome>;
   store: CustomerCredentialStore;
   onSessionExpired: () => void;
 }) {

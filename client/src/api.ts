@@ -4229,7 +4229,7 @@ function generationRequestError(error: unknown, errorPrefix: string): Error {
     return new Error(`${errorPrefix}：请求超时，请重试`);
   }
   if (error instanceof TypeError) {
-    return new Error(`${errorPrefix}：网络连接失败，请检查本地服务`);
+    return new Error(`${errorPrefix}：网络连接失败，请检查网络后重试`);
   }
   return error instanceof Error ? error : new Error(errorPrefix);
 }
@@ -4262,7 +4262,7 @@ function analysisRequestError(error: unknown, errorPrefix: string): Error {
     return new Error(`${errorPrefix}：请求超时，请重试`);
   }
   if (error instanceof TypeError) {
-    return new Error(`${errorPrefix}：网络连接失败，请检查本地服务`);
+    return new Error(`${errorPrefix}：网络连接失败，请检查网络后重试`);
   }
   return error instanceof Error ? error : new Error(errorPrefix);
 }
@@ -5094,21 +5094,6 @@ export async function customerActivate(
     },
   );
   return body;
-}
-
-export type CustomerRecoverInput = Omit<
-  CustomerActivateInput,
-  "activationCode"
->;
-
-/** Recover a previously bound desktop from its durable opaque fingerprint.
- * The server only succeeds while the associated activation code, account and
- * device binding are all active; first-time users still need an activation
- * code. The empty code is an explicit wire-level recovery signal. */
-export function customerRecover(
-  input: CustomerRecoverInput,
-): Promise<CustomerActivationResponse> {
-  return customerActivate({ ...input, activationCode: "" });
 }
 
 export type CustomerLoginResult = {

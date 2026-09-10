@@ -9,7 +9,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CustomerDeviceListResponse, CustomerProfile } from "../api";
 import { CustomerProfilePanel } from "./CustomerProfilePanel";
-import type { CustomerCredentialStore } from "./useCustomerSession";
+import type {
+  CustomerCredentialStore,
+  CustomerLogoutOutcome,
+} from "./useCustomerSession";
 
 const profile: CustomerProfile = {
   user_id: "user-1",
@@ -234,10 +237,10 @@ describe("CustomerProfilePanel", () => {
   });
 
   it("prevents duplicate logout actions while the first request is pending", async () => {
-    let finishLogout: (() => void) | undefined;
+    let finishLogout: ((outcome: CustomerLogoutOutcome) => void) | undefined;
     const onLogout = vi.fn(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<CustomerLogoutOutcome>((resolve) => {
           finishLogout = resolve;
         }),
     );
@@ -251,7 +254,9 @@ describe("CustomerProfilePanel", () => {
     expect(logoutButton).toBeDisabled();
     expect(logoutButton).toHaveTextContent("正在退出");
 
-    await act(async () => finishLogout?.());
+    await act(async () =>
+      finishLogout?.({ serverReleased: true, credentialCleared: true }),
+    );
     expect(logoutButton).toBeEnabled();
     expect(logoutButton).toHaveTextContent("退出登录");
   });

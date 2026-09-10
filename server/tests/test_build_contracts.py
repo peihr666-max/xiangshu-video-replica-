@@ -116,18 +116,39 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert workflow.count("branches: [main]") == 2
     assert "pull_request_target:" not in workflow
     assert "permissions:\n  contents: read" in workflow
-    assert workflow.count("persist-credentials: false") == 3
+    # 4 checkouts (changes, secret-scan, quality-linux, windows-nsis); select-runner
+    # runs github-script only and checks out nothing.
+    assert workflow.count("persist-credentials: false") == 4
     assert "secret-scan:" in workflow
     assert "name: Secret scan" in workflow
     assert "quality-linux:" in workflow
     assert "name: Linux quality gate" in workflow
     assert "windows-nsis:" in workflow
     assert "name: Windows Tauri and NSIS" in workflow
-    assert workflow.count(f"if: {fork_pr_guard}") == 3
+    # Supporting jobs added by the CI-localization change: `changes` (path
+    # filtering) and `select-runner` (dual-path Linux gate: a self-hosted
+    # `video-replica` runner when one is online, else GitHub-hosted). The pinned
+    # actions and the arch-agnostic runner label are contract-checked so a future
+    # edit cannot silently drop the dual path or unpin an action.
+    assert "changes:" in workflow
+    assert "name: Detect changes" in workflow
+    assert "select-runner:" in workflow
+    assert "name: Select runner" in workflow
+    assert "dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d" in workflow
+    assert "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3" in workflow
+    assert '["self-hosted","linux","video-replica"]' in workflow
+    assert "fromJSON(needs.select-runner.outputs.runner)" in workflow
+    # Every job (changes, select-runner, secret-scan, quality-linux, windows-nsis)
+    # carries the same-repo fork-PR guard, so a fork PR never runs untrusted code.
+    assert workflow.count(f"if: {fork_pr_guard}") == 5
     assert workflow.count("runs-on: ubuntu-24.04") == 2
     assert workflow.count("runs-on: windows-2025") == 1
     assert "npm run check:security" in workflow
-    assert "run: npm run check\n" in workflow
+    # The Linux gate splits the former single `npm run check` into static checks
+    # plus sharded pytest (each shard against its own isolated PostgreSQL
+    # container); `npm run check` is no longer invoked verbatim in ci.yml.
+    assert "run: npm run check:static\n" in workflow
+    assert "run: bash scripts/ci/run-pytest-shards.sh\n" in workflow
     assert "npm run build" in workflow
     assert "npm audit --audit-level=high" in workflow
     assert "cargo test --manifest-path client/src-tauri/Cargo.toml --locked" in workflow
@@ -157,7 +178,7 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert "7-Zip\\7z.exe" in workflow
     assert "start-backend.bat" in workflow
     assert "start-backend.sh" in workflow
-    assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 3
+    assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 4
     assert workflow.count("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020") == 3
     assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
     assert "actions/upload-artifact@" not in workflow

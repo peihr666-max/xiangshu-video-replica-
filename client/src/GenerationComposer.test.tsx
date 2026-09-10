@@ -1087,7 +1087,7 @@ describe("GenerationComposer", () => {
     );
 
     firstRequest.reject?.(
-      new Error("创建视频生成批次失败：网络连接失败，请检查本地服务"),
+      new Error("创建视频生成批次失败：网络连接失败，请检查网络后重试"),
     );
     expect(await screen.findByText(/网络连接失败/)).toBeInTheDocument();
     await waitFor(() =>
