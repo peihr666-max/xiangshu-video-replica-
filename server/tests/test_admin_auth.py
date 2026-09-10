@@ -1333,7 +1333,11 @@ def test_api_lifespan_fails_closed_on_postgres_without_tls_in_customer_productio
 def test_api_lifespan_tolerates_internal_lane_without_database_env() -> None:
     """Regression lock: the new lifespan check must not break the internal /
     test lane that sets no database environment at all (the legacy lane
-    resolves per-request; only the customer boundary fails closed here)."""
+    resolves per-request; only the customer boundary fails closed here).
+
+    CW-025 后 internal lane（DATABASE_URL_ENV 未设置或为 sqlite://）直接通过，
+    由请求级别的 customer_fence 解析数据库（DB_PATH 通道）。
+    """
     from app.main import app as real_app
 
     with _env(

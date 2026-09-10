@@ -1,5 +1,6 @@
 import ipaddress
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -36,7 +37,7 @@ from app.character_routes import router as character_router
 from app.control_routes import router as control_router
 from app.customer_device_routes import router as customer_device_router
 from app.customer_session_routes import router as customer_session_router
-from app.db_pg import close_pg_pool
+from app.db_pg import DATABASE_URL_ENV, SQLITE_URL_SCHEMES, close_pg_pool
 from app.first_frame_routes import router as first_frame_router
 from app.generation_routes import router as generation_router
 from app.independent_routes import router as independent_router
@@ -96,42 +97,57 @@ class VideoReplicaAPI(FastAPI):
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # T09 / DB-08: fail the API process closed at startup when a customer-
-    # production boot still carries legacy single-admin mappings, dev identity,
-    # local assets or a missing admin-session key (uvicorn aborts on lifespan
-    # errors). No-op on the internal SQLite lane.
+    """CW-025: 全环境 PG-only API lifespan（customer lane）。
+
+    T09 / DB-08: fail the API process closed at startup when a customer-
+    production boot still carries legacy single-admin mappings, dev identity,
+    local assets or a missing admin-session key (uvicorn aborts on lifespan
+    errors).
+
+    M1 review H1: the lifespan must run the database-mode fail-closed check
+    too, so a direct `uvicorn app.main:app` boot cannot reach the internal
+    SQLite lane (bootstrap.main already validates; this closes the
+    systemd/container entrypoint).
+
+    CW-025 后 resolve_database_config() 全环境 fail-closed（不再抛
+    MissingDatabaseConfigError），所以 try/except 吞掉逻辑已删除。
+    历史 SQLite 工具走 CW-060 独立白名单，不经过在线 API 入口。
+
+    CW-025 补充：internal lane（内部 P0 遗留逻辑，DATABASE_URL 未设置或为
+    SQLite URL）在 DB_PATH 已配置时直接通过，不调用 resolve_database_config()。
+    内部 P0 是"已完成收口"的独立线，不属于客户版 V3 的运行环境（dev/test/CI/
+    staging/production），归 CW-030/CW-040 后续处理。若 DATABASE_URL 与
+    DB_PATH 都缺失，仍视为"缺 DSN"全环境 fail-closed。
+    """
     from app.bootstrap import assert_customer_production_security
+    from app.db_pg import resolve_database_config, validate_customer_production
+
+    # CW-025: internal lane（DATABASE_URL 未设置或为 SQLite URL）直接通过，
+    # 由请求级别的 customer_fence 解析数据库（DB_PATH 通道）。
+    # 内部 P0 是"已完成收口"的独立线，不属于客户版 V3 的运行环境
+    # （dev/test/CI/staging/production），归 CW-030/CW-040 后续处理。
+    # customer lane（DATABASE_URL_ENV=postgresql://）走 resolve_database_config()
+    # 全环境 fail-closed。
+    # 但 customer production 环境下不允许 internal lane（必须配置 PG DSN）。
+    url = os.environ.get(DATABASE_URL_ENV, "").strip()
+    if not url or url.startswith(SQLITE_URL_SCHEMES):
+        if is_customer_production():
+            raise RuntimeError(
+                "customer production requires PostgreSQL: "
+                f"{DATABASE_URL_ENV} must be set to a postgresql:// DSN "
+                f"(internal lane is not allowed in customer production)"
+            )
+        yield
+        return
 
     assert_customer_production_security()
-    # M1 review H1: the lifespan must run the database-mode fail-closed check
-    # too, so a direct `uvicorn app.main:app` boot cannot reach the internal
-    # SQLite lane in customer production (bootstrap.main already validates;
-    # this closes the systemd/container entrypoint). resolve raises
-    # RuntimeError for the customer boundary (missing DSN) — that propagates.
-    # The internal lane may legitimately boot without any database env (the
-    # legacy runtime resolves per-request), so its narrow
-    # MissingDatabaseConfigError is tolerated here. Every other resolution
-    # error — most importantly an unsupported/mistyped URL scheme — must
-    # propagate: swallowing it would advertise a healthy startup without a
-    # usable PostgreSQL runtime (Codex P1).
-    from app.db_pg import (
-        MissingDatabaseConfigError,
-        resolve_database_config,
-        validate_customer_production,
-    )
-
-    try:
-        _database_config = resolve_database_config()
-    except MissingDatabaseConfigError:
-        _database_config = None
-    if _database_config is not None:
-        validate_customer_production(_database_config)
+    _database_config = resolve_database_config()
+    validate_customer_production(_database_config)
     if is_customer_production():
         check_customer_production_runtime_dependencies()
     yield
     # M0 review M2: release the PG pool on shutdown so pooled connections
-    # don't outlive the process. No-op on the SQLite lane (the pool is never
-    # opened there) and when the pool was never created in PG mode.
+    # don't outlive the process.
     close_pg_pool()
 
 

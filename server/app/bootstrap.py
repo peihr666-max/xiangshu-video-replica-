@@ -28,14 +28,13 @@ from app.db_pg import (
     validate_customer_production,
 )
 from app.db_portable import BusinessConnection
-from app.local_settings_key import LocalSettingsKeyStoreError, persist_local_settings_key
+from app.local_settings_key import persist_local_settings_key
 from app.settings import (
     DEFAULT_BILLING_SETTINGS,
     DEFAULT_RUNTIME_SETTINGS,
     LOCAL_KEYSTORE_DISABLED_ENV,
     SETTINGS_KEY_ENV,
     SettingsRepository,
-    SettingsUnavailableError,
     normalize_config,
     settings_encryption_key,
     validate_provider_config,
@@ -577,47 +576,46 @@ def check_customer_production_runtime_dependencies() -> PgReadyInfo | None:
 
 
 def _run_runtime_bootstrap() -> None:
-    # T05: resolve the database mode first so customer production fails closed
-    # before any SQLite file is touched. T09: the security gate then rejects
-    # legacy single-admin mappings, dev identities, local assets and missing
-    # admin-session keys before the ready check or any pool warm-up.
+    """CW-025: 全环境 PG-only bootstrap。
+
+    T05: resolve the database mode first so all environments fail closed
+    before any SQLite file is touched. T09: the security gate then rejects
+    legacy single-admin mappings, dev identities, local assets and missing
+    admin-session keys before the ready check or any pool warm-up.
+
+    CW-025 后 resolve_database_config() 只返回 POSTGRESQL 模式（否则抛 RuntimeError），
+    所以 SQLite 分支已删除。历史 SQLite 工具（backup/sqlite_to_postgres/gate1_*）
+    走 CW-060 独立白名单，不经过本函数。
+    """
     config = resolve_database_config()
     validate_customer_production(config)
     assert_customer_production_security()
 
-    if config.mode is DatabaseMode.POSTGRESQL:
-        # PG runtime: warm the pool and verify the server round-trip. Alembic
-        # migrations against PG are executed once T06 lands; the ready check
-        # itself is the API bootstrap contract for the PG lane.
-        ready = (
-            check_customer_production_runtime_dependencies()
-            if is_customer_production()
-            else check_pg_ready()
+    # CW-025: config.mode 一定是 POSTGRESQL（resolve_database_config 保证）
+    if config.mode is not DatabaseMode.POSTGRESQL:  # pragma: no cover - defensive
+        raise RuntimeError(
+            f"bootstrap requires PostgreSQL, got {config.mode}; "
+            "this indicates a bug in resolve_database_config()"
         )
-        if ready is None:  # pragma: no cover - guarded by the branch above
-            raise RuntimeError("PostgreSQL readiness check returned no result")
-        logging.getLogger(__name__).info(
-            "PostgreSQL runtime ready (pool_max=%d, server_now=%s)",
-            ready.pool_size,
-            ready.server_now.isoformat(),
-        )
-        # bootstrap is a short-lived process: release the pooled connections
-        # before exit (M0 review M2; close_pg_pool is a no-op on the SQLite
-        # lane, which never opens a pool).
-        close_pg_pool()
-        return
 
-    db_path_value = config.sqlite_path
-    if not db_path_value:
-        raise SystemExit("VIDEO_REPLICA_DB_PATH is required")
-
-    try:
-        bootstrap_runtime(db_path_value)
-    except (SettingsUnavailableError, LocalSettingsKeyStoreError) as exc:
-        logger.error("Local settings bootstrap failed: %s", type(exc).__name__)
-        raise SystemExit(
-            "Local settings are still stored, but the encryption key is unavailable or invalid."
-        ) from exc
+    # PG runtime: warm the pool and verify the server round-trip. Alembic
+    # migrations against PG are executed by deploy/postgres/migrate.sh;
+    # the ready check itself is the API bootstrap contract for the PG lane.
+    ready = (
+        check_customer_production_runtime_dependencies()
+        if is_customer_production()
+        else check_pg_ready()
+    )
+    if ready is None:  # pragma: no cover - guarded by the branch above
+        raise RuntimeError("PostgreSQL readiness check returned no result")
+    logging.getLogger(__name__).info(
+        "PostgreSQL runtime ready (pool_max=%d, server_now=%s)",
+        ready.pool_size,
+        ready.server_now.isoformat(),
+    )
+    # bootstrap is a short-lived process: release the pooled connections
+    # before exit (M0 review M2).
+    close_pg_pool()
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -12,6 +12,31 @@
 > 实施与验收以[唯一数据库规范](PostgreSQL唯一数据库实施与验收规范.md)及 CW-001—060 为准。此前仅客户生产 PG、默认开发 SQLite、SQLite 业务测试可作为当前验收的口径不再适用。
 > 本次更新只确认规范和任务定义；原代码仍有 SQLite 分支，历史任务/测试记录保留原文，不据此声明实际迁移或生产切换已完成。
 
+## CW-025 — 把现有 PG 保护扩展到全部运行环境（全环境 PG-only 运行入口，2026-09-10）
+
+分支 `feat/customer-v3-cw025-pg-protection-all-env`，基线 `origin/main@9a70918`（CW-009 #108）。`db_pg.resolve_database_config()` 作为单一在线解析入口全环境 fail-closed：`sqlite://`、`VIDEO_REPLICA_DB_PATH`（含与 PG DSN 混配）、缺 DSN 均 `RuntimeError`，不支持 scheme `ValueError`；`bootstrap._run_runtime_bootstrap()` 与 `generation_worker.main()` 删除 SQLite 在线分支，`main._lifespan()` customer lane 走 resolve+validate；新增 `scripts/dev-with-pg.sh` 使开发入口幂等拉起 pg-fixture 并强制注入 PG DSN。逐环境启动拒绝矩阵 5 环境×4 场景×2 入口=40 例（断言无 `.db/.db-wal/.db-shm` 副作用）+ 正向对照 + 桌面制品无 PG DSN 8 例。`npm run check` 全绿：client vitest 1267、biome 199/ruff/mypy 104/tauri cargo check 通过、服务端全量 pytest **2210 passed / 1 skipped / 0 failed**。收尾根因修复 `test_internal_access_tokens.py` 的 A1 `a1_dsn` fixture 连接池单例泄漏（teardown 只删库未 `close_pg_pool()`，陈旧 pool 毒化字母序后续的 `test_postgres_migrations`；源头+消费端双修复，对齐全仓 8+ PG fixture 约定）。零迁移文件改动。
+
+证据层级 `AUTOMATED_VERIFIED`；真实服务器/staging/生产切换、PG HA、双 API/四 Worker 部署未执行，不提升 `STAGING_VERIFIED`。内部 P0 遗留 lane 的请求级 `DB_PATH`/SQLite 通道与 Worker SQLite 业务实现按 CW-025 完工标准（"最终 SQLite 在线实现移除须等 CW-043"）延后 CW-042/043/030/026，本任务不声称已移除。完整 §14 记录、拒绝矩阵与根因分析见 `docs/evidence/CW025-EVIDENCE.md`。
+
+### CW-025 Section 14 Ledger Record
+
+```text
+任务/工作包：CW-025（W4）把现有 PG 保护扩展到全部运行环境
+Owner / Reviewer：后端（Qoder 代理，hlong026 会话 2026-09-10）/ PR #7 CodeReview + connector
+分支 / 基线 SHA：feat/customer-v3-cw025-pg-protection-all-env / 基线 origin/main@9a70918（CW-009 #108）
+上游规格段落：收敛详细任务清单 §CW-025（line 335–344）；客户版任务清单-V3.md §18 CW-025（line 486）；PG-01 运行入口合同
+改动文件：14（11 改+3 新）——package.json、server/app/{bootstrap,customer_fence,db_pg,generation_worker,main}.py、server/tests/{test_admin_auth,test_db,test_db_pg,test_internal_access_tokens,test_postgres_migrations}.py；新 scripts/dev-with-pg.sh、server/tests/{test_bootstrap_all_env_pg_gate,test_desktop_artifact_no_pg_dsn}.py
+失败测试或回归锁定：先红后绿——反转 test_db_pg resolve 全环境 fail-closed、删 test_db SQLite bootstrap 用例；新增拒绝矩阵 test_bootstrap_all_env_pg_gate（51）+ test_desktop_artifact_no_pg_dsn（8）；收尾修复 A1 fixture 池泄漏
+实现结果：单一在线解析入口全环境 PG-only fail-closed；bootstrap/worker/lifespan 入口删 SQLite 在线分支；开发入口强制 PG；桌面制品无 PG DSN
+验证命令与通过数：npm run check —— client vitest 1267、biome 199、ruff All checks passed、ruff format 293、mypy 104、tauri cargo check 通过、服务端全量 pytest 2210 passed/1 skipped/0 failed（1009.52s）
+证据层级：AUTOMATED_VERIFIED
+安全与可观测性：无真实密钥/激活码/token 入码入日志入 PR；secret 扫描 exit 0；readiness 日志脱敏 DSN 凭据
+迁移与回滚：零迁移文件改动（未触碰冻结 025–030 区间）；回滚 = revert 本分支
+外部授权记录：无（不涉及真实 ZPay/付费 Provider/生产 COS/发码/灰度/公网发布）
+未测试项：cargo test、npm audit、客户浏览器 E2E、npm run build —— 只在 CI 三门禁执行
+Lore 提交 SHA：本 PR squash 后回填
+```
+
 ## 管理后台改版 W3–W17（2026-09-05，自动化与本地浏览器验证完成）
 
 分支 `feat/customer-v3-admin-revamp`，实施基线 `67cf008`。完成管理聚合、按秒计费和实际用量成本、个人提示词、客户端参数与钱包、圆滑趋势曲线。最终 `npm.cmd run check` 退出 0：前端 746 通过；后端 1633 通过/1 项因缺少 ffmpeg 跳过；密钥扫描、静态检查、Cargo 和 Mypy 通过。133 个受检源码指纹与最终工作树一致。后台 12 页及客户端 3 个组件完成参考图成对对照，明确保留真实数据及已裁决范围差异。

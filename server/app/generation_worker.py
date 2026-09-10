@@ -1742,20 +1742,14 @@ def main() -> None:
             close_pg_pool()
         return
 
-    db_path_value = config.sqlite_path
-    if not db_path_value:
-        raise SystemExit("VIDEO_REPLICA_DB_PATH is required")
-    db_path = Path(db_path_value)
-
-    if args.once:
-        processed = run_sqlite_worker_round(
-            db_path=db_path,
-            worker_id=args.worker_id,
-            max_tasks=args.max_tasks,
-        )
-        logger.info("generation worker processed %s task(s)", processed)
-        return
-    run_forever(db_path=db_path, worker_id=args.worker_id, idle_seconds=args.idle_seconds)
+    # CW-025: resolve_database_config() 全环境 fail-closed 后，SQLite 分支 unreachable。
+    # Worker SQLite 业务逻辑（run_sqlite_worker_round/run_forever/--db-path）归 CW-030 移除。
+    # 本 RuntimeError 是防御性断言：如果走到这里，说明 resolve_database_config() 有 bug。
+    raise RuntimeError(
+        "generation_worker: SQLite online path is unreachable after CW-025; "
+        "this indicates a bug in resolve_database_config(). "
+        "Worker SQLite business logic removal is tracked by CW-030."
+    )
 
 
 if __name__ == "__main__":

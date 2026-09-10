@@ -120,38 +120,51 @@ class MissingDatabaseConfigError(ValueError):
 
 
 def resolve_database_config() -> DatabaseConfig:
-    """Resolve the active database mode from the environment.
+    """Resolve the active database mode from the environment (CW-025: 全环境 PG-only).
 
-    ``VIDEO_REPLICA_DATABASE_URL`` wins when set: ``postgresql://`` (or the
-    ``postgres://`` alias) selects the PG runtime, a ``sqlite://`` URL selects
-    the legacy SQLite runtime. Without it, ``VIDEO_REPLICA_DB_PATH`` keeps the
-    internal P0 SQLite behaviour so existing deployments stay unchanged.
+    ``VIDEO_REPLICA_DATABASE_URL`` 必须设置为 ``postgresql://`` (或 ``postgres://`` 别名)。
+
+    CW-025 后全环境 fail-closed：
+    - sqlite:// URL → RuntimeError
+    - VIDEO_REPLICA_DB_PATH → RuntimeError
+    - 缺 DSN → RuntimeError
+    - 不支持的 scheme → ValueError (保留原有行为)
+
+    历史 SQLite 工具（backup/sqlite_to_postgres/gate1_*）走 CW-060 独立白名单，
+    不经过本函数的在线通道。
     """
     url = os.environ.get(DATABASE_URL_ENV, "").strip()
+    db_path = os.environ.get(DB_PATH_ENV, "").strip()
+
+    # CW-025: DB_PATH 在线入口全环境拒绝（历史工具走 CW-060 白名单）
+    if db_path:
+        raise RuntimeError(
+            f"customer edition requires PostgreSQL: "
+            f"{DB_PATH_ENV} is rejected in all environments "
+            f"(set {DATABASE_URL_ENV} to a postgresql:// DSN; "
+            f"legacy SQLite tools are isolated by CW-060)"
+        )
+
     if url:
         if url.startswith(PG_URL_SCHEMES):
             return DatabaseConfig(mode=DatabaseMode.POSTGRESQL, dsn=url, sqlite_path=None)
+        # CW-025: sqlite:// URL 全环境拒绝
         if url.startswith(SQLITE_URL_SCHEMES):
-            path = _sqlite_path_from_url(url)
-            return DatabaseConfig(mode=DatabaseMode.SQLITE, dsn=None, sqlite_path=path)
+            raise RuntimeError(
+                f"customer edition requires PostgreSQL: "
+                f"sqlite:// URL is rejected in all environments "
+                f"(set {DATABASE_URL_ENV} to a postgresql:// DSN; "
+                f"legacy SQLite tools are isolated by CW-060)"
+            )
         scheme = url.split(":", 1)[0]
-        raise ValueError(
-            f"unsupported database URL scheme: {scheme}:// (expected postgresql:// or sqlite://)"
-        )
+        raise ValueError(f"unsupported database URL scheme: {scheme}:// (expected postgresql://)")
 
-    db_path = os.environ.get(DB_PATH_ENV, "").strip()
-    if db_path:
-        return DatabaseConfig(mode=DatabaseMode.SQLITE, dsn=None, sqlite_path=db_path)
-
-    missing = f"neither {DATABASE_URL_ENV} nor {DB_PATH_ENV} is set; cannot resolve database mode"
-    if _is_customer_production():
-        # Fail closed with the production-facing message instead of a generic
-        # configuration error.
-        raise RuntimeError(
-            f"customer production requires PostgreSQL: {missing} "
-            f"(set {DATABASE_URL_ENV} to a postgresql:// DSN)"
-        )
-    raise MissingDatabaseConfigError(missing)
+    # CW-025: 缺 DSN 全环境 fail-closed（不再区分 internal/customer lane）
+    raise RuntimeError(
+        f"customer edition requires PostgreSQL: "
+        f"neither {DATABASE_URL_ENV} nor {DB_PATH_ENV} is set "
+        f"(set {DATABASE_URL_ENV} to a postgresql:// DSN)"
+    )
 
 
 def validate_customer_production(config: DatabaseConfig) -> None:
