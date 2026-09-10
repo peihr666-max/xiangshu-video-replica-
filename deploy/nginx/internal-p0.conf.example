@@ -57,6 +57,12 @@ server {
 
     # If another trusted proxy sits in front of nginx, configure real_ip first;
     # otherwise these rules see the proxy address, not the operator address.
+    #
+    # CW-019: /admin is served from the independent admin artifact
+    # (`client/dist-admin`, built by `npm run build:admin` with base `/admin/`),
+    # not from the customer SPA in `root` above. The intranet `allow` ranges,
+    # `deny all` and Basic Auth below are unchanged and must not be dropped
+    # when this file is edited.
     location ^~ /admin {
         satisfy all;
         allow 10.0.0.0/8;
@@ -67,7 +73,8 @@ server {
         auth_basic "Internal control";
         auth_basic_user_file /etc/nginx/video-replica-admin.htpasswd;
 
-        try_files $uri $uri/ /index.html;
+        alias /opt/video-replica/app/client/dist-admin/;
+        try_files $uri $uri/ /admin/index.html;
     }
 
     location ^~ /api/control/ {

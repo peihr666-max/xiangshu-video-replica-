@@ -23,6 +23,15 @@ ROOT="/opt/video-replica-candidate"
 REPO_URL="${VIDEO_REPLICA_GIT_REPO_URL:-https://github.com/phlong026/xiangshu-video-replica.git}"
 SOURCE="$ROOT/releases/$RELEASE_SHA"
 SITE="/www/wwwroot/video.zszhj.cn"
+# CW-019: the admin console is an independent build artifact (client/dist-admin,
+# base /admin/). It is deployed beside the customer web root and must be replaced
+# in the same run as $SITE, so the two artifacts never serve bytes from different
+# release SHAs. Nginx serves it with
+#   location ^~ /admin/ { alias <ADMIN_SITE>/; try_files $uri $uri/ /admin/index.html; }
+# (deploy/nginx/customer.conf.example). That location block must already be in
+# place before the first release built by this script is rolled out, otherwise
+# the VERIFY step below fails on purpose and the run rolls back.
+ADMIN_SITE="${SITE}-admin"
 COMPOSE="$ROOT/compose.yaml"
 CUSTOMER_ENV="/etc/video-replica/customer.env"
 SERVICE_USER="video-replica"
@@ -33,6 +42,7 @@ SHORT_SHA="${RELEASE_SHA:0:7}"
 BACKUP="$ROOT/backups/git-$SHORT_SHA-$STAMP"
 BUILD_CTX="$ROOT/build-git-$SHORT_SHA-$STAMP"
 STAGE_SITE="$ROOT/site-git-$SHORT_SHA-$STAMP"
+STAGE_ADMIN_SITE="$ROOT/admin-site-git-$SHORT_SHA-$STAMP"
 LOG="$ROOT/deploy-git-$SHORT_SHA-$STAMP.log"
 STATUS="$ROOT/deploy-git-$SHORT_SHA-$STAMP.status"
 NEW_IMAGE="video-replica-rehearsal-app:$SHORT_SHA-git"
@@ -74,6 +84,13 @@ rollback() {
   if [[ -f "$BACKUP/site-before.tar.gz" ]]; then
     find "$SITE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
     tar -xzf "$BACKUP/site-before.tar.gz" -C "$SITE"
+  fi
+  # CW-019: restore the admin artifact only when this run actually backed one up.
+  # The first release that introduces dist-admin has no prior admin site, so a
+  # missing archive means "nothing to roll back to", not "skip silently".
+  if [[ -f "$BACKUP/admin-site-before.tar.gz" ]]; then
+    find "$ADMIN_SITE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    tar -xzf "$BACKUP/admin-site-before.tar.gz" -C "$ADMIN_SITE"
   fi
   if [[ "$ROLLOUT_STARTED" == "1" ]]; then
     docker compose -f "$COMPOSE" up -d --no-deps "${SERVICES[@]}" || true
@@ -127,7 +144,7 @@ for command in git docker curl python3; do
   require_command "$command"
 done
 [[ -f "$COMPOSE" && -d "$SITE" && -r "$CUSTOMER_ENV" ]]
-[[ ! -e "$BUILD_CTX" && ! -e "$STAGE_SITE" && ! -e "$BACKUP" ]]
+[[ ! -e "$BUILD_CTX" && ! -e "$STAGE_SITE" && ! -e "$STAGE_ADMIN_SITE" && ! -e "$BACKUP" ]]
 [[ "$(df -Pk "$ROOT" | awk 'NR == 2 {print $4}')" -gt 4194304 ]]
 docker compose -f "$COMPOSE" config --quiet
 curl -fsS --max-time 20 "$PUBLIC_ORIGIN/health?preflight=$STAMP" >/dev/null
@@ -154,10 +171,17 @@ python3 "$SOURCE/scripts/customer_release_preflight.py" \
   --service-user "$SERVICE_USER"
 docker run --rm -v "$SOURCE:/workspace" -w /workspace \
   -e "VITE_API_BASE_URL=$PUBLIC_ORIGIN" "$NODE_BUILD_IMAGE" sh -lc \
-  'npm ci --ignore-scripts && npm run build --workspace client'
+  'npm ci --ignore-scripts && npm run build:all && npm run verify:customer-bundle'
 [[ -s "$SOURCE/client/dist/index.html" && -d "$SOURCE/client/dist/assets" ]]
 EXPECTED_ASSET=$(grep -oE 'assets/[^" ]+\.js' "$SOURCE/client/dist/index.html" | head -n 1)
 [[ -n "$EXPECTED_ASSET" ]]
+# CW-019: build:all also produces the admin artifact, and verify:customer-bundle
+# (inside the same container) fails the run if any admin or internal entry leaked
+# into client/dist. This is the only place the deployed bytes are produced, so the
+# CW-019 exclusion evidence belongs to the release chain here, not just to CI.
+[[ -s "$SOURCE/client/dist-admin/index.html" && -d "$SOURCE/client/dist-admin/assets" ]]
+EXPECTED_ADMIN_ASSET=$(grep -oE 'assets/[^" ]+\.js' "$SOURCE/client/dist-admin/index.html" | head -n 1)
+[[ -n "$EXPECTED_ADMIN_ASSET" ]]
 
 API_CONTAINER=$(docker compose -f "$COMPOSE" ps -q api-1)
 DB_CONTAINER=$(docker compose -f "$COMPOSE" ps -q db)
@@ -189,6 +213,11 @@ printf '%s\n' "$RELEASE_SHA" > "$BACKUP/release-sha.txt"
 printf '%s\n' "$RELEASE_TREE" > "$BACKUP/release-tree.txt"
 docker compose -f "$COMPOSE" ps > "$BACKUP/compose-before.txt"
 tar -czf "$BACKUP/site-before.tar.gz" -C "$SITE" .
+# CW-019: archive the admin artifact as well. Absent on the first release that
+# introduces dist-admin; rollback() keys off this file's existence.
+if [[ -d "$ADMIN_SITE" ]]; then
+  tar -czf "$BACKUP/admin-site-before.tar.gz" -C "$ADMIN_SITE" .
+fi
 CURRENT_HEAD_BEFORE=$(docker compose -f "$COMPOSE" exec -T db sh -lc \
   'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"')
 [[ "$CURRENT_HEAD_BEFORE" == "$OLD_IMAGE_DB_HEAD" ]]
@@ -198,6 +227,9 @@ docker compose -f "$COMPOSE" exec -T db sh -lc \
 [[ -s "$BACKUP/database-before.dump" ]]
 docker exec -i "$DB_CONTAINER" pg_restore --list < "$BACKUP/database-before.dump" >/dev/null
 sha256sum "$BACKUP/site-before.tar.gz" "$BACKUP/database-before.dump" > "$BACKUP/BACKUP-SHA256SUMS"
+if [[ -s "$BACKUP/admin-site-before.tar.gz" ]]; then
+  sha256sum "$BACKUP/admin-site-before.tar.gz" >> "$BACKUP/BACKUP-SHA256SUMS"
+fi
 
 mark BUILD
 mkdir -p "$BUILD_CTX/server" "$BUILD_CTX/scripts"
@@ -275,11 +307,19 @@ CURRENT_DB_HEAD=$(docker compose -f "$COMPOSE" exec -T api-1 \
 [[ "$CURRENT_DB_HEAD" == "$IMAGE_DB_HEAD" ]]
 
 mark SITE
-mkdir -p "$STAGE_SITE"
+mkdir -p "$STAGE_SITE" "$STAGE_ADMIN_SITE"
 cp -a "$SOURCE/client/dist"/. "$STAGE_SITE"/
 grep -q "$EXPECTED_ASSET" "$STAGE_SITE/index.html"
+cp -a "$SOURCE/client/dist-admin"/. "$STAGE_ADMIN_SITE"/
+grep -q "$EXPECTED_ADMIN_ASSET" "$STAGE_ADMIN_SITE/index.html"
 find "$SITE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 cp -a "$STAGE_SITE"/. "$SITE"/
+# CW-019: replace the admin artifact immediately after the customer one, both from
+# staging dirs built out of the same $RELEASE_SHA. Nginx serves /admin/ from
+# $ADMIN_SITE, so leaving it on the previous SHA would mix two releases.
+mkdir -p "$ADMIN_SITE"
+find "$ADMIN_SITE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+cp -a "$STAGE_ADMIN_SITE"/. "$ADMIN_SITE"/
 
 mark VERIFY
 for service in "${SERVICES[@]}"; do
@@ -289,14 +329,23 @@ for service in "${SERVICES[@]}"; do
   [[ "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid")" == "$RELEASE_SHA" ]]
 done
 grep -q "$EXPECTED_ASSET" "$SITE/index.html"
+grep -q "$EXPECTED_ADMIN_ASSET" "$ADMIN_SITE/index.html"
 curl -fsS --max-time 20 "$PUBLIC_ORIGIN/health?release=$SHORT_SHA" >/dev/null
 CUSTOMER_HTML=$(curl -fsS --max-time 20 "$PUBLIC_ORIGIN/customer?release=$SHORT_SHA")
 grep -q "$EXPECTED_ASSET" <<< "$CUSTOMER_HTML"
+# CW-019: prove /admin is really served from the new admin artifact. Before this
+# task the customer bundle itself rendered AdminApp at /admin; now it cannot, so a
+# missing nginx `location ^~ /admin/` block or a missing dist-admin would otherwise
+# degrade to the customer activation screen (or a 500 redirect cycle) while this
+# script still reported SUCCESS.
+ADMIN_HTML=$(curl -fsS --max-time 20 "$PUBLIC_ORIGIN/admin/?release=$SHORT_SHA")
+grep -q "$EXPECTED_ADMIN_ASSET" <<< "$ADMIN_HTML"
 docker compose -f "$COMPOSE" exec -T api-1 sh -lc \
   "cd /opt/video-replica/server && python -c 'from app.main import app; assert \"/api/control/customer-sessions/live\" in app.openapi()[\"paths\"]'"
 
 trap - ERR
 mark SUCCESS
-printf 'DEPLOYED=%s\nRELEASE_SHA=%s\nRELEASE_TREE=%s\nPREVIOUS_IMAGE=%s\nNEW_IMAGE=%s\nDATABASE_HEAD_BEFORE=%s\nDATABASE_HEAD_AFTER=%s\nCLIENT_ASSET=%s\nDATABASE_BACKUP=%s\n' \
+printf 'DEPLOYED=%s\nRELEASE_SHA=%s\nRELEASE_TREE=%s\nPREVIOUS_IMAGE=%s\nNEW_IMAGE=%s\nDATABASE_HEAD_BEFORE=%s\nDATABASE_HEAD_AFTER=%s\nCLIENT_ASSET=%s\nADMIN_SITE=%s\nADMIN_ASSET=%s\nDATABASE_BACKUP=%s\n' \
   "$STAMP" "$RELEASE_SHA" "$RELEASE_TREE" "$OLD_IMAGE" "$NEW_IMAGE" \
-  "$CURRENT_HEAD_BEFORE" "$CURRENT_DB_HEAD" "$EXPECTED_ASSET" "$BACKUP/database-before.dump"
+  "$CURRENT_HEAD_BEFORE" "$CURRENT_DB_HEAD" "$EXPECTED_ASSET" \
+  "$ADMIN_SITE" "$EXPECTED_ADMIN_ASSET" "$BACKUP/database-before.dump"

@@ -7,6 +7,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspace client",
+    "build:admin": "npm run build:admin --workspace client",
+    "build:all": "npm run build && npm run build:admin",
     "check": "bash scripts/verify_no_secrets.sh && npm run check --workspace client && npm run check:e2e && npm run check:tauri && uv --cache-dir .uv-cache run --project server --locked ruff check server && uv --cache-dir .uv-cache run --project server --locked ruff format --check server && uv --cache-dir .uv-cache run --project server --locked python -m mypy --config-file server/pyproject.toml server/app && uv --cache-dir .uv-cache run --project server --locked python -m pytest --rootdir server server/tests",
     "check:e2e": "biome check e2e",
     "check:security": "bash scripts/verify_no_secrets.sh",
@@ -27,7 +29,8 @@
     "test": "npm run test --workspace client && uv --cache-dir .uv-cache run --project server --locked python -m pytest --rootdir server server/tests",
     "test:e2e": "npm run test --workspace client -- e2e_contract.test.tsx && uv --cache-dir .uv-cache run --project server --locked python -m pytest --rootdir server server/tests/test_e2e_fake_provider.py",
     "test:gate1": "uv --cache-dir .uv-cache run --project server --locked python -m app.gate1_e2e",
-    "test:customer-e2e": "playwright test --config e2e/customer/playwright.config.mjs"
+    "test:customer-e2e": "playwright test --config e2e/customer/playwright.config.mjs",
+    "verify:customer-bundle": "node scripts/verify_customer_bundle.mjs"
   },
   "engines": {
     "node": ">=24"

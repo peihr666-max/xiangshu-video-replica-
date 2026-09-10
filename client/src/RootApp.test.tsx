@@ -70,20 +70,37 @@ describe("RootApp", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it.each(["/admin", "/admin/"])(
-    "routes %s to the internal management page",
-    (path) => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(() => jsonResponse({ items: [] })),
-      );
+  // CW-019: /admin 由独立管理制品（client/dist-admin）提供，客户入口不再认识
+  // 该路径。浏览器命中客户 index.html 的 /admin 或 /admin/* 时降级到客户壳
+  // （激活屏），不得渲染任何管理内容——这是"客户所有 chunk 不得含内部/管理
+  // 入口"验收底线在渲染层的直接对应。管理代码排除同时由
+  // scripts/verify_customer_bundle.mjs（产物层）与 entryContract.test.ts
+  // （源码层）双层断言。
+  it.each(["/admin", "/admin/", "/admin/funds"])(
+    "does not render any management content when the browser hits %s on the customer entry (admin is a separate build artifact since CW-019)",
+    async (path) => {
+      const fetchMock = stubCustomerWorkspaceFetch();
+      vi.stubGlobal("fetch", fetchMock);
 
       render(<RootApp path={path} />);
 
+      // 客户壳兜底：落到激活屏，不是管理后台。
       expect(
-        screen.getByRole("heading", { name: "运营管理后台" }),
+        await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
       ).toBeInTheDocument();
-      expect(screen.queryByRole("heading", { name: "众墅之家" })).toBeNull();
+      // 管理标识文案不得出现（AdminApp 的 h1 与其内部 TabBar 文案）。
+      expect(
+        screen.queryByRole("heading", { name: "运营管理后台" }),
+      ).toBeNull();
+      expect(screen.queryByText("激活码批次")).toBeNull();
+      expect(screen.queryByText("审计中心")).toBeNull();
+      expect(screen.queryByText("强制下线")).toBeNull();
+      // 客户入口不发起管理域调用（/api/control/*）。
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes("/api/control/"),
+        ),
+      ).toBe(false);
     },
   );
 
@@ -247,9 +264,10 @@ describe("RootApp", () => {
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });
 
-  // CW-013: Tauri 桌面无 admin 通道——/admin* 在 Tauri 运行时也收敛到客户状态机。
-  // 固化“!isTauriRuntime() 守卫 admin”这条产品红线，防止守卫被误挪或误删后
-  // 桌面客户构建意外拉起管理后台。
+  // CW-013 + CW-019: Tauri 桌面无 admin 通道——/admin* 在 Tauri 运行时也收敛到
+  // 客户状态机。CW-019 拆包后浏览器端同样不再认识 /admin（管理端走独立制品），
+  // 但本用例继续固化"桌面客户构建永不拉起管理后台"这条产品红线：即便未来有人
+  // 试图在 RootApp 里重新加回 admin 分支，Tauri 运行时也必须保持客户壳。
   it.each(["/admin", "/admin/funds"])(
     "keeps the Tauri desktop on the customer lane even for the admin path %s (no admin lane in the desktop build)",
     async (path) => {
