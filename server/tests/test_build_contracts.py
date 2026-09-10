@@ -129,6 +129,9 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     ) in step
     assert workflow.count("LOCAL_ARTIFACT_ROOT") == 4
     assert workflow.count("SHA256SUMS.txt") == 1
+    # CW-022: the Windows job must execute the OS-native credential (DPAPI)
+    # and durable-identity tests that the Linux gate compiles out.
+    assert "cargo test --manifest-path client/src-tauri/Cargo.toml --locked" in windows_job
     # CW-021 widened payload detection: beyond the launcher scripts the
     # customer installer must not carry an embedded server/Python runtime,
     # FFmpeg distribution, SQLite business database, or boot/port markers.

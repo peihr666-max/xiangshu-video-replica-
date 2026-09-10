@@ -327,6 +327,12 @@ jobs:
       - name: Check Tauri project (customer default)
         if: needs.changes.outputs.desktop == 'true'
         run: npm run check:tauri
+      # CW-022: the OS-native credential (DPAPI), durable-identity and
+      # download-registry tests are compiled out on Linux, so the Windows job
+      # must execute them natively.
+      - name: Run Rust credential and download tests on Windows
+        if: needs.changes.outputs.desktop == 'true'
+        run: cargo test --manifest-path client/src-tauri/Cargo.toml --locked
       # CW-021: the internal edition and its local sidecar are retired, so the
       # Windows job builds only the customer cloud bundle.
       - name: Build unsigned customer cloud NSIS installer
