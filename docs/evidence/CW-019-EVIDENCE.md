@@ -7,7 +7,8 @@
 | **Task ID** | CW-019 / W3「分离客户与管理员前端构建制品」 |
 | **Owner** | 前端构建（Agent 执行） |
 | **Reviewer** | CodeReview 子代理（push 前自检，M/m/n 分级）+ owner（PR 评审） |
-| **Branch / Base SHA** | `feat/customer-v3-cw019-split-build-artifacts` / 开工基线 `5e9d2d7`；收尾**两次** rebase：`d8f3352`（CW-016 #6 / CW-025 #7 / CW-033 #3）→ `e06b13c`（CI 重构 #8 / CW-017 #9）。两次均 0 冲突，但第二次需手工修 ci.yml 门控语义（见 Critical Findings 8）。全仓门禁跑于树 `485541f`（本文档纪正编辑前的提交树）；push 树与 `485541f` 的差集为 **docs-only**，`git log origin/main..HEAD` 只含本任务 1 个提交 |
+| **Branch / Base SHA** | `feat/customer-v3-cw019-split-build-artifacts` / 开工基线 `5e9d2d7`；收尾**两次** rebase：`d8f3352`（CW-016 #6 / CW-025 #7 / CW-033 #3）→ `e06b13c`（CI 重构 #8 / CW-017 #9）。两次均 0 冲突，但第二次需手工修 ci.yml 门控语义（见 Critical Findings 8）。全仓门禁跑于树 `485541f`（本文档纪正编辑前的提交树）；`485541f` → PR head 的差集为 **docs-only**（`git diff --stat` 只含 `docs/`，无任何被测代码或构建输入变更） |
+| **PR** | **#12**（base `main`）。push 后核对 PR 的 Commits 列表：`git log origin/main..HEAD` 只含本任务提交（实现提交 + 本行 PR 号回填的 docs 提交），**无外来提交**；受保护 main 仅接受 owner 账号 squash merge，本任务**不自行合并** |
 | **Date** | 2026-09-10 |
 | **Evidence Level** | `AUTOMATED_VERIFIED` |
 | **上游规格** | `docs/开发交接提示词-CW019-拆双构建制品-2026-09-10.md` §5/§6/§7/§9/§10 |
@@ -643,7 +644,8 @@ Windows Tauri/NSIS 门禁。本地 `npm run check` 不含这四项，Rust/构建
 ```text
 任务/工作包：CW-019 / W3「分离客户与管理员前端构建制品」
 Owner / Reviewer：前端构建（Agent 执行）/ CodeReview 子代理（push 前自检）+ owner（PR 评审）
-分支 / 基线 SHA：feat/customer-v3-cw019-split-build-artifacts / 开工基线 origin/main@5e9d2d7，收尾两次 rebase：先到 origin/main@d8f3352（CW-016 #6 / CW-025 #7 / CW-033 #3 已合入；package.json 与 docs/客户版任务清单-V3.md 两处交集均自动合并、0 冲突；rebase 后两次 build:all 的 21 文件 SHA-256 清单与 rebase 前字节级相同），再到 origin/main@e06b13c（CI 重构 #8 + CW-017 #9；同为 0 冲突，但 ci.yml 的自动合并结果语义破损，已手工补 if 门控，详见 Critical Findings §8；客户制品因 CW-017 改动客户包输入而哈希变化，管理制品 4 文件哈希未变）。全仓门禁跑于树 485541f（本文档纪正编辑前的提交树），485541f 与 push 树的差集为 docs-only（git diff --stat 只含 docs/），git log origin/main..HEAD 只含本任务 1 个提交
+分支 / 基线 SHA：feat/customer-v3-cw019-split-build-artifacts / 开工基线 origin/main@5e9d2d7，收尾两次 rebase：先到 origin/main@d8f3352（CW-016 #6 / CW-025 #7 / CW-033 #3 已合入；package.json 与 docs/客户版任务清单-V3.md 两处交集均自动合并、0 冲突；rebase 后两次 build:all 的 21 文件 SHA-256 清单与 rebase 前字节级相同），再到 origin/main@e06b13c（CI 重构 #8 + CW-017 #9；同为 0 冲突，但 ci.yml 的自动合并结果语义破损，已手工补 if 门控，详见 Critical Findings §8；客户制品因 CW-017 改动客户包输入而哈希变化，管理制品 4 文件哈希未变）。全仓门禁跑于树 485541f（本文档纪正编辑前的提交树），485541f 与 PR head 的差集为 docs-only（git diff --stat 只含 docs/），git log origin/main..HEAD 只含本任务提交、无外来提交
+PR：#12（base main）；push 后核对 PR Commits 列表确认无外来提交；受保护 main 仅接受 owner 账号 squash merge，本任务不自行合并
 上游规格段落：docs/客户版任务清单-V3.md §17 CW-019 行、§18 CW-019 行；docs/开发交接提示词-CW019-拆双构建制品-2026-09-10.md §5/§6/§7/§9/§10；docs/客户版代码开发清单-V3.md §4.5
 改动文件：新增 client/admin.html、client/src/admin-main.tsx、client/vite.admin.config.ts、client/src/entryContract.test.ts、scripts/verify_customer_bundle.mjs；修改 client/vite.config.ts、client/src/RootApp.tsx、client/src/RootApp.test.tsx、client/src/SettingsPanel.tsx、client/src/SettingsPanel.test.tsx、client/src/admin/SystemSettingsPage.tsx、client/src/main.tsx、client/tsconfig.node.json、client/package.json、package.json、.github/workflows/ci.yml、.gitignore、deploy/nginx/customer.conf.example、deploy/nginx/internal-p0.conf.example、deploy/customer-git-rollout.sh、server/tests/test_customer_git_rollout.py、docs/客户版部署与灰度手册.md、docs/客户版代码开发清单-V3.md、docs/客户版任务清单-V3.md、docs/CUSTOMER-TASK-EVIDENCE-V3.md
 失败测试或回归锁定：红1 entryContract.test.ts 4 failed/1 passed（RootApp 仍 lazy import AdminApp + /admin 分支）；红2 旧单入口 901.67 kB chunk 被 verify 判 ❌ 命中 /api/control/、激活码批次、审计中心、强制下线 4 条 → 双入口落地后转绿；变异测试锁定断言有效性（注入 import App from "./App" + <App/> → exit 1，还原后 7/7 绿）；n3「剔注释」弱化风险已用变异测试证伪；收尾期抓到并修复一处本 PR 造成的确定性真回归——上游守卫 test_customer_git_rollout.py 断言旧构建命令字面量 "npm run build --workspace client"（M1 已改为 build:all + verify:customer-bundle），隔离复跑 1 failed/3 passed 100% 可复现；该失败此前被 client vitest 时序 flake 掩盖（check 脚本以 && 串联且 client 段在 pytest 之前，flake 短路使 pytest 一次都没执行到），改分段执行后暴露，处置详见 Critical Findings §7
