@@ -24,7 +24,7 @@ AI 短视频复刻生产工作台：参考视频上传 → AI 拆解分镜 → �
 | 部署形态 | LB + 双 API + 四 Worker + PG HA + 私有 COS（`deploy/` 模板与 systemd 单元） | 桌面端拉起同机 FastAPI + Worker sidecar |
 | 用户身份 | 激活码激活 + 两设备单在线会话 | 内部 Bearer Token / 桌面固定身份 |
 | 计费 | 零额度激活 + ZPay 续充 + 管理端调账审计 | 内部价钱包 + ZPay 充值 |
-| 桌面构建 | `npm run tauri:build`（唯一默认，直连远程 HTTPS API，独立应用标识） | `npm run tauri:build:internal`（显式 opt-in，随包 `start-backend` 脚本） |
+| 桌面构建 | `npm run tauri:build`（唯一默认，直连远程 HTTPS API，独立应用标识） | 内部版已随 CW-021 退役（本地 sidecar 启动链自源码与制品删除，不再有内部构建入口） |
 
 客户版V3的PG运行基座、激活码、会话、队列和安全等已有各自历史自动化证据；这不等于开发/全部业务测试/运行入口已经统一PG。本次60项收敛任务状态见`docs/客户版任务清单-V3.md`§17；真实ZPay/COS/Provider、生产数据处置和灰度仍需相应实际证据。
 
@@ -32,7 +32,7 @@ AI 短视频复刻生产工作台：参考视频上传 → AI 拆解分镜 → �
 
 - **`server/`** — Python 3.12 · FastAPI · Alembic · psycopg3（同步驱动，`%s` 占位符）· pytest · Ruff · mypy strict。
 - **`client/`** — React 19 · TypeScript 5.9 · Vite 8 · Biome · Vitest；API 类型由 FastAPI OpenAPI 生成（`npm run generate:api`，产物不手工修改）。业务工作台、客户端与管理端共用同一 React 构建。
-- **`client/src-tauri/`** — Tauri 2 / Rust 桌面端，客户云版为唯一默认构建目标（`tauri.conf.json` 即客户 foundation，`tauri.customer.conf.json` 仅追加发行专属 installerHooks）；内部版降级为显式 opt-in overlay（`tauri.internal.conf.json`，需 `--features local-sidecar`）。
+- **`client/src-tauri/`** — Tauri 2 / Rust 桌面端，客户云版为唯一产品（`tauri.conf.json` 即客户 foundation，`tauri.customer.conf.json` 仅追加发行专属 installerHooks）；CW-021 已删除本地 API/Worker sidecar 启动链、启动脚本与内部构建入口，桌面端不启动任何本地业务后端。
 - **存储** — 人物、首帧等业务图片在生产使用腾讯云 COS 私有桶（启动即校验，缺/错配置 fail-closed）；新视频成片只保存供应商结果链接，不再下载或转存。开发机可回退本地文件系统存储。
 - **外部 Provider** — 视频拆解（Gemini）、人物图片（GPT Image 2 / Nano Banana）、视频生成（Metaso H3）。开发联调可切 `fake_h3` 模拟链路，不触达付费接口。
 
@@ -101,14 +101,14 @@ scripts/pg-fixture.sh stop
 - 服务端全量 pytest（约 1550 用例，21–30 分钟）每任务只跑一次，由 `npm run check` 统一承载，不要单独重复执行。
 - 严禁两个全量 pytest 实例同时打同一个 PG fixture（共享 `customer_v3_test` 库会互踩造成假性失败）。
 - `cargo test`、`npm audit`、客户浏览器 E2E 与 `npm run build` 只在 CI 三门禁执行，本地 `npm run check` 不含；涉及 Rust/构建/依赖变更以 CI 为准。
-- 当前本地验证规模（2026-09-04）：服务端 1555 passed / 1 skipped（本机无 ffmpeg）、客户端 vitest 715、直链播放与列表隐藏 Playwright 1、Tauri 模块测试两种配置各 16。
+- 当前本地验证规模（2026-09-04）：服务端 1555 passed / 1 skipped（本机无 ffmpeg）、客户端 vitest 715、直链播放与列表隐藏 Playwright 1、Tauri 模块测试 16（CW-021 起仅客户默认配置）。
 
 ## 构建与发布
 
 ```bash
-npm run tauri:build            # 客户云版 NSIS（唯一默认，--no-default-features，强制非 loopback HTTPS API origin）
+npm run tauri:build            # 客户云版 NSIS（唯一产品，--no-default-features，强制非 loopback HTTPS API origin）
 npm run tauri:build:customer   # 同上（保留为 npm run tauri:build 别名，维持 CI 与既有引用连续）
-npm run tauri:build:internal   # 内部版 NSIS（显式 opt-in，--config tauri.internal.conf.json --features local-sidecar，随包 start-backend）
+# CW-021: 内部版与本地 sidecar 启动链已退役，不存在 :internal 构建入口。
 npm run test:customer-e2e      # 客户浏览器 E2E（激活 / 设备配对 / 充值）
 npm run test:gate1             # 内部 FakeProvider 桌面纵向验收（隔离 API+Vite+Chrome，产物写 output/playwright/）
 ```
