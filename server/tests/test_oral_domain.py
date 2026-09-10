@@ -3059,6 +3059,9 @@ def test_oral_task_serialization_reports_billing_status_and_available_actions(
         denied = client.get(f"/api/oral/tasks/{uncertain.task_id}")
         assert denied.status_code == 404
         assert denied.json()["detail"]["code"] == "ORAL_TASK_NOT_FOUND"
+        # Restore the owner identity before the remaining serialization
+        # assertions (the denial swap above must not leak into them).
+        _read_actor_override()
 
         contract = client.get("/openapi.json").json()
         list_get = contract["paths"]["/api/oral/tasks"]["get"]

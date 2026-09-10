@@ -30,6 +30,7 @@
 - 迁移的既有测试（因收敛行为变化而更新认证方式，断言语义不变）：
   - `tests/test_independent_creation.py::test_saved_prompts_aggregate_across_projects`：X-Dev-User-Id → 种子客户会话 Bearer（owner 过滤 / limit 钳制 / 坏 JSON 跳过断言不变）。
   - `tests/test_oral_domain.py` 3 个路由级用例：X-Dev-User-Id → `get_current_user` 依赖覆盖（业务行为断言不变；认证层由本任务专项覆盖）。
+- **CI 捕获并修复的迁移缺陷**：serialization 用例中越权拒绝检查把 actor 覆盖切到 employee_2 后未切回，后续序列化断言以 employee_2 身份得到 404（Windows 本机该用例此前被 ffmpeg 缺失挡在 setup，未暴露；CI Linux 首跑精确捕获）。修复 = 拒绝检查后恢复 owner 覆盖，并用 winget 安装 ffmpeg 后在本机复跑 `test_oral_domain.py` 全模块 61 passed 0 error 验证。
 
 ## 4. 验证命令与通过数（本机 Windows + Docker PG 16.15，容器 `vs-pg-cw026` 端口 5437 / 分片 5500-5503，与 5435（CW-056）/5436（CW-031）/5434（vs-pg-dev）全部隔离）
 
@@ -45,7 +46,7 @@
 | `mypy server/app` | Success: no issues found in 104 source files |
 | 顺序全量 `pytest tests -q`（隔离容器 vs-pg-cw026:5437，一次性收尾全量） | `28 failed, 2292 passed, 2 skipped, 38 errors`（59:41）；28 failed = 22 cw033 POSIX 子进程 WinError2 + 6 simple_character 本机图像工具缺失（与 CW-054 登记的环境基线逐文件一致，还原 auth.py 对照可复现同类）；38 errors 全为 ffmpeg 缺失；本任务触碰的全部测试文件（cw026_converged_auth/internal_access_tokens/independent_creation/customer_fencing/customer_recharge/oral_domain 迁移用例）在 FAILED/ERROR 清单零出现 |
 
-环境性豁免（与基线一致，非本任务引入）：本机无 ffmpeg（38 errors 在还原 `auth.py` 的对照运行中逐字节同数复现）；无 cargo/gh（tauri/audit 门禁交 CI）；`test_cw033_pitr_drill_validation.py` 子进程调 `.sh` 的 `WinError 2` 与 simple_character 本机图像校验工具缺失沿用 CW-054/055 已登记归因。以上由 CI Linux 门禁承载。并行分片说明：本机另一会话（CW-057）与本次收尾同时启动同名分片脚本（固定容器名 `customer-v3-pg-test-shardN` + 共享 /tmp 日志），两组运行互相污染，按「共享 PG 全量串行」规则停止分片路径，改为上述隔离容器顺序全量（等价路径 A），未与任何其他任务争用 PG。
+环境性豁免（与基线一致，非本任务引入）：`test_cw033_pitr_drill_validation.py` 子进程调 `.sh` 的 `WinError 2` 与 simple_character 本机图像校验工具缺失沿用 CW-054/055 已登记归因；ffmpeg 缺失曾在基线对照中造成 38 个 setup ERROR，任务收尾期经 winget 安装 ffmpeg 9.0.1 后 `test_oral_domain.py` 全模块 61 passed（该 38 项已从环境豁免清单移除并转为本地实测通过）。无 cargo/gh（tauri/audit 门禁交 CI）。并行分片说明：本机另一会话（CW-057）与本次收尾同时启动同名分片脚本（固定容器名 `customer-v3-pg-test-shardN` + 共享 /tmp 日志），两组运行互相污染，按「共享 PG 全量串行」规则停止分片路径，改为上述隔离容器顺序全量（等价路径 A），未与任何其他任务争用 PG。
 
 ## 5. 安全复核记录（独立视角自检）
 
