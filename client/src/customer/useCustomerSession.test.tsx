@@ -15,10 +15,7 @@ import {
  * contract (the desktop build swaps in the Tauri DPAPI adapter, tests and
  * the browser lane use an isolated non-persistent store; dev doc §14: the
  * desktop and browser credential adapters must stay separate). */
-function memoryStore(initial?: {
-  deviceToken?: string | null;
-  automaticRecovery?: boolean;
-}) {
+function memoryStore(initial?: { deviceToken?: string | null }) {
   let deviceToken: string | null = initial?.deviceToken ?? null;
   let sessionToken: string | null = null;
   const calls: string[] = [];
@@ -60,7 +57,6 @@ function memoryStore(initial?: {
     devicePlatform() {
       return "windows";
     },
-    automaticRecovery: initial?.automaticRecovery ?? false,
   };
   return store;
 }
@@ -80,6 +76,10 @@ function jsonResponse(payload: unknown, status = 200, headers?: Headers) {
 const deviceTokenText = "device-token-1";
 const sessionTokenText = "session-token-1";
 const renewedSessionTokenText = "session-token-2";
+// CW-017 late-logout race: a distinct token for the session established while
+// the first logout is still in flight (named constant so the repo secret scan
+// stays quiet, same posture as the fixtures above).
+const relaunchSessionTokenText = "session-token-3";
 
 const activationBody = {
   username: "user-1",
@@ -141,54 +141,30 @@ describe("useCustomerSession", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("recovers a durable desktop fingerprint automatically when local credentials are missing", async () => {
-    const store = memoryStore({ automaticRecovery: true });
-    const fetchMock = stubFetch((url) => {
-      if (url.endsWith("/api/customer/activate")) {
-        return jsonResponse(activationBody, 201);
-      }
-      return jsonResponse({}, 500);
-    });
-
-    const { result } = renderHook(() =>
-      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
-    );
-
-    await waitFor(() => expect(result.current.screen).toBe("workspace"));
-    expect(store.snapshot()).toEqual({
-      deviceToken: deviceTokenText,
-      sessionToken: sessionTokenText,
-    });
-    const request = fetchMock.mock.calls[0];
-    const body = JSON.parse(String(request[1]?.body));
-    expect(body.activation_code).toBe("");
-    expect(body.device_fingerprint).toBe("instance-1");
-  });
-
-  it("shows first activation without an error when automatic recovery finds no binding", async () => {
-    const store = memoryStore({ automaticRecovery: true });
-    const fetchMock = stubFetch((url) => {
-      if (url.endsWith("/api/customer/activate")) {
-        return jsonResponse(
-          {
-            detail: {
-              code: "ACTIVATION_UNAVAILABLE",
-              message: "The activation code cannot be used.",
-            },
-          },
-          400,
-        );
-      }
-      return jsonResponse({}, 500);
-    });
+  // CW-017: the unattended empty-code recovery probe is retired. The server
+  // deliberately refuses fingerprint-only recovery (activation_code_routes.py
+  // `if not code_digests: raise unavailable` + the module docstring "a leaked
+  // stable fingerprint is not a second authentication factor"), so the old
+  // automaticRecovery lane could never succeed — its 201 "recovered" mock was
+  // false evidence, forbidden by the CW-017 acceptance line. A wiped install
+  // now waits on the activation screen for the full code, which the server
+  // binds to the same fingerprint (recover-or-bind) — never a boot-time probe.
+  it("never fires an empty-code recovery probe; a wiped install waits for the full activation code", async () => {
+    const store = memoryStore();
+    const fetchMock = stubFetch(() => jsonResponse({}, 500));
 
     const { result } = renderHook(() =>
       useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
     );
 
     await waitFor(() => expect(result.current.screen).toBe("activation"));
+    // No unattended POST /api/customer/activate carrying an empty code: the
+    // recovery contract is user-driven (full code + the same fingerprint).
+    const activateProbes = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/api/customer/activate"),
+    );
+    expect(activateProbes).toHaveLength(0);
     expect(result.current.error).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("activates with the device instance fingerprint and persists both credentials", async () => {
@@ -542,7 +518,12 @@ describe("useCustomerSession", () => {
     });
 
     await waitFor(() => expect(result.current.screen).toBe("session-replaced"));
-    expect(store.snapshot().sessionToken).toBeNull();
+    // DoD: SESSION_REPLACED keeps the device credential (back to login, the
+    // device slot is not consumed again) — only the session token is cleared.
+    expect(store.snapshot()).toEqual({
+      deviceToken: "device-token-1",
+      sessionToken: null,
+    });
   });
 
   it("clears every stored credential when the device is revoked", async () => {
@@ -568,6 +549,15 @@ describe("useCustomerSession", () => {
       deviceToken: null,
       sessionToken: null,
     });
+    // DoD: DEVICE_REVOKED clears device/session credentials (the snapshot above)
+    // but must NOT treat the stable machine identity as a credential. The hook
+    // only ever calls clearAllCredentials — it has no instance-id-clearing path
+    // — so the fingerprint survives for a later re-pairing. This in-memory mock
+    // returns the id from a closure the clear never touches, so the real
+    // guarantee (clear_all() deletes only the credential envelope while the
+    // device-instance-id lives in its own vault file) is locked by the Rust
+    // vault test `clear_all_removes_the_envelope_entirely`, not asserted here.
+    expect(await store.deviceInstanceId()).toBe("instance-1");
   });
 
   it("logs out to the login screen keeping the device credential", async () => {
@@ -598,6 +588,113 @@ describe("useCustomerSession", () => {
     });
   });
 
+  it("reports a determinate server-released outcome on a clean logout", async () => {
+    const store = memoryStore({ deviceToken: "device-token-1" });
+    stubFetch((url) => {
+      if (url.endsWith("/api/customer/sessions/login")) {
+        return jsonResponse(loginBody, 201);
+      }
+      if (url.endsWith("/api/customer/sessions/logout")) {
+        return jsonResponse(undefined, 204);
+      }
+      return jsonResponse({}, 500);
+    });
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+    await waitFor(() => expect(result.current.screen).toBe("workspace"));
+
+    // CW-017 DoD: logout must hand back a determinate outcome, not void — the
+    // shell has to tell "the server released the lease" from "local-only".
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await result.current.logout();
+    });
+    expect(outcome).toEqual({ serverReleased: true, credentialCleared: true });
+    expect(result.current.screen).toBe("login");
+    // A clean release leaves no visible error banner on the login screen.
+    expect(result.current.error).toBeNull();
+    expect(store.snapshot()).toEqual({
+      deviceToken: "device-token-1",
+      sessionToken: null,
+    });
+  });
+
+  it("never reports a server release when the logout call fails (network/5xx)", async () => {
+    const store = memoryStore({ deviceToken: "device-token-1" });
+    stubFetch((url) => {
+      if (url.endsWith("/api/customer/sessions/login")) {
+        return jsonResponse(loginBody, 201);
+      }
+      if (url.endsWith("/api/customer/sessions/logout")) {
+        return jsonResponse(
+          { detail: { code: "INTERNAL", message: "logout blew up" } },
+          500,
+        );
+      }
+      return jsonResponse({}, 500);
+    });
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+    await waitFor(() => expect(result.current.screen).toBe("workspace"));
+
+    // DoD: never call a local-only logout a server release. A 5xx logout still
+    // returns the user to login with the device credential intact, but
+    // serverReleased must be false so the UI cannot claim the lease is gone.
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await result.current.logout();
+    });
+    expect(outcome).toEqual({ serverReleased: false, credentialCleared: true });
+    expect(result.current.screen).toBe("login");
+    // CW-017 可见结果: the login screen must tell the user the server never
+    // confirmed the release, so a local-only logout is not mistaken for clean.
+    expect(result.current.error?.message).toBe(
+      "本机已退出，但服务端未能确认释放会话，请检查网络后重试",
+    );
+    expect(store.snapshot()).toEqual({
+      deviceToken: "device-token-1",
+      sessionToken: null,
+    });
+  });
+
+  it("surfaces a session-token vault-write failure as a determinate outcome", async () => {
+    const store = memoryStore({ deviceToken: "device-token-1" });
+    stubFetch((url) => {
+      if (url.endsWith("/api/customer/sessions/login")) {
+        return jsonResponse(loginBody, 201);
+      }
+      if (url.endsWith("/api/customer/sessions/logout")) {
+        return jsonResponse(undefined, 204);
+      }
+      return jsonResponse({}, 500);
+    });
+    // Today a throwing vault write is swallowed by a bare catch{}; the
+    // determinate outcome must instead report credentialCleared:false.
+    vi.spyOn(store, "clearSessionToken").mockRejectedValue(
+      new Error("vault I/O failure"),
+    );
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+    await waitFor(() => expect(result.current.screen).toBe("workspace"));
+
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await result.current.logout();
+    });
+    expect(outcome).toEqual({ serverReleased: true, credentialCleared: false });
+    expect(result.current.screen).toBe("login");
+    // CW-017 可见结果: a vault-write failure is surfaced, not swallowed.
+    expect(result.current.error?.message).toBe(
+      "本机已退出，但清理本机会话凭据失败，请重试",
+    );
+  });
+
   it("sends only one backend logout while concurrent clicks are pending", async () => {
     const store = memoryStore({ deviceToken: "device-token-1" });
     let resolveLogout:
@@ -623,8 +720,8 @@ describe("useCustomerSession", () => {
     );
     await waitFor(() => expect(result.current.screen).toBe("workspace"));
 
-    let firstLogout: Promise<void> | undefined;
-    let secondLogout: Promise<void> | undefined;
+    let firstLogout: Promise<unknown> | undefined;
+    let secondLogout: Promise<unknown> | undefined;
     act(() => {
       firstLogout = result.current.logout();
       secondLogout = result.current.logout();
@@ -641,6 +738,71 @@ describe("useCustomerSession", () => {
       await Promise.all([firstLogout, secondLogout]);
     });
     expect(result.current.screen).toBe("login");
+  });
+
+  it("does not let a late logout clobber a session established while it was in flight", async () => {
+    const store = memoryStore({ deviceToken: "device-token-1" });
+    let resolveLogout:
+      | ((value: Awaited<ReturnType<typeof jsonResponse>>) => void)
+      | undefined;
+    const logoutGate = new Promise<Awaited<ReturnType<typeof jsonResponse>>>(
+      (resolve) => {
+        resolveLogout = resolve;
+      },
+    );
+    let loginCount = 0;
+    stubFetch((url) => {
+      if (url.endsWith("/api/customer/sessions/login")) {
+        loginCount += 1;
+        // First login = the original session; the retry while the logout is
+        // still in flight mints a distinct session token (session B).
+        return jsonResponse(
+          loginCount === 1
+            ? loginBody
+            : {
+                ...loginBody,
+                session_token: relaunchSessionTokenText,
+                request_id: "req-relaunch",
+              },
+          201,
+        );
+      }
+      if (url.endsWith("/api/customer/sessions/logout")) {
+        return logoutGate;
+      }
+      return jsonResponse({}, 500);
+    });
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+    await waitFor(() => expect(result.current.screen).toBe("workspace"));
+
+    // Kick off logout; it parks on the gate (slow network) after nulling the
+    // session ref and bumping the generation.
+    let logoutPromise: Promise<unknown> | undefined;
+    act(() => {
+      logoutPromise = result.current.logout();
+    });
+
+    // While that logout is in flight the customer logs back in (session B).
+    await act(async () => {
+      await result.current.retryLogin();
+    });
+    await waitFor(() => expect(result.current.screen).toBe("workspace"));
+    expect(store.snapshot().sessionToken).toBe(relaunchSessionTokenText);
+
+    // The stale logout finally resolves. Its tail (clearSessionToken +
+    // setSessionToken(null) + dispatch logout) must be generation-guarded so it
+    // cannot clobber session B — DoD: a late logout never touches a new session.
+    resolveLogout?.(await jsonResponse(undefined, 204));
+    await act(async () => {
+      await logoutPromise;
+    });
+
+    expect(result.current.screen).toBe("workspace");
+    expect(result.current.user).not.toBeNull();
+    expect(store.snapshot().sessionToken).toBe(relaunchSessionTokenText);
   });
 
   it("exposes the activated user identity for the workspace shell", async () => {

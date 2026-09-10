@@ -12,6 +12,7 @@ import { LeaseCountdown } from "./LeaseCountdown";
 import { PairingApprovalCard } from "./PairingApprovalCard";
 import type {
   CustomerCredentialStore,
+  CustomerLogoutOutcome,
   CustomerSessionRuntime,
 } from "./useCustomerSession";
 
@@ -43,7 +44,7 @@ export function CustomerProfilePanel({
   onApprovePairing: (pairingId: string) => void;
   onDismissPairing: (pairingId: string) => void;
   onManualHeartbeat?: () => void;
-  onLogout: () => Promise<void>;
+  onLogout: () => Promise<CustomerLogoutOutcome>;
   onProfileUpdated: (profile: CustomerProfile) => void;
   onRefreshProfile: () => Promise<void>;
   onRecharge: (amountYuan?: number) => void;
