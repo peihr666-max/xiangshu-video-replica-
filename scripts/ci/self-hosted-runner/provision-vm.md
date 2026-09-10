@@ -93,6 +93,25 @@ bash scripts/ci/self-hosted-runner/runner-service.sh install-systemd
 - Because the gate now runs on your machine, the AGENTS.md pre-PR local full run
   is redundant while the runner is online — **the PR CI *is* the local run**.
 
+### Enable auto-dispatch (one-time read-only PAT secret)
+
+`select-runner` lists the repo's self-hosted runners to find an online
+`video-replica` one. That REST call needs an **Administration (read)** scope the
+workflow `GITHUB_TOKEN` does **not** have (and `administration` is not a valid
+`permissions:` key), so without a token it 403s and the job cleanly falls back to
+GitHub-hosted `ubuntu-24.04` — your runner is simply never used. To let PR CI
+actually dispatch here, add a read-only PAT **once**:
+
+1. Create a **fine-grained PAT**: Repository access → *only this repo*;
+   Permissions → **Administration: Read-only** (nothing else).
+2. Repo → Settings → Secrets and variables → Actions → *New repository secret*:
+   name `SELF_HOSTED_RUNNER_READ_PAT`, value = the PAT.
+
+`ci.yml` uses `${{ secrets.SELF_HOSTED_RUNNER_READ_PAT || github.token }}`: with
+the secret set, online-runner auto-dispatch works; without it, every run stays on
+hosted runners (still correct, just not local). The token is read-only,
+repo-scoped, and never printed, logged, or committed.
+
 ## Escape hatches
 
 - **Stop the runner** (`runner-service.sh stop`) → new PRs auto-fall back to

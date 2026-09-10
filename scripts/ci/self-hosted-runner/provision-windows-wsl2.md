@@ -93,6 +93,16 @@ runner 标签为 `self-hosted, linux, X64, video-replica`（arch/OS 由 runner �
 这台 x64 Windows/WSL2 runner 与 macOS 的 arm64 VM runner **可被同一套 workflow 选中**，
 谁在线用谁。
 
+> **启用自动派发（一次性只读 PAT secret）**：`select-runner` 要列出仓库自托管 runner，
+> 这个 REST 调用需要 **Administration(read)** 权限，而 workflow 的 `GITHUB_TOKEN` **没有**
+> 该权限（`administration` 也不是合法 `permissions:` 键）；缺 token 时它 403 并**干净回退**
+> GitHub 托管 `ubuntu-24.04`（你的 runner 不会被用到）。要让 PR CI 真派发到本机，一次性加：
+> 1) 建 **fine-grained PAT**：仓库访问只勾本仓库，权限只给 **Administration: Read-only**；
+> 2) 仓库 Settings → Secrets and variables → Actions → New repository secret，
+>    名字 `SELF_HOSTED_RUNNER_READ_PAT`，值填该 PAT。
+> `ci.yml` 用 `${{ secrets.SELF_HOSTED_RUNNER_READ_PAT || github.token }}`：设了就自动派发，
+> 没设就始终走托管（仍正确，只是不在本机跑）。token 只读、限本仓、绝不打印/落盘/入库。
+
 > **WSL2 生命周期注意**：`wsl --shutdown` 或 Windows 重启会停掉 WSL2 里的 runner。
 > 需要接 PR 任务时，先 `wsl -d Ubuntu-24.04` 进环境再 `runner-service.sh start`。
 > WSL2 若启用了 systemd（`/etc/wsl.conf` 里 `[boot] systemd=true`），可用
