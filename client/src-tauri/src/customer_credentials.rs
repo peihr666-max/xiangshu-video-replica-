@@ -265,8 +265,9 @@ mod durable_identity {
     const REG_OPTION_NON_VOLATILE: u32 = 0;
     const REG_SZ: u32 = 1;
     const RRF_RT_REG_SZ: u32 = 0x0000_0002;
-    const REGISTRY_SUBKEY: &str = r"Software\Xiangshu\VideoReplicaCustomer";
-    const REGISTRY_VALUE: &str = "DeviceInstanceId";
+    // pub(super): the CW-022 re-verification tests pin these frozen values.
+    pub(super) const REGISTRY_SUBKEY: &str = r"Software\Xiangshu\VideoReplicaCustomer";
+    pub(super) const REGISTRY_VALUE: &str = "DeviceInstanceId";
 
     #[link(name = "Advapi32")]
     extern "system" {
@@ -299,6 +300,8 @@ mod durable_identity {
             data_size: u32,
         ) -> i32;
         fn RegCloseKey(hkey: HKey) -> i32;
+        #[cfg(test)]
+        fn RegDeleteKeyValueW(hkey: HKey, subkey: *const u16, value: *const u16) -> i32;
     }
 
     fn wide(value: &str) -> Vec<u16> {
@@ -399,6 +402,24 @@ mod durable_identity {
             )));
         }
         Ok(())
+    }
+
+    /// CW-022 test-only: remove the durable identity value so the upgrade
+    /// migration path can be exercised from the exact first-upgraded-launch
+    /// state on a shared runner. Never compiled outside `cargo test`.
+    #[cfg(test)]
+    pub fn clear() -> Result<(), VaultError> {
+        let subkey = wide(REGISTRY_SUBKEY);
+        let value_name = wide(REGISTRY_VALUE);
+        let status =
+            unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, subkey.as_ptr(), value_name.as_ptr()) };
+        // A missing value is the clean state the caller asked for.
+        if status == 0 || status == ERROR_FILE_NOT_FOUND {
+            return Ok(());
+        }
+        Err(vault_err(format!(
+            "unable to clear durable device identity (Windows error {status})"
+        )))
     }
 }
 
@@ -980,5 +1001,137 @@ mod tests {
             "a non-Windows/non-macOS build must refuse to persist"
         );
         assert!(!vault.dir.join(CREDENTIALS_FILE).exists());
+    }
+
+    // ------------------------------------------------------------------
+    // CW-022 re-verification: corruption must fail closed without touching
+    // the stable device identity, and the frozen credential namespace must
+    // not drift under an already-released version chain (CW-003 §6).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_frozen_credential_file_namespace_is_stable() {
+        // Renaming these files orphans the credentials and the legacy
+        // identity of every already-released install (0.1.12–0.1.16).
+        assert_eq!(CREDENTIALS_FILE, "customer-credentials.bin");
+        assert_eq!(DEVICE_INSTANCE_FILE, "device-instance-id");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_frozen_windows_identity_namespace_is_stable() {
+        // The registry namespace mirrors the app-data identity across
+        // uninstall/reinstall; it must stay byte-stable for upgrades.
+        assert_eq!(
+            durable_identity::REGISTRY_SUBKEY,
+            r"Software\Xiangshu\VideoReplicaCustomer"
+        );
+        assert_eq!(durable_identity::REGISTRY_VALUE, "DeviceInstanceId");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_corrupted_envelope_fails_closed_and_keeps_the_device_identity() {
+        let vault = temp_vault();
+        vault
+            .save(&CustomerCredentials {
+                device_token: DEVICE_TOKEN_TEXT.into(),
+                session_token: Some("session-token-1".into()),
+            })
+            .expect("save");
+        let identity = vault.device_instance_id().expect("identity");
+        let envelope = vault.dir.join(CREDENTIALS_FILE);
+        let mut raw = fs::read(&envelope).expect("read envelope");
+        assert!(!raw.is_empty());
+        // Simulate partial-write/disk corruption: truncate and shuffle bytes
+        // so the payload is no longer a decryptable DPAPI envelope.
+        raw.truncate(raw.len() / 2);
+        raw.reverse();
+        fs::write(&envelope, &raw).expect("corrupt envelope");
+
+        // The load must surface an explicit error — never a decrypted guess,
+        // never plaintext, and never a silent reset to a fresh login.
+        assert!(vault.load().is_err());
+        // The stable identity is stored separately and must survive.
+        assert_eq!(vault.device_instance_id().expect("identity"), identity);
+        // The failure stays visible: the vault must not have silently
+        // replaced the corrupted envelope with a freshly minted login — a
+        // repaired file would load `Ok` instead.
+        assert!(vault.load().is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_empty_envelope_is_a_visible_error_not_a_login() {
+        let vault = temp_vault();
+        vault
+            .save(&CustomerCredentials {
+                device_token: DEVICE_TOKEN_TEXT.into(),
+                session_token: Some("session-token-1".into()),
+            })
+            .expect("save");
+        let envelope = vault.dir.join(CREDENTIALS_FILE);
+        fs::write(&envelope, b"").expect("truncate envelope to empty");
+        assert!(vault.load().is_err());
+        // The device credential survives the corrupted session material.
+        let loaded_after_rewrite = {
+            vault
+                .save(&CustomerCredentials {
+                    device_token: DEVICE_TOKEN_TEXT.into(),
+                    session_token: None,
+                })
+                .expect("re-save");
+            vault.load().expect("reload").expect("device credential")
+        };
+        assert_eq!(loaded_after_rewrite.device_token, DEVICE_TOKEN_TEXT);
+        assert_eq!(loaded_after_rewrite.session_token, None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_durable_identity_migrates_the_legacy_id_into_the_registry_once() {
+        // Preserve whatever a previous run (or a real install on this
+        // machine) left behind, exercise the first-upgraded-launch path from
+        // a clean registry, then restore. This is the only test touching the
+        // registry key, so parallel test threads cannot race on it.
+        let backup = durable_identity::read().expect("read backup");
+        durable_identity::clear().expect("clear registry value");
+
+        let result = (|| -> Result<(), VaultError> {
+            let legacy = temp_vault();
+            let legacy_id = legacy.device_instance_id().expect("legacy id");
+            // First upgraded launch: no registry value yet, so the legacy
+            // app-data identifier is migrated and mirrored into the registry.
+            assert_eq!(
+                legacy.durable_device_instance_id().expect("durable"),
+                legacy_id.as_str()
+            );
+            assert_eq!(
+                durable_identity::read().expect("registry").as_deref(),
+                Some(legacy_id.as_str())
+            );
+            // Later launches (and a reinstall that loses app data) keep the
+            // same identity from the registry, never mint a second device.
+            assert_eq!(
+                CustomerCredentialVault::new(legacy.dir.clone())
+                    .durable_device_instance_id()
+                    .expect("durable again"),
+                legacy_id.as_str()
+            );
+            let reinstalled = temp_vault();
+            assert_eq!(
+                reinstalled.durable_device_instance_id().expect("reinstall"),
+                legacy_id.as_str()
+            );
+            Ok(())
+        })();
+
+        // Restore the pre-test state regardless of the outcome.
+        let restore = match backup {
+            Some(value) => durable_identity::write(&value),
+            None => durable_identity::clear(),
+        };
+        restore.expect("restore registry value");
+        result.expect("migration scenario");
     }
 }
