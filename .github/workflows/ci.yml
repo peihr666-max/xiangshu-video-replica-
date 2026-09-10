@@ -8,9 +8,6 @@ on:
 
 permissions:
   contents: read
-  # select-runner queries the self-hosted runner list to decide the Linux gate's
-  # runs-on target (dual path: self-hosted when online, else GitHub-hosted).
-  actions: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -77,6 +74,12 @@ jobs:
     name: Select runner
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      # Listing the repo's self-hosted runners requires "Administration" read —
+      # the "actions" permission does NOT cover runner management and 403s with
+      # "Resource not accessible by integration". Scoped to this job only (least
+      # privilege); any lookup error still falls back to a GitHub-hosted runner.
+      administration: read
     timeout-minutes: 5
     outputs:
       runner: ${{ steps.pick.outputs.runner }}
