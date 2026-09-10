@@ -13,7 +13,7 @@
 | --- | --- |
 | 任务/工作包 | CW-056（W4）补齐空PG及受支持旧PG升级矩阵；DoD：建立 supported_release_head→final_head 表、所有登记起点各跑**独立**真实 PG 数据副本、漏项=0/skip=0、每个起点核对 schema 对象/关键事实/约束/下一写、失败后 alembic_version 与结构状态必须可判定、offline `--sql` 明确不作为交付升级脚本 |
 | Owner / Reviewer | Owner：Qoder 代理（2026-09-10）；Reviewer：待 PR 独立 CodeReview |
-| 分支 / 基线 SHA | `feat/customer-v3-cw056-pg-upgrade-matrix`；基线 `origin/main@d8f3352`（CW-016 #6 合并后） |
+| 分支 / 基线 SHA | `feat/customer-v3-cw056-pg-upgrade-matrix`；创建基线 `origin/main@d8f3352`（CW-016 #6 合并后），收尾 rebase 至 `origin/main@0d08608`（CW-019 #12 合并后；6 文件与 main 零重叠、0 冲突，rebase 后代码提交 `dfce1d0`） |
 | 上游规格段落 | 收敛详细任务清单 §CW-056（line 588–601）；V3 清单 §18 CW-056 行（line 496）；PG-04 schema 与迁移（`docs/PostgreSQL唯一数据库实施与验收规范.md`）；CW-003 §1 受支持版本表；CW-053 §3 E1「字节不改」与 §7 L241 升级矩阵债务；CW-007 TEST-PG 硬门 |
 | 改动文件 | 5 文件（+1291/−26）：新增 `server/tests/test_cw056_supported_head_matrix.py`（+1150，13 用例）、`server/migrations/env.py`（+83/−19）、`deploy/postgres/migrate.sh`（+17/−1）、`server/tests/test_postgres_migrations.py`（+35/−6）、`server/tests/pg_test_kit.py`（+6/−0，纯增量 allowlist）；另新增本证据文件。**零迁移版本文件改动**（`git diff --name-only` 与 `migrations/versions` 交集为空，PG-09 遵守） |
 | 失败测试或回归锁定 | 新增 13 用例（A 组 7 项静态/CLI **刻意不挂 PG 门** + B 组 5 项 + C 组 1 项挂 CW-007 硬门）。RED 阶段 A 组 **3 failed / 4 passed**（3 项真实实现缺口），全文件首轮 **8 failed / 5 passed**，其中 **5 项为测试自身写法缺陷**（已逐项修正并登记于 §11.3），修正后收敛为 **3 failed / 10 passed**；GREEN 阶段 **37 passed**（13 新增 + 24 既有 `test_postgres_migrations`）零回归 |
