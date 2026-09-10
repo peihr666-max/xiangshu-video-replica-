@@ -45,6 +45,10 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "cw010_wallet_billing_test",
         "cw010_independent_test",
         "cw010_oral_test",
+        # CW-054 PG portable contract: dedicated database for executemany /
+        # iterdump / set_trace_callback / _NamedRow / type-roundtrip /
+        # constraint-exception mapping tests (segment 1/N).
+        "cw054_contract_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):
