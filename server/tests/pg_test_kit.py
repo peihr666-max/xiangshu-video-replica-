@@ -55,6 +55,9 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # and dropped inside its own test, never shared across tests.
         "cw056_head_matrix_test",
         "cw056_failstate_test",
+        # CW-057 maintenance/seed CLI PG entry: dedicated database for the
+        # gate1 seed (migrate → seed → pristine-refusal) contract.
+        "cw057_gate1_seed_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):
