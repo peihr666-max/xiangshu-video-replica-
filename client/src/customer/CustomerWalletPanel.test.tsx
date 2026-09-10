@@ -698,12 +698,21 @@ describe("CustomerWalletPanel", () => {
 
     await screen.findByText("order-pending");
     fireEvent.click(screen.getByRole("button", { name: "删除待支付订单" }));
-    expect(await screen.findByText("关闭订单失败")).toBeInTheDocument();
+    // waitFor + getByText 而非 findByText + toBeInTheDocument：CI 慢环境下
+    // checkOrder 轮询 useEffect 与 closePendingOrder 竞态会让 findByText
+    // 拿到短暂出现后被 replace 的 stale DOM node，导致 toBeInTheDocument
+    // 报 "element could not be found in the document"。waitFor 会重试整个
+    // 断言直到 error 元素稳定挂载（asyncUtilTimeout 3000ms 全局配置）。
+    await waitFor(() => {
+      expect(screen.getByText("关闭订单失败")).toBeInTheDocument();
+    });
 
     resolveLedger?.(
       await jsonResponse({ items: [], total: 0, limit: 20, offset: 0 }),
     );
     await delayedLedger;
-    expect(await screen.findByText("关闭订单失败")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("关闭订单失败")).toBeInTheDocument();
+    });
   });
 });
