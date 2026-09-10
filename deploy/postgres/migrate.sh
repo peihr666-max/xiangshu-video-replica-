@@ -22,4 +22,20 @@ cd /opt/video-replica/app/server
 # permit plaintext fallback before the first migration statement executes.
 .venv/bin/python -c \
     'from app.db_pg import resolve_database_config, validate_customer_production; validate_customer_production(resolve_database_config())'
-exec flock -n "$LOCK_FILE" .venv/bin/alembic upgrade head
+
+# Not exec'd: a post-upgrade head check has to run in this same shell. `exec`
+# replaces the process, so anything written after it would never execute.
+flock -n "$LOCK_FILE" .venv/bin/alembic upgrade head
+
+# Verify what is actually applied. `alembic upgrade head` exits 0 when the
+# database is already at head, so a green run on its own cannot distinguish
+# "just migrated" from "deployed new code against an old schema and did
+# nothing" -- and the second case is the one that pages someone at 3am.
+# Read-only, so it is safe to run after the lock is released.
+EXPECTED_HEAD="$(.venv/bin/alembic heads | awk 'NR == 1 {print $1}')"
+ACTUAL_HEAD="$(.venv/bin/alembic current | awk 'NR == 1 {print $1}')"
+if [ -z "$EXPECTED_HEAD" ] || [ "$ACTUAL_HEAD" != "$EXPECTED_HEAD" ]; then
+    echo "migration did not reach the expected head: current='${ACTUAL_HEAD}' expected head='${EXPECTED_HEAD}'" >&2
+    exit 70
+fi
+echo "migration verified at expected head: ${ACTUAL_HEAD}"
