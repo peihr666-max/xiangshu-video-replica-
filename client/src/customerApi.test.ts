@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CUSTOMER_SESSION_EXPIRED_EVENT,
   CUSTOMER_SESSION_REPLACED_EVENT,
@@ -148,6 +148,11 @@ const loginBody = {
 };
 
 describe("customer API adapter requests", () => {
+  beforeEach(() => {
+    // CW-015: 测试环境需要显式配置 API base URL，不再依赖 loopback fallback
+    vi.stubEnv("VITE_API_BASE_URL", "http://127.0.0.1:8000");
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
@@ -517,6 +522,11 @@ describe("customer API adapter requests", () => {
 // ---------------------------------------------------------------------------
 
 describe("customer API error states", () => {
+  beforeEach(() => {
+    // CW-015: 测试环境需要显式配置 API base URL，不再依赖 loopback fallback
+    vi.stubEnv("VITE_API_BASE_URL", "http://127.0.0.1:8000");
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();

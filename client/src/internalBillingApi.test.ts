@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createRechargeOrder,
@@ -9,6 +9,7 @@ import {
   getWallet,
   listRechargeOrders,
   listWalletTransactions,
+  setCustomerSessionToken,
   setInternalAccessToken,
   testControlProviderConnection,
   updateControlProviderSettings,
@@ -19,14 +20,21 @@ import {
 const SERVICE_KEY_TEXT = ["service", "key"].join("-");
 
 describe("internal billing API", () => {
+  beforeEach(() => {
+    // CW-015: 测试环境需要显式配置 API base URL，不再依赖 loopback fallback
+    vi.stubEnv("VITE_API_BASE_URL", "http://127.0.0.1:8000");
+  });
+
   afterEach(() => {
     setInternalAccessToken(null);
+    setCustomerSessionToken(null);
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
 
-  it("sends the transient Bearer token to business wallet and recharge APIs", async () => {
-    setInternalAccessToken("internal-user-token");
+  it("sends the customer session token to business wallet and recharge APIs (CW-015)", async () => {
+    // CW-015: 内部计费 API 现在使用 customerSessionToken，不再优先 internalAccessToken
+    setCustomerSessionToken("customer-session-token");
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -53,7 +61,7 @@ describe("internal billing API", () => {
     ]);
     for (const [, options] of fetchMock.mock.calls) {
       expect((options.headers as Headers).get("Authorization")).toBe(
-        "Bearer internal-user-token",
+        "Bearer customer-session-token",
       );
     }
     expect(fetchMock.mock.calls[2]?.[1]).toEqual(
@@ -65,7 +73,8 @@ describe("internal billing API", () => {
   });
 
   it("rejects a wallet response without usable pricing", async () => {
-    setInternalAccessToken("internal-user-token");
+    // CW-015: 内部计费 API 现在使用 customerSessionToken
+    setCustomerSessionToken("customer-session-token");
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({

@@ -3,7 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { components } from "./generated/api";
 
-const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 5_000;
 // Cloud/storage operations (diagnostics, presigned URLs, archive prechecks)
 // may legitimately take much longer than a normal API round-trip.
@@ -44,7 +43,8 @@ export function resolveApiBaseUrl(
   if (isProduction && runtimeLocation.protocol === "https:") {
     return runtimeLocation.origin;
   }
-  return DEFAULT_API_BASE_URL;
+  // CW-015: 正式客户构建必须有唯一地址来源，缺地址时 fail-closed，不再回退到 loopback
+  throw new Error("API base URL is required");
 }
 
 function apiBaseUrl(): string {
@@ -1240,7 +1240,8 @@ export function attachCustomerSessionToken(token: string): () => void {
 }
 
 function workspaceAccessToken(): string | null {
-  return internalAccessToken ?? customerSessionToken;
+  // CW-015: 正式客户构建只使用 customerSessionToken，不再优先 internalAccessToken
+  return customerSessionToken;
 }
 
 export async function getWallet(): Promise<WalletSnapshot> {
@@ -2438,15 +2439,14 @@ function uploadStorageObject(
     // Scale the timeout with the payload (~200KB/s) so large 50MB uploads are
     // not cut off on slow links, while small files keep a tight bound.
     request.timeout = Math.max(60_000, Math.ceil(file.size / 200));
-    const devUserId = getDevelopmentUserId();
-    if (isLocalApiUploadUrl(intent.url)) {
-      // Mirror requestApi's auth precedence: the internal Bearer token wins in
-      // managed mode; otherwise fall back to the development identity header.
-      const accessToken = workspaceAccessToken();
+    // CW-015: 一次性计算是否是 API 上传，避免重复调用和重复抛错
+    const isApiUpload = isApiUploadUrl(intent.url);
+    // CW-015: 只在上传到 API 时携带 Bearer token，上传到 COS/Provider 时不携带
+    // 内部 P0 单机版仍可使用 internalAccessToken，正式客户构建只使用 customerSessionToken
+    if (isApiUpload) {
+      const accessToken = internalAccessToken ?? workspaceAccessToken();
       if (accessToken) {
         request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
-      } else if (devUserId) {
-        request.setRequestHeader("X-Dev-User-Id", devUserId);
       }
     }
     for (const [name, value] of Object.entries(intent.headers)) {
@@ -2463,7 +2463,7 @@ function uploadStorageObject(
         resolve();
         return;
       }
-      if (request.status === 401 && isLocalApiUploadUrl(intent.url)) {
+      if (request.status === 401 && isApiUpload) {
         emitSessionExpired();
         reject(new Error("登录已失效，请重新进入工作台。"));
         return;
@@ -2473,8 +2473,8 @@ function uploadStorageObject(
     request.onerror = () =>
       reject(
         new Error(
-          isLocalApiUploadUrl(intent.url)
-            ? `${errorPrefix}失败（无法连接本地服务，请确认服务已启动）`
+          isApiUpload
+            ? `${errorPrefix}失败（无法连接服务，请确认服务已启动）`
             : `${errorPrefix}失败（无法连接素材库；请检查网络以及素材库跨域访问规则）`,
         ),
       );
@@ -4464,18 +4464,16 @@ async function requestApi(
   if (callerSignal?.aborted) abortFromCaller();
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = new Headers(init.headers);
-  const devUserId = getDevelopmentUserId();
-  const customerOwnerAtStart =
-    internalAccessToken === null ? customerSessionOwner : null;
+  // CW-015: 统一 session 所有权追踪，不再因 internalAccessToken 存在而跳过 owner 检查
+  const customerOwnerAtStart = customerSessionOwner;
 
   if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  const accessToken = workspaceAccessToken();
+  // CW-015: 内部 P0 单机版仍可使用 internalAccessToken，正式客户构建只使用 customerSessionToken
+  const accessToken = internalAccessToken ?? workspaceAccessToken();
   if (accessToken) {
     headers.set("Authorization", `Bearer ${accessToken}`);
-  } else if (devUserId) {
-    headers.set("X-Dev-User-Id", devUserId);
   }
 
   try {
@@ -4498,17 +4496,6 @@ async function requestApi(
     window.clearTimeout(timeout);
     callerSignal?.removeEventListener("abort", abortFromCaller);
   }
-}
-
-function getDevelopmentUserId(): string | undefined {
-  if (!import.meta.env.DEV) {
-    return undefined;
-  }
-  const explicitUserId = import.meta.env.VITE_DEV_USER_ID;
-  if (explicitUserId?.trim()) {
-    return explicitUserId.trim();
-  }
-  return "employee_1";
 }
 
 function emitSessionExpired() {
@@ -4592,13 +4579,13 @@ function contentTypeForIdentityFile(file: File): string {
   return file.type || "application/octet-stream";
 }
 
-function isLocalApiUploadUrl(url: string): boolean {
+// CW-015: 判断上传 URL 是否是 API 地址（而不是 COS/Provider 直传地址）
+// 只在上传到 API 时携带客户 Bearer token，上传到 COS/Provider 时不携带
+function isApiUploadUrl(url: string): boolean {
   try {
     const target = new URL(url);
-    return (
-      (target.hostname === "127.0.0.1" || target.hostname === "localhost") &&
-      target.port === "8000"
-    );
+    const apiBase = new URL(apiBaseUrl());
+    return target.origin === apiBase.origin;
   } catch {
     return false;
   }
