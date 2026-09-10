@@ -12,6 +12,12 @@
 > 实施与验收以[唯一数据库规范](PostgreSQL唯一数据库实施与验收规范.md)及 CW-001—060 为准。此前仅客户生产 PG、默认开发 SQLite、SQLite 业务测试可作为当前验收的口径不再适用。
 > 本次更新只确认规范和任务定义；原代码仍有 SQLite 分支，历史任务/测试记录保留原文，不据此声明实际迁移或生产切换已完成。
 
+## CW-033 — 数据与资产快照恢复演练（2026-09-10，Pre-GA 准备批次，自动化验证完成）
+
+分支 `feat/customer-v3-cw033-snapshot-recovery-drill`，基线 `9a70918`（= CW-009 tip = origin/main）。CW-033 属于 CW-001 §5.5 **GA 触发·冻结**清单，本批次仅覆盖 pre-GA 阶段可自动化的仓库侧准备面：新增 `server/tests/test_cw033_pitr_drill_validation.py`（以子进程真调用 `deploy/postgres/pitr-restore-drill.sh`，锁定 T38 结构性 grep 未触达的 10 条 fail-fast 路径——label 正则、manifest 路径、port 校验、CLI usage、drill env 门禁、recovery root/db/user 校验，共 23 用例含 parametrize 展开）与 `server/tests/test_cw033_evidence_boundary.py`（7 用例自守卫，若证据层级被误升 STAGING_VERIFIED/REAL_CHAIN_VERIFIED/PRODUCTION_GO 而 CW-005 §5 无对应签认，CI 即失败）。drill 脚本本体与 T38 交付的 `pitr-backup.sh`/`pitr-preflight.sh`/`pitr-fetch-wal.sh`/`pitr_recovery_facts.py` 零改动；无 Alembic revision；无外部授权动作。
+
+证据层级 `AUTOMATED_VERIFIED`；**未**升至 `STAGING_VERIFIED`/`REAL_CHAIN_VERIFIED`/`PRODUCTION_GO`——`pg_ctl` 隔离副本恢复、真实 `pg_basebackup --wal-method=stream` 基准备份、WAL 归档 + `assert-wal` 外部取回、`pitr_recovery_facts.py verify` 100 事实跨域核验等 GA-blocked 项**未执行、未宣称**，触发条件是 CW-005 §5 数据批次盘点完成 + A/B/C 路线签认（数据负责人 + 业务负责人 + owner phlong026 三方）；PITR/RTO/RPO 测量归 CW-048，逻辑快照不得冒充 PITR（`客户版部署与灰度手册.md` §PITR 红线）。完整 §14 记录、GA-blocked 清单与交叉引用见 `docs/evidence/CW033-EVIDENCE.md`。
+
 ## 管理后台改版 W3–W17（2026-09-05，自动化与本地浏览器验证完成）
 
 分支 `feat/customer-v3-admin-revamp`，实施基线 `67cf008`。完成管理聚合、按秒计费和实际用量成本、个人提示词、客户端参数与钱包、圆滑趋势曲线。最终 `npm.cmd run check` 退出 0：前端 746 通过；后端 1633 通过/1 项因缺少 ffmpeg 跳过；密钥扫描、静态检查、Cargo 和 Mypy 通过。133 个受检源码指纹与最终工作树一致。后台 12 页及客户端 3 个组件完成参考图成对对照，明确保留真实数据及已裁决范围差异。
