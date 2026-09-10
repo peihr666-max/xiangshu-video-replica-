@@ -59,22 +59,33 @@
 
 ## 7. 验证命令（PR 前必须全绿）
 
+> **本地门禁前置原则（每任务、每 worktree/分支强制，OS 无关）**：开发完 → 评审自检通过后 → **push/开 PR 之前**，必须在本地把 Linux 质量门跑绿一次。macOS / Linux / Windows(WSL2) 用同一套命令；Windows 迁移见 `scripts/ci/self-hosted-runner/provision-windows-wsl2.md`。自托管 runner 在线时 PR 的 Linux 门就跑在你本机（**PR CI 即本地跑**），可免第二遍本地全量；离线回退托管时提交前必须本地跑绿。
+
+两条等价路径，二选一（都等价于 CI Linux 质量门）：
+
+**路径 A — 顺序全量（需手动起 fixture）**
 ```bash
 # 1) 先启动 PostgreSQL fixture（Docker PG16，端口 5433；脚本必须带子命令，无参数会打印 usage 并退出 1）
 scripts/pg-fixture.sh start
-
-# 2) 服务端全量验证（server/ 目录；fixture 未启动时 PG 套件按 skip 运行，不得声明 AUTOMATED_VERIFIED）
-uv run python -m pytest tests -q            # 全量，基线 603+，零回归（PG 套件默认连 localhost:5433 fixture）
+# 2) 服务端全量验证（server/ 目录；fixture 未启动时 PG 套件失败而非 skip，不得声明 AUTOMATED_VERIFIED）
+uv run python -m pytest tests -q            # 全量，零回归（PG 套件默认连 localhost:5433 fixture）
 uv run ruff check . && uv run ruff format --check .
 uv run mypy app                             # strict
-
 # 3) 全仓门禁（仓库根目录，等价于 CI Linux 质量门）
 npm run check
-
 # 收尾：scripts/pg-fixture.sh stop；DSN 覆盖用环境变量 TEST_POSTGRESQL_URL
 ```
 
-CI 说明：CI 目前对 PG 相关测试按 skip 运行（未内嵌 PG service），因此沙箱/本地必须用 fixture 真实跑过，才可声明 `AUTOMATED_VERIFIED`。
+**路径 B — 静态检查 + 分片并行 pytest（更快，推荐；脚本自管 PG，勿手动起 fixture）**
+```bash
+# 每片独立 PG 容器（端口 5433+i，物理隔离，零库名冲突/零共享锁争用），跑完自动清理。
+# 不要先跑 pg-fixture.sh start——默认 fixture 占 5433 会与 shard-0 撞端口。
+npm run check:sharded
+# 等价拆开：npm run check:static && bash scripts/ci/run-pytest-shards.sh
+```
+
+CI 说明：CI 现已真实内嵌 PG（Linux 门用 `scripts/ci/run-pytest-shards.sh` 分片并行、每片独立 PG 容器），不再对 PG 测试 skip；本地/沙箱同样必须用真实 PG 跑过才可声明 `AUTOMATED_VERIFIED`。
+
 
 ## 8. 环境变量备忘
 

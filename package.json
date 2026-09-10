@@ -10,6 +10,8 @@
     "check": "bash scripts/verify_no_secrets.sh && npm run check --workspace client && npm run check:e2e && npm run check:tauri && uv --cache-dir .uv-cache run --project server --locked ruff check server && uv --cache-dir .uv-cache run --project server --locked ruff format --check server && uv --cache-dir .uv-cache run --project server --locked python -m mypy --config-file server/pyproject.toml server/app && uv --cache-dir .uv-cache run --project server --locked python -m pytest --rootdir server server/tests",
     "check:e2e": "biome check e2e",
     "check:security": "bash scripts/verify_no_secrets.sh",
+    "check:sharded": "npm run check:static && bash scripts/ci/run-pytest-shards.sh",
+    "check:static": "bash scripts/verify_no_secrets.sh && npm run check --workspace client && npm run check:e2e && npm run check:tauri && uv --cache-dir .uv-cache run --project server --locked ruff check server && uv --cache-dir .uv-cache run --project server --locked ruff format --check server && uv --cache-dir .uv-cache run --project server --locked python -m mypy --config-file server/pyproject.toml server/app",
     "check:tauri": "cargo fmt --manifest-path client/src-tauri/Cargo.toml --check && cargo check --manifest-path client/src-tauri/Cargo.toml --locked",
     "check:tauri:customer": "cargo check --manifest-path client/src-tauri/Cargo.toml --locked --no-default-features",
     "dev:client": "npm run dev --workspace client",

@@ -4,10 +4,24 @@
 
 set -e
 
-CONTAINER_NAME="customer-v3-pg-test"
-DATA_VOLUME="customer-v3-pg-data"
-HOST_PORT=5433
+# Parameterized for parallel CI shards (each shard gets its own isolated
+# container + port). Defaults are unchanged, so `scripts/pg-fixture.sh start`
+# behaves exactly as before for local development.
+CONTAINER_NAME="${PG_FIXTURE_NAME:-customer-v3-pg-test}"
+# Volume derives from the container name so parallel fixtures never share data,
+# but the historical default volume name is preserved for backward compat.
+if [ -n "${PG_FIXTURE_VOLUME:-}" ]; then
+    DATA_VOLUME="${PG_FIXTURE_VOLUME}"
+elif [ "${CONTAINER_NAME}" = "customer-v3-pg-test" ]; then
+    DATA_VOLUME="customer-v3-pg-data"
+else
+    DATA_VOLUME="${CONTAINER_NAME}-data"
+fi
+HOST_PORT="${PG_FIXTURE_PORT:-5433}"
+DB_NAME="${PG_FIXTURE_DB:-customer_v3_test}"
 CONTAINER_PORT=5432
+PG_USER=testuser
+PG_PASSWORD=testpass
 
 usage() {
     echo "Usage: $0 {start|stop|clean|status|test}"
@@ -47,9 +61,9 @@ case "$1" in
         echo "Launching postgres:16-alpine container..."
         docker run -d \
             --name ${CONTAINER_NAME} \
-            -e POSTGRES_USER=testuser \
-            -e POSTGRES_PASSWORD=testpass \
-            -e POSTGRES_DB=customer_v3_test \
+            -e POSTGRES_USER=${PG_USER} \
+            -e POSTGRES_PASSWORD=${PG_PASSWORD} \
+            -e POSTGRES_DB=${DB_NAME} \
             -p ${HOST_PORT}:${CONTAINER_PORT} \
             -v ${DATA_VOLUME}:/var/lib/postgresql/data \
             postgres:16-alpine
@@ -57,7 +71,7 @@ case "$1" in
         # Wait for startup
         echo "Waiting for PostgreSQL to be ready..."
         for i in {1..30}; do
-            if docker exec $CONTAINER_NAME pg_isready -U testuser -d customer_v3_test > /dev/null 2>&1; then
+            if docker exec $CONTAINER_NAME pg_isready -U ${PG_USER} -d ${DB_NAME} > /dev/null 2>&1; then
                 echo "PostgreSQL is ready!"
                 docker logs $CONTAINER_NAME 2>&1 | tail -5
                 exit 0
@@ -97,8 +111,8 @@ case "$1" in
         docker volume ls --filter "name=${DATA_VOLUME}" || echo "Volume not found"
         echo ""
         echo "=== Test DSN ==="
-        echo "postgresql://testuser:testpass@localhost:${HOST_PORT}/customer_v3_test"
-        export TEST_POSTGRESQL_URL="postgresql://testuser:testpass@localhost:${HOST_PORT}/customer_v3_test"
+        echo "postgresql://${PG_USER}:${PG_PASSWORD}@localhost:${HOST_PORT}/${DB_NAME}"
+        export TEST_POSTGRESQL_URL="postgresql://${PG_USER}:${PG_PASSWORD}@localhost:${HOST_PORT}/${DB_NAME}"
         echo "Set environment: TEST_POSTGRESQL_URL=$TEST_POSTGRESQL_URL"
         ;;
         
@@ -110,7 +124,7 @@ case "$1" in
         fi
         
         echo "Running PostgreSQL fixture tests..."
-        export TEST_POSTGRESQL_URL="postgresql://testuser:testpass@localhost:${HOST_PORT}/customer_v3_test"
+        export TEST_POSTGRESQL_URL="postgresql://${PG_USER}:${PG_PASSWORD}@localhost:${HOST_PORT}/${DB_NAME}"
         cd server
         uv run python -m pytest tests/test_postgres_migrations.py -v
         ;;
