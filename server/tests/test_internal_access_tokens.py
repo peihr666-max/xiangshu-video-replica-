@@ -18,6 +18,7 @@ from pg_test_kit import require_pg_or_explicit_skip
 
 from app.auth import CurrentUser, get_current_user, get_database
 from app.db import connect_database, initialize_database
+from app.db_pg import close_pg_pool
 from app.db_portable import BusinessConnection
 from app.main import app
 
@@ -236,8 +237,17 @@ def a1_dsn() -> Iterator[str]:
     )
     command.upgrade(config, "head")
     try:
+        # CW-025: reset the process-wide pool singleton before handing out the
+        # DSN and again on teardown, matching every other PG fixture (see
+        # test_customer_queue_fairness / test_customer_security / ...).
+        # get_pg_pool() caches the resolved DSN on first use; without the
+        # teardown reset this module-scoped fixture leaks a pool pointing at the
+        # dropped a1 database into every later test in the same pytest process
+        # (broke test_postgres_migrations empty-customer bootstrap).
+        close_pg_pool()
         yield _a1_dsn()
     finally:
+        close_pg_pool()
         with psycopg.connect(
             _a1_base_dsn().rsplit("/", 1)[0] + "/postgres", autocommit=True
         ) as conn:

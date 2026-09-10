@@ -347,6 +347,13 @@ def test_empty_customer_bootstrap_runs_on_a_fresh_migrated_database(
     from cryptography.fernet import Fernet
 
     from app import bootstrap
+    from app.db_pg import close_pg_pool
+
+    # CW-025: reset the process-wide pool singleton so this case re-resolves its
+    # own t36 DSN instead of inheriting a pool cached by an earlier test in the
+    # same pytest process (get_pg_pool() caches the DSN on first use). Matches
+    # the standalone-test convention in test_customer_devices.py.
+    close_pg_pool()
 
     database_name = "t36_empty_customer_bootstrap_test"
     dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{database_name}"

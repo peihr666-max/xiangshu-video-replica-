@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 from alembic import command
-from cryptography.fernet import Fernet
 
 from app.backup import backup_database, check_database, restore_database, run_daily_backup
 from app.db import alembic_config, connect_database, initialize_database
@@ -436,55 +435,10 @@ def test_remove_oss_migration_refuses_to_orphan_legacy_assets(tmp_path: Path) ->
         )
 
 
-def test_runtime_bootstrap_upgrades_an_existing_database_before_startup(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "bootstrap-upgrade.db"
-    command.upgrade(alembic_config(db_path), "017_generation_task_retry_lineage")
-    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-        conn.execute(
-            "INSERT INTO provider_settings (provider, encrypted_config) "
-            "VALUES ('oss', 'legacy-encrypted-value')"
-        )
-        conn.execute("UPDATE runtime_settings SET active_storage_provider = 'oss' WHERE id = 1")
-        conn.commit()
-
-    result = subprocess.run(
-        [sys.executable, "-m", "app.bootstrap"],
-        cwd=Path(__file__).resolve().parents[1],
-        env={
-            **os.environ,
-            "VIDEO_REPLICA_DB_PATH": str(db_path),
-            "VIDEO_REPLICA_SETTINGS_KEY": Fernet.generate_key().decode("ascii"),
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-        # The bootstrap logs Chinese messages; the default locale decoding
-        # (C/POSIX on CI runners) crashes the reader thread, whose death
-        # stalls the pipe and deadlocks the subprocess. Decode UTF-8 with
-        # replacement instead.
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    assert result.returncode == 0, result.stderr
-    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "081_oral_unit_price"
-        )
-        assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM provider_settings WHERE provider = 'oss'"
-            ).fetchone()[0]
-            == 0
-        )
-        assert (
-            conn.execute(
-                "SELECT active_storage_provider FROM runtime_settings WHERE id = 1"
-            ).fetchone()[0]
-            == "local"
-        )
+# CW-025: test_runtime_bootstrap_upgrades_an_existing_database_before_startup 已删除。
+# 原测试验证 SQLite bootstrap 升级（DB_PATH → alembic upgrade），CW-025 后
+# resolve_database_config() 全环境拒绝 DB_PATH，bootstrap 只支持 PG。
+# PG bootstrap 升级验证见 test_postgres_migrations.py。
 
 
 def test_alembic_revision_can_downgrade_to_base(tmp_path: Path) -> None:
