@@ -5,7 +5,10 @@ Usage (server/ directory):
     uv run python -m scripts.purge_idempotency_envelopes \
         --database-url postgresql://USER:PASSWORD@HOST:5432/DBNAME [--dry-run]
 
-The DSN defaults to the ``VIDEO_REPLICA_DATABASE_URL`` environment variable.
+The DSN resolves through ``app.db_pg.resolve_cli_pg_dsn`` (CW-057): the
+argument wins over ``VIDEO_REPLICA_DATABASE_URL``, and missing DSNs,
+``sqlite://`` URLs or ``VIDEO_REPLICA_DB_PATH`` leftovers fail closed with a
+fixed, credential-free message and never create a database file (PG-01).
 Output carries counts only — no business values, credentials or envelope
 contents are ever printed. Intended to run from the
 ``video-replica-maintenance`` systemd timer (deploy/systemd/), daily.
@@ -14,13 +17,13 @@ contents are ever printed. Intended to run from the
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import datetime
 
 import psycopg
 
 from app.customer_idempotency import count_expired_envelopes, purge_expired_envelopes
+from app.db_pg import CliDatabaseConfigError, resolve_cli_pg_dsn
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--database-url",
-        default=os.environ.get("VIDEO_REPLICA_DATABASE_URL", ""),
+        default="",
         help="PostgreSQL DSN (defaults to VIDEO_REPLICA_DATABASE_URL)",
     )
     parser.add_argument(
@@ -39,14 +42,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.database_url.strip():
-        print(
-            "error: --database-url or VIDEO_REPLICA_DATABASE_URL is required",
-            file=sys.stderr,
-        )
+    try:
+        database_url = resolve_cli_pg_dsn(args.database_url)
+    except CliDatabaseConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    with psycopg.connect(args.database_url) as conn:
+    with psycopg.connect(database_url) as conn:
         # The recovery window is decided on the server clock: writes, route
         # checks and this purge must all read the same PostgreSQL clock, or
         # host-clock drift shifts the window boundary (M2 review LOW).

@@ -211,6 +211,58 @@ def validate_customer_production(config: DatabaseConfig) -> None:
         )
 
 
+class CliDatabaseConfigError(RuntimeError):
+    """A maintenance/seed CLI received a database configuration PG-01 rejects.
+
+    Raised by :func:`resolve_cli_pg_dsn` before any connection attempt, so a
+    misconfigured command fails closed with a fixed, credential-free message
+    and never creates a database file (CW-057).
+    """
+
+
+def resolve_cli_pg_dsn(explicit: str | None = None) -> str:
+    """Resolve the PostgreSQL DSN for one non-HTTP CLI invocation (CW-057).
+
+    The single PG entry point for the maintenance/seed/admin CLI surface
+    (PG-01/PG-08): ``--database-url`` wins over the environment, and the
+    CW-025 fail-closed :func:`resolve_database_config` contract applies
+    verbatim when the argument is empty — a missing DSN, a ``sqlite://`` URL
+    or a leftover ``VIDEO_REPLICA_DB_PATH`` raises :class:`CliDatabaseConfigError`
+    instead of starting against SQLite or creating a database file.
+    """
+    candidate = (explicit or "").strip()
+    if not candidate:
+        try:
+            config = resolve_database_config()
+        except (RuntimeError, ValueError) as exc:
+            raise CliDatabaseConfigError(str(exc)) from exc
+        if config.mode is not DatabaseMode.POSTGRESQL or config.dsn is None:
+            raise CliDatabaseConfigError("maintenance/seed CLIs require PostgreSQL")
+        return config.dsn
+    # An explicit DSN must not silently coexist with a legacy DB_PATH leftover:
+    # resolve_database_config() rejects that combination for the runtime lane,
+    # and an ambiguous host configuration is an error, not a hint.
+    if os.environ.get(DB_PATH_ENV, "").strip():
+        raise CliDatabaseConfigError(
+            "customer edition requires PostgreSQL: "
+            f"{DB_PATH_ENV} is rejected in all environments "
+            f"(set {DATABASE_URL_ENV} to a postgresql:// DSN; "
+            "legacy SQLite tools are isolated by CW-060)"
+        )
+    if candidate.startswith(SQLITE_URL_SCHEMES):
+        raise CliDatabaseConfigError(
+            "customer edition requires PostgreSQL: sqlite:// URLs are rejected "
+            "for maintenance/seed CLIs (PG-01); pass a postgresql:// DSN via "
+            f"--database-url or {DATABASE_URL_ENV}"
+        )
+    if not candidate.startswith(PG_URL_SCHEMES):
+        scheme = candidate.split(":", 1)[0]
+        raise CliDatabaseConfigError(
+            f"unsupported database URL scheme: {scheme}:// (expected postgresql://)"
+        )
+    return candidate
+
+
 _pool: ConnectionPool | None = None
 _pool_lock = threading.Lock()
 

@@ -5,8 +5,11 @@ Usage (server/ directory):
     uv run python -m scripts.purge_expired_export_ciphertexts \
         --database-url postgresql://USER:PASSWORD@HOST:5432/DBNAME [--dry-run]
 
-The DSN defaults to the ``VIDEO_REPLICA_DATABASE_URL`` environment variable;
-the retention window past expiry defaults to 7 days and is tunable via
+The DSN resolves through ``app.db_pg.resolve_cli_pg_dsn`` (CW-057): the
+argument wins over ``VIDEO_REPLICA_DATABASE_URL``, and missing DSNs,
+``sqlite://`` URLs or ``VIDEO_REPLICA_DB_PATH`` leftovers fail closed with a
+fixed, credential-free message and never create a database file (PG-01).
+The retention window past expiry defaults to 7 days and is tunable via
 ``VIDEO_REPLICA_EXPORT_CIPHERTEXT_RETENTION_SECONDS``. Output carries counts
 only — no business values, ciphertext or credentials are ever printed.
 Intended to run from the ``video-replica-maintenance`` systemd timer
@@ -16,7 +19,6 @@ Intended to run from the ``video-replica-maintenance`` systemd timer
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import UTC, datetime
 
@@ -26,6 +28,7 @@ from app.activation_code_service import (
     count_expired_export_ciphertexts,
     purge_expired_export_ciphertexts,
 )
+from app.db_pg import CliDatabaseConfigError, resolve_cli_pg_dsn
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--database-url",
-        default=os.environ.get("VIDEO_REPLICA_DATABASE_URL", ""),
+        default="",
         help="PostgreSQL DSN (defaults to VIDEO_REPLICA_DATABASE_URL)",
     )
     parser.add_argument(
@@ -44,15 +47,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.database_url.strip():
-        print(
-            "error: --database-url or VIDEO_REPLICA_DATABASE_URL is required",
-            file=sys.stderr,
-        )
+    try:
+        database_url = resolve_cli_pg_dsn(args.database_url)
+    except CliDatabaseConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     now = datetime.now(UTC)
-    with psycopg.connect(args.database_url) as conn:
+    with psycopg.connect(database_url) as conn:
         if args.dry_run:
             eligible = count_expired_export_ciphertexts(conn, now=now)
             print(f"expired export ciphertexts eligible for purge: {eligible}")
