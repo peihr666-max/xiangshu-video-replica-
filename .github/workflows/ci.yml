@@ -8,12 +8,115 @@ on:
 
 permissions:
   contents: read
+  # select-runner queries the self-hosted runner list to decide the Linux gate's
+  # runs-on target (dual path: self-hosted when online, else GitHub-hosted).
+  actions: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Design (2026-09-10, CI localization speedup):
+# - `changes` computes which areas a PR touched so heavy, area-specific steps
+#   only run when relevant; on push to main everything is forced true.
+# - `select-runner` picks the Linux gate's runner: a self-hosted `video-replica`
+#   runner when one is online (PR CI then runs on the developer's own warm
+#   machine), otherwise GitHub-hosted ubuntu-24.04. Arch is intentionally NOT
+#   pinned so an arm64 macOS VM and an x64 Windows/WSL2 runner both qualify.
+# - `quality-linux` stays a SINGLE job (stable required-check name). Its pytest
+#   suite runs sharded (each shard against its own isolated PostgreSQL
+#   container via scripts/ci/run-pytest-shards.sh); the job-level postgres
+#   service was removed because the shard script self-manages PostgreSQL for
+#   hosted, self-hosted and local runs identically. The customer E2E step starts
+#   its own fixture afterwards (setup-backend.mjs derives PG_BASE from
+#   TEST_POSTGRESQL_URL and builds the customer_e2e database itself).
+# - `windows-nsis` always reports green: when no desktop/client change is
+#   detected its heavy build steps short-circuit (skip) and the job succeeds in
+#   seconds, keeping the required-check name stable without a 13-minute build.
+# Every job keeps the same-repo PR guard so fork PRs never execute untrusted
+# code on a self-hosted runner.
+
 jobs:
+  changes:
+    name: Detect changes
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      desktop: ${{ github.event_name == 'push' || steps.filter.outputs.desktop == 'true' }}
+      frontend: ${{ github.event_name == 'push' || steps.filter.outputs.frontend == 'true' }}
+      server: ${{ github.event_name == 'push' || steps.filter.outputs.server == 'true' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            desktop:
+              - 'client/src-tauri/**'
+              - 'client/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packaging_tools/**'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'client/**'
+              - 'package.json'
+              - 'package-lock.json'
+            server:
+              - 'server/**'
+              - 'scripts/**'
+              - 'package.json'
+
+  select-runner:
+    name: Select runner
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - name: Choose self-hosted runner when online, else GitHub-hosted
+        id: pick
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CI_FORCE_HOSTED: ${{ vars.CI_FORCE_HOSTED }}
+        with:
+          script: |
+            const hosted = '["ubuntu-24.04"]';
+            const selfHosted = '["self-hosted","linux","video-replica"]';
+            const forced = (process.env.CI_FORCE_HOSTED || '').trim().toLowerCase();
+            if (forced === 'true' || forced === '1' || forced === 'yes') {
+              core.info('CI_FORCE_HOSTED is set -> GitHub-hosted runner.');
+              core.setOutput('runner', hosted);
+              return;
+            }
+            try {
+              const runners = await github.paginate(
+                github.rest.actions.listSelfHostedRunnersForRepo,
+                { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+              );
+              const match = runners.find(r =>
+                r.status === 'online' &&
+                (r.labels || []).some(l => l.name === 'video-replica')
+              );
+              if (match) {
+                core.info(`Self-hosted runner online: ${match.name} -> ${selfHosted}`);
+                core.setOutput('runner', selfHosted);
+              } else {
+                core.info('No online video-replica runner -> GitHub-hosted runner.');
+                core.setOutput('runner', hosted);
+              }
+            } catch (err) {
+              core.warning(`Runner lookup failed (${err.message}); -> GitHub-hosted runner.`);
+              core.setOutput('runner', hosted);
+            }
+
   secret-scan:
     name: Secret scan
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -34,29 +137,14 @@ jobs:
   quality-linux:
     name: Linux quality gate
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
-    # 2026-08-26: raised 30 -> 60 — the full pytest suite (~1450 tests, PG
-    # service + 10k queue load) measures 9-27 minutes depending on the hosted
-    # runner's performance; a slow runner previously hit the 30-minute cap at
-    # ~92% and the gate was cancelled mid-run (not a test failure).
+    needs: [changes, select-runner]
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.runner) }}
+    # 2026-08-26: raised 30 -> 60 — the full pytest suite (PG fixture + 10k
+    # queue load) measures 9-27 minutes on a hosted runner depending on its
+    # performance; a slow runner previously hit the 30-minute cap mid-run. The
+    # suite is now sharded (see below), but the timeout stays generous to cover
+    # a cold self-hosted runner or a slow hosted one.
     timeout-minutes: 60
-    services:
-      # M0 review H2: run the PostgreSQL tests in CI instead of silently
-      # skipping them. Port/host/credentials mirror scripts/pg-fixture.sh so
-      # TEST_POSTGRESQL_URL stays identical locally and in CI.
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: testuser
-          POSTGRES_PASSWORD: testpass
-          POSTGRES_DB: customer_v3_test
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U testuser -d customer_v3_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     env:
       TEST_POSTGRESQL_URL: postgresql://testuser:testpass@localhost:5433/customer_v3_test
     steps:
@@ -112,17 +200,41 @@ jobs:
         run: npm ci
       - name: Install Python dependencies
         run: uv sync --project server --locked --group dev --python 3.12
-      - name: Run repository quality checks
-        run: npm run check
+      - name: Run static quality checks
+        # secret scan + client check (biome/tsc/vitest) + e2e lint + tauri
+        # (cargo fmt/check) + ruff + ruff format --check + mypy. This is the
+        # former `npm run check` minus its trailing full pytest, which now runs
+        # sharded in the next step. Always runs: backend changes must be gated.
+        run: npm run check:static
+      - name: Run sharded PostgreSQL pytest
+        # Each shard gets its own isolated PostgreSQL container (distinct name +
+        # host port), so the PG-touching test files never collide. Falls back to
+        # a single sequential pass when Docker is unavailable. Override the shard
+        # count per-runner with the CI_PYTEST_SHARDS repo variable (e.g. a warm
+        # self-hosted VM with more cores can use 6 or 8).
+        run: bash scripts/ci/run-pytest-shards.sh
+        env:
+          CI_PYTEST_SHARDS: ${{ vars.CI_PYTEST_SHARDS || 4 }}
+      - name: Start PostgreSQL fixture for E2E
+        if: needs.changes.outputs.frontend == 'true'
+        # The shard containers are torn down by the shard script; the customer
+        # E2E needs a PostgreSQL on TEST_POSTGRESQL_URL (5433) so setup-backend.mjs
+        # can build its own customer_e2e database.
+        run: bash scripts/pg-fixture.sh start
       - name: Install Playwright Chromium
+        if: needs.changes.outputs.frontend == 'true'
         run: npx playwright install chromium --with-deps
       - name: Run customer browser E2E
+        if: needs.changes.outputs.frontend == 'true'
         run: npm run test:customer-e2e
       - name: Run Rust tests
+        if: needs.changes.outputs.desktop == 'true'
         run: cargo test --manifest-path client/src-tauri/Cargo.toml --locked
       - name: Build web client
+        if: needs.changes.outputs.desktop == 'true'
         run: npm run build
       - name: Audit JavaScript dependencies
+        if: needs.changes.outputs.frontend == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -145,37 +257,61 @@ jobs:
 
             exit "$status"
           done
+      - name: Stop PostgreSQL fixture
+        if: always()
+        # Keep a persistent self-hosted runner clean between runs (idempotent on
+        # hosted runners, which are destroyed anyway).
+        run: bash scripts/pg-fixture.sh stop || true
 
   windows-nsis:
     name: Windows Tauri and NSIS
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: changes
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
+      - name: Detect desktop changes
+        shell: bash
+        env:
+          DESKTOP_CHANGED: ${{ needs.changes.outputs.desktop }}
+        # Always runs, so the job concludes SUCCESS (stable required-check name)
+        # even when every heavy step below short-circuits on a non-desktop PR.
+        # The flag is passed via env (not interpolated into the shell) per the
+        # workflow security guideline; it is a strict 'true'/'false' string.
+        run: echo "desktop=${DESKTOP_CHANGED} - when false, the NSIS build steps are skipped and this gate stays green."
       - name: Checkout repository
+        if: needs.changes.outputs.desktop == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up Node.js
+        if: needs.changes.outputs.desktop == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
       - name: Set up Rust
+        if: needs.changes.outputs.desktop == 'true'
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
           rustup default stable
       - name: Install JavaScript dependencies
+        if: needs.changes.outputs.desktop == 'true'
         run: npm ci
       - name: Check Tauri project
+        if: needs.changes.outputs.desktop == 'true'
         run: npm run check:tauri
       - name: Check customer cloud target without local sidecar
+        if: needs.changes.outputs.desktop == 'true'
         run: npm run check:tauri:customer
       - name: Build unsigned internal NSIS installer
+        if: needs.changes.outputs.desktop == 'true'
         run: npm run tauri:build -- --bundles nsis --no-sign --ci
       - name: Record internal installer SHA256
+        if: needs.changes.outputs.desktop == 'true'
         shell: pwsh
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
       - name: Archive unsigned internal NSIS installer locally
+        if: needs.changes.outputs.desktop == 'true'
         shell: pwsh
         env:
           LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts
@@ -194,6 +330,7 @@ jobs:
             ForEach-Object { "$($_.Hash) *$(Split-Path $_.Path -Leaf)" } |
             Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding utf8
       - name: Isolate customer NSIS output
+        if: needs.changes.outputs.desktop == 'true'
         shell: pwsh
         run: |
           $internalInstallers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
@@ -202,12 +339,14 @@ jobs:
           }
           $internalInstallers | Remove-Item -Force
       - name: Build unsigned customer cloud NSIS installer
+        if: needs.changes.outputs.desktop == 'true'
         run: npm run tauri:build:customer
         env:
           # Contract-only unsigned artifact. Release builds replace this
           # non-routable origin with the approved staging/production origin.
           VITE_API_BASE_URL: https://staging.example.invalid
       - name: Verify customer installer excludes local launchers
+        if: needs.changes.outputs.desktop == 'true'
         shell: pwsh
         run: |
           $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
@@ -234,9 +373,11 @@ jobs:
             throw "customer installer contains local launchers: $($forbidden.FullName -join ', ')"
           }
       - name: Record customer cloud installer SHA256
+        if: needs.changes.outputs.desktop == 'true'
         shell: pwsh
         run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
       - name: Archive unsigned customer cloud NSIS installer locally
+        if: needs.changes.outputs.desktop == 'true'
         shell: pwsh
         env:
           LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts

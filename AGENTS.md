@@ -31,7 +31,7 @@
 1. 从最新 main 切分支 `feat/customer-v3-tXX-短横线描述`；同一时间只开一个任务分支（多分支同改账本会连环冲突）。
 2. 测试先行：先写失败测试（红），再实现（绿）。
 3. push 前核对提交清单（防并发会话污染任务 PR）：先 `git fetch origin --prune`，再确认 `git log origin/main..HEAD --oneline` 中是且仅是本任务的提交；发现其他会话/他人的提交时，先摘出到独立分支（或与所有者确认处理方式），严禁混入任务 PR——squash 合并后外来提交将不可逆地进入 main（2026-08-22 曾有并发会话提交混入 PR #39）。push 后、合并前再核对一次 PR 的 Commits 列表。
-4. 全量验证零回归后提 PR：标题 `TXX: <英文摘要>`；三门禁 CI 全绿（secret 扫描 / Linux 质量门 / Windows NSIS）；受保护 main 仅接受 squash merge（所有者账号 phlong026）。
+4. 全量验证零回归后提 PR：**push 前必须先按 §验证命令「本地门禁前置原则」在本地把 Linux 质量门跑绿**（`npm run check:static` + `bash scripts/ci/run-pytest-shards.sh`，或顺序 `npm run check`；自托管 runner 在线时 PR CI 即本地跑，可免第二遍；Windows 走 WSL2，命令同一套）。标题 `TXX: <英文摘要>`；三门禁 CI 全绿（secret 扫描 / Linux 质量门 / Windows NSIS）；受保护 main 仅接受 squash merge（所有者账号 phlong026）。
 5. 同一 PR 内更新账本：任务清单任务状态 + 头部状态行 + §12 工作包状态、`docs/CUSTOMER-TASK-EVIDENCE-V3.md` 登记、`docs/evidence/TXX-EVIDENCE.md`（证据文件统一存放于 `docs/evidence/`，结构参照 `docs/evidence/T06-EVIDENCE.md`，含 §14 模板全文；2026-08-21 M0 评审 M8 起不再放仓库根目录）。
 6. 一个 PR 只承载一个任务；评审评论逐条实质修复后 resolve，不得当作流程噪音跳过。
 7. 需人工授权的动作（真实 ZPay / 付费 Provider / 生产 COS 变更 / 对外发码 / 灰度扩大 / 公网发布）必须先取得用户明确授权。
@@ -46,7 +46,16 @@
 
 ## 验证命令（分层：开发期快速反馈，任务收尾全量门禁）
 
-> **分层原则**：全量 pytest（账本口径 1446+ 用例，历史全绿耗时约 21–30 分钟）每任务只跑**一次**——收尾提交 PR 前，由第 3 步的 `npm run check` 统一承载（其脚本末尾已包含服务端全量 pytest；不要在第 2 步再单独跑一遍全量，否则一次收尾 = 两次全量）。开发期每轮迭代只跑受影响专项（秒级）。**严禁两个全量 pytest 实例同时打同一个 PG fixture**（各 PG 测试文件有独立库，但 5 个文件共享 `customer_v3_test`，并发会互踩造成假性失败——2026-08-23 T19 实测教训）。注意：`cargo test`、`npm audit`、客户浏览器 E2E 与 `npm run build` 四项**只在 CI 三门禁里执行**，本地 `npm run check` 不含——涉及 Rust/构建/依赖变更时以 CI 结果为准。
+> **分层原则**：全量 pytest（账本口径 1446+ 用例，历史全绿耗时约 21–30 分钟）每任务只跑**一次**——收尾提交 PR 前，由第 3 步的 `npm run check` 统一承载（其脚本末尾已包含服务端全量 pytest；不要在第 2 步再单独跑一遍全量，否则一次收尾 = 两次全量）。开发期每轮迭代只跑受影响专项（秒级）。**严禁两个全量 pytest 实例同时打同一个 PG fixture**（各 PG 测试文件有独立库，但 5 个文件共享 `customer_v3_test`，并发会互踩造成假性失败——2026-08-23 T19 实测教训）。注意：`cargo test`、`npm audit`、客户浏览器 E2E 与 `npm run build` 四项**只在 CI 三门禁里执行**，本地 `npm run check` 不含——涉及 Rust/构建/依赖变更时以 CI 结果为准。**并行 pytest 的正确姿势**：不要用两个终端各跑一份全量去打同一个 fixture；用 `bash scripts/ci/run-pytest-shards.sh`（或 `npm run check:sharded`），它给每片拉起**独立 PG 容器**（端口 5433+i，物理隔离，零库名冲突/零共享锁争用），4 片并行把 pytest 段从 ~16min 压到 ~6min（本机实测 2242 passed/1 skipped，与顺序全量逐一致）。
+
+### 本地门禁前置原则（每任务、每 worktree/分支强制，OS 无关）
+
+> **原则**：代码开发完 → CodeReview 自检通过后 → **push/开 PR 之前**，必须在本地把 Linux 质量门跑绿一次。macOS / Linux / Windows(WSL2) 用**同一套命令**（Windows 迁移见 `scripts/ci/self-hosted-runner/provision-windows-wsl2.md`）。
+
+- **必跑**：`npm run check:static`（secret + 前端 + e2e lint + tauri + ruff + ruff-format + mypy）+ `bash scripts/ci/run-pytest-shards.sh`（分片并行 pytest）。二者合起来 = 原 `npm run check` 全集，只是 pytest 改并行。仍可用 `npm run check`（顺序全量）作为等价回退。
+- **双路径豁免**：当自托管 runner（`scripts/ci/self-hosted-runner/`）在线时，PR 的 Linux 门就跑在你本机热缓存上——**PR CI 即本地跑**，可不再单独跑第二遍本地全量；runner 离线回退 GitHub 托管时，提交前必须本地跑绿一次。
+- 该原则卡在既有并行工作流的「CodeReview 自检（push 前）」→「push→CI」之间，不新增环节，只把本地门禁从建议升级为**强制**。
+
 
 ### 开发期（每任务每轮迭代，快）
 
@@ -60,20 +69,29 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy app
 
 ### 任务收尾（每任务一次，PR 前必须全绿）
 
+两条等价路径，二选一（都等价于 CI Linux 质量门；差异只在 pytest 顺序还是并行）：
+
+**路径 A — 顺序全量（原始，需手动起 fixture）**
 ```bash
 # 1) 先启动 PostgreSQL fixture（Docker PG16，端口 5433；脚本必须带子命令，无参数会打印 usage 并退出 1）
 scripts/pg-fixture.sh start
-
-# 2) 服务端专项复验（server/ 目录；全量 pytest 不在这一步跑——它由第 3 步统一承载，避免双跑；
+# 2) 服务端专项复验（server/ 目录；全量 pytest 不在这一步跑——由第 3 步统一承载，避免双跑；
 #    CW-007 硬门：fixture 未启动时 PG 套件失败而非 skip，缺库伪绿/缺库 skip 均不得声明 AUTOMATED_VERIFIED）
 uv run ruff check . && uv run ruff format --check . && uv run mypy app
-
-# 3) 全仓门禁（仓库根目录，等价于 CI Linux 质量门，覆盖前端/Tauri/服务端全套；
-#    其脚本末尾含服务端全量 pytest——这是每任务唯一的一次全量）
+# 3) 全仓门禁（仓库根目录，覆盖前端/Tauri/服务端全套；脚本末尾含服务端全量 pytest——每任务唯一的一次全量）
 npm run check
-
 # 收尾：scripts/pg-fixture.sh stop；DSN 覆盖用环境变量 TEST_POSTGRESQL_URL
 ```
+
+**路径 B — 静态检查 + 分片并行 pytest（更快，推荐；脚本自管 PG，勿手动起 fixture）**
+```bash
+# 静态门 + 4 片并行 pytest；每片独立 PG 容器（端口 5433+i），跑完自动清理。
+# 注意：不要先跑 scripts/pg-fixture.sh start——默认 fixture 占 5433 会与 shard-0 撞端口。
+npm run check:sharded
+# 等价拆开：npm run check:static && bash scripts/ci/run-pytest-shards.sh
+# 无 Docker 时脚本自动回退单进程顺序跑（等价路径 A 的 pytest 段）。
+```
+
 
 ## 环境变量备忘
 
