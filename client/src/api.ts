@@ -4229,7 +4229,7 @@ function generationRequestError(error: unknown, errorPrefix: string): Error {
     return new Error(`${errorPrefix}：请求超时，请重试`);
   }
   if (error instanceof TypeError) {
-    return new Error(`${errorPrefix}：网络连接失败，请检查本地服务`);
+    return new Error(`${errorPrefix}：网络连接失败，请检查网络后重试`);
   }
   return error instanceof Error ? error : new Error(errorPrefix);
 }
@@ -4262,7 +4262,7 @@ function analysisRequestError(error: unknown, errorPrefix: string): Error {
     return new Error(`${errorPrefix}：请求超时，请重试`);
   }
   if (error instanceof TypeError) {
-    return new Error(`${errorPrefix}：网络连接失败，请检查本地服务`);
+    return new Error(`${errorPrefix}：网络连接失败，请检查网络后重试`);
   }
   return error instanceof Error ? error : new Error(errorPrefix);
 }

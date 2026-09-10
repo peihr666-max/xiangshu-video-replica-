@@ -1476,9 +1476,15 @@ describe("generation workflow API", () => {
     await expect(createScriptVersion("project-1", input)).rejects.toThrow(
       "保存口播稿失败：请求超时，请重试",
     );
-    await expect(createScriptVersion("project-1", input)).rejects.toThrow(
-      "保存口播稿失败：网络连接失败，请检查本地服务",
+    const offlineError = await createScriptVersion("project-1", input).catch(
+      (caught: unknown) => caught,
     );
+    // CW-018: symmetric guard with the analysis-side test — lock the corrected
+    // cloud wording AND assert the misleading local-service prompt is gone.
+    expect((offlineError as Error).message).toBe(
+      "保存口播稿失败：网络连接失败，请检查网络后重试",
+    );
+    expect((offlineError as Error).message).not.toMatch(/本地服务/);
   });
 
   it("preserves the server error code on generation failures", async () => {
@@ -2263,6 +2269,26 @@ describe("startVideoAnalysis", () => {
     await expect(startVideoAnalysis("project-1", "asset-1")).rejects.toThrow(
       /参考视频不满足拆解要求/,
     );
+  });
+
+  it("maps an analysis transport failure to a cloud hint, never a local-service prompt (CW-018)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
+    );
+
+    const error = await startVideoAnalysis("project-1", "asset-1").catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Error);
+    // CW-018: the customer product is cloud-only (CW-015 fail-closed base,
+    // CW-021 removes the local backend), so a transport failure must guide the
+    // customer to check their network — matching the server's own cloud wording
+    // (“请检查网络后重试”) — and must never tell them to check a local service.
+    expect((error as Error).message).toBe(
+      "启动视频拆解失败：网络连接失败，请检查网络后重试",
+    );
+    expect((error as Error).message).not.toMatch(/本地服务/);
   });
 });
 
