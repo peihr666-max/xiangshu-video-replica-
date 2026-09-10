@@ -11,7 +11,6 @@ import {
   customerHeartbeat,
   customerLogin,
   customerLogout,
-  customerRecover,
   customerSwitch,
 } from "../api";
 import {
@@ -38,9 +37,6 @@ export interface CustomerCredentialStore {
   /** The stable device fingerprint (§14: generated once, read forever). */
   deviceInstanceId(): Promise<string>;
   devicePlatform(): string;
-  /** Only the desktop's registry-backed identity is durable enough to act as
-   * an unattended recovery proof. Browser/test stores opt out by default. */
-  readonly automaticRecovery?: boolean;
 }
 
 export type CustomerSessionConflict = {
@@ -56,6 +52,18 @@ export type CustomerSessionRuntime = {
   connectivity: "reachable" | "unreachable";
   lastHeartbeatAt: string;
   leaseExpiresAt: string | null;
+};
+
+/** The determinate result of a logout (CW-017 DoD: a network or storage
+ * failure must have an explicit outcome — never call a local-only logout a
+ * server release). ``serverReleased`` is true only when the server confirmed
+ * the release (2xx); a network/5xx failure leaves it false so the UI cannot
+ * claim a release that did not happen. ``credentialCleared`` is false when the
+ * local session-token vault write threw — a stale token stays on disk and the
+ * next login overwrites it. */
+export type CustomerLogoutOutcome = {
+  serverReleased: boolean;
+  credentialCleared: boolean;
 };
 
 export type CustomerActivationFormInput = {
@@ -93,6 +101,22 @@ function credentialStoreError(cause: unknown): CustomerApiError {
   });
 }
 
+/** CW-017: a logout whose server release or local credential clear failed must
+ * leave a VISIBLE, determinate result — never let a local-only logout look like
+ * a clean release. ``error`` is hook state, so it survives the workspace→login
+ * transition and LoginPage renders it (DoD: 网络或存储失败有明确结果). */
+function logoutFailureError(
+  failure: "server-release" | "credential-clear",
+): CustomerApiError {
+  return new CustomerApiError({
+    message:
+      failure === "server-release"
+        ? "本机已退出，但服务端未能确认释放会话，请检查网络后重试"
+        : "本机已退出，但清理本机会话凭据失败，请重试",
+    transportKind: "unknown",
+  });
+}
+
 /**
  * The customer session orchestrator (FE-02): boots from the credential
  * store, drives activate/login/logout, listens for the three lifecycle
@@ -125,7 +149,7 @@ export function useCustomerSession(
    * buttons. Failures stay silent — terminal outcomes arrive as the
    * lifecycle events, transient ones are retried by the next tick. */
   sendHeartbeatNow(): Promise<void>;
-  logout(): Promise<void>;
+  logout(): Promise<CustomerLogoutOutcome>;
   restartAfterExpiry(): void;
   restartAfterRevocation(): void;
 } {
@@ -256,61 +280,13 @@ export function useCustomerSession(
       if (cancelled) {
         return;
       }
-      if (deviceToken === null && store.automaticRecovery) {
-        setIsBusy(true);
-        try {
-          const response = await customerRecover({
-            deviceFingerprint: await store.deviceInstanceId(),
-            deviceName: "本机设备",
-            devicePlatform: store.devicePlatform(),
-            idempotencyKey: newIdempotencyKey(),
-          });
-          await store.saveActivation(
-            response.device_token,
-            response.session_token,
-          );
-          if (cancelled) {
-            return;
-          }
-          sessionTokenRef.current = response.session_token;
-          sessionGenerationRef.current += 1;
-          setSessionToken(response.session_token);
-          setUser({ userId: response.user_id, username: response.username });
-          noteLease(response.session_lease_expires_at);
-          dispatch({
-            type: "boot-check-completed",
-            hasDeviceCredential: false,
-          });
-          dispatch({ type: "activation-succeeded" });
-          return;
-        } catch (cause) {
-          if (cancelled) {
-            return;
-          }
-          dispatch({
-            type: "boot-check-completed",
-            hasDeviceCredential: false,
-          });
-          if (
-            cause instanceof CustomerApiError &&
-            cause.code === "ACTIVATION_UNAVAILABLE"
-          ) {
-            // A genuinely new/unbound computer belongs on first activation;
-            // the expected recovery miss is not an error banner.
-            return;
-          }
-          setError(
-            cause instanceof CustomerApiError
-              ? cause
-              : credentialStoreError(cause),
-          );
-          return;
-        } finally {
-          if (!cancelled) {
-            setIsBusy(false);
-          }
-        }
-      }
+      // CW-017: the unattended empty-code recovery lane is retired. The server
+      // deliberately refuses fingerprint-only recovery (activation_code_routes.py
+      // `if not code_digests: raise unavailable`; a leaked stable fingerprint is
+      // not a second authentication factor), so the empty-code probe could never
+      // succeed. A wiped install now falls through to the activation screen and
+      // recovers with the full code, which the server binds to the same
+      // fingerprint (recover-or-bind) — never an unattended boot probe.
       dispatch({
         type: "boot-check-completed",
         hasDeviceCredential: deviceToken !== null,
@@ -356,7 +332,7 @@ export function useCustomerSession(
       // or the customer lane would sit on the checking screen forever.
       bootstrappedRef.current = false;
     };
-  }, [establishSession, store, noteLease]);
+  }, [establishSession, store]);
 
   // The three lifecycle events (§10.1) arrive on window — dispatched by the
   // customer transport on any 401 that ends the session. Each one also does
@@ -592,18 +568,28 @@ export function useCustomerSession(
   }, [sendHeartbeat]);
 
   const logoutInFlightRef = useRef(false);
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (): Promise<CustomerLogoutOutcome> => {
     if (logoutInFlightRef.current) {
-      return;
+      // A concurrent second click does not re-run the release; report that it
+      // neither confirmed a server release nor cleared credentials itself.
+      return { serverReleased: false, credentialCleared: false };
     }
     logoutInFlightRef.current = true;
+    // Capture the generation this logout bumps to. If a new session is
+    // established while the backend logout is still in flight (a late logout),
+    // the tail below must not clobber it — DoD: a late logout never touches a
+    // new session.
+    const logoutGeneration = sessionGenerationRef.current + 1;
     try {
       const token = sessionTokenRef.current;
       sessionTokenRef.current = null;
-      sessionGenerationRef.current += 1;
+      sessionGenerationRef.current = logoutGeneration;
       latestHeartbeatRequestIdRef.current += 1;
       setError(null);
       setConflict(null);
+      // No live session token means there is nothing for the server to release;
+      // treat that as released rather than a swallowed failure.
+      let serverReleased = token === null;
       if (token !== null) {
         setIsBusy(true);
         try {
@@ -611,24 +597,42 @@ export function useCustomerSession(
             { kind: "session", token },
             { idempotencyKey: newIdempotencyKey() },
           );
+          serverReleased = true;
         } catch {
-          // The session is being discarded locally regardless; a failing
-          // logout (network/timeout) must still return the user to the login
-          // screen with the device credential intact.
+          // The session is discarded locally regardless, but a failing logout
+          // (network/timeout/5xx) must NOT be reported as a server release.
+          serverReleased = false;
         } finally {
           setIsBusy(false);
         }
       }
-      try {
-        await store.clearSessionToken();
-      } catch {
-        // A failing vault write must still return the user to the login screen;
-        // the stale session token stays on disk and the next login overwrites it.
+      let credentialCleared = false;
+      // Generation guard: only tear down local state when no newer session has
+      // taken over since this logout began (a late logout must not clobber it).
+      if (sessionGenerationRef.current === logoutGeneration) {
+        try {
+          await store.clearSessionToken();
+          credentialCleared = true;
+        } catch {
+          // A failing vault write still returns the user to the login screen;
+          // the stale token stays on disk and the next login overwrites it.
+          credentialCleared = false;
+        }
+        setSessionToken(null);
+        setUser(null);
+        setSessionRuntime(null);
+        dispatch({ type: "logout" });
+        // CW-017 DoD: a network or storage failure must have a VISIBLE result.
+        // The user lands on the login screen; surface why this was not a clean
+        // release so a local-only logout is never mistaken for a server one.
+        // ``error`` is hook state, so it survives the workspace→login switch.
+        if (!serverReleased) {
+          setError(logoutFailureError("server-release"));
+        } else if (!credentialCleared) {
+          setError(logoutFailureError("credential-clear"));
+        }
       }
-      setSessionToken(null);
-      setUser(null);
-      setSessionRuntime(null);
-      dispatch({ type: "logout" });
+      return { serverReleased, credentialCleared };
     } finally {
       logoutInFlightRef.current = false;
     }
@@ -683,7 +687,6 @@ type StoredCustomerCredentials = {
 
 function tauriCustomerCredentialStore(): CustomerCredentialStore {
   return {
-    automaticRecovery: true,
     async loadDeviceCredentialToken() {
       const stored = await invoke<StoredCustomerCredentials | null>(
         "customer_load_credentials",
@@ -736,7 +739,6 @@ function inMemoryCustomerCredentialStore(): CustomerCredentialStore {
   let sessionToken: string | null = null;
   const instanceId = newIdempotencyKey();
   return {
-    automaticRecovery: false,
     async loadDeviceCredentialToken() {
       return deviceToken;
     },

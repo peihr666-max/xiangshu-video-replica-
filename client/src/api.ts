@@ -5096,21 +5096,6 @@ export async function customerActivate(
   return body;
 }
 
-export type CustomerRecoverInput = Omit<
-  CustomerActivateInput,
-  "activationCode"
->;
-
-/** Recover a previously bound desktop from its durable opaque fingerprint.
- * The server only succeeds while the associated activation code, account and
- * device binding are all active; first-time users still need an activation
- * code. The empty code is an explicit wire-level recovery signal. */
-export function customerRecover(
-  input: CustomerRecoverInput,
-): Promise<CustomerActivationResponse> {
-  return customerActivate({ ...input, activationCode: "" });
-}
-
 export type CustomerLoginResult = {
   /** 201 established / recovered, 200 renewed (the server sets it). */
   status: 200 | 201;

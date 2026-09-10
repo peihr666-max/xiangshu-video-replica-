@@ -6,6 +6,7 @@ import type {
 } from "./api";
 import type {
   CustomerCredentialStore,
+  CustomerLogoutOutcome,
   CustomerSessionRuntime,
 } from "./customer/useCustomerSession";
 
@@ -31,7 +32,7 @@ export type WorkspaceShellProps = {
     onDismissPairing: (pairingId: string) => void;
     onProfileUpdated: (profile: CustomerProfile) => void;
     onRefreshProfile: () => Promise<void>;
-    onLogout: () => Promise<void>;
+    onLogout: () => Promise<CustomerLogoutOutcome>;
     onRefreshDevices: () => Promise<void>;
     onResetActivationCode: () => Promise<CustomerActivationCodeReset>;
     onUnbind: (deviceId: string) => void;
