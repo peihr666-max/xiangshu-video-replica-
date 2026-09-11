@@ -633,15 +633,10 @@ def test_worker_main_dispatches_to_pg_forever_loop(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         worker_module, "run_forever_pg", lambda **kwargs: calls.append("run_forever_pg")
     )
-    monkeypatch.setattr(
-        worker_module, "run_forever", lambda **kwargs: calls.append("run_forever"), raising=True
-    )
-    monkeypatch.setattr(
-        worker_module,
-        "run_worker_once",
-        lambda *args, **kwargs: calls.append("run_worker_once"),
-        raising=True,
-    )
+    # CW-030 removed the SQLite worker entry points entirely: the SQLite
+    # forever loop cannot run in any mode because it no longer exists.
+    assert not hasattr(worker_module, "run_forever")
+    assert not hasattr(worker_module, "run_sqlite_worker_round")
 
     worker_module.main()
 
