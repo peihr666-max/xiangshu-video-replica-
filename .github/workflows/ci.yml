@@ -214,6 +214,16 @@ jobs:
         # former `npm run check` minus its trailing full pytest, which now runs
         # sharded in the next step. Always runs: backend changes must be gated.
         run: npm run check:static
+      - name: Assert shard manifests cover every test file
+        # CI-7 (CW-061): fail-closed coverage guard, ordered BEFORE the sharded
+        # pytest. run-pytest-shards.sh only executes the files named in the
+        # committed shard manifests; without this assertion a stale split makes
+        # CI silently skip any test file added since the manifests were last
+        # regenerated (the CW-044 §18.2 fail-open gap: 13 files never ran, and
+        # the gap grows by one per new test file). Non-zero exit lists the
+        # uncovered/ghost entries and fails the gate; regenerate the manifests
+        # with `python3 scripts/ci/build-test-shards.py --shards 4` to clear it.
+        run: python3 scripts/ci/build-test-shards.py --check-coverage
       - name: Run sharded PostgreSQL pytest
         # Each shard gets its own isolated PostgreSQL container (distinct name +
         # host port), so the PG-touching test files never collide. Falls back to

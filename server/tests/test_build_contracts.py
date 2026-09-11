@@ -183,3 +183,27 @@ def test_packaged_local_backend_launchers_are_removed() -> None:
         "127.0.0.1:8000",
     ):
         assert marker not in lib_rs, f"lib.rs must not keep local sidecar code: {marker}"
+
+
+def test_ci_shard_coverage_guard_is_wired() -> None:
+    # CW-061 (SH-6 + CI-7): the shard-coverage guard must be wired into both the
+    # runner and the workflow so a stale committed manifest fails the build
+    # instead of silently skipping tests.
+    #
+    # Background: run-pytest-shards.sh only runs the files named in the committed
+    # shard manifests; before CW-061 it never checked that those manifests cover
+    # every server/tests/test_*.py, so 13 recent CW test files never ran in CI
+    # (CW-044 §18.2). The guard is fail-closed and independent of every prerequisite.
+    runner = (REPO_ROOT / "scripts" / "ci" / "run-pytest-shards.sh").read_text(encoding="utf-8")
+    # SH-6: resolve_manifests must fail-closed via --check-coverage before adopting
+    # the committed manifests.
+    assert "build-test-shards.py" in runner
+    assert "--check-coverage" in runner
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # CI-7: a standalone coverage-assertion step, ordered BEFORE the sharded pytest.
+    assert "build-test-shards.py --check-coverage" in workflow
+    assert "Assert shard manifests cover every test file" in workflow
+    assert workflow.index("build-test-shards.py --check-coverage") < workflow.index(
+        "bash scripts/ci/run-pytest-shards.sh"
+    )
