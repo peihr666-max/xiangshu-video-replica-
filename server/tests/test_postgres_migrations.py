@@ -32,9 +32,10 @@ from sqlalchemy.engine import make_url
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # PR#103(df7020c) 引入 pg_test_kit.require_pg_or_explicit_skip 模块级 autouse fixture，
 # 取代旧的 SKIP_REASON 常量（已无引用，随 main 基线删除）。
-# HEAD_REVISION 取本分支链尾 081：本分支 = main(→080) + 人物库线 081_oral_unit_price，
-# 迁移后 alembic 版本头即 081，9 处 assert version == HEAD_REVISION 依赖此值。
-HEAD_REVISION = "081_oral_unit_price"
+# HEAD_REVISION 取本分支链尾 082：本分支 = main(→081) + CW-068 发布账号授权
+# 082_publish_accounts，迁移后 alembic 版本头即 082，9 处 assert version ==
+# HEAD_REVISION 依赖此值。
+HEAD_REVISION = "082_publish_accounts"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(

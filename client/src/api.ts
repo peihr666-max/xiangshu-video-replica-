@@ -5725,3 +5725,58 @@ export function fetchViralVideoStatistics(
     VIRAL_STATISTICS_TIMEOUT_MS,
   );
 }
+
+// ---------------------------------------------------------------------------
+// C5 发布模块第一阶段：平台发布账号（/api/studio/publish/accounts）
+// 发布记录（/records）属第二阶段，本轮不提供调用。
+// ---------------------------------------------------------------------------
+
+export type PublishAccountItem = {
+  id: string;
+  platform: "douyin" | "wechat_channels";
+  display_name: string;
+  status: "connected" | "invalid";
+  last_verified_at: string | null;
+  error_message: string | null;
+  security_sdk_required: boolean;
+  created_at: string;
+};
+
+export async function listPublishAccounts(): Promise<PublishAccountItem[]> {
+  return requestApiJson<{ accounts: PublishAccountItem[] }>(
+    "/api/studio/publish/accounts",
+    "读取发布账号失败",
+  ).then((payload) => payload.accounts);
+}
+
+export async function createPublishAccount(input: {
+  platform: PublishAccountItem["platform"];
+  display_name: string;
+  cookie: string;
+  security_sdk?: string;
+}): Promise<PublishAccountItem> {
+  return requestApiJson<PublishAccountItem>(
+    "/api/studio/publish/accounts",
+    "连接发布账号失败",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function deletePublishAccount(accountId: string): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `/api/studio/publish/accounts/${encodeURIComponent(accountId)}`,
+    "删除发布账号失败",
+    { method: "DELETE" },
+  );
+}
+
+export async function verifyPublishAccount(accountId: string): Promise<void> {
+  await requestApiJson<{ submitted: boolean }>(
+    `/api/studio/publish/accounts/${encodeURIComponent(accountId)}/verify`,
+    "发起登录态校验失败",
+    { method: "POST" },
+  );
+}

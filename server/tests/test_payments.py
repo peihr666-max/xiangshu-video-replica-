@@ -20,7 +20,8 @@ from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.internal_accounts import create_user, issue_token
 from app.main import app
-from app.payment_routes import get_zpay_order_query_client
+from app.payment_provider import MerchantConfig, OrderQueryError
+from app.payment_routes import get_zpay_provider
 from app.settings import SettingsRepository
 from app.zpay import (
     ZPayDeploymentConfig,
@@ -409,6 +410,20 @@ class FakeZPayQueryClient:
         self.result = result
         self.calls: list[str] = []
 
+    # CW-066 Protocol 桩：路由在 query_order 前会读取 provider 的配置，
+    # fake 的 query_order 直接 del 这两个参数；merchant 需带渠道守卫用的
+    # allowed_channels（fake 结果固定走 alipay 渠道）。
+    def load_merchant_config(self, conn: object) -> MerchantConfig:
+        del conn
+        return MerchantConfig(
+            provider="zpay",
+            raw={},
+            allowed_channels=("alipay", "wechat_native"),
+        )
+
+    def load_deployment_config(self) -> object:
+        return None
+
     def query_order(
         self,
         *,
@@ -434,7 +449,7 @@ def test_control_sync_keeps_unpaid_order_pending(payment_context: PaymentTestCon
             response_digest="a" * 64,
         )
     )
-    app.dependency_overrides[get_zpay_order_query_client] = lambda: fake
+    app.dependency_overrides[get_zpay_provider] = lambda: fake
 
     response = payment_context.client.post(
         f"/api/control/recharge-orders/{ORDER_NO}/sync",
@@ -471,7 +486,7 @@ def test_control_sync_paid_result_uses_the_same_credit_service(
             response_digest="b" * 64,
         )
     )
-    app.dependency_overrides[get_zpay_order_query_client] = lambda: fake
+    app.dependency_overrides[get_zpay_provider] = lambda: fake
     from app import payment_routes
 
     original = payment_routes.confirm_recharge_payment
@@ -511,7 +526,7 @@ def test_control_sync_rejects_missing_forged_or_business_identity(
     headers: dict[str, str],
 ) -> None:
     fake = FakeZPayQueryClient(ZPayOrderQueryResult(False, ORDER_NO, None, None, None, "c" * 64))
-    app.dependency_overrides[get_zpay_order_query_client] = lambda: fake
+    app.dependency_overrides[get_zpay_provider] = lambda: fake
 
     response = payment_context.client.post(
         f"/api/control/recharge-orders/{ORDER_NO}/sync",
@@ -526,8 +541,8 @@ def test_control_sync_rejects_missing_forged_or_business_identity(
 def test_control_sync_surfaces_redacted_query_failure_without_crediting(
     payment_context: PaymentTestContext,
 ) -> None:
-    fake = FakeZPayQueryClient(ZPayOrderQueryError("query failed", status_code=504))
-    app.dependency_overrides[get_zpay_order_query_client] = lambda: fake
+    fake = FakeZPayQueryClient(OrderQueryError("query failed", status_code=504))
+    app.dependency_overrides[get_zpay_provider] = lambda: fake
 
     response = payment_context.client.post(
         f"/api/control/recharge-orders/{ORDER_NO}/sync",
@@ -738,7 +753,7 @@ def test_control_sync_requires_write_contract_and_audits_the_attempt(
 ) -> None:
     """A4（2026-09-02 评估）：手动查单必须带 confirm/reason/幂等键并留审计."""
     fake = FakeZPayQueryClient(ZPayOrderQueryResult(False, ORDER_NO, None, None, None, "c" * 64))
-    app.dependency_overrides[get_zpay_order_query_client] = lambda: fake
+    app.dependency_overrides[get_zpay_provider] = lambda: fake
 
     missing_reason = payment_context.client.post(
         f"/api/control/recharge-orders/{ORDER_NO}/sync",

@@ -82,6 +82,12 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # assigned to CW-043, reset per test and migrated to alembic head.
         "cw043_analytics_test",
         "cw043_viral_import_test",
+        # CW-068 C5 发布管理第一阶段（账号授权）：one dedicated database for
+        # the 发布账号 TEST-PG suite (test_publish_accounts.py) — accounts CRUD /
+        # 凭据不回传 / Fernet 密文落库 / 用户隔离 / verify 租约与 finalize /
+        # FOR UPDATE SKIP LOCKED 并发抢占，reset per test and migrated to
+        # alembic head so publish_accounts (082_publish_accounts) is present.
+        "cw068_publish_accounts_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):

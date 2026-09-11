@@ -10,10 +10,12 @@ import {
   createGenerationTaskPreviewUrl,
   createMaterialUploadIntent,
   createProject,
+  createPublishAccount,
   createScriptFromAudioTask,
   createScriptVersion,
   createVideoUploadIntent,
   defaultBatchProvider,
+  deletePublishAccount,
   downloadMaterialAsset,
   type GenerationBatch,
   type GenerationBatchInput,
@@ -38,6 +40,7 @@ import {
   listOralTasksPage,
   listOralVoices,
   listProjects,
+  listPublishAccounts,
   listSimpleCharacterLibraryPage,
   listStudioSavedScripts,
   listViralVideos,
@@ -46,6 +49,7 @@ import {
   type OralAvatarRecord,
   type OralTaskRecord,
   type Project,
+  type PublishAccountItem,
   readAnalysisPayload,
   resolveMaterials,
   retryOralTaskArchive,
@@ -58,6 +62,7 @@ import {
   uploadMaterial,
   uploadReferenceVideo,
   type ViralVideoItem,
+  verifyPublishAccount,
 } from "../api";
 import { createDraft } from "./state";
 import type {
@@ -66,6 +71,7 @@ import type {
   StudioData,
   StudioDraft,
   StudioPerson,
+  StudioPublishAccount,
   StudioScript,
   StudioStats,
   StudioTask,
@@ -1466,4 +1472,59 @@ export async function runReplicaGeneration(
   const batch = await createGenerationBatch(projectId, request);
   clearFrozenReplicaRequest(prepared);
   return batch;
+}
+
+// ---------------------------------------------------------------------------
+// C5 发布模块第一阶段：平台发布账号连接与登录态校验
+// 发布记录（草稿持久化 / 真实发布提交）属第二阶段，本轮不提供调用。
+// ---------------------------------------------------------------------------
+
+export const PUBLISH_PLATFORM_LABELS: Record<
+  StudioPublishAccount["platform"],
+  "抖音" | "视频号"
+> = { douyin: "抖音", wechat_channels: "视频号" };
+
+function studioPublishAccountFromApi(
+  item: PublishAccountItem,
+): StudioPublishAccount {
+  return {
+    id: item.id,
+    platform: item.platform,
+    displayName: item.display_name,
+    status: item.status,
+    lastVerifiedAt: item.last_verified_at,
+    errorMessage: item.error_message,
+    securitySdkRequired: item.security_sdk_required,
+    createdAt: item.created_at,
+  };
+}
+
+export async function loadPublishAccounts(): Promise<StudioPublishAccount[]> {
+  const accounts = await listPublishAccounts();
+  return accounts.map(studioPublishAccountFromApi);
+}
+
+export async function connectPublishAccount(input: {
+  platform: StudioPublishAccount["platform"];
+  displayName: string;
+  cookie: string;
+  securitySdk?: string;
+}): Promise<StudioPublishAccount> {
+  const created = await createPublishAccount({
+    platform: input.platform,
+    display_name: input.displayName,
+    cookie: input.cookie,
+    ...(input.securitySdk ? { security_sdk: input.securitySdk } : {}),
+  });
+  return studioPublishAccountFromApi(created);
+}
+
+export async function removePublishAccount(accountId: string): Promise<void> {
+  await deletePublishAccount(accountId);
+}
+
+export async function requestPublishAccountVerify(
+  accountId: string,
+): Promise<void> {
+  await verifyPublishAccount(accountId);
 }
