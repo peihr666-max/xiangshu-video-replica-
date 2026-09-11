@@ -181,7 +181,7 @@ describe("CW-019 customer entry contract (source-level)", () => {
     // 无样式 HTML 渲染（历史实测：品牌 SVG 以 1264px 原始尺寸铺满首屏，
     // 表单被推出首屏之外）。
     expect(readSource("./RootApp.tsx")).toMatch(
-      /import\s+"\.\s*\/customer\/customer-access\.css";/
+      /import\s+"\.\s*\/customer\/customer-access\.css";/,
     );
   });
 
@@ -190,16 +190,19 @@ describe("CW-019 customer entry contract (source-level)", () => {
     // 其类规则原依赖 styles.css（客户制品不加载）。拆出的 legacy-panels.css
     // 必须随该挂载点加载，否则深创作面板在生产客户包里是无样式 HTML。
     expect(readSource("./studio/LiveWorkspacePanel.tsx")).toMatch(
-      /import\s+"\.\.\s*\/legacy-panels\.css";/
+      /import\s+"\.\.\s*\/legacy-panels\.css";/,
     );
   });
 
   it("客户侧拆分样式不得包含管理域选择器", () => {
     // CW-019 延伸：拆分产物只服务客户 lane，任何 .admin- 选择器进入客户
     // 制品都算管理域样式泄漏。横幅注释也不得出现该字面量，避免误命中。
-    for (const file of ["./customer/customer-access.css", "./legacy-panels.css"]) {
+    for (const file of [
+      "./customer/customer-access.css",
+      "./legacy-panels.css",
+    ]) {
       expect(readSource(file), `${file} 不得包含管理域选择器`).not.toMatch(
-        /\.admin-/
+        /\.admin-/,
       );
     }
   });

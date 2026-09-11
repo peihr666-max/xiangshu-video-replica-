@@ -375,85 +375,85 @@ button.nav-button {
   margin-top: 26px;
 }
 @media (min-height: 900px) and (min-width: 721px) {
-.customer-access-brand {
+  .customer-access-brand {
     min-height: 136px;
   }
-.customer-access-brand img {
+  .customer-access-brand img {
     width: 82px;
     height: 82px;
   }
-.customer-access-body {
+  .customer-access-body {
     padding-top: 32px;
     padding-bottom: 38px;
   }
-.customer-access-lead {
+  .customer-access-lead {
     margin-top: 16px;
     margin-bottom: 30px;
   }
-.customer-access-form {
+  .customer-access-form {
     gap: 20px;
   }
-.customer-access-form input {
+  .customer-access-form input {
     height: 62px;
   }
-.customer-access-form button,
-.customer-access-card--login .customer-access-body > button {
+  .customer-access-form button,
+  .customer-access-card--login .customer-access-body > button {
     min-height: 68px;
   }
-.customer-access-footer {
+  .customer-access-footer {
     padding-top: 28px;
     padding-bottom: 32px;
   }
 }
 @media (max-height: 700px) and (min-width: 721px) {
-.customer-access-shell {
+  .customer-access-shell {
     padding: 16px 24px;
   }
-.customer-access-card {
+  .customer-access-card {
     transform: scale(0.84);
   }
 }
 @media (max-width: 720px) {
-.customer-access-shell {
+  .customer-access-shell {
     padding: 20px;
   }
-.customer-access-card {
+  .customer-access-card {
     border-radius: 14px;
   }
-.customer-access-brand {
+  .customer-access-brand {
     min-height: 104px;
     padding: 18px 28px;
   }
-.customer-access-brand img {
+  .customer-access-brand img {
     width: 58px;
     height: 58px;
   }
-.customer-access-brand__name strong {
+  .customer-access-brand__name strong {
     font-size: 27px;
   }
-.customer-access-brand__name small {
+  .customer-access-brand__name small {
     font-size: 19px;
   }
-.customer-access-body {
+  .customer-access-body {
     padding: 24px 28px 22px;
   }
-.customer-access-body h1 {
+  .customer-access-body h1 {
     font-size: 27px;
   }
-.customer-access-lead {
+  .customer-access-lead {
     margin: 10px 0 20px;
   }
-.customer-access-form {
+  .customer-access-form {
     gap: 14px;
   }
-.customer-access-form input {
+  .customer-access-form input {
     height: 54px;
   }
-.customer-access-form button,
-.customer-access-card--login .customer-access-body > button {
+  .customer-access-form button,
+  .customer-access-card--login .customer-access-body > button {
     min-height: 56px;
   }
-.customer-access-footer {
+  .customer-access-footer {
     padding: 17px 28px 19px;
   }
 }
@@ -512,8 +512,8 @@ button.danger-button:not(:disabled):hover {
   background: #3a1c26;
 }
 @media (max-width: 640px) {
-.login-card,
-.empty-state {
+  .login-card,
+  .empty-state {
     padding: 28px;
   }
 }
@@ -1074,44 +1074,44 @@ button.table-action-button--danger {
   background: #27151c;
 }
 @media (max-width: 720px) {
-.wallet-summary-grid,
-.recharge-presets,
-.custom-recharge-form {
+  .wallet-summary-grid,
+  .recharge-presets,
+  .custom-recharge-form {
     grid-template-columns: minmax(0, 1fr);
   }
-.wallet-section,
-.wallet-summary-card {
+  .wallet-section,
+  .wallet-summary-card {
     padding: 16px;
   }
-.recharge-dialog {
+  .recharge-dialog {
     align-items: start;
     padding: 14px;
   }
-.recharge-dialog__panel {
+  .recharge-dialog__panel {
     padding: 18px;
   }
-.recharge-dialog__presets,
-.recharge-dialog__chooser form,
-.recharge-dialog__payment {
+  .recharge-dialog__presets,
+  .recharge-dialog__chooser form,
+  .recharge-dialog__payment {
     grid-template-columns: minmax(0, 1fr);
   }
-.recharge-dialog__qr {
+  .recharge-dialog__qr {
     width: min(300px, 100%);
     justify-self: center;
   }
-.customer-profile__hero,
-.customer-profile__license,
-.customer-profile__replacement,
-.pairing-approval-card,
-.device-management-page__header,
-.device-management-page__footer {
+  .customer-profile__hero,
+  .customer-profile__license,
+  .customer-profile__replacement,
+  .pairing-approval-card,
+  .device-management-page__header,
+  .device-management-page__footer {
     align-items: stretch;
     flex-direction: column;
   }
-.customer-profile__metrics,
-.customer-profile__account,
-.customer-profile__account form,
-.device-slot-grid {
+  .customer-profile__metrics,
+  .customer-profile__account,
+  .customer-profile__account form,
+  .device-slot-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -553,7 +553,7 @@
   font-size: 12.5px;
 }
 @media (prefers-reduced-motion: reduce) {
-.pipeline-skeleton__bars span {
+  .pipeline-skeleton__bars span {
     animation: none;
   }
 }
@@ -1574,7 +1574,7 @@
   opacity: 1;
 }
 @media (hover: none) {
-.batch-history-card__actions {
+  .batch-history-card__actions {
     height: auto;
     opacity: 1;
   }
@@ -2269,7 +2269,7 @@
   font-size: 11px;
 }
 @media (prefers-reduced-motion: reduce) {
-.video-stage-step--active .video-stage-step__dot {
+  .video-stage-step--active .video-stage-step__dot {
     animation: none;
   }
 }
@@ -2282,135 +2282,135 @@
   font-size: 13px;
 }
 @media (max-width: 1180px) {
-.task-records-layout {
+  .task-records-layout {
     grid-template-columns: 1fr;
   }
-.task-detail-grid {
+  .task-detail-grid {
     grid-template-columns: 1fr;
   }
-.analysis-workspace-grid {
+  .analysis-workspace-grid {
     grid-template-columns: 1fr;
   }
-.character-selection {
+  .character-selection {
     min-height: auto;
   }
 }
 @media (max-width: 900px) {
-.source-frame-options {
+  .source-frame-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-.first-frame-options,
-.character-reference-options {
+  .first-frame-options,
+  .character-reference-options {
     grid-template-columns: 1fr;
   }
-.source-frame-option img,
-.source-frame-placeholder {
+  .source-frame-option img,
+  .source-frame-placeholder {
     aspect-ratio: 16 / 9;
   }
-.video-stage-result-grid {
+  .video-stage-result-grid {
     grid-template-columns: 1fr;
   }
-.video-stage-summary {
+  .video-stage-summary {
     width: min(100%, 440px);
     margin-inline: auto;
   }
-.video-stage-summary dl {
+  .video-stage-summary dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 640px) {
-.source-frame-summary {
+  .source-frame-summary {
     align-items: flex-start;
     flex-direction: column;
     gap: 10px;
   }
-.source-frame-options {
+  .source-frame-options {
     grid-template-columns: 1fr;
   }
-.task-records {
+  .task-records {
     padding: 0;
   }
-.video-stage-header,
-.video-stage-footer {
+  .video-stage-header,
+  .video-stage-footer {
     align-items: stretch;
     flex-direction: column;
   }
-.video-stage-header__actions {
+  .video-stage-header__actions {
     justify-content: flex-start;
   }
-.video-stage-title-row {
+  .video-stage-title-row {
     align-items: flex-start;
     flex-direction: column;
   }
-.video-stage-summary dl {
+  .video-stage-summary dl {
     grid-template-columns: 1fr;
   }
-.video-stage-steps {
+  .video-stage-steps {
     overflow-x: auto;
     justify-content: flex-start;
     padding-bottom: 6px;
   }
-.video-stage-info {
+  .video-stage-info {
     justify-content: space-between;
   }
-.video-stage-tech dl {
+  .video-stage-tech dl {
     min-width: 0;
   }
-.section-heading,
-.task-item {
+  .section-heading,
+  .task-item {
     align-items: flex-start;
     flex-direction: column;
   }
-.batch-input-row,
-.provider-grid,
-.runtime-fields,
-.provider-card[data-provider="cos"] .field-stack,
-.shot-time-grid,
-.shot-field-grid,
-.generation-source-grid,
-.generation-parameter-grid,
-.prompt-diff {
+  .batch-input-row,
+  .provider-grid,
+  .runtime-fields,
+  .provider-card[data-provider="cos"] .field-stack,
+  .shot-time-grid,
+  .shot-field-grid,
+  .generation-source-grid,
+  .generation-parameter-grid,
+  .prompt-diff {
     grid-template-columns: 1fr;
   }
-.generation-actions,
-.paid-task-warning {
+  .generation-actions,
+  .paid-task-warning {
     align-items: stretch;
     flex-direction: column;
   }
-.generation-actions > button,
-.generation-block > button {
+  .generation-actions > button,
+  .generation-block > button {
     width: 100%;
   }
-.source-frame-toolbar {
+  .source-frame-toolbar {
     align-items: stretch;
     flex-direction: column;
   }
-.source-frame-toolbar > button {
+  .source-frame-toolbar > button {
     margin-top: 0;
   }
-.analysis-summary {
+  .analysis-summary {
     align-items: flex-start;
     flex-direction: column;
   }
-.task-result-heading,
-.task-result-actions {
+  .task-result-heading,
+  .task-result-actions {
     align-items: stretch;
     flex-direction: column;
     min-width: 0;
     width: 100%;
   }
-.task-result-actions button {
+  .task-result-actions button {
     width: 100%;
     max-width: 100%;
     overflow-wrap: anywhere;
     white-space: normal;
   }
-.task-resolution-controls {
+  .task-resolution-controls {
     grid-template-columns: 1fr;
   }
-.task-resolution-controls button,
-.paid-regeneration-controls > button,
-.task-paid-regeneration > button {
+  .task-resolution-controls button,
+  .paid-regeneration-controls > button,
+  .task-paid-regeneration > button {
     width: 100%;
   }
 }
@@ -2894,41 +2894,41 @@
   font-size: 12px;
 }
 @media (max-width: 1200px) {
-.character-preview-list {
+  .character-preview-list {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 @media (max-width: 900px) {
-.character-preview-list {
+  .character-preview-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-.character-scene-grid {
+  .character-scene-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 720px) {
-.simple-character-upload-form {
+  .simple-character-upload-form {
     grid-template-columns: minmax(0, 1fr);
   }
-.simple-character-upload__intro {
+  .simple-character-upload__intro {
     flex-direction: column;
     gap: 4px;
   }
-.character-lightbox {
+  .character-lightbox {
     padding: 16px;
   }
-.character-scene-panel {
+  .character-scene-panel {
     min-width: 0;
   }
-.character-scene-panel__head {
+  .character-scene-panel__head {
     align-items: stretch;
     flex-direction: column;
   }
-.character-scene-form,
-.character-scene-grid {
+  .character-scene-form,
+  .character-scene-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-.character-scene-form label {
+  .character-scene-form label {
     grid-column: 1;
   }
 }
@@ -2937,10 +2937,10 @@
   color: var(--gold);
 }
 @media (max-width: 720px) {
-.first-frame-selection {
+  .first-frame-selection {
     padding: 16px;
   }
-.project-appearance-summary > div {
+  .project-appearance-summary > div {
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
