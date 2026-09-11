@@ -75,6 +75,13 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "cw059_billing_test",
         "cw059_task_test",
         "cw059_rbac_test",
+        # CW-043 audit implementation (Segment 4+): one dedicated database each
+        # for the 数据看板 analytics matrix (test_cw043_analytics_pg_matrix.py)
+        # and the 爆款导入 lease/attempt matrix (test_cw043_viral_import_pg.py).
+        # Both fill the ⚠️partial gaps CW043-PG-COVERAGE-MATRIX §5.1.1 #8/#20
+        # assigned to CW-043, reset per test and migrated to alembic head.
+        "cw043_analytics_test",
+        "cw043_viral_import_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):
