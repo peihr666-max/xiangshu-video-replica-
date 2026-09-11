@@ -58,6 +58,9 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # CW-057 maintenance/seed CLI PG entry: dedicated database for the
         # gate1 seed (migrate → seed → pristine-refusal) contract.
         "cw057_gate1_seed_test",
+        # CW-058 content/asset domain matrix: one dedicated database for the
+        # 内容/版本/工作台/素材/人物/爆款 TEST-PG matrix (truncated per test).
+        "cw058_content_asset_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):

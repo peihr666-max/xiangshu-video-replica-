@@ -145,6 +145,17 @@ def review_character_asset(
     return get_character_asset_review(conn, review_id)
 
 
+def _review_order_token(conn: BusinessConnection) -> str:
+    """Append-only 插入序伪列，按通道选择。
+
+    审核历史是只增不改的表，「最新一次裁决」依赖插入序打平同一
+    ``created_at`` 的行：SQLite 用 ``rowid``；PostgreSQL 没有 ``rowid``，
+    ``ctid`` 是官方对应的物理插入序伪列。CW-058 之前 PG 通道上任何审核
+    历史查询/发布路径都会因 ``column "rowid" does not exist`` 直接失败。
+    """
+    return "ctid" if conn.is_postgres else "rowid"
+
+
 def list_character_asset_reviews(
     conn: BusinessConnection,
     *,
@@ -161,10 +172,10 @@ def list_character_asset_reviews(
     )
     read_character_asset_row(conn, character_asset_id)
     rows = conn.execute(
-        """
+        f"""
         SELECT * FROM character_asset_reviews
         WHERE character_asset_id = %s
-        ORDER BY created_at, rowid
+        ORDER BY created_at, {_review_order_token(conn)}
         """,
         (character_asset_id,),
     ).fetchall()
@@ -420,22 +431,23 @@ def load_selected_character_assets(
     selected: list[SelectedCharacterAsset] = []
     for view_type in required_views:
         character_asset_id = selected_asset_ids[view_type]
+        latest_order = _review_order_token(conn)
         row = conn.execute(
-            """
+            f"""
             SELECT character_asset.*, asset.storage_uri, asset.sha256,
                    asset.size_bytes, asset.content_type,
                    (
                        SELECT review.id
                        FROM character_asset_reviews AS review
                        WHERE review.character_asset_id = character_asset.id
-                       ORDER BY review.created_at DESC, review.rowid DESC
+                       ORDER BY review.created_at DESC, review.{latest_order} DESC
                        LIMIT 1
                    ) AS review_id,
                    (
                        SELECT review.decision
                        FROM character_asset_reviews AS review
                        WHERE review.character_asset_id = character_asset.id
-                       ORDER BY review.created_at DESC, review.rowid DESC
+                       ORDER BY review.created_at DESC, review.{latest_order} DESC
                        LIMIT 1
                    ) AS review_decision
             FROM character_assets AS character_asset
