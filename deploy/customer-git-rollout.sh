@@ -32,7 +32,11 @@ SITE="/www/wwwroot/video.zszhj.cn"
 # place before the first release built by this script is rolled out, otherwise
 # the VERIFY step below fails on purpose and the run rolls back.
 ADMIN_SITE="${SITE}-admin"
-COMPOSE="$ROOT/compose.yaml"
+# CW-032: the compose topology is a registered in-repo artifact
+# (deploy/customer/compose.yaml — the single default delivery package), not an
+# unregistered /opt/video-replica-candidate host file. Legacy hosts may still
+# redirect via CUSTOMER_COMPOSE=, but no longer need to.
+COMPOSE="${CUSTOMER_COMPOSE:-$SOURCE/deploy/customer/compose.yaml}"
 CUSTOMER_ENV="/etc/video-replica/customer.env"
 SERVICE_USER="video-replica"
 PUBLIC_ORIGIN="https://video.zszhj.cn"
@@ -208,6 +212,8 @@ EXPECTED_DB_HEAD=$(printf '%s\n' "$HEADS_OUTPUT" | awk '/\(head\)/ {print $1}' |
 mark BACKUP
 mkdir -p "$BACKUP"
 cp -a "$COMPOSE" "$BACKUP/compose-before.yaml"
+# CW-032: pin the exact topology artifact this release rolled out with.
+sha256sum "$COMPOSE" > "$BACKUP/compose.sha256"
 printf '%s\n' "$OLD_IMAGE" > "$BACKUP/previous-image.txt"
 printf '%s\n' "$RELEASE_SHA" > "$BACKUP/release-sha.txt"
 printf '%s\n' "$RELEASE_TREE" > "$BACKUP/release-tree.txt"
