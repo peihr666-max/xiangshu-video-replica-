@@ -50,10 +50,11 @@ type AuthPendingAction = "" | "login" | "exchange" | "recover";
 // ADMIN_SESSION_CONTEXT_CHANGED 是仅有的两个无中文映射的登录路径错误码，
 // 未经映射时管理员会看到服务端英文原文；overrides 只作用于本组件，
 // 不改 api.admin.ts 全局映射（其余页面文案已被既有测试钉住）。
+// ADMIN-LOGIN-POLISH-20260912：会话绑定已按 B1·方案② 收窄为仅浏览器
+// 环境（见 #53），文案同步去掉"网络"语义。
 const loginErrorOverrides = {
   RATE_LIMITED: "登录尝试过于频繁，请稍后再试。",
-  ADMIN_SESSION_CONTEXT_CHANGED:
-    "检测到登录环境变化（网络或浏览器），请重新登录。",
+  ADMIN_SESSION_CONTEXT_CHANGED: "检测到浏览器环境变化，请重新登录。",
 };
 
 export type AdminTab =
@@ -167,6 +168,7 @@ export function AdminApp() {
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [recoveryCredential, setRecoveryCredential] = useState("");
+  const [recoveryTrimmed, setRecoveryTrimmed] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [authPending, setAuthPending] = useState<AuthPendingAction>("");
@@ -223,6 +225,7 @@ export function AdminApp() {
       setShowPassword(false);
       setAuthPending("");
       setRecoveryCredential("");
+      setRecoveryTrimmed(false);
       setNewPassword("");
       setConfirmPassword("");
       setIsNavigationOpen(
@@ -349,6 +352,7 @@ export function AdminApp() {
       setActor(result.actor);
       setLoginUsername(result.actor.username);
       setRecoveryCredential("");
+      setRecoveryTrimmed(false);
       setAuthPhase("password-setup");
     } catch (cause) {
       setError(
@@ -421,7 +425,7 @@ export function AdminApp() {
             <h1>运营管理后台</h1>
             <p>统一管理客户、激活码、设备、资金与系统配置的运营控制台。</p>
             <ul className="admin-login__points">
-              <li>会话绑定当前浏览器与网络环境，环境变化后需重新登录</li>
+              <li>会话绑定当前浏览器环境，更换浏览器后需重新登录</li>
               <li>登录与敏感操作全部记入审计日志</li>
               <li>管理员与审计员分角色授权，审计员只读</li>
             </ul>
@@ -509,10 +513,21 @@ export function AdminApp() {
                     ref={recoveryCredentialRef}
                     type="password"
                     value={recoveryCredential}
-                    onChange={(event) =>
-                      setRecoveryCredential(event.target.value)
-                    }
+                    onChange={(event) => {
+                      setRecoveryCredential(event.target.value);
+                      setRecoveryTrimmed(
+                        event.target.value !== event.target.value.trim(),
+                      );
+                    }}
                   />
+                  <small className="admin-login__hint">
+                    凭据以 ASX1. 开头。
+                  </small>
+                  {recoveryTrimmed ? (
+                    <small className="admin-login__hint">
+                      已自动忽略首尾空白。
+                    </small>
+                  ) : null}
                 </div>
                 <button
                   className="admin-login__submit"
