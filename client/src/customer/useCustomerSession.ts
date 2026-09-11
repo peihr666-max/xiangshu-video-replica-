@@ -142,6 +142,9 @@ export function useCustomerSession(
    * fresh session token (§14). Never invoked without a prior
    * ``conflict-detected`` transition — no silent switching. */
   switchSession(): Promise<void>;
+  /** Failure message of the last explicit switch (FE-03: visible failure);
+   * null until a switch actually fails. */
+  switchError: string | null;
   /** The user declined the takeover: back to the login screen, the other
    * device keeps the lease. */
   cancelSessionSwitch(): void;
@@ -151,6 +154,11 @@ export function useCustomerSession(
   sendHeartbeatNow(): Promise<void>;
   logout(): Promise<CustomerLogoutOutcome>;
   restartAfterExpiry(): void;
+  /** Local-only expiry: the workspace reports a lost session without a
+   * transport lifecycle event (missing local token). Runs the same cleanup
+   * as a transport expiry and lands on the expired terminal screen — never
+   * a silent no-op from the workspace screen. */
+  expireSessionLocally(): void;
   restartAfterRevocation(): void;
 } {
   const [screen, dispatch] = useReducer(
@@ -162,6 +170,10 @@ export function useCustomerSession(
   const [conflict, setConflict] = useState<CustomerSessionConflict | null>(
     null,
   );
+  // The switch-failure message for the conflict dialog. Independent from the
+  // global `error` — entering binding-conflict always leaves a 409 error in
+  // `error`, and the dialog must not show "switch failed" before a switch.
+  const [switchError, setSwitchError] = useState<string | null>(null);
   // The in-memory session token powers heartbeat/logout. The persistent
   // copy lives only in the injected store; this state is intentionally not
   // persisted anywhere else.
@@ -518,6 +530,7 @@ export function useCustomerSession(
   const switchSession = useCallback(async () => {
     setIsBusy(true);
     setError(null);
+    setSwitchError(null);
     try {
       const deviceToken = await store.loadDeviceCredentialToken();
       if (deviceToken === null) {
@@ -548,6 +561,14 @@ export function useCustomerSession(
       setError(
         cause instanceof CustomerApiError ? cause : credentialStoreError(cause),
       );
+      // F-01 review（FE-03）：切换失败必须可见。独立于全局 error——进入
+      // binding-conflict 的两条路径（boot/retryLogin）本身会留下 409 的
+      // error，若对话框复用它，用户没点切换就会先看到"切换失败"。
+      setSwitchError(
+        cause instanceof CustomerApiError
+          ? cause.message
+          : "本机凭据读写失败，请稍后重试。",
+      );
     } finally {
       setIsBusy(false);
     }
@@ -555,6 +576,7 @@ export function useCustomerSession(
 
   const cancelSessionSwitch = useCallback(() => {
     setError(null);
+    setSwitchError(null);
     setConflict(null);
     dispatch({ type: "conflict-cancelled" });
   }, []);
@@ -644,6 +666,24 @@ export function useCustomerSession(
     dispatch({ type: "restart-login" });
   }, []);
 
+  // Local-only expiry path: the workspace lost its session (missing local
+  // token, or a 401 whose lifecycle event never reached this hook) and would
+  // otherwise stay on a silently dead workspace screen. Same cleanup as the
+  // transport-driven expiry, then the §4.2 expired terminal screen offers the
+  // deterministic recovery path.
+  const expireSessionLocally = useCallback(() => {
+    void store.clearSessionToken();
+    sessionTokenRef.current = null;
+    sessionGenerationRef.current += 1;
+    latestHeartbeatRequestIdRef.current += 1;
+    setSessionToken(null);
+    setUser(null);
+    setConflict(null);
+    setSessionRuntime(null);
+    setError(null);
+    dispatch({ type: "session-expired" });
+  }, [store]);
+
   const restartAfterRevocation = useCallback(() => {
     setError(null);
     setConflict(null);
@@ -660,10 +700,12 @@ export function useCustomerSession(
     activate,
     retryLogin,
     switchSession,
+    switchError,
     cancelSessionSwitch,
     sendHeartbeatNow,
     logout,
     restartAfterExpiry,
+    expireSessionLocally,
     restartAfterRevocation,
   };
 }

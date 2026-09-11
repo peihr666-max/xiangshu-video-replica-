@@ -132,6 +132,10 @@ function CustomerSessionShell({
       ) : (
         <SessionConflictDialog
           conflict={session.conflict}
+          // FE-03: a failed switch must be visible. Independent switchError —
+          // the 409 that opened this screen also sits in session.error, and
+          // reusing it would show "切换失败" before any switch attempt.
+          error={session.switchError}
           onCancel={session.cancelSessionSwitch}
           // Return the switch promise: the dialog awaits onSwitch to keep
           // its buttons disabled, so a discarded promise would let a second
@@ -149,7 +153,12 @@ function CustomerSessionShell({
           onManualHeartbeat={() => void session.sendHeartbeatNow()}
           onLogout={session.logout}
           store={store}
-          onSessionExpired={session.restartAfterExpiry}
+          // F-01 review (P0-3): the workspace calls this when it lost the
+          // session locally (missing token / 401 without a lifecycle event).
+          // restartAfterExpiry is a guarded no-op from the workspace screen —
+          // the dedicated local expiry lands on the expired terminal instead.
+          onSessionExpired={session.expireSessionLocally}
+          onPairDevice={onPairDevice}
         />
       );
     case "session-expired":

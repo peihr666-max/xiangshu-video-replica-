@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
  */
 export function SessionConflictDialog({
   conflict,
+  error,
   onCancel,
   onSwitch,
 }: {
@@ -18,6 +19,9 @@ export function SessionConflictDialog({
     leaseExpiresAt: string;
     slotNo: number;
   };
+  /** 切换失败的原因（FE-03：失败必须可见，不得让按钮静默恢复可点）。
+   * 由 RootApp 从会话 hook 的 error 状态传入。 */
+  error?: string | null;
   onCancel: () => void;
   onSwitch: () => void;
 }): React.JSX.Element {
@@ -97,6 +101,12 @@ export function SessionConflictDialog({
         <p className="action-message">
           切换后另一台设备将立即下线。是否切换到本设备继续使用？
         </p>
+
+        {error ? (
+          <p className="form-error" role="alert">
+            切换失败：{error}。可重试，或取消后稍后再试。
+          </p>
+        ) : null}
       </div>
 
       <footer className="dialog-actions">

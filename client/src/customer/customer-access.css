@@ -1019,8 +1019,19 @@ button.danger-button:not(:disabled):hover {
   gap: 12px;
   min-height: 150px;
 }
-.device-slot-card__empty a {
+.device-slot-card__empty a,
+.device-slot-card__empty button {
+  background: none;
+  border: none;
+  padding: 0;
   color: #e0b45e;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.device-slot-card__empty a:hover,
+.device-slot-card__empty button:hover {
+  text-decoration: underline;
 }
 .device-management-page__footer {
   border-top: 1px solid var(--line);
