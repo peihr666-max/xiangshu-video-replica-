@@ -1,4 +1,7 @@
 import { useState } from "react";
+// 老组件样式（F-01/P0-1 修复）：这些面板的类规则原在 styles.css（仅管理/内部壳
+// 加载），客户制品必须随本挂载点自带样式。
+import "../legacy-panels.css";
 import { AnalysisWorkspace } from "../AnalysisWorkspace";
 import type { CurrentUser, GenerationBatch, Project } from "../api";
 import { CharacterLibrary } from "../CharacterLibrary";

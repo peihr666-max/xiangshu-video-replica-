@@ -1,4 +1,7 @@
 import { lazy, Suspense, useMemo, useState } from "react";
+// 客户 lane 基础与账户屏样式（F-01/P0-1 修复）：客户制品不含 styles.css，
+// 全局 reset、:root 令牌与激活/登录/配对等屏样式必须随本入口加载。
+import "./customer/customer-access.css";
 import { ActivationPage } from "./customer/ActivationPage";
 import { CustomerPairingFlow } from "./customer/CustomerPairingFlow";
 import { CustomerWorkspace } from "./customer/CustomerWorkspace";

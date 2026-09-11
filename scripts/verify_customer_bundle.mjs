@@ -307,6 +307,47 @@ function countNeedleFiles(textArtifacts, needles) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 断言 3（F-01/P0-1）：客户制品 CSS 必须自带账户屏与老组件样式。
+// styles.css 只服务管理端与内部壳，客户制品不含它；激活/登录/配对屏样式在
+// customer/customer-access.css（RootApp 引入），深创作面板样式在
+// legacy-panels.css（LiveWorkspacePanel 引入）。若这两类锚点在客户 CSS 产物
+// 中缺席，说明拆分文件被移除或引入链断裂——历史上这正是激活页无样式渲染
+// （品牌 SVG 铺满首屏）的根因。同时禁止任何 .admin- 选择器进入客户 CSS。
+// ─────────────────────────────────────────────────────────────────────────────
+const REQUIRED_CUSTOMER_CSS_NEEDLES = Object.freeze([
+  ".customer-access", // 账户屏样式锚点
+  ".stage-block", // 拆解工作台老组件样式锚点
+  ".recharge-dialog", // 客户充值弹窗样式锚点（收款主链路）
+]);
+const FORBIDDEN_CUSTOMER_CSS_NEEDLE = ".admin-";
+
+function checkCustomerStyleCoverage(textArtifacts) {
+  const problems = [];
+  const cssArtifacts = textArtifacts.filter(({ rel }) => {
+    const base = rel.split("/").pop() ?? "";
+    return rel.startsWith("assets/") && base.endsWith(".css");
+  });
+  if (cssArtifacts.length === 0) {
+    problems.push("assets/ 下没有任何 CSS 产物（客户样式未打包）");
+    return problems;
+  }
+  for (const needle of REQUIRED_CUSTOMER_CSS_NEEDLES) {
+    const hit = cssArtifacts.some(({ text }) => text.includes(needle));
+    if (!hit) {
+      problems.push(
+        `客户 CSS 产物缺少必需锚点 "${needle}"（账户屏/老组件样式未随包）`,
+      );
+    }
+  }
+  for (const { rel, text } of cssArtifacts) {
+    if (text.includes(FORBIDDEN_CUSTOMER_CSS_NEEDLE)) {
+      problems.push(`客户 CSS 产物包含管理域选择器 "${FORBIDDEN_CUSTOMER_CSS_NEEDLE}"：${rel}`);
+    }
+  }
+  return problems;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 产物清单 + 哈希：SHA-256 + 字节数 + POSIX 相对路径，按路径字典序稳定输出。
 // ─────────────────────────────────────────────────────────────────────────────
 function buildManifest(absPaths, baseDir) {
@@ -515,9 +556,9 @@ function main() {
 
   const relPaths = manifest.map((entry) => entry.rel);
   const nameHits = checkForbiddenFileNames(relPaths);
-  const contentHits = checkForbiddenContent(
-    collectTextArtifacts(absPaths, customerDistDir),
-  );
+  const customerTexts = collectTextArtifacts(absPaths, customerDistDir);
+  const contentHits = checkForbiddenContent(customerTexts);
+  const styleCoverageProblems = checkCustomerStyleCoverage(customerTexts);
 
   if (nameHits.length > 0 || contentHits.length > 0) {
     console.error("");
@@ -547,6 +588,13 @@ function main() {
         }
       }
     }
+    if (styleCoverageProblems.length > 0) {
+      console.error("");
+      console.error("── 客户样式覆盖断言失败（F-01/P0-1）──");
+      for (const problem of styleCoverageProblems) {
+        console.error(`  ${problem}`);
+      }
+    }
     console.error("");
     console.error(
       "[verify_customer_bundle] 客户所有 chunk 不得含内部/管理入口（CW-019 验收底线）；" +
@@ -558,6 +606,9 @@ function main() {
   console.log("");
   console.log(
     "[verify_customer_bundle] ✅ 客户构建制品通过管理/内部代码排除断言。",
+  );
+  console.log(
+    `[verify_customer_bundle] 客户样式覆盖：账户屏/老组件锚点齐备，管理域选择器 0 命中（F-01/P0-1）。`,
   );
   console.log(
     `[verify_customer_bundle] 扫描文件数：${manifest.length}；禁止文件名命中：0；禁止特征串命中：0。`,

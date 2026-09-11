@@ -1,14 +1,5 @@
-/* 客户制品的入口图不含 styles.css（其引入方 App.tsx 仅测试可达），
-   浏览器默认 body margin/白底会露出 8px 白缝；此处的全局重置必须随本文件提供。 */
-html,
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100dvh;
-  background: #080909;
-  color-scheme: dark;
-}
-
+/* 全局 reset 已随 customer/customer-access.css（RootApp 引入）提供，
+   客户制品不含 styles.css，此处不再重复。 */
 .studio-shell {
   --studio-bg: #080909;
   --studio-panel: #101111;
