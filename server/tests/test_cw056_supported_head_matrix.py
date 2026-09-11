@@ -1,4 +1,4 @@
-"""CW-056 — 受支持发布 head → 最终 head 的 PostgreSQL 升级矩阵（PG-04）。
+﻿"""CW-056 — 受支持发布 head → 最终 head 的 PostgreSQL 升级矩阵（PG-04）。
 
 规格来源：``outputs/customer-cloud-convergence-analysis-2026-09-08/v3/客户版收敛剩余任务清单与验收完工标准-V3.md``
 §CW-056。权威上游依据（均为 owner 已签认的冻结证据，本文件不自行推导版本清单）：
@@ -57,7 +57,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→080 + 081）。
-HEAD_REVISION = "081_oral_unit_price"
+HEAD_REVISION = "086_remove_device_slot_constraints"
 
 # 最后一个已发布（受支持）起点。其后的 056–081 尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，

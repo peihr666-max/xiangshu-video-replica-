@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import sqlite3
@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "081_oral_unit_price"
+    assert version == "086_remove_device_slot_constraints"
     assert {
         "characters",
         "project_main_characters",

@@ -1,4 +1,4 @@
-"""T16 / T18 / DEV-01 — two current device slots, credentials and unbind history,
+﻿"""T16 / T18 / DEV-01 — two current device slots, credentials and unbind history,
 the admin verification lane.
 
 Fail-first tests for the frozen files ``server/app/customer_device_service.py``
@@ -142,10 +142,10 @@ def test_keyed_digest_is_deterministic_and_key_sensitive() -> None:
     assert first != other_value, "a different token must change the digest"
 
 
-def test_max_slots_constant_is_two() -> None:
-    from app.customer_device_service import MAX_DEVICE_SLOTS
+def test_default_max_devices_constant_is_two() -> None:
+    from app.customer_device_service import _DEFAULT_MAX_DEVICES
 
-    assert MAX_DEVICE_SLOTS == 2
+    assert _DEFAULT_MAX_DEVICES == 2
 
 
 def test_enroll_openapi_contract_declares_both_response_shapes() -> None:
@@ -2862,7 +2862,7 @@ def test_admin_device_events_downgrade_guard(route_state: str) -> None:
         command.downgrade(config, "037_device_pairing_requests")
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "081_oral_unit_price"
+    assert version == "086_remove_device_slot_constraints"
 
 
 # ---------------------------------------------------------------------------
@@ -2939,7 +2939,7 @@ def test_pairing_downgrade_refuses_once_rows_exist(route_state: str) -> None:
     # the version stays at the current head.
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "081_oral_unit_price"
+    assert version == "086_remove_device_slot_constraints"
 
     # An emptied table downgrades symmetrically, and upgrading back restores
     # the schema for any rerun of this module. Revision 038 added the
