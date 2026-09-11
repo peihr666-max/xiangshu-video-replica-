@@ -1,4 +1,4 @@
-"""
+﻿"""
 T03 / DB-01 - PostgreSQL 16 fixture tests (canonical path per V3 frozen file mapping).
 
 Verifies: the local/CI PG fixture is reachable, is PostgreSQL 16, and supports
@@ -32,9 +32,9 @@ from sqlalchemy.engine import make_url
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # PR#103(df7020c) 引入 pg_test_kit.require_pg_or_explicit_skip 模块级 autouse fixture，
 # 取代旧的 SKIP_REASON 常量（已无引用，随 main 基线删除）。
-# HEAD_REVISION 取本分支链尾 081：本分支 = main(→080) + 人物库线 081_oral_unit_price，
-# 迁移后 alembic 版本头即 081，9 处 assert version == HEAD_REVISION 依赖此值。
-HEAD_REVISION = "081_oral_unit_price"
+# HEAD_REVISION 取本分支链尾 083：本分支 = main(→081) + CW-067 083_recharge_orders_multi_provider，
+# 迁移后 alembic 版本头即 083，9 处 assert version == HEAD_REVISION 依赖此值。
+HEAD_REVISION = "083_recharge_orders_multi_provider"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(
@@ -1151,7 +1151,8 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             )
 
         with pytest.raises(RuntimeError, match="cannot downgrade 026"):
-            # Fourteen steps from head: 054->053 (empty free-grant layer,
+            # Fifteen steps from head: 083->081 (empty wechat columns,
+            # symmetric) then 054->053 (empty free-grant layer,
             # symmetric on a fresh database) then 039->038 (empty admin adjustments
             # layer, symmetric) then 038->037 (empty admin device operations
             # layer, symmetric) then 037->036 (empty device pairing layer,
@@ -1174,8 +1175,8 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
-        # downgrade becomes possible again. Twelve steps
-        # (038->037->036->035->034->033->032->029->028->031->027->026->025)
+        # downgrade becomes possible again. Thirteen steps
+        # (083->081->038->037->036->035->034->033->032->029->028->031->027->026->025)
         # restore the 022 constraint set the final assertion exercises.
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute("DELETE FROM recharge_orders WHERE provider != 'zpay'")

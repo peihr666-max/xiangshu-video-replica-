@@ -1,4 +1,4 @@
-"""T10 / ACT-01 — activation code catalog schema (revision 027).
+﻿"""T10 / ACT-01 — activation code catalog schema (revision 027).
 
 Fail-first PostgreSQL tests for the frozen file
 ``server/migrations/versions/027_activation_code_catalog.py``: batches,
@@ -28,7 +28,7 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
-_HEAD_REVISION = "081_oral_unit_price"
+_HEAD_REVISION = "083_recharge_orders_multi_provider"
 
 
 def _pg_dsn() -> str:
