@@ -12,13 +12,16 @@ describe("SessionConflictDialog (FE-03 / T30)", () => {
   function renderWithProps({
     onCancel,
     onSwitch,
+    error,
   }: {
     onCancel?: () => void;
     onSwitch?: () => void;
+    error?: string | null;
   }) {
     return render(
       <SessionConflictDialog
         conflict={baseMockConflict}
+        error={error}
         onCancel={onCancel ?? vi.fn()}
         onSwitch={onSwitch ?? vi.fn()}
       />,
@@ -51,6 +54,17 @@ describe("SessionConflictDialog (FE-03 / T30)", () => {
     renderWithProps({ onCancel: mockOnCancel });
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(mockOnCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("切换失败原因必须可见（F-01 review：不得静默恢复可点）", () => {
+    renderWithProps({ error: "网络连接失败，请检查网络后重试" });
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("切换失败：网络连接失败，请检查网络后重试");
+  });
+
+  it("无错误时不渲染告警位", () => {
+    renderWithProps({});
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("has confirm switch button that calls onSwitch callback", () => {

@@ -34,6 +34,7 @@ export function CustomerWorkspace({
   onLogout,
   store,
   onSessionExpired,
+  onPairDevice,
 }: {
   user: CustomerWorkspaceUser;
   sessionRuntime?: CustomerSessionRuntime | null;
@@ -41,6 +42,8 @@ export function CustomerWorkspace({
   onLogout: () => Promise<CustomerLogoutOutcome>;
   store: CustomerCredentialStore;
   onSessionExpired: () => void;
+  /** 设备管理页"绑定第二台设备"的页内导航（F-01 review：不得用 <a href> 整页重载）。 */
+  onPairDevice?: () => void;
 }) {
   const [devices, setDevices] = useState<CustomerDeviceListResponse | null>(
     null,
@@ -323,6 +326,7 @@ export function CustomerWorkspace({
             onSessionExpired,
             sessionRuntime,
             onManualHeartbeat,
+            onPairDevice,
           }}
         />
       ) : (

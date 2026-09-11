@@ -29,16 +29,19 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
 
   const mockOnUnbind = vi.fn();
   const mockOnRecharge = vi.fn();
+  const mockOnPairDevice = vi.fn();
 
   function renderWithProps(props?: {
     onUnbind?: () => void;
     onRecharge?: () => void;
+    onPairDevice?: () => void;
   }) {
     render(
       <DeviceManagementPage
         devices={mockDevices}
         isOnline={true}
         leaseExpiresAt={new Date(Date.now() + 3600_000).toISOString()} // 1 小时后过期
+        onPairDevice={props?.onPairDevice ?? mockOnPairDevice}
         onUnbind={props?.onUnbind ?? mockOnUnbind}
         onRecharge={props?.onRecharge ?? mockOnRecharge}
       />,
@@ -59,6 +62,18 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
   it("displays masked device name without exposing full fingerprint", () => {
     renderWithProps();
     expect(screen.getByText(/iPhone •••• AB12/i)).toBeInTheDocument();
+  });
+
+  it("空槽位的绑定入口走页内回调而不是 <a href> 整页导航（F-01 review）", () => {
+    renderWithProps();
+    const bindButton = screen.getByRole("button", { name: "绑定第二台设备" });
+    expect(bindButton).toBeInTheDocument();
+    // Tauri 桌面壳里 <a href> 会整页重载、丢失状态机；必须是回调按钮
+    expect(
+      screen.queryByRole("link", { name: "绑定第二台设备" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(bindButton);
+    expect(mockOnPairDevice).toHaveBeenCalledTimes(1);
   });
 
   it("has unbind button for each device slot that calls onUnbind callback", async () => {

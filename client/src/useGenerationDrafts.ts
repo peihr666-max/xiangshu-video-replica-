@@ -76,6 +76,9 @@ type UseGenerationDraftsInput = {
   referenceSelectionId: string | null;
   shotCardVersionId: string;
   sourceAssetId: string | null;
+  /** F-05（前端分析报告 2026-09-12）：返回当前可用秒数余额；null 表示
+   * 本 lane 无法读取（软预检跳过，服务端仍会硬校验）。 */
+  walletProvider?: () => Promise<number | null>;
 };
 
 export function useGenerationDrafts({
@@ -91,6 +94,7 @@ export function useGenerationDrafts({
   referenceSelectionId,
   shotCardVersionId,
   sourceAssetId,
+  walletProvider,
 }: UseGenerationDraftsInput) {
   const [scriptVersion, setScriptVersion] = useState<GenerationVersion | null>(
     null,
@@ -126,6 +130,15 @@ export function useGenerationDrafts({
   const [recoveryRecord, setRecoveryRecord] =
     useState<IdempotencyRecord | null>(null);
   const [busyAction, setBusyAction] = useState<GenerationBusyAction>(null);
+  // F-06：本地草稿体系。hydrated 之前禁止防抖写入（加载失败不得销毁草稿）；
+  // draftAppliedRef 记录草稿已套用，AI 改写恢复必须让位于更新的用户草稿。
+  const [insufficientBalance, setInsufficientBalance] = useState<{
+    neededSeconds: number;
+    balanceSeconds: number | null;
+  } | null>(null);
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const draftAppliedRef = useRef(false);
+  const serverScriptTextRef = useRef(originalScript);
   const loadGenerationRef = useRef(0);
   const actionGenerationRef = useRef(0);
   const identityIdRef = useRef(identityId);
@@ -148,6 +161,8 @@ export function useGenerationDrafts({
   useEffect(() => {
     actionGenerationRef.current += 1;
     isCreatingBatchRef.current = false;
+    setDraftHydrated(false);
+    draftAppliedRef.current = false;
     const storageKey = idempotencyStorageKey(currentUserId, projectId);
     const restoredRecord = restoreIdempotencyRecord(storageKey);
     idempotencyRecordRef.current = restoredRecord;
@@ -159,6 +174,7 @@ export function useGenerationDrafts({
     setIsLoading(true);
     setError("");
     setMessage("");
+    setInsufficientBalance(null);
 
     Promise.all([
       getLatestScriptVersion(projectId),
@@ -225,6 +241,40 @@ export function useGenerationDrafts({
           setRatio(restoredRatio);
         }
 
+        // F-06：本地草稿恢复。仅在编辑内容与服务端已存版本不同时套用，
+        // 一致（上次已保存后残留）则直接清掉，不产生噪音提示。
+        // 成功还原后才允许防抖写入本地草稿（P1-1：加载失败不得销毁草稿）。
+        setDraftHydrated(true);
+        serverScriptTextRef.current = restoredScriptText;
+        const draftScriptKey = localDraftScriptKey(currentUserId, projectId);
+        const draftEntry = readLocalDraft(draftScriptKey);
+        const draftPromptKey = localDraftPromptKey(currentUserId, projectId);
+        const draftPrompt = readLocalDraft(draftPromptKey);
+        let draftApplied = false;
+        if (draftEntry && draftEntry.text !== restoredScriptText) {
+          setScriptText(draftEntry.text);
+          if (draftEntry.source) {
+            setScriptSource(draftEntry.source);
+          }
+          draftAppliedRef.current = true;
+          draftApplied = true;
+        } else if (draftEntry) {
+          clearLocalDraftText(draftScriptKey);
+        }
+        if (
+          restoredPrompt &&
+          draftPrompt &&
+          draftPrompt.text !== restoredPromptText
+        ) {
+          setPromptText(draftPrompt.text);
+          draftApplied = true;
+        } else if (draftPrompt) {
+          clearLocalDraftText(draftPromptKey);
+        }
+        if (draftApplied) {
+          setMessage("已恢复上次未保存的本地草稿，请确认后保存。");
+        }
+
         if (
           latestRewriteTask &&
           rewriteTaskMatchesScope(
@@ -247,14 +297,22 @@ export function useGenerationDrafts({
           const recoveredKey = scriptRewriteIdempotencyKey(recoveredScope);
           if (latestRewriteTask.status === "SUCCEEDED") {
             clearScriptRewriteIdempotencyKey(recoveredScope, recoveredKey);
-            applyRecoveredScriptRewrite(
-              latestRewriteTask,
-              identityId,
-              setScriptSource,
-              setScriptText,
-              setMessage,
-              setError,
-            );
+            // 用户本地草稿更新（改写完成后又手工编辑过）：草稿优先，
+            // 不回填改写结果（P1-2）。
+            if (!draftAppliedRef.current) {
+              applyRecoveredScriptRewrite(
+                latestRewriteTask,
+                identityId,
+                setScriptSource,
+                setScriptText,
+                setMessage,
+                setError,
+              );
+            } else {
+              setMessage(
+                "已恢复上次未保存的本地草稿（较已完成的 AI 改写结果更新），请确认后保存。",
+              );
+            }
           } else if (
             latestRewriteTask.status === "FAILED" ||
             latestRewriteTask.status === "SUBMISSION_UNCERTAIN"
@@ -289,14 +347,21 @@ export function useGenerationDrafts({
                     recoveredScope,
                     recoveredKey,
                   );
-                  applyRecoveredScriptRewrite(
-                    completedTask,
-                    identityId,
-                    setScriptSource,
-                    setScriptText,
-                    setMessage,
-                    setError,
-                  );
+                  // 用户本地草稿更新时改写结果让位（P1-2，同 SUCCEEDED 路径）
+                  if (!draftAppliedRef.current) {
+                    applyRecoveredScriptRewrite(
+                      completedTask,
+                      identityId,
+                      setScriptSource,
+                      setScriptText,
+                      setMessage,
+                      setError,
+                    );
+                  } else {
+                    setMessage(
+                      "已恢复上次未保存的本地草稿（较已完成的 AI 改写结果更新），请确认后保存。",
+                    );
+                  }
                 }
               })
               .catch((requestError) => {
@@ -343,6 +408,47 @@ export function useGenerationDrafts({
     referenceSelectionId,
     shotCardVersionId,
     sourceAssetId,
+  ]);
+
+  // F-06：未保存编辑的本地草稿防抖写入（与镜头卡 800ms 自动保存同节奏）。
+  // 仅在成功还原后、且文本相对服务端真相有差异时写入——保存/编译后的
+  // 等值回写、pending timer 复活都被这里挡掉；显式保存/编译成功仍会主动清除。
+  useEffect(() => {
+    if (isLoading || readOnly || !draftHydrated) {
+      return;
+    }
+    const scriptChanged =
+      scriptText.trim() !== serverScriptTextRef.current.trim();
+    const promptChanged = promptText !== savedPromptText;
+    if (!scriptChanged && !promptChanged) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (scriptText.trim() !== serverScriptTextRef.current.trim()) {
+        writeLocalDraft(localDraftScriptKey(currentUserId, projectId), {
+          source: scriptSource,
+          text: scriptText.trim(),
+        });
+      }
+      if (promptText !== savedPromptText) {
+        writeLocalDraft(localDraftPromptKey(currentUserId, projectId), {
+          text: promptText,
+        });
+      }
+    }, 800);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    currentUserId,
+    draftHydrated,
+    isLoading,
+    projectId,
+    promptText,
+    readOnly,
+    savedPromptText,
+    scriptSource,
+    scriptText,
   ]);
 
   useEffect(() => {
@@ -649,6 +755,8 @@ export function useGenerationDrafts({
       if (promptVersion) {
         setPromptStale(true);
       }
+      // 显式保存成功后服务端即真相源，本地草稿清掉，避免下次恢复出旧差异。
+      clearLocalDraftText(localDraftScriptKey(currentUserId, projectId));
       setMessage(`口播稿已保存为版本 #${saved.version_number}。`);
     } catch (requestError) {
       if (actionGeneration === actionGenerationRef.current) {
@@ -687,6 +795,8 @@ export function useGenerationDrafts({
       setPromptText(compiledText);
       setSavedPromptText(compiledText);
       setPromptStale(false);
+      // 编译产物即最新真相，清掉 Prompt 本地草稿（F-06）。
+      clearLocalDraftText(localDraftPromptKey(currentUserId, projectId));
       setMessage(`视频生成提示词已编译为版本 #${compiled.version_number}。`);
     } catch (requestError) {
       if (actionGeneration === actionGenerationRef.current) {
@@ -721,6 +831,8 @@ export function useGenerationDrafts({
       setPromptText(revisedText);
       setSavedPromptText(revisedText);
       setPromptStale(false);
+      // Prompt 修订成功即服务端有真相，清掉本地草稿（F-06）。
+      clearLocalDraftText(localDraftPromptKey(currentUserId, projectId));
       try {
         const saved = await saveGenerationPrompt(projectId, {
           name: `我的提示词 ${new Date().toLocaleString("zh-CN")}`,
@@ -795,6 +907,7 @@ export function useGenerationDrafts({
       setPromptText(text);
       setSavedPromptText(text);
       setPromptStale(false);
+      clearLocalDraftText(localDraftPromptKey(currentUserId, projectId));
       setMessage("已将我的提示词应用到本次生成。");
     } catch (requestError) {
       setError(errorMessage(requestError, "应用我的提示词失败。"));
@@ -856,7 +969,7 @@ export function useGenerationDrafts({
       return;
     }
     idempotencyRecordRef.current = recoveryRecord;
-    await submitBatch(recoveryRecord, onBatchCreated);
+    await submitBatch(recoveryRecord, onBatchCreated, true);
   }
 
   // P0-04-01：主按钮一键流水线——保存脏口播稿 →（需要时）编译 →（需要时）
@@ -923,6 +1036,7 @@ export function useGenerationDrafts({
         savedScriptThisRun = true;
         setScriptVersion(saved);
         setScriptStale(false);
+        clearLocalDraftText(localDraftScriptKey(currentUserId, projectId));
         // 与手动 saveScript 对齐：新口播稿落库后旧 Prompt 即刻 stale
         // （服务端 SCRIPT_SUPERSEDED），编译失败时不能谎报就绪。
         if (promptVersion) {
@@ -963,6 +1077,7 @@ export function useGenerationDrafts({
         setPromptText(compiledText);
         setSavedPromptText(compiledText);
         setPromptStale(false);
+        clearLocalDraftText(localDraftPromptKey(currentUserId, projectId));
       }
 
       // 正常情况下走到这里 prompt 必非空（未编译 ⇒ 原本存在且参数匹配），
@@ -1016,6 +1131,10 @@ export function useGenerationDrafts({
   async function submitBatch(
     idempotencyRecord: IdempotencyRecord,
     onBatchCreated: (batch: GenerationBatch) => void,
+    // 恢复重放（recoverBatch）：上次提交结果不确定，批次可能已在服务端
+    // 创建并扣减余额——本地余额读数偏低恰是常见组合，软预检绝不能在此
+    // 清掉指向可能已存在付费批次的唯一恢复记录；同键幂等重放本身安全。
+    isRecovery = false,
   ) {
     const actionGeneration = actionGenerationRef.current + 1;
     actionGenerationRef.current = actionGeneration;
@@ -1023,8 +1142,31 @@ export function useGenerationDrafts({
     setBusyAction("batch");
     setError("");
     setMessage("");
+    setInsufficientBalance(null);
     const storageKey = idempotencyStorageKey(currentUserId, projectId);
     try {
+      // F-05 软预检：余额明显不足时直接给出充值引导，不打服务端
+      // （服务端 402 硬校验仍在，预检只是更早、更友好的反馈）。
+      // 恢复重放跳过预检（P1-2：不得销毁可能已建批次的恢复记录）。
+      if (walletProvider && !isRecovery) {
+        const neededSeconds =
+          idempotencyRecord.request.output_duration_seconds *
+          idempotencyRecord.request.quantity;
+        const balanceSeconds = await walletProvider().catch(() => null);
+        if (actionGeneration !== actionGenerationRef.current) {
+          return;
+        }
+        if (balanceSeconds !== null && balanceSeconds < neededSeconds) {
+          clearIdempotencyRecord(storageKey, idempotencyRecord);
+          idempotencyRecordRef.current = null;
+          setRecoveryRecord(null);
+          setInsufficientBalance({ neededSeconds, balanceSeconds });
+          setError(
+            `余额不足：本次预计消耗 ${neededSeconds} 秒，当前余额 ${balanceSeconds} 秒，请充值后重试。`,
+          );
+          return;
+        }
+      }
       const batch = await createGenerationBatch(
         projectId,
         idempotencyRecord.request,
@@ -1045,6 +1187,8 @@ export function useGenerationDrafts({
       onBatchCreated(batch);
     } catch (requestError) {
       const definitiveRejection = isDefinitiveBatchRejection(requestError);
+      const insufficient =
+        (requestError as { code?: string }).code === "INSUFFICIENT_CREDITS";
       if (definitiveRejection) {
         clearIdempotencyRecord(storageKey, idempotencyRecord);
       }
@@ -1056,7 +1200,19 @@ export function useGenerationDrafts({
           idempotencyRecordRef.current = null;
           setRecoveryRecord(null);
         }
-        setError(errorMessage(requestError, "创建视频生成批次失败。"));
+        if (insufficient && actionGeneration === actionGenerationRef.current) {
+          setInsufficientBalance({
+            neededSeconds:
+              idempotencyRecord.request.output_duration_seconds *
+              idempotencyRecord.request.quantity,
+            balanceSeconds: null,
+          });
+        }
+        setError(
+          insufficient
+            ? "余额不足，无法创建生成批次，请充值后重试。"
+            : errorMessage(requestError, "创建视频生成批次失败。"),
+        );
       }
     } finally {
       if (actionGeneration === actionGenerationRef.current) {
@@ -1074,6 +1230,7 @@ export function useGenerationDrafts({
     scriptStale,
     scriptDirty,
     shotMappings,
+    insufficientBalance,
     // prompt 状态
     promptVersion,
     promptText,
@@ -1440,6 +1597,75 @@ function clearIdempotencyRecord(storageKey: string, record: IdempotencyRecord) {
 // 还原路径。运行时代码不应调用。
 export function __resetSessionIdempotencyRecordsForTests() {
   sessionIdempotencyRecords.clear();
+}
+
+// F-06（前端分析报告 2026-09-12）：未保存的口播稿/Prompt 编辑此前只存在
+// React state，刷新/崩溃即丢。本地草稿按 账号+项目 维度持久化**非敏感**
+// 用户文本（与批次幂等记录同策略、同存储边界），成功保存/编译后清除；
+// 恢复时与服务端版本一致则自动丢弃。禁止写入任何凭据类内容。
+const LOCAL_DRAFT_SCRIPT_PREFIX = "generation.localDraft/script/";
+const LOCAL_DRAFT_PROMPT_PREFIX = "generation.localDraft/prompt/";
+
+type LocalDraftEntry = { source?: ScriptSource; text: string };
+
+function localDraftScriptKey(userId: string, projectId: string): string {
+  // 与 idempotencyStorageKey 一致：id 片段必须编码，避免含 / 或 % 的 id 造成键歧义
+  return `${LOCAL_DRAFT_SCRIPT_PREFIX}${encodeURIComponent(
+    userId,
+  )}/${encodeURIComponent(projectId)}`;
+}
+
+function localDraftPromptKey(userId: string, projectId: string): string {
+  return `${LOCAL_DRAFT_PROMPT_PREFIX}${encodeURIComponent(
+    userId,
+  )}/${encodeURIComponent(projectId)}`;
+}
+
+function isScriptSource(value: unknown): value is ScriptSource {
+  return value === "original" || value === "custom";
+}
+
+function readLocalDraft(storageKey: string): LocalDraftEntry | null {
+  try {
+    const saved = window.localStorage.getItem(storageKey);
+    if (!saved) {
+      return null;
+    }
+    const parsed: unknown = JSON.parse(saved);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as LocalDraftEntry).text === "string" &&
+      (parsed as LocalDraftEntry).text.trim()
+    ) {
+      const entry = parsed as LocalDraftEntry;
+      return isScriptSource(entry.source) ? entry : { text: entry.text };
+    }
+    return null;
+  } catch {
+    // 浏览器存储被禁用或内容损坏时静默降级为「无本地草稿」。
+    return null;
+  }
+}
+
+function writeLocalDraft(storageKey: string, entry: LocalDraftEntry): void {
+  try {
+    if (entry.text.trim()) {
+      window.localStorage.setItem(storageKey, JSON.stringify(entry));
+    } else {
+      window.localStorage.removeItem(storageKey);
+    }
+  } catch {
+    // 写入失败不阻塞编辑：显式保存仍是主要持久化路径。
+  }
+}
+
+function clearLocalDraftText(storageKey: string): void {
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    // 清理失败无害：下次恢复时会因与服务端一致而丢弃。
+  }
 }
 
 function isDefinitiveBatchRejection(error: unknown): boolean {

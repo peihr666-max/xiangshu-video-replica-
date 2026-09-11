@@ -191,18 +191,24 @@ export function AnalysisWorkspace({
   onAnalysisReady,
   onBatchCreated,
   onClose,
+  onRecharge,
   onWorkspaceBusyChange,
   project,
   readOnly = false,
+  walletProvider,
 }: {
   currentUserId: string;
   identityId?: string;
   onAnalysisReady: (projectId: string) => void;
   onBatchCreated: (batch: GenerationBatch) => void;
   onClose: () => void;
+  /** 余额不足时的充值引导动作（可选；内部 lane 缺省）。 */
+  onRecharge?: () => void;
   onWorkspaceBusyChange?: (isBusy: boolean) => void;
   project: Project;
   readOnly?: boolean;
+  /** 客户 lane 提供钱包余额读取，用于建批前的软预检（F-05）。 */
+  walletProvider?: () => Promise<number | null>;
 }) {
   const [analysisId, setAnalysisId] = useState("");
   const [analysisProvider, setAnalysisProvider] =
@@ -526,6 +532,7 @@ export function AnalysisWorkspace({
     referenceSelectionId: characterReferenceSelection?.id ?? null,
     shotCardVersionId,
     sourceAssetId: project.reference_asset_id,
+    walletProvider,
   });
 
   const readiness = useWorkspaceReadiness({
@@ -1203,6 +1210,7 @@ export function AnalysisWorkspace({
                   </p>
                 ) : null}
                 <GenerationComposer
+                  onRecharge={onRecharge}
                   analysisVersionId={analysisId}
                   characterVersionId={
                     characterSelection?.character_version_id ?? null

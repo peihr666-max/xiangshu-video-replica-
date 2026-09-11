@@ -200,6 +200,45 @@ describe("useCustomerSession", () => {
     expect(body.device_platform).toBe("windows");
   });
 
+  // F-01 review (P0-3): the workspace calls expireSessionLocally when it lost
+  // the session without a transport lifecycle event. It must land on the
+  // expired terminal — never a silent no-op leaving a dead workspace.
+  it("本地会话失效路径从工作台进入过期终局屏并清除会话令牌", async () => {
+    const store = memoryStore();
+    stubFetch((url) => {
+      if (url.endsWith("/api/customer/activate")) {
+        return jsonResponse(activationBody, 201);
+      }
+      return jsonResponse({}, 500);
+    });
+
+    const { result } = renderHook(() =>
+      useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
+    );
+    await waitFor(() => expect(result.current.screen).toBe("activation"));
+
+    await act(async () => {
+      await result.current.activate({
+        activationCode: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD",
+        deviceName: "工作电脑",
+      });
+    });
+    expect(result.current.screen).toBe("workspace");
+
+    act(() => {
+      result.current.expireSessionLocally();
+    });
+
+    expect(result.current.screen).toBe("session-expired");
+    expect(result.current.user).toBeNull();
+    expect(result.current.sessionRuntime).toBeNull();
+    // 与传输层 401 过期同规格：仅清会话令牌，设备凭据保留（§13.2）
+    expect(store.snapshot()).toEqual({
+      deviceToken: "device-token-1",
+      sessionToken: null,
+    });
+  });
+
   it("keeps the activation screen and surfaces the anti-enumeration rejection", async () => {
     const store = memoryStore();
     stubFetch((url) => {
@@ -401,6 +440,9 @@ describe("useCustomerSession", () => {
       useCustomerSession(store, { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS }),
     );
     await waitFor(() => expect(result.current.screen).toBe("binding-conflict"));
+    // 冲突屏打开时（尚未点切换）不得出现"切换失败"：409 的 error 属于
+    // 进入路径，switchError 只在真正的切换失败后非空（FE-03）。
+    expect(result.current.switchError).toBeNull();
 
     await act(async () => {
       await result.current.switchSession();
@@ -409,6 +451,9 @@ describe("useCustomerSession", () => {
     expect(result.current.screen).toBe("binding-conflict");
     expect(result.current.conflict).not.toBeNull();
     expect(result.current.error).not.toBeNull();
+    // F-01 review：切换失败原因走独立的 switchError（对话框告警位），
+    // 全局 error 此时仍是进入冲突屏时的 409 消息，不得混用。
+    expect(result.current.switchError).toBe("boom");
   });
 
   it("reports the request id on an idempotency conflict", async () => {

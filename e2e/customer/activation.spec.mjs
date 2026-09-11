@@ -45,8 +45,10 @@ test("activated workspace shows the first device in slot one and a wallet", asyn
     deviceManagement.getByRole("button", { name: "充值秒数" }),
   ).toBeVisible();
 
-  // The pairing entry for a second device is present.
+  // The pairing entry for a second device is present. FE-04 review (F-07):
+  // it must be an in-page callback button, never an <a href> — a native
+  // navigation would hard-reload the Tauri webview and drop the state machine.
   await expect(
-    deviceManagement.getByRole("link", { name: "绑定第二台设备" }),
+    deviceManagement.getByRole("button", { name: "绑定第二台设备" }),
   ).toBeVisible();
 });

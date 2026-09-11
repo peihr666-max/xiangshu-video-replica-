@@ -1406,28 +1406,36 @@ function controlWriteInit(
   };
 }
 
-export async function updateControlZPaySettings(input: {
-  pid: string;
-  key: string;
-  enabled_channels: Array<"alipay" | "wxpay">;
-}): Promise<ControlSettings["zpay"]> {
+export async function updateControlZPaySettings(
+  input: {
+    pid: string;
+    key: string;
+    enabled_channels: Array<"alipay" | "wxpay">;
+  },
+  // 资金链路最敏感的写操作：确认对话框收集的操作原因必须透传到审计。
+  // 缺省值仅保留给尚未接入确认流的旧调用点（workspace SettingsPanel）。
+  reason = "更新 ZPay 支付配置",
+): Promise<ControlSettings["zpay"]> {
   return requestControlJson<ControlSettings["zpay"]>(
     "/api/control/settings/zpay",
     "保存 ZPay 设置失败",
-    controlWriteInit("PATCH", input, "更新 ZPay 支付配置"),
+    controlWriteInit("PATCH", input, reason),
   );
 }
 
-export async function updateControlBillingSettings(input: {
-  internal_base_unit_price_fen: number;
-  oral_unit_price_fen: number;
-  min_recharge_fen: number;
-  recharge_step_fen: number;
-}): Promise<BillingSettings> {
+export async function updateControlBillingSettings(
+  input: {
+    internal_base_unit_price_fen: number;
+    oral_unit_price_fen: number;
+    min_recharge_fen: number;
+    recharge_step_fen: number;
+  },
+  reason = "更新后台计费配置",
+): Promise<BillingSettings> {
   return requestControlJson<BillingSettings>(
     "/api/control/settings/billing",
     "保存内部价格失败",
-    controlWriteInit("PATCH", input, "更新后台计费配置"),
+    controlWriteInit("PATCH", input, reason),
   );
 }
 

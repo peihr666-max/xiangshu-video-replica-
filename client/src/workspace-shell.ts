@@ -45,6 +45,9 @@ export type WorkspaceShellProps = {
      * on the internal lane. Rendered in the profile centre's device tab. */
     sessionRuntime?: CustomerSessionRuntime | null;
     onManualHeartbeat?: () => void;
+    /** 设备管理页"绑定第二台设备"的页内导航（F-01 review：客户 lane 必传，
+     * 内部 lane 无配对流程故缺省）。 */
+    onPairDevice?: () => void;
   };
   customerWallet?: {
     store: CustomerCredentialStore;

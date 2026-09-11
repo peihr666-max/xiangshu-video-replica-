@@ -172,4 +172,46 @@ describe("CW-019 customer entry contract (source-level)", () => {
     expect(codeOnly).toMatch(/\bworkspaceBackend\b/);
     expect(codeOnly).toMatch(/\bcontrolBackend\b/);
   });
+
+  it("客户账户屏样式必须随客户入口加载（customer-access.css）", () => {
+    // F-01/P0-1（前端分析报告 2026-09-12）：styles.css 仅由管理入口
+    // （admin-main.tsx）与内部死壳（App.tsx）引入，客户制品不含它。全局
+    // reset、:root 令牌与激活/登录/配对等账户屏样式已拆入
+    // customer/customer-access.css，必须由 RootApp 显式加载；否则激活页以
+    // 无样式 HTML 渲染（历史实测：品牌 SVG 以 1264px 原始尺寸铺满首屏，
+    // 表单被推出首屏之外）。
+    expect(readSource("./RootApp.tsx")).toMatch(
+      /import\s+"\.\s*\/customer\/customer-access\.css";/,
+    );
+  });
+
+  it("老组件样式必须随 LiveWorkspacePanel 加载（legacy-panels.css）", () => {
+    // F-01/P0-1：LiveWorkspacePanel 挂载的拆解/项目/人物/任务/钱包等老组件，
+    // 其类规则原依赖 styles.css（客户制品不加载）。拆出的 legacy-panels.css
+    // 必须随该挂载点加载，否则深创作面板在生产客户包里是无样式 HTML。
+    expect(readSource("./studio/LiveWorkspacePanel.tsx")).toMatch(
+      /import\s+"\.\.\s*\/legacy-panels\.css";/,
+    );
+  });
+
+  it("客户侧拆分样式不得包含管理域选择器", () => {
+    // CW-019 延伸：拆分产物只服务客户 lane，任何 .admin- 选择器进入客户
+    // 制品都算管理域样式泄漏。横幅注释也不得出现该字面量，避免误命中。
+    for (const file of [
+      "./customer/customer-access.css",
+      "./legacy-panels.css",
+    ]) {
+      expect(readSource(file), `${file} 不得包含管理域选择器`).not.toMatch(
+        /\.admin-/,
+      );
+    }
+  });
+
+  it("styles.css 不得再承载客户账户屏样式（已拆出，防回流）", () => {
+    // 拆分后 styles.css 只服务管理端与内部壳。若有人把账户屏样式改回本文件，
+    // 客户制品会再次丢失它们——这里钉住拆分事实（两个客户独占类）。
+    const source = readSource("./styles.css");
+    expect(source).not.toMatch(/\.customer-access-shell\b/);
+    expect(source).not.toMatch(/\.customer-access-brand\b/);
+  });
 });

@@ -71,12 +71,16 @@ function WorkspaceHost({
   firstFrameAssetId = props.firstFrameAssetId,
   identityId,
   projectId = props.projectId,
+  onRecharge,
+  walletProvider,
 }: {
   currentUserId?: string;
   durationSeconds?: number;
   firstFrameAssetId?: string;
   identityId?: string;
   projectId?: string;
+  onRecharge?: () => void;
+  walletProvider?: () => Promise<number | null>;
 }) {
   const drafts = useGenerationDrafts({
     characterVersionId: props.characterVersionId,
@@ -91,6 +95,7 @@ function WorkspaceHost({
     referenceSelectionId: props.referenceSelectionId,
     shotCardVersionId: props.shotCardVersionId,
     sourceAssetId: props.sourceAssetId,
+    walletProvider,
   });
 
   useEffect(() => {
@@ -134,6 +139,7 @@ function WorkspaceHost({
         drafts={drafts}
         firstFrameAssetId={firstFrameAssetId}
         firstFrameSelectionVersionId={props.firstFrameSelectionVersionId}
+        onRecharge={onRecharge}
         onBatchCreated={props.onBatchCreated}
         readOnly={props.readOnly}
         referenceSelectionId={props.referenceSelectionId}
@@ -1568,5 +1574,108 @@ describe("GenerationComposer", () => {
     ).toBe(idempotencyKey);
     expect(props.onBatchCreated).toHaveBeenCalledWith(recoveredBatch);
     storageWrite.mockRestore();
+  });
+
+  // F-05（前端分析报告 2026-09-12）：余额软预检不足时拦截建批，
+  // 并提供「去充值」引导（客户 lane 打开充值弹窗）。
+  it("F-05：余额软预检不足时拦截建批并给出去充值入口", async () => {
+    window.localStorage.clear();
+    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
+      version: {
+        ...baseVersion,
+        id: "script-1",
+        payload: {
+          source: "original",
+          full_text: props.originalScript,
+          shot_card_version_id: "shot-card-1",
+          shot_mappings: [],
+        },
+      },
+      stale: false,
+      stale_reasons: [],
+    });
+    vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
+      version: promptVersion("LOCKED"),
+      stale: false,
+      stale_reasons: [],
+    });
+    const onRecharge = vi.fn();
+
+    render(
+      <WorkspaceHost onRecharge={onRecharge} walletProvider={async () => 0} />,
+    );
+    const submit = await screen.findByRole("button", {
+      name: "创建 1 个生成任务",
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(api.createGenerationBatch).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "余额不足，去充值" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/余额不足：本次预计消耗 15 秒，当前余额 0 秒/),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "余额不足，去充值" }));
+    expect(onRecharge).toHaveBeenCalledTimes(1);
+  });
+
+  // F-05 服务端权威 402 契约：insufficientBalance 置位且幂等记录保留
+  // （充值后同键重试）——这条不变式最易被将来改动破坏。
+  it("F-05：服务端 402 INSUFFICIENT_CREDITS 保留幂等记录并给出去充值", async () => {
+    window.localStorage.clear();
+    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
+      version: {
+        ...baseVersion,
+        id: "script-1",
+        payload: {
+          source: "original",
+          full_text: props.originalScript,
+          shot_card_version_id: "shot-card-1",
+          shot_mappings: [],
+        },
+      },
+      stale: false,
+      stale_reasons: [],
+    });
+    vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
+      version: promptVersion("LOCKED"),
+      stale: false,
+      stale_reasons: [],
+    });
+    vi.mocked(api.createGenerationBatch).mockRejectedValue(
+      Object.assign(new Error("Available credits are insufficient."), {
+        code: "INSUFFICIENT_CREDITS",
+        status: 402,
+      }),
+    );
+
+    const onRecharge = vi.fn();
+    render(<WorkspaceHost onRecharge={onRecharge} />);
+    const submit = await screen.findByRole("button", {
+      name: "创建 1 个生成任务",
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() =>
+      expect(api.createGenerationBatch).toHaveBeenCalledOnce(),
+    );
+    expect(
+      await screen.findByRole("button", { name: "余额不足，去充值" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText("余额不足，无法创建生成批次，请充值后重试。"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "余额不足，去充值" }));
+    expect(onRecharge).toHaveBeenCalledTimes(1);
+    // 幂等记录必须保留：充值后可同键重试，不会丢恢复入口
+    expect(
+      window.localStorage.getItem(
+        "generation.idempotency/employee_1/project-1",
+      ),
+    ).not.toBeNull();
   });
 });
