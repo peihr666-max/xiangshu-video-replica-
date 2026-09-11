@@ -26,6 +26,9 @@
  *     （见下），"客户制品 0 命中" 就失去证据价值 → 退出 1。
  *     因此本脚本要求 `client/dist-admin` 存在：请先 `npm run build:all`
  *     （而不是只 `npm run build`）。缺阳性对照样本即等同缺库伪绿。
+ *  6) 包含向断言（ADMIN-BUNDLE-CSS-CONTRACT-20260912）：管理制品 CSS 必须含
+ *     基础样式表标记（.admin-shell{ 与 --admin-bg）——排除断言发现不了
+ *     「管理制品缺自身依赖」的半裸渲染回归（CW-019 双入口拆分实际发生过）。
  *
  * 关于「压缩后失效的特征串」（重要，勿误删也勿误信）：
  * `build.minify: "oxc"` 会 mangle 局部标识符，所以 `AdminApp`、
@@ -426,6 +429,56 @@ function runPositiveControl() {
   return counts;
 }
 
+/**
+ * ADMIN-BUNDLE-CSS-CONTRACT-20260912：双向合同的「包含向」断言。
+ *
+ * 排除断言只证明「客户制品不含管理代码」；CW-019 拆分双入口后 styles.css
+ * 只剩客户壳 App.tsx 一处导入，管理制品整份缺失基础样式表（.admin-shell
+ * 布局、--admin-* 令牌定义），产线半裸渲染时全部既有断言依旧全绿。这里
+ * 钉住两个在 CSS 压缩后仍字面存活的最小标记（壳层选择器 + 令牌定义），
+ * 缺任一即失败。源码级契约见 client/src/entryContract.test.ts。
+ */
+const ADMIN_BASE_STYLESHEET_NEEDLES = Object.freeze([
+  ".admin-shell{",
+  "--admin-bg",
+]);
+
+function runAdminBaseStylesheetControl() {
+  assertArtifactDir(
+    adminDistDir,
+    "管理构建制品（包含向断言样本）目录",
+    "请先执行 `npm run build:all`（同时产出客户与管理制品）再运行本断言。",
+  );
+  const cssAbsPaths = walk(adminDistDir).filter((abs) => abs.endsWith(".css"));
+  const missing = ADMIN_BASE_STYLESHEET_NEEDLES.filter(
+    (needle) =>
+      !cssAbsPaths.some((abs) => readFileSync(abs, "utf8").includes(needle)),
+  );
+  if (missing.length > 0) {
+    console.error("");
+    console.error(
+      "[verify_customer_bundle] ❌ 管理制品缺失基础样式表标记（半裸渲染回归）：",
+    );
+    for (const needle of missing) {
+      console.error(`  "${needle}" 在 client/dist-admin/**/*.css 中 0 命中`);
+    }
+    console.error(
+      '  处理方式：检查 client/src/admin-main.tsx 是否仍显式 import "./styles.css"；' +
+        "源码级契约见 client/src/entryContract.test.ts。",
+    );
+    process.exit(1);
+  }
+  console.log("");
+  console.log("# ADMIN-BUNDLE-CSS-CONTRACT positive control (client/dist-admin)");
+  console.log("# 基础样式表标记在管理制品 CSS 中的命中（必须全部 ≥1）");
+  for (const needle of ADMIN_BASE_STYLESHEET_NEEDLES) {
+    const hits = cssAbsPaths.filter((abs) =>
+      readFileSync(abs, "utf8").includes(needle),
+    ).length;
+    console.log(`  ${String(hits).padStart(3)}  "${needle}"`);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 主流程
 // ─────────────────────────────────────────────────────────────────────────────
@@ -455,6 +508,10 @@ function main() {
   // 阳性对照先跑：特征串一旦腐烂，后面的「0 命中」就毫无证据价值，
   // 让它先失败可以最早暴露问题，而不是在一份无效报告末尾附注。
   const positiveCounts = runPositiveControl();
+
+  // 包含向断言（ADMIN-BUNDLE-CSS-CONTRACT）：管理制品必须自带基础样式表，
+  // 同样先于排除断言执行——「半裸渲染」是最严重的现场回归，让它最早失败。
+  runAdminBaseStylesheetControl();
 
   const relPaths = manifest.map((entry) => entry.rel);
   const nameHits = checkForbiddenFileNames(relPaths);
