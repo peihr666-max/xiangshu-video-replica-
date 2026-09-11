@@ -535,20 +535,24 @@ describe("AdminApp", () => {
       target: { value: "" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存 ZPay 设置" }));
-    fireEvent.change(screen.getByLabelText("内部单价（分/秒）"), {
-      target: { value: "500" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存内部价格" }));
 
-    await waitFor(() =>
+    // A-01：保存走 reasonAndAck 确认框，操作原因透传审计
+    await screen.findByRole("dialog", { name: "保存 ZPay 支付设置" });
+    fireEvent.change(screen.getByPlaceholderText("请填写可审计的操作原因"), {
+      target: { value: "商户换绑，工单 IT-42" },
+    });
+    fireEvent.click(screen.getByLabelText("我已知晓该操作的影响"));
+    fireEvent.click(screen.getByRole("button", { name: "确认保存 ZPay 设置" }));
+
+    await waitFor(() => {
       expect(
         fetchMock.mock.calls.some(
           ([url, options]) =>
             String(url).endsWith("/api/control/settings/zpay") &&
             options?.method === "PATCH",
         ),
-      ).toBe(true),
-    );
+      ).toBe(true);
+    });
     const zpayCall = fetchMock.mock.calls.find(
       ([url, options]) =>
         String(url).endsWith("/api/control/settings/zpay") &&
@@ -562,7 +566,7 @@ describe("AdminApp", () => {
         key: "",
         enabled_channels: ["alipay", "wxpay"],
         confirm: true,
-        reason: "更新 ZPay 支付配置",
+        reason: "商户换绑，工单 IT-42",
       }),
     );
     expect(
