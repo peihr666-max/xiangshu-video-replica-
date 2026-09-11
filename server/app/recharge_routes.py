@@ -34,21 +34,22 @@ from app.customer_idempotency import (
 )
 from app.db_portable import BusinessConnection
 from app.ops_metrics import set_current_trace_fields
+from app.payment_provider import (
+    DeploymentConfig,
+    MerchantConfig,
+    PaymentCodeError,
+    PaymentProvider,
+    get_payment_provider,
+)
 from app.permissions import require_not_auditor
 from app.security_rate_limit import _server_now, client_ip_from_request
 from app.settings import SettingsRepository, effective_customer_billing_settings
 from app.wallet_routes import WalletResponse, WalletTransactionPage, WalletTransactionResponse
-from app.zpay import (
-    ZPayDeploymentConfig,
-    ZPayMerchantConfig,
-    ZPayPaymentCodeClient,
-    ZPayPaymentCodeError,
-    build_zpay_payment_form,
-    deployment_config_from_environment,
-    generate_merchant_order_no,
-    merchant_config_from_settings,
-)
+from app.zpay import generate_merchant_order_no
 from app.zpay_payments import read_recharge_order, serialize_recharge_order
+
+# Import to trigger provider registration
+import app.zpay_provider  # noqa: F401
 
 router = APIRouter(prefix="/api", tags=["recharge"])
 MAX_ORDER_NUMBER_ATTEMPTS = 3
@@ -131,14 +132,12 @@ class UpdateCustomerProfileRequest(BaseModel):
     display_name: str
 
 
-def get_zpay_payment_code_client() -> ZPayPaymentCodeClient:
-    return ZPayPaymentCodeClient()
+def get_zpay_provider() -> PaymentProvider:
+    """Dependency: get the ZPay payment provider."""
+    return get_payment_provider("zpay")
 
 
-PaymentCodeClientDep = Annotated[
-    ZPayPaymentCodeClient,
-    Depends(get_zpay_payment_code_client),
-]
+ZPayProviderDep = Annotated[PaymentProvider, Depends(get_zpay_provider)]
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +155,10 @@ def _stage_recharge_preconditions(
     conn: BusinessConnection,
     *,
     amount_fen: int,
+    provider: PaymentProvider,
     customer_user_id: str | None = None,
-) -> tuple[dict[str, int], ZPayMerchantConfig, ZPayDeploymentConfig]:
-    """Billing settings + amount validation + ZPay configuration, shared."""
+) -> tuple[dict[str, int], MerchantConfig, DeploymentConfig]:
+    """Billing settings + amount validation + provider configuration, shared."""
     settings_repo = SettingsRepository(conn)
     billing = (
         settings_repo.read_customer_billing_settings(user_id=customer_user_id)
@@ -181,8 +181,8 @@ def _stage_recharge_preconditions(
             ) from exc
     validate_recharge_amount(amount_fen, billing)
     try:
-        merchant = merchant_config_from_settings(settings_repo.load_zpay_config())
-        deployment = deployment_config_from_environment()
+        merchant = provider.load_merchant_config(conn)
+        deployment = provider.load_deployment_config()
     except ValueError as exc:
         raise HTTPException(
             status_code=503,
@@ -199,13 +199,14 @@ def _insert_recharge_order(
     pricing_scope: Literal["INTERNAL", "CUSTOMER_STANDARD"],
     merchant_order_no: str,
     billing: dict[str, int],
-    merchant: ZPayMerchantConfig,
-    deployment: ZPayDeploymentConfig,
+    merchant: MerchantConfig,
+    deployment: DeploymentConfig,
+    provider: PaymentProvider,
 ) -> RechargeOrderResponse:
     """Insert one PENDING recharge order and build its payment form."""
     charged_unit_price_fen = billing["charged_unit_price_fen"]
     credits = amount_fen // charged_unit_price_fen
-    form_fields = build_zpay_payment_form(
+    payment_form = provider.create_payment_form(
         merchant_order_no=merchant_order_no,
         amount_fen=amount_fen,
         credits=credits,
@@ -220,13 +221,14 @@ def _insert_recharge_order(
             "    base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot,\n"
             "    min_recharge_fen_snapshot, recharge_step_fen_snapshot,\n"
             "    amount_fen, credits\n"
-            ") VALUES (%s, %s, %s, 'zpay', NULL, %s, 'PENDING', %s, "
+            ") VALUES (%s, %s, %s, %s, NULL, %s, 'PENDING', %s, "
             "%s, %s, %s, %s, %s, %s)\n",
             (
                 str(uuid4()),
                 user_id,
                 merchant_order_no,
-                merchant.channel,
+                provider.name,
+                merchant.primary_channel,
                 pricing_scope,
                 billing["internal_base_unit_price_fen"],
                 charged_unit_price_fen,
@@ -242,9 +244,9 @@ def _insert_recharge_order(
         status="PENDING",
         amount_fen=amount_fen,
         credits=credits,
-        gateway_url=deployment.gateway_url,
+        gateway_url=payment_form.gateway_url,
         method="POST",
-        form_fields=form_fields,
+        form_fields=payment_form.form_fields,
     )
 
 
@@ -268,6 +270,7 @@ def _retryable_merchant_order_collision(exc: Exception) -> bool:
 def create_recharge_order(
     payload: CreateRechargeOrderRequest,
     db: BusinessDbDep,
+    provider: ZPayProviderDep,
 ) -> RechargeOrderResponse:
     for _ in range(MAX_ORDER_NUMBER_ATTEMPTS):
         merchant_order_no = generate_merchant_order_no()
@@ -293,6 +296,7 @@ def create_recharge_order(
                 billing, merchant, deployment = _stage_recharge_preconditions(
                     conn,
                     amount_fen=payload.amount_fen,
+                    provider=provider,
                 )
                 return _insert_recharge_order(
                     conn,
@@ -303,6 +307,7 @@ def create_recharge_order(
                     billing=billing,
                     merchant=merchant,
                     deployment=deployment,
+                    provider=provider,
                 )
         except (sqlite3.IntegrityError, psycopg.errors.UniqueViolation) as exc:
             # The merchant-order-number collision is a retryable random draw; any
@@ -332,6 +337,7 @@ def create_customer_recharge_order(
     request: Request,
     response: Response,
     db: BusinessDbDep,
+    provider: ZPayProviderDep,
 ) -> RechargeOrderResponse:
     """T22: Customer can reuse ZPay to top-up the same wallet under their session.
 
@@ -421,6 +427,7 @@ def create_customer_recharge_order(
                 billing, merchant, deployment = _stage_recharge_preconditions(
                     conn,
                     amount_fen=payload.amount_fen,
+                    provider=provider,
                     customer_user_id=user.id,
                 )
                 order = _insert_recharge_order(
@@ -432,6 +439,7 @@ def create_customer_recharge_order(
                     billing=billing,
                     merchant=merchant,
                     deployment=deployment,
+                    provider=provider,
                 )
                 assert envelope_id is not None
                 recovery_expires_at = (
@@ -623,7 +631,7 @@ def close_customer_recharge_order(order_no: str, request: Request) -> Response:
 def create_customer_payment_code(
     order_no: str,
     request: Request,
-    payment_client: PaymentCodeClientDep,
+    provider: ZPayProviderDep,
 ) -> CustomerPaymentCodeResponse:
     """Return a display-ready QR image for one owned pending order.
 
@@ -660,10 +668,8 @@ def create_customer_payment_code(
                 },
             )
         try:
-            merchant = merchant_config_from_settings(
-                SettingsRepository(business_conn).load_zpay_config()
-            )
-            deployment = deployment_config_from_environment()
+            merchant = provider.load_merchant_config(business_conn)
+            deployment = provider.load_deployment_config()
         except ValueError as exc:
             raise HTTPException(
                 status_code=503,
@@ -676,7 +682,7 @@ def create_customer_payment_code(
         credits = int(order["credits"])
 
     try:
-        payment_code = payment_client.create_payment_code(
+        payment_code = provider.create_payment_code(
             merchant=merchant,
             deployment=deployment,
             merchant_order_no=order_no,
@@ -684,7 +690,7 @@ def create_customer_payment_code(
             credits=credits,
             client_ip=client_ip_from_request(request),
         )
-    except ZPayPaymentCodeError as exc:
+    except PaymentCodeError as exc:
         raise HTTPException(
             status_code=exc.status_code,
             detail={
