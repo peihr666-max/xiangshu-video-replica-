@@ -216,9 +216,7 @@ def test_verify_customer_bundle_asserts_admin_base_stylesheet_marker() -> None:
     # 「排除断言」（客户制品不含管理代码）依旧全绿——排除向发现不了「缺自身
     # 依赖」的回归。verify 脚本必须在阳性对照之外，显式断言管理制品 CSS 含
     # 基础样式表标记；源码级契约见 client/src/entryContract.test.ts。
-    script = (REPO_ROOT / "scripts" / "verify_customer_bundle.mjs").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "verify_customer_bundle.mjs").read_text(encoding="utf-8")
 
     assert "runAdminBaseStylesheetControl" in script
     assert ".admin-shell{" in script
