@@ -37,7 +37,7 @@ from app.admin_auth_routes import (
     issue_exchange_credential,
 )
 from app.admin_write_contract import IDEMPOTENCY_KEY_HEADER
-from app.db_pg import DATABASE_URL_ENV
+from app.db_pg import DATABASE_URL_ENV, close_pg_pool
 
 TEST_KEY = "cw063-h3-test-hmac-key-0123456789abcdef"
 CW063_DB_NAME = "cw063_h3_extended_modes_test"
@@ -77,10 +77,19 @@ def h3_app(monkeypatch: pytest.MonkeyPatch, h3_pg_dsn: str) -> Iterator[FastAPI]
     app = FastAPI()
     app.include_router(admin_auth_router)
     app.include_router(admin_runtime_router)
+    # CW-063: get_pg_pool() caches its DSN process-wide on first use, so reset
+    # the singleton before repointing DATABASE_URL_ENV and again on teardown.
+    # Without this the cw063 pool — whose database the module-scoped h3_pg_dsn
+    # fixture drops at teardown — leaks into every later pool consumer in the
+    # same shard process (seen as test_admin_rate_routes hitting a dropped
+    # database). Matches the standalone-suite convention used by
+    # test_wallet_billing_service / test_oral_domain / test_postgres_migrations.
+    close_pg_pool()
     monkeypatch.setenv(DATABASE_URL_ENV, h3_pg_dsn)
     monkeypatch.setenv(ADMIN_SESSION_HMAC_KEY_ENV, TEST_KEY)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
     yield app
+    close_pg_pool()
 
 
 @pytest.fixture()
