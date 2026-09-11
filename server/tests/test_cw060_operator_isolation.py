@@ -69,7 +69,6 @@ _APP_DB_CONSUMERS = frozenset(
         "server/app/backup.py",
         "server/app/bootstrap.py",
         "server/app/customer_fence.py",
-        "server/app/generation_worker.py",
         "server/app/internal_accounts.py",
         "server/app/media_routes.py",
         "server/app/rbac_routes.py",

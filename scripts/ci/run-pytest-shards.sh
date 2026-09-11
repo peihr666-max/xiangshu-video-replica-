@@ -76,6 +76,18 @@ resolve_manifests() {
     fi
   done
   if [ "${ok}" -eq 1 ]; then
+    # SH-6 fail-closed guard (CW-061): the committed manifests must cover every
+    # discovered server/tests/test_*.py. A stale split — a new test file landed
+    # without regenerating the manifests — would otherwise make CI silently skip
+    # it (the CW-044 §18.2 fail-open gap: 13 files never ran). Refuse to adopt an
+    # incomplete split; do NOT degrade to sequential here, because that would
+    # mask the staleness and let the committed manifests rot. Force regeneration.
+    if ! python3 "${SCRIPT_DIR}/build-test-shards.py" --check-coverage \
+        --out-dir "${COMMITTED_SHARD_DIR}" >&2; then
+      log "ERROR: committed shard manifests in ${COMMITTED_SHARD_DIR} do not cover every test file (see gaps above)." >&2
+      log "ERROR: regenerate and commit them:  python3 scripts/ci/build-test-shards.py --shards ${n}" >&2
+      exit 1
+    fi
     SHARD_SRC_DIR="${COMMITTED_SHARD_DIR}"
     log "==> Using committed shard manifests in ${SHARD_SRC_DIR} (N=${n})."
     return 0
