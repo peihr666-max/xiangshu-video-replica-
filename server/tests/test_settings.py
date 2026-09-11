@@ -16,17 +16,17 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, HiflyTimeoutError
 from app.settings import (
+    HiflyProviderTester,
+    NoopProviderTester,
+    ProviderTestResult,
     SettingsDecryptError,
     SettingsKeyMissing,
     SettingsRepository,
+    StorageProviderTester,
     effective_customer_billing_settings,
     fernet_from_environment,
 )
 from app.settings_routes import (
-    HiflyProviderTester,
-    NoopProviderTester,
-    ProviderTestResult,
-    StorageProviderTester,
     configured_only_message,
     get_database,
     get_provider_tester,
@@ -1443,7 +1443,7 @@ def test_update_cos_settings_removes_lifecycle_rules_for_permanent_storage(
             cast("CloudStorageConfig", config), client=RecordingLifecycleClient()
         )
 
-    monkeypatch.setattr("app.settings_routes.create_storage_adapter", fake_factory)
+    monkeypatch.setattr("app.settings.create_storage_adapter", fake_factory)
 
     response = client.put(
         "/api/admin/settings/providers/cos",
@@ -1499,7 +1499,7 @@ def test_update_cos_settings_preserves_unrelated_lifecycle_rules(
             raise AssertionError("有无关规则时不得删除整个生命周期配置")
 
     monkeypatch.setattr(
-        "app.settings_routes.create_storage_adapter",
+        "app.settings.create_storage_adapter",
         lambda config: CloudStorageAdapter(
             cast("CloudStorageConfig", config), client=MixedLifecycleClient()
         ),
@@ -1560,7 +1560,7 @@ def test_update_cos_settings_lifecycle_failure_does_not_block_save(
             raise RuntimeError("lifecycle api down")
 
     monkeypatch.setattr(
-        "app.settings_routes.create_storage_adapter",
+        "app.settings.create_storage_adapter",
         lambda config: CloudStorageAdapter(
             cast("CloudStorageConfig", config), client=FailingLifecycleClient()
         ),
@@ -1605,7 +1605,7 @@ def test_update_cos_settings_treats_missing_lifecycle_as_already_permanent(
             raise MissingLifecycleError
 
     monkeypatch.setattr(
-        "app.settings_routes.create_storage_adapter",
+        "app.settings.create_storage_adapter",
         lambda config: CloudStorageAdapter(
             cast("CloudStorageConfig", config), client=AlreadyPermanentClient()
         ),

@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import uuid
+from collections.abc import Callable, Mapping
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from cryptography.fernet import Fernet, InvalidToken
+from fastapi import HTTPException
+from pydantic import BaseModel
 
 from app.db_portable import BusinessConnection
 from app.local_settings_key import LocalSettingsKeyStoreError, load_or_create_local_settings_key
+from app.storage import (
+    CloudStorageAdapter,
+    CloudStorageConfig,
+    StorageAdapter,
+    StorageBackendUnavailable,
+    cloud_storage_config_from_settings,
+    create_storage_adapter,
+)
 from app.zpay import parse_enabled_channels
 
 ProviderName = Literal[
@@ -542,3 +555,272 @@ def mask_secret(value: str) -> str:
     if len(value) <= 4:
         return "********"
     return f"********{value[-4:]}"
+
+
+logger = logging.getLogger(__name__)
+
+
+class ProviderTestResult(BaseModel):
+    status: str
+    provider: str
+    test_kind: str
+    account_credit: int | None = None
+
+
+class ProviderTester(Protocol):
+    def connection_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult: ...
+
+    def paid_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult: ...
+
+
+class NoopProviderTester:
+    def connection_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult:
+        return ProviderTestResult(
+            status="configured_only" if config else "not_configured",
+            provider=provider,
+            test_kind="connection",
+        )
+
+    def paid_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "code": "PROVIDER_TEST_NOT_IMPLEMENTED",
+                "message": "A real provider client is required before paid tests can run.",
+            },
+        )
+
+
+class HiflyAccountProbe(Protocol):
+    def account_credit(self) -> int: ...
+
+
+def _default_hifly_client(config: Mapping[str, str]) -> HiflyAccountProbe:
+    # app.hifly 顶层反向导入本模块（SettingsRepository）；默认客户端工厂只能在
+    # 调用期解析，否则形成 settings -> hifly -> settings 模块级循环导入。
+    from app.hifly import hifly_client_from_config
+
+    return hifly_client_from_config(config)
+
+
+class HiflyProviderTester:
+    def __init__(
+        self,
+        *,
+        fallback: ProviderTester | None = None,
+        client_factory: Callable[[Mapping[str, str]], HiflyAccountProbe] | None = None,
+    ) -> None:
+        self.fallback = fallback or NoopProviderTester()
+        self.client_factory = client_factory or _default_hifly_client
+
+    def connection_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult:
+        if provider != "hifly" or not config:
+            return self.fallback.connection_test(provider, config)
+        from app.hifly import HiflyError, HiflySettingsUnavailable, HiflyTimeoutError
+
+        try:
+            account_credit = self.client_factory(config).account_credit()
+        except HiflyTimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "code": "HIFLY_ACCOUNT_CHECK_TIMEOUT",
+                    "failure_phase": "account_credit",
+                    "message": "Hifly 只读账户检查超时；未创建收费任务。",
+                },
+            ) from exc
+        except HiflySettingsUnavailable as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "HIFLY_SETTINGS_INVALID",
+                    "failure_phase": "configuration",
+                    "message": "Hifly 配置不完整；请重新保存 API Key。",
+                },
+            ) from exc
+        except HiflyError as exc:
+            is_auth_failure = exc.vendor_code == 2003 or exc.http_status in {401, 403}
+            raise HTTPException(
+                # A vendor credential failure is an invalid saved setting, not
+                # an expired administrator session. Returning 401 here would
+                # make both settings clients sign the operator out.
+                status_code=422 if is_auth_failure else 503,
+                detail={
+                    "code": (
+                        "HIFLY_AUTH_FAILED" if is_auth_failure else "HIFLY_ACCOUNT_CHECK_FAILED"
+                    ),
+                    "failure_phase": "authenticate" if is_auth_failure else "account_credit",
+                    "message": (
+                        "Hifly 凭据认证失败；未创建收费任务。"
+                        if is_auth_failure
+                        else "Hifly 只读账户检查失败；未创建收费任务。"
+                    ),
+                },
+            ) from exc
+        return ProviderTestResult(
+            status="ok",
+            provider=provider,
+            test_kind="account_credit",
+            account_credit=account_credit,
+        )
+
+    def paid_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult:
+        return self.fallback.paid_test(provider, config)
+
+
+class StorageProviderTester:
+    def __init__(
+        self,
+        *,
+        fallback: ProviderTester | None = None,
+        storage_factory: Callable[[CloudStorageConfig], StorageAdapter] = create_storage_adapter,
+    ) -> None:
+        self.fallback = fallback or NoopProviderTester()
+        self.storage_factory = storage_factory
+
+    def connection_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult:
+        if provider != "cos":
+            return self.fallback.connection_test(provider, config)
+        if not config:
+            return self.fallback.connection_test(provider, config)
+
+        adapter: StorageAdapter | None = None
+        cleanup_required = False
+        put_succeeded = False
+        test_key = f"projects/settings-diagnostics/{uuid.uuid4().hex}.txt"
+        payload = b"video-replica storage connection check"
+        failure_phase = "initialize"
+        operation_error: Exception | None = None
+        cleanup_error: Exception | None = None
+        try:
+            adapter = self.storage_factory(cloud_storage_config_from_settings(provider, config))
+            cleanup_required = True
+            failure_phase = "put"
+            adapter.put_object(test_key, payload, content_type="text/plain")
+            put_succeeded = True
+            failure_phase = "head"
+            metadata = adapter.head_object(test_key)
+            failure_phase = "get"
+            content = adapter.get_object(test_key)
+            failure_phase = "verify"
+            if metadata is None or metadata.size != len(payload) or content != payload:
+                raise StorageBackendUnavailable("storage connection test verification failed")
+        except Exception as exc:
+            operation_error = exc
+        finally:
+            if adapter is not None and cleanup_required:
+                try:
+                    adapter.delete_object(test_key, actor_id="settings-diagnostic")
+                except Exception as exc:
+                    cleanup_error = exc
+                    logger.error("Storage connection test cleanup failed for provider %s", provider)
+
+        if cleanup_error is not None and put_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "STORAGE_CONNECTION_TEST_CLEANUP_FAILED",
+                    "cleanup_failed": True,
+                    "failure_phase": "delete",
+                    "message": "对象存储测试对象清理失败；可能残留测试对象，请检查本地服务日志。",
+                },
+            ) from cleanup_error
+        if isinstance(operation_error, ValueError):
+            logger.warning("Storage connection test has invalid settings for provider %s", provider)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "STORAGE_SETTINGS_INVALID",
+                    "cleanup_failed": cleanup_error is not None,
+                    "failure_phase": failure_phase,
+                    "message": "对象存储配置无效；请检查必填参数。",
+                },
+            ) from operation_error
+        if operation_error is not None:
+            logger.warning("Storage connection test failed for provider %s", provider)
+            message = "对象存储连接测试失败；请运行测试设置并查看本地服务日志。"
+            if cleanup_error is not None:
+                message = (
+                    "对象存储连接测试失败，且清理动作失败；可能残留测试对象，请查看本地服务日志。"
+                )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "STORAGE_CONNECTION_TEST_FAILED",
+                    "cleanup_failed": cleanup_error is not None,
+                    "failure_phase": failure_phase,
+                    "message": message,
+                },
+            ) from operation_error
+
+        return ProviderTestResult(status="ok", provider=provider, test_kind="storage_connection")
+
+    def paid_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult:
+        return self.fallback.paid_test(provider, config)
+
+
+def remove_cos_lifecycle_rules(
+    config: dict[str, str],
+    *,
+    actor_id: str,
+) -> dict[str, str]:
+    """保存 COS 配置后删除自动过期规则；失败不阻断配置保存。"""
+    try:
+        adapter = create_storage_adapter(cloud_storage_config_from_settings("cos", config))
+    except (ValueError, StorageBackendUnavailable) as exc:
+        logger.warning("COS lifecycle rule removal skipped: %s", exc, exc_info=True)
+        return {
+            "status": "skipped",
+            "message": "对象存储配置不完整或客户端初始化失败，已跳过旧媒体过期规则清理。",
+        }
+    cloud_adapter = adapter if isinstance(adapter, CloudStorageAdapter) else None
+    if cloud_adapter is None:
+        return {
+            "status": "skipped",
+            "message": "当前存储适配器不支持生命周期规则。",
+        }
+    try:
+        cloud_adapter.remove_lifecycle_rules(actor_id=actor_id)
+    except StorageBackendUnavailable as exc:
+        logger.warning("COS lifecycle rules removal failed: %s", exc)
+        return {
+            "status": "failed",
+            "message": "自动过期规则删除失败；配置已保存，可重新保存以重试。",
+        }
+    return {
+        "status": "removed",
+        "message": "已移除项目素材与成片的 180 天自动过期规则，按永久保存执行。",
+    }
+
+
+def get_provider_tester() -> ProviderTester:
+    return StorageProviderTester(fallback=HiflyProviderTester())
+
+
+def require_supported_provider(provider: str) -> ProviderName:
+    try:
+        return normalize_provider(provider)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "UNSUPPORTED_PROVIDER",
+                "message": "该服务已不受支持。",
+            },
+        ) from exc
+
+
+def merge_provider_config(
+    saved_config: dict[str, str], incoming_config: dict[str, str]
+) -> dict[str, str]:
+    merged = dict(saved_config)
+    for key, value in incoming_config.items():
+        # 掩码值（mask_secret 产出的 ******** 尾号形态）回传等于"未修改该
+        # 密钥"：保留库中原值，避免把真实凭据覆盖成星号字符串。
+        if is_secret_field(key) and value.strip().startswith("********"):
+            continue
+        if value.strip():
+            merged[key] = value
+        elif not is_secret_field(key):
+            merged.pop(key, None)
+    return merged
