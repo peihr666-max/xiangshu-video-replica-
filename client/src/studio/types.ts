@@ -252,6 +252,16 @@ export type StudioPublishDraft = {
   description: string;
   tags: string[];
 };
+export type StudioPublishAccount = {
+  id: string;
+  platform: "douyin" | "wechat_channels";
+  displayName: string;
+  status: "connected" | "invalid";
+  lastVerifiedAt: string | null;
+  errorMessage: string | null;
+  securitySdkRequired: boolean;
+  createdAt: string;
+};
 export type StudioState = {
   page: StudioPage;
   draft: StudioDraft;
@@ -265,6 +275,11 @@ export type StudioState = {
   savedScripts: StudioScript[];
   favorites: string[];
   publishDrafts?: StudioPublishDraft[];
+  /**
+   * C5 第一阶段：云端发布账号（正式模式由档案页「发布账号」tab 自行加载）。
+   * 发布记录 publishRecords 属第二阶段，本轮不引入。
+   */
+  publishAccounts?: StudioPublishAccount[];
 };
 export type LivePanel =
   | "projects"
