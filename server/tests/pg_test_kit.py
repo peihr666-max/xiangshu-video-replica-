@@ -45,6 +45,9 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "cw010_wallet_billing_test",
         "cw010_independent_test",
         "cw010_oral_test",
+        # CW-030 worker PG matrix: dedicated database for the converged
+        # worker scheduling/recovery matrix (test_cw030_worker_pg_matrix.py).
+        "cw030_worker_matrix_test",
         # CW-054 PG portable contract: dedicated database for executemany /
         # iterdump / set_trace_callback / _NamedRow / type-roundtrip /
         # constraint-exception mapping tests (segment 1/N).

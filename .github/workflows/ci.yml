@@ -214,6 +214,16 @@ jobs:
         # former `npm run check` minus its trailing full pytest, which now runs
         # sharded in the next step. Always runs: backend changes must be gated.
         run: npm run check:static
+      - name: Assert shard manifests cover every test file
+        # CI-7 (CW-061): fail-closed coverage guard, ordered BEFORE the sharded
+        # pytest. run-pytest-shards.sh only executes the files named in the
+        # committed shard manifests; without this assertion a stale split makes
+        # CI silently skip any test file added since the manifests were last
+        # regenerated (the CW-044 §18.2 fail-open gap: 13 files never ran, and
+        # the gap grows by one per new test file). Non-zero exit lists the
+        # uncovered/ghost entries and fails the gate; regenerate the manifests
+        # with `python3 scripts/ci/build-test-shards.py --shards 4` to clear it.
+        run: python3 scripts/ci/build-test-shards.py --check-coverage
       - name: Run sharded PostgreSQL pytest
         # Each shard gets its own isolated PostgreSQL container (distinct name +
         # host port), so the PG-touching test files never collide. Falls back to
@@ -324,47 +334,17 @@ jobs:
       - name: Install JavaScript dependencies
         if: needs.changes.outputs.desktop == 'true'
         run: npm ci
-      - name: Check Tauri project
+      - name: Check Tauri project (customer default)
         if: needs.changes.outputs.desktop == 'true'
         run: npm run check:tauri
-      - name: Check customer cloud target without local sidecar
+      # CW-022: the OS-native credential (DPAPI), durable-identity and
+      # download-registry tests are compiled out on Linux, so the Windows job
+      # must execute them natively.
+      - name: Run Rust credential and download tests on Windows
         if: needs.changes.outputs.desktop == 'true'
-        run: npm run check:tauri:customer
-      - name: Build unsigned internal NSIS installer
-        if: needs.changes.outputs.desktop == 'true'
-        run: npm run tauri:build -- --bundles nsis --no-sign --ci
-      - name: Record internal installer SHA256
-        if: needs.changes.outputs.desktop == 'true'
-        shell: pwsh
-        run: Get-FileHash .cargo-target/release/bundle/nsis/*.exe -Algorithm SHA256
-      - name: Archive unsigned internal NSIS installer locally
-        if: needs.changes.outputs.desktop == 'true'
-        shell: pwsh
-        env:
-          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts
-        run: |
-          if (-not $env:LOCAL_ARTIFACT_ROOT) {
-            throw 'LOCAL_ARTIFACT_ROOT must be configured for the Windows job'
-          }
-          $installers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
-          if (-not $installers) {
-            throw 'internal NSIS installer was not produced'
-          }
-          $destination = Join-Path $env:LOCAL_ARTIFACT_ROOT '${{ github.sha }}\internal'
-          New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          $installers | Copy-Item -Destination $destination -Force
-          $installers | Get-FileHash -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash) *$(Split-Path $_.Path -Leaf)" } |
-            Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding utf8
-      - name: Isolate customer NSIS output
-        if: needs.changes.outputs.desktop == 'true'
-        shell: pwsh
-        run: |
-          $internalInstallers = Get-ChildItem -LiteralPath '.cargo-target/release/bundle/nsis' -Filter '*.exe'
-          if (-not $internalInstallers) {
-            throw 'internal NSIS installer was not produced'
-          }
-          $internalInstallers | Remove-Item -Force
+        run: cargo test --manifest-path client/src-tauri/Cargo.toml --locked
+      # CW-021: the internal edition and its local sidecar are retired, so the
+      # Windows job builds only the customer cloud bundle.
       - name: Build unsigned customer cloud NSIS installer
         if: needs.changes.outputs.desktop == 'true'
         run: npm run tauri:build:customer
@@ -372,7 +352,7 @@ jobs:
           # Contract-only unsigned artifact. Release builds replace this
           # non-routable origin with the approved staging/production origin.
           VITE_API_BASE_URL: https://staging.example.invalid
-      - name: Verify customer installer excludes local launchers
+      - name: Verify customer installer excludes local backend distribution
         if: needs.changes.outputs.desktop == 'true'
         shell: pwsh
         run: |
@@ -394,10 +374,32 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'customer NSIS installer could not be inspected'
           }
-          $forbidden = Get-ChildItem -LiteralPath $extractRoot -Recurse -File |
-            Where-Object { $_.Name -in @('start-backend.bat', 'start-backend.sh') }
+          # CW-021 widened detection: the local sidecar is gone from the source
+          # tree, so the payload must not carry any local-backend launcher, an
+          # embedded server/Python runtime, an FFmpeg distribution, a SQLite
+          # business database, or boot-command/business-port markers.
+          $payload = Get-ChildItem -LiteralPath $extractRoot -Recurse -File
+          $forbiddenNames = @('start-backend.bat', 'start-backend.sh', 'pyvenv.cfg', 'ffmpeg.exe', 'ffprobe.exe')
+          $forbidden = $payload |
+            Where-Object {
+              $_.Name -in $forbiddenNames -or
+              $_.Extension -in @('.db', '.sqlite', '.sqlite3', '.pyd') -or
+              $_.FullName -match '[\\/](server|\.venv|ffmpeg)[\\/]'
+            }
           if ($forbidden) {
-            throw "customer installer contains local launchers: $($forbidden.FullName -join ', ')"
+            throw "customer installer contains local backend distribution: $($forbidden.FullName -join ', ')"
+          }
+          $binaryMarkers = @('start-backend', 'VIDEO_REPLICA_BOOT_COMMAND', '127.0.0.1:8000')
+          $binaries = $payload | Where-Object { $_.Extension -in @('.exe', '.dll') }
+          foreach ($binary in $binaries) {
+            $bytes = [System.IO.File]::ReadAllBytes($binary.FullName)
+            foreach ($marker in $binaryMarkers) {
+              foreach ($encoding in @([System.Text.Encoding]::ASCII, [System.Text.Encoding]::Unicode)) {
+                if ($encoding.GetString($bytes).Contains($marker)) {
+                  throw "customer installer binary $($binary.Name) contains local backend marker '$marker'"
+                }
+              }
+            }
           }
       - name: Record customer cloud installer SHA256
         if: needs.changes.outputs.desktop == 'true'
@@ -416,9 +418,15 @@ jobs:
           if (-not $installers) {
             throw 'customer NSIS installer was not produced'
           }
-          $destination = Join-Path $env:LOCAL_ARTIFACT_ROOT '${{ github.sha }}\customer-cloud'
+          $destination = Join-Path $env:LOCAL_ARTIFACT_ROOT '${{ github.sha }}\customer-cloud-internal-test-unsigned'
           New-Item -ItemType Directory -Path $destination -Force | Out-Null
           $installers | Copy-Item -Destination $destination -Force
           $installers | Get-FileHash -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash) *$(Split-Path $_.Path -Leaf)" } |
             Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding utf8
+          # CW-024: this CI artifact is a --no-sign contract-only build. The
+          # machine-readable channel label marks it internal-test-only so an
+          # unsigned installer can never be mistaken for a customer release;
+          # the sole release channel is the signed flow in
+          # scripts/release/build-customer-signed-release.ps1.
+          Set-Content -LiteralPath (Join-Path $destination 'RELEASE-CHANNEL.txt') -Value 'internal-test-unsigned' -Encoding utf8

@@ -12,11 +12,11 @@ or quota data leaves the process.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 import psycopg
 
+from app.db_pg import CliDatabaseConfigError, resolve_cli_pg_dsn
 from app.db_portable import BusinessConnection
 from app.internal_billing import (
     find_dangling_billing_reservations,
@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--database-url",
-        default=os.environ.get("VIDEO_REPLICA_DATABASE_URL", ""),
+        default="",
         help="PostgreSQL DSN (defaults to VIDEO_REPLICA_DATABASE_URL)",
     )
     parser.add_argument(
@@ -46,17 +46,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.database_url.strip():
-        print(
-            "error: --database-url or VIDEO_REPLICA_DATABASE_URL is required",
-            file=sys.stderr,
-        )
+    try:
+        database_url = resolve_cli_pg_dsn(args.database_url)
+    except CliDatabaseConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     if args.limit < 1:
         print("error: --limit must be positive", file=sys.stderr)
         return 1
 
-    with psycopg.connect(args.database_url) as raw:
+    with psycopg.connect(database_url) as raw:
         with raw.transaction():
             conn = BusinessConnection.postgres(raw)
             if args.dry_run:

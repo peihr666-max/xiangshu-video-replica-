@@ -81,13 +81,16 @@ def test_write_evidence_manifest_hashes_evidence_but_excludes_runtime(tmp_path: 
     paths = prepare_gate1_run(tmp_path, run_id="manifest-run")
     api_log = paths.logs_dir / "api.log"
     screenshot = paths.screenshots_dir / "workspace.png"
-    database = paths.runtime_dir / "gate1.sqlite3"
+    # CW-057: the runtime directory no longer holds a database file (the Gate 1
+    # runtime database is PostgreSQL); private runtime state is still excluded
+    # from the evidence manifest whatever its name is.
+    runtime_state = paths.runtime_dir / "private-runtime-state.json"
     # newline="" keeps the on-disk bytes identical to the hashed b"...\n"
     # literals below; the default text-mode newline translation on Windows
     # would otherwise turn \n into \r\n and break the manifest hash.
     api_log.write_text("api ready\n", encoding="utf-8", newline="")
     screenshot.write_bytes(b"fake-png")
-    database.write_bytes(b"private-runtime-state")
+    runtime_state.write_bytes(b"private-runtime-state")
 
     manifest_path = write_evidence_manifest(paths, status="failed", commit_sha="abc123")
 
@@ -424,9 +427,12 @@ def test_gate1_runtime_environment_forces_isolated_desktop_auth(
     monkeypatch.setenv("VIDEO_REPLICA_ALLOW_DEV_IDENTITY_HEADER", "1")
     monkeypatch.setenv("VITE_GENERATION_PROVIDER", "metaso")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://production.example.com")
+    # A leftover DB_PATH would make the PG-only child resolver reject the run,
+    # so the harness must strip it from the child environment.
+    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "leftover.sqlite3"))
 
     environment = gate1_e2e._gate1_runtime_environment(
-        database_path=tmp_path / "gate1.sqlite3",
+        database_url="postgresql://gate1:secret@localhost:5433/gate1_e2e",
         storage_root=tmp_path / "storage",
         settings_key="test-settings-key",
         fake_h3_result_path=tmp_path / "reference.mp4",
@@ -439,6 +445,12 @@ def test_gate1_runtime_environment_forces_isolated_desktop_auth(
     assert environment["VITE_API_BASE_URL"] == "http://127.0.0.1:18000"
     assert environment["VIDEO_REPLICA_LOCAL_API_BASE_URL"] == "http://127.0.0.1:18000"
     assert environment["PUBLIC_BASE_URL"] == ""
+    # CW-057: the Gate 1 runtime database is PostgreSQL only.
+    assert (
+        environment["VIDEO_REPLICA_DATABASE_URL"]
+        == "postgresql://gate1:secret@localhost:5433/gate1_e2e"
+    )
+    assert "VIDEO_REPLICA_DB_PATH" not in environment
 
 
 def test_run_metadata_records_whether_the_suite_is_filtered(tmp_path: Path) -> None:

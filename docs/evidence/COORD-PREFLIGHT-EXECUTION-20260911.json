@@ -1,0 +1,1826 @@
+{
+  "task": "COORD-PREFLIGHT-EXECUTION-20260911",
+  "captured_at": "2026-09-11T07:06:43.524307+00:00",
+  "refs": {
+    "main": "dfe7711969f70a85a720aa62e93fc17609ce8058",
+    "cw059": "6ebc2377e038cd11cd34f82e21f6a047acddf664",
+    "cw061": "c53cf0596e702801f9f0bd4ee4e3bc22e7460413",
+    "cw044": "d9b4cc4da9cacf693bd5119263b5c7580cdfb958"
+  },
+  "scope": "Static handoff preparation only; not a business coverage acceptance or PG test run.",
+  "shard_membership": {
+    "main": {
+      "source_test_file_count": 112,
+      "manifest_entry_count": 99,
+      "manifest_unique_count": 99,
+      "missing": [
+        "tests/test_cw024_signed_release_upgrade_contracts.py",
+        "tests/test_cw026_converged_auth.py",
+        "tests/test_cw027_admin_permission_matrix.py",
+        "tests/test_cw028_shared_settings_contract.py",
+        "tests/test_cw029_billing_pg_matrix.py",
+        "tests/test_cw030_worker_pg_matrix.py",
+        "tests/test_cw032_delivery_package.py",
+        "tests/test_cw054_pg_portable_contract.py",
+        "tests/test_cw056_supported_head_matrix.py",
+        "tests/test_cw057_cli_pg_entry.py",
+        "tests/test_cw058_content_asset_pg_matrix.py",
+        "tests/test_cw060_operator_isolation.py",
+        "tests/test_storage_cross_instance.py"
+      ],
+      "duplicates": [],
+      "stale": [],
+      "basis": "File membership only, not pytest collection or executed case counts."
+    },
+    "cw061": {
+      "source_test_file_count": 113,
+      "manifest_entry_count": 113,
+      "manifest_unique_count": 113,
+      "missing": [],
+      "duplicates": [],
+      "stale": [],
+      "basis": "File membership only, not pytest collection or executed case counts."
+    }
+  },
+  "targeted_source_inventory": [
+    {
+      "source": "main",
+      "path": "server/tests/test_materials.py",
+      "functions": [
+        {
+          "name": "test_lists_owned_stored_and_direct_materials_with_server_pagination",
+          "line": 120,
+          "parametrized": false
+        },
+        {
+          "name": "test_direct_result_is_visible_but_not_presented_as_cloud_asset",
+          "line": 140,
+          "parametrized": false
+        },
+        {
+          "name": "test_upload_audio_to_storage_then_complete_and_list_it",
+          "line": 161,
+          "parametrized": false
+        },
+        {
+          "name": "test_audio_upload_intent_enforces_purpose_duration_contract",
+          "line": 216,
+          "parametrized": true
+        },
+        {
+          "name": "test_audio_complete_rejects_duration_that_differs_from_browser_claim",
+          "line": 238,
+          "parametrized": false
+        },
+        {
+          "name": "test_historical_audio_without_verified_purpose_is_read_only",
+          "line": 266,
+          "parametrized": false
+        },
+        {
+          "name": "test_non_audio_upload_rejects_audio_purpose",
+          "line": 294,
+          "parametrized": false
+        },
+        {
+          "name": "test_upload_intent_rejects_unsupported_or_mismatched_media",
+          "line": 319,
+          "parametrized": true
+        },
+        {
+          "name": "test_rename_hide_and_resolve_hidden_material",
+          "line": 337,
+          "parametrized": false
+        },
+        {
+          "name": "test_auditor_cannot_change_material_library",
+          "line": 375,
+          "parametrized": true
+        },
+        {
+          "name": "test_complete_rejects_bytes_that_do_not_match_declared_media",
+          "line": 388,
+          "parametrized": false
+        },
+        {
+          "name": "test_local_material_upload_uses_authenticated_api_endpoint",
+          "line": 413,
+          "parametrized": false
+        },
+        {
+          "name": "test_other_user_cannot_complete_material_upload",
+          "line": 447,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 13,
+      "executed_cases": null
+    },
+    {
+      "source": "main",
+      "path": "server/tests/test_studio_analytics.py",
+      "functions": [
+        {
+          "name": "test_daily_series_covers_full_window_by_beijing_day",
+          "line": 262,
+          "parametrized": false
+        },
+        {
+          "name": "test_analytics_uses_one_clock_read_across_beijing_midnight",
+          "line": 296,
+          "parametrized": false
+        },
+        {
+          "name": "test_kind_breakdown_counts_only_visible_completed_tasks",
+          "line": 352,
+          "parametrized": false
+        },
+        {
+          "name": "test_task_stats_combine_visible_generation_and_oral_statuses",
+          "line": 385,
+          "parametrized": false
+        },
+        {
+          "name": "test_recent_works_sorted_scoped_and_capped",
+          "line": 405,
+          "parametrized": false
+        },
+        {
+          "name": "test_recent_works_cap_at_twenty",
+          "line": 449,
+          "parametrized": false
+        },
+        {
+          "name": "test_days_window_is_clamped",
+          "line": 487,
+          "parametrized": false
+        },
+        {
+          "name": "test_analytics_route_scopes_by_caller",
+          "line": 502,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 8,
+      "executed_cases": null
+    },
+    {
+      "source": "main",
+      "path": "server/tests/test_viral_import.py",
+      "functions": [
+        {
+          "name": "test_enqueue_creates_project_and_replays_same_request",
+          "line": 104,
+          "parametrized": false
+        },
+        {
+          "name": "test_idempotency_conflict_and_permissions",
+          "line": 116,
+          "parametrized": false
+        },
+        {
+          "name": "test_existing_project_must_be_owned",
+          "line": 143,
+          "parametrized": false
+        },
+        {
+          "name": "test_worker_imports_project_asset_and_exposes_capabilities",
+          "line": 184,
+          "parametrized": false
+        },
+        {
+          "name": "test_completion_rejects_project_owner_change",
+          "line": 238,
+          "parametrized": false
+        },
+        {
+          "name": "test_copy_uses_audio_only_when_source_marks_it_verified",
+          "line": 280,
+          "parametrized": false
+        },
+        {
+          "name": "test_retryable_failure_reuses_task_and_project",
+          "line": 307,
+          "parametrized": false
+        },
+        {
+          "name": "test_worker_project_transfer_failure_is_not_replayed_with_same_key",
+          "line": 331,
+          "parametrized": false
+        },
+        {
+          "name": "test_worker_missing_source_failure_stays_terminal_and_replay_is_controlled",
+          "line": 385,
+          "parametrized": false
+        },
+        {
+          "name": "test_unavailable_video_and_missing_idempotency_are_rejected",
+          "line": 430,
+          "parametrized": false
+        },
+        {
+          "name": "test_runtime_switch_blocks_new_imports",
+          "line": 455,
+          "parametrized": false
+        },
+        {
+          "name": "test_cached_wechat_media_imports_without_source_settings",
+          "line": 467,
+          "parametrized": false
+        },
+        {
+          "name": "test_two_imports_share_one_durable_public_media_preparation",
+          "line": 498,
+          "parametrized": false
+        },
+        {
+          "name": "test_import_rejects_same_size_copy_with_mismatched_hash",
+          "line": 543,
+          "parametrized": false
+        },
+        {
+          "name": "test_sqlite_worker_rolls_back_partial_asset_before_marking_failure",
+          "line": 583,
+          "parametrized": false
+        },
+        {
+          "name": "test_stale_attempt_cannot_publish_asset_even_with_same_worker_id",
+          "line": 643,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 16,
+      "executed_cases": null
+    },
+    {
+      "source": "main",
+      "path": "server/tests/test_first_frames.py",
+      "functions": [
+        {
+          "name": "test_source_frame_quality_wrapper_uses_one_bounded_attempt",
+          "line": 105,
+          "parametrized": false
+        },
+        {
+          "name": "test_contact_sheet_prompt_keeps_server_template_before_user_addition",
+          "line": 192,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_task_is_idempotent_and_worker_publishes_result",
+          "line": 392,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_write_role_gate_and_customer_access",
+          "line": 448,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_task_exposes_real_worker_stage",
+          "line": 493,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_idempotent_replay_requires_project_access",
+          "line": 557,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_task_replay_survives_input_change_but_worker_fails_closed",
+          "line": 585,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_task_storage_read_failure_is_retryable_before_provider_submit",
+          "line": 637,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_task_lease_loss_rolls_back_published_rows",
+          "line": 684,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_task_lease_can_be_renewed_during_long_quality_work",
+          "line": 752,
+          "parametrized": false
+        },
+        {
+          "name": "test_final_retryable_provider_failure_stops_automatic_paid_retry",
+          "line": 797,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_task_publishes_rejected_candidates_with_quality_labels",
+          "line": 839,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_task_reuses_checkpoint_after_quality_service_recovers",
+          "line": 901,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_checkpoint_rejects_a_different_provider",
+          "line": 993,
+          "parametrized": false
+        },
+        {
+          "name": "test_new_first_frame_task_does_not_copy_legacy_checkpoint_without_execution",
+          "line": 1092,
+          "parametrized": false
+        },
+        {
+          "name": "test_expired_first_frame_task_does_not_resume_legacy_checkpoint_without_execution",
+          "line": 1137,
+          "parametrized": false
+        },
+        {
+          "name": "test_acquired_first_frame_task_rejects_legacy_checkpoint_without_execution",
+          "line": 1178,
+          "parametrized": false
+        },
+        {
+          "name": "test_new_first_frame_task_reuses_checkpoint_from_uncertain_task",
+          "line": 1229,
+          "parametrized": false
+        },
+        {
+          "name": "test_generate_candidates_archives_them_and_preserves_image_input_order",
+          "line": 1308,
+          "parametrized": false
+        },
+        {
+          "name": "test_project_appearance_uses_the_selected_source_frame_scene",
+          "line": 1352,
+          "parametrized": false
+        },
+        {
+          "name": "test_project_appearance_uses_half_open_segment_boundaries",
+          "line": 1384,
+          "parametrized": false
+        },
+        {
+          "name": "test_selected_scene_look_is_the_authoritative_outfit_for_first_frame",
+          "line": 1412,
+          "parametrized": false
+        },
+        {
+          "name": "test_full_person_prompt_uses_project_appearance_instead_of_copying_reference_clothes",
+          "line": 1464,
+          "parametrized": false
+        },
+        {
+          "name": "test_quality_gate_retries_a_head_only_result_before_publishing",
+          "line": 1517,
+          "parametrized": false
+        },
+        {
+          "name": "test_quality_gate_blocks_generation_when_selected_source_frame_has_multiple_people",
+          "line": 1555,
+          "parametrized": false
+        },
+        {
+          "name": "test_customer_production_rejects_fake_first_frame_quality_override",
+          "line": 1579,
+          "parametrized": false
+        },
+        {
+          "name": "test_analysis_person_count_blocks_multi_person_video_before_paid_generation",
+          "line": 1595,
+          "parametrized": false
+        },
+        {
+          "name": "test_legacy_analysis_without_person_count_requires_reanalysis_before_paid_generation",
+          "line": 1646,
+          "parametrized": false
+        },
+        {
+          "name": "test_custom_prompt_cannot_bypass_the_no_text_constraint",
+          "line": 1694,
+          "parametrized": false
+        },
+        {
+          "name": "test_confirmed_first_frame_is_versioned_and_latest_candidates_invalidate_old_confirmation",
+          "line": 1721,
+          "parametrized": false
+        },
+        {
+          "name": "test_uninspected_legacy_first_frame_candidate_cannot_be_confirmed",
+          "line": 1754,
+          "parametrized": false
+        },
+        {
+          "name": "test_unverified_first_frame_confirmation_requires_explicit_override",
+          "line": 1804,
+          "parametrized": false
+        },
+        {
+          "name": "test_employee_can_view_newest_first_frame_candidate_versions",
+          "line": 1869,
+          "parametrized": false
+        },
+        {
+          "name": "test_generation_retries_one_transient_image_provider_failure",
+          "line": 1894,
+          "parametrized": false
+        },
+        {
+          "name": "test_source_frame_reconfirmation_makes_existing_first_frame_candidates_stale",
+          "line": 1914,
+          "parametrized": false
+        },
+        {
+          "name": "test_new_analysis_invalidates_project_appearance_and_first_frame_candidates",
+          "line": 1943,
+          "parametrized": false
+        },
+        {
+          "name": "test_main_character_reselection_makes_confirmed_first_frame_stale",
+          "line": 1997,
+          "parametrized": false
+        },
+        {
+          "name": "test_generation_uses_the_selected_character_snapshot_for_reference_order",
+          "line": 2031,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 38,
+      "executed_cases": null
+    },
+    {
+      "source": "main",
+      "path": "server/tests/test_source_frames.py",
+      "functions": [
+        {
+          "name": "test_missing_semantic_settings_fall_back_to_local_scoring",
+          "line": 181,
+          "parametrized": false
+        },
+        {
+          "name": "test_owner_can_extract_candidates_and_confirm_one",
+          "line": 244,
+          "parametrized": false
+        },
+        {
+          "name": "test_owner_can_cancel_a_stuck_source_frame_task_and_enqueue_again",
+          "line": 315,
+          "parametrized": false
+        },
+        {
+          "name": "test_owner_can_submit_all_five_adaptive_timestamps",
+          "line": 343,
+          "parametrized": false
+        },
+        {
+          "name": "test_expired_source_frame_task_requires_manual_recovery_without_retry",
+          "line": 357,
+          "parametrized": false
+        },
+        {
+          "name": "test_owner_cannot_restart_a_running_source_frame_task",
+          "line": 391,
+          "parametrized": false
+        },
+        {
+          "name": "test_ffmpeg_extractor_uses_one_process_for_all_requested_frames",
+          "line": 430,
+          "parametrized": false
+        },
+        {
+          "name": "test_semantic_source_frame_score_can_beat_a_sharper_but_unsuitable_frame",
+          "line": 466,
+          "parametrized": false
+        },
+        {
+          "name": "test_source_frame_extraction_requires_owner_and_ready_reference",
+          "line": 503,
+          "parametrized": false
+        },
+        {
+          "name": "test_confirmation_rejects_assets_outside_the_latest_candidate_set",
+          "line": 528,
+          "parametrized": false
+        },
+        {
+          "name": "test_reextracting_source_frames_makes_the_previous_selection_stale",
+          "line": 554,
+          "parametrized": false
+        },
+        {
+          "name": "test_owner_can_reextract_manually_selected_timestamps_across_the_full_video",
+          "line": 591,
+          "parametrized": false
+        },
+        {
+          "name": "test_manual_source_frame_timestamp_must_be_inside_the_video_duration",
+          "line": 616,
+          "parametrized": false
+        },
+        {
+          "name": "test_manual_source_frame_timestamp_rejects_non_finite_values",
+          "line": 635,
+          "parametrized": true
+        },
+        {
+          "name": "test_manual_source_frame_timestamp_rejects_invalid_ranges_or_duplicates",
+          "line": 645,
+          "parametrized": true
+        },
+        {
+          "name": "test_technical_frame_score_prefers_high_detail_over_a_flat_frame",
+          "line": 658,
+          "parametrized": false
+        },
+        {
+          "name": "test_ffmpeg_extractor_returns_scored_jpegs_for_requested_timestamps",
+          "line": 668,
+          "parametrized": false
+        },
+        {
+          "name": "test_empty_extracted_frame_is_reported_as_an_extraction_failure",
+          "line": 705,
+          "parametrized": false
+        },
+        {
+          "name": "test_database_failure_removes_uploaded_candidate_frames",
+          "line": 739,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 19,
+      "executed_cases": null
+    },
+    {
+      "source": "main",
+      "path": "server/tests/test_script_from_audio.py",
+      "functions": [
+        {
+          "name": "test_enqueue_returns_202_and_replays_idempotently",
+          "line": 135,
+          "parametrized": false
+        },
+        {
+          "name": "test_auditor_cannot_enqueue",
+          "line": 166,
+          "parametrized": false
+        },
+        {
+          "name": "test_other_user_cannot_read_task",
+          "line": 175,
+          "parametrized": false
+        },
+        {
+          "name": "test_worker_pipeline_completes_and_deletes_temp_audio",
+          "line": 191,
+          "parametrized": false
+        },
+        {
+          "name": "test_latest_endpoint_returns_newest_task",
+          "line": 229,
+          "parametrized": false
+        },
+        {
+          "name": "test_worker_cleans_durable_terminal_audio_after_restart",
+          "line": 247,
+          "parametrized": false
+        },
+        {
+          "name": "test_active_project_has_database_mutex",
+          "line": 268,
+          "parametrized": false
+        },
+        {
+          "name": "test_expired_audio_lease_cannot_change_recovered_state",
+          "line": 281,
+          "parametrized": true
+        },
+        {
+          "name": "test_invalid_source_rejected_before_enqueue",
+          "line": 323,
+          "parametrized": true
+        },
+        {
+          "name": "test_missing_asr_configuration_is_a_business_error",
+          "line": 333,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_worker_consumes_audio_outside_transaction",
+          "line": 347,
+          "parametrized": false
+        },
+        {
+          "name": "test_audio_receipt_survives_worker_retry_without_reupload_or_resubmit",
+          "line": 400,
+          "parametrized": false
+        },
+        {
+          "name": "test_local_media_failure_is_not_marked_as_provider_submission",
+          "line": 468,
+          "parametrized": false
+        },
+        {
+          "name": "test_existing_audio_receipt_waits_for_configuration_recovery",
+          "line": 491,
+          "parametrized": false
+        },
+        {
+          "name": "test_worker_failures_delete_temp_audio_and_surface_error",
+          "line": 515,
+          "parametrized": false
+        },
+        {
+          "name": "test_missing_ffmpeg_fails_closed",
+          "line": 558,
+          "parametrized": false
+        },
+        {
+          "name": "test_transcript_result_dataclass_defaults",
+          "line": 599,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 17,
+      "executed_cases": null
+    },
+    {
+      "source": "main",
+      "path": "server/tests/test_cw058_content_asset_pg_matrix.py",
+      "functions": [
+        {
+          "name": "test_optional_project_state_routes_conceal_foreign_projects_on_real_pg",
+          "line": 215,
+          "parametrized": false
+        },
+        {
+          "name": "test_versions_unique_constraint_and_project_cascade_on_real_pg",
+          "line": 256,
+          "parametrized": false
+        },
+        {
+          "name": "test_main_character_selection_freezes_snapshot_and_is_idempotent_on_pg",
+          "line": 428,
+          "parametrized": false
+        },
+        {
+          "name": "test_character_selection_rejects_unavailable_and_auditor_on_pg",
+          "line": 477,
+          "parametrized": false
+        },
+        {
+          "name": "test_studio_draft_roundtrip_upsert_isolation_and_delete_on_pg",
+          "line": 516,
+          "parametrized": false
+        },
+        {
+          "name": "test_saved_scripts_ordering_cap_and_isolation_on_pg",
+          "line": 569,
+          "parametrized": false
+        },
+        {
+          "name": "test_notification_preferences_upsert_keeps_single_row_on_pg",
+          "line": 609,
+          "parametrized": false
+        },
+        {
+          "name": "test_studio_task_stats_scope_and_hidden_batch_on_real_pg",
+          "line": 694,
+          "parametrized": false
+        },
+        {
+          "name": "test_media_upload_persists_asset_analysis_and_project_status_on_pg",
+          "line": 763,
+          "parametrized": false
+        },
+        {
+          "name": "test_media_upload_dedup_reuses_owned_hash_never_foreign_on_pg",
+          "line": 798,
+          "parametrized": false
+        },
+        {
+          "name": "test_media_completion_rolls_back_atomically_when_enqueue_fails_on_pg",
+          "line": 855,
+          "parametrized": false
+        },
+        {
+          "name": "test_materials_pagination_hide_rename_and_audit_on_pg",
+          "line": 917,
+          "parametrized": false
+        },
+        {
+          "name": "test_asset_access_owner_scoping_on_pg",
+          "line": 1013,
+          "parametrized": false
+        },
+        {
+          "name": "test_character_review_history_latest_decision_wins_on_pg",
+          "line": 1172,
+          "parametrized": false
+        },
+        {
+          "name": "test_publish_freezes_hash_and_enforces_published_view_uniqueness_on_pg",
+          "line": 1222,
+          "parametrized": false
+        },
+        {
+          "name": "test_viral_store_upsert_dedup_and_statistics_coalesce_on_pg",
+          "line": 1298,
+          "parametrized": false
+        },
+        {
+          "name": "test_viral_keyset_pagination_and_cursor_invalidation_on_pg",
+          "line": 1341,
+          "parametrized": false
+        },
+        {
+          "name": "test_viral_favorites_idempotent_isolated_and_paginated_on_pg",
+          "line": 1381,
+          "parametrized": false
+        },
+        {
+          "name": "test_viral_hidden_visibility_excluded_from_list_on_pg",
+          "line": 1424,
+          "parametrized": false
+        },
+        {
+          "name": "test_viral_refresh_pg_lane_enqueues_and_worker_consumes_on_pg",
+          "line": 1450,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 20,
+      "executed_cases": null
+    },
+    {
+      "source": "main",
+      "path": "server/tests/test_cw030_worker_pg_matrix.py",
+      "functions": [
+        {
+          "name": "test_independent_double_claim_is_exclusive",
+          "line": 308,
+          "parametrized": false
+        },
+        {
+          "name": "test_independent_expired_lease_marks_uncertain_and_releases_slot",
+          "line": 321,
+          "parametrized": false
+        },
+        {
+          "name": "test_independent_late_uncertainty_cannot_disturb_replacement",
+          "line": 341,
+          "parametrized": false
+        },
+        {
+          "name": "test_independent_worker_settles_exactly_once_on_pg",
+          "line": 377,
+          "parametrized": false
+        },
+        {
+          "name": "test_independent_crash_after_claim_never_blind_resubmits",
+          "line": 415,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_double_claim_is_exclusive",
+          "line": 499,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_expired_without_checkpoint_is_quarantined",
+          "line": 512,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_expired_with_checkpoint_resumes",
+          "line": 534,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_stale_lease_failure_is_a_noop",
+          "line": 560,
+          "parametrized": false
+        },
+        {
+          "name": "test_first_frame_submission_fence_splits_uncertain_and_retryable",
+          "line": 589,
+          "parametrized": false
+        },
+        {
+          "name": "test_character_sheet_double_claim_and_expiry",
+          "line": 626,
+          "parametrized": false
+        },
+        {
+          "name": "test_character_generation_skip_locked_double_claim",
+          "line": 718,
+          "parametrized": false
+        },
+        {
+          "name": "test_character_generation_expired_lease_with_attempts_left_recovers",
+          "line": 735,
+          "parametrized": false
+        },
+        {
+          "name": "test_character_generation_exhausted_attempts_fail_closed",
+          "line": 754,
+          "parametrized": false
+        },
+        {
+          "name": "test_source_frame_double_claim_is_exclusive",
+          "line": 828,
+          "parametrized": false
+        },
+        {
+          "name": "test_source_frame_expired_fails_closed_to_manual_recovery",
+          "line": 839,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_worker_round_processes_source_frames_with_missing_quality_settings",
+          "line": 860,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_rewrite_claim_is_exclusive",
+          "line": 946,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_rewrite_expired_submission_quarantines_without_recall",
+          "line": 954,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_rewrite_network_timeout_lands_uncertain_not_retried",
+          "line": 975,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_rewrite_stale_completion_cannot_overwrite_recovered_state",
+          "line": 1005,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_rewrite_worker_settles_on_pg",
+          "line": 1040,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_from_audio_claim_is_exclusive",
+          "line": 1091,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_from_audio_expired_presubmission_lease_resets_to_pending",
+          "line": 1100,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_from_audio_expired_inflight_submission_quarantines",
+          "line": 1122,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_from_audio_provider_failure_is_terminal_without_resubmit",
+          "line": 1142,
+          "parametrized": false
+        },
+        {
+          "name": "test_script_from_audio_receipt_survives_retry",
+          "line": 1167,
+          "parametrized": false
+        },
+        {
+          "name": "test_mixed_h3_and_independent_rotation_within_frozen_bounds",
+          "line": 1195,
+          "parametrized": false
+        },
+        {
+          "name": "test_second_device_cannot_grow_same_user_running_slot",
+          "line": 1217,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 29,
+      "executed_cases": null
+    },
+    {
+      "source": "cw059",
+      "path": "server/tests/test_cw059_billing_pg_matrix.py",
+      "functions": [
+        {
+          "name": "test_pg_wallets_reject_negative_available_and_reserved",
+          "line": 225,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_recharge_orders_reject_duplicate_merchant_order_no",
+          "line": 250,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_recharge_orders_reject_duplicate_provider_trade_no",
+          "line": 272,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_recharge_orders_reject_blank_provider_trade_no",
+          "line": 315,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_wallet_transactions_reject_duplicate_idempotency_key",
+          "line": 337,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_wallet_transactions_reject_duplicate_charge_per_order",
+          "line": 377,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_wallet_transactions_reject_duplicate_reserve_round",
+          "line": 417,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_wallet_transactions_reject_duplicate_terminal_round",
+          "line": 459,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_wallet_transactions_reject_malformed_ledger_shape",
+          "line": 513,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_ledger_sequence_is_immutable_on_update",
+          "line": 537,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_concurrent_duplicate_merchant_order_no_commits_exactly_once",
+          "line": 605,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_concurrent_duplicate_charge_per_order_commits_exactly_once",
+          "line": 629,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 12,
+      "executed_cases": null
+    },
+    {
+      "source": "cw059",
+      "path": "server/tests/test_cw059_task_worker_pg_matrix.py",
+      "functions": [
+        {
+          "name": "test_pg_generation_tasks_reject_negative_attempt",
+          "line": 283,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_generation_batches_reject_duplicate_idempotency_key",
+          "line": 299,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_generation_tasks_reject_orphan_batch_foreign_key",
+          "line": 322,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_generation_batch_delete_cascades_to_tasks",
+          "line": 335,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_character_generation_tasks_reject_uncertain_status",
+          "line": 359,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_source_frame_tasks_reject_uncertain_status",
+          "line": 381,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_first_frame_tasks_status_enum_boundary",
+          "line": 398,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_operation_cost_records_accept_unknown_reject_bad_status_and_unit",
+          "line": 427,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_operation_cost_records_reject_negative_and_enforce_source_subject_unique",
+          "line": 449,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_script_rewrite_tasks_enforce_ip_profile_shape",
+          "line": 476,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_script_rewrite_tasks_reject_second_active_per_project",
+          "line": 531,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_generation_task_operations_enforce_idempotency_unique",
+          "line": 575,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_concurrent_duplicate_batch_idempotency_commits_exactly_once",
+          "line": 638,
+          "parametrized": false
+        },
+        {
+          "name": "test_pg_concurrent_operation_cost_freeze_commits_exactly_once",
+          "line": 665,
+          "parametrized": false
+        }
+      ],
+      "test_function_count": 14,
+      "executed_cases": null
+    },
+    {
+      "source": "cw059",
+      "path": "server/tests/test_cw059_rbac_pg_matrix.py",
+      "functions": [
+        {
+          "name": "test_pg_project_delete_blocked_by_active_generation_task",
+          "line": 180,
+          "parametrized": true
+        },
+        {
+          "name": "test_pg_project_delete_allowed_once_generation_task_terminal",
+          "line": 215,
+          "parametrized": true
+        }
+      ],
+      "test_function_count": 2,
+      "executed_cases": null
+    }
+  ],
+  "open_prs": [
+    {
+      "number": 38,
+      "title": "COORD-PREFLIGHT: add the new-task readiness checklist",
+      "head": "8339044a5a9a169aeb61c0764bbfec3f6f0414d7",
+      "branch": "docs/customer-task-preflight-checklist",
+      "draft": true
+    },
+    {
+      "number": 36,
+      "title": "CW-061: fail-closed shard-coverage guard for the CI Linux pytest gate",
+      "head": "c53cf0596e702801f9f0bd4ee4e3bc22e7460413",
+      "branch": "feat/customer-v3-cw061-ci-shard-coverage-guard",
+      "draft": false
+    },
+    {
+      "number": 35,
+      "title": "COORD-DATA-DECISION: land data disposition decision (fresh empty PG, no legacy migration)",
+      "head": "fef686b5d459f6dd30bb64eae80394916a3b7dca",
+      "branch": "docs/cw005-disposition-decision",
+      "draft": false
+    }
+  ],
+  "base_main_checks": [
+    {
+      "name": "Windows Tauri and NSIS",
+      "status": "in_progress",
+      "conclusion": null,
+      "html_url": "https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/34572418405/job/103177329517"
+    },
+    {
+      "name": "Linux quality gate",
+      "status": "in_progress",
+      "conclusion": null,
+      "html_url": "https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/34572418405/job/103177329478"
+    },
+    {
+      "name": "Secret scan",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/34572418405/job/103177280241"
+    },
+    {
+      "name": "Select runner",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/34572418405/job/103177280231"
+    },
+    {
+      "name": "Detect changes",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/34572418405/job/103177280105"
+    }
+  ],
+  "cw061_linux_job": {
+    "head_sha": "c53cf0596e702801f9f0bd4ee4e3bc22e7460413",
+    "conclusion": "failure",
+    "html_url": "https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/34570087198/job/103170200044",
+    "runner_name": "GitHub Actions 1000000489",
+    "steps": [
+      {
+        "number": 1,
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 2,
+        "name": "Checkout repository",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 3,
+        "name": "Install system dependencies (Tauri + ffmpeg)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 4,
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 5,
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 6,
+        "name": "Set up uv",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 7,
+        "name": "Set up Rust",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 8,
+        "name": "Install JavaScript dependencies",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 9,
+        "name": "Install Python dependencies",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 10,
+        "name": "Run static quality checks",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 11,
+        "name": "Assert shard manifests cover every test file",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 12,
+        "name": "Run sharded PostgreSQL pytest",
+        "status": "completed",
+        "conclusion": "failure"
+      },
+      {
+        "number": 13,
+        "name": "Start PostgreSQL fixture for E2E",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 14,
+        "name": "Install Playwright Chromium",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 15,
+        "name": "Run customer browser E2E",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 16,
+        "name": "Run Rust tests",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 17,
+        "name": "Build web client",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 18,
+        "name": "Build admin bundle",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 19,
+        "name": "Verify customer bundle excludes admin and internal entries",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 20,
+        "name": "Audit JavaScript dependencies",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 21,
+        "name": "Stop PostgreSQL fixture",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 39,
+        "name": "Post Set up uv",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 40,
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 41,
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "skipped"
+      },
+      {
+        "number": 42,
+        "name": "Post Checkout repository",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "number": 43,
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "claims": [
+    {
+      "task": "COORD-PREFLIGHT-20260911",
+      "state": "REVIEW",
+      "owner": "Codex / 01a08add-2977-7b60-a307-af86f90445dd",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/COORD-PREFLIGHT-20260911"
+    },
+    {
+      "task": "COORD-PREFLIGHT-EXECUTION-20260911",
+      "state": "ACTIVE",
+      "owner": "Codex / 01a08add-2977-7b60-a307-af86f90445dd",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/COORD-PREFLIGHT-EXECUTION-20260911"
+    },
+    {
+      "task": "COORD-PROGRESS-AUDIT-20260911",
+      "state": "REVIEW",
+      "owner": "Codex / 01a08add-2977-7b60-a307-af86f90445dd",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/COORD-PROGRESS-AUDIT-20260911"
+    },
+    {
+      "task": "COORD-SCHEDULE",
+      "state": "CLEANED",
+      "owner": "Codex / 01a08add-2977-7b60-a307-af86f90445dd",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/COORD-SCHEDULE"
+    },
+    {
+      "task": "CW-014",
+      "state": null,
+      "owner": "Qoder session on behalf of honor.pei",
+      "worktree": null
+    },
+    {
+      "task": "CW-021",
+      "state": null,
+      "owner": "ZCode 会话 sess_0d6c74dc（用户授权流水线执行者）",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-021-remove-local-backend"
+    },
+    {
+      "task": "CW-022",
+      "state": null,
+      "owner": "ZCode 会话 sess_0d6c74dc（用户授权流水线执行者）",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-022-credential-identity-compat-reverify"
+    },
+    {
+      "task": "CW-023",
+      "state": null,
+      "owner": "ZCode 会话 sess_0d6c74dc（用户授权流水线执行者）",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-023-download-cancel-failure"
+    },
+    {
+      "task": "CW-024",
+      "state": "REVIEW",
+      "owner": "ZCode agent (GLM-5.3-Flash), host PC-202609071434",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-024-signed-release-secure-upgrade"
+    },
+    {
+      "task": "CW-026",
+      "state": "CLEANED",
+      "owner": "ZCode session (user-authorized full-chain dev 026->030)",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-026-exit-internal-auth-fencing"
+    },
+    {
+      "task": "CW-027",
+      "state": "CLEANED",
+      "owner": "ZCode session (user-authorized full-chain dev 026->030)",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-027-admin-console-permission-matrix"
+    },
+    {
+      "task": "CW-028",
+      "state": "REVIEW",
+      "owner": "ZCode agent (sess_67c51fa7-0f9f-44d4-84f7-0e111d14dc3a)",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-028-shared-settings-migration"
+    },
+    {
+      "task": "CW-029",
+      "state": "CLEANED",
+      "owner": "ZCode session (user-authorized full-chain dev 026->030)",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-029-billing-pg-matrix"
+    },
+    {
+      "task": "CW-030",
+      "state": "REVIEW",
+      "owner": "ZCode agent (sess_67c51fa7-0f9f-44d4-84f7-0e111d14dc3a)",
+      "worktree": "E:/众墅之家爆款短视频创作/.worktrees/CW-030-worker-pg-convergence"
+    },
+    {
+      "task": "CW-032",
+      "state": null,
+      "owner": "ZCode session (GLM-5.3-Flash) on behalf of honor.pei",
+      "worktree": null
+    },
+    {
+      "task": "CW-044",
+      "state": null,
+      "owner": "Qoder session on behalf of honor.pei",
+      "worktree": null
+    },
+    {
+      "task": "CW-054",
+      "state": "CLEANED",
+      "owner": "honor.pei <peihr85@gmail.com>",
+      "worktree": null
+    },
+    {
+      "task": "CW-055",
+      "state": "CLEANED",
+      "owner": "honor.pei (original author, commit f17da93); rebase+push+evidence by qoder-agent session task-7bf",
+      "worktree": null
+    },
+    {
+      "task": "CW-057",
+      "state": null,
+      "owner": "ZCode session (GLM-5.3-Flash) on behalf of honor.pei",
+      "worktree": null
+    },
+    {
+      "task": "CW-058",
+      "state": null,
+      "owner": "ZCode session (GLM-5.3-Flash) on behalf of honor.pei",
+      "worktree": null
+    },
+    {
+      "task": "CW-059",
+      "state": null,
+      "owner": "Qoder session on behalf of honor.pei (task-7bf)",
+      "worktree": null
+    },
+    {
+      "task": "CW-060",
+      "state": null,
+      "owner": "ZCode session (GLM-5.3-Flash) on behalf of honor.pei（用户 2026-09-11 授权：可开发前置，前置完成即进入 CW-032）",
+      "worktree": null
+    },
+    {
+      "task": "CW-061",
+      "state": null,
+      "owner": "Qoder session on behalf of honor.pei（用户 2026-09-11 授权：立即另开独立修复任务）",
+      "worktree": null
+    }
+  ],
+  "worktrees": [
+    {
+      "path": "E:/众墅之家爆款短视频创作/xiangshu-video-replica-",
+      "branch": "feat/customer-v3-cw056-pg-upgrade-matrix",
+      "head": "48569dae28b7e60c54428fae3145a0f2ce004285",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        ".mypy_cache/",
+        ".mypy_cache/.gitignore",
+        ".mypy_cache/3.12/",
+        ".mypy_cache/CACHEDIR.TAG",
+        ".mypy_cache/missing_stubs",
+        ".ruff_cache/",
+        ".uv-cache/",
+        ".worktrees/",
+        "client/.env.local",
+        "client/node_modules/",
+        "client/tsconfig.app.tsbuildinfo",
+        "client/tsconfig.node.tsbuildinfo",
+        "node_modules/",
+        "scripts/__pycache__/",
+        "server/.mypy_cache/",
+        "server/.mypy_cache/.gitignore",
+        "server/.mypy_cache/3.12/",
+        "server/.mypy_cache/CACHEDIR.TAG",
+        "server/.pytest_cache/",
+        "server/.ruff_cache/",
+        "server/.venv/",
+        "server/app/__pycache__/",
+        "server/migrations/__pycache__/",
+        "server/migrations/versions/__pycache__/",
+        "server/scripts/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 15,
+        "state": "closed",
+        "merged_at": "2026-09-10T18:46:04Z",
+        "merge_commit_sha": "d3d66b2b7c0c051fc873d8edaca05ffa3f34922d",
+        "merge_in_base_main": true,
+        "pr_head": "48569dae28b7e60c54428fae3145a0f2ce004285"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/COORD-PREFLIGHT-20260911",
+      "branch": "docs/customer-task-preflight-checklist",
+      "head": "8339044a5a9a169aeb61c0764bbfec3f6f0414d7",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        "server/scripts/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 38,
+        "state": "open",
+        "merged_at": null,
+        "merge_commit_sha": "7acd728f88c17d9c114a3b0a9864421923161de0",
+        "merge_in_base_main": false,
+        "pr_head": "8339044a5a9a169aeb61c0764bbfec3f6f0414d7"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/COORD-PREFLIGHT-EXECUTION-20260911",
+      "branch": "docs/customer-preflight-execution-20260911",
+      "head": "dfe7711969f70a85a720aa62e93fc17609ce8058",
+      "status_lines": [
+        "M docs/客户版代码开发清单-V3.md"
+      ],
+      "ignored_top_level_entries": [],
+      "pr": null,
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/COORD-PROGRESS-AUDIT-20260911",
+      "branch": "docs/customer-progress-audit-20260911",
+      "head": "27ef81f5538eee24c408aacd43ac4ee2e91c19e1",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        "server/scripts/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 37,
+        "state": "closed",
+        "merged_at": "2026-09-11T07:00:41Z",
+        "merge_commit_sha": "dfe7711969f70a85a720aa62e93fc17609ce8058",
+        "merge_in_base_main": true,
+        "pr_head": "27ef81f5538eee24c408aacd43ac4ee2e91c19e1"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/CW-024-signed-release-secure-upgrade",
+      "branch": "feat/customer-v3-cw024-signed-release-secure-upgrade",
+      "head": "0fdef3ced7c15b60c51bacb9b545120a59afc01c",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        ".mypy_cache/",
+        ".mypy_cache/.gitignore",
+        ".mypy_cache/3.12/",
+        ".mypy_cache/CACHEDIR.TAG",
+        ".mypy_cache/missing_stubs",
+        ".ruff_cache/",
+        "client/node_modules/",
+        "client/tsconfig.app.tsbuildinfo",
+        "client/tsconfig.node.tsbuildinfo",
+        "node_modules/",
+        "scripts/__pycache__/",
+        "server/.pytest_cache/",
+        "server/.ruff_cache/",
+        "server/.venv/",
+        "server/app/__pycache__/",
+        "server/migrations/__pycache__/",
+        "server/migrations/versions/__pycache__/",
+        "server/scripts/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 32,
+        "state": "closed",
+        "merged_at": "2026-09-11T03:22:27Z",
+        "merge_commit_sha": "b9769761a14e86865313702d69f5b838ba29e806",
+        "merge_in_base_main": true,
+        "pr_head": "3a1cd279c35367d107af645e235d7dec6c1405e7"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/CW-028-shared-settings-migration",
+      "branch": "feat/customer-v3-cw028-shared-settings-migration",
+      "head": "4828b1d0cd83566d5f6bd8c3b8e7499dbb7a59ba",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        "server/.mypy_cache/",
+        "server/.mypy_cache/.gitignore",
+        "server/.mypy_cache/3.12/",
+        "server/.mypy_cache/CACHEDIR.TAG",
+        "server/.mypy_cache/missing_stubs",
+        "server/.pytest_cache/",
+        "server/.ruff_cache/",
+        "server/.venv/",
+        "server/app/__pycache__/",
+        "server/migrations/__pycache__/",
+        "server/migrations/versions/__pycache__/",
+        "server/scripts/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 28,
+        "state": "closed",
+        "merged_at": "2026-09-11T01:05:32Z",
+        "merge_commit_sha": "7f7a17704eae9b337e2e686d0b83aae936ea5a58",
+        "merge_in_base_main": true,
+        "pr_head": "4828b1d0cd83566d5f6bd8c3b8e7499dbb7a59ba"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/CW-030-worker-pg-convergence",
+      "branch": "feat/customer-v3-cw030-worker-pg-convergence",
+      "head": "0af69fb49e314d80190cb7fcca02591d1685ea48",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        "server/.mypy_cache/",
+        "server/.mypy_cache/.gitignore",
+        "server/.mypy_cache/3.12/",
+        "server/.mypy_cache/CACHEDIR.TAG",
+        "server/.mypy_cache/missing_stubs",
+        "server/.pytest_cache/",
+        "server/.ruff_cache/",
+        "server/.venv/",
+        "server/app/__pycache__/",
+        "server/migrations/__pycache__/",
+        "server/migrations/versions/__pycache__/",
+        "server/scripts/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 29,
+        "state": "closed",
+        "merged_at": "2026-09-11T02:43:12Z",
+        "merge_commit_sha": "1b78734322d3e5d94bc5984fb5981c61dcbc6bb9",
+        "merge_in_base_main": true,
+        "pr_head": "0af69fb49e314d80190cb7fcca02591d1685ea48"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/CW-031-cloud-asset-no-local-fallback",
+      "branch": "feat/customer-v3-cw031-cloud-asset-no-local-fallback",
+      "head": "f6f4498ed160535deeb67f2f431b24c42e2bb9b8",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        "scripts/__pycache__/",
+        "server/.mypy_cache/",
+        "server/.mypy_cache/.gitignore",
+        "server/.mypy_cache/3.12/",
+        "server/.mypy_cache/CACHEDIR.TAG",
+        "server/.pytest_cache/",
+        "server/.ruff_cache/",
+        "server/.venv/",
+        "server/app/__pycache__/",
+        "server/migrations/__pycache__/",
+        "server/migrations/versions/__pycache__/",
+        "server/scripts/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 17,
+        "state": "closed",
+        "merged_at": "2026-09-10T18:46:24Z",
+        "merge_commit_sha": "f5e24c98a4df174b745d56d8cd4a7c34a0551772",
+        "merge_in_base_main": true,
+        "pr_head": "f6f4498ed160535deeb67f2f431b24c42e2bb9b8"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/CW-044-ci-doc-inventory",
+      "branch": "feat/customer-v3-cw044-ci-doc-inventory",
+      "head": "d9b4cc4da9cacf693bd5119263b5c7580cdfb958",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        "scripts/__pycache__/",
+        "server/app/__pycache__/",
+        "server/scripts/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": null,
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/CW-058-content-asset-pg-tests",
+      "branch": "feat/customer-v3-cw058-content-asset-pg-tests",
+      "head": "4b3062ed2d44fca1411417d6244e85ecb7b276cc",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        "server/.mypy_cache/",
+        "server/.mypy_cache/.gitignore",
+        "server/.mypy_cache/3.12/",
+        "server/.mypy_cache/CACHEDIR.TAG",
+        "server/.pytest_cache/",
+        "server/.ruff_cache/",
+        "server/app/__pycache__/",
+        "server/migrations/__pycache__/",
+        "server/migrations/versions/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 33,
+        "state": "closed",
+        "merged_at": "2026-09-11T04:03:19Z",
+        "merge_commit_sha": "38ae06c0ee7f3fca8345e236fc42e7dd9ae7a835",
+        "merge_in_base_main": true,
+        "pr_head": "4b3062ed2d44fca1411417d6244e85ecb7b276cc"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/CW-059-billing-task-pg-tests",
+      "branch": "feat/customer-v3-cw059-billing-task-pg-tests",
+      "head": "6ebc2377e038cd11cd34f82e21f6a047acddf664",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        ".mypy_cache/",
+        ".mypy_cache/.gitignore",
+        ".mypy_cache/3.12/",
+        ".mypy_cache/CACHEDIR.TAG",
+        ".mypy_cache/missing_stubs",
+        ".ruff_cache/",
+        "server/.ruff_cache/",
+        "server/app/__pycache__/",
+        "server/migrations/__pycache__/",
+        "server/migrations/versions/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": null,
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/.worktrees/CW-061-ci-shard-coverage-guard",
+      "branch": "feat/customer-v3-cw061-ci-shard-coverage-guard",
+      "head": "c53cf0596e702801f9f0bd4ee4e3bc22e7460413",
+      "status_lines": [],
+      "ignored_top_level_entries": [
+        ".ruff_cache/",
+        "scripts/ci/__pycache__/",
+        "server/.pytest_cache/",
+        "server/.ruff_cache/",
+        "server/app/__pycache__/",
+        "server/tests/__pycache__/"
+      ],
+      "pr": {
+        "number": 36,
+        "state": "open",
+        "merged_at": null,
+        "merge_commit_sha": "1bfaef331da3419c257c7eef82d8e7258c8970f3",
+        "merge_in_base_main": false,
+        "pr_head": "c53cf0596e702801f9f0bd4ee4e3bc22e7460413"
+      },
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    },
+    {
+      "path": "E:/众墅之家爆款短视频创作/xiangshu-video-replica-/.worktrees/CW-014-ledger-backfill",
+      "branch": "docs/customer-v3-cw014-merged-backfill",
+      "head": "cd87180360ac028eb458dde06f0a33b8bb7ae712",
+      "status_lines": [
+        "M docs/客户版任务清单-V3.md"
+      ],
+      "ignored_top_level_entries": [],
+      "pr": null,
+      "disposition": "KEEP: owner activity, merged-main checks and archive clearance required; no automatic deletion"
+    }
+  ],
+  "validation": {
+    "static_reference_check": "PASS: all documented test functions/modules exist at recorded refs; AST lines and counts match; shard arithmetic matches; relative link and file-map entries exist",
+    "doc_contracts": "9 passed; one existing Starlette deprecation warning",
+    "business_pg_execution": "NOT_RUN",
+    "secret_scan": "PASS: repository runtime-contract secret scanner",
+    "diff_check": "PASS"
+  },
+  "resource_observation": {
+    "method": "Read-only docker ps -a and Get-NetTCPConnection, elevation approved after sandbox permission denial; no container env or database access",
+    "observed_before_task_claim_at": "2026-09-11T07:04:38Z",
+    "ports": [
+      {
+        "port": 5432,
+        "container": "zhongshu-backend-dev-postgres-1"
+      },
+      {
+        "port": 5434,
+        "container": "vs-pg-dev"
+      },
+      {
+        "port": 5435,
+        "container": "vs-pg-cw056"
+      },
+      {
+        "port": 5436,
+        "container": "vs-pg-cw031"
+      },
+      {
+        "port": 5437,
+        "container": "vs-pg-cw059"
+      },
+      {
+        "port": 5440,
+        "container": "vs-pg-cw058"
+      }
+    ],
+    "additional_containers": [
+      {
+        "name": "vs-pg-cw028",
+        "state": "running",
+        "host_port": null
+      },
+      {
+        "name": "customer-v3-pg-test-shard0",
+        "state": "created",
+        "host_port": null
+      }
+    ],
+    "this_task_allocation": "No PG instance, port, database, container, volume or runner reserved. Documentation checks only.",
+    "full_shard_policy": "Serial across workspaces until container/volume/log names and ports are isolated; do not remove unknown-owner shard0."
+  },
+  "owned_merged_task_archive": {
+    "path": "E:\\众墅之家爆款短视频创作\\.worktree-archives\\COORD-PROGRESS-AUDIT-20260911",
+    "file_count": 5,
+    "verified": true,
+    "archived_at": "2026-09-11T07:07:52.035718+00:00",
+    "removed": false
+  },
+  "closing_recheck": {
+    "captured_at": "2026-09-11T07:14:04.718107+00:00",
+    "origin_main": "d7a9a4052e4e962b439f537415facca00152fcec",
+    "pr38": {
+      "merged": true,
+      "merge_sha": "d7a9a4052e4e962b439f537415facca00152fcec",
+      "merged_at": "2026-09-11T07:11:47Z"
+    },
+    "pr37_merge_checks": {
+      "Linux quality gate": "cancelled",
+      "Windows Tauri and NSIS": "cancelled",
+      "Secret scan": "success"
+    },
+    "owned_claims_updated_to": "MERGED / WAITING_MAIN_CHECKS",
+    "archived_directories": 2,
+    "archived_files": 10,
+    "worktrees_removed": 0
+  }
+}

@@ -1,3 +1,18 @@
+"""Legacy SQLite backup/restore tools — internal P0 lane only (CW-057).
+
+Classification (CW-057 command×database matrix, PG-08): ``python -m
+app.backup`` is a *historical* internal-P0 SQLite entry. It is only reachable
+from the internal single-host deployment (``deploy/systemd/video-replica-
+backup.service``, which self-labels "Internal P0 SQLite only") and from the
+CW-060-isolated historical import tooling (``sqlite_to_postgres`` reuses
+``SqliteSnapshot``/``create_readonly_snapshot``). The customer PostgreSQL
+backup/restore path is ``deploy/postgres/pitr-*.sh`` (pg_basebackup + WAL)
+verified by ``scripts.pitr_recovery_facts``; the SQLite backup timer is
+excluded from the customer formal deployment package (CW-032) and the whole
+internal lane exits with CW-040/CW-042. No current maintenance/seed/admin
+CLI may call into this module.
+"""
+
 from __future__ import annotations
 
 import argparse

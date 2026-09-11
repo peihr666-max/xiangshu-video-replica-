@@ -1,45 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import stat
-import subprocess
-import sys
 import tomllib
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _bash_path() -> str | None:
-    # Resolve the interpreter explicitly: Windows' CreateProcess searches
-    # System32 before PATH, so a bare "bash" argument can silently resolve
-    # to the WSL launcher stub (System32\bash.exe / WindowsApps\bash.exe)
-    # even when git-bash is first on PATH. The stub's exit status drifts
-    # with the WSL service state and its UTF-16 diagnostics kill text-mode
-    # output readers mid-decode, so the POSIX launcher tests need a native
-    # Windows POSIX shell (git-bash) or a real POSIX system, probed once at
-    # import time.
-    bash = shutil.which("bash")
-    if bash is None:
-        return None
-    if sys.platform == "win32":
-        lowered = {part.lower() for part in Path(bash).parts}
-        if "system32" in lowered or "windowsapps" in lowered:
-            return None
-    probe = subprocess.run(
-        [bash, "-c", "exit 0"],
-        check=False,
-        capture_output=True,
-        timeout=30,
-    )
-    return bash if probe.returncode == 0 else None
-
-
-BASH = _bash_path()
 
 
 def test_cargo_build_uses_workspace_isolated_target_directory() -> None:
@@ -76,14 +41,11 @@ def test_api_uses_the_project_interpreter_instead_of_a_global_uvicorn() -> None:
     assert '"--no-proxy-headers"' in customer_e2e_launcher
 
 
-def test_local_start_commands_upgrade_the_database_before_api_or_worker() -> None:
+def test_dev_start_commands_upgrade_the_database_before_api_or_worker() -> None:
+    # CW-021 removed the packaged start-backend launchers from the desktop
+    # bundle; only the development commands (which target a registered PG and
+    # are never shipped) keep a bootstrapping order worth locking.
     package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
-    posix_launcher = (REPO_ROOT / "client/src-tauri/resources/start-backend.sh").read_text(
-        encoding="utf-8"
-    )
-    windows_launcher = (REPO_ROOT / "client/src-tauri/resources/start-backend.bat").read_text(
-        encoding="utf-8"
-    )
 
     server_command = package["scripts"]["dev:server"]
     worker_command = package["scripts"]["dev:worker"]
@@ -94,12 +56,6 @@ def test_local_start_commands_upgrade_the_database_before_api_or_worker() -> Non
         "python -m app.generation_worker"
     )
     assert "--no-proxy-headers" in server_command
-    assert "--no-proxy-headers" in posix_launcher
-    assert "--no-proxy-headers" in windows_launcher
-    assert posix_launcher.index("python -m app.bootstrap") < posix_launcher.index("start_server")
-    assert windows_launcher.index("python -m app.bootstrap") < windows_launcher.index(
-        'start "video-replica-api"'
-    )
 
 
 def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
@@ -153,29 +109,46 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert "npm audit --audit-level=high" in workflow
     assert "cargo test --manifest-path client/src-tauri/Cargo.toml --locked" in workflow
     assert "npm run check:tauri" in workflow
-    assert "npm run check:tauri:customer" in workflow
-    assert "npm run tauri:build -- --bundles nsis --no-sign --ci" in workflow
+    # CW-021: the local sidecar feature and the internal edition are gone, so
+    # CI only ever builds the customer cloud bundle.
+    assert "check:tauri:internal" not in workflow
+    assert "tauri:build:internal" not in workflow
+    assert "internal NSIS" not in workflow
     assert "npm run tauri:build:customer" in workflow
     assert "VITE_API_BASE_URL: https://staging.example.invalid" in workflow
     windows_job = workflow.split("\n  windows-nsis:\n", 1)[1]
     job_config, windows_steps = windows_job.split("\n    steps:\n", 1)
     assert "runner.temp" not in job_config
     assert "LOCAL_ARTIFACT_ROOT" not in job_config
-    for step_name in (
-        "Archive unsigned internal NSIS installer locally",
-        "Archive unsigned customer cloud NSIS installer locally",
-    ):
-        step = windows_steps.split(f"      - name: {step_name}\n", 1)[1].split(
-            "\n      - name:", 1
-        )[0]
-        assert (
-            "\n        env:\n"
-            "          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts\n"
-        ) in step
-    assert workflow.count("LOCAL_ARTIFACT_ROOT") == 8
-    assert workflow.count("SHA256SUMS.txt") == 2
-    assert "Verify customer installer excludes local launchers" in workflow
+    step = windows_steps.split(
+        "      - name: Archive unsigned customer cloud NSIS installer locally\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert (
+        "\n        env:\n"
+        "          LOCAL_ARTIFACT_ROOT: ${{ runner.temp }}/video-replica-artifacts\n"
+    ) in step
+    assert workflow.count("LOCAL_ARTIFACT_ROOT") == 4
+    assert workflow.count("SHA256SUMS.txt") == 1
+    # CW-022: the Windows job must execute the OS-native credential (DPAPI)
+    # and durable-identity tests that the Linux gate compiles out.
+    assert "cargo test --manifest-path client/src-tauri/Cargo.toml --locked" in windows_job
+    # CW-021 widened payload detection: beyond the launcher scripts the
+    # customer installer must not carry an embedded server/Python runtime,
+    # FFmpeg distribution, SQLite business database, or boot/port markers.
+    assert "Verify customer installer excludes local backend distribution" in workflow
+    assert "pyvenv.cfg" in workflow
+    assert "ffmpeg.exe" in workflow
+    assert "'.db', '.sqlite', '.sqlite3', '.pyd'" in workflow
+    assert "[\\\\/](server|\\.venv|ffmpeg)[\\\\/]" in workflow
+    assert "VIDEO_REPLICA_BOOT_COMMAND" in workflow
+    assert "127.0.0.1:8000" in workflow
     assert "7-Zip\\7z.exe" in workflow
+    # The launcher names may only appear inside the payload gate's forbidden
+    # list; no build/check/archive step may reference them.
+    workflow_before_payload_gate = workflow.split(
+        "Verify customer installer excludes local backend distribution", 1
+    )[0]
+    assert "start-backend" not in workflow_before_payload_gate
     assert "start-backend.bat" in workflow
     assert "start-backend.sh" in workflow
     assert workflow.count("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == 4
@@ -185,149 +158,52 @@ def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:
     assert ".cargo-target/release/bundle/nsis/*.exe" in workflow
 
 
-def test_posix_backend_launcher_executes_default_commands(tmp_path: Path) -> None:
-    if BASH is None:
-        pytest.skip("a functional bash is required for the POSIX launcher flow")
-    assert BASH is not None
-    launcher = tmp_path / "start-backend.sh"
-    shutil.copy2(REPO_ROOT / "client/src-tauri/resources/start-backend.sh", launcher)
-    launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+def test_packaged_local_backend_launchers_are_removed() -> None:
+    # CW-021: the desktop bundle must not ship any local backend launcher. The
+    # packaged start scripts, the local-sidecar Cargo feature, the internal
+    # overlay config, and the sidecar startup code in lib.rs are retired.
+    for launcher in (
+        "client/src-tauri/resources/start-backend.sh",
+        "client/src-tauri/resources/start-backend.bat",
+        "client/src-tauri/tauri.internal.conf.json",
+    ):
+        assert not (REPO_ROOT / launcher).exists(), f"{launcher} must be removed (CW-021)"
+    package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
+    for script in ("check:tauri:internal", "tauri:build:internal", "tauri:dev:internal"):
+        assert script not in package["scripts"], f"{script} must be removed (CW-021)"
+    assert "local-sidecar" not in json.dumps(package)
+    cargo_toml = (REPO_ROOT / "client/src-tauri/Cargo.toml").read_text(encoding="utf-8")
+    assert "local-sidecar" not in cargo_toml
+    lib_rs = (REPO_ROOT / "client/src-tauri/src/lib.rs").read_text(encoding="utf-8")
+    for marker in (
+        "BackendProcess",
+        "BOOT_COMMAND",
+        "local_api_ready",
+        "start_local_services",
+        "127.0.0.1:8000",
+    ):
+        assert marker not in lib_rs, f"lib.rs must not keep local sidecar code: {marker}"
 
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_uv = fake_bin / "uv"
-    fake_uv.write_text(
-        """#!/bin/sh
-case "$*" in
-  *app.bootstrap*) printf '%s' "$*" > "$TEST_BOOTSTRAP_MARKER" ;;
-  *uvicorn*) printf '%s' "$*" > "$TEST_SERVER_MARKER" ;;
-  *generation_worker*) printf '%s' "$*" > "$TEST_WORKER_MARKER" ;;
-  *) exit 64 ;;
-esac
-""",
-        encoding="utf-8",
+
+def test_ci_shard_coverage_guard_is_wired() -> None:
+    # CW-061 (SH-6 + CI-7): the shard-coverage guard must be wired into both the
+    # runner and the workflow so a stale committed manifest fails the build
+    # instead of silently skipping tests.
+    #
+    # Background: run-pytest-shards.sh only runs the files named in the committed
+    # shard manifests; before CW-061 it never checked that those manifests cover
+    # every server/tests/test_*.py, so 13 recent CW test files never ran in CI
+    # (CW-044 §18.2). The guard is fail-closed and independent of every prerequisite.
+    runner = (REPO_ROOT / "scripts" / "ci" / "run-pytest-shards.sh").read_text(encoding="utf-8")
+    # SH-6: resolve_manifests must fail-closed via --check-coverage before adopting
+    # the committed manifests.
+    assert "build-test-shards.py" in runner
+    assert "--check-coverage" in runner
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # CI-7: a standalone coverage-assertion step, ordered BEFORE the sharded pytest.
+    assert "build-test-shards.py --check-coverage" in workflow
+    assert "Assert shard manifests cover every test file" in workflow
+    assert workflow.index("build-test-shards.py --check-coverage") < workflow.index(
+        "bash scripts/ci/run-pytest-shards.sh"
     )
-    fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IXUSR)
-
-    server_marker = tmp_path / "server.args"
-    worker_marker = tmp_path / "worker.args"
-    bootstrap_marker = tmp_path / "bootstrap.args"
-    env = {
-        **os.environ,
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "TEST_SERVER_MARKER": str(server_marker),
-        "TEST_WORKER_MARKER": str(worker_marker),
-        "TEST_BOOTSTRAP_MARKER": str(bootstrap_marker),
-        "VIDEO_REPLICA_DB_PATH": str(tmp_path / "app.db"),
-        "VIDEO_REPLICA_SETTINGS_KEY": "test-settings-key",
-        "VIDEO_REPLICA_DESKTOP_USER_ID": "employee_1",
-    }
-
-    result = subprocess.run(
-        [BASH, str(launcher)],
-        check=False,
-        capture_output=True,
-        env=env,
-        text=True,
-        timeout=10,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "python -m app.bootstrap" in bootstrap_marker.read_text(encoding="utf-8")
-    assert "python -m uvicorn app.main:app" in server_marker.read_text(encoding="utf-8")
-    assert "python -m app.generation_worker" in worker_marker.read_text(encoding="utf-8")
-
-
-def test_packaged_launchers_reject_partial_command_overrides(tmp_path: Path) -> None:
-    launcher = tmp_path / "start-backend.sh"
-    shutil.copy2(REPO_ROOT / "client/src-tauri/resources/start-backend.sh", launcher)
-    launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
-
-    partial_overrides = (
-        {
-            "VIDEO_REPLICA_SERVER_CMD": "/usr/bin/true",
-            "VIDEO_REPLICA_WORKER_CMD": "/usr/bin/true",
-        },
-        {
-            "VIDEO_REPLICA_BOOTSTRAP_CMD": "/usr/bin/true",
-            "VIDEO_REPLICA_SERVER_CMD": "/usr/bin/true",
-        },
-        {
-            "VIDEO_REPLICA_BOOTSTRAP_CMD": "/usr/bin/true",
-            "VIDEO_REPLICA_WORKER_CMD": "/usr/bin/true",
-        },
-    )
-    expected_error = "packaged bootstrap, server, and worker commands must be set together"
-    if BASH is not None:
-        for overrides in partial_overrides:
-            env = {
-                **os.environ,
-                "VIDEO_REPLICA_DB_PATH": str(tmp_path / "app.db"),
-                "VIDEO_REPLICA_DESKTOP_USER_ID": "employee_1",
-                **overrides,
-            }
-            result = subprocess.run(
-                [BASH, str(launcher)],
-                check=False,
-                capture_output=True,
-                env=env,
-                text=True,
-                timeout=10,
-            )
-
-            assert result.returncode != 0
-            assert expected_error in str(result.stderr)
-
-    windows_launcher = (REPO_ROOT / "client/src-tauri/resources/start-backend.bat").read_text(
-        encoding="utf-8"
-    )
-    distribution_plan = (REPO_ROOT / "docs/服务端分发与自动拉起方案.md").read_text(encoding="utf-8")
-    assert expected_error in windows_launcher
-    assert "VIDEO_REPLICA_BOOTSTRAP_CMD" in distribution_plan
-
-
-def test_posix_packaged_launcher_runs_without_uv_or_server_sources(tmp_path: Path) -> None:
-    if BASH is None:
-        pytest.skip("a functional bash is required for the POSIX launcher flow")
-    assert BASH is not None
-    launcher = tmp_path / "start-backend.sh"
-    shutil.copy2(REPO_ROOT / "client/src-tauri/resources/start-backend.sh", launcher)
-    launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
-
-    marker_dir = tmp_path / "markers"
-    marker_dir.mkdir()
-    commands: dict[str, str] = {}
-    for name in ("bootstrap", "server", "worker"):
-        command = tmp_path / name
-        # as_posix(): the launcher hands the override commands to
-        # ``sh -c``, where Windows backslash separators would be eaten as
-        # escape characters (identical to str() on POSIX).
-        command_path = command.as_posix()
-        marker_path = (marker_dir / name).as_posix()
-        command.write_text(
-            f"#!/bin/sh\nprintf '%s' '{name}' > '{marker_path}'\n",
-            encoding="utf-8",
-        )
-        command.chmod(command.stat().st_mode | stat.S_IXUSR)
-        commands[name] = command_path
-
-    env = {
-        **os.environ,
-        "PATH": "/usr/bin:/bin",
-        "VIDEO_REPLICA_DB_PATH": str(tmp_path / "app.db"),
-        "VIDEO_REPLICA_DESKTOP_USER_ID": "employee_1",
-        "VIDEO_REPLICA_BOOTSTRAP_CMD": commands["bootstrap"],
-        "VIDEO_REPLICA_SERVER_CMD": commands["server"],
-        "VIDEO_REPLICA_WORKER_CMD": commands["worker"],
-    }
-    result = subprocess.run(
-        [BASH, str(launcher)],
-        check=False,
-        capture_output=True,
-        env=env,
-        text=True,
-        timeout=10,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert {path.name for path in marker_dir.iterdir()} == {"bootstrap", "server", "worker"}

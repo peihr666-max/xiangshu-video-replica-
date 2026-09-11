@@ -505,6 +505,18 @@ def test_analytics_route_scopes_by_caller(tmp_path: Path, monkeypatch) -> None:
         seed_analytics_scene(connection)
     monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(db_path))
 
+    # 冻结路由时钟：种子的业务日期钉死在 2026-09 上，而 7 天窗口起点随
+    # 真实时间（北京日界）滑动——不冻结时该用例是日期炸弹（北京日期
+    # 每越过一天，窗口就滑出一颗种子，计数随之变化）。
+    frozen_moment = datetime(2026, 9, 11, 4, 0, tzinfo=UTC)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_moment.astimezone(tz) if tz else frozen_moment.replace(tzinfo=None)
+
+    monkeypatch.setattr(studio_routes, "datetime", _FrozenDatetime)
+
     def database_override():
         conn = BusinessConnection.sqlite(connect_database(db_path))
         try:

@@ -32,7 +32,11 @@ SITE="/www/wwwroot/video.zszhj.cn"
 # place before the first release built by this script is rolled out, otherwise
 # the VERIFY step below fails on purpose and the run rolls back.
 ADMIN_SITE="${SITE}-admin"
-COMPOSE="$ROOT/compose.yaml"
+# CW-032: the compose topology is a registered in-repo artifact
+# (deploy/customer/compose.yaml — the single default delivery package), not an
+# unregistered /opt/video-replica-candidate host file. Legacy hosts may still
+# redirect via CUSTOMER_COMPOSE=, but no longer need to.
+COMPOSE="${CUSTOMER_COMPOSE:-$SOURCE/deploy/customer/compose.yaml}"
 CUSTOMER_ENV="/etc/video-replica/customer.env"
 SERVICE_USER="video-replica"
 PUBLIC_ORIGIN="https://video.zszhj.cn"
@@ -208,6 +212,8 @@ EXPECTED_DB_HEAD=$(printf '%s\n' "$HEADS_OUTPUT" | awk '/\(head\)/ {print $1}' |
 mark BACKUP
 mkdir -p "$BACKUP"
 cp -a "$COMPOSE" "$BACKUP/compose-before.yaml"
+# CW-032: pin the exact topology artifact this release rolled out with.
+sha256sum "$COMPOSE" > "$BACKUP/compose.sha256"
 printf '%s\n' "$OLD_IMAGE" > "$BACKUP/previous-image.txt"
 printf '%s\n' "$RELEASE_SHA" > "$BACKUP/release-sha.txt"
 printf '%s\n' "$RELEASE_TREE" > "$BACKUP/release-tree.txt"
@@ -237,6 +243,17 @@ cp -a "$SOURCE/server/app" "$BUILD_CTX/server/app"
 cp -a "$SOURCE/server/migrations" "$BUILD_CTX/server/migrations"
 cp -a "$SOURCE/server/alembic.ini" "$BUILD_CTX/server/alembic.ini"
 cp -a "$SOURCE/scripts/customer_release_preflight.py" "$BUILD_CTX/scripts/customer_release_preflight.py"
+# CW-060 / PG-09: historical SQLite operator tooling never ships to customers.
+# server/app/backup.py belongs to the isolated operator package and the
+# legacy import/reconcile CLIs live only under server/scripts/ (never copied
+# above); fail closed if either ever leaks into the customer build context.
+rm -f "$BUILD_CTX/server/app/backup.py"
+for forbidden_operator_path in server/app/backup.py server/scripts; do
+  [[ ! -e "$BUILD_CTX/$forbidden_operator_path" ]] || {
+    echo "PRECHECK_FAILED: historical SQLite tooling in the customer build context: $forbidden_operator_path" >&2
+    exit 1
+  }
+done
 {
   printf 'FROM %s\n' "$OLD_IMAGE"
   cat <<'DOCKERFILE'
@@ -251,7 +268,11 @@ RUN command -v ffmpeg \
     && chmod 0755 /opt/video-replica/scripts/customer_release_preflight.py \
     && python -m compileall -q /opt/video-replica/server/app /opt/video-replica/server/migrations \
     && cd /opt/video-replica/server \
-    && python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker"
+    && python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker" \
+    && ! test -e /opt/video-replica/server/app/backup.py \
+    && ! test -e /opt/video-replica/server/scripts/sqlite_to_postgres.py \
+    && ! test -e /opt/video-replica/server/scripts/reconcile_customer_billing.py \
+    && python -c "import pathlib, sys; forbidden = {'backup.py', 'sqlite_to_postgres.py', 'reconcile_customer_billing.py'}; found = [str(p) for p in pathlib.Path('/opt/video-replica/server').rglob('*') if p.is_file() and p.name in forbidden]; sys.exit('historical SQLite tooling in the customer image: ' + repr(found) if found else 0)"
 DOCKERFILE
   if [[ -n "$OLD_IMAGE_USER" ]]; then
     printf 'USER %s\n' "$OLD_IMAGE_USER"

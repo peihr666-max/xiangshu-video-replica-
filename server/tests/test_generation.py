@@ -52,7 +52,7 @@ from app.generation import (
     validate_h3_request,
 )
 from app.generation_routes import get_h3_provider
-from app.generation_worker import run_sqlite_worker_round, run_worker_once
+from app.generation_worker import run_worker_once
 from app.main import app
 from app.settings import SETTINGS_KEY_ENV, SettingsRepository
 from app.storage import FakeStorageAdapter, StorageBackendUnavailable, StoragePermissionError
@@ -1503,7 +1503,19 @@ def test_video_worker_round_does_not_load_image_quality_credentials(
         "app.generation_worker.get_media_storage",
         lambda _: FakeStorageAdapter(provider="fake", bucket="generation-results"),
     )
-    assert run_sqlite_worker_round(db_path=db_path, worker_id="no-qc-settings", max_tasks=1) == 1
+    with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        storage = FakeStorageAdapter(provider="fake", bucket="generation-results")
+        assert (
+            run_worker_once(
+                conn,
+                worker_id="no-qc-settings",
+                storage=storage,
+                generation_storage=storage,
+                first_frame_storage=storage,
+                max_tasks=1,
+            )
+            == 1
+        )
     completed = client.get(
         f"/api/generation-batches/{created.json()['id']}",
         headers=auth_headers("employee_1"),

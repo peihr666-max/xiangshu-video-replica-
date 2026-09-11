@@ -25,6 +25,10 @@ Usage:
 
     # Re-emit shards from an existing committed profile (no log needed):
     python3 scripts/ci/build-test-shards.py --shards 4
+
+    # Fail-closed coverage guard (CI-7 / SH-6): assert the committed manifests
+    # cover every discovered test file; exit 1 on any gap or ghost entry:
+    python3 scripts/ci/build-test-shards.py --check-coverage
 """
 
 from __future__ import annotations
@@ -80,6 +84,35 @@ def discover_test_files(tests_root: Path) -> list[str]:
             rel = path.as_posix()
         files.append(rel)
     return sorted(files)
+
+
+def find_uncovered_tests(
+    manifest_dir: Path, tests_root: Path
+) -> tuple[list[str], list[str]]:
+    """Compare the committed shard manifests against the discovered suite.
+
+    Returns ``(uncovered, ghosts)`` where:
+
+    * ``uncovered`` — discovered ``test_*.py`` files absent from every manifest
+      (CI would silently skip them; the CW-044 §18.2 fail-open gap).
+    * ``ghosts`` — manifest entries that are not discovered test files (stale or
+      renamed tests left behind in a manifest).
+
+    Both lists are sorted for deterministic, reviewable output. Manifest entries
+    are compared verbatim (whitespace stripped) against ``discover_test_files``,
+    so the same repo-relative posix spelling is used on both sides.
+    """
+    discovered = discover_test_files(tests_root)
+    discovered_set = set(discovered)
+    union: set[str] = set()
+    for manifest in sorted(manifest_dir.glob("shard-*.txt")):
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            entry = line.strip()
+            if entry:
+                union.add(entry)
+    uncovered = sorted(discovered_set - union)
+    ghosts = sorted(union - discovered_set)
+    return uncovered, ghosts
 
 
 def normalize_profile_keys(raw: dict[str, float], files: list[str]) -> dict[str, float]:
@@ -155,7 +188,47 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--from-log", type=Path, default=None, help="pytest --durations=0 log to (re)build the profile from")
     ap.add_argument("--source-label", default="pytest --durations=0 baseline (full suite)", help="provenance note stored in the profile")
     ap.add_argument("--emit-profile-only", action="store_true", help="only write the durations profile, do not build shards")
+    ap.add_argument("--check-coverage", action="store_true", help="fail-closed guard: assert the manifests in --out-dir cover every test file under --tests-root; exit 1 on any gap or ghost (writes nothing)")
     args = ap.parse_args(argv)
+
+    # --check-coverage is a read-only guard (CI-7 / SH-6): it never builds or
+    # writes shards, so it short-circuits before the profile/discover flow and
+    # does not require a valid --shards.
+    if args.check_coverage:
+        uncovered, ghosts = find_uncovered_tests(args.out_dir, args.tests_root)
+        discovered_count = len(discover_test_files(args.tests_root))
+        if uncovered or ghosts:
+            print(
+                f"ERROR: shard manifests under {args.out_dir} do not cover the "
+                f"{discovered_count} discovered test file(s) under {args.tests_root}.",
+                file=sys.stderr,
+            )
+            if uncovered:
+                print(
+                    f"  {len(uncovered)} test file(s) missing from every manifest "
+                    f"(CI would silently skip them):",
+                    file=sys.stderr,
+                )
+                for path in uncovered:
+                    print(f"    - {path}", file=sys.stderr)
+            if ghosts:
+                print(
+                    f"  {len(ghosts)} manifest entrie(s) that are not discovered "
+                    f"test files (stale/renamed):",
+                    file=sys.stderr,
+                )
+                for path in ghosts:
+                    print(f"    + {path}", file=sys.stderr)
+            print(
+                "  Regenerate with: python3 scripts/ci/build-test-shards.py --shards 4",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"==> coverage OK: {discovered_count} discovered test file(s) fully "
+            f"covered by the manifests in {args.out_dir}."
+        )
+        return 0
 
     if args.shards < 1:
         print("ERROR: --shards must be >= 1", file=sys.stderr)

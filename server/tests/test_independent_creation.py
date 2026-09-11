@@ -769,13 +769,80 @@ def test_independent_batches_never_leak_provider_names(scene: str) -> None:
     assert "tikhub" not in body
 
 
-def test_saved_prompts_aggregate_across_projects(scene: str) -> None:
+def test_saved_prompts_aggregate_across_projects(
+    scene: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CW-026: the converged PG lane resolves reads through customer Bearer
+    # sessions only, so this route-level test authenticates two seeded
+    # sessions instead of the retired X-Dev-User-Id bypass.
+    from app.customer_device_service import highest_device_domain_key, keyed_digest
+
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY",
+        "cw010-independent-session-key-0123456789abcdef",
+    )
+    _version, session_key = highest_device_domain_key()
+
+    def _session_token(pg, *, user_id: str, code_id: str, device_id: str) -> str:
+        token = f"cw010-session-{user_id}"
+        pg.execute(
+            "INSERT INTO activation_code_batches "
+            "(id, name, face_value_fen, unit_price_fen_snapshot, credits_snapshot, "
+            "quantity, activation_expires_at, status, created_by_user_id) VALUES "
+            "(%s, 'cw010-batch', 1500, 1000, 100, 1, '2099-01-01T00:00:00+00:00', "
+            "'OPEN', 'employee_1') ON CONFLICT (id) DO NOTHING",
+            (f"cw010-batch-{user_id}",),
+        )
+        pg.execute(
+            "INSERT INTO activation_codes (id, batch_id, code_digest, "
+            "digest_key_version, masked_code, status, issued_at, activated_at, "
+            "bound_user_id) VALUES "
+            "(%s, %s, 'cw010-digest-' || %s, 1, 'cw010-****', 'ACTIVE', "
+            "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', %s) "
+            "ON CONFLICT (id) DO NOTHING",
+            (code_id, f"cw010-batch-{user_id}", user_id, user_id),
+        )
+        pg.execute(
+            "INSERT INTO customer_devices (id, activation_code_id, user_id, slot_no, "
+            "display_name, platform, fingerprint_hmac, fingerprint_key_version, "
+            "token_digest, token_key_version, status, bound_at) VALUES "
+            "(%s, %s, %s, 1, 'CW010 device', 'windows', %s, 1, %s, 1, "
+            "'BOUND', '2026-08-01T00:00:00+00:00') ON CONFLICT (id) DO NOTHING",
+            (
+                device_id,
+                code_id,
+                user_id,
+                keyed_digest(session_key, f"fp-{device_id}"),
+                keyed_digest(session_key, f"device-token-{device_id}"),
+            ),
+        )
+        pg.execute(
+            "INSERT INTO customer_session_state (user_id, activation_code_id, device_id, "
+            "session_id, token_digest, session_epoch, lease_until) VALUES "
+            "(%s, %s, %s, %s, %s, 1, '2099-06-01T00:00:00+00:00') ON CONFLICT (user_id) "
+            "DO NOTHING",
+            (
+                user_id,
+                code_id,
+                device_id,
+                f"cw010-session-{user_id}",
+                keyed_digest(session_key, token),
+            ),
+        )
+        return token
+
     with psycopg.connect(scene, autocommit=True) as pg:
         pg.execute(
             "INSERT INTO users (id, username, display_name, role) "
-            "VALUES ('u3', 'u3', 'U3', 'employee')"
+            "VALUES ('u3', 'u3', 'U3', 'employee') ON CONFLICT (id) DO NOTHING"
         )
-        pg.execute("INSERT INTO projects (id, owner_user_id, name) VALUES ('project_c', 'u3', 'C')")
+        pg.execute(
+            "INSERT INTO projects (id, owner_user_id, name) "
+            "VALUES ('project_c', 'u3', 'C') ON CONFLICT (id) DO NOTHING"
+        )
+        pg.execute(
+            "DELETE FROM customer_session_state WHERE user_id IN ('employee_1', 'employee_2')"
+        )
         _executemany(
             pg,
             "INSERT INTO versions ("
@@ -816,13 +883,21 @@ def test_saved_prompts_aggregate_across_projects(scene: str) -> None:
             " 'employee_1', 'user', 'reverse_prompt_revision', 'employee_1')"
         )
 
+        token_1 = _session_token(
+            pg, user_id="employee_1", code_id="cw010-code-e1", device_id="cw010-dev-e1"
+        )
+        token_2 = _session_token(
+            pg, user_id="employee_2", code_id="cw010-code-e2", device_id="cw010-dev-e2"
+        )
+
     # 独立创作页「导入提示词」数据源：跨项目聚合、仅作者本人、按时间倒序。
     # 恢复为 origin/main 驱动的真实路由（GET /api/studio/saved-prompts）：它走
-    # 无栅栏的 get_database + get_current_user（PG 上认 dev header），零 override，
-    # 因此断言的是生产 handler 本身（owner 过滤 / limit 钳制 / 坏 JSON 跳过 /
-    # SavedPromptListPage 序列化），而非手抄一份它的 SQL 自证。
+    # 无栅栏的 get_database + get_current_user（CW-026 后 PG 上仅认客户会话
+    # Bearer），零 override，因此断言的是生产 handler 本身（owner 过滤 /
+    # limit 钳制 / 坏 JSON 跳过 / SavedPromptListPage 序列化），而非手抄一份
+    # 它的 SQL 自证。
     client = TestClient(app)
-    headers = {"X-Dev-User-Id": "employee_1"}
+    headers = {"Authorization": f"Bearer {token_1}"}
     response = client.get("/api/studio/saved-prompts", headers=headers)
     assert response.status_code == 200
     items = response.json()["items"]
@@ -841,9 +916,9 @@ def test_saved_prompts_aggregate_across_projects(scene: str) -> None:
     assert [item["id"] for item in clamped_high] == ["sp-1"]
 
     # 越权隔离：employee_2 只看到自己的 sp-2（owner 过滤由路由 actor.id 驱动）。
-    other = client.get("/api/studio/saved-prompts", headers={"X-Dev-User-Id": "employee_2"}).json()[
-        "items"
-    ]
+    other = client.get(
+        "/api/studio/saved-prompts", headers={"Authorization": f"Bearer {token_2}"}
+    ).json()["items"]
     assert [item["id"] for item in other] == ["sp-2"]
 
 

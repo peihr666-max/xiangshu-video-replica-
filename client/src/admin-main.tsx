@@ -10,6 +10,12 @@ import "./styles.css";
 // `scripts/verify_customer_bundle.mjs` 与 `client/src/entryContract.test.ts` 双层保证。
 //
 // 挂载点 id 与客户入口一致（root），复用同一套 nginx / Tauri 排障经验。
+//
+// ADMIN-UI-AUDIT-20260911: styles.css 是客户/管理共享的基础样式表
+// （.admin-shell 布局、全局 input/button、--admin-* 设计令牌定义）。
+// 拆分双入口后它只剩客户壳 App.tsx 一处导入，管理端产物随之半裸渲染；
+// 管理入口必须在此显式导入，契约由 entryContract.test.ts 钉住。
+import "./styles.css";
 
 const root = document.getElementById("root");
 

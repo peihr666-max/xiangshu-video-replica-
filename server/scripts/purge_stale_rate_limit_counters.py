@@ -5,7 +5,10 @@ Usage (server/ directory):
     uv run python -m scripts.purge_stale_rate_limit_counters \
         --database-url postgresql://USER:PASSWORD@HOST:5432/DBNAME [--dry-run]
 
-The DSN defaults to the ``VIDEO_REPLICA_DATABASE_URL`` environment variable.
+The DSN resolves through ``app.db_pg.resolve_cli_pg_dsn`` (CW-057): the
+argument wins over ``VIDEO_REPLICA_DATABASE_URL``, and missing DSNs,
+``sqlite://`` URLs or ``VIDEO_REPLICA_DB_PATH`` leftovers fail closed with a
+fixed, credential-free message and never create a database file (PG-01).
 Counter rows on fully lapsed windows can never be consulted again
 (``consume_rate_limit`` resets the window on the first hit after the
 cutoff), so deleting them keeps the table bounded without touching any
@@ -17,12 +20,12 @@ never written here. Output carries counts only. Intended to run from the
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import datetime
 
 import psycopg
 
+from app.db_pg import CliDatabaseConfigError, resolve_cli_pg_dsn
 from app.security_rate_limit import count_stale_counters, purge_stale_counters
 
 
@@ -32,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--database-url",
-        default=os.environ.get("VIDEO_REPLICA_DATABASE_URL", ""),
+        default="",
         help="PostgreSQL DSN (defaults to VIDEO_REPLICA_DATABASE_URL)",
     )
     parser.add_argument(
@@ -42,11 +45,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.database_url.strip():
-        print(
-            "error: --database-url or VIDEO_REPLICA_DATABASE_URL is required",
-            file=sys.stderr,
-        )
+    try:
+        database_url = resolve_cli_pg_dsn(args.database_url)
+    except CliDatabaseConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     # The cutoff comes from the PostgreSQL clock (SELECT now()), never the
@@ -54,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     # the server clock, so a host clock ahead of PG would sweep counters
     # the limiter still treats as active and bypass the shared abuse budget
     # (Codex P2; same source as the idempotency purge).
-    with psycopg.connect(args.database_url) as conn:
+    with psycopg.connect(database_url) as conn:
         row = conn.execute("SELECT now()").fetchone()
         if row is None:
             raise RuntimeError("SELECT now() returned no rows")

@@ -23,6 +23,7 @@ from urllib.request import urlopen
 
 from cryptography.fernet import Fernet
 
+from app.db_pg import DATABASE_URL_ENV, DB_PATH_ENV, CliDatabaseConfigError, resolve_cli_pg_dsn
 from app.gate1_bootstrap import bootstrap_gate1_database
 
 CommandRunner = Callable[[list[str]], None]
@@ -413,22 +414,53 @@ def verify_evidence_manifest(manifest_path: Path) -> None:
             raise ValueError(f"Gate 1 evidence hash mismatch: {relative_value}")
 
 
+def _to_sqlalchemy_psycopg_url(database_url: str) -> str:
+    """Translate a libpq DSN into the SQLAlchemy driver URL Alembic needs."""
+    for prefix in ("postgresql://", "postgres://"):
+        if database_url.startswith(prefix):
+            return database_url.replace(prefix, "postgresql+psycopg://", 1)
+    return database_url
+
+
+def migrate_gate1_database(repository_root: Path, database_url: str) -> None:
+    """Bring the Gate 1 PostgreSQL database to the frozen migration head.
+
+    The PG runtime bootstrap no longer migrates (deploy/postgres/migrate.sh
+    owns production migrations), so the harness runs the same Alembic
+    ``upgrade head`` in-process before seeding. Failure here aborts the run
+    before any API process starts.
+    """
+
+    from alembic import command
+    from alembic.config import Config
+
+    server_dir = repository_root / "server"
+    config = Config(str(server_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(server_dir / "migrations"))
+    config.set_main_option("sqlalchemy.url", _to_sqlalchemy_psycopg_url(database_url))
+    command.upgrade(config, "head")
+
+
 def _gate1_runtime_environment(
     *,
-    database_path: Path,
+    database_url: str,
     storage_root: Path,
     settings_key: str,
     fake_h3_result_path: Path,
     api_url: str,
 ) -> dict[str, str]:
     environment = os.environ.copy()
+    # A leftover DB_PATH would make the PG-only runtime resolver reject the
+    # child outright (an ambiguous configuration is an error), so the harness
+    # strips it from the child environment explicitly.
+    environment.pop(DB_PATH_ENV, None)
     environment.update(
         {
             "PYTHONUNBUFFERED": "1",
             "PUBLIC_BASE_URL": "",
             "VIDEO_REPLICA_AUTH_MODE": "desktop",
             "VIDEO_REPLICA_ALLOW_DEV_IDENTITY_HEADER": "0",
-            "VIDEO_REPLICA_DB_PATH": str(database_path),
+            DATABASE_URL_ENV: database_url,
             "VIDEO_REPLICA_SETTINGS_KEY": settings_key,
             "VIDEO_REPLICA_DESKTOP_USER_ID": "gate1_admin",
             "VIDEO_REPLICA_FAKE_H3_RESULT_PATH": str(fake_h3_result_path),
@@ -447,6 +479,7 @@ def run_gate1(
     repository_root: Path,
     output_root: Path,
     run_id: str,
+    database_url: str | None = None,
     playwright_arguments: list[str] | None = None,
 ) -> int:
     paths = prepare_gate1_run(output_root, run_id=run_id)
@@ -465,12 +498,17 @@ def run_gate1(
         _require_available_port("127.0.0.1", api_port)
         _require_available_port("127.0.0.1", GATE1_WEB_PORT)
 
+        # CW-057: the Gate 1 runtime database is PostgreSQL only. A missing or
+        # SQLite DSN fails closed here (CliDatabaseConfigError lands in the
+        # harness error log) and never creates a database file.
+        resolved_database_url = resolve_cli_pg_dsn(database_url)
+        migrate_gate1_database(repository_root, resolved_database_url)
+
         settings_key = Fernet.generate_key().decode("ascii")
-        database_path = paths.runtime_dir / "gate1.sqlite3"
         storage_root = paths.runtime_dir / "storage"
         storage_root.mkdir()
         runtime_env = _gate1_runtime_environment(
-            database_path=database_path,
+            database_url=resolved_database_url,
             storage_root=storage_root,
             settings_key=settings_key,
             fake_h3_result_path=paths.media_dir / "reference.mp4",
@@ -481,7 +519,7 @@ def run_gate1(
         os.environ["VIDEO_REPLICA_SETTINGS_KEY"] = settings_key
         try:
             bootstrap_gate1_database(
-                database_path,
+                resolved_database_url,
                 user_id="gate1_admin",
                 display_name="Gate 1 Admin",
             )
@@ -726,7 +764,7 @@ def _write_run_metadata(
         "run_id": paths.run_id,
         "commit_sha": commit_sha,
         "started_at": datetime.now(UTC).isoformat(),
-        "runtime": "React/Vite + FastAPI + one-shot Worker + SQLite + LocalStorageAdapter",
+        "runtime": "React/Vite + FastAPI + one-shot Worker + PostgreSQL + LocalStorageAdapter",
         "gate_scope": "macOS desktop FakeProvider E2E; not Windows WebView2 acceptance",
         "formal_run": not playwright_arguments,
         "playwright_arguments": playwright_arguments,
@@ -766,13 +804,27 @@ def main() -> None:
         default=repository_root / "output" / "playwright" / "gate1",
     )
     parser.add_argument("--run-id", default=_default_run_id())
+    parser.add_argument(
+        "--database-url",
+        default="",
+        help=(
+            "PostgreSQL DSN for the Gate 1 runtime database "
+            "(defaults to VIDEO_REPLICA_DATABASE_URL; SQLite is rejected)"
+        ),
+    )
     parser.add_argument("playwright_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    try:
+        resolved_database_url = resolve_cli_pg_dsn(args.database_url)
+    except CliDatabaseConfigError as exc:
+        parser.error(f"error: {exc}")
+        return
     raise SystemExit(
         run_gate1(
             repository_root=repository_root,
             output_root=args.output_root,
             run_id=args.run_id,
+            database_url=resolved_database_url,
             playwright_arguments=normalize_playwright_arguments(args.playwright_args),
         )
     )
