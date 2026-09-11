@@ -2784,4 +2784,154 @@ describe("AnalysisWorkspace workflow gates", () => {
       expect.objectContaining({ id: "batch-100" }),
     );
   });
+
+  // F-06（前端分析报告 2026-09-12）：未保存的口播稿编辑此前只存在 React
+  // state，刷新/崩溃即丢。防抖写入 localStorage 本地草稿，重挂载恢复。
+  it("F-06：未保存口播稿写入本地草稿，重挂载后恢复并提示", async () => {
+    const draftKey = "generation.localDraft/script/employee_1/project-1";
+    const first = render(
+      <AnalysisWorkspace
+        currentUserId="employee_1"
+        onAnalysisReady={vi.fn()}
+        onBatchCreated={vi.fn()}
+        onClose={vi.fn()}
+        project={{
+          id: "project-1",
+          owner_user_id: "employee_1",
+          name: "本地草稿恢复测试",
+          status: "REFERENCE_READY",
+          reference_asset_id: "reference-video-1",
+          reference_upload_status: "READY",
+          analysis_status: "READY",
+        }}
+      />,
+    );
+    expect(await screen.findByText("拆解完成")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("口播稿内容"), {
+      target: { value: "本地草稿口播稿" },
+    });
+    await waitFor(
+      () => {
+        const saved = window.localStorage.getItem(draftKey);
+        expect(saved).not.toBeNull();
+        expect(JSON.parse(saved ?? "{}").text).toBe("本地草稿口播稿");
+      },
+      { timeout: 3000 },
+    );
+
+    first.unmount();
+
+    // 跨账号隔离：employee_2 不得看到 employee_1 的草稿
+    const secondView = render(
+      <AnalysisWorkspace
+        currentUserId="employee_2"
+        onAnalysisReady={vi.fn()}
+        onBatchCreated={vi.fn()}
+        onClose={vi.fn()}
+        project={{
+          id: "project-1",
+          owner_user_id: "employee_2",
+          name: "跨账号隔离测试",
+          status: "REFERENCE_READY",
+          reference_asset_id: "reference-video-1",
+          reference_upload_status: "READY",
+          analysis_status: "READY",
+        }}
+      />,
+    );
+    const otherUserArea = (await screen.findByLabelText(
+      "口播稿内容",
+    )) as HTMLTextAreaElement;
+    await waitFor(() => expect(otherUserArea.value).toBe("原始口播稿"));
+    expect(
+      screen.queryByText("已恢复上次未保存的本地草稿，请确认后保存。"),
+    ).not.toBeInTheDocument();
+
+    secondView.unmount();
+    renderReadyWorkspace(vi.fn());
+    const textarea = (await screen.findByLabelText(
+      "口播稿内容",
+    )) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe("本地草稿口播稿"));
+    expect(
+      await screen.findByText("已恢复上次未保存的本地草稿，请确认后保存。"),
+    ).toBeInTheDocument();
+    window.localStorage.removeItem(draftKey);
+  });
+
+  it("F-06：显式保存口播稿成功后清除本地草稿", async () => {
+    const draftKey = "generation.localDraft/script/employee_1/project-1";
+    vi.mocked(api.getLatestProjectShotCards).mockResolvedValue({
+      id: "shot-card-2",
+      project_id: "project-1",
+      asset_id: null,
+      kind: "shot_card",
+      version_number: 2,
+      payload: {
+        source_analysis_version_id: "analysis-1",
+        duration_seconds: 8,
+        shots: [],
+      },
+      created_by_user_id: "employee_1",
+      created_at: "2030-01-01T00:00:00Z",
+    });
+    vi.mocked(api.createScriptVersion).mockResolvedValue({
+      id: "script-2",
+      project_id: "project-1",
+      asset_id: null,
+      kind: "script",
+      version_number: 2,
+      payload: {
+        source: "original",
+        full_text: "待保存草稿",
+        shot_card_version_id: "shot-card-2",
+        shot_mappings: [],
+      },
+      created_by_user_id: "employee_1",
+      created_at: "2030-01-01T00:00:00Z",
+    });
+    const view = render(
+      <AnalysisWorkspace
+        currentUserId="employee_1"
+        onAnalysisReady={vi.fn()}
+        onBatchCreated={vi.fn()}
+        onClose={vi.fn()}
+        project={{
+          id: "project-1",
+          owner_user_id: "employee_1",
+          name: "本地草稿清除测试",
+          status: "REFERENCE_READY",
+          reference_asset_id: "reference-video-1",
+          reference_upload_status: "READY",
+          analysis_status: "READY",
+        }}
+      />,
+    );
+    expect(await screen.findByText("拆解完成")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "完成角色选择" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成源画面" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成人物参考" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成置换首帧" }));
+
+    fireEvent.change(await screen.findByLabelText("口播稿内容"), {
+      target: { value: "待保存草稿" },
+    });
+    await waitFor(
+      () => {
+        const saved = window.localStorage.getItem(draftKey);
+        expect(saved).not.toBeNull();
+        expect(JSON.parse(saved ?? "{}").text).toBe("待保存草稿");
+      },
+      { timeout: 3000 },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "保存口播稿" }));
+    await waitFor(() => {
+      // 保存成功后服务端即真相源，本地草稿必须被清除（核心契约）
+      expect(window.localStorage.getItem(draftKey)).toBeNull();
+      expect(vi.mocked(api.createScriptVersion)).toHaveBeenCalledTimes(1);
+    });
+    view.unmount();
+  });
 });
