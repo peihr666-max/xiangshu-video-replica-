@@ -36,6 +36,7 @@ from app.character_identity_routes import router as character_identity_router
 from app.character_reference_routes import router as character_reference_router
 from app.character_routes import router as character_router
 from app.control_routes import router as control_router
+from app.customer_auth_routes import router as customer_auth_router
 from app.customer_device_routes import router as customer_device_router
 from app.customer_session_routes import router as customer_session_router
 from app.db_pg import DATABASE_URL_ENV, SQLITE_URL_SCHEMES, close_pg_pool
@@ -359,6 +360,7 @@ app.include_router(admin_profit_router)
 app.include_router(admin_rate_router)
 app.include_router(admin_runtime_router)
 app.include_router(admin_audit_router)
+app.include_router(customer_auth_router)
 app.include_router(customer_activation_router)
 app.include_router(customer_device_router)
 app.include_router(customer_session_router)

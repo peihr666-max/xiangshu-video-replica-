@@ -107,7 +107,9 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     "recharge_orders": frozenset({"prepay_id", "code_url", "transaction_id"}),
     # 086_remove_device_slot_constraints: 每用户设备上限列仅存在于 PG
     # （T07 的 SQLite 源 schema 冻结于 042 前基线）。
-    "users": frozenset({"max_devices"}),
+    # 20260912T1400_customer_registration_credentials: 自助注册凭证列仅存在于 PG
+    # （SQLite 内部泳道从不自注册客户，088 在该 lane 为 guarded no-op）。
+    "users": frozenset({"max_devices", "password_hash", "registration_source"}),
     # 20260912T1353_customer_discounts: wallet_transactions.discount_rate 仅存在于 PG
     # （本迁移非 postgresql 方言 return，SQLite lane 不建此列）。
     "wallet_transactions": frozenset({"discount_rate"}),
