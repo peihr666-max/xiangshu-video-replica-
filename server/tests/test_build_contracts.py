@@ -207,3 +207,22 @@ def test_ci_shard_coverage_guard_is_wired() -> None:
     assert workflow.index("build-test-shards.py --check-coverage") < workflow.index(
         "bash scripts/ci/run-pytest-shards.sh"
     )
+
+
+def test_verify_customer_bundle_asserts_admin_base_stylesheet_marker() -> None:
+    # ADMIN-BUNDLE-CSS-CONTRACT-20260912（双向合同的「包含向」）：
+    # CW-019 拆分双入口后 styles.css 只剩客户壳一处导入，管理端产物整份缺失
+    # 基础样式表（.admin-shell 布局、--admin-* 令牌定义），产线半裸渲染时全部
+    # 「排除断言」（客户制品不含管理代码）依旧全绿——排除向发现不了「缺自身
+    # 依赖」的回归。verify 脚本必须在阳性对照之外，显式断言管理制品 CSS 含
+    # 基础样式表标记；源码级契约见 client/src/entryContract.test.ts。
+    script = (REPO_ROOT / "scripts" / "verify_customer_bundle.mjs").read_text(encoding="utf-8")
+
+    assert "runAdminBaseStylesheetControl" in script
+    assert ".admin-shell{" in script
+    assert "--admin-bg" in script
+    # 断言必须真的接进主流程（防「定义了但没调用」的静默失效），
+    # 且先于排除断言执行——让最严重的回归最早失败。
+    assert script.index("runAdminBaseStylesheetControl();") < script.index(
+        "const nameHits = checkForbiddenFileNames(relPaths)"
+    )
