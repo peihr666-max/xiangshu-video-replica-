@@ -59,7 +59,7 @@ REPO_ROOT = SERVER_DIR.parent
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→080 + 081）。
 HEAD_REVISION = "083_recharge_orders_multi_provider"
 
-# 最后一个已发布（受支持）起点。其后的 056–081 尚未随任何受支持版本发布，
+# 最后一个已发布（受支持）起点。其后的 056–082 尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
 # 那不是「冻结已发布历史」而是「冻结开发中」。
 PUBLISHED_HEAD_REVISION = "055_customer_batch_visibility"
@@ -115,9 +115,13 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "primary_keys": 76,
 }
 
-# head 的表名全集（76）。counts 只能证明「数量没漂」，证明不了「同一批表」：
-# 掉一张旧表再建一张新表，tables 计数仍是 76。表名集合与下面的完整目录
+# head 的表名全集（77）。counts 只能证明「数量没漂」，证明不了「同一批表」：
+# 掉一张旧表再建一张新表，tables 计数仍是 77。表名集合与下面的完整目录
 # 摘要一起构成结构等价的两级断言，失配时的报错可直接指出 missing/unexpected。
+# 082 的增量：tables/primary_keys +1（publish_accounts）、columns +15、
+# check_constraints +3（platform/status/verify_flag 三条 CHECK）、foreign_keys +1
+# （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
+# partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
 HEAD_TABLE_NAMES: tuple[str, ...] = (
     "activation_code_activations",
     "activation_code_batches",
@@ -170,6 +174,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
     "project_main_characters",
     "projects",
     "provider_settings",
+    "publish_accounts",
     "recharge_orders",
     "runtime_settings",
     "script_from_audio_tasks",
@@ -1079,14 +1084,16 @@ def test_audit_lineage_downgrade_refusal_is_preserved(matrix_database: str) -> N
 
 # 055（最后一个已发布起点）**之后**才创建的表，用于「失败不留半结构」断言。
 # 逐个核对过建表迁移：operation_cost_rates=056、daily_external_prices=058、
-# oral_tasks=065、studio_drafts=067。选早于 055 的表会假红（它们在起点就已
-# 存在），而选拼错的表名会假绿（to_regclass 对不存在的名字同样返回 NULL），
-# 所以下面的用例额外断言每个名字都在 HEAD_TABLE_NAMES 里。
+# oral_tasks=065、studio_drafts=067、publish_accounts=082。选早于 055 的表会假红
+# （它们在起点就已存在），而选拼错的表名会假绿（to_regclass 对不存在的名字同样
+# 返回 NULL），所以下面的用例额外断言每个名字都在 HEAD_TABLE_NAMES 里。
+# 尾项 publish_accounts 由链尾迁移创建，是「一条都没半建成」的最强哨兵。
 LATE_TABLES_AFTER_PUBLISHED_HEAD: tuple[str, ...] = (
     "operation_cost_rates",
     "daily_external_prices",
     "oral_tasks",
     "studio_drafts",
+    "publish_accounts",
 )
 
 
