@@ -745,9 +745,9 @@ export function WorkbenchPage() {
         ))}
       </div>
       <div className="studio-home-grid">
-        <div className="studio-home-main">
-          <h2>正在进行</h2>
+        <div className="studio-home-cell" data-area="running">
           <Panel className="studio-running-list">
+            <h2>正在进行</h2>
             {active.length ? (
               active.slice(0, 2).map((task) => (
                 <div className="studio-running-row" key={task.id}>
@@ -793,75 +793,21 @@ export function WorkbenchPage() {
               <Empty
                 title={data.loading ? "正在读取任务" : "还没有进行中的任务"}
                 description="从上传视频或选择素材开始创作"
+                action={
+                  data.loading ? undefined : (
+                    <Button onClick={() => fileInputRef.current?.click()}>
+                      上传视频，开始第一支创作
+                    </Button>
+                  )
+                }
               />
             )}
           </Panel>
-          <div className="studio-home-section-heading">
-            <h2>爆款视频精选</h2>
-            <Button
-              variant="quiet"
-              aria-label="查看全部爆款"
-              onClick={() => navigate("viral")}
-            >
-              查看全部爆款
-              <Icon name="arrow" size={16} />
-            </Button>
-          </div>
-          {featuredVideos.length ? (
-            <div className="studio-home-viral-grid">
-              {featuredVideos.map((video) => (
-                <article className="studio-home-viral-card" key={video.id}>
-                  <button
-                    type="button"
-                    className="studio-home-viral-cover"
-                    aria-label={`查看详情：${video.title}`}
-                    onClick={() => {
-                      navigate("viral-detail", {
-                        selectedVideoId: video.id,
-                        returnTo: "workbench",
-                      });
-                      persistWorkbenchViralDetailUrl(video);
-                    }}
-                  >
-                    <img src={video.poster} alt="" loading="lazy" />
-                    <span className="studio-home-viral-platform">
-                      {video.platform}
-                    </span>
-                    <span className="studio-home-viral-duration">
-                      {video.duration}
-                    </span>
-                  </button>
-                  <h3 title={video.title}>{video.title}</h3>
-                  <div className="studio-home-viral-meta">
-                    <span>
-                      <Icon name="fire" size={14} />
-                      热度 {formatWorkbenchLikes(video)}
-                    </span>
-                    <Button
-                      variant="quiet"
-                      aria-label={`用它复刻：${video.title}`}
-                      disabled={viralImportingId === video.id}
-                      onClick={() => void beginViralCreation(video)}
-                    >
-                      {viralImportingId === video.id ? "导入中…" : "用它复刻"}
-                    </Button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <Panel className="studio-home-viral-empty">
-              <Empty
-                title={data.loading ? "正在读取爆款灵感" : "暂无爆款灵感"}
-                description="前往爆款视频页查看更多乡墅参考作品"
-              />
-            </Panel>
-          )}
         </div>
-        <aside className="studio-home-side">
+        <div className="studio-home-cell" data-area="activity">
           <Panel className="studio-activity">
             <h2>任务动态</h2>
-            {data.tasks.slice(0, 5).map((task) => (
+            {data.tasks.slice(0, 4).map((task) => (
               <button
                 type="button"
                 key={task.id}
@@ -876,56 +822,133 @@ export function WorkbenchPage() {
                 </span>
               </button>
             ))}
-            {!data.tasks.length && <p>暂无任务动态</p>}
+            {!data.tasks.length && (
+              <Empty
+                title={data.loading ? "正在读取任务" : "暂无任务动态"}
+                description="任务提交后这里会实时更新"
+              />
+            )}
+            {data.tasks.length > 4 && (
+              <Button variant="quiet" onClick={() => navigate("tasks")}>
+                进入任务中心
+              </Button>
+            )}
           </Panel>
+        </div>
+        <div className="studio-home-cell" data-area="viral">
+          <Panel className="studio-viral-panel">
+            <div className="studio-home-section-heading">
+              <h2>爆款视频精选</h2>
+              <Button
+                variant="quiet"
+                aria-label="查看全部爆款"
+                onClick={() => navigate("viral")}
+              >
+                查看全部爆款
+                <Icon name="arrow" size={16} />
+              </Button>
+            </div>
+            {featuredVideos.length ? (
+              <div className="studio-home-viral-grid">
+                {featuredVideos.map((video) => (
+                  <article className="studio-home-viral-card" key={video.id}>
+                    <button
+                      type="button"
+                      className="studio-home-viral-cover"
+                      aria-label={`查看详情：${video.title}`}
+                      onClick={() => {
+                        navigate("viral-detail", {
+                          selectedVideoId: video.id,
+                          returnTo: "workbench",
+                        });
+                        persistWorkbenchViralDetailUrl(video);
+                      }}
+                    >
+                      <img src={video.poster} alt="" loading="lazy" />
+                      <span className="studio-home-viral-platform">
+                        {video.platform}
+                      </span>
+                      <span className="studio-home-viral-duration">
+                        {video.duration}
+                      </span>
+                    </button>
+                    <h3 title={video.title}>{video.title}</h3>
+                    <div className="studio-home-viral-meta">
+                      <span>
+                        <Icon name="fire" size={14} />
+                        热度 {formatWorkbenchLikes(video)}
+                      </span>
+                      <Button
+                        variant="quiet"
+                        aria-label={`用它复刻：${video.title}`}
+                        disabled={viralImportingId === video.id}
+                        onClick={() => void beginViralCreation(video)}
+                      >
+                        {viralImportingId === video.id ? "导入中…" : "用它复刻"}
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <Empty
+                title={data.loading ? "正在读取爆款灵感" : "暂无爆款灵感"}
+                description="前往爆款视频页查看更多乡墅参考作品"
+              />
+            )}
+          </Panel>
+        </div>
+        <div className="studio-home-cell" data-area="shortcuts">
           <Panel className="studio-shortcuts">
             <h2>快捷入口</h2>
-            <button
-              type="button"
-              aria-label="快捷入口：文案工坊"
-              onClick={() => navigate("copy")}
-            >
-              <Icon name="pen" size={28} />
-              <span>
-                文案工坊<small>创作爆款文案</small>
-              </span>
-              <Icon name="chevron" />
-            </button>
-            <button
-              type="button"
-              aria-label="快捷入口：人物库"
-              onClick={() => navigate("people")}
-            >
-              <Icon name="person" size={28} />
-              <span>
-                人物库<small>管理数字人</small>
-              </span>
-              <Icon name="chevron" />
-            </button>
-            <button
-              type="button"
-              aria-label="快捷入口：素材库"
-              onClick={() => navigate("materials")}
-            >
-              <Icon name="folder" size={28} />
-              <span>
-                素材库<small>管理我的素材</small>
-              </span>
-              <Icon name="chevron" />
-            </button>
-            <button
-              type="button"
-              aria-label="快捷入口：数据看板"
-              onClick={() => navigate("analytics")}
-            >
-              <Icon name="chart" size={28} />
-              <span>
-                数据看板<small>查看创作数据</small>
-              </span>
-              <Icon name="chevron" />
-            </button>
+            <div className="studio-shortcuts-grid">
+              <button
+                type="button"
+                aria-label="快捷入口：文案工坊"
+                onClick={() => navigate("copy")}
+              >
+                <Icon name="pen" size={28} />
+                <span>
+                  文案工坊<small>创作爆款文案</small>
+                </span>
+                <Icon name="chevron" />
+              </button>
+              <button
+                type="button"
+                aria-label="快捷入口：人物库"
+                onClick={() => navigate("people")}
+              >
+                <Icon name="person" size={28} />
+                <span>
+                  人物库<small>管理数字人</small>
+                </span>
+                <Icon name="chevron" />
+              </button>
+              <button
+                type="button"
+                aria-label="快捷入口：素材库"
+                onClick={() => navigate("materials")}
+              >
+                <Icon name="folder" size={28} />
+                <span>
+                  素材库<small>管理我的素材</small>
+                </span>
+                <Icon name="chevron" />
+              </button>
+              <button
+                type="button"
+                aria-label="快捷入口：数据看板"
+                onClick={() => navigate("analytics")}
+              >
+                <Icon name="chart" size={28} />
+                <span>
+                  数据看板<small>查看创作数据</small>
+                </span>
+                <Icon name="chevron" />
+              </button>
+            </div>
           </Panel>
-        </aside>
+        </div>
       </div>
     </section>
   );

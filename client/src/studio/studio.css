@@ -1,3 +1,14 @@
+/* 客户制品的入口图不含 styles.css（其引入方 App.tsx 仅测试可达），
+   浏览器默认 body margin/白底会露出 8px 白缝；此处的全局重置必须随本文件提供。 */
+html,
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100dvh;
+  background: #080909;
+  color-scheme: dark;
+}
+
 .studio-shell {
   --studio-bg: #080909;
   --studio-panel: #101111;
@@ -724,7 +735,42 @@
 .studio-home-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.74fr) minmax(360px, 1fr);
+  grid-template-areas:
+    "running activity"
+    "viral shortcuts";
   gap: 14px;
+}
+/* 行锁定等高网格：每个单元格是网格直接子项，行内两卡顶边/底边强制对齐 */
+.studio-home-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.studio-home-cell[data-area="running"] {
+  grid-area: running;
+}
+.studio-home-cell[data-area="activity"] {
+  grid-area: activity;
+}
+.studio-home-cell[data-area="viral"] {
+  grid-area: viral;
+}
+.studio-home-cell[data-area="shortcuts"] {
+  grid-area: shortcuts;
+}
+.studio-home-cell > .studio-panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+}
+.studio-home-cell > .studio-panel > h2 {
+  font-size: 17px;
+  font-weight: 500;
+  margin: 0 0 8px;
+}
+.studio-home-cell > .studio-panel > .studio-empty {
+  flex: 1 1 auto;
 }
 .studio-start {
   width: min(1018px, 78%);
@@ -829,13 +875,6 @@
 }
 .studio-metric-hint.is-danger {
   color: #f05e4b;
-}
-.studio-home-main > h2 {
-  font-size: 17px;
-  margin: 7px 0 6px;
-}
-.studio-running-list {
-  padding: 0 14px;
 }
 .studio-running-row {
   display: flex;
@@ -986,11 +1025,7 @@
   align-items: center;
   justify-content: space-between;
   min-height: 35px;
-}
-.studio-home-section-heading h2 {
-  font-size: 17px;
-  font-weight: 500;
-  margin: 0;
+  margin-bottom: 6px;
 }
 .studio-home-section-heading .studio-button {
   min-height: 30px;
@@ -1001,7 +1036,7 @@
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
-  padding: 0 8px;
+  align-content: start;
 }
 .studio-home-viral-card {
   min-width: 0;
@@ -1081,16 +1116,6 @@
   padding: 3px 6px;
   font-size: 10px;
 }
-.studio-home-viral-empty {
-  min-height: 180px;
-}
-.studio-home-side .studio-panel {
-  padding: 12px 16px;
-}
-.studio-home-side .studio-panel > h2 {
-  font-size: 17px;
-  margin-bottom: 6px;
-}
 .studio-activity {
   min-height: 287px;
 }
@@ -1115,11 +1140,14 @@
 .studio-activity > .studio-button {
   border-top: 1px solid #26291f;
   color: #bdbfb2;
-  width: calc(100% + 42px);
-  margin: 20px -21px -21px;
-  padding: 20px;
+  width: calc(100% + 32px);
+  margin: auto -16px -14px;
+  padding: 14px 16px;
   justify-content: flex-start;
   border-radius: 0;
+}
+.studio-activity > .studio-button:hover {
+  color: #e6e7dd;
 }
 .studio-dot {
   width: 12px;
@@ -1138,15 +1166,16 @@
   background: #e46f51;
 }
 .studio-shortcuts {
+  margin-top: 0;
+}
+.studio-shortcuts-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
   gap: 9px;
-  margin-top: 10px;
+  flex: 1 1 auto;
 }
-.studio-shortcuts > h2 {
-  grid-column: 1 / -1;
-}
-.studio-shortcuts > button {
+.studio-shortcuts-grid > button {
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1160,10 +1189,10 @@
   margin-top: 0;
   min-height: 65px;
 }
-.studio-shortcuts > button > svg:first-child {
+.studio-shortcuts-grid > button > svg:first-child {
   color: #e1b238;
 }
-.studio-shortcuts > button > svg:last-child {
+.studio-shortcuts-grid > button > svg:last-child {
   margin-left: auto;
 }
 .studio-shortcuts small {
@@ -1544,7 +1573,9 @@
 }
 @media (min-width: 1700px) {
   .studio-stage {
-    max-width: 1580px;
+    /* 宽屏上限：≤2104px 视口内保持全宽贴边；更宽的 UltraWide 居中对称留白。
+       原 1580px 会在 2K/4K 缩放窗口右侧留出大片空带。 */
+    max-width: 1840px;
     margin: 0 auto;
   }
 }
@@ -1634,7 +1665,12 @@
   .studio-result-actions button {
     font-size: 14px;
   }
-  .studio-home-side .studio-panel {
+  .studio-home-cell > .studio-panel {
+    padding: 12px 14px;
+  }
+  .studio-activity > .studio-button {
+    width: calc(100% + 28px);
+    margin: auto -14px -12px;
     padding: 12px 14px;
   }
 }
@@ -1668,15 +1704,11 @@
 }
 @media (max-width: 1100px) {
   .studio-home-grid {
-    grid-template-columns: 1fr;
-  }
-  .studio-home-side {
-    display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 20px;
-  }
-  .studio-shortcuts {
-    margin-top: 0;
+    grid-template-areas:
+      "running running"
+      "activity shortcuts"
+      "viral viral";
   }
   .studio-home-viral-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1751,8 +1783,13 @@
   .studio-source-input .studio-button {
     flex: 1 1 auto;
   }
-  .studio-home-side {
+  .studio-home-grid {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "running"
+      "activity"
+      "viral"
+      "shortcuts";
   }
   .studio-home-metrics {
     grid-template-columns: 1fr 1fr;
