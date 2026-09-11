@@ -591,9 +591,7 @@ def test_local_object_endpoints_fail_closed_without_cos(
     _set_runtime_provider(fence_env.dsn, "cos")
     _clear_cos_settings(fence_env.dsn)
     customer = _activated_customer(customer_lane, fence_env, fingerprint="cw031-fp-lo-a")
-    session_token = _business_login(
-        customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}"
-    )
+    session_token = _business_login(customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}")
 
     put_response = customer_lane.put(
         "/api/assets/local-objects/projects/cw031-project/uploads/asset-1/reference.mp4",
@@ -620,9 +618,7 @@ def test_local_object_endpoints_keep_404_when_cos_is_configured(
     _set_runtime_provider(fence_env.dsn, "cos")
     _write_cos_settings(fence_env.dsn, settings_key=fence_env.settings_key)
     customer = _activated_customer(customer_lane, fence_env, fingerprint="cw031-fp-lo-b")
-    session_token = _business_login(
-        customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}"
-    )
+    session_token = _business_login(customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}")
 
     put_response = customer_lane.put(
         "/api/assets/local-objects/projects/cw031-project/uploads/asset-1/reference.mp4",
@@ -653,9 +649,7 @@ def test_local_object_put_with_local_provider_stops_before_the_fence(
     _set_runtime_provider(fence_env.dsn, "local")
     _clear_cos_settings(fence_env.dsn)
     customer = _activated_customer(customer_lane, fence_env, fingerprint="cw031-fp-lo-c")
-    session_token = _business_login(
-        customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}"
-    )
+    session_token = _business_login(customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}")
 
     response = customer_lane.put(
         "/api/assets/local-objects/projects/cw031-missing/uploads/asset-1/reference.mp4",
