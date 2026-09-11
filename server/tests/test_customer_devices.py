@@ -713,41 +713,27 @@ def test_next_free_slot_reports_availability(devices_dsn: str) -> None:
 
 
 def test_third_bound_row_is_refused_by_the_database(devices_dsn: str) -> None:
-    """The third-device block is proven by PostgreSQL itself (§11.3)."""
+    """The per-user device-limit floor is proven by PostgreSQL itself (086).
+
+    CW-073 removed the hard-coded two-slot DB constraints (uq_customer_devices_slot,
+    ck_customer_devices_slot_range); the third-device block now lives in the
+    service layer and is answered with 409 ``DEVICE_SLOTS_FULL`` (locked by the
+    API tests in this module).  What the database itself still refuses outright
+    is a non-positive ``users.max_devices`` — the CHECK 086 installed.
+    """
     close_pg_pool()
-    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
-        conn.execute(
-            "INSERT INTO activation_code_batches "
-            "(id, name, face_value_fen, unit_price_fen_snapshot, credits_snapshot, "
-            "quantity, activation_expires_at, status, created_by_user_id) "
-            f"VALUES ('batch-third', 'third', 1500, 1000, 100, 1, "
-            f"'{FUTURE_EXPIRY}', 'OPEN', 'admin_u')"
-        )
-        digest = compute_code_digest(THIRD_DEVICE_CODE, key=TEST_KEY.encode("utf-8"))
-        conn.execute(
-            "INSERT INTO activation_codes "
-            "(id, batch_id, code_digest, digest_key_version, masked_code, "
-            "status, issued_at) "
-            "VALUES ('code-third', 'batch-third', %s, 1, 'XS04-****', "
-            "'ISSUED', '2026-01-01T00:00:00+00:00')",
-            (digest,),
-        )
-        conn.execute(
-            "INSERT INTO users (id, username, display_name, role) "
-            "VALUES ('third_u', 'third_u', 'Third User', 'customer')"
-        )
     try:
-        with psycopg.connect(_t16_dsn()) as conn:
-            _bind_raw(conn, "code-third", "third_u", "dev-third-1", 1)
-            _bind_raw(conn, "code-third", "third_u", "dev-third-2", 2)
-            # A third BOUND device cannot occupy slot 1 or slot 2.
-            with pytest.raises(UniqueViolation):
-                _bind_raw(conn, "code-third", "third_u", "dev-third-3", 1)
-            with pytest.raises(UniqueViolation):
-                _bind_raw(conn, "code-third", "third_u", "dev-third-4", 2)
-            # The slot_no CHECK itself refuses a third slot number outright.
-            with pytest.raises(CheckViolation, match="ck_customer_devices_slot_range"):
-                _bind_raw(conn, "code-third", "third_u", "dev-third-5", 3)
+        with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, display_name, role) "
+                "VALUES ('third_u', 'third_u', 'Third User', 'customer')"
+            )
+            # server_default 2: a fresh user sits at the historical two-device limit.
+            seeded = conn.execute("SELECT max_devices FROM users WHERE id = 'third_u'").fetchone()
+            assert seeded == (2,), seeded
+            # The DB itself refuses a non-positive limit (ck_users_max_devices_positive).
+            with pytest.raises(CheckViolation, match="ck_users_max_devices_positive"):
+                conn.execute("UPDATE users SET max_devices = 0 WHERE id = 'third_u'")
     finally:
         close_pg_pool()
 
