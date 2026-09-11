@@ -48,3 +48,9 @@
 - 真实多出口网络的行为验证（运营商级 NAT 漂移）未做——语义由单元/集成测试承载，实机验证归 CW-049 UAT / CW-050 真实链路。
 - 审计面：`created_ip_digest` 的查询/导出消费方目前为零（仅落库）；如后续需在审计中心展示，属独立需求。
 - 证据层级：CODE_PRESENT + 本机 AUTOMATED_VERIFIED；最终三门禁以 PR CI 为准。
+
+## 7. CI 第一轮登记与 flake 归因（2026-09-12）
+
+- PR Linux 门首轮 run 34627420740：静态段 ruff/mypy 全过；客户端 vitest **1300 passed / 1 failed**，失败用例 `src/studio/StudioWorkspace.test.tsx > 视频生成（C2 独立创作） > 工作区卸载后旧口播响应不会再跳转页面`。
+- 归因：**main 侧已知负载型时序 flake**（该文件此前已有同类的 role/dialog 时序失败登记，见 CW-055 §18 行与 CW-019 评审记录；本分支 diff 为 server-only：admin_auth_routes.py + test_admin_auth.py + docs，**零 client 文件**，失败不可能由本任务引入）。
+- 处置：不为跳过而改测试、不重跑旧 head 刷绿；追加本 docs-only 提交触发全新完整 run，新旧行均如实登记，最终以含本提交的 run 为准。
