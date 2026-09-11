@@ -288,17 +288,6 @@ def customer_production(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def media_client(fence_env: FenceEnv) -> Iterator[TestClient]:
-    """只挂媒体路由、且不 override get_media_storage —— 闸门必须被真实走到。"""
-    from app.media_routes import router as media_router
-
-    application = FastAPI()
-    application.include_router(media_router)
-    with TestClient(application) as test_client:
-        yield test_client
-
-
-@pytest.fixture()
 def customer_lane(fence_env: FenceEnv, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """真实客户 lane：激活 → 设备 → 业务登录（dev 身份被 401 挡在存储之前）。"""
     from app.activation_code_routes import router as activation_code_router
@@ -591,19 +580,30 @@ def test_customer_lane_rejects_the_dev_identity_before_storage(
 
 
 def test_local_object_endpoints_fail_closed_without_cos(
-    media_client: TestClient, fence_env: FenceEnv
+    customer_lane: TestClient, fence_env: FenceEnv
 ) -> None:
+    """客户 lane 真实会话下正式服务未配 COS → local-objects 端点 503 围栏。
+
+    CW-026 收敛后客户 lane 只认 Bearer 会话（dev 身份 401），
+    故闸门断言迁移到真实会话模式（原 X-Dev-User-Id 写法已被
+    test_customer_lane_rejects_the_dev_identity_before_storage 登记为 401）。
+    """
     _set_runtime_provider(fence_env.dsn, "cos")
     _clear_cos_settings(fence_env.dsn)
+    customer = _activated_customer(customer_lane, fence_env, fingerprint="cw031-fp-lo-a")
+    session_token = _business_login(
+        customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}"
+    )
 
-    put_response = media_client.put(
+    put_response = customer_lane.put(
         "/api/assets/local-objects/projects/cw031-project/uploads/asset-1/reference.mp4",
         content=b"cw031-reference-bytes",
-        headers={"X-Dev-User-Id": ADMIN_USER_ID},
+        headers=_bearer(session_token),
     )
-    get_response = media_client.get(
+    get_response = customer_lane.get(
         "/api/assets/local-objects/projects/cw031-project/reference.mp4",
         params={"expires": "9999999999", "sig": "0" * 64},
+        headers=_bearer(session_token),
     )
 
     assert put_response.status_code == 503, put_response.text
@@ -614,20 +614,25 @@ def test_local_object_endpoints_fail_closed_without_cos(
 
 
 def test_local_object_endpoints_keep_404_when_cos_is_configured(
-    media_client: TestClient, fence_env: FenceEnv
+    customer_lane: TestClient, fence_env: FenceEnv
 ) -> None:
     """COS 已配置时这两个端点今天就是 404；闸门不得改变既有正式服务行为。"""
     _set_runtime_provider(fence_env.dsn, "cos")
     _write_cos_settings(fence_env.dsn, settings_key=fence_env.settings_key)
+    customer = _activated_customer(customer_lane, fence_env, fingerprint="cw031-fp-lo-b")
+    session_token = _business_login(
+        customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}"
+    )
 
-    put_response = media_client.put(
+    put_response = customer_lane.put(
         "/api/assets/local-objects/projects/cw031-project/uploads/asset-1/reference.mp4",
         content=b"cw031-reference-bytes",
-        headers={"X-Dev-User-Id": ADMIN_USER_ID},
+        headers=_bearer(session_token),
     )
-    get_response = media_client.get(
+    get_response = customer_lane.get(
         "/api/assets/local-objects/projects/cw031-project/reference.mp4",
         params={"expires": "9999999999", "sig": "0" * 64},
+        headers=_bearer(session_token),
     )
 
     assert put_response.status_code == 404, put_response.text
@@ -637,17 +642,25 @@ def test_local_object_endpoints_keep_404_when_cos_is_configured(
     assert _persistent_file_snapshot(fence_env.local_root) == set()
 
 
-def test_local_object_put_is_not_fenced_on_the_desktop_lane(
-    media_client: TestClient, fence_env: FenceEnv
+def test_local_object_put_with_local_provider_stops_before_the_fence(
+    customer_lane: TestClient, fence_env: FenceEnv
 ) -> None:
-    """回归锁：围栏外（桌面车道）仍走原本地上传链路（此处停在项目门禁）。"""
+    """回归锁：provider=local（围栏之外）时真实客户会话的上传停在项目门禁 404，而非围栏 503。
+
+    原“桌面车道”回归锁的前提（SQLite 桌面车道）已随 CW-021/CW-026 收敛移除；
+    本用例在 PG 客户车道上登记等价的“围栏之外”行为。
+    """
     _set_runtime_provider(fence_env.dsn, "local")
     _clear_cos_settings(fence_env.dsn)
+    customer = _activated_customer(customer_lane, fence_env, fingerprint="cw031-fp-lo-c")
+    session_token = _business_login(
+        customer_lane, customer, f"cw031-idem-login-{uuid4().hex[:8]}"
+    )
 
-    response = media_client.put(
+    response = customer_lane.put(
         "/api/assets/local-objects/projects/cw031-missing/uploads/asset-1/reference.mp4",
         content=b"cw031-reference-bytes",
-        headers={"X-Dev-User-Id": ADMIN_USER_ID},
+        headers=_bearer(session_token),
     )
 
     assert response.status_code == 404, response.text
