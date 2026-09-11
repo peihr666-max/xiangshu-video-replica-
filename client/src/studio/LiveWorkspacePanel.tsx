@@ -4,6 +4,7 @@ import { useState } from "react";
 import "../legacy-panels.css";
 import { AnalysisWorkspace } from "../AnalysisWorkspace";
 import type { CurrentUser, GenerationBatch, Project } from "../api";
+import { customerGetWallet } from "../api";
 import { CharacterLibrary } from "../CharacterLibrary";
 import { CustomerProfilePanel } from "../customer/CustomerProfilePanel";
 import { CustomerRechargeDialog } from "../customer/CustomerRechargeDialog";
@@ -81,6 +82,26 @@ export function LiveWorkspacePanel({
     onProjectSelected(nextProject);
   }
 
+  // F-05：建批前软预检的余额读取。仅客户 lane 提供；读取失败返回 null
+  // （预检跳过，服务端 402 仍会硬校验）。内部 lane 由任务页/钱包页自身呈现。
+  const walletProvider = customerSession
+    ? async (): Promise<number | null> => {
+        try {
+          const token = await customerSession.store.loadSessionToken();
+          if (!token) {
+            return null;
+          }
+          const wallet = await customerGetWallet({ kind: "session", token });
+          return wallet.available_credits;
+        } catch {
+          return null;
+        }
+      }
+    : undefined;
+  // 余额不足引导：客户 lane 打开充值弹窗；内部 lane 无客户收款概念，
+  // 不提供引导按钮（insufficient 提示本身仍会渲染）。
+  const rechargeGuidance = customerSession ? () => openRecharge() : undefined;
+
   function finishRecharge() {
     setWalletRefreshKey((current) => current + 1);
     onRefresh();
@@ -108,17 +129,21 @@ export function LiveWorkspacePanel({
             onAnalysisReady={() => onRefresh()}
             onBatchCreated={onBatchCreated}
             onClose={closeProjectView}
+            onRecharge={rechargeGuidance}
             onWorkspaceBusyChange={onBusyChange}
             project={selectedProject}
             readOnly={!canWrite}
+            walletProvider={walletProvider}
           />
         ) : projectView === "detail" && selectedProject ? (
           <ProjectDetailFlow
             onBack={closeProjectView}
             onBatchCreated={onBatchCreated}
             onBusyChange={onBusyChange}
+            onRecharge={rechargeGuidance}
             project={selectedProject}
             readOnly={!canWrite}
+            walletProvider={walletProvider}
           />
         ) : (
           <ProjectsPage
@@ -168,6 +193,7 @@ export function LiveWorkspacePanel({
           onProfileUpdated={customerAccount.onProfileUpdated}
           onRefreshProfile={customerAccount.onRefreshProfile}
           onLogout={customerAccount.onLogout}
+          onPairDevice={customerAccount.onPairDevice}
           onRecharge={(amountYuan) => openRecharge(amountYuan)}
           onRefreshDevices={customerAccount.onRefreshDevices}
           onResetActivationCode={customerAccount.onResetActivationCode}
