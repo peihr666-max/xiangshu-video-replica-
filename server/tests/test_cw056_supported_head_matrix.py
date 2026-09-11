@@ -1,4 +1,4 @@
-﻿"""CW-056 — 受支持发布 head → 最终 head 的 PostgreSQL 升级矩阵（PG-04）。
+"""CW-056 — 受支持发布 head → 最终 head 的 PostgreSQL 升级矩阵（PG-04）。
 
 规格来源：``outputs/customer-cloud-convergence-analysis-2026-09-08/v3/客户版收敛剩余任务清单与验收完工标准-V3.md``
 §CW-056。权威上游依据（均为 owner 已签认的冻结证据，本文件不自行推导版本清单）：

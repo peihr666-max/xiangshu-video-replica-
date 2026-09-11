@@ -255,8 +255,7 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
         total_device_capacity = int(
             _one(
                 conn,
-                "SELECT COALESCE(SUM(max_devices), 0) FROM users "
-                "WHERE role = 'customer'",
+                "SELECT COALESCE(SUM(max_devices), 0) FROM users WHERE role = 'customer'",
             )
         )
         unconfigured_rates = int(

@@ -37,9 +37,7 @@ def upgrade() -> None:
     op.drop_index("uq_customer_devices_slot", table_name="customer_devices")
 
     # 2. Drop the hard-coded slot range CHECK (slot_no IN (1, 2)).
-    op.drop_constraint(
-        "ck_customer_devices_slot_range", "customer_devices", type_="check"
-    )
+    op.drop_constraint("ck_customer_devices_slot_range", "customer_devices", type_="check")
 
     # 3. Add per-user device limit on the users table.
     op.add_column(
@@ -79,11 +77,7 @@ def downgrade() -> None:
 
     # Guard: refuse if any device has slot_no outside (1, 2).
     has_out_of_range_slots = bind.execute(
-        sa.text(
-            "SELECT EXISTS ("
-            "  SELECT 1 FROM customer_devices WHERE slot_no NOT IN (1, 2)"
-            ")"
-        )
+        sa.text("SELECT EXISTS (  SELECT 1 FROM customer_devices WHERE slot_no NOT IN (1, 2))")
     ).scalar()
     if has_out_of_range_slots:
         raise RuntimeError(

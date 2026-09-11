@@ -1,4 +1,4 @@
-﻿"""T10 / ACT-01 — activation code catalog schema (revision 027).
+"""T10 / ACT-01 — activation code catalog schema (revision 027).
 
 Fail-first PostgreSQL tests for the frozen file
 ``server/migrations/versions/027_activation_code_catalog.py``: batches,
