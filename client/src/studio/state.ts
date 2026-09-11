@@ -358,16 +358,37 @@ export const SUPPORTED_VIDEO_RATIOS = [
   "9:16",
 ] as const;
 
-export const DEFAULT_MAX_REFERENCE_IMAGES = 4;
+export const DEFAULT_MAX_REFERENCE_IMAGES = 8;
+export const DEFAULT_MAX_REFERENCE_VIDEOS = 3;
+export const DEFAULT_MAX_REFERENCE_AUDIOS = 3;
 
-export function validateReferenceImages(
+/** R2V 参考视频/音频时长上限（秒）：上传前前端探测拦截，选取时对已知时长拦截。 */
+export const MAX_REFERENCE_MEDIA_SECONDS = 15;
+
+export type ReferenceLimits = {
+  maxReferenceImages?: number;
+  maxReferenceVideos?: number;
+  maxReferenceAudios?: number;
+};
+
+/**
+ * R2V 参考素材统一混合列表校验：一个 referenceIds 里可混合图片/视频/音频，
+ * 按资产 kind 分流后各自计数、各自套用上限（默认图 8 / 视频 3 / 音频 3），
+ * 去重、剔除失效引用，并按选择顺序裁剪出可提交的整理结果。与后端
+ * independent.py 的 _validate_reference_kind_limits 保持一致的每类上限语义。
+ */
+export function validateReferences(
   referenceIds: string[],
   availableAssets: StudioAsset[],
-  maxReferenceImages = DEFAULT_MAX_REFERENCE_IMAGES,
+  limits: ReferenceLimits = {},
 ) {
   const assetById = new Map(availableAssets.map((asset) => [asset.id, asset]));
   const seen = new Set<string>();
+  const assets: StudioAsset[] = [];
   const images: StudioAsset[] = [];
+  const videos: StudioAsset[] = [];
+  const audios: StudioAsset[] = [];
+  const overDurationMedia: StudioAsset[] = [];
   let invalidCount = 0;
   let duplicateCount = 0;
 
@@ -378,36 +399,114 @@ export function validateReferenceImages(
     }
     seen.add(id);
     const asset = assetById.get(id);
-    if (asset?.kind !== "image") {
+    if (!asset) {
       invalidCount += 1;
       continue;
     }
-    images.push(asset);
+    assets.push(asset);
+    if (asset.kind === "image") images.push(asset);
+    else if (asset.kind === "video") videos.push(asset);
+    else audios.push(asset);
+    // 视频/音频参考时长超过上限即视为问题素材；时长未知（undefined）放行。
+    if (
+      asset.kind !== "image" &&
+      asset.durationSeconds !== undefined &&
+      asset.durationSeconds > MAX_REFERENCE_MEDIA_SECONDS
+    ) {
+      overDurationMedia.push(asset);
+    }
   }
 
-  const limit = Math.max(0, Math.floor(maxReferenceImages));
-  const overLimitCount = Math.max(0, images.length - limit);
+  const imageLimit = Math.max(
+    0,
+    Math.floor(limits.maxReferenceImages ?? DEFAULT_MAX_REFERENCE_IMAGES),
+  );
+  const videoLimit = Math.max(
+    0,
+    Math.floor(limits.maxReferenceVideos ?? DEFAULT_MAX_REFERENCE_VIDEOS),
+  );
+  const audioLimit = Math.max(
+    0,
+    Math.floor(limits.maxReferenceAudios ?? DEFAULT_MAX_REFERENCE_AUDIOS),
+  );
+
+  const imageOverCount = Math.max(0, images.length - imageLimit);
+  const videoOverCount = Math.max(0, videos.length - videoLimit);
+  const audioOverCount = Math.max(0, audios.length - audioLimit);
+  const overLimitCount = imageOverCount + videoOverCount + audioOverCount;
+
   const issues: string[] = [];
   if (invalidCount > 0)
-    issues.push(`参考图仅支持图片，旧草稿中有 ${invalidCount} 项无效素材。`);
+    issues.push(
+      `参考素材仅支持图片、视频或音频，旧草稿中有 ${invalidCount} 项无效素材。`,
+    );
   if (duplicateCount > 0)
     issues.push(
-      `参考图不能重复选择，旧草稿中有 ${duplicateCount} 项重复素材。`,
+      `参考素材不能重复选择，旧草稿中有 ${duplicateCount} 项重复素材。`,
     );
-  if (overLimitCount > 0)
+  if (imageOverCount > 0)
     issues.push(
-      `当前最多选择 ${limit} 张参考图，旧草稿已超出 ${overLimitCount} 张。`,
+      `当前最多选择 ${imageLimit} 张参考图，旧草稿已超出 ${imageOverCount} 张。`,
+    );
+  if (videoOverCount > 0)
+    issues.push(
+      `当前最多选择 ${videoLimit} 个参考视频，旧草稿已超出 ${videoOverCount} 个。`,
+    );
+  if (audioOverCount > 0)
+    issues.push(
+      `当前最多选择 ${audioLimit} 个参考音频，旧草稿已超出 ${audioOverCount} 个。`,
+    );
+  const overDurationCount = overDurationMedia.length;
+  if (overDurationCount > 0)
+    issues.push(
+      `参考视频/音频时长不能超过 ${MAX_REFERENCE_MEDIA_SECONDS} 秒，旧草稿中有 ${overDurationCount} 项超时素材。`,
     );
 
+  // 整理：按选择顺序保留，每类裁剪到各自上限；超时素材一并移除。
+  const overDurationIds = new Set(overDurationMedia.map((asset) => asset.id));
+  let keptImages = 0;
+  let keptVideos = 0;
+  let keptAudios = 0;
+  const repairIds: string[] = [];
+  for (const asset of assets) {
+    if (overDurationIds.has(asset.id)) continue;
+    if (asset.kind === "image") {
+      if (keptImages < imageLimit) {
+        keptImages += 1;
+        repairIds.push(asset.id);
+      }
+    } else if (asset.kind === "video") {
+      if (keptVideos < videoLimit) {
+        keptVideos += 1;
+        repairIds.push(asset.id);
+      }
+    } else if (keptAudios < audioLimit) {
+      keptAudios += 1;
+      repairIds.push(asset.id);
+    }
+  }
+
   return {
+    assets,
     images,
+    videos,
+    audios,
+    referenceIds: assets.map((asset) => asset.id),
     imageIds: images.map((asset) => asset.id),
-    repairIds: images.slice(0, limit).map((asset) => asset.id),
-    limit,
+    videoIds: videos.map((asset) => asset.id),
+    audioIds: audios.map((asset) => asset.id),
+    imageCount: images.length,
+    videoCount: videos.length,
+    audioCount: audios.length,
+    imageLimit,
+    videoLimit,
+    audioLimit,
     invalidCount,
     duplicateCount,
     overLimitCount,
+    overDurationCount,
     issues,
+    repairIds,
   };
 }
 

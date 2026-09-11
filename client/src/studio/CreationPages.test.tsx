@@ -37,7 +37,9 @@ const replicaApi = vi.hoisted(() => ({
 }));
 const replicaLive = vi.hoisted(() => ({
   readAudioDuration: vi.fn(),
+  readVideoDuration: vi.fn(),
   uploadOralAudioMaterial: vi.fn(),
+  uploadReferenceAudioMaterial: vi.fn(),
   uploadWorkbenchSourceVideo: vi.fn(),
   uploadVideoMaterial: vi.fn(),
   runReplicaGeneration: vi.fn(),
@@ -311,6 +313,8 @@ describe("V1.4 创作页面", () => {
     replicaApi.waitForScriptRewriteTask.mockReset();
     replicaLive.uploadVideoMaterial.mockReset();
     replicaLive.readAudioDuration.mockReset();
+    replicaLive.readVideoDuration.mockReset();
+    replicaLive.uploadReferenceAudioMaterial.mockReset();
     replicaLive.uploadOralAudioMaterial.mockReset();
     replicaLive.validateOralAudioFile.mockReset();
     replicaLive.readAudioDuration.mockResolvedValue(42);
@@ -372,8 +376,8 @@ describe("V1.4 创作页面", () => {
     expect(screen.getByRole("button", { name: "生成视频" })).toBeDisabled();
 
     value.data.assets.push({
-      id: "invalid-reference",
-      name: "无效参考视频.mp4",
+      id: "reference-video",
+      name: "参考运镜.mp4",
       kind: "video",
       group: "参考素材",
       source: "素材库",
@@ -384,13 +388,13 @@ describe("V1.4 创作页面", () => {
       page: "reference",
       draft: {
         ...value.state.draft,
-        referenceIds: ["reference-1", "invalid-reference"],
+        referenceIds: ["reference-1", "reference-video", "ghost-reference"],
       },
     };
     view.rerender(<VideoPage />);
-    expect(screen.getByRole("button", { name: "整理参考图" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "整理参考素材" })).toBeDisabled();
     vi.mocked(value.patchDraft).mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "整理参考图" }));
+    fireEvent.click(screen.getByRole("button", { name: "整理参考素材" }));
     expect(value.patchDraft).not.toHaveBeenCalled();
 
     value.state = { ...value.state, page: "oral" };
@@ -1272,7 +1276,7 @@ describe("V1.4 创作页面", () => {
     ).not.toBeNull();
   });
 
-  it("参考素材只接受图片并提示整理旧草稿中的无效类型", () => {
+  it("参考素材接受图片/视频/音频并按类展示", () => {
     const value = studio();
     value.state = {
       ...value.state,
@@ -1303,21 +1307,16 @@ describe("V1.4 创作页面", () => {
     useStudio.mockReturnValue(value);
     render(<VideoPage />);
 
+    // 三类参考素材都按 kind 标签展示，不再被判为无效
     expect(screen.getByText("图片 · 素材库")).toBeInTheDocument();
-    expect(screen.queryByText("视频 · 素材库")).toBeNull();
-    expect(screen.queryByText("音频 · 素材库")).toBeNull();
-    expect(
-      screen.getByText("参考图仅支持图片，旧草稿中有 2 项无效素材。"),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "生成视频" })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("button", { name: "整理参考图" }));
-    expect(value.patchDraft).toHaveBeenCalledWith({
-      referenceIds: ["reference-1"],
-    });
+    expect(screen.getByText("视频 · 素材库")).toBeInTheDocument();
+    expect(screen.getByText("音频 · 素材库")).toBeInTheDocument();
+    expect(screen.queryByText(/无效素材/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "整理参考素材" })).toBeNull();
   });
 
-  it("参考图本机上传会在发请求前拒绝视频文件", () => {
+  it("参考素材本机上传对超过 15 秒的视频在发请求前拦截", async () => {
+    replicaLive.readVideoDuration.mockResolvedValue(20);
     const value = studio({
       review: false,
       state: {
@@ -1329,14 +1328,133 @@ describe("V1.4 创作页面", () => {
     useStudio.mockReturnValue(value);
     render(<VideoPage />);
 
-    fireEvent.change(screen.getByLabelText("上传参考图"), {
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
       target: {
         files: [new File(["video"], "庭院.mp4", { type: "video/mp4" })],
       },
     });
 
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "参考视频时长不能超过 15 秒，请裁剪后再上传。",
+      ),
+    );
     expect(replicaLive.uploadVideoMaterial).not.toHaveBeenCalled();
-    expect(value.notify).toHaveBeenCalledWith("仅支持 PNG 或 JPEG 图片。");
+  });
+
+  it("参考素材本机上传接受不超过 15 秒的视频", async () => {
+    replicaLive.readVideoDuration.mockResolvedValue(12);
+    replicaLive.uploadVideoMaterial.mockResolvedValue({
+      id: "reference-video",
+      name: "庭院.mp4",
+      kind: "video",
+      group: "参考素材",
+      source: "本机上传",
+      saved: true,
+    });
+    const value = studio({
+      review: false,
+      state: {
+        ...studio().state,
+        page: "reference",
+        draft: { ...studio().state.draft, referenceIds: [] },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
+      target: {
+        files: [new File(["video"], "庭院.mp4", { type: "video/mp4" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(replicaLive.uploadVideoMaterial).toHaveBeenCalledWith(
+        expect.any(File),
+        "参考素材",
+        expect.any(Function),
+      ),
+    );
+    expect(replicaLive.readVideoDuration).toHaveBeenCalled();
+  });
+
+  it("参考素材本机上传对超过 15 秒的音频在发请求前拦截", async () => {
+    replicaLive.readAudioDuration.mockResolvedValue(30);
+    const value = studio({
+      review: false,
+      state: {
+        ...studio().state,
+        page: "reference",
+        draft: { ...studio().state.draft, referenceIds: [] },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
+      target: {
+        files: [new File(["audio"], "环境声.mp3", { type: "audio/mpeg" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "参考音频时长不能超过 15 秒，请裁剪后再上传。",
+      ),
+    );
+    expect(replicaLive.uploadReferenceAudioMaterial).not.toHaveBeenCalled();
+  });
+
+  it("参考素材本机上传以 reference 用途接受不超过 15 秒的音频", async () => {
+    replicaLive.readAudioDuration.mockResolvedValue(10);
+    replicaLive.uploadReferenceAudioMaterial.mockResolvedValue({
+      id: "reference-audio",
+      name: "环境声.mp3",
+      kind: "audio",
+      group: "参考素材",
+      source: "本机上传",
+      saved: true,
+    });
+    const value = studio({
+      review: false,
+      state: {
+        ...studio().state,
+        page: "reference",
+        draft: { ...studio().state.draft, referenceIds: [] },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
+      target: {
+        files: [new File(["audio"], "环境声.mp3", { type: "audio/mpeg" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(replicaLive.uploadReferenceAudioMaterial).toHaveBeenCalledWith(
+        expect.any(File),
+        10,
+        expect.any(Function),
+      ),
+    );
+  });
+
+  it("参考素材上传器标注视频与音频的 15 秒上限", () => {
+    const value = studio({
+      review: false,
+      state: {
+        ...studio().state,
+        page: "reference",
+        draft: { ...studio().state.draft, referenceIds: [] },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    expect(screen.getByText("视频/音频 ≤15 秒")).toBeInTheDocument();
   });
 
   it("参考图上传完成时按最新草稿追加而不复活已移除引用", async () => {
@@ -1356,6 +1474,8 @@ describe("V1.4 创作页面", () => {
         r2v_enabled: true,
         last_frame_enabled: true,
         max_reference_images: 4,
+        max_reference_videos: 3,
+        max_reference_audios: 3,
         max_quantity: 4,
       },
       state: {
@@ -1367,7 +1487,7 @@ describe("V1.4 创作页面", () => {
     useStudio.mockImplementation(() => current);
     const view = render(<VideoPage />);
 
-    fireEvent.change(screen.getByLabelText("上传参考图"), {
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
       target: {
         files: [new File(["image"], "庭院.jpg", { type: "image/jpeg" })],
       },
@@ -1427,6 +1547,8 @@ describe("V1.4 创作页面", () => {
         r2v_enabled: true,
         last_frame_enabled: true,
         max_reference_images: 1,
+        max_reference_videos: 3,
+        max_reference_audios: 3,
         max_quantity: 4,
       },
       state: {
@@ -1437,7 +1559,7 @@ describe("V1.4 创作页面", () => {
     });
     useStudio.mockImplementation(() => current);
     const view = render(<VideoPage />);
-    fireEvent.change(screen.getByLabelText("上传参考图"), {
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
       target: {
         files: [new File(["image"], "迟到.jpg", { type: "image/jpeg" })],
       },
@@ -1483,6 +1605,8 @@ describe("V1.4 创作页面", () => {
         r2v_enabled: true,
         last_frame_enabled: true,
         max_reference_images: 4,
+        max_reference_videos: 3,
+        max_reference_audios: 3,
         max_quantity: 4,
       },
       state: {
@@ -1493,7 +1617,7 @@ describe("V1.4 创作页面", () => {
     });
     useStudio.mockImplementation(() => current);
     const view = render(<VideoPage />);
-    fireEvent.change(screen.getByLabelText("上传参考图"), {
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
       target: {
         files: [new File(["image"], "离开.jpg", { type: "image/jpeg" })],
       },
@@ -1531,6 +1655,8 @@ describe("V1.4 创作页面", () => {
         r2v_enabled: true,
         last_frame_enabled: true,
         max_reference_images: 4,
+        max_reference_videos: 3,
+        max_reference_audios: 3,
         max_quantity: 4,
       },
       state: {
@@ -1541,7 +1667,7 @@ describe("V1.4 创作页面", () => {
     });
     useStudio.mockImplementation(() => current);
     const view = render(<VideoPage />);
-    fireEvent.change(screen.getByLabelText("上传参考图"), {
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
       target: {
         files: [new File(["image"], "旧草稿.jpg", { type: "image/jpeg" })],
       },

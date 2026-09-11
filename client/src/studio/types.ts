@@ -39,6 +39,8 @@ export type StudioAsset = {
   url?: string;
   poster?: string;
   duration?: string;
+  /** 数值时长（秒）：供参考选取/上传路径做 ≤15s 拦截比较；未知时为 undefined。 */
+  durationSeconds?: number;
   group: string;
   personId?: string;
   composite?: boolean;

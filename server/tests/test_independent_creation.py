@@ -42,10 +42,12 @@ Migration findings (SQLite → PostgreSQL):
   ``snapshot_generation_rates`` reads on the PG lane; the seed captures and
   restores them (ON CONFLICT DO NOTHING) so every created task freezes a real
   cost snapshot.
-- ``reference_asset_ids`` over the capability limit is rejected by the
-  ``IndependentVideoRequest`` model (``max_length``) at construction time, so the
-  service-level assertion is a pydantic ``ValidationError`` (the route turned it
-  into a 422 ``too_long`` body).
+- ``reference_asset_ids`` over the *total* cap (8 + 3 + 3 = 14) is rejected by
+  the ``IndependentVideoRequest`` model (``max_length``) at construction time, so
+  the service-level assertion is a pydantic ``ValidationError`` (the route turned
+  it into a 422 ``too_long`` body). The per-kind caps (image ≤ 8 / video ≤ 3 /
+  audio ≤ 3) are enforced after the backend splits the mixed list by asset kind
+  (``INDEPENDENT_REFERENCE_LIMIT_EXCEEDED``).
 - The foreign-asset and auditor denials are PG ``AuditedSecurityDenial`` (an
   ``HTTPException`` subclass) because ``_raise_denial_with_audit`` defers the
   audit to the route layer on PostgreSQL; the status code (404 / 403) is asserted.
@@ -229,6 +231,28 @@ def _seed_scene(dsn: str) -> None:
                     "video-hash",
                     9,
                     "video/mp4",
+                    "employee_1",
+                ),
+                # R2V 多模态参考：用户素材通道的视频/音频（material_video /
+                # material_audio），与上方复刻源视频（reference_video）区分。
+                (
+                    "material-video-owned",
+                    None,
+                    "material_video",
+                    "fake://generation-results/ref-video.mp4",
+                    "material-video-hash",
+                    9,
+                    "video/mp4",
+                    "employee_1",
+                ),
+                (
+                    "material-audio-owned",
+                    None,
+                    "material_audio",
+                    "fake://generation-results/ref-audio.mp3",
+                    "material-audio-hash",
+                    9,
+                    "audio/mpeg",
                     "employee_1",
                 ),
             ],
@@ -656,12 +680,14 @@ def test_reference_images_reject_duplicates_and_more_than_capability_limit(scene
     assert duplicate.value.status_code == 422
     assert duplicate.value.detail["code"] == "INDEPENDENT_REFERENCE_DUPLICATE"
 
-    # 超出能力上限（>4 张）由请求模型 max_length 拒绝（路由层表现为 422 too_long）。
+    # 超出总兜底上限（>14 项）由请求模型 max_length 拒绝（ValidationError
+    # too_long）；每类上限（图≤8/视≤3/音≤3）在分流后由
+    # INDEPENDENT_REFERENCE_LIMIT_EXCEEDED 拒绝，纯函数层已单测覆盖。
     with pytest.raises(ValidationError):
         IndependentVideoRequest(
             mode="r2v",
-            prompt_text="超量参考图",
-            reference_asset_ids=[f"frame-{index}" for index in range(5)],
+            prompt_text="超量参考素材",
+            reference_asset_ids=[f"frame-{index}" for index in range(15)],
             output_duration_seconds=8,
             quantity=1,
             idempotency_key="reference-over-limit",
@@ -912,6 +938,67 @@ def test_t2v_and_r2v_tasks_run_through_worker_with_protocol_payload(scene: str) 
     assert roles == ["reference_image"]
     assert r2v_request["content"][1]["name"] == "ref-1"
     assert "first_frame" not in roles and "last_frame" not in roles
+
+
+def test_r2v_reference_video_and_audio_flow_through_worker_payload(scene: str) -> None:
+    """R2V 参考视频/音频端到端：请求 → prompt_snapshot → lease → provider_request。"""
+    _enable_extended_modes()
+    _create(
+        IndependentVideoRequest(
+            mode="r2v",
+            prompt_text="参考视频与音频生成别墅外观",
+            reference_asset_ids=["material-video-owned", "material-audio-owned"],
+            output_duration_seconds=6,
+            quantity=1,
+            idempotency_key="r2v-media-worker",
+        ),
+        EMPLOYEE_1,
+    )
+
+    processed = _run_worker("media-worker")
+
+    assert processed == 1
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        row = conn.execute(
+            "SELECT prompt_snapshot_json, provider_request_json FROM generation_tasks"
+        ).fetchone()
+    assert row is not None
+    snapshot = json.loads(str(row["prompt_snapshot_json"]))
+    assert [video["uri"] for video in snapshot["reference_videos"]] == [
+        "fake://generation-results/ref-video.mp4"
+    ]
+    assert [audio["uri"] for audio in snapshot["reference_audios"]] == [
+        "fake://generation-results/ref-audio.mp3"
+    ]
+    request_payload = json.loads(str(row["provider_request_json"]))
+    roles = [item.get("role") for item in request_payload["content"][1:]]
+    assert roles == ["reference_video", "reference_audio"]
+    assert request_payload["content"][1]["video_url"]["url"]
+    assert request_payload["content"][2]["audio_url"]["url"]
+
+
+def test_r2v_rejects_replica_source_video_as_reference(scene: str) -> None:
+    """素材类别门禁：复刻源视频（kind=reference_video）不得充当 R2V 参考素材。
+
+    统一混合列表按 kind 分流，仅素材通道类别（material_image / material_video /
+    material_audio 等）可作参考；被拆解的复刻源视频（reference_video）不在并集内。
+    """
+    _enable_extended_modes()
+    with pytest.raises(HTTPException) as exc:
+        _create(
+            IndependentVideoRequest(
+                mode="r2v",
+                prompt_text="用复刻源视频冒充参考素材",
+                reference_asset_ids=["asset-video"],
+                output_duration_seconds=6,
+                quantity=1,
+                idempotency_key="r2v-bad-reference-kind",
+            ),
+            EMPLOYEE_1,
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "INDEPENDENT_ASSET_KIND_UNSUPPORTED"
 
 
 def test_video_task_route_creates_batch_through_fenced_write_on_pg(scene: str) -> None:

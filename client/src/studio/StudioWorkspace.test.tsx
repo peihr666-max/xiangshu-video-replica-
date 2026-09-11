@@ -81,6 +81,8 @@ const api = vi.hoisted(() => ({
       r2v_enabled: boolean;
       last_frame_enabled: boolean;
       max_reference_images: number;
+      max_reference_videos: number;
+      max_reference_audios: number;
       max_quantity: number;
     }> => ({
       extended_modes_enabled: true,
@@ -89,6 +91,8 @@ const api = vi.hoisted(() => ({
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     }),
   ),
@@ -2214,6 +2218,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     api.getGenerationPriceQuote.mockResolvedValue({
@@ -2269,6 +2275,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: false,
       last_frame_enabled: false,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     live.loadStudioData.mockResolvedValue(emptyStudioData);
@@ -2287,7 +2295,7 @@ describe("视频生成（C2 独立创作）", () => {
     expect(api.createIndependentVideoTask).not.toHaveBeenCalled();
   });
 
-  it("参考素材选择器只展示图片并在达到能力上限后阻止继续添加", async () => {
+  it("参考素材选择器展示图片/视频/音频并按每类上限分别阻止", async () => {
     api.getIndependentCapabilities.mockResolvedValue({
       extended_modes_enabled: true,
       t2v_enabled: true,
@@ -2295,6 +2303,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 2,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     const imageA = {
@@ -2306,18 +2316,20 @@ describe("视频生成（C2 独立创作）", () => {
       saved: true,
     };
     const imageB = { ...imageA, id: "image-b", name: "外立面 B.jpg" };
+    const imageC = { ...imageA, id: "image-c", name: "外立面 C.jpg" };
     live.loadStudioData.mockResolvedValue({
       ...emptyStudioData,
       assets: [
         imageA,
         imageB,
+        imageC,
         { ...imageA, id: "video-a", name: "运镜.mp4", kind: "video" },
         { ...imageA, id: "audio-a", name: "环境声.wav", kind: "audio" },
       ],
     });
     const initial = createState("reference");
     initial.draft.prompt = "参考外立面生成";
-    initial.draft.referenceIds = ["image-a"];
+    initial.draft.referenceIds = ["image-a", "image-b"];
     render(<StudioWorkspace currentUser={reviewUser} initialState={initial} />);
 
     const pickerButton = await screen.findByRole("button", {
@@ -2325,16 +2337,109 @@ describe("视频生成（C2 独立创作）", () => {
     });
     fireEvent.click(pickerButton);
     const picker = screen.getByRole("dialog", { name: "选择参考素材" });
-    expect(within(picker).queryByText("运镜.mp4")).toBeNull();
-    expect(within(picker).queryByText("环境声.wav")).toBeNull();
-    expect(within(picker).queryByText("外立面 A.jpg")).toBeNull();
-    fireEvent.click(within(picker).getByRole("button", { name: /外立面 B/ }));
-
+    // 已选的两张图片不再出现，未选图片与视频/音频都可选
     expect(
-      await screen.findByText("已选 2/2 张参考图，需移除后才能继续添加。"),
+      within(picker).queryByRole("button", { name: /外立面 A/ }),
+    ).toBeNull();
+    expect(
+      within(picker).queryByRole("button", { name: /外立面 B/ }),
+    ).toBeNull();
+    expect(
+      within(picker).getByRole("button", { name: /外立面 C/ }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /从素材库选择/ })).toBeDisabled();
-    expect(screen.getByLabelText("上传参考图")).toBeDisabled();
+    expect(
+      within(picker).getByRole("button", { name: /运镜/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(picker).getByRole("button", { name: /环境声/ }),
+    ).toBeInTheDocument();
+
+    // 图片已达每类上限（2/2），再选图片被拒并提示
+    fireEvent.click(within(picker).getByRole("button", { name: /外立面 C/ }));
+    expect(
+      await screen.findByText("当前最多选择 2 张参考图。"),
+    ).toBeInTheDocument();
+
+    // 视频仍有额度，选择后按类更新计数
+    fireEvent.click(within(picker).getByRole("button", { name: /运镜/ }));
+    expect(
+      await screen.findByText("参考图 2/2 · 视频 1/3 · 音频 0/3"),
+    ).toBeInTheDocument();
+  });
+
+  it("参考素材选择器拦截时长超过 15 秒的视频与音频", async () => {
+    api.getIndependentCapabilities.mockResolvedValue({
+      extended_modes_enabled: true,
+      t2v_enabled: true,
+      i2v_enabled: true,
+      r2v_enabled: true,
+      last_frame_enabled: true,
+      max_reference_images: 8,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
+      max_quantity: 4,
+    });
+    const base = {
+      id: "image-a",
+      name: "外立面 A.jpg",
+      kind: "image" as const,
+      group: "参考素材",
+      source: "素材库",
+      saved: true,
+    };
+    live.loadStudioData.mockResolvedValue({
+      ...emptyStudioData,
+      assets: [
+        {
+          ...base,
+          id: "video-long",
+          name: "长运镜.mp4",
+          kind: "video",
+          durationSeconds: 20,
+        },
+        {
+          ...base,
+          id: "audio-long",
+          name: "长环境声.mp3",
+          kind: "audio",
+          durationSeconds: 30,
+        },
+        {
+          ...base,
+          id: "video-ok",
+          name: "短运镜.mp4",
+          kind: "video",
+          durationSeconds: 10,
+        },
+      ],
+    });
+    const initial = createState("reference");
+    initial.draft.prompt = "参考外立面生成";
+    initial.draft.referenceIds = [];
+    render(<StudioWorkspace currentUser={reviewUser} initialState={initial} />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /从素材库选择/ }),
+    );
+    const picker = screen.getByRole("dialog", { name: "选择参考素材" });
+
+    // 超过 15 秒的视频被拦截、不加入参考
+    fireEvent.click(within(picker).getByRole("button", { name: /长运镜/ }));
+    expect(
+      await screen.findByText("参考视频时长不能超过 15 秒，请裁剪后再选取。"),
+    ).toBeInTheDocument();
+
+    // 超过 15 秒的音频被拦截
+    fireEvent.click(within(picker).getByRole("button", { name: /长环境声/ }));
+    expect(
+      await screen.findByText("参考音频时长不能超过 15 秒，请裁剪后再选取。"),
+    ).toBeInTheDocument();
+
+    // 合规视频（10 秒）可正常选取
+    fireEvent.click(within(picker).getByRole("button", { name: /短运镜/ }));
+    expect(
+      await screen.findByText("参考图 0/8 · 视频 1/3 · 音频 0/3"),
+    ).toBeInTheDocument();
   });
 
   it("图片素材选择器只签当前六条且下一页只增加一条", async () => {
@@ -2389,6 +2494,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: false,
       last_frame_enabled: false,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     const image = (id: string) => ({
@@ -2424,6 +2531,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 2,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     const image = (id: string) => ({
@@ -2447,7 +2556,7 @@ describe("视频生成（C2 独立创作）", () => {
       await screen.findByText("当前最多选择 2 张参考图，旧草稿已超出 1 张。"),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成视频" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "整理参考图" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "整理参考素材" })).toBeEnabled();
     expect(api.createIndependentVideoTask).not.toHaveBeenCalled();
   });
 
@@ -2459,6 +2568,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     const restored = createState("reference").draft;
@@ -2487,7 +2598,7 @@ describe("视频生成（C2 独立创作）", () => {
     expect(
       await screen.findByText("正在恢复草稿参考图，请稍候。"),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "整理参考图" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "整理参考素材" })).toBeNull();
     resolveMaterials?.({
       assets: [
         {
@@ -2503,7 +2614,7 @@ describe("视频生成（C2 独立创作）", () => {
     });
 
     expect(await screen.findByText("恢复参考图.jpg")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "整理参考图" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "整理参考素材" })).toBeNull();
   });
 
   it("云端草稿参考图解析失败时保留引用并可重试恢复", async () => {
@@ -2514,6 +2625,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     const restored = createState("reference").draft;
@@ -2546,13 +2659,13 @@ describe("视频生成（C2 独立创作）", () => {
     expect(
       await screen.findByText("草稿参考图读取失败，请重试。"),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "整理参考图" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "整理参考素材" })).toBeNull();
     expect(live.persistCloudDraft).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "重试读取草稿参考图" }));
 
     expect(await screen.findByText("恢复参考图.jpg")).toBeInTheDocument();
     expect(live.loadDraftMaterials).toHaveBeenCalledTimes(2);
-    expect(screen.queryByRole("button", { name: "整理参考图" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "整理参考素材" })).toBeNull();
     expect(live.persistCloudDraft).not.toHaveBeenCalled();
   });
 
@@ -2564,6 +2677,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     const restored = createState("reference").draft;
@@ -2621,6 +2736,8 @@ describe("视频生成（C2 独立创作）", () => {
         r2v_enabled: true,
         last_frame_enabled: true,
         max_reference_images: 4,
+        max_reference_videos: 3,
+        max_reference_audios: 3,
         max_quantity: 4,
       });
     live.loadStudioData.mockResolvedValue({
@@ -2661,6 +2778,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     live.loadStudioData.mockResolvedValue({
@@ -2686,7 +2805,9 @@ describe("视频生成（C2 独立创作）", () => {
     fireEvent.click(screen.getByRole("button", { name: "移除 外立面 A.jpg" }));
     fireEvent.click(screen.getByRole("button", { name: "确认费用并提交" }));
 
-    expect(await screen.findByText("请至少选择一张参考图")).toBeInTheDocument();
+    expect(
+      await screen.findByText("请至少选择一个参考素材"),
+    ).toBeInTheDocument();
     expect(api.createIndependentVideoTask).not.toHaveBeenCalled();
   });
 
@@ -3144,6 +3265,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     const submittedBatch = {
@@ -3208,6 +3331,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     let resolveBatch:
@@ -3264,6 +3389,8 @@ describe("视频生成（C2 独立创作）", () => {
       r2v_enabled: true,
       last_frame_enabled: true,
       max_reference_images: 4,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
       max_quantity: 4,
     });
     const resolveBatches: Array<
