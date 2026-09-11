@@ -46,7 +46,11 @@ const adminDevEntryPlugin: Plugin = {
       // Rewrite /admin/ → /admin/admin.html so that after Vite strips the
       // base prefix ("/admin/"), it resolves to /admin.html in the project root.
       // Without this, Vite's SPA fallback serves index.html (customer entry).
-      if (url === "/admin/" || url === "/admin" || url === "/admin/index.html") {
+      if (
+        url === "/admin/" ||
+        url === "/admin" ||
+        url === "/admin/index.html"
+      ) {
         req.url = "/admin/admin.html";
       }
       next();
