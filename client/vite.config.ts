@@ -81,6 +81,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
     restoreMocks: true,
+    // CI 负载下单条用例（多段 findBy + 网络重试时序）可能超过 vitest 默认
+    // 5s；20s 只放宽上限，正常用例仍按实际耗时结束。
+    testTimeout: 20000,
     // Node >= 25 ships the Web Storage API enabled by default, and that
     // native globalThis.localStorage makes the jsdom environment skip
     // installing its own Storage (window keys already present on globalThis

@@ -13,6 +13,7 @@ import type {
   StudioAsset,
   StudioContextValue,
   StudioData,
+  StudioPublishAccount,
   StudioTask,
   StudioVideo,
 } from "./types";
@@ -40,6 +41,11 @@ const {
   getViralImportTask,
   getStudioNotificationPreferences,
   updateStudioNotificationPreferences,
+  PUBLISH_PLATFORM_LABELS,
+  connectPublishAccount,
+  loadPublishAccounts,
+  removePublishAccount,
+  requestPublishAccountVerify,
 } = vi.hoisted(() => ({
   useStudio: vi.fn<() => StudioContextValue>(),
   loadTaskPreview: vi.fn(),
@@ -76,6 +82,13 @@ const {
   getViralImportTask: vi.fn(),
   getStudioNotificationPreferences: vi.fn(),
   updateStudioNotificationPreferences: vi.fn(),
+  // C5 发布账号（第一阶段）：live.ts 的这几个导出在测试里由替身接管。
+  // PUBLISH_PLATFORM_LABELS 是常量映射而非函数，给出同形状字面量即可。
+  PUBLISH_PLATFORM_LABELS: { douyin: "抖音", wechat_channels: "视频号" },
+  connectPublishAccount: vi.fn(),
+  loadPublishAccounts: vi.fn(),
+  removePublishAccount: vi.fn(),
+  requestPublishAccountVerify: vi.fn(),
 }));
 
 vi.mock("./context", () => ({ useStudio }));
@@ -97,6 +110,11 @@ vi.mock("./live", () => ({
   loadMoreGenerationTasks,
   loadMoreOralTasks,
   loadStudioTaskDetail,
+  PUBLISH_PLATFORM_LABELS,
+  connectPublishAccount,
+  loadPublishAccounts,
+  removePublishAccount,
+  requestPublishAccountVerify,
 }));
 
 import {
@@ -1982,5 +2000,202 @@ describe("CW-016 两个客户钱包入口路由到 live 钱包工作区", () => 
     fireEvent.click(screen.getByRole("button", { name: "查看使用记录" }));
 
     expect(value.openLive).toHaveBeenCalledWith("wallet");
+  });
+});
+
+// CW-068 / C5 第一阶段：档案页「发布账号」页签从占位提示改为真实账号授权流。
+// 用例名与 docs/evidence/CW002-SCOPE-DECISIONS.md 验收矩阵 A14（前端接线）、
+// A15（前端凭据不回显）逐字对齐。
+describe("CW-068 发布账号管理（正式模式）", () => {
+  const douyinAccount: StudioPublishAccount = {
+    id: "acc-9",
+    platform: "douyin",
+    displayName: "张工说乡墅",
+    status: "connected",
+    lastVerifiedAt: null,
+    errorMessage: null,
+    securitySdkRequired: true,
+    createdAt: "2026-09-07 00:00:00",
+  };
+  const channelsAccount: StudioPublishAccount = {
+    id: "acc-1",
+    platform: "wechat_channels",
+    displayName: "众墅乡建",
+    status: "invalid",
+    lastVerifiedAt: "2026-09-10 08:30:00",
+    errorMessage: "视频号登录态已过期",
+    securitySdkRequired: false,
+    createdAt: "2026-09-07 00:00:00",
+  };
+  const NAME_INPUT = "例如：张工说乡墅";
+  const COOKIE_INPUT = "粘贴从浏览器复制的整段 Cookie";
+  const SDK_INPUT = "粘贴浏览器 localStorage 中 security-sdk 对应的 JSON 内容";
+
+  /** 正式模式挂载档案页并切到「发布账号」页签（概览页签随之卸载）。 */
+  function openPublishingTab() {
+    const value = studio(undefined, { review: false });
+    useStudio.mockReturnValue(value);
+    const view = render(<ProfilePage />);
+    fireEvent.click(screen.getByRole("tab", { name: "发布账号" }));
+    return { value, view };
+  }
+
+  beforeEach(() => {
+    useStudio.mockReset();
+    getStudioNotificationPreferences.mockReset();
+    getStudioNotificationPreferences.mockResolvedValue({ enabled: true });
+    connectPublishAccount.mockReset();
+    loadPublishAccounts.mockReset();
+    loadPublishAccounts.mockResolvedValue([]);
+    removePublishAccount.mockReset();
+    requestPublishAccountVerify.mockReset();
+  });
+
+  it("未接通占位提示已移除", () => {
+    const value = studio(undefined, { review: false });
+    useStudio.mockReturnValue(value);
+    render(<ProfilePage />);
+    // Sentinel：先证明「发布账号概览」面板真的渲染了，否则下面这条
+    // 「占位提示不在」会在整块面板缺失时同样成立（假绿）。
+    expect(screen.getByText("发布账号概览")).toBeInTheDocument();
+    expect(screen.queryByText("发布账号服务尚未接入")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "发布账号" }));
+    expect(
+      screen.queryByText("平台账号授权接口尚未接入，暂不可添加账号。"),
+    ).toBeNull();
+    // 真实授权流入口全部就位，连接按钮不再是 disabled 占位
+    expect(screen.getByRole("button", { name: "抖音" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "视频号" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(NAME_INPUT)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(COOKIE_INPUT)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(SDK_INPUT)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "连接发布账号" })).toBeEnabled();
+  });
+
+  it("连接发布账号：填写 Cookie 后提交并回显列表", async () => {
+    connectPublishAccount.mockResolvedValue(douyinAccount);
+    const { value } = openPublishingTab();
+
+    fireEvent.change(screen.getByPlaceholderText(NAME_INPUT), {
+      target: { value: "张工说乡墅" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(COOKIE_INPUT), {
+      target: { value: "sessionid=test; ttwid=1" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(SDK_INPUT), {
+      target: { value: '{"key_version":3}' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "连接发布账号" }));
+
+    await waitFor(() =>
+      expect(connectPublishAccount).toHaveBeenCalledWith({
+        platform: "douyin",
+        displayName: "张工说乡墅",
+        cookie: "sessionid=test; ttwid=1",
+        securitySdk: '{"key_version":3}',
+      }),
+    );
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "发布账号已连接，可点击“校验登录态”确认有效性。",
+      ),
+    );
+    // 回显列表：昵称·平台 + 状态 + 最后校验时间
+    await screen.findByText("抖音 · 张工说乡墅");
+    expect(screen.getByText("已连接 · 尚未校验")).toBeInTheDocument();
+  });
+
+  it("抖音未填 security_sdk 时给出明确提示", () => {
+    const { value } = openPublishingTab();
+
+    fireEvent.change(screen.getByPlaceholderText(NAME_INPUT), {
+      target: { value: "张工说乡墅" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(COOKIE_INPUT), {
+      target: { value: "sessionid=test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "连接发布账号" }));
+
+    expect(value.notify).toHaveBeenCalledWith(
+      "抖音需要同时粘贴 security_sdk 材料（浏览器 localStorage 导出）。",
+    );
+    expect(connectPublishAccount).not.toHaveBeenCalled();
+  });
+
+  it("发起校验与解绑走真实接口并刷新列表", async () => {
+    loadPublishAccounts.mockResolvedValue([channelsAccount]);
+    requestPublishAccountVerify.mockResolvedValue(undefined);
+    removePublishAccount.mockResolvedValue(undefined);
+    const { value } = openPublishingTab();
+
+    await screen.findByText("视频号 · 众墅乡建");
+    expect(
+      screen.getByText(/登录态已失效：视频号登录态已过期 · 最后校验 /),
+    ).toBeInTheDocument();
+
+    const callsBeforeVerify = loadPublishAccounts.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "校验登录态" }));
+    await waitFor(() =>
+      expect(requestPublishAccountVerify).toHaveBeenCalledWith("acc-1"),
+    );
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith(
+        "已发起登录态校验，稍候自动刷新结果。",
+      ),
+    );
+    // 探测在服务端异步执行，面板必须立刻刷一次列表再去等结果
+    await waitFor(() =>
+      expect(loadPublishAccounts.mock.calls.length).toBeGreaterThan(
+        callsBeforeVerify,
+      ),
+    );
+
+    // 解绑后服务端不再返回该账号：任何后续刷新都不得把它带回来
+    loadPublishAccounts.mockResolvedValue([]);
+    fireEvent.click(screen.getByRole("button", { name: "解绑" }));
+    await waitFor(() =>
+      expect(removePublishAccount).toHaveBeenCalledWith("acc-1"),
+    );
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith("发布账号已解绑。"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("视频号 · 众墅乡建")).toBeNull(),
+    );
+  });
+
+  it("凭据明文不出现在 DOM", async () => {
+    const cookieValue = "sessionid=super-secret-cookie-value; ttwid=1";
+    const sdkValue = '{"key_version":3,"ticket":"super-secret-ticket"}';
+    connectPublishAccount.mockResolvedValue(douyinAccount);
+    const { view } = openPublishingTab();
+
+    fireEvent.change(screen.getByPlaceholderText(NAME_INPUT), {
+      target: { value: "张工说乡墅" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(COOKIE_INPUT), {
+      target: { value: cookieValue },
+    });
+    fireEvent.change(screen.getByPlaceholderText(SDK_INPUT), {
+      target: { value: sdkValue },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "连接发布账号" }));
+
+    // Sentinel：先证明账号行真的渲染出来，否则「明文不在 DOM 里」会在
+    // 提交根本没成功的情况下恒真（假绿）。
+    await screen.findByText("抖音 · 张工说乡墅");
+
+    for (const html of [view.container.innerHTML, document.body.innerHTML]) {
+      expect(html).not.toContain(cookieValue);
+      expect(html).not.toContain(sdkValue);
+      expect(html).not.toContain("super-secret-cookie-value");
+      expect(html).not.toContain("super-secret-ticket");
+    }
+    // React 把受控 textarea 的值渲染成子文本，innerHTML 看得见；但受控 input
+    // 只更新 DOM property，innerHTML 看不见。toHaveValue 与元素类型无关，是
+    // 表单残值的可靠断言，两条一起留（已用 mutation 验证 innerHTML 那条有牙）。
+    expect(screen.getByPlaceholderText(COOKIE_INPUT)).toHaveValue("");
+    expect(screen.getByPlaceholderText(SDK_INPUT)).toHaveValue("");
   });
 });

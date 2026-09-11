@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import sqlite3
 from typing import Annotated
@@ -10,25 +8,22 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
+# Import to trigger provider registration
+import app.zpay_provider  # noqa: F401
 from app.admin_write_contract import AdminWriteContract
 from app.admin_write_contract import require_write_contract as _require_write_contract
 from app.auth import Database
 from app.control_auth import ControlUser
 from app.db_portable import BusinessConnection
 from app.ops_metrics import get_or_create_request_id
+from app.payment_provider import (
+    MerchantConfig,
+    OrderQueryError,
+    PaymentProvider,
+    get_payment_provider,
+)
 from app.permissions import write_audit
 from app.recharge_routes import RechargeOrderStatusResponse
-from app.settings import SettingsRepository
-from app.zpay import (
-    ZPayMerchantConfig,
-    ZPayOrderQueryClient,
-    ZPayOrderQueryError,
-    deployment_config_from_environment,
-    merchant_config_from_settings,
-    parse_zpay_money_to_fen,
-    sign_zpay_params,
-    zpay_signing_string,
-)
 from app.zpay_payments import (
     PaymentConfirmationError,
     confirm_recharge_payment,
@@ -40,47 +35,43 @@ router = APIRouter(prefix="/api", tags=["payments"])
 logger = logging.getLogger(__name__)
 
 
-def get_zpay_order_query_client() -> ZPayOrderQueryClient:
-    return ZPayOrderQueryClient()
+def get_zpay_provider() -> PaymentProvider:
+    """Dependency: get the ZPay payment provider."""
+    return get_payment_provider("zpay")
 
 
-ZPayOrderQuery = Annotated[ZPayOrderQueryClient, Depends(get_zpay_order_query_client)]
+ZPayProviderDep = Annotated[PaymentProvider, Depends(get_zpay_provider)]
 
 
 @router.get("/payments/zpay/notify", response_class=PlainTextResponse)
-def zpay_notify(request: Request, conn: Database) -> PlainTextResponse:
+def zpay_notify(
+    request: Request,
+    conn: Database,
+    provider: ZPayProviderDep,
+) -> PlainTextResponse:
     params = _unique_query_params(request)
-    merchant = _load_merchant_config(conn)
+    merchant = _load_merchant_config(conn, provider)
 
-    signature = params.get("sign", "")
-    if params.get("sign_type", "").upper() != "MD5" or not hmac.compare_digest(
-        sign_zpay_params(params, merchant.key), signature
-    ):
-        return PlainTextResponse("failure", status_code=400)
-    if params.get("pid") != merchant.pid:
-        return PlainTextResponse("failure", status_code=400)
-    if params.get("trade_status") != "TRADE_SUCCESS":
+    # Use provider abstraction for notification verification
+    verification = provider.verify_notification(params, merchant)
+    if not verification.valid:
+        logger.warning("ZPay callback rejected: %s", verification.error_code)
         return PlainTextResponse("failure", status_code=400)
 
-    merchant_order_no = params.get("out_trade_no", "")
-    provider_trade_no = params.get("trade_no", "")
-    channel = params.get("type", "")
-    try:
-        amount_fen = parse_zpay_money_to_fen(params.get("money", ""))
-    except ValueError:
-        return PlainTextResponse("failure", status_code=400)
-    if not merchant_order_no or not provider_trade_no or not channel:
-        return PlainTextResponse("failure", status_code=400)
+    assert verification.merchant_order_no is not None
+    assert verification.provider_trade_no is not None
+    assert verification.amount_fen is not None
+    assert verification.channel is not None
+    assert verification.source_digest is not None
 
-    source_digest = hashlib.sha256(zpay_signing_string(params).encode("utf-8")).hexdigest()
     try:
         confirm_recharge_payment(
             conn,
-            merchant_order_no=merchant_order_no,
-            provider_trade_no=provider_trade_no,
-            amount_fen=amount_fen,
-            channel=channel,
-            source_digest=source_digest,
+            merchant_order_no=verification.merchant_order_no,
+            provider_trade_no=verification.provider_trade_no,
+            amount_fen=verification.amount_fen,
+            channel=verification.channel,
+            source_digest=verification.source_digest,
             allowed_channels=merchant.allowed_channels,
         )
     except PaymentConfirmationError as exc:
@@ -111,7 +102,7 @@ def sync_recharge_order_with_zpay(
     request: Request,
     conn: Database,
     _actor: ControlUser,
-    query_client: ZPayOrderQuery,
+    provider: ZPayProviderDep,
 ) -> RechargeOrderStatusResponse:
     """Manual single-order query with the admin write contract (A4, A2).
 
@@ -151,21 +142,21 @@ def sync_recharge_order_with_zpay(
             },
         )
 
-    merchant = _load_merchant_config(conn)
+    merchant = _load_merchant_config(conn, provider)
     try:
-        deployment = deployment_config_from_environment()
+        deployment = provider.load_deployment_config()
     except ValueError as exc:
         raise HTTPException(
             status_code=503,
             detail={"code": "ZPAY_CONFIGURATION_INVALID", "message": str(exc)},
         ) from exc
     try:
-        remote_order = query_client.query_order(
+        remote_order = provider.query_order(
             merchant=merchant,
             deployment=deployment,
             merchant_order_no=order_no,
         )
-    except ZPayOrderQueryError as exc:
+    except OrderQueryError as exc:
         raise HTTPException(
             status_code=exc.status_code,
             detail={
@@ -216,9 +207,13 @@ def sync_recharge_order_with_zpay(
     return RechargeOrderStatusResponse(**serialize_recharge_order(confirmed))
 
 
-def _load_merchant_config(conn: BusinessConnection) -> ZPayMerchantConfig:
+def _load_merchant_config(
+    conn: BusinessConnection,
+    provider: PaymentProvider,
+) -> MerchantConfig:
+    """Load merchant configuration via the provider abstraction."""
     try:
-        return merchant_config_from_settings(SettingsRepository(conn).load_zpay_config())
+        return provider.load_merchant_config(conn)
     except ValueError as exc:
         raise HTTPException(
             status_code=503,

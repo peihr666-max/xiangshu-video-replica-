@@ -1832,3 +1832,16 @@
     scroll-behavior: auto;
   }
 }
+
+/* C5 发布账号连接表单（第一阶段：账号授权） */
+.studio-publish-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+.studio-publish-platform-options {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}

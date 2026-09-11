@@ -1013,10 +1013,26 @@ describe("AdminApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "登录后台" }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(
-      "检测到登录环境变化（网络或浏览器），请重新登录。",
-    );
+    expect(alert).toHaveTextContent("检测到浏览器环境变化，请重新登录。");
     expect(alert.textContent).not.toContain("context changed");
+  });
+
+  it("恢复凭据表单提供格式提示并对粘贴空白给出忽略反馈", async () => {
+    installFetch();
+
+    render(<AdminApp />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "首次设置或找回密码" }),
+    );
+
+    expect(screen.getByText("凭据以 ASX1. 开头。")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("一次性恢复凭据"), {
+      target: { value: "  ASX1.body.signature  " },
+    });
+
+    expect(screen.getByText("已自动忽略首尾空白。")).toBeInTheDocument();
   });
 
   it("keeps key order actions available on a narrow viewport", async () => {
