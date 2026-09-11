@@ -1579,6 +1579,7 @@ describe("GenerationComposer", () => {
   // F-05（前端分析报告 2026-09-12）：余额软预检不足时拦截建批，
   // 并提供「去充值」引导（客户 lane 打开充值弹窗）。
   it("F-05：余额软预检不足时拦截建批并给出去充值入口", async () => {
+    window.localStorage.clear();
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: {
         ...baseVersion,
@@ -1625,6 +1626,7 @@ describe("GenerationComposer", () => {
   // F-05 服务端权威 402 契约：insufficientBalance 置位且幂等记录保留
   // （充值后同键重试）——这条不变式最易被将来改动破坏。
   it("F-05：服务端 402 INSUFFICIENT_CREDITS 保留幂等记录并给出去充值", async () => {
+    window.localStorage.clear();
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: {
         ...baseVersion,

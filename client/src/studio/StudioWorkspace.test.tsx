@@ -523,6 +523,8 @@ describe("V1.4 workspace integration", () => {
     ).not.toBeInTheDocument();
   });
   beforeEach(() => {
+    // F-06 本地草稿会跨用例残留（防抖写入 localStorage），逐用例隔离
+    window.localStorage.clear();
     vi.clearAllMocks();
     api.customerGetWallet.mockReset();
     api.getWallet.mockReset();

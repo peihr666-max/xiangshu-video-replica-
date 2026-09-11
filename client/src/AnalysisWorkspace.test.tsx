@@ -369,6 +369,8 @@ function readReactProps<T>(element: Element): T {
 describe("AnalysisWorkspace workflow gates", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // F-06 本地草稿防抖写入会跨用例残留，逐用例隔离
+    window.localStorage.clear();
     vi.mocked(api.getLatestProjectAnalysis).mockResolvedValue({
       id: "analysis-1",
       project_id: "project-1",
@@ -2789,6 +2791,7 @@ describe("AnalysisWorkspace workflow gates", () => {
   // state，刷新/崩溃即丢。防抖写入 localStorage 本地草稿，重挂载恢复。
   it("F-06：未保存口播稿写入本地草稿，重挂载后恢复并提示", async () => {
     const draftKey = "generation.localDraft/script/employee_1/project-1";
+    window.localStorage.clear();
     const first = render(
       <AnalysisWorkspace
         currentUserId="employee_1"
