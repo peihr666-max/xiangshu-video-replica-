@@ -1,4 +1,10 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { AnalyticsPage } from "./admin/AnalyticsPage";
 import { AuditCenterPage } from "./admin/AuditCenterPage";
 import { CustomersManagementPage } from "./admin/CustomersManagementPage";
@@ -6,6 +12,7 @@ import { FundsPage } from "./admin/FundsPage";
 import { GenerationRecordsPage } from "./admin/GenerationRecordsPage";
 import { OverviewPage } from "./admin/OverviewPage";
 import { SystemSettingsPage } from "./admin/SystemSettingsPage";
+import "./admin/admin-login.css";
 import { PageBanner } from "./admin/ui/PageBanner";
 import { TabBar } from "./admin/ui/TabBar";
 import { roleLabel } from "./admin/ui/vocabulary";
@@ -36,6 +43,18 @@ type AuthPhase =
   | "recovery"
   | "password-setup"
   | "ready";
+
+type AuthPendingAction = "" | "login" | "exchange" | "recover";
+
+// ADMIN-UI-AUDIT-20260911：登录门错误本地化。RATE_LIMITED 与
+// ADMIN_SESSION_CONTEXT_CHANGED 是仅有的两个无中文映射的登录路径错误码，
+// 未经映射时管理员会看到服务端英文原文；overrides 只作用于本组件，
+// 不改 api.admin.ts 全局映射（其余页面文案已被既有测试钉住）。
+const loginErrorOverrides = {
+  RATE_LIMITED: "登录尝试过于频繁，请稍后再试。",
+  ADMIN_SESSION_CONTEXT_CHANGED:
+    "检测到登录环境变化（网络或浏览器），请重新登录。",
+};
 
 export type AdminTab =
   | "overview"
@@ -150,6 +169,11 @@ export function AdminApp() {
   const [recoveryCredential, setRecoveryCredential] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [authPending, setAuthPending] = useState<AuthPendingAction>("");
+  const [showPassword, setShowPassword] = useState(false);
+  const loginUsernameRef = useRef<HTMLInputElement>(null);
+  const recoveryCredentialRef = useRef<HTMLInputElement>(null);
+  const newPasswordRef = useRef<HTMLInputElement>(null);
   const initialRoute = adminRouteFromHash(window.location.hash);
   const [activeTab, setActiveTab] = useState<AdminTab>(initialRoute.tab);
   const [navigationIntent, setNavigationIntent] = useState(initialRoute.intent);
@@ -196,6 +220,8 @@ export function AdminApp() {
       setActor(null);
       setAuthPhase("anonymous");
       setLoginPassword("");
+      setShowPassword(false);
+      setAuthPending("");
       setRecoveryCredential("");
       setNewPassword("");
       setConfirmPassword("");
@@ -250,6 +276,17 @@ export function AdminApp() {
     };
   }, [handleSessionExpired]);
 
+  // 登录门各阶段进入时聚焦首个输入框（biome 禁用 autoFocus 属性，改用 ref）。
+  useEffect(() => {
+    if (authPhase === "anonymous") {
+      loginUsernameRef.current?.focus();
+    } else if (authPhase === "recovery") {
+      recoveryCredentialRef.current?.focus();
+    } else if (authPhase === "password-setup") {
+      newPasswordRef.current?.focus();
+    }
+  }, [authPhase]);
+
   useEffect(() => {
     const syncNavigationMode = () => {
       const nextCompact = window.innerWidth < compactNavigationBreakpoint;
@@ -263,6 +300,11 @@ export function AdminApp() {
 
   async function signInWithPassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // 后端按 IP+账号双维度对每次登录尝试计数：提交期间必须拦住重复提交，
+    // 否则双击会白烧限流预算，可能把管理员自己锁在门外。
+    if (authPending) {
+      return;
+    }
     setError("");
     setNotice("");
     const username = loginUsername.trim();
@@ -270,21 +312,30 @@ export function AdminApp() {
       setError("请输入管理员账号和密码。");
       return;
     }
+    setAuthPending("login");
     try {
       const result = await loginAdminWithPassword(username, loginPassword);
       setActor(result.actor);
       setLoginPassword("");
+      setShowPassword(false);
       setAuthPhase("ready");
       const route = adminRouteFromHash(window.location.hash);
       setActiveTab(route.tab);
       setNavigationIntent(route.intent);
     } catch (cause) {
-      setError(adminActivationErrorMessage(cause, "后台登录失败"));
+      setError(
+        adminActivationErrorMessage(cause, "后台登录失败", loginErrorOverrides),
+      );
+    } finally {
+      setAuthPending("");
     }
   }
 
   async function verifyRecoveryCredential(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (authPending) {
+      return;
+    }
     setError("");
     setNotice("");
     const credential = recoveryCredential.trim();
@@ -292,6 +343,7 @@ export function AdminApp() {
       setError("请输入一次性恢复凭据。");
       return;
     }
+    setAuthPending("exchange");
     try {
       const result = await exchangeAdminSession(credential);
       setActor(result.actor);
@@ -299,12 +351,23 @@ export function AdminApp() {
       setRecoveryCredential("");
       setAuthPhase("password-setup");
     } catch (cause) {
-      setError(adminActivationErrorMessage(cause, "恢复凭据验证失败"));
+      setError(
+        adminActivationErrorMessage(
+          cause,
+          "恢复凭据验证失败",
+          loginErrorOverrides,
+        ),
+      );
+    } finally {
+      setAuthPending("");
     }
   }
 
   async function saveRecoveredPassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (authPending) {
+      return;
+    }
     setError("");
     setNotice("");
     if (newPassword.length < 12 || newPassword.length > 128) {
@@ -315,6 +378,7 @@ export function AdminApp() {
       setError("两次输入的新密码不一致。");
       return;
     }
+    setAuthPending("recover");
     try {
       await recoverAdminPassword(newPassword);
       setActor(null);
@@ -323,7 +387,15 @@ export function AdminApp() {
       setAuthPhase("anonymous");
       setNotice("密码已设置，请使用管理员账号和新密码登录。");
     } catch (cause) {
-      setError(adminActivationErrorMessage(cause, "设置管理员密码失败"));
+      setError(
+        adminActivationErrorMessage(
+          cause,
+          "设置管理员密码失败",
+          loginErrorOverrides,
+        ),
+      );
+    } finally {
+      setAuthPending("");
     }
   }
 
@@ -339,115 +411,170 @@ export function AdminApp() {
 
   if (authPhase !== "ready" || !actor) {
     return (
-      <main className="admin-shell">
-        <header className="admin-header">
-          <div>
-            <span className="eyebrow">CONTROL CENTER</span>
+      <main className="admin-shell admin-shell--gate">
+        <div className="admin-login">
+          <section className="admin-login__brand">
+            <div className="admin-login__brand-mark">
+              <img alt="" aria-hidden="true" src={zhongshuLogoMark} />
+              <span>众墅之家</span>
+            </div>
             <h1>运营管理后台</h1>
-          </div>
-        </header>
-
-        {error ? <PageBanner tone="error">{error}</PageBanner> : null}
-        {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
-
-        {authPhase === "checking" ? (
-          <section className="admin-panel" aria-label="后台登录">
-            <p>正在检查登录状态…</p>
+            <p>统一管理客户、激活码、设备、资金与系统配置的运营控制台。</p>
+            <ul className="admin-login__points">
+              <li>会话绑定当前浏览器与网络环境，环境变化后需重新登录</li>
+              <li>登录与敏感操作全部记入审计日志</li>
+              <li>管理员与审计员分角色授权，审计员只读</li>
+            </ul>
           </section>
-        ) : null}
 
-        {authPhase === "anonymous" ? (
-          <section className="admin-panel" aria-label="后台登录">
-            <h2>管理员登录</h2>
-            <form className="admin-form" onSubmit={signInWithPassword}>
-              <label>
-                管理员账号
-                <input
-                  autoComplete="username"
-                  value={loginUsername}
-                  onChange={(event) => setLoginUsername(event.target.value)}
-                />
-              </label>
-              <label>
-                管理员密码
-                <input
-                  autoComplete="current-password"
-                  type="password"
-                  value={loginPassword}
-                  onChange={(event) => setLoginPassword(event.target.value)}
-                />
-              </label>
-              <button type="submit">登录后台</button>
-            </form>
-            <button
-              type="button"
-              onClick={() => {
-                setError("");
-                setNotice("");
-                setAuthPhase("recovery");
-              }}
-            >
-              首次设置或找回密码
-            </button>
-          </section>
-        ) : null}
+          <section className="admin-login__card" aria-label="后台登录">
+            {error ? <PageBanner tone="error">{error}</PageBanner> : null}
+            {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
 
-        {authPhase === "recovery" ? (
-          <section className="admin-panel" aria-label="管理员密码恢复">
-            <h2>首次设置或找回密码</h2>
-            <p className="admin-hint">
-              一次性恢复凭据只用于验证身份和设置新密码，不能作为日常登录方式。
-            </p>
-            <form className="admin-form" onSubmit={verifyRecoveryCredential}>
-              <label>
-                一次性恢复凭据
-                <input
-                  autoComplete="off"
-                  placeholder="ASX1.…"
-                  type="password"
-                  value={recoveryCredential}
-                  onChange={(event) =>
-                    setRecoveryCredential(event.target.value)
-                  }
-                />
-              </label>
-              <button type="submit">验证恢复凭据</button>
-            </form>
-            <button type="button" onClick={() => setAuthPhase("anonymous")}>
-              返回账号密码登录
-            </button>
-          </section>
-        ) : null}
+            {authPhase === "checking" ? (
+              <p className="admin-login__status">正在检查登录状态…</p>
+            ) : null}
 
-        {authPhase === "password-setup" ? (
-          <section className="admin-panel" aria-label="设置管理员密码">
-            <h2>设置管理员密码</h2>
-            <p className="admin-hint">
-              当前账号：{actor?.username}。保存后，所有旧会话都会失效。
-            </p>
-            <form className="admin-form" onSubmit={saveRecoveredPassword}>
-              <label>
-                新管理员密码
-                <input
-                  autoComplete="new-password"
-                  type="password"
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                />
-              </label>
-              <label>
-                确认新管理员密码
-                <input
-                  autoComplete="new-password"
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(event) => setConfirmPassword(event.target.value)}
-                />
-              </label>
-              <button type="submit">保存新密码</button>
-            </form>
+            {authPhase === "anonymous" ? (
+              <form className="admin-login__form" onSubmit={signInWithPassword}>
+                <h2>管理员登录</h2>
+                <div className="admin-login__control">
+                  <label htmlFor="admin-login-username">管理员账号</label>
+                  <input
+                    id="admin-login-username"
+                    autoComplete="username"
+                    ref={loginUsernameRef}
+                    value={loginUsername}
+                    onChange={(event) => setLoginUsername(event.target.value)}
+                  />
+                </div>
+                <div className="admin-login__control">
+                  <label htmlFor="admin-login-password">管理员密码</label>
+                  <div className="admin-login__password-row">
+                    <input
+                      id="admin-login-password"
+                      autoComplete="current-password"
+                      type={showPassword ? "text" : "password"}
+                      value={loginPassword}
+                      onChange={(event) => setLoginPassword(event.target.value)}
+                    />
+                    <button
+                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                      aria-pressed={showPassword}
+                      className="admin-login__toggle"
+                      type="button"
+                      onClick={() => setShowPassword((current) => !current)}
+                    >
+                      {showPassword ? "隐藏" : "显示"}
+                    </button>
+                  </div>
+                </div>
+                <button
+                  className="admin-login__submit"
+                  disabled={authPending !== ""}
+                  type="submit"
+                >
+                  {authPending === "login" ? "正在登录…" : "登录后台"}
+                </button>
+                <button
+                  className="admin-login__link"
+                  type="button"
+                  onClick={() => {
+                    setError("");
+                    setNotice("");
+                    setAuthPhase("recovery");
+                  }}
+                >
+                  首次设置或找回密码
+                </button>
+              </form>
+            ) : null}
+
+            {authPhase === "recovery" ? (
+              <form
+                aria-label="管理员密码恢复"
+                className="admin-login__form"
+                onSubmit={verifyRecoveryCredential}
+              >
+                <h2>首次设置或找回密码</h2>
+                <p className="admin-login__hint">
+                  一次性恢复凭据只用于验证身份和设置新密码，不能作为日常登录方式。
+                </p>
+                <div className="admin-login__control">
+                  <label htmlFor="admin-login-recovery">一次性恢复凭据</label>
+                  <input
+                    id="admin-login-recovery"
+                    autoComplete="off"
+                    placeholder="ASX1.…"
+                    ref={recoveryCredentialRef}
+                    type="password"
+                    value={recoveryCredential}
+                    onChange={(event) =>
+                      setRecoveryCredential(event.target.value)
+                    }
+                  />
+                </div>
+                <button
+                  className="admin-login__submit"
+                  disabled={authPending !== ""}
+                  type="submit"
+                >
+                  {authPending === "exchange" ? "正在验证…" : "验证恢复凭据"}
+                </button>
+                <button
+                  className="admin-login__link"
+                  type="button"
+                  onClick={() => setAuthPhase("anonymous")}
+                >
+                  返回账号密码登录
+                </button>
+              </form>
+            ) : null}
+
+            {authPhase === "password-setup" ? (
+              <form
+                aria-label="设置管理员密码"
+                className="admin-login__form"
+                onSubmit={saveRecoveredPassword}
+              >
+                <h2>设置管理员密码</h2>
+                <p className="admin-login__hint">
+                  当前账号：{actor?.username}。保存后，所有旧会话都会失效。
+                </p>
+                <div className="admin-login__control">
+                  <label htmlFor="admin-login-new-password">新管理员密码</label>
+                  <input
+                    id="admin-login-new-password"
+                    autoComplete="new-password"
+                    ref={newPasswordRef}
+                    type="password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                  />
+                </div>
+                <div className="admin-login__control">
+                  <label htmlFor="admin-login-confirm-password">
+                    确认新管理员密码
+                  </label>
+                  <input
+                    id="admin-login-confirm-password"
+                    autoComplete="new-password"
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                  />
+                </div>
+                <button
+                  className="admin-login__submit"
+                  disabled={authPending !== ""}
+                  type="submit"
+                >
+                  {authPending === "recover" ? "正在保存…" : "保存新密码"}
+                </button>
+              </form>
+            ) : null}
           </section>
-        ) : null}
+        </div>
       </main>
     );
   }
