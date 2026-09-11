@@ -1048,12 +1048,19 @@ def test_customer_payment_code_is_generated_server_side_for_owned_order(
     clean_state: str,
     recharge_config_fixture,
 ) -> None:
-    from app.recharge_routes import get_zpay_payment_code_client
+    from app.recharge_routes import get_zpay_provider
     from app.zpay import ZPayPaymentCodeResult
 
     class FakePaymentCodeClient:
         def __init__(self) -> None:
             self.order_numbers: list[str] = []
+
+        def load_merchant_config(self, conn: object) -> object:
+            del conn
+            return None
+
+        def load_deployment_config(self) -> object:
+            return None
 
         def create_payment_code(self, **kwargs) -> ZPayPaymentCodeResult:
             self.order_numbers.append(str(kwargs["merchant_order_no"]))
@@ -1082,14 +1089,14 @@ def test_customer_payment_code_is_generated_server_side_for_owned_order(
     order_no = created.json()["order_no"]
 
     fake_client = FakePaymentCodeClient()
-    customer_app.dependency_overrides[get_zpay_payment_code_client] = lambda: fake_client
+    customer_app.dependency_overrides[get_zpay_provider] = lambda: fake_client
     try:
         response = client.post(
             f"/api/customer/recharge-orders/{order_no}/payment-code",
             headers={"Authorization": f"Bearer {session_token}"},
         )
     finally:
-        customer_app.dependency_overrides.pop(get_zpay_payment_code_client, None)
+        customer_app.dependency_overrides.pop(get_zpay_provider, None)
 
     assert response.status_code == 200, response.text
     assert response.json() == {
