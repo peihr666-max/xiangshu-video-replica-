@@ -37,10 +37,11 @@ from app.security_rate_limit import (
     control_export_account_limit,
     rate_limit_window_seconds,
 )
-from app.settings import ProviderName, SettingsRepository
-from app.settings_routes import (
+from app.settings import (
+    ProviderName,
     ProviderTester,
     ProviderTestResult,
+    SettingsRepository,
     get_provider_tester,
     merge_provider_config,
     remove_cos_lifecycle_rules,
