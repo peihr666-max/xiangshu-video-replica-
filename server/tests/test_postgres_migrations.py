@@ -1,4 +1,4 @@
-﻿"""
+"""
 T03 / DB-01 - PostgreSQL 16 fixture tests (canonical path per V3 frozen file mapping).
 
 Verifies: the local/CI PG fixture is reachable, is PostgreSQL 16, and supports

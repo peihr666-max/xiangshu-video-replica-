@@ -27,9 +27,7 @@ depends_on = None
 # Constraint definitions (post-migration target state)
 # ---------------------------------------------------------------------------
 
-_PROVIDER_ENUM = (
-    "provider IN ('zpay', 'activation_code', 'admin_adjustment', 'wechat_native')"
-)
+_PROVIDER_ENUM = "provider IN ('zpay', 'activation_code', 'admin_adjustment', 'wechat_native')"
 
 _PROVIDER_SCOPE_PAIRING = (
     "(provider = 'activation_code' AND pricing_scope = 'CUSTOMER_STANDARD') OR "
@@ -53,9 +51,7 @@ _PROVIDER_TRADE_NO = (
 )
 
 # 036's channel guard: channel is only meaningful for payment-gateway providers.
-_PROVIDER_CHANNEL = (
-    "channel IS NULL OR provider IN ('zpay', 'wechat_native')"
-)
+_PROVIDER_CHANNEL = "channel IS NULL OR provider IN ('zpay', 'wechat_native')"
 
 # Min/step ladder governs both gateway providers.
 _AMOUNT_MINIMUM = (
@@ -133,11 +129,7 @@ def downgrade() -> None:
     # Guard: refuse if wechat_native rows exist (billing rows must never be
     # deleted to make a downgrade pass — 026 No-Go precedent).
     has_wechat_rows = bind.execute(
-        sa.text(
-            "SELECT EXISTS ("
-            "  SELECT 1 FROM recharge_orders WHERE provider = 'wechat_native'"
-            ")"
-        )
+        sa.text("SELECT EXISTS (  SELECT 1 FROM recharge_orders WHERE provider = 'wechat_native')")
     ).scalar()
     if has_wechat_rows:
         raise RuntimeError(

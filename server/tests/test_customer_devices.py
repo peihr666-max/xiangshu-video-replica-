@@ -1,4 +1,4 @@
-﻿"""T16 / T18 / DEV-01 — two current device slots, credentials and unbind history,
+"""T16 / T18 / DEV-01 — two current device slots, credentials and unbind history,
 the admin verification lane.
 
 Fail-first tests for the frozen files ``server/app/customer_device_service.py``
