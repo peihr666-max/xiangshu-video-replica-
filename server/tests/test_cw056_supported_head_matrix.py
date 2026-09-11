@@ -56,10 +56,10 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
-# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→080 + 081）。
-HEAD_REVISION = "081_oral_unit_price"
+# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→081 + 082）。
+HEAD_REVISION = "082_publish_accounts"
 
-# 最后一个已发布（受支持）起点。其后的 056–081 尚未随任何受支持版本发布，
+# 最后一个已发布（受支持）起点。其后的 056–082 尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
 # 那不是「冻结已发布历史」而是「冻结开发中」。
 PUBLISHED_HEAD_REVISION = "055_customer_batch_visibility"
@@ -101,8 +101,8 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # 例如 triggers 用 information_schema.triggers 的**行数**（BEFORE UPDATE 与
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS: dict[str, int] = {
-    "tables": 76,
-    "columns": 894,
+    "tables": 77,
+    "columns": 909,
     "identity_columns": 0,
     "sequences": 3,
     "jsonb_columns": 0,
@@ -110,14 +110,18 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "triggers": 18,
     "partial_indexes": 25,
     "unique_constraints": 27,
-    "check_constraints": 221,
-    "foreign_keys": 145,
-    "primary_keys": 76,
+    "check_constraints": 224,
+    "foreign_keys": 146,
+    "primary_keys": 77,
 }
 
-# head 的表名全集（76）。counts 只能证明「数量没漂」，证明不了「同一批表」：
-# 掉一张旧表再建一张新表，tables 计数仍是 76。表名集合与下面的完整目录
+# head 的表名全集（77）。counts 只能证明「数量没漂」，证明不了「同一批表」：
+# 掉一张旧表再建一张新表，tables 计数仍是 77。表名集合与下面的完整目录
 # 摘要一起构成结构等价的两级断言，失配时的报错可直接指出 missing/unexpected。
+# 082 的增量：tables/primary_keys +1（publish_accounts）、columns +15、
+# check_constraints +3（platform/status/verify_flag 三条 CHECK）、foreign_keys +1
+# （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
+# partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
 HEAD_TABLE_NAMES: tuple[str, ...] = (
     "activation_code_activations",
     "activation_code_batches",
@@ -170,6 +174,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
     "project_main_characters",
     "projects",
     "provider_settings",
+    "publish_accounts",
     "recharge_orders",
     "runtime_settings",
     "script_from_audio_tasks",
@@ -202,7 +207,8 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 这是「空库→head」与「旧起点→head」必须**收敛到同一 schema** 的机器化断言 ——
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
-HEAD_SCHEMA_DIGEST = "9a8ac71b4dd8f183b85012da0ec7206bc8e6b54e6bc47927aceb001b77696211"
+# 082 追加 publish_accounts 后由 cw068 freeze probe 在真实 PG（16-alpine）上重算。
+HEAD_SCHEMA_DIGEST = "a23fa2756885009a3faa9af9d73472c21667bbce057283cdbf3d64dd456bf071"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (
@@ -1079,14 +1085,16 @@ def test_audit_lineage_downgrade_refusal_is_preserved(matrix_database: str) -> N
 
 # 055（最后一个已发布起点）**之后**才创建的表，用于「失败不留半结构」断言。
 # 逐个核对过建表迁移：operation_cost_rates=056、daily_external_prices=058、
-# oral_tasks=065、studio_drafts=067。选早于 055 的表会假红（它们在起点就已
-# 存在），而选拼错的表名会假绿（to_regclass 对不存在的名字同样返回 NULL），
-# 所以下面的用例额外断言每个名字都在 HEAD_TABLE_NAMES 里。
+# oral_tasks=065、studio_drafts=067、publish_accounts=082。选早于 055 的表会假红
+# （它们在起点就已存在），而选拼错的表名会假绿（to_regclass 对不存在的名字同样
+# 返回 NULL），所以下面的用例额外断言每个名字都在 HEAD_TABLE_NAMES 里。
+# 尾项 publish_accounts 由链尾迁移创建，是「一条都没半建成」的最强哨兵。
 LATE_TABLES_AFTER_PUBLISHED_HEAD: tuple[str, ...] = (
     "operation_cost_rates",
     "daily_external_prices",
     "oral_tasks",
     "studio_drafts",
+    "publish_accounts",
 )
 
 
