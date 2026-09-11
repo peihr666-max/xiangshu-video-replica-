@@ -61,6 +61,17 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # CW-058 content/asset domain matrix: one dedicated database for the
         # 内容/版本/工作台/素材/人物/爆款 TEST-PG matrix (truncated per test).
         "cw058_content_asset_test",
+        # CW-059 billing/task/permission domain matrices: one dedicated database
+        # each for the 账务/支付/钱包 matrix (test_cw059_billing_pg_matrix.py),
+        # the 任务/Worker/生成 matrix (test_cw059_task_worker_pg_matrix.py) and
+        # the 权限/RBAC matrix (test_cw059_rbac_pg_matrix.py), all reset per test
+        # and migrated to alembic head so every business table (wallets /
+        # wallet_transactions / generation_tasks / image_tasks / script_* /
+        # first_frames / source_frames / projects /
+        # customer_authorization_evidence ...) is present.
+        "cw059_billing_test",
+        "cw059_task_test",
+        "cw059_rbac_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):
