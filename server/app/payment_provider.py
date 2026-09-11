@@ -16,7 +16,6 @@ from typing import Protocol
 
 from app.db_portable import BusinessConnection
 
-
 # ---------------------------------------------------------------------------
 # Generic data types (provider-agnostic)
 # ---------------------------------------------------------------------------

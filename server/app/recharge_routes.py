@@ -10,6 +10,8 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, StrictInt
 
+# Import to trigger provider registration
+import app.zpay_provider  # noqa: F401
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import (
     BusinessDbDep,
@@ -47,9 +49,6 @@ from app.settings import SettingsRepository, effective_customer_billing_settings
 from app.wallet_routes import WalletResponse, WalletTransactionPage, WalletTransactionResponse
 from app.zpay import generate_merchant_order_no
 from app.zpay_payments import read_recharge_order, serialize_recharge_order
-
-# Import to trigger provider registration
-import app.zpay_provider  # noqa: F401
 
 router = APIRouter(prefix="/api", tags=["recharge"])
 MAX_ORDER_NUMBER_ATTEMPTS = 3

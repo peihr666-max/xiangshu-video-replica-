@@ -28,7 +28,6 @@ from app.payment_provider import (
 )
 from app.settings import SettingsRepository
 from app.zpay import (
-    ALLOWED_ZPAY_CHANNELS,
     ZPayDeploymentConfig,
     ZPayMerchantConfig,
     ZPayOrderQueryClient,
@@ -257,9 +256,7 @@ class ZPayProvider(PaymentProvider):
             )
 
         # Compute source digest
-        source_digest = hashlib.sha256(
-            zpay_signing_string(params).encode("utf-8")
-        ).hexdigest()
+        source_digest = hashlib.sha256(zpay_signing_string(params).encode("utf-8")).hexdigest()
 
         return NotificationVerification(
             valid=True,

@@ -8,6 +8,8 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
+# Import to trigger provider registration
+import app.zpay_provider  # noqa: F401
 from app.admin_write_contract import AdminWriteContract
 from app.admin_write_contract import require_write_contract as _require_write_contract
 from app.auth import Database
@@ -28,9 +30,6 @@ from app.zpay_payments import (
     read_recharge_order,
     serialize_recharge_order,
 )
-
-# Import to trigger provider registration
-import app.zpay_provider  # noqa: F401
 
 router = APIRouter(prefix="/api", tags=["payments"])
 logger = logging.getLogger(__name__)
