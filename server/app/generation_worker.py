@@ -7,7 +7,6 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -25,7 +24,6 @@ from app.character_image_generation import (
     acquire_character_generation_task,
     run_next_character_generation_task,
 )
-from app.db import connect_database
 from app.db_pg import (
     DatabaseMode,
     check_pg_ready,
@@ -1580,58 +1578,6 @@ def run_pg_worker_once(
     return processed
 
 
-def run_sqlite_worker_round(
-    *,
-    db_path: Path,
-    worker_id: str,
-    max_tasks: int | None = None,
-) -> int:
-    try:
-        with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-            # 云端模式下所有需要持久保留的生成资产都进入 COS；
-            # 未配置 COS 的桌面开发环境仍由 get_media_storage 回退本地盘。
-            asset_storage = get_media_storage(conn)
-            return run_worker_once(
-                conn,
-                worker_id=worker_id,
-                storage=asset_storage,
-                generation_storage=asset_storage,
-                first_frame_storage=asset_storage,
-                max_tasks=max_tasks,
-            )
-    except HTTPException as exc:
-        if not _is_quality_settings_failure(exc):
-            raise
-        logger.warning("visual quality settings unavailable; processing source frames locally")
-        with BusinessConnection.sqlite(connect_database(db_path)) as conn:
-            asset_storage = get_media_storage(conn)
-            return int(
-                _run_source_frame_once(
-                    conn,
-                    worker_id=worker_id,
-                    storage=asset_storage,
-                    extractor=None,
-                    quality_inspector=None,
-                    shared_inspector=None,
-                )
-            )
-
-
-def run_forever(*, db_path: Path, worker_id: str, idle_seconds: float) -> None:
-    while True:
-        try:
-            processed = run_sqlite_worker_round(db_path=db_path, worker_id=worker_id)
-        except HTTPException as exc:
-            code = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
-            logger.error("generation worker configuration unavailable: %s", code)
-            processed = 0
-        except Exception:
-            logger.exception("generation worker iteration failed")
-            processed = 0
-        if processed == 0:
-            time.sleep(idle_seconds)
-
-
 def run_pg_worker_round(*, worker_id: str, max_tasks: int | None = None) -> int:
     try:
         # The media-storage configuration lives in the business database;
@@ -1743,7 +1689,7 @@ def main() -> None:
         return
 
     # CW-025: resolve_database_config() 全环境 fail-closed 后，SQLite 分支 unreachable。
-    # Worker SQLite 业务逻辑（run_sqlite_worker_round/run_forever/--db-path）归 CW-030 移除。
+    # CW-030 已移除 Worker 的 SQLite 业务入口（run_sqlite_worker_round/run_forever）；
     # 本 RuntimeError 是防御性断言：如果走到这里，说明 resolve_database_config() 有 bug。
     raise RuntimeError(
         "generation_worker: SQLite online path is unreachable after CW-025; "
