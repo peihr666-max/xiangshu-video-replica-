@@ -18,10 +18,13 @@ server/tests/test_first_frames.py
 server/tests/test_local_settings_key.py
 server/tests/test_operation_costs.py
 server/tests/test_ops_alerts.py
+server/tests/test_ops_metrics.py
 server/tests/test_project_character_selection.py
 server/tests/test_security_contracts.py
 server/tests/test_simple_character.py
 server/tests/test_source_frames.py
 server/tests/test_studio_notification_preferences.py
+server/tests/test_viral_keywords.py
+server/tests/test_viral_media.py
 server/tests/test_viral_statistics.py
 server/tests/test_zpay.py

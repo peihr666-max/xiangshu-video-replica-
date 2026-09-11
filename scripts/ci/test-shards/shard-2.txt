@@ -4,6 +4,7 @@ server/tests/test_admin_profit_routes.py
 server/tests/test_asr_provider.py
 server/tests/test_build_contracts.py
 server/tests/test_characters.py
+server/tests/test_customer_ha_smoke.py
 server/tests/test_customer_queue_fairness.py
 server/tests/test_cw026_converged_auth.py
 server/tests/test_cw030_worker_pg_matrix.py

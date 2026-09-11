@@ -17,6 +17,7 @@ server/tests/test_desktop_artifact_no_pg_dsn.py
 server/tests/test_gate1_bootstrap.py
 server/tests/test_gate1_e2e.py
 server/tests/test_generation.py
+server/tests/test_health.py
 server/tests/test_internal_access_tokens.py
 server/tests/test_ops_metrics.py
 server/tests/test_optional_project_state_api.py

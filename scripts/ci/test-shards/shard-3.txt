@@ -19,6 +19,7 @@ server/tests/test_migration_dialect_contract.py
 server/tests/test_postgres_migrations.py
 server/tests/test_queue_load_10k.py
 server/tests/test_script_rewrite.py
+server/tests/test_security_contracts.py
 server/tests/test_sqlite_to_postgres.py
 server/tests/test_storage.py
 server/tests/test_studio_analytics.py
@@ -26,6 +27,6 @@ server/tests/test_studio_drafts.py
 server/tests/test_studio_stats.py
 server/tests/test_viral_decrypt.py
 server/tests/test_viral_link.py
-server/tests/test_viral_media.py
 server/tests/test_viral_refresh.py
 server/tests/test_worker_crash_recovery.py
+server/tests/test_zpay.py
