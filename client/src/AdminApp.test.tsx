@@ -827,6 +827,194 @@ describe("AdminApp", () => {
     ).toBe(true);
   });
 
+  it("登录门提供密码可见性切换并回写状态", async () => {
+    installFetch();
+
+    render(<AdminApp />);
+
+    expect(await screen.findByLabelText("管理员密码")).toHaveAttribute(
+      "type",
+      "password",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "显示密码" }));
+    expect(screen.getByLabelText("管理员密码")).toHaveAttribute("type", "text");
+    const hideToggle = screen.getByRole("button", { name: "隐藏密码" });
+    expect(hideToggle).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(hideToggle);
+    expect(screen.getByLabelText("管理员密码")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    expect(screen.getByRole("button", { name: "显示密码" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("登录提交期间禁用按钮并阻止重复提交以保护登录限流预算", async () => {
+    // 后端按 IP+账号双维度对每次登录尝试计数（admin_auth_routes
+    // _spend_admin_password_budget）：前端双击等于白烧两份预算，可能把管理员
+    // 锁在门外。提交期间必须禁用按钮，直到当前请求落地。
+    let resolveLogin:
+      | ((response: {
+          ok: boolean;
+          status: number;
+          json: () => Promise<unknown>;
+        }) => void)
+      | undefined;
+    const fetchMock = vi.fn((url: string, requestInit?: RequestInit) => {
+      if (
+        url.endsWith("/api/control/admin/session") &&
+        (!requestInit?.method || requestInit.method === "GET")
+      ) {
+        return jsonResponse(
+          {
+            detail: {
+              code: "ADMIN_SESSION_INVALID",
+              message: "Admin session is missing, revoked or invalid.",
+            },
+          },
+          401,
+        );
+      }
+      if (url.endsWith("/api/control/admin/session/password")) {
+        return new Promise((resolve) => {
+          resolveLogin = resolve;
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminApp />);
+
+    fireEvent.change(await screen.findByLabelText("管理员账号"), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText("管理员密码"), {
+      target: { value: "Admin Login Passphrase 2026!" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "登录后台" }));
+
+    const pendingButton = await screen.findByRole("button", {
+      name: "正在登录…",
+    });
+    expect(pendingButton).toBeDisabled();
+    fireEvent.click(pendingButton);
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith("/api/control/admin/session/password"),
+      ).length,
+    ).toBe(1);
+
+    resolveLogin?.({
+      ok: true,
+      status: 201,
+      json: async () => adminSession,
+    });
+    expect(
+      await screen.findByRole("navigation", { name: "管理端导航" }),
+    ).toBeInTheDocument();
+  });
+
+  it("登录限流错误呈现中文提示而非服务端英文原文", async () => {
+    const fetchMock = vi.fn((url: string, requestInit?: RequestInit) => {
+      if (
+        url.endsWith("/api/control/admin/session") &&
+        (!requestInit?.method || requestInit.method === "GET")
+      ) {
+        return jsonResponse(
+          {
+            detail: {
+              code: "ADMIN_SESSION_INVALID",
+              message: "Admin session is missing, revoked or invalid.",
+            },
+          },
+          401,
+        );
+      }
+      if (url.endsWith("/api/control/admin/session/password")) {
+        return jsonResponse(
+          {
+            detail: {
+              code: "RATE_LIMITED",
+              message:
+                "Too many administrator sign-in attempts. Try again later.",
+            },
+          },
+          429,
+        );
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminApp />);
+
+    fireEvent.change(await screen.findByLabelText("管理员账号"), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText("管理员密码"), {
+      target: { value: "Admin Login Passphrase 2026!" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "登录后台" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("登录尝试过于频繁，请稍后再试。");
+    expect(alert.textContent).not.toContain("Too many");
+  });
+
+  it("会话上下文变化错误呈现中文提示", async () => {
+    const fetchMock = vi.fn((url: string, requestInit?: RequestInit) => {
+      if (
+        url.endsWith("/api/control/admin/session") &&
+        (!requestInit?.method || requestInit.method === "GET")
+      ) {
+        return jsonResponse(
+          {
+            detail: {
+              code: "ADMIN_SESSION_INVALID",
+              message: "Admin session is missing, revoked or invalid.",
+            },
+          },
+          401,
+        );
+      }
+      if (url.endsWith("/api/control/admin/session/password")) {
+        return jsonResponse(
+          {
+            detail: {
+              code: "ADMIN_SESSION_CONTEXT_CHANGED",
+              message:
+                "Admin session network or browser context changed; sign in again.",
+            },
+          },
+          401,
+        );
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminApp />);
+
+    fireEvent.change(await screen.findByLabelText("管理员账号"), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText("管理员密码"), {
+      target: { value: "Admin Login Passphrase 2026!" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "登录后台" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "检测到登录环境变化（网络或浏览器），请重新登录。",
+    );
+    expect(alert.textContent).not.toContain("context changed");
+  });
+
   it("keeps key order actions available on a narrow viewport", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,

@@ -114,6 +114,16 @@ describe("CW-019 customer entry contract (source-level)", () => {
     expect(source).toMatch(/找不到应用挂载节点/);
   });
 
+  it("管理端入口必须引入共享基础样式表 styles.css", () => {
+    // ADMIN-UI-AUDIT-20260911：CW-019 拆分双入口后，styles.css 只剩客户壳
+    // App.tsx 一处导入；管理端产物（dist-admin）随之缺失 .admin-shell 布局、
+    // 全局 input/button 规则和 --admin-* 设计令牌定义，页面级 admin-*.css
+    // 引用的这些变量全部落空，管理后台在产线以半裸样式渲染。源码层契约：
+    // 管理端挂载文件必须显式导入基础样式表，防止再回归。
+    const source = readCodeOnly("./admin-main.tsx");
+    expect(source).toMatch(/import\s+"\.\/styles\.css";/);
+  });
+
   it("管理端独立入口 HTML admin.html 存在且引用 admin-main.tsx", () => {
     const source = readSource("../admin.html");
     expect(source).toMatch(/admin-main\.tsx/);
