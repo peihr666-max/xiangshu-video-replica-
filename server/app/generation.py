@@ -5227,7 +5227,14 @@ def mark_task_submission_uncertain(
             "SELECT batch_id FROM generation_tasks WHERE id = %s",
             (task_id,),
         ).fetchone()
-        conn.execute(
+        # CW-030: only an in-flight task (SUBMITTING = provider call in
+        # flight, RUNNING = submitted/polling) may transition to
+        # SUBMISSION_UNCERTAIN. A late duplicate signal for an already
+        # uncertain/reconciled/replacement task must not transition anything
+        # and must not release the owner's slot a second time — that would
+        # let the same user run a second concurrent task (the mark-side twin
+        # of the P1-5 reconcile guard).
+        update = conn.execute(
             """
             UPDATE generation_tasks
             SET
@@ -5238,15 +5245,17 @@ def mark_task_submission_uncertain(
                 locked_by = NULL,
                 locked_until = NULL,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
+            WHERE id = %s AND status IN ('SUBMITTING', 'RUNNING')
+            RETURNING batch_id
             """,
             (provider_task_id, error_code, message, task_id),
-        )
+        ).fetchone()
         # The task leaves the runnable/running states here; its concurrency
         # slot must be released with the transition, or the user's cursor
         # stays pinned at 1 and no later task of theirs ever runs (M5 review
         # P1-2 — the expiry sweeper cannot reach it: no lease remains).
-        release_user_queue_slot_for_task(conn, task_id=task_id)
+        if update is not None:
+            release_user_queue_slot_for_task(conn, task_id=task_id)
         if row is not None:
             _refresh_batch_status_in_transaction(conn, batch_id=str(row["batch_id"]))
 

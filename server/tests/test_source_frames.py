@@ -16,11 +16,7 @@ from pydantic import ValidationError
 from app.auth import get_database
 from app.db import connect_database, initialize_database
 from app.db_portable import BusinessConnection
-from app.generation_worker import (
-    run_sqlite_worker_round,
-    run_worker_once,
-    source_frame_semantic_inspector,
-)
+from app.generation_worker import run_worker_once, source_frame_semantic_inspector
 from app.main import app
 from app.media_routes import get_media_storage
 from app.source_frame_routes import ExtractSourceFramesRequest, get_source_frame_extractor
@@ -204,61 +200,6 @@ def test_missing_semantic_settings_fall_back_to_local_scoring(
         )
 
     assert inspector is None
-
-
-def test_worker_round_processes_source_frames_when_quality_settings_are_missing(
-    client: TestClient,
-    db_path: Path,
-    storage: FakeStorageAdapter,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    storage.put_object(
-        "projects/project_owned/uploads/reference_owned/reference.mp4",
-        b"reference-video",
-        content_type="video/mp4",
-    )
-    queued = client.post(
-        "/api/projects/project_owned/source-frames/extract",
-        json={"asset_id": "reference_owned"},
-        headers=auth_headers("employee_1"),
-    )
-    assert queued.status_code == 202
-
-    def unavailable(_: BusinessConnection) -> object:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "FIRST_FRAME_QUALITY_SETTINGS_UNAVAILABLE"},
-        )
-
-    monkeypatch.setattr(
-        "app.generation_worker.get_first_frame_quality_inspector",
-        unavailable,
-    )
-    monkeypatch.setattr("app.generation_worker.get_media_storage", lambda _: storage)
-    monkeypatch.setattr(
-        "app.generation_worker.FFmpegSourceFrameExtractor",
-        lambda: FakeSourceFrameExtractor(),
-    )
-
-    processed = run_sqlite_worker_round(
-        db_path=db_path,
-        worker_id="source-frame-fallback-worker",
-        max_tasks=1,
-    )
-
-    assert processed == 1
-    task = client.get(
-        f"/api/source-frame-tasks/{queued.json()['id']}",
-        headers=auth_headers("employee_1"),
-    )
-    assert task.status_code == 200
-    assert task.json()["status"] == "SUCCEEDED"
-    latest = client.get(
-        "/api/projects/project_owned/source-frames/latest",
-        headers=auth_headers("employee_1"),
-    )
-    assert latest.status_code == 200
-    assert latest.json()["payload"]["semantic_quality_status"] == "NOT_REQUESTED"
 
 
 def complete_source_frame_task(

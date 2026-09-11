@@ -105,7 +105,14 @@ impl Registry {
             .0
             .iter_mut()
             .find(|item| item.url.as_deref() == Some(url) && item.started && !item.completed)?;
-        let success = success && path.as_deref() == Some(item.path.as_path());
+        // CW-023: the success rule is enforced at the state layer — the saved
+        // file must exist at the reserved destination and be non-empty — so
+        // the contract holds even if the event callback's own check drifts.
+        let success = success
+            && path.as_deref() == Some(item.path.as_path())
+            && path
+                .as_ref()
+                .is_some_and(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() > 0));
         item.completed = true;
         let result = FinishedDownload {
             download_id: item.id.clone(),
@@ -116,6 +123,15 @@ impl Registry {
         // Failed records remain URL tombstones, but cannot be used to reveal a path.
         if !success {
             item.started = false;
+            // CW-023: a failed download leaves a partial (or zero-byte) file
+            // at the user-approved destination — the WebView created/replaced
+            // exactly this path for this download, and the visible outcome is
+            // DOWNLOAD_FAILED, so remove the residue instead of leaving a
+            // corrupt playable-looking file behind. Best-effort: a locked
+            // file keeps the same failure outcome for manual recovery.
+            if path.as_deref() == Some(item.path.as_path()) {
+                let _ = std::fs::remove_file(&item.path);
+            }
         }
         item.finished = Some(result.clone());
         Some(result)
@@ -456,6 +472,17 @@ mod windows_dialog {
 mod tests {
     use super::*;
 
+    /// CW-023: a throwaway directory for fixtures that exercise the real
+    /// non-empty-file completion rule.
+    fn temp_download_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "video-replica-download-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp download dir");
+        dir
+    }
+
     #[test]
     fn suggested_filename_cannot_select_a_directory_or_executable() {
         assert_eq!(safe_filename("../a\\b:影片.exe"), "_a_b_影片.mp4");
@@ -496,9 +523,11 @@ mod tests {
     #[test]
     fn approved_download_is_one_use_and_only_completed_paths_can_be_revealed() {
         let mut registry = Registry::default();
-        let chosen = registry
-            .prepare(PathBuf::from("C:/Videos/one.mp4"))
-            .unwrap();
+        // CW-023: completion requires a real non-empty file at the reserved
+        // destination, so this fixture writes one.
+        let destination = temp_download_dir().join("one.mp4");
+        std::fs::write(&destination, b"video-bytes").unwrap();
+        let chosen = registry.prepare(destination.clone()).unwrap();
         let url = "blob:http://tauri.localhost/abc";
         assert!(registry.completed_path(&chosen.download_id).is_err());
         registry.bind(&chosen.download_id, url).unwrap();
@@ -510,6 +539,8 @@ mod tests {
             .finish(url, Some(PathBuf::from(&chosen.path)), true)
             .unwrap();
         assert!(result.success);
+        assert!(destination.exists(), "a successful download keeps its file");
+        let _ = std::fs::remove_file(&destination);
         assert_eq!(
             registry.completed_path(&chosen.download_id).unwrap(),
             PathBuf::from(chosen.path)
@@ -604,13 +635,85 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_download_cleans_up_its_partial_residue() {
+        let dir = temp_download_dir();
+        let destination = dir.join("film.mp4");
+        let mut registry = Registry::default();
+
+        // A failed download (webview-reported failure at the reserved
+        // destination) must not leave a corrupt playable-looking file.
+        std::fs::write(&destination, b"partial-bytes").expect("write partial");
+        let chosen = registry.prepare(destination.clone()).expect("prepare");
+        let url = "blob:http://tauri.localhost/residue";
+        registry.bind(&chosen.download_id, url).expect("bind");
+        registry.request(url).expect("request");
+        let result = registry
+            .finish(url, Some(destination.clone()), false)
+            .expect("finish");
+        assert!(!result.success);
+        assert!(
+            !destination.exists(),
+            "the partial residue of a failed download must be cleaned up"
+        );
+
+        // A zero-byte file is not a completed download either: the same
+        // cleanup applies when the report claims success with empty bytes.
+        std::fs::write(&destination, b"").expect("write empty");
+        let chosen = registry.prepare(destination.clone()).expect("prepare 2");
+        let url = "blob:http://tauri.localhost/empty";
+        registry.bind(&chosen.download_id, url).expect("bind 2");
+        registry.request(url).expect("request 2");
+        let result = registry
+            .finish(url, Some(destination.clone()), true)
+            .expect("finish 2");
+        assert!(!result.success);
+        assert!(
+            !destination.exists(),
+            "a zero-byte residue must be cleaned up as well"
+        );
+
+        // A successful download keeps its file exactly as saved.
+        std::fs::write(&destination, b"complete-video-bytes").expect("write complete");
+        let chosen = registry.prepare(destination.clone()).expect("prepare 3");
+        let url = "blob:http://tauri.localhost/complete";
+        registry.bind(&chosen.download_id, url).expect("bind 3");
+        registry.request(url).expect("request 3");
+        let result = registry
+            .finish(url, Some(destination.clone()), true)
+            .expect("finish 3");
+        assert!(result.success);
+        assert!(destination.exists(), "a successful download keeps its file");
+
+        // A path mismatch reports failure but must not delete unknown files.
+        let unrelated = dir.join("unrelated.txt");
+        std::fs::write(&unrelated, b"keep me").expect("write unrelated");
+        std::fs::write(&destination, b"again").expect("write again");
+        let chosen = registry.prepare(destination.clone()).expect("prepare 4");
+        let url = "blob:http://tauri.localhost/mismatch";
+        registry.bind(&chosen.download_id, url).expect("bind 4");
+        registry.request(url).expect("request 4");
+        let result = registry
+            .finish(url, Some(unrelated.clone()), true)
+            .expect("finish 4");
+        assert!(!result.success);
+        assert!(unrelated.exists(), "an unrelated path is never deleted");
+        assert!(destination.exists(), "a mismatched report deletes nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn finished_status_survives_missing_event_delivery() {
         let mut registry = Registry::default();
         assert!(registry.finished_status("unknown").is_none());
         for success in [true, false] {
-            let chosen = registry
-                .prepare(PathBuf::from("C:/Videos/one.mp4"))
-                .unwrap();
+            // CW-023: the success=true leg needs a real non-empty file at the
+            // reserved destination; the failed leg leaves the file missing.
+            let destination = temp_download_dir().join(format!("status-{success}.mp4"));
+            if success {
+                std::fs::write(&destination, b"video-bytes").unwrap();
+            }
+            let chosen = registry.prepare(destination.clone()).unwrap();
             let url = format!("blob:http://tauri.localhost/{success}");
             assert!(registry.finished_status(&chosen.download_id).is_none());
             registry.bind(&chosen.download_id, &url).unwrap();
@@ -619,6 +722,7 @@ mod tests {
             registry
                 .finish(&url, Some(PathBuf::from(&chosen.path)), success)
                 .unwrap();
+            let _ = std::fs::remove_file(&destination);
             let status = registry.finished_status(&chosen.download_id).unwrap();
             assert_eq!(status.download_id, chosen.download_id);
             assert_eq!(status.path, chosen.path);
