@@ -75,6 +75,13 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "cw059_billing_test",
         "cw059_task_test",
         "cw059_rbac_test",
+        # CW-043 audit implementation (Segment 4+): one dedicated database each
+        # for the 数据看板 analytics matrix (test_cw043_analytics_pg_matrix.py)
+        # and the 爆款导入 lease/attempt matrix (test_cw043_viral_import_pg.py).
+        # Both fill the ⚠️partial gaps CW043-PG-COVERAGE-MATRIX §5.1.1 #8/#20
+        # assigned to CW-043, reset per test and migrated to alembic head.
+        "cw043_analytics_test",
+        "cw043_viral_import_test",
         # CW-063 h3_extended_modes_enabled admin toggle: dedicated database
         # for the GET/PATCH /api/control/settings/h3-extended-modes route
         # tests (test_admin_h3_extended_modes.py), migrated to alembic head
