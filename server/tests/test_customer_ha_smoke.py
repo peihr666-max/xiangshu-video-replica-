@@ -89,7 +89,7 @@ def test_liveness_and_readiness_are_separate_endpoints(
     # reports the postgresql database label with local dev storage.
     monkeypatch.setenv(
         "VIDEO_REPLICA_DATABASE_URL",
-        "postgresql://testuser:testpass@localhost:5445/customer_v3_test",
+        os.environ.get("TEST_POSTGRESQL_URL", "postgresql://testuser:testpass@localhost:5433/customer_v3_test"),
     )
     from app.main import app
 
