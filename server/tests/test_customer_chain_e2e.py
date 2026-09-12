@@ -617,11 +617,8 @@ def test_customer_chain_second_device_conflict_switch_recharge(
     chain_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The device/session/money chain: pair a second device, its login hits
-    the 409 OTHER_DEVICE_ONLINE conflict while the first device is online,
-    the explicit switch displaces the first device (epoch bump), the old
-    session token fails the fenced write gate, and the top-up closes with
-    the signed ZPay callback (PAID + one CHARGE, idempotent on replay)."""
+    """Both devices stay online and share the same wallet. Recovery replaces
+    only the caller's old session; a verified callback credits the account once."""
     code = generate_activation_code()
     customer = _activated_customer(client, code=code, fingerprint="fp-chain-b", suffix="chain-b")
     first_session = _business_login(client, customer, "idem-login-chain-b")
@@ -661,7 +658,7 @@ def test_customer_chain_second_device_conflict_switch_recharge(
     assert second["slot_no"] == 2 and second["device_token"], second
     second_device_token = str(second["device_token"])
 
-    # --- Conflict: the second device's plain login is refused ---
+    # --- A second device can log in while the first remains online ---
     conflict = client.post(
         LOGIN_PATH,
         json={},
@@ -670,11 +667,11 @@ def test_customer_chain_second_device_conflict_switch_recharge(
             IDEMPOTENCY_KEY_HEADER: "idem-login-second-chain-b",
         },
     )
-    assert conflict.status_code == 409, conflict.text
-    assert conflict.json()["detail"]["code"] == "OTHER_DEVICE_ONLINE", conflict.text
-    assert conflict.json()["detail"]["online_slot_no"] == 1, conflict.text
+    assert conflict.status_code == 201, conflict.text
+    assert conflict.json()["session_epoch"] == 1
+    previous_second_session = conflict.json()["session_token"]
 
-    # --- Explicit switch: the user confirms the takeover ---
+    # --- Legacy switch recovers only the caller device ---
     switched = client.post(
         SWITCH_PATH,
         json={},
@@ -685,20 +682,24 @@ def test_customer_chain_second_device_conflict_switch_recharge(
     )
     assert switched.status_code == 201, switched.text
     switched_payload = switched.json()
-    # Epochs along the chain: activation session (1) → business login (2) →
-    # explicit switch (3). The switch always bumps the live session's epoch.
-    assert switched_payload["session_epoch"] == 3, switched_payload
+    assert switched_payload["session_epoch"] == 2, switched_payload
     assert switched_payload["device_id"] == second["device_id"], switched_payload
     new_session = str(switched_payload["session_token"])
 
-    # --- The displaced first session fails the fenced write gate ---
+    # --- The first device remains valid; only the old second token is fenced ---
     stale_write = client.post(
         PROJECTS_PATH,
         json={"name": "Stale Session Project"},
         headers=_bearer(first_session),
     )
-    assert stale_write.status_code == 401, stale_write.text
-    assert stale_write.json()["detail"]["code"] == "SESSION_REPLACED", stale_write.text
+    assert stale_write.status_code == 201, stale_write.text
+    replaced_write = client.post(
+        PROJECTS_PATH,
+        json={"name": "Expired second session"},
+        headers=_bearer(previous_second_session),
+    )
+    assert replaced_write.status_code == 401
+    assert replaced_write.json()["detail"]["code"] == "SESSION_REPLACED"
 
     # --- Controlled five-yuan acceptance: one named customer only ---
     monkeypatch.setenv(
@@ -757,16 +758,14 @@ def test_customer_chain_second_device_conflict_switch_recharge(
             (customer["user_id"],),
         ).fetchone()
         assert charge is not None and int(charge[0]) == 1
-        session_row = conn.execute(
-            "SELECT session_epoch, device_id FROM customer_session_state"
-        ).fetchone()
-        assert session_row is not None
-        assert int(session_row[0]) == 3, session_row  # activation(1) → login(2) → switch(3)
-        assert str(session_row[1]) == second["device_id"], session_row
+        sessions = conn.execute(
+            "SELECT device_id, session_epoch FROM customer_session_state"
+        ).fetchall()
+        assert dict(sessions) == {customer["device_id"]: 2, second["device_id"]: 2}
         switch_event = conn.execute(
             "SELECT 1 FROM customer_session_events WHERE reason = 'explicit_switch' LIMIT 1"
         ).fetchone()
-        assert switch_event is not None, "switch must be recorded as an explicit SWITCH event"
+        assert switch_event is None, "independent login never displaces another device"
 
     # --- Idempotent callback replay: still success, still one CHARGE ---
     replay = client.get(NOTIFY_PATH, params=params)

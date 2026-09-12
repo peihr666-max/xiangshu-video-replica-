@@ -122,7 +122,7 @@ def list_devices(
             total_row = conn.execute(
                 "SELECT COUNT(*) FROM customer_devices cd "
                 "JOIN users u ON u.id = cd.user_id "
-                "JOIN activation_codes ac ON ac.id = cd.activation_code_id "
+                "LEFT JOIN activation_codes ac ON ac.id = cd.activation_code_id "
                 f"{where}",
                 params,
             ).fetchone()
@@ -135,7 +135,7 @@ def list_devices(
                 " css.lease_until::timestamptz > clock_timestamp()) AS online "
                 "FROM customer_devices cd "
                 "JOIN users u ON u.id = cd.user_id "
-                "JOIN activation_codes ac ON ac.id = cd.activation_code_id "
+                "LEFT JOIN activation_codes ac ON ac.id = cd.activation_code_id "
                 "LEFT JOIN customer_session_state css ON css.device_id = cd.id "
                 f"{where} ORDER BY cd.bound_at DESC LIMIT %s OFFSET %s",
                 (*params, bounded_limit, bounded_offset),
@@ -161,7 +161,7 @@ def list_devices(
     items = [
         {
             "device_id": str(row[0]),
-            "activation_code_id": str(row[1]),
+            "activation_code_id": str(row[1]) if row[1] is not None else None,
             "user_id": str(row[2]),
             "slot_no": int(row[3]),
             "display_name": row[4],
@@ -171,7 +171,7 @@ def list_devices(
             "unbound_at": row[8],
             "revoked_at": row[9],
             "username": str(row[10]),
-            "activation_code": str(row[11]),
+            "activation_code": str(row[11]) if row[11] is not None else "",
             "last_heartbeat_at": row[12],
             "online": bool(row[13]),
         }

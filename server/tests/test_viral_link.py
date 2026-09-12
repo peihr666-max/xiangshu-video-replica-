@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +28,7 @@ from app.viral_link import (
     ResolvedViralLink,
     UrllibDouyidouHttpTransport,
     ViralLinkError,
+    normalize_supported_link,
 )
 from app.viral_media import UrlFetcher, ViralMediaError, ViralMediaResult
 
@@ -172,6 +174,70 @@ def test_douyidou_requires_a_canonical_native_video_id() -> None:
     )
     with pytest.raises(ViralLinkError) as failure:
         client.resolve("https://v.douyin.com/share/", purpose="replica")
+    assert failure.value.code == "VIRAL_LINK_NATIVE_ID_INVALID"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.xiaohongshu.com/explore/66e012345678901234abcdef",
+        "https://www.xiaohongshu.com/discovery/item/66e012345678901234abcdef?xsec_token=share",
+        "http://xhslink.com/a/share123",
+    ],
+)
+def test_xiaohongshu_link_resolves_to_its_native_platform(url: str) -> None:
+    transport = StubTransport(
+        json.dumps(
+            {
+                "code": 0,
+                "data": {
+                    "note_id": "66e012345678901234abcdef",
+                    "video": ["https://cdn.example/note.mp4"],
+                    "audio": ["https://cdn.example/note.mp3"],
+                    "title": "乡墅视频",
+                },
+            }
+        ).encode()
+    )
+    resolver = DouyidouLinkClient(app_id="a", app_secret="s", transport=transport)
+    result = resolver.resolve(f"分享视频 {url}。", purpose="replica")
+    assert result.platform == "xiaohongshu"
+    assert result.video_id == "66e012345678901234abcdef"
+    assert result.video_url == "https://cdn.example/note.mp4"
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://xiaohongshu.com.evil.example/explore/123",
+        "https://xhslink.com@evil.example/a/123",
+        "https://evil.example@xhslink.com/a/123",
+        "https://xhslink.com:8443/a/123",
+        "https://xhslink.com:invalid/a/123",
+    ],
+)
+def test_link_rejects_deceptive_hosts_and_nonstandard_authority(url: str) -> None:
+    with pytest.raises(ViralLinkError):
+        normalize_supported_link(url)
+
+
+@pytest.mark.parametrize("native_id", ["7345678901234567890", "../note", "", "not-a-note"])
+def test_xiaohongshu_rejects_missing_or_invalid_native_id(native_id: str) -> None:
+    transport = StubTransport(
+        json.dumps(
+            {
+                "code": 0,
+                "data": {
+                    "note_id": native_id,
+                    "video": ["https://cdn.example/note.mp4"],
+                },
+            }
+        ).encode()
+    )
+    resolver = DouyidouLinkClient(app_id="a", app_secret="s", transport=transport)
+    with pytest.raises(ViralLinkError) as failure:
+        resolver.resolve("https://xhslink.com/a/share", purpose="replica")
     assert failure.value.code == "VIRAL_LINK_NATIVE_ID_INVALID"
 
 
@@ -793,7 +859,7 @@ def test_invalid_downloaded_media_never_creates_source_project_or_asset(
         (
             "https://example.com/video/123",
             "VIRAL_LINK_PLATFORM_UNSUPPORTED",
-            "当前仅支持抖音视频链接，请上传 MP4 或 MOV 文件。",
+            "当前支持抖音和小红书视频链接，其他平台请上传 MP4 或 MOV 文件。",
         ),
     ],
 )
