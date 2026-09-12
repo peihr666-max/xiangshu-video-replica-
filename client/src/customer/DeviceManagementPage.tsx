@@ -23,7 +23,7 @@ export function DeviceManagementPage({
       <header className="device-management-page__header">
         <div>
           <h2 id="device-title">设备管理</h2>
-          <p>一个账号最多绑定 2 台设备，同时只允许 1 台设备在线。</p>
+          <p>设备数量不限，多台设备可以同时在线，互不影响。</p>
         </div>
         <span
           className={
@@ -93,7 +93,7 @@ export function DeviceManagementPage({
                   <p>这个位置还没有绑定设备。</p>
                   {onPairDevice ? (
                     <button onClick={onPairDevice} type="button">
-                      绑定第二台设备
+                      绑定其他设备
                     </button>
                   ) : null}
                 </div>
@@ -104,9 +104,7 @@ export function DeviceManagementPage({
       </div>
 
       <div className="device-management-page__footer">
-        <p>
-          发现陌生设备时请立即下线；解绑当前设备后，需要使用激活码重新绑定。
-        </p>
+        <p>发现陌生设备时请立即下线；解绑当前设备后，需要重新登录。</p>
         <button onClick={onRecharge} type="button">
           充值秒数
         </button>

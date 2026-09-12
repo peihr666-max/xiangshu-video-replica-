@@ -11,8 +11,11 @@ import {
   customerHeartbeat,
   customerLogin,
   customerLogout,
+  customerPasswordLogin,
+  customerRegister,
   customerSwitch,
 } from "../api";
+import type { AccountAccessInput } from "./AccountAccessPage";
 import {
   type CustomerScreen,
   customerScreenReducer,
@@ -136,6 +139,7 @@ export function useCustomerSession(
   /** Heartbeat/lease health while a session is live; null otherwise. */
   sessionRuntime: CustomerSessionRuntime | null;
   activate(input: CustomerActivationFormInput): Promise<void>;
+  loginWithPassword(input: AccountAccessInput): Promise<void>;
   retryLogin(): Promise<void>;
   /** The explicit takeover (FE-03): the user confirmed in the conflict dialog,
    * the server atomically displaces the other device's lease and mints a
@@ -464,6 +468,81 @@ export function useCustomerSession(
     [store, noteLease],
   );
 
+  const passwordAttemptRef = useRef<{
+    fingerprint: string;
+    key: string;
+  } | null>(null);
+  const registeredUsernameRef = useRef<string | null>(null);
+  const passwordPendingRef = useRef(false);
+  const loginWithPassword = useCallback(
+    async (input: AccountAccessInput) => {
+      if (passwordPendingRef.current) return;
+      passwordPendingRef.current = true;
+      setIsBusy(true);
+      try {
+        if (
+          input.mode === "register" &&
+          registeredUsernameRef.current !== input.username
+        ) {
+          await customerRegister(input.username, input.password);
+          registeredUsernameRef.current = input.username;
+        }
+        const body = {
+          username: input.username,
+          password: input.password,
+          device_fingerprint: await store.deviceInstanceId(),
+          device_platform: store.devicePlatform(),
+        };
+        // Keep only a SHA-256 request fingerprint in the retry slot, never the password.
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(JSON.stringify(body)),
+        );
+        const fingerprint = Array.from(new Uint8Array(digest), (b) =>
+          b.toString(16).padStart(2, "0"),
+        ).join("");
+        if (passwordAttemptRef.current?.fingerprint !== fingerprint) {
+          passwordAttemptRef.current = {
+            fingerprint,
+            key: newIdempotencyKey(),
+          };
+        }
+        const response = await customerPasswordLogin(
+          body,
+          passwordAttemptRef.current.key,
+        );
+        await store.saveActivation(
+          response.device_token,
+          response.session_token,
+        );
+        passwordAttemptRef.current = null;
+        registeredUsernameRef.current = null;
+        sessionTokenRef.current = response.session_token;
+        sessionGenerationRef.current += 1;
+        setSessionToken(response.session_token);
+        setUser({ userId: response.user_id, username: response.username });
+        setError(null);
+        setConflict(null);
+        noteLease(response.session_lease_expires_at);
+        window.history.replaceState(null, "", "/#studio/workbench");
+        dispatch({ type: "password-login-succeeded" });
+      } catch (cause) {
+        if (
+          cause instanceof CustomerApiError &&
+          cause.status &&
+          cause.status < 500
+        ) {
+          passwordAttemptRef.current = null;
+        }
+        throw cause;
+      } finally {
+        passwordPendingRef.current = false;
+        setIsBusy(false);
+      }
+    },
+    [store, noteLease],
+  );
+
   // A guard for concurrent retries: while a login attempt is in flight, further
   // clicks are ignored until the in-flight request completes. This avoids
   // duplicate login calls and keeps the UI state consistent.
@@ -698,6 +777,7 @@ export function useCustomerSession(
     user,
     sessionRuntime,
     activate,
+    loginWithPassword,
     retryLogin,
     switchSession,
     switchError,

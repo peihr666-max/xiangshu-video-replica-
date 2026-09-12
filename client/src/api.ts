@@ -5084,6 +5084,40 @@ export type CustomerActivateInput = {
   requestId?: string;
 };
 
+export type CustomerPasswordSession =
+  components["schemas"]["CustomerPasswordLoginResponse"];
+
+export async function customerRegister(
+  username: string,
+  password: string,
+): Promise<void> {
+  await customerJson("/api/customer/register", {
+    method: "POST",
+    body: { username, password },
+  });
+}
+
+export async function customerPasswordLogin(
+  input: {
+    username: string;
+    password: string;
+    device_fingerprint: string;
+    device_platform: string;
+  },
+  idempotencyKey: string,
+): Promise<CustomerPasswordSession> {
+  const { body } = await customerJson<CustomerPasswordSession>(
+    "/api/customer/login",
+    {
+      method: "POST",
+      body: input,
+      idempotencyKey,
+      shouldDispatchLifecycle: () => false,
+    },
+  );
+  return body;
+}
+
 /** Redeem an activation code: user + wallet + first device + first charge +
  * first session in one transaction (POST /api/customer/activate). */
 export async function customerActivate(
@@ -5482,7 +5516,7 @@ const VIRAL_LIST_TIMEOUT_MS = 120_000;
 const VIRAL_MEDIA_TIMEOUT_MS = 120_000;
 const VIRAL_STATISTICS_TIMEOUT_MS = 150_000;
 
-export type ViralPlatform = "douyin" | "wechat_channels";
+export type ViralPlatform = "douyin" | "wechat_channels" | "xiaohongshu";
 export type ViralSort = "hot" | "latest";
 
 export type ViralVideoItem = {

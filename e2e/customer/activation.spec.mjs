@@ -1,54 +1,31 @@
 import { expect, test } from "@playwright/test";
 import {
+  enterCustomerAccount,
   openCustomerDevices,
-  waitForCustomerWorkspace,
 } from "./workspace-navigation.mjs";
 
-const CODE_A = "XS04-ABCDEFG-HJKLMNP-QRSTVWX-YZ23456";
-const CODE_B = "XS04-2345678-9ABCDEF-GHJKLMN-PQRSTVW";
-
-test("customer activates a code and reaches the workspace", async ({
+test("public workbench gates operations and six-character registration returns home", async ({
   page,
 }) => {
-  await page.goto("/customer");
-
-  // First run shows the activation form (V1.4 brand heading).
+  await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "激活众墅之家 · AI 即创" }),
-  ).toBeVisible();
-
-  await page.getByLabel("激活码").fill(CODE_A);
-  await page.getByLabel("设备名称").fill("E2E Device A");
-  await page.getByRole("button", { name: "激活并进入工作台" }).click();
-
-  // The V1.4 workspace lands with the customer profile entry visible.
-  await waitForCustomerWorkspace(page);
+    page
+      .getByRole("main")
+      .getByRole("button", { name: "登录 / 注册", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "用户档案", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "登录账号" })).toBeVisible();
+  await enterCustomerAccount(page, "e2e_account_first");
 });
 
-test("activated workspace shows the first device in slot one and a wallet", async ({
+test("registered account exposes its device and the real wallet entry", async ({
   page,
 }) => {
-  await page.goto("/customer");
-
-  await page.getByLabel("激活码").fill(CODE_B);
-  await page.getByLabel("设备名称").fill("E2E Device A");
-  await page.getByRole("button", { name: "激活并进入工作台" }).click();
-
-  const deviceManagement = await openCustomerDevices(page);
-
-  // Two-slot device view: the first device occupies slot one, and the
-  // recharge action is reachable without any second main-code entry.
-  await expect(page.getByText("E2E Device A").first()).toBeVisible({
-    timeout: 20_000,
-  });
+  await enterCustomerAccount(page, "e2e_account_devices");
+  const devices = await openCustomerDevices(page);
   await expect(
-    deviceManagement.getByRole("button", { name: "充值秒数" }),
+    devices.getByText("设备数量不限，多台设备可以同时在线，互不影响。"),
   ).toBeVisible();
-
-  // The pairing entry for a second device is present. FE-04 review (F-07):
-  // it must be an in-page callback button, never an <a href> — a native
-  // navigation would hard-reload the Tauri webview and drop the state machine.
-  await expect(
-    deviceManagement.getByRole("button", { name: "绑定第二台设备" }),
-  ).toBeVisible();
+  await expect(devices.getByText("当前设备", { exact: true })).toBeVisible();
+  await expect(devices.getByRole("button", { name: "充值秒数" })).toBeVisible();
 });

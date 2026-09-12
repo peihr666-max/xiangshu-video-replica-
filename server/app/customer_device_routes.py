@@ -1688,6 +1688,8 @@ def reset_customer_activation_code(
             ) from None
         except SessionFencingError as exc:
             raise _http(401, exc.code, exc.message) from None
+        if session.activation_code_id is None:
+            raise _http(400, "ACTIVATION_CODE_NOT_APPLICABLE", "账号密码用户无需激活码。")
         scope = _reset_code_scope(session.activation_code_id)
         _lock_reset_code_scope(conn, scope)
         matched = next(

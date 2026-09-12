@@ -32,8 +32,8 @@ SCRYPT_P = 1
 SCRYPT_DKLEN = 32
 SCRYPT_SALT_BYTES = 16
 
-# Customer password policy (matches the administrator floor of 12 characters).
-MIN_PASSWORD_LENGTH = 12
+# Customer policy confirmed 2026-09-12; administrator policy stays independent.
+MIN_PASSWORD_LENGTH = 6
 MAX_PASSWORD_LENGTH = 128
 
 _SCRYPT_ALGORITHM = "scrypt"

@@ -34,6 +34,7 @@ from app.viral_decrypt import decrypt_head, is_encrypted_mp4
 from app.viral_tikhub import (
     PLATFORM_DOUYIN,
     PLATFORM_WECHAT,
+    PLATFORM_XIAOHONGSHU,
     ViralSourceClient,
     ViralSourceError,
     ViralVideo,
@@ -371,7 +372,7 @@ class ViralMediaPipeline:
     # -- 内部 -----------------------------------------------------------------
 
     def _resolve_kind(self, video: ViralVideo, prefer: str | None = None) -> tuple[str, str]:
-        if video.platform == PLATFORM_DOUYIN:
+        if video.platform in (PLATFORM_DOUYIN, PLATFORM_XIAOHONGSHU):
             if prefer == "video":
                 if video.play_url:
                     return "video", "video/mp4"
@@ -386,7 +387,7 @@ class ViralMediaPipeline:
         raise ViralMediaError("暂不支持的视频平台")
 
     def _download_content(self, video: ViralVideo, kind: str) -> bytes:
-        if video.platform == PLATFORM_DOUYIN:
+        if video.platform in (PLATFORM_DOUYIN, PLATFORM_XIAOHONGSHU):
             url = video.audio_url if kind == "audio" else video.play_url
             if not url:
                 raise ViralMediaError("该视频暂无可用的媒体地址")
