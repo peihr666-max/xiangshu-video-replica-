@@ -795,29 +795,26 @@ describe("CustomerWalletPanel", () => {
         return jsonResponse({ items: [], total: 0, limit: 20, offset: 0 });
       }),
     );
-    const realTimeout = window.setTimeout.bind(window);
-    let runNextPoll: (() => void) | undefined;
-    vi.spyOn(window, "setTimeout").mockImplementation(
-      (handler, delay, ...args) => {
-        if (delay === 2000 && typeof handler === "function") {
-          runNextPoll = handler as () => void;
-          return 0;
-        }
-        return realTimeout(handler, delay, ...args);
-      },
-    );
-    render(
+    vi.useFakeTimers();
+    const view = render(
       <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
     );
-    expect(await screen.findByText("查询订单暂时失败")).toBeInTheDocument();
-    expect(runNextPoll).toBeTypeOf("function");
-    await act(async () => {
-      runNextPoll?.();
-    });
-    expect(poll).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText("查询订单暂时失败")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("支付结果确认中，请完成支付后返回本页。"),
-    ).toBeInTheDocument();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText("查询订单暂时失败")).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(poll).toHaveBeenCalledTimes(2);
+      expect(screen.queryByText("查询订单暂时失败")).not.toBeInTheDocument();
+      expect(
+        screen.getByText("支付结果确认中，请完成支付后返回本页。"),
+      ).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 });
