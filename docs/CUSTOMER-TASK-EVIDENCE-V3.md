@@ -1203,3 +1203,10 @@ AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门
 ## FIX-TESTREADY-20260912 / 自动化测试前置
 
 AUTOMATED_VERIFIED（本地）；独立只读 review_w13 PASS；完整本地质量门在 a44672a（已整合主干 cd8bccf）通过：后端 2957 passed、1 个原有 TLS 跳过；前端 1350 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 全部通过。PR、当前提交远程 CI 和合并待完成；产品文件未改动，F06另行发现的产品竞态未在此修复。人工联合调试全部留第二部分。[证据](evidence/FIX-TESTREADY-20260912.md)。
+
+
+## W19 主干前置合并与第二部分隔离联调补充
+
+2026-09-13 最新记录：PR #88 已以820c3d8合入main，本任务整合为8cca2e1。独立只读review_w13确认Worker实现无回退、W13认证及TESTREADY与main一致；认领记录“尚无PR”已修正。新主干相关前端142 passed及secret/Biome/TypeScript通过，后端认证/Worker/发布143 passed（W19-testready-{frontend,backend}.log）。首次专项因新建数据库名未列入仓库白名单而拒绝，64 passed/79 setup errors的环境失败日志保留；使用同一独享新容器内已登记customer_v3_test后通过，未修改测试白名单。完整门仍对应此前记录的实际基线，PR #87当前门禁待更新提交。
+
+用户授权第二部分后，真实四generation CLI并发启动使用同一逻辑标签，4个实例ID均唯一，均PG就绪并--once退出0；真实publish CLI在30秒空闲中收到SIGTERM后0.214秒退出0，PG连接恢复基线0。3项进程检查通过，证据在仓库上级 outputs/remediation-20260912/joint-round2/w19/。首次缺COS配置时4实例失败记录保留；后续仅写合成配置、空队列验证，没有调用供应商或真实平台。不能据此声明实际平台探测、带任务租约恢复、生产编排或容量通过。
