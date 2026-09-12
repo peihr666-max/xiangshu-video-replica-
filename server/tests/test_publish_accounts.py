@@ -60,7 +60,7 @@ from app.db_portable import BusinessConnection
 from app.main import app
 from app.permissions import AuditedSecurityDenial, persist_security_denial
 from app.publish import claim_account_verify_work, finalize_account_verify
-from app.settings import LOCAL_KEYSTORE_DISABLED_ENV, SETTINGS_KEY_ENV
+from app.settings import SETTINGS_KEY_ENV
 
 CW068_TEST_DB = "cw068_publish_accounts_test"
 
@@ -291,7 +291,6 @@ def lane_env(cw068_dsn: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     close_pg_pool()
     monkeypatch.setenv(DATABASE_URL_ENV, cw068_dsn)
     monkeypatch.setenv(SETTINGS_KEY_ENV, _TEST_KEY)
-    monkeypatch.setenv(LOCAL_KEYSTORE_DISABLED_ENV, "1")
     yield cw068_dsn
     close_pg_pool()
 

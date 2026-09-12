@@ -1508,7 +1508,7 @@ def test_api_lifespan_fails_closed_on_sqlite_lane_in_customer_production() -> No
     env = _clean_production_env()
     env[DATABASE_URL_ENV] = "sqlite:///data/app.db"
     with _env(**env):
-        with pytest.raises(RuntimeError, match="requires PostgreSQL"):
+        with pytest.raises(RuntimeError, match="PostgreSQL is required"):
             with TestClient(real_app):
                 pass
 
@@ -1523,7 +1523,9 @@ def test_api_lifespan_fails_closed_on_missing_dsn_in_customer_production() -> No
     env = _clean_production_env()
     env[DATABASE_URL_ENV] = ""
     with _env(**env):
-        with pytest.raises(RuntimeError, match="customer production requires PostgreSQL"):
+        # CW-042-b unified wording: the missing-DSN refusal is the same in
+        # every environment now that the SQLite lane is retired.
+        with pytest.raises(RuntimeError, match="PostgreSQL is required"):
             with TestClient(real_app):
                 pass
 
@@ -1541,15 +1543,19 @@ def test_api_lifespan_fails_closed_on_postgres_without_tls_in_customer_productio
                 pass
 
 
-def test_api_lifespan_tolerates_internal_lane_without_database_env() -> None:
-    """Regression lock: the new lifespan check must not break the internal /
-    test lane that sets no database environment at all (the legacy lane
-    resolves per-request; only the customer boundary fails closed here).
+def test_api_lifespan_fails_closed_on_missing_dsn_in_every_environment() -> None:
+    """CW-042-b flip: the internal/desktop SQLite lane is physically retired,
+    so a missing DATABASE_URL now fails the lifespan in EVERY environment
+    (previously tolerated outside customer production; the per-request
+    DB_PATH channel no longer exists)."""
+    import asyncio
+    from unittest.mock import Mock
 
-    CW-025 后 internal lane（DATABASE_URL_ENV 未设置或为 sqlite://）直接通过，
-    由请求级别的 customer_fence 解析数据库（DB_PATH 通道）。
-    """
-    from app.main import app as real_app
+    from app.main import _lifespan
+
+    async def run_lifespan() -> None:
+        async with _lifespan(Mock()):
+            pass
 
     with _env(
         **{
@@ -1558,8 +1564,8 @@ def test_api_lifespan_tolerates_internal_lane_without_database_env() -> None:
             "VIDEO_REPLICA_CUSTOMER_PRODUCTION": "",
         }
     ):
-        with TestClient(real_app):
-            pass
+        with pytest.raises(RuntimeError, match="the internal SQLite lane is retired"):
+            asyncio.run(run_lifespan())
 
 
 def test_api_lifespan_fails_closed_on_unsupported_scheme_in_customer_production() -> None:

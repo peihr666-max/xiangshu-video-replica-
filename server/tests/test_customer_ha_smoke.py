@@ -85,6 +85,12 @@ def test_liveness_and_readiness_are_separate_endpoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    # CW-042-b: the lifespan requires a PG DSN in every environment; /ready
+    # reports the postgresql database label with local dev storage.
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_DATABASE_URL",
+        "postgresql://testuser:testpass@localhost:5445/customer_v3_test",
+    )
     from app.main import app
 
     with TestClient(app) as client:
@@ -95,7 +101,7 @@ def test_liveness_and_readiness_are_separate_endpoints(
         assert client.get("/ready").json() == {
             "status": "ready",
             "service": "video-replica-api",
-            "database": "internal",
+            "database": "postgresql",
             "storage": "local",
         }
 

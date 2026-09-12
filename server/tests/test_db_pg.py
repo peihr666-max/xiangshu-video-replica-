@@ -114,19 +114,18 @@ def test_resolve_rejects_db_path_all_environments() -> None:
 def test_business_write_without_snapshot_never_falls_back_from_pg(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """CW-042-b: the SQLite fallback lane is gone — the fence refuses a
+    snapshot-less write with 503 regardless of any leftover DB_PATH."""
     from app import customer_fence
 
     monkeypatch.setenv(DATABASE_URL_ENV, PG_DSN)
     monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(tmp_path / "legacy.db"))
-    connect_sqlite = Mock()
-    monkeypatch.setattr(customer_fence, "connect_database", connect_sqlite)
 
     with pytest.raises(HTTPException) as error:
         with customer_fence.BusinessDb(None, None, None).write():
             pytest.fail("A PG writer requires a customer session snapshot")
     assert error.value.status_code == 503
     assert error.value.detail["code"] == "DATABASE_NOT_CONFIGURED"
-    connect_sqlite.assert_not_called()
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
@@ -149,6 +148,8 @@ def test_customer_snapshot_pg_pool_failure_is_fail_closed(
 def test_business_read_pg_failure_does_not_fall_back_to_sqlite(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error_type: type[Exception]
 ) -> None:
+    """CW-042-b: the SQLite read lane is gone — a PG pool failure propagates
+    instead of falling back, no matter what DB_PATH says."""
     from app import customer_fence, db_pg
 
     monkeypatch.setenv(DATABASE_URL_ENV, PG_DSN)
@@ -156,12 +157,9 @@ def test_business_read_pg_failure_does_not_fall_back_to_sqlite(
     unavailable_pool = Mock(side_effect=error_type("PG failed"))
     monkeypatch.setattr(customer_fence, "get_pg_pool", unavailable_pool)
     monkeypatch.setattr(db_pg, "get_pg_pool", unavailable_pool)
-    sqlite_connect = Mock()
-    monkeypatch.setattr(customer_fence, "connect_database", sqlite_connect)
 
     with pytest.raises(error_type, match="PG failed"):
         next(customer_fence.get_business_read_conn())
-    sqlite_connect.assert_not_called()
 
 
 def test_resolve_rejects_unsupported_scheme() -> None:
@@ -1257,8 +1255,9 @@ def test_pg_lane_has_no_mid_transaction_commit_call_sites() -> None:
 
     行为测试只能覆盖跑到的路径，而 84 处 PG 构造点分布在 10 个模块里。
     因此把不变量钉在源码层面：任何新增的 .raw.commit() / .raw.rollback()
-    都必须位于门面 db_portable.py 内部（且被 SQLiteBackend 分支守卫，
-    已由上面的 spy 用例证明），否则本用例失败并列出具体调用点。
+    都必须位于门面 db_portable.py 内部（历史上有 SQLiteBackend 分支守卫，
+    CW-042-b 退役 SQLite lane 后门面仅余 PG 路径，提交权仍只属于外层
+    pg_transaction），否则本用例失败并列出具体调用点。
     """
     offenders = [
         site for site in _scan_app_sources(_APP_PATTERN) if not site.startswith("db_portable.py:")

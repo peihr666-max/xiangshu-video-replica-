@@ -28,7 +28,6 @@ from app.auth import (
 )
 from app.bootstrap import is_customer_production
 from app.customer_fence import BusinessDbDep
-from app.db import connect_database
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media import storage_key_from_uri
@@ -213,19 +212,7 @@ def _validate_character_cache_grant(
             persist_security_denial(exc)
             raise
         return
-    db_path = os.environ.get("VIDEO_REPLICA_DB_PATH", "").strip()
-    if not db_path:
-        raise HTTPException(status_code=503, detail={"code": "DATABASE_NOT_CONFIGURED"})
-    conn = BusinessConnection.sqlite(connect_database(Path(db_path)))
-    try:
-        validate_signed_asset_grant(
-            conn,
-            user_id=user_id,
-            asset_id=asset_id,
-            session_epoch=session_epoch,
-        )
-    finally:
-        conn.close()
+    raise HTTPException(status_code=503, detail={"code": "DATABASE_NOT_CONFIGURED"})
 
 
 def _read_verified_character_cache_source(

@@ -63,16 +63,12 @@ _FORBIDDEN_PACKAGE_MARKERS = (
 
 # Registered reverse consumers of the historical in-app SQLite surfaces
 # (CW-060 inventory; CW-042 prunes the list when the lane exits).
+# CW-042-b retired the SQLite business runtime: the eight runtime consumers
+# were cut, and app.db survives only inside the CW-060 operator closure
+# (app.backup imports connect_database for the historical backup tool).
 _APP_DB_CONSUMERS = frozenset(
     {
-        "server/app/auth.py",
         "server/app/backup.py",
-        "server/app/bootstrap.py",
-        "server/app/customer_fence.py",
-        "server/app/internal_accounts.py",
-        "server/app/media_routes.py",
-        "server/app/rbac_routes.py",
-        "server/app/viral_routes.py",
     }
 )
 _APP_BACKUP_CONSUMERS = frozenset({"server/scripts/sqlite_to_postgres.py"})

@@ -62,7 +62,6 @@ jobs:
               - 'client/**'
               - 'package.json'
               - 'package-lock.json'
-              - 'packaging_tools/**'
               - '.github/workflows/ci.yml'
             frontend:
               - 'client/**'

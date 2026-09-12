@@ -791,6 +791,10 @@ def test_cors_preflight_permits_idempotency_headers(monkeypatch: pytest.MonkeyPa
     from app.main import app as main_app
 
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_DATABASE_URL",
+        "postgresql://testuser:testpass@localhost:5445/customer_v3_test",
+    )
     with TestClient(main_app) as main_client:
         preflight = main_client.options(
             ACTIVATE_PATH,

@@ -288,62 +288,85 @@ def test_customer_production_flag_still_refuses_internal_bearer(
 
 
 # ---------------------------------------------------------------------------
-# Class 2 — the legacy SQLite lane is out of CW-026's scope and still works
+# Class 3 — read owner: a customer session reads only its own rows
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_sqlite_lane_keeps_internal_and_dev_identity(
-    route_state: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Scope guard: CW-026 converges the PG lane only. The legacy internal
-    desktop lane (SQLite) keeps its auth until CW-021/CW-040/CW-041 exit it,
-    so this test fails if the convergence accidentally reached into it."""
-    from app.db import initialize_database
+def _activate_customer(client: TestClient, dsn: str, *, suffix: str) -> dict:
+    code = FIRST_CODE if suffix == "a" else FIRST_CODE.replace("AAAAAAA", "AAAAAAB")
+    _seed_issuable_code(dsn, code, code_id=f"code-{suffix}", batch_id=f"batch-{suffix}")
+    response = client.post(
+        ACTIVATE_PATH,
+        json={
+            "activation_code": code,
+            "device_fingerprint": f"fp-{suffix}",
+            "device_name": f"Device {suffix}",
+            "device_platform": "windows",
+        },
+        headers={IDEMPOTENCY_KEY_HEADER: f"idem-{suffix}"},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
-    db_path = tmp_path / "cw026-legacy.db"
-    with initialize_database(db_path) as conn:
+
+def _bearer(token: str) -> dict[str, str]:
+    return {AUTHORIZATION_HEADER: f"Bearer {token}"}
+
+
+def _wallet_of_actor(client: TestClient, token: str) -> dict:
+    response = client.get("/api/wallet", headers=_bearer(token))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+# ---------------------------------------------------------------------------
+def _seed_issuable_code(dsn: str, code: str, *, code_id: str, batch_id: str) -> None:
+    with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(
-            "INSERT INTO users (id, username, display_name, role) "
-            "VALUES ('employee_1', 'employee_1', 'Employee One', 'employee')"
+            "INSERT INTO activation_code_batches "
+            "(id, name, face_value_fen, unit_price_fen_snapshot, credits_snapshot, "
+            "quantity, activation_expires_at, status, created_by_user_id) "
+            f"VALUES ('{batch_id}', 'batch-{batch_id}', 1500, 1000, 100, 1, "
+            f"'{FUTURE_EXPIRY}', 'OPEN', 'admin_u')"
         )
-    monkeypatch.delenv(DATABASE_URL_ENV, raising=False)
-    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(db_path))
-    monkeypatch.setenv("VIDEO_REPLICA_AUTH_MODE", "development")
-    monkeypatch.setenv("VIDEO_REPLICA_ALLOW_DEV_IDENTITY_HEADER", "1")
-    client = TestClient(_probe_app())
-
-    dev = client.get("/whoami", headers={"X-Dev-User-Id": "employee_1"})
-
-    assert dev.status_code == 200, dev.text
-    assert dev.json() == {"id": "employee_1", "role": "employee"}
-
-    monkeypatch.delenv("VIDEO_REPLICA_DESKTOP_USER_ID", raising=False)
-    monkeypatch.setenv("VIDEO_REPLICA_AUTH_MODE", "internal")
-    import sqlite3
-
-    raw_token = "cw026-legacy-internal-" + secrets.token_urlsafe(24)
-    digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-    with sqlite3.connect(db_path) as conn:
+        digest = compute_code_digest(code, key=TEST_KEY.encode("utf-8"))
         conn.execute(
-            "INSERT INTO users (id, username, display_name, role) "
-            "VALUES ('internal_admin_u', 'internal_admin_u', 'Internal Admin', 'admin') "
-            "ON CONFLICT (id) DO NOTHING"
-        )
-        conn.execute(
-            "INSERT INTO internal_access_tokens (id, user_id, token_digest) "
-            "VALUES ('cw026-legacy-token', 'internal_admin_u', ?)",
+            "INSERT INTO activation_codes "
+            "(id, batch_id, code_digest, digest_key_version, masked_code, "
+            "status, issued_at) "
+            f"VALUES ('{code_id}', '{batch_id}', %s, 1, 'XS04-****', "
+            "'ISSUED', '2026-01-01T00:00:00+00:00')",
             (digest,),
         )
-    internal = client.get("/whoami", headers={"Authorization": f"Bearer {raw_token}"})
-
-    assert internal.status_code == 200, internal.text
-    assert internal.json() == {"id": "internal_admin_u", "role": "admin"}
 
 
-# ---------------------------------------------------------------------------
-# The retained business app (read-owner + fencing + idempotent replay)
+def _activate_customer(client: TestClient, dsn: str, *, suffix: str) -> dict:
+    code = FIRST_CODE if suffix == "a" else FIRST_CODE.replace("AAAAAAA", "AAAAAAB")
+    _seed_issuable_code(dsn, code, code_id=f"code-{suffix}", batch_id=f"batch-{suffix}")
+    response = client.post(
+        ACTIVATE_PATH,
+        json={
+            "activation_code": code,
+            "device_fingerprint": f"fp-{suffix}",
+            "device_name": f"Device {suffix}",
+            "device_platform": "windows",
+        },
+        headers={IDEMPOTENCY_KEY_HEADER: f"idem-{suffix}"},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {AUTHORIZATION_HEADER: f"Bearer {token}"}
+
+
+def _wallet_of_actor(client: TestClient, token: str) -> dict:
+    response = client.get("/api/wallet", headers=_bearer(token))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -408,58 +431,6 @@ def customer_app(route_state: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[
 def client(customer_app: FastAPI) -> Iterator[TestClient]:
     with TestClient(customer_app) as test_client:
         yield test_client
-
-
-def _seed_issuable_code(dsn: str, code: str, *, code_id: str, batch_id: str) -> None:
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute(
-            "INSERT INTO activation_code_batches "
-            "(id, name, face_value_fen, unit_price_fen_snapshot, credits_snapshot, "
-            "quantity, activation_expires_at, status, created_by_user_id) "
-            f"VALUES ('{batch_id}', 'batch-{batch_id}', 1500, 1000, 100, 1, "
-            f"'{FUTURE_EXPIRY}', 'OPEN', 'admin_u')"
-        )
-        digest = compute_code_digest(code, key=TEST_KEY.encode("utf-8"))
-        conn.execute(
-            "INSERT INTO activation_codes "
-            "(id, batch_id, code_digest, digest_key_version, masked_code, "
-            "status, issued_at) "
-            f"VALUES ('{code_id}', '{batch_id}', %s, 1, 'XS04-****', "
-            "'ISSUED', '2026-01-01T00:00:00+00:00')",
-            (digest,),
-        )
-
-
-def _activate_customer(client: TestClient, dsn: str, *, suffix: str) -> dict:
-    code = FIRST_CODE if suffix == "a" else FIRST_CODE.replace("AAAAAAA", "AAAAAAB")
-    _seed_issuable_code(dsn, code, code_id=f"code-{suffix}", batch_id=f"batch-{suffix}")
-    response = client.post(
-        ACTIVATE_PATH,
-        json={
-            "activation_code": code,
-            "device_fingerprint": f"fp-{suffix}",
-            "device_name": f"Device {suffix}",
-            "device_platform": "windows",
-        },
-        headers={IDEMPOTENCY_KEY_HEADER: f"idem-{suffix}"},
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-def _bearer(token: str) -> dict[str, str]:
-    return {AUTHORIZATION_HEADER: f"Bearer {token}"}
-
-
-def _wallet_of_actor(client: TestClient, token: str) -> dict:
-    response = client.get("/api/wallet", headers=_bearer(token))
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-# ---------------------------------------------------------------------------
-# Class 3 — read owner: a customer session reads only its own rows
-# ---------------------------------------------------------------------------
 
 
 def test_customer_session_reads_resolve_to_session_owner_only(

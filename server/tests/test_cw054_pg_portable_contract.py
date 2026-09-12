@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -657,25 +656,19 @@ class TestConstraintExceptionMappingPGLane:
             )
         assert exc_info.value.sqlstate == NOT_NULL_VIOLATION
 
-    def test_mapped_error_is_catchable_as_either_lanes_integrity_error(
+    def test_mapped_error_is_catchable_as_the_pg_lanes_integrity_error(
         self, pg_business: BusinessConnection
     ) -> None:
-        """The whole point of the portable type: callers that catch
-        ``sqlite3.IntegrityError``, callers that catch the broader
-        ``sqlite3.Error`` (app/source_frames.py:538 — which silently missed PG
-        failures) and callers that catch ``psycopg.IntegrityError`` all reach
-        the same handler, without any call-site rewrite."""
-        with pytest.raises(sqlite3.IntegrityError):
+        """CW-042-b: the dual inheritance (sqlite3 + psycopg) was transitional
+        and is retired with the SQLite lane — the mapped error is now a pure
+        ``psycopg.IntegrityError``, so every existing
+        ``except psycopg.IntegrityError`` handler keeps working unchanged."""
+        with pytest.raises(psycopg.IntegrityError):
             pg_business.execute(
                 "INSERT INTO cw054_contract (id, owner) VALUES (%s, %s)", ("k4", "")
             )
         pg_business.raw.rollback()
-        with pytest.raises(sqlite3.Error):
-            pg_business.execute(
-                "INSERT INTO cw054_contract (id, owner) VALUES (%s, %s)", ("k5", "")
-            )
-        pg_business.raw.rollback()
-        with pytest.raises(psycopg.IntegrityError):
+        with pytest.raises(IntegrityConstraintError):
             pg_business.execute(
                 "INSERT INTO cw054_contract (id, owner) VALUES (%s, %s)", ("k6", "")
             )

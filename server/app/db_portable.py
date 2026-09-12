@@ -7,11 +7,10 @@ internal SQLite desktop lane runs the *same* SQL through a bounded
 translation layer — exactly one SQL source, no dual variants (the
 single-implementation red line).
 
-- ``translate_to_sqlite`` — a fail-closed translator over the bounded set of
   dialect differences. Anything it does not recognise raises ``ValueError``
   rather than silently passing through: the desktop lane must never run SQL
   the translator has not vetted.
-- ``SQLiteBackend`` / ``PostgresBackend`` — execute() wrappers.
+- ``PostgresBackend`` — the execute() wrapper.
 - ``BusinessConnection`` — the uniform facade the business services see:
   ``execute`` / ``transaction`` / ``commit`` / ``rollback`` with backend
   dispatch, plus ``.raw`` for the storage/ffprobe adapters and ``.ctx`` for
@@ -21,176 +20,12 @@ single-implementation red line).
 from __future__ import annotations
 
 import json
-import re
-import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any, Protocol, cast
 
 import psycopg
-
-# ---------------------------------------------------------------------------
-# Translation
-# ---------------------------------------------------------------------------
-
-_INTERVAL_RE = re.compile(r"""now\s*\(\s*\)\s*(?P<op>[+-])\s*interval\s*'(?P<body>[^']+)'""")
-
-
-def _translate_interval(match: re.Match[str]) -> str:
-    """``now() + interval '60 seconds'`` → ``datetime('now', '+60 seconds')``.
-
-    The interval body is a duration like ``60 seconds`` / ``2 days``; the
-    leading sign on the SQLite modifier mirrors the operator.
-    """
-    body = match.group("body").strip()
-    sign = "+" if match.group("op") == "+" else "-"
-    return f"datetime('now', '{sign}{body}')"
-
-
-def _consume_trailing_identifier(out: list[str]) -> str | None:
-    """Pop the identifier at the tail of the translated output.
-
-    The streaming translator appends each identifier character as its own
-    element, so the tail of ``out`` is the identifier's characters in order.
-    Used by the ``::timestamptz`` rule to wrap a bare or table-qualified
-    column reference with SQLite's ``datetime()`` (see ``translate_to_sqlite``).
-    Returns None when the tail is not a plain identifier (a ``?`` parameter or
-    an expression), in which case the cast is simply dropped as before.
-    """
-    translated = "".join(out)
-    match = re.search(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$", translated)
-    if match is None:
-        return None
-    out[:] = [translated[: match.start()]]
-    return match.group()
-
-
-def translate_to_sqlite(sql: str) -> str:
-    """Translate PG-canonical SQL to SQLite over the bounded dialect set.
-
-    Rules (source SQL is always PG-canonical; the translator only *degrades*
-    to SQLite for the desktop lane):
-
-    - ``%s`` placeholder → ``?`` (outside string literals / comments);
-    - ``FOR UPDATE [SKIP LOCKED]`` → removed (SQLite is single-writer and
-      ``BEGIN IMMEDIATE`` already serialises writes);
-    - ``now() [+|-] interval '<dur>'`` → ``datetime('now', '<+|-dur>')``;
-    - ``::type`` cast → removed (the source must spell portable casts with
-      ``CAST(x AS T)``; a non-plain cast raises ``ValueError``).
-
-    Fail-closed: an unhandled Postgres cast or any ``%`` run the translator
-    cannot account for raises ``ValueError`` instead of silently passing
-    SQLite a query it may mis-execute.
-    """
-    out: list[str] = []
-    i, n = 0, len(sql)
-    while i < n:
-        ch = sql[i]
-        # --- quoted / commented regions pass through untouched ---
-        if ch == "'":
-            # A string literal passes through verbatim. An unterminated
-            # literal is a source bug — fail closed instead of mis-translating
-            # (an unguarded ``end == -1`` previously looped forever).
-            close = sql.find("'", i + 1)
-            while close != -1 and close + 1 < n and sql[close + 1] == "'":
-                # '' is an escaped quote inside the literal — keep scanning.
-                close = sql.find("'", close + 2)
-            if close == -1:
-                raise ValueError(f"unterminated string literal in SQL: {sql!r}")
-            out.append(sql[i : close + 1])
-            i = close + 1
-            continue
-        if ch == '"':
-            end = sql.find('"', i + 1)
-            if end == -1:
-                raise ValueError(f"unterminated double-quoted identifier in SQL: {sql!r}")
-            out.append(sql[i : end + 1])
-            i = end + 1
-            continue
-        if sql.startswith("--", i):
-            end = sql.find("\n", i)
-            if end == -1:
-                out.append(sql[i:])
-                break
-            out.append(sql[i : end + 1])
-            i = end + 1
-            continue
-        if sql.startswith("/*", i):
-            end = sql.find("*/", i + 2)
-            if end == -1:
-                raise ValueError(f"unterminated block comment in SQL: {sql!r}")
-            out.append(sql[i : end + 2])
-            i = end + 2
-            continue
-        # --- normal region ---
-        if ch == "%" and sql.startswith("%s", i):
-            out.append("?")
-            i += 2
-            continue
-        if ch == "%":
-            # A lone '%' (modulo) is fine; a '%s'-shaped run that reached here
-            # with a format we don't know must not be silently mis-executed.
-            if i + 1 < n and sql[i + 1] in "sdiuxfg":
-                raise ValueError(f"unhandled placeholder style in SQL: {sql[i : i + 2]!r}")
-            out.append(ch)
-            i += 1
-            continue
-        if ch == ":" and sql.startswith("::", i):
-            m = re.match(r"::[A-Za-z_][A-Za-z0-9_]*", sql[i:])
-            if m is None:
-                raise ValueError(f"unhandled cast in SQL near {sql[i : i + 12]!r}")
-            # A parameterised type (numeric(10,2), varchar(20), …) is not a
-            # plain cast and must never be silently dropped.
-            if i + m.end() < n and sql[i + m.end()] == "(":
-                raise ValueError(f"unhandled parameterised cast in SQL near {sql[i : i + 16]!r}")
-            if m.group() == "::timestamptz":
-                # ident::timestamptz → datetime(ident), and %s::timestamptz →
-                # datetime(?): SQLite has no casts and the ISO-8601 text lives
-                # in TEXT columns, so a timestamp comparison must parse both
-                # sides — datetime() accepts every storage format (SQLite
-                # ``datetime('now', ...)`` output and Python ``.isoformat()``),
-                # matching the PG cast semantics regardless of which writer
-                # produced the column (T25 fair queue; the desktop lane
-                # compares by parsing, never by string order).
-                ident = _consume_trailing_identifier(out)
-                if ident is not None:
-                    out.append(f"datetime({ident})")
-                elif out and out[-1] == "?":
-                    out[-1] = "datetime(?)"
-                i += m.end()
-                continue
-            i += m.end()
-            continue
-        if sql[i : i + 10].upper() == "FOR UPDATE":
-            # Match "FOR UPDATE" / "FOR UPDATE SKIP LOCKED" as a standalone
-            # clause (the session-row lock the PG lane relies on; SQLite's
-            # single-writer BEGIN IMMEDIATE covers the same serialisation).
-            skip = re.match(r"(?i)FOR UPDATE(?:\s+SKIP LOCKED)?", sql[i:])
-            if skip:
-                # Drop the whitespace that preceded the clause so no dangling
-                # space survives the removal.
-                while out and out[-1].isspace():
-                    out.pop()
-                i += skip.end()
-                continue
-        if sql[i : i + 3].upper() == "NOW":
-            m = _INTERVAL_RE.match(sql[i:])
-            if m:
-                out.append(_translate_interval(m))
-                i += m.end()
-                continue
-            if sql[i + 3 : i + 5] == "()":
-                # Bare ``now()`` (no interval): SQLite has no now() function;
-                # datetime('now') is the UTC current time in the same textual
-                # shape every SQLite timestamp writer produces (T25).
-                out.append("datetime('now')")
-                i += 5
-                continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
 
 # ---------------------------------------------------------------------------
 # Backends
@@ -213,11 +48,12 @@ class _BusinessCursor(Protocol):
     def rowcount(self) -> int: ...
 
 
-class IntegrityConstraintError(sqlite3.IntegrityError, psycopg.IntegrityError):
+class IntegrityConstraintError(psycopg.IntegrityError):
     """A constraint violation catchable on *both* lanes (CW-054).
 
-    The desktop SQLite lane raises ``sqlite3.IntegrityError`` and the business
-    callers catch that — sometimes through the broader ``sqlite3.Error``, which
+    Historical note: the retired desktop SQLite lane raised
+    ``sqlite3.IntegrityError`` and business callers caught that — sometimes
+    through the broader ``sqlite3.Error``, which
     on the PG lane used to let a constraint failure escape the handler entirely
     (``source_frames`` rolls back and maps its write errors that way). The
     customer lane raises psycopg's SQLSTATE-mapped subclasses instead. Basing
@@ -254,20 +90,6 @@ def _map_integrity_error(exc: psycopg.Error) -> IntegrityConstraintError:
         sqlstate=getattr(exc, "sqlstate", None),
         constraint_name=getattr(diag, "constraint_name", None),
     )
-
-
-class SQLiteBackend:
-    """Wraps a sqlite3 connection; every execute runs the translation."""
-
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
-
-    def execute(self, sql: str, params: Sequence[object] = ()) -> sqlite3.Cursor:
-        return self._conn.execute(translate_to_sqlite(sql), params)
-
-    @property
-    def raw(self) -> sqlite3.Connection:
-        return self._conn
 
 
 class PostgresBackend:
@@ -478,7 +300,7 @@ class BusinessConnection:
     commit into a mid-flight business commit.
     """
 
-    def __init__(self, backend: SQLiteBackend | PostgresBackend) -> None:
+    def __init__(self, backend: PostgresBackend) -> None:
         self._backend = backend
         self.ctx: object | None = None  # CustomerSessionContext (T21 fencing)
         self.api_key_id: str | None = None  # Authenticated credential, never client input.
@@ -524,17 +346,16 @@ class BusinessConnection:
             # whole batch as a single command, whereas sqlite3 hands the trace
             # hook each substituted statement it executes.
             self._trace_callback(sql)
-        if isinstance(self._backend, SQLiteBackend):
-            return self._backend.raw.executemany(translate_to_sqlite(sql), seq)
         return self._backend.executemany(sql, seq)
 
     def commit(self) -> None:
-        if isinstance(self._backend, SQLiteBackend):
-            self._backend.raw.commit()
+        """No-op by design: transaction ownership is the fenced
+        pg_transaction() context on the (now only) PostgreSQL lane. The
+        retired SQLite lane was the only caller-owned-transaction lane."""
 
     def rollback(self) -> None:
-        if isinstance(self._backend, SQLiteBackend):
-            self._backend.raw.rollback()
+        """No-op by design: see commit(); rollback is owned by
+        pg_transaction() on error paths."""
 
     @property
     def is_postgres(self) -> bool:
@@ -551,13 +372,11 @@ class BusinessConnection:
         transaction owns the state; report ``True`` once a transaction is open
         (the psycopg info parity) so callers that guard on it keep working.
         """
-        if isinstance(self._backend, SQLiteBackend):
-            return self._backend.raw.in_transaction
         return bool(self._backend.raw.info.transaction_status)
 
     def close(self) -> None:
-        if isinstance(self._backend, SQLiteBackend):
-            self._backend.raw.close()
+        """No-op by design: pooled PG connections are returned by the
+        pg_transaction() context, never closed by business callers."""
 
     def set_trace_callback(self, callback: Callable[[str], object] | None) -> None:
         """sqlite3-shaped SQL trace hook (tests count statements).
@@ -565,10 +384,7 @@ class BusinessConnection:
         CW-054: the PG lane now stores the callback and invokes it from
         ``execute`` for every statement. Setting ``None`` disables tracing.
         """
-        if isinstance(self._backend, SQLiteBackend):
-            self._backend.raw.set_trace_callback(callback)
-        else:
-            self._trace_callback = callback
+        self._trace_callback = callback
 
     def iterdump(self) -> Iterator[str]:
         """sqlite3-shaped whole-database dump (tests check no secret is stored).
@@ -577,8 +393,6 @@ class BusinessConnection:
         table so sensitive-data checks traverse actual rows instead of an
         empty iterator.
         """
-        if isinstance(self._backend, SQLiteBackend):
-            return self._backend.raw.iterdump()
         return self._pg_iterdump()
 
     def _pg_iterdump(self) -> Iterator[str]:
@@ -617,38 +431,22 @@ class BusinessConnection:
         return self
 
     def __exit__(self, exc_type: object, _exc: object, _tb: object) -> None:
-        if isinstance(self._backend, SQLiteBackend):
-            if exc_type is None:
-                self._backend.raw.commit()
-            else:
-                self._backend.raw.rollback()
+        """No-op by design: on the (now only) PostgreSQL lane the fenced
+        pg_transaction() context owns commit/rollback; the retired SQLite
+        lane was the only caller-owned ``with conn:`` transaction lane."""
 
     @contextmanager
     def transaction(self, isolation: str | None = None) -> Iterator[BusinessConnection]:
-        """Explicit write transaction. SQLite: ``BEGIN IMMEDIATE``. PG: no-op —
-        the outer ``fenced_pg_transaction`` owns the transaction, and
-        ``isolation`` is forwarded there by the wiring (T21)."""
-        if isinstance(self._backend, SQLiteBackend):
-            raw = self._backend.raw
-            raw.execute("BEGIN IMMEDIATE")
-            try:
-                yield self
-                raw.commit()
-            except BaseException:
-                raw.rollback()
-                raise
-        else:
-            yield self
+        """Explicit write transaction. PG: no-op — the outer
+        ``fenced_pg_transaction`` owns the transaction, and ``isolation`` is
+        forwarded there by the wiring (T21)."""
+        yield self
 
     @property
-    def raw(self) -> sqlite3.Connection | psycopg.Connection:
+    def raw(self) -> psycopg.Connection:
         return self._backend.raw
 
     # --- factory ---
-
-    @classmethod
-    def sqlite(cls, conn: sqlite3.Connection) -> BusinessConnection:
-        return cls(SQLiteBackend(conn))
 
     @classmethod
     def postgres(cls, conn: psycopg.Connection) -> BusinessConnection:

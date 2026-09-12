@@ -34,11 +34,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 from collections.abc import Iterator, Sequence
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -542,34 +540,6 @@ def test_customer_production_rejects_sqlite_migration_target() -> None:
         f"variable, got stderr tail: {result.stderr.strip()[-400:]!r}"
     )
     assert "VIDEO_REPLICA_DATABASE_URL" in result.stderr
-
-
-def test_internal_lane_sqlite_migration_target_still_works(tmp_path: Path) -> None:
-    """internal/桌面 lane 的 SQLite 迁移路径不受门禁影响（防误伤回归锁）。
-
-    与上一用例成对：门禁若被写成全局拒绝 SQLite，``app/db.py`` 的
-    ``initialize_database`` 与 30+ 测试会立刻失效。
-
-    这里走 **online** 模式而非 ``--sql``：offline 对 SQLite 同样会崩在 009 的
-    ``MockConnection.exec_driver_sql`` 缺失（该缺陷与方言无关），用它当回归锁会假红。
-    online 也正是 ``app/db.py.upgrade_database`` 的真实路径。
-    """
-    database_file = tmp_path / "cw056_internal_lane.db"
-    result = _run_alembic_cli(
-        args=["upgrade", "head"],
-        database_url=f"sqlite:///{database_file}",
-        customer_production=None,
-    )
-    assert result.returncode == 0, (
-        "internal lane SQLite migrations must keep working, "
-        f"stderr tail: {result.stderr.strip()[-400:]!r}"
-    )
-    assert database_file.is_file(), "the SQLite lane must still create its database file"
-
-    with closing(sqlite3.connect(database_file)) as conn:
-        row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert row is not None, "the SQLite lane must stamp alembic_version"
-    assert row[0] == HEAD_REVISION, f"unexpected SQLite lane head {row[0]!r}"
 
 
 def test_migrate_sh_verifies_head_after_upgrade() -> None:
