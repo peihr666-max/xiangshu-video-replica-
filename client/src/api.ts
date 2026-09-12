@@ -1714,6 +1714,8 @@ export type IndependentCapabilities = {
   r2v_enabled: boolean;
   last_frame_enabled: boolean;
   max_reference_images: number;
+  max_reference_videos: number;
+  max_reference_audios: number;
   max_quantity: number;
 };
 
@@ -2354,7 +2356,7 @@ export async function createMaterialUploadIntent(
   input: {
     title?: string;
     group?: string;
-    audioPurpose?: "oral_audio" | "voice_clone";
+    audioPurpose?: "oral_audio" | "voice_clone" | "reference";
     durationSeconds?: number;
   } = {},
 ): Promise<MaterialUploadIntent> {

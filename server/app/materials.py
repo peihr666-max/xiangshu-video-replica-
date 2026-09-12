@@ -34,9 +34,11 @@ MaterialMediaType = Literal["image", "video", "audio"]
 MaterialSource = Literal["upload", "project", "character", "oral", "generation"]
 MaterialStatus = Literal["uploading", "ready", "unavailable"]
 MaterialDelivery = Literal["stored", "direct"]
-AudioPurpose = Literal["oral_audio", "voice_clone"]
+AudioPurpose = Literal["oral_audio", "voice_clone", "reference"]
 
 IMAGE_UPLOAD_LIMIT = 10 * 1024 * 1024
+# R2V 参考音频时长上限：与参考视频一致（前端拦截 + 后端音频探测双保险）。
+MAX_REFERENCE_AUDIO_SECONDS = 15.0
 ALLOWED_UPLOADS: dict[tuple[str, str], tuple[MaterialMediaType, str]] = {
     (".jpg", "image/jpeg"): ("image", ".jpg"),
     (".jpeg", "image/jpeg"): ("image", ".jpg"),
@@ -196,7 +198,7 @@ def validate_audio_contract(
         raise material_error(
             422,
             "MATERIAL_AUDIO_PURPOSE_REQUIRED",
-            "音频素材必须声明完整口播或声音克隆用途。",
+            "音频素材必须声明完整口播、声音克隆或参考用途。",
         )
     if duration_seconds is None:
         raise material_error(
@@ -209,6 +211,12 @@ def validate_audio_contract(
             422,
             "MATERIAL_AUDIO_DURATION_INVALID",
             "声音克隆样本时长必须为 5–180 秒。",
+        )
+    if audio_purpose == "reference" and duration_seconds > MAX_REFERENCE_AUDIO_SECONDS:
+        raise material_error(
+            422,
+            "MATERIAL_AUDIO_DURATION_INVALID",
+            "参考音频时长不能超过 15 秒。",
         )
 
 
@@ -469,8 +477,10 @@ def material_item(row: Any) -> MaterialItem:
             duration_valid = duration is not None and duration > 0
             if purpose == "voice_clone" and duration is not None:
                 duration_valid = 5 <= duration <= 180
+            elif purpose == "reference" and duration is not None:
+                duration_valid = 0 < duration <= MAX_REFERENCE_AUDIO_SECONDS
             if (
-                purpose in {"oral_audio", "voice_clone"}
+                purpose in {"oral_audio", "voice_clone", "reference"}
                 and duration_valid
                 and metadata.get("audio_duration_verified") is True
             ):
@@ -722,7 +732,7 @@ def prepare_material_upload(
         ),
         audio_purpose=(
             cast(AudioPurpose, metadata["audio_purpose"])
-            if metadata.get("audio_purpose") in {"oral_audio", "voice_clone"}
+            if metadata.get("audio_purpose") in {"oral_audio", "voice_clone", "reference"}
             else None
         ),
         requested_duration_seconds=(

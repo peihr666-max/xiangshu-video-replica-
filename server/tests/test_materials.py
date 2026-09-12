@@ -204,6 +204,65 @@ def test_upload_audio_to_storage_then_complete_and_list_it(
     assert material["saved"] is True
 
 
+def test_upload_reference_audio_then_complete_lists_reference_use(
+    client: TestClient,
+    storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # R2V 参考音频：以 reference 用途上传，完成后 allowed_uses 应含 reference，
+    # 使其可被参考选取器消费；时长服务端探测并落库。
+    monkeypatch.setattr(materials, "probe_audio_duration", lambda _content: 10.0)
+    intent = client.post(
+        "/api/studio/materials/upload-intent",
+        headers=auth_headers(),
+        json={
+            "filename": "环境声.mp3",
+            "content_type": "audio/mpeg",
+            "size_bytes": 11,
+            "title": "参考音频",
+            "group": "参考素材",
+            "audio_purpose": "reference",
+            "duration_seconds": 10,
+        },
+    )
+    assert intent.status_code == 200, intent.text
+    body = intent.json()
+
+    storage.put_object(body["storage_key"], b"ID3abcdefgh", content_type="audio/mpeg")
+    completed = client.post(
+        f"/api/studio/materials/uploads/{body['asset_id']}/complete",
+        headers=auth_headers(),
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "ready"
+
+    listed = client.get(
+        "/api/studio/materials?media_type=audio",
+        headers=auth_headers(),
+    )
+    assert listed.status_code == 200
+    material = listed.json()["items"][0]
+    assert material["title"] == "参考音频"
+    assert material["allowed_uses"] == ["reference"]
+    assert material["duration_seconds"] == 10
+
+
+def test_reference_audio_upload_intent_accepts_up_to_15s(client: TestClient) -> None:
+    # 边界：参考音频时长恰为 15 秒应被接受（≤15s）。
+    response = client.post(
+        "/api/studio/materials/upload-intent",
+        headers=auth_headers(),
+        json={
+            "filename": "ref.mp3",
+            "content_type": "audio/mpeg",
+            "size_bytes": 10,
+            "audio_purpose": "reference",
+            "duration_seconds": 15,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
 @pytest.mark.parametrize(
     ("purpose", "duration", "expected_code"),
     [
@@ -211,6 +270,7 @@ def test_upload_audio_to_storage_then_complete_and_list_it(
         ("voice_clone", 4.9, "MATERIAL_AUDIO_DURATION_INVALID"),
         ("voice_clone", 180.1, "MATERIAL_AUDIO_DURATION_INVALID"),
         ("oral_audio", None, "MATERIAL_AUDIO_DURATION_REQUIRED"),
+        ("reference", 15.1, "MATERIAL_AUDIO_DURATION_INVALID"),
     ],
 )
 def test_audio_upload_intent_enforces_purpose_duration_contract(

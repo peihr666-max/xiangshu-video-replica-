@@ -49,6 +49,7 @@ from app.generation import (
     prepare_generation_reconcile_operation,
     reconcile_submission_uncertain_task,
     run_next_generation_task,
+    validate_h3_request,
 )
 from app.generation_routes import get_h3_provider
 from app.generation_worker import run_worker_once
@@ -453,7 +454,7 @@ def test_metaso_h3_provider_creates_polls_and_returns_url_without_downloading(
     }
     query_method, query_url, query_headers, query_body = transport.requests[1]
     assert query_method == "GET"
-    assert query_url.endswith("/api/minimax/v2/query/video_generation?task_id=task-real-1")
+    assert query_url.endswith("/api/minimax/v2/query/video_generation/task-real-1")
     assert query_headers["Authorization"] == "Bearer metaso-test-key"
     assert query_body is None
     assert len(transport.requests) == 3
@@ -557,7 +558,7 @@ def test_metaso_h3_provider_rejects_a_non_https_first_frame_url() -> None:
     transport = RecordedMetasoTransport([])
     provider = MetasoH3Provider(api_key="metaso-test-key", transport=transport)
 
-    with pytest.raises(H3ProviderFailed, match="HTTPS first-frame URL"):
+    with pytest.raises(H3ProviderFailed, match="HTTPS media URLs"):
         provider.create_image_to_video(
             build_h3_request(
                 prompt_text="生成自然运动的视频",
@@ -568,6 +569,204 @@ def test_metaso_h3_provider_rejects_a_non_https_first_frame_url() -> None:
         )
 
     assert transport.requests == []
+
+
+def test_build_h3_request_supports_reference_video_and_audio() -> None:
+    request = build_h3_request(
+        prompt_text="角色按参考视频动作起舞，音色参考音频",
+        duration_seconds=8,
+        resolution="2K",
+        ratio="adaptive",
+        reference_videos=[{"url": "https://cdn.example.test/ref-dance.mp4"}],
+        reference_audios=[{"url": "https://cdn.example.test/ref-voice.mp3"}],
+    )
+    assert request["model"] == "MiniMax-H3"
+    assert request["content"][1] == {
+        "type": "video_url",
+        "video_url": {"url": "https://cdn.example.test/ref-dance.mp4"},
+        "role": "reference_video",
+    }
+    assert request["content"][2] == {
+        "type": "audio_url",
+        "audio_url": {"url": "https://cdn.example.test/ref-voice.mp3"},
+        "role": "reference_audio",
+    }
+
+
+def test_build_h3_request_rejects_reference_media_with_first_frame() -> None:
+    with pytest.raises(ValueError, match="must not carry first/last frame"):
+        build_h3_request(
+            prompt_text="x",
+            first_frame_url="https://cdn.example.test/a.png",
+            duration_seconds=5,
+            resolution="768P",
+            reference_videos=[{"url": "https://cdn.example.test/b.mp4"}],
+        )
+
+
+def test_validate_h3_request_accepts_mixed_reference_media() -> None:
+    request = build_h3_request(
+        prompt_text="多模态参考生成",
+        duration_seconds=10,
+        resolution="768P",
+        ratio="16:9",
+        reference_images=[{"name": "ref-1", "url": "https://cdn.example.test/face.png"}],
+        reference_videos=[{"url": "https://cdn.example.test/motion.mp4"}],
+        reference_audios=[{"url": "https://cdn.example.test/voice.mp3"}],
+    )
+    validate_h3_request(request)
+
+
+def test_validate_h3_request_rejects_reference_media_mixed_with_frames() -> None:
+    request = {
+        "model": "MiniMax-H3",
+        "content": [
+            {"type": "text", "text": "x"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://cdn.example.test/a.png"},
+                "role": "first_frame",
+            },
+            {
+                "type": "video_url",
+                "video_url": {"url": "https://cdn.example.test/b.mp4"},
+                "role": "reference_video",
+            },
+        ],
+        "resolution": "768P",
+        "duration": 5,
+        "ratio": "adaptive",
+    }
+    with pytest.raises(ValueError, match="must not mix"):
+        validate_h3_request(request)
+
+
+def test_validate_h3_request_rejects_reference_video_without_url() -> None:
+    request = {
+        "model": "MiniMax-H3",
+        "content": [
+            {"type": "text", "text": "x"},
+            {"type": "video_url", "video_url": {}, "role": "reference_video"},
+        ],
+        "resolution": "768P",
+        "duration": 5,
+        "ratio": "adaptive",
+    }
+    with pytest.raises(ValueError, match="url"):
+        validate_h3_request(request)
+
+
+def test_metaso_provider_rejects_non_https_reference_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
+    transport = RecordedMetasoTransport([])
+    provider = MetasoH3Provider(api_key="metaso-test-key", transport=transport)
+    with pytest.raises(H3ProviderFailed, match="HTTPS"):
+        provider.submit_image_to_video(
+            build_h3_request(
+                prompt_text="x",
+                duration_seconds=5,
+                resolution="768P",
+                reference_videos=[{"url": "http://insecure.example.test/v.mp4"}],
+            )
+        )
+    assert transport.requests == []
+
+
+def test_metaso_h3_provider_query_uses_path_based_task_id() -> None:
+    transport = RecordedMetasoTransport(
+        [json.dumps({"task": {"id": "task-1", "status": "running"}}).encode()]
+    )
+    provider = MetasoH3Provider(api_key="metaso-test-key", transport=transport)
+    result = provider.query_image_to_video("task-1")
+    assert result.status == "RUNNING"
+    method, url, headers, body = transport.requests[0]
+    assert method == "GET"
+    assert url == "https://metaso.cn/api/minimax/v2/query/video_generation/task-1"
+    assert headers["Authorization"] == "Bearer metaso-test-key"
+    assert body is None
+
+
+def test_metaso_h3_provider_query_parses_task_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
+    transport = RecordedMetasoTransport(
+        [
+            json.dumps(
+                {
+                    "task": {
+                        "id": "t-1",
+                        "status": "succeeded",
+                        "content": {"url": "https://files.example.test/v.mp4"},
+                        "usage": {"output_seconds": 6},
+                    }
+                }
+            ).encode()
+        ]
+    )
+    provider = MetasoH3Provider(api_key="metaso-test-key", transport=transport)
+    result = provider.query_image_to_video("t-1")
+    assert result.status == "SUCCEEDED"
+    assert result.result_url == "https://files.example.test/v.mp4"
+    assert result.output_seconds == 6.0
+
+
+def test_metaso_h3_provider_query_parses_bare_task_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
+    transport = RecordedMetasoTransport(
+        [
+            json.dumps(
+                {
+                    "id": "t-2",
+                    "status": "succeeded",
+                    "content": {"url": "https://files.example.test/v2.mp4"},
+                }
+            ).encode()
+        ]
+    )
+    provider = MetasoH3Provider(api_key="metaso-test-key", transport=transport)
+    result = provider.query_image_to_video("t-2")
+    assert result.status == "SUCCEEDED"
+    assert result.result_url == "https://files.example.test/v2.mp4"
+
+
+def test_metaso_h3_provider_query_parses_legacy_items_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.generation.socket.getaddrinfo", _fake_public_dns)
+    transport = RecordedMetasoTransport(
+        [
+            json.dumps(
+                {
+                    "items": [
+                        {"id": "other", "status": "succeeded"},
+                        {
+                            "id": "t-3",
+                            "status": "succeeded",
+                            "content": {"url": "https://files.example.test/v3.mp4"},
+                        },
+                    ]
+                }
+            ).encode()
+        ]
+    )
+    provider = MetasoH3Provider(api_key="metaso-test-key", transport=transport)
+    result = provider.query_image_to_video("t-3")
+    assert result.status == "SUCCEEDED"
+    assert result.result_url == "https://files.example.test/v3.mp4"
+
+
+@pytest.mark.parametrize("status", ["queued", "processing", "running"])
+def test_metaso_h3_provider_maps_pending_statuses_to_running(status: str) -> None:
+    transport = RecordedMetasoTransport(
+        [json.dumps({"task": {"id": "t", "status": status}}).encode()]
+    )
+    provider = MetasoH3Provider(api_key="metaso-test-key", transport=transport)
+    assert provider.query_image_to_video("t").status == "RUNNING"
 
 
 def auth_headers(user_id: str) -> dict[str, str]:
