@@ -53,6 +53,10 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "activation_code_exports",
         "activation_code_activations",
         "activation_code_events",
+        # 089_customer_api_keys: 客户程序 API Key 泳道，PG-only（089 明确 SQLite lane 不建表）。
+        "customer_api_keys",
+        # 090_customer_discounts: 客户消耗侧折扣配置，PG-only（090 明确非 postgresql 方言 return）。
+        "customer_discounts",
         "customer_devices",
         "device_pairing_requests",
         "customer_session_state",
@@ -96,13 +100,16 @@ _OPERATION_COST_RATE_SEEDS = (
 PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     "runtime_settings": frozenset({"fair_queue_enabled"}),
     "audit_logs": frozenset({"occurred_at"}),
-    "generation_tasks": frozenset({"created_at_utc"}),
+    "generation_tasks": frozenset({"created_at_utc", "discount_rate_snapshot"}),
     # 083_recharge_orders_multi_provider: WeChat Native 支付回执列仅存在于
     # PG（T07 的 SQLite 源 schema 冻结于 042 前基线）。
     "recharge_orders": frozenset({"prepay_id", "code_url", "transaction_id"}),
     # 086_remove_device_slot_constraints: 每用户设备上限列仅存在于 PG
     # （T07 的 SQLite 源 schema 冻结于 042 前基线）。
     "users": frozenset({"max_devices"}),
+    # 090_customer_discounts: wallet_transactions.discount_rate 仅存在于 PG
+    # （090 非 postgresql 方言 return，SQLite lane 不建此列）。
+    "wallet_transactions": frozenset({"discount_rate"}),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000
 _DIGEST_MODULUS = 1 << 256

@@ -40,6 +40,12 @@ from fastapi import Depends, HTTPException, Request
 
 from app import ops_metrics
 from app.activation_code_service import ActivationKeyError
+from app.api_key_service import (
+    ApiKeyError,
+    authenticate_api_key,
+    parse_api_key_prefix,
+    touch_last_used,
+)
 from app.auth import CurrentUser, authenticate_request
 from app.customer_auth import (
     CustomerSessionContext,
@@ -58,11 +64,26 @@ from app.db_pg import (
 )
 from app.db_portable import BusinessConnection
 from app.permissions import AuditedSecurityDenial, persist_security_denial
-from app.security_rate_limit import rate_limit_window_seconds, record_auth_failure
+from app.security_rate_limit import (
+    DIMENSION_APIKEY_IP,
+    DIMENSION_APIKEY_KEY,
+    RateLimitDecision,
+    apikey_ip_limit,
+    apikey_key_limit,
+    client_ip_from_request,
+    consume_rate_limit,
+    rate_limit_window_seconds,
+    record_auth_failure,
+)
 
 AUTHORIZATION_HEADER = "Authorization"
 BEARER_SCHEME = "bearer"
 FENCING_FAILURE_DIMENSION = "session:fencing"
+# CW-078: the API-Key lane is detected by this fixed plaintext scheme prefix, so
+# get_business_db / customer_read_transaction route an ``xsk_live_`` bearer to
+# the independent lane before the session fence ever sees it (§2.5 B).
+API_KEY_BEARER_PREFIX = "xsk_live_"
+RETRY_AFTER_HEADER = "Retry-After"
 logger = logging.getLogger(__name__)
 
 
@@ -344,6 +365,213 @@ def _record_fencing_commit_evidence(
     )
 
 
+# ---------------------------------------------------------------------------
+# CW-078 — the API-Key lane (§2.5 B): an independent customer credential that
+# never passes through the session fence. get_business_db / customer_read_
+# transaction detect an ``xsk_live_`` bearer and route it here; api_key_service
+# resolves the credential (prefix lookup + versioned HMAC-SHA256 compare) and
+# business writes run in a plain pg_transaction (no fenced_pg_transaction).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ApiKeyUser:
+    """The API-Key lane principal: an authenticated customer program.
+
+    Independent of the session fence (§2.5 B) — it carries the key id (for the
+    ``last_used_at`` writeback) and the owning customer's user id, plus the
+    stored scopes. There is deliberately no device / session / epoch / lease:
+    those are the fence's anchors, and §2.5 B documents the accepted risks of
+    having none (no device binding, no preemption, no lease expiry), mitigated
+    by one-time plaintext, the ``apikey:*`` budget and revoke-on-compromise.
+    """
+
+    key_id: str
+    user_id: str
+    scopes: tuple[str, ...]
+
+
+def _api_key_bearer(request: Request) -> str | None:
+    """The presented plaintext key when the bearer is an ``xsk_live_`` credential."""
+    token = _bearer_token(request)
+    if token is not None and token.startswith(API_KEY_BEARER_PREFIX):
+        return token
+    return None
+
+
+def _api_key_failure_identifier(prefix: str) -> str:
+    """The ``apikey:key`` audit identifier: a digest of the prefix, never the key.
+
+    The 40-char secret never reaches ``security_auth_failures`` (R-A / the
+    ``activate:code`` precedent); the 8-char prefix is digested so a hammered
+    candidate stays countable without storing anything replayable.
+    """
+    return hashlib.sha256(prefix.encode("utf-8")).hexdigest()
+
+
+def _enforce_api_key_failure_budget(request: Request, plaintext: str) -> None:
+    """Burn the API-Key brute-force budget and append the failure audit trail.
+
+    Runs in its own committed transaction so the rolled-back authentication
+    lookup never refunds it (the activation / fencing precedent). Best-effort: a
+    flaky audit write must not turn a legal 401 into a 500, so it logs and
+    swallows its own failure. When the address budget is already exhausted the
+    caller's 401 is upgraded to a 429 carrying ``Retry-After``.
+    """
+    context = ops_metrics.current_request_context()
+    request_id = context.request_id if context is not None else None
+    client_ip = client_ip_from_request(request)
+    prefix = parse_api_key_prefix(plaintext)
+    window = rate_limit_window_seconds()
+    try:
+        with pg_transaction() as conn:
+            ip_decision = consume_rate_limit(
+                conn,
+                dimension=DIMENSION_APIKEY_IP,
+                identifier=client_ip,
+                limit=apikey_ip_limit(),
+                window_seconds=window,
+            )
+            key_decision: RateLimitDecision | None = None
+            # A blocked address draws no per-key budget (PR #46 precedent): the
+            # key identifier is attacker-controlled, so a blocked client must
+            # not mint one unbounded counter row per random well-shaped key.
+            if prefix is not None and ip_decision.allowed:
+                key_decision = consume_rate_limit(
+                    conn,
+                    dimension=DIMENSION_APIKEY_KEY,
+                    identifier=_api_key_failure_identifier(prefix),
+                    limit=apikey_key_limit(),
+                    window_seconds=window,
+                )
+            record_auth_failure(
+                conn,
+                dimension=DIMENSION_APIKEY_IP,
+                identifier=client_ip,
+                request_id=request_id,
+                dedupe_window_seconds=window,
+            )
+            if prefix is not None:
+                record_auth_failure(
+                    conn,
+                    dimension=DIMENSION_APIKEY_KEY,
+                    identifier=_api_key_failure_identifier(prefix),
+                    request_id=request_id,
+                    dedupe_window_seconds=window,
+                )
+    except Exception as audit_error:
+        logger.warning(
+            "api key failure budget unavailable (%s)",
+            type(audit_error).__name__,
+        )
+        return
+    if not ip_decision.allowed or (key_decision is not None and not key_decision.allowed):
+        retry_after = max(
+            ip_decision.retry_after_seconds,
+            key_decision.retry_after_seconds if key_decision is not None else 0,
+        )
+        blocked = HTTPException(
+            429,
+            detail={
+                "code": "API_KEY_RATE_LIMITED",
+                "message": "Too many API-key attempts; retry later.",
+            },
+        )
+        blocked.headers = {RETRY_AFTER_HEADER: str(retry_after)}
+        raise blocked
+
+
+def resolve_api_key_user(request: Request) -> ApiKeyUser | None:
+    """Resolve an ``xsk_live_`` bearer to its ApiKeyUser, or None if not a key.
+
+    The independent lane's early gate (§2.5 B): it never touches
+    ``customer_session_snapshot`` or the fence. Returns None when the request
+    carries no API-Key-scheme bearer, so the caller falls through to the session
+    / internal lane. A malformed, unknown, mismatched or revoked key is the
+    single 401 ``API_KEY_INVALID`` (no oracle) after burning the ``apikey:*``
+    budget; a missing HMAC-key configuration or an unavailable pool is a 503
+    fail-closed — a server outage must never masquerade as a client credential
+    problem.
+    """
+    plaintext = _api_key_bearer(request)
+    if plaintext is None:
+        return None
+    if not _customer_database_configured():
+        # API Keys are customer-PG infrastructure; the internal/desktop lane has
+        # no customer_api_keys table, so such a bearer can never be valid.
+        raise HTTPException(
+            401,
+            detail={
+                "code": "API_KEY_INVALID",
+                "message": "The API key is not valid or has been revoked.",
+            },
+        )
+    try:
+        get_pg_pool()
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            503,
+            detail={
+                "code": "API_KEY_SERVICE_UNAVAILABLE",
+                "message": "The API-key service is unavailable.",
+            },
+        ) from exc
+    try:
+        with pg_transaction() as conn:
+            authed = authenticate_api_key(conn, plaintext)
+    except ApiKeyError as exc:
+        raise HTTPException(
+            503,
+            detail={
+                "code": "API_KEY_SERVICE_UNAVAILABLE",
+                "message": "API-key digest keys are not configured; the lane is refused.",
+            },
+        ) from exc
+    if authed is None:
+        _enforce_api_key_failure_budget(request, plaintext)
+        raise HTTPException(
+            401,
+            detail={
+                "code": "API_KEY_INVALID",
+                "message": "The API key is not valid or has been revoked.",
+            },
+        )
+    ops_metrics.set_current_trace_fields(user_id=authed.user_id)
+    return ApiKeyUser(key_id=authed.key_id, user_id=authed.user_id, scopes=authed.scopes)
+
+
+@contextmanager
+def customer_read_transaction(
+    request: Request,
+) -> Iterator[tuple[psycopg.Connection, str]]:
+    """Unified customer-lane read for the API-Key whitelist endpoints (§2.2).
+
+    Accepts EITHER an ``xsk_live_`` API-Key bearer (the independent lane: a
+    plain PG transaction, no fence, ``last_used_at`` written back) OR a session
+    token (the fenced lane: ``customer_session_snapshot`` +
+    ``fenced_pg_transaction``, re-verified under the row lock). Yields
+    ``(conn, user_id)`` so a whitelisted GET serves both credentials with one
+    body. The API-Key path never calls ``fenced_pg_transaction`` (§2.5 B).
+    """
+    api_key = resolve_api_key_user(request)
+    if api_key is not None:
+        with pg_transaction() as conn:
+            touch_last_used(conn, key_id=api_key.key_id)
+            yield conn, api_key.user_id
+        return
+    snapshot = customer_session_snapshot(request)
+    if snapshot is None:
+        raise HTTPException(
+            401,
+            detail={
+                "code": "SESSION_REQUIRED",
+                "message": "A customer session token is required.",
+            },
+        )
+    with fenced_pg_transaction(snapshot) as (conn, ctx):
+        yield conn, ctx.user_id
+
+
 @dataclass(frozen=True)
 class BusinessDb:
     """The single dependency migrated business write routes use (plan B.3).
@@ -358,6 +586,10 @@ class BusinessDb:
     snapshot: CustomerSessionSnapshot | None
     authorization: str | None
     dev_user_id: str | None
+    # CW-078: set when get_business_db resolved an ``xsk_live_`` bearer to an
+    # authenticated API-Key principal; write() then takes the independent lane
+    # (write_for_api_key) instead of the session fence (§2.5 B).
+    api_key: ApiKeyUser | None = None
 
     @contextmanager
     def write(
@@ -380,6 +612,10 @@ class BusinessDb:
                     display_name=ctx.user_id,
                     role="customer",
                 )
+                yield bc, actor
+            return
+        if self.api_key is not None:
+            with self.write_for_api_key(isolation=isolation) as (bc, actor):
                 yield bc, actor
             return
         # CW-025: internal lane 直接从 DB_PATH_ENV 读取，不经过 resolve_database_config()。
@@ -418,14 +654,50 @@ class BusinessDb:
         finally:
             raw.close()
 
+    @contextmanager
+    def write_for_api_key(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+    ) -> Iterator[tuple[BusinessConnection, CurrentUser]]:
+        """The API-Key lane business write (§2.5 B): an independent PG
+        transaction that never calls ``fenced_pg_transaction``.
+
+        ``last_used_at`` is written back as the authentication side effect and
+        the owning customer is the acting user. There is no session to
+        re-verify under a row lock — the credential was resolved once at the
+        early gate (``resolve_api_key_user``); any row lock a whitelisted write
+        needs (e.g. ``FOR UPDATE`` on a wallet row) is the caller's to take
+        inside the yielded connection, exactly as on the session lane. A
+        business exception rolls the whole transaction back.
+        """
+        assert self.api_key is not None
+        with pg_transaction(isolation=isolation) as conn:
+            touch_last_used(conn, key_id=self.api_key.key_id)
+            bc = BusinessConnection.postgres(conn)
+            actor = CurrentUser(
+                id=self.api_key.user_id,
+                username=self.api_key.user_id,
+                display_name=self.api_key.user_id,
+                role="customer",
+            )
+            yield bc, actor
+
 
 def get_business_db(request: Request) -> BusinessDb:
     """FastAPI dependency: the customer-business write entry for migrated routes.
 
-    On the customer lane the session snapshot is taken here (the early 401
-    gate); the final verdict always happens in ``fenced_pg_transaction``
-    inside ``write()`` (the SES-04 red line).
+    Three lanes resolve here (§2.2 认证三轨). An ``xsk_live_`` bearer is taken
+    first: ``resolve_api_key_user`` authenticates it on the independent API-Key
+    lane (no fence) and ``write()`` then dispatches to ``write_for_api_key``.
+    Otherwise, on the customer lane the session snapshot is taken here (the
+    early 401 gate); the final verdict always happens in
+    ``fenced_pg_transaction`` inside ``write()`` (the SES-04 red line). With
+    neither, the internal/desktop lane resolves ``AuthenticatedUser``.
     """
+    api_key = resolve_api_key_user(request)
+    if api_key is not None:
+        return BusinessDb(snapshot=None, authorization=None, dev_user_id=None, api_key=api_key)
     snapshot = customer_session_snapshot(request)
     if snapshot is not None:
         return BusinessDb(snapshot=snapshot, authorization=None, dev_user_id=None)

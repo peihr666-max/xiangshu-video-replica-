@@ -56,7 +56,7 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
-# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→083 + CW-075 090）。
+# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→089 + CW-075 090）。
 HEAD_REVISION = "090_customer_discounts"
 
 # 最后一个已发布（受支持）起点。其后的 056–090 尚未随任何受支持版本发布，
@@ -101,18 +101,18 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # 例如 triggers 用 information_schema.triggers 的**行数**（BEFORE UPDATE 与
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS: dict[str, int] = {
-    "tables": 77,
-    "columns": 913,
+    "tables": 79,
+    "columns": 936,
     "identity_columns": 0,
     "sequences": 3,
     "jsonb_columns": 0,
-    "timestamptz_columns": 16,
+    "timestamptz_columns": 20,
     "triggers": 18,
     "partial_indexes": 24,
     "unique_constraints": 27,
-    "check_constraints": 227,
-    "foreign_keys": 146,
-    "primary_keys": 77,
+    "check_constraints": 233,
+    "foreign_keys": 149,
+    "primary_keys": 79,
 }
 
 # head 的表名全集。counts 只能证明「数量没漂」，证明不了「同一批表」：
@@ -123,12 +123,12 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
 # （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
 # partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
 # CW-075 090 的增量：本表名集追加 customer_discounts（本分支链尾迁移 090 新建的表，
-# 已 linearize 到 main 现头 083 之上：082→086→083→090）。HEAD_SCHEMA_COUNTS 与
-# HEAD_SCHEMA_DIGEST 仍冻结在 main 的 083 基线（tables=77、columns=913、
-# check_constraints=227）——它们是全局 post-linearization 不变量，须待 integrator
-# 折叠其余并行迁移（088/089/090）后一次性重算（沿 CW-076 先例）。故 B 组真实 PG 矩阵
-# 在重算前预期红：表名集断言（inventory 的 tables 与 HEAD_TABLE_NAMES 排序相等）
-# 因已含 customer_discounts 而通过，counts/digest 断言随 090 漂移而红，重算后转绿。
+# 已 re-linearize 到 main 现头 089 之上：089→090）。HEAD_SCHEMA_COUNTS 与
+# HEAD_SCHEMA_DIGEST 已随之重算为 090 的真实值——它们是全局 post-linearization 不变量：
+# CW-078 折叠 089 时在本地 PG 探针重算过一次（digest 8fe43e16），CW-075 折叠 090 后沿
+# 同一先例（postgres:16-alpine，与 CI pg-fixture 同主版本）再重算一次。故 B 组真实 PG
+# 矩阵断言全绿：表名集（inventory 的 tables 与 HEAD_TABLE_NAMES 排序相等，含
+# customer_api_keys 与 customer_discounts 两表）、counts、digest 三项均对齐 090 重算值。
 HEAD_TABLE_NAMES: tuple[str, ...] = (
     "activation_code_activations",
     "activation_code_batches",
@@ -153,6 +153,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
     "character_sheet_tasks",
     "character_versions",
     "characters",
+    "customer_api_keys",
     "customer_authorization_evidence",
     "customer_batch_visibility",
     "customer_devices",
@@ -215,7 +216,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 这是「空库→head」与「旧起点→head」必须**收敛到同一 schema** 的机器化断言 ——
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
-HEAD_SCHEMA_DIGEST = "c6b1d59f2d529463dfcd1a0400d3173e8bb6d0c9341cc158946200394befa891"
+HEAD_SCHEMA_DIGEST = "9806dc1cd969c860396c6a4c07926f4063b3c83d0f6706f0cc28f7c5a7cd4fce"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

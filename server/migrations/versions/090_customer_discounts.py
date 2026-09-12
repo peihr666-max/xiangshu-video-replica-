@@ -2,7 +2,7 @@
 
 合并文档计划的三支 Phase 5 折扣迁移（089 customer_discounts 表 / 090
 generation_tasks.discount_rate_snapshot / 091 wallet_transactions.discount_rate）为单一
-090——因 089 号已被 CW-078 customer_api_keys 占用，本分支从 main 现头 083 顺延取 090。
+090——因 089 号已被 CW-078 customer_api_keys 占用，本分支 re-linearize 到 089 之上取 090。
 
 customer_discounts 保存客户的消耗侧折扣配置：折扣率（0 < rate ≤ 1.0）、优先级（互斥取最高）、
 有效期（valid_from/valid_until）、适用接口范围（applicable_interfaces TEXT-JSON 数组，维持 head
@@ -26,7 +26,7 @@ append-only 历史账目（R-D），一旦落了非空折扣快照，删列会�
 先例——有数据显式 RuntimeError 拒绝，空库对称回退。
 
 Revision ID: 090_customer_discounts
-Revises: 083_recharge_orders_multi_provider
+Revises: 089_customer_api_keys
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "090_customer_discounts"
-down_revision = "083_recharge_orders_multi_provider"
+down_revision = "089_customer_api_keys"
 branch_labels = None
 depends_on = None
 
