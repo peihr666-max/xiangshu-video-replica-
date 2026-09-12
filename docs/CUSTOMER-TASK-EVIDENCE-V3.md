@@ -1202,3 +1202,7 @@ AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门
 ## UC-BATCH-02（UC-06—10）
 
 第一批前置 PR #79 已合并 @37a2633；第二批个人中心前后端联调及 38 项后端专项通过；最终集成 PG 2906 passed/1 原有跳过、真实浏览器 4 passed，静态门及评审恢复增量见证据。用户去重反馈已纳入五页签及无设备展示。[完整证据](evidence/UC-BATCH02-PERSONAL-CENTER.md)。后续积分计价/来源归属/管理员加分尚未验收。
+
+## FIX-TESTREADY-20260912 / 自动化测试前置
+
+AUTOMATED_VERIFIED（本地）；独立只读 review_w13 PASS；完整本地质量门在 a44672a（已整合主干 cd8bccf）通过：后端 2957 passed、1 个原有 TLS 跳过；前端 1350 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 全部通过。PR、当前提交远程 CI 和合并待完成；产品文件未改动，F06另行发现的产品竞态未在此修复。人工联合调试全部留第二部分。[证据](evidence/FIX-TESTREADY-20260912.md)。

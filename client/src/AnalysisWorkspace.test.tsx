@@ -2811,14 +2811,30 @@ describe("AnalysisWorkspace workflow gates", () => {
     );
     expect(await screen.findByText("拆解完成")).toBeInTheDocument();
 
+    await waitFor(() =>
+      expect(screen.getByLabelText("口播稿内容")).toHaveValue("原始口播稿"),
+    );
+    const customSource = await screen.findByRole("radio", { name: "自定义稿" });
+    await waitFor(() => expect(customSource).toBeEnabled());
+    fireEvent.click(customSource);
+    expect(customSource).toBeChecked();
+    await waitFor(() =>
+      expect(screen.getByLabelText("口播稿内容")).not.toHaveAttribute(
+        "readonly",
+      ),
+    );
     fireEvent.change(screen.getByLabelText("口播稿内容"), {
       target: { value: "本地草稿口播稿" },
     });
+    expect(screen.getByLabelText("口播稿内容")).toHaveValue("本地草稿口播稿");
     await waitFor(
       () => {
         const saved = window.localStorage.getItem(draftKey);
         expect(saved).not.toBeNull();
-        expect(JSON.parse(saved ?? "{}").text).toBe("本地草稿口播稿");
+        expect(JSON.parse(saved ?? "{}")).toMatchObject({
+          text: "本地草稿口播稿",
+          source: "custom",
+        });
       },
       { timeout: 3000 },
     );
@@ -2857,6 +2873,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       "口播稿内容",
     )) as HTMLTextAreaElement;
     await waitFor(() => expect(textarea.value).toBe("本地草稿口播稿"));
+    expect(screen.getByRole("radio", { name: "自定义稿" })).toBeChecked();
     expect(
       await screen.findByText("已恢复上次未保存的本地草稿，请确认后保存。"),
     ).toBeInTheDocument();
@@ -2886,7 +2903,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       kind: "script",
       version_number: 2,
       payload: {
-        source: "original",
+        source: "custom",
         full_text: "待保存草稿",
         shot_card_version_id: "shot-card-2",
         shot_mappings: [],
@@ -2917,9 +2934,19 @@ describe("AnalysisWorkspace workflow gates", () => {
     fireEvent.click(screen.getByRole("button", { name: "完成人物参考" }));
     fireEvent.click(screen.getByRole("button", { name: "完成置换首帧" }));
 
-    fireEvent.change(await screen.findByLabelText("口播稿内容"), {
+    const customSource = await screen.findByRole("radio", { name: "自定义稿" });
+    await waitFor(() => expect(customSource).toBeEnabled());
+    fireEvent.click(customSource);
+    expect(customSource).toBeChecked();
+    await waitFor(() =>
+      expect(screen.getByLabelText("口播稿内容")).not.toHaveAttribute(
+        "readonly",
+      ),
+    );
+    fireEvent.change(screen.getByLabelText("口播稿内容"), {
       target: { value: "待保存草稿" },
     });
+    expect(screen.getByLabelText("口播稿内容")).toHaveValue("待保存草稿");
     await waitFor(
       () => {
         const saved = window.localStorage.getItem(draftKey);
