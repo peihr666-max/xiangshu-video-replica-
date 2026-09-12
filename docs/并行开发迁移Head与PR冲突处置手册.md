@@ -104,6 +104,27 @@ EOF
 [ ] git log origin/main..HEAD 只含本任务提交
 ```
 
+### 5.1 已工具化（MIGRATION-GUARD-20260912，2026-09-12）
+
+§4 的探针与 §5 的清单已封装为 `scripts/ci/migration_manifest.py`，并由 CI 接线（`quality-linux` 内，排在分片 pytest **之前**）：
+
+```bash
+python3 scripts/ci/migration_manifest.py --check          # §5 的可执行版本（免 PG）
+python3 scripts/ci/migration_manifest.py --record         # 新增/重挂迁移后重记清单并提交
+python3 scripts/ci/migration_manifest.py --print-schema   # §4 的探针（复用同一套 CW-056 helper）
+python3 scripts/ci/migration_manifest.py --check-schema   # 真实 PG 与冻结字面量比对
+```
+
+上面的 heredoc 与清单**保留**，作为原理说明与逃生舱；日常用命令，避免手抄数字——`--print-schema` 与 §4 逐项等价（同一对 helper，零漂移）。
+
+工具**不拥有**真源常量：`HEAD_REVISION` / `PUBLISHED_*` / 冻结矩阵仍以 `test_cw056_supported_head_matrix.py` 为准，工具只用 `ast` 读取并**独立重算后比对**（双跑，任一侧漂移都会红）。
+
+**新增迁移改用时间戳命名**：`YYYYMMDDTHHMM_<slug>`（如 `20260912T1430_customer_discounts`）。存量文件一律不改名——main 现链 `081→082→086→083→089` 的数字序早已断裂，顺序完全由 `down_revision` 决定。豁免规则是「`naming_policy.adoption_head` 锚点 + 其祖先闭包」。
+
+**merge revision 的定位**：§3 的「后合者重挂」仍是正常路径（它安全且产物更简单）。`down_revision = ("a", "b")` 的用途是**重挂不可行时**——两个 head 都已经进了 main。守卫把「已发布段 base..055 保持线性」写成硬约束，保证 merge revision 只可能出现在已发布段之后，因为 §4 的线性遍历是冻结哈希成立的前提。
+
+见 [ADR](adr/adr-migration-chain-guard-tooling.md)。
+
 ## 6. 事故台账（2026-09-11~12 实录，全部已修复）
 
 | # | 事故 | 证据 | 根因 | 修法沉淀 |

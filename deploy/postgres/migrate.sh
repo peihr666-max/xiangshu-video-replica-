@@ -32,9 +32,24 @@ flock -n "$LOCK_FILE" .venv/bin/alembic upgrade head
 # "just migrated" from "deployed new code against an old schema and did
 # nothing" -- and the second case is the one that pages someone at 3am.
 # Read-only, so it is safe to run after the lock is released.
-EXPECTED_HEAD="$(.venv/bin/alembic heads | awk 'NR == 1 {print $1}')"
-ACTUAL_HEAD="$(.venv/bin/alembic current | awk 'NR == 1 {print $1}')"
-if [ -z "$EXPECTED_HEAD" ] || [ "$ACTUAL_HEAD" != "$EXPECTED_HEAD" ]; then
+#
+# Count the heads instead of taking the first. `alembic heads` prints one
+# "NNN_slug (head)" line per head, and the previous `awk 'NR == 1'` would
+# silently pick one of them; `alembic current` likewise prints one line per row
+# in alembic_version, so a database left at more than one revision could be
+# compared on its first row alone and reported as "reached the expected head".
+# customer-git-rollout.sh guards the same way; keep the two in step.
+HEADS_OUTPUT="$(.venv/bin/alembic heads)"
+HEAD_COUNT="$(printf '%s\n' "$HEADS_OUTPUT" | awk '/\(head\)/ {count++} END {print count + 0}')"
+EXPECTED_HEAD="$(printf '%s\n' "$HEADS_OUTPUT" | awk '/\(head\)/ {print $1}' | tail -n 1)"
+CURRENT_OUTPUT="$(.venv/bin/alembic current)"
+CURRENT_COUNT="$(printf '%s\n' "$CURRENT_OUTPUT" | awk '/\(head\)/ {count++} END {print count + 0}')"
+ACTUAL_HEAD="$(printf '%s\n' "$CURRENT_OUTPUT" | awk '/\(head\)/ {print $1}' | tail -n 1)"
+if [ "$HEAD_COUNT" != "1" ] || [ -z "$EXPECTED_HEAD" ]; then
+    echo "migration script tree must have exactly one head, found ${HEAD_COUNT}" >&2
+    exit 70
+fi
+if [ "$CURRENT_COUNT" != "1" ] || [ "$ACTUAL_HEAD" != "$EXPECTED_HEAD" ]; then
     echo "migration did not reach the expected head: current='${ACTUAL_HEAD}' expected head='${EXPECTED_HEAD}'" >&2
     exit 70
 fi

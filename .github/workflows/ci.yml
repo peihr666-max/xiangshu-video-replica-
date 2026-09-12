@@ -214,6 +214,17 @@ jobs:
         # former `npm run check` minus its trailing full pytest, which now runs
         # sharded in the next step. Always runs: backend changes must be gated.
         run: npm run check:static
+      - name: Assert migration chain invariants
+        # MIGRATION-GUARD-20260912: fail-closed guard for the migration chain, ordered
+        # BEFORE the sharded pytest so a broken chain is caught in seconds instead of
+        # after a 17-minute shard run. DB-free and stdlib-only, so it runs on plain
+        # `python3` like the shard-coverage guard below.
+        # Enforces: exactly one head, a single base, a linear frozen published range,
+        # the new-revision timestamp naming policy, and that no migration file recorded
+        # in server/migrations/manifest.json has been rewritten. Remedy for most
+        # failures is `python3 scripts/ci/migration_manifest.py --record` and commit.
+        # See docs/并行开发迁移Head与PR冲突处置手册.md §5.
+        run: python3 scripts/ci/migration_manifest.py --check
       - name: Assert shard manifests cover every test file
         # CI-7 (CW-061): fail-closed coverage guard, ordered BEFORE the sharded
         # pytest. run-pytest-shards.sh only executes the files named in the
