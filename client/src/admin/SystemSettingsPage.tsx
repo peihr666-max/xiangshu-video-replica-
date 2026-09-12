@@ -7,6 +7,7 @@ import {
   updateControlRuntimeSettings,
 } from "../api";
 import { type SettingsBackend, SettingsPanel } from "../SettingsPanel";
+import { H3ExtendedModesSection } from "./H3ExtendedModesSection";
 import { PaymentSettingsSection } from "./PaymentSettingsSection";
 import { QueueModeSection } from "./QueueModeSection";
 import { RatesManager } from "./RatesManager";
@@ -60,6 +61,7 @@ export function SystemSettingsPage({
       {tab === "services" ? (
         <>
           <QueueModeSection readOnly={readOnly} />
+          <H3ExtendedModesSection readOnly={readOnly} />
           <ViralRuntimeSection readOnly={readOnly} />
           <section className="admin-panel" aria-label="服务配置">
             <SettingsPanel
