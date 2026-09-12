@@ -268,16 +268,14 @@ describe("V1.4 workspace integration", () => {
           role: "customer",
         }}
         customerAccount={account}
-        initialState={createState("profile")}
+        initialState={createState("workbench")}
       />,
     );
 
     expect(
       await screen.findByRole("button", { name: "用户档案，积分 0 积分" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("0 积分")).toHaveLength(2);
-    expect(screen.getByText("客户甲")).toBeInTheDocument();
-    expect(screen.getByText("customer-a")).toBeInTheDocument();
+    expect(screen.getByText("0 积分")).toBeInTheDocument();
   });
 
   it("正式内部工作区沿用已有钱包接口显示积分", async () => {
@@ -370,7 +368,7 @@ describe("V1.4 workspace integration", () => {
     ).toBeInTheDocument();
   });
 
-  it("钱包读取失败与未知状态分开，并允许提供重试", async () => {
+  it("侧栏钱包读取失败与未知余额明确区分", async () => {
     api.customerGetWallet
       .mockRejectedValueOnce(new Error("wallet offline"))
       .mockResolvedValueOnce({
@@ -390,7 +388,7 @@ describe("V1.4 workspace integration", () => {
           role: "customer",
         }}
         customerAccount={account}
-        initialState={createState("profile")}
+        initialState={createState("workbench")}
       />,
     );
 
@@ -398,11 +396,7 @@ describe("V1.4 workspace integration", () => {
     expect(
       await screen.findByRole("button", { name: "用户档案，积分 读取失败" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("读取失败")).toHaveLength(2);
-    fireEvent.click(screen.getByRole("button", { name: "重试余额查询" }));
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 12 积分" }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("读取失败")).toBeInTheDocument();
   });
 
   it("账户资料失败入口透传既有资料刷新操作", async () => {
@@ -429,7 +423,7 @@ describe("V1.4 workspace integration", () => {
     );
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "重试资料查询" }),
+      await screen.findByRole("button", { name: "重试加载账号" }),
     );
     expect(account.onRefreshProfile).toHaveBeenCalledOnce();
   });

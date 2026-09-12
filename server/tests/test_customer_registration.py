@@ -56,7 +56,7 @@ CW076_DB_NAME = "cw076_registration_test"
 CW076_MIGRATION_DB_NAME = "cw076_migration_test"
 
 REGISTER_PATH = "/api/customer/register"
-HEAD_REVISION = "20260912T1910_xiaohongshu_link_import"
+HEAD_REVISION = "20260912T2200_customer_token_lifecycle"
 PRIOR_REVISION = "20260912T1353_customer_discounts"
 
 # A policy-valid password (>= MIN_PASSWORD_LENGTH, not blank). Never a secret.

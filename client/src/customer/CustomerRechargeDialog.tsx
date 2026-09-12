@@ -249,7 +249,7 @@ export function CustomerRechargeDialog({
         {paymentState === "paid" ? (
           <div className="recharge-dialog__success" role="status">
             <strong>充值成功</strong>
-            <p>秒数额度已经到账，可以继续创建视频。</p>
+            <p>积分已经到账，可以继续创建视频。</p>
             <button onClick={onClose} type="button">
               完成
             </button>
@@ -271,7 +271,7 @@ export function CustomerRechargeDialog({
             <div className="recharge-dialog__summary">
               <span>支付金额</span>
               <strong>{formatFen(order.amount_fen)}</strong>
-              <p>到账 {order.credits} 秒 · 支付完成后自动到账</p>
+              <p>到账 {order.credits} 积分 · 支付完成后自动到账</p>
               <span className="recharge-dialog__waiting" role="status">
                 正在等待支付结果
               </span>
@@ -294,7 +294,7 @@ export function CustomerRechargeDialog({
           <div className="recharge-dialog__chooser">
             <p>
               {wallet
-                ? `当前可用 ${wallet.available_credits} 秒，768P 价格 ${formatFen(wallet.internal_unit_price_fen)}/秒。`
+                ? `当前可用 ${wallet.available_credits} 积分，兑换单价 ${formatFen(wallet.internal_unit_price_fen)}/积分。`
                 : "正在读取充值信息…"}
             </p>
             <div className="recharge-dialog__presets">
@@ -308,7 +308,7 @@ export function CustomerRechargeDialog({
                   <strong>{amount} 元</strong>
                   <span>
                     {wallet
-                      ? `约 ${Math.floor((amount * 100) / wallet.internal_unit_price_fen)} 秒 @768P`
+                      ? `约 ${Math.floor((amount * 100) / wallet.internal_unit_price_fen)} 积分`
                       : "—"}
                   </span>
                 </button>

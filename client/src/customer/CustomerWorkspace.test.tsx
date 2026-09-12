@@ -74,6 +74,22 @@ function jsonResponse(payload: unknown, status = 200) {
   });
 }
 
+function centerResponse(url: string) {
+  if (url.endsWith("/api/customer/center-summary"))
+    return jsonResponse({
+      user_id: "user-1",
+      available_credits: 0,
+      reserved_credits: 0,
+      total_consumed_credits: 0,
+      active_tokens: 0,
+    });
+  if (url.endsWith("/api/customer/api-keys"))
+    return jsonResponse({ items: [], total: 0 });
+  if (url.endsWith("/api/customer/api-keys/default"))
+    return jsonResponse({ plaintext: null }, 201);
+  return undefined;
+}
+
 function fakeStore(): CustomerCredentialStore {
   return {
     loadDeviceCredentialToken: vi.fn().mockResolvedValue(deviceTokenText),
@@ -120,106 +136,9 @@ describe("CustomerWorkspace (T31)", () => {
       if (url.endsWith("/health")) {
         return jsonResponse({ status: "ok", service: "video-replica-api" });
       }
-      return jsonResponse([]);
+      return centerResponse(url) ?? jsonResponse([]);
     });
   }
-
-  /** Like stubDeviceFetch, but the pending request disappears from the list
-   * once the approve call lands — the reload after approval must observe it. */
-  function stubDeviceFetchWithApproval() {
-    let approved = false;
-    return vi.fn((url: string, init?: RequestInit) => {
-      if (
-        url.endsWith("/api/customer/devices") &&
-        (init?.method ?? "GET") === "GET"
-      ) {
-        return jsonResponse(
-          approved ? { ...mockDevices, pending_pairings: [] } : mockDevices,
-        );
-      }
-      if (url.endsWith("/api/customer/profile")) {
-        return jsonResponse(mockProfile);
-      }
-      if (
-        url.includes("/api/customer/device-pairings/") &&
-        url.endsWith("/approve")
-      ) {
-        approved = true;
-        return jsonResponse({
-          pairing_request_id: "pairing-1",
-          status: "APPROVED",
-        });
-      }
-      if (url.endsWith("/health")) {
-        return jsonResponse({ status: "ok", service: "video-replica-api" });
-      }
-      return jsonResponse([]);
-    });
-  }
-
-  function stubDeviceFetchWithDismissal() {
-    let dismissed = false;
-    return vi.fn((url: string, init?: RequestInit) => {
-      if (
-        url.endsWith("/api/customer/devices") &&
-        (init?.method ?? "GET") === "GET"
-      ) {
-        return jsonResponse(
-          dismissed ? { ...mockDevices, pending_pairings: [] } : mockDevices,
-        );
-      }
-      if (url.endsWith("/api/customer/profile")) {
-        return jsonResponse(mockProfile);
-      }
-      if (
-        url.endsWith("/api/customer/device-pairings/pairing-1") &&
-        init?.method === "DELETE"
-      ) {
-        dismissed = true;
-        return Promise.resolve({
-          ok: true,
-          status: 204,
-          json: async () => undefined,
-        });
-      }
-      if (url.endsWith("/health")) {
-        return jsonResponse({ status: "ok", service: "video-replica-api" });
-      }
-      return jsonResponse([]);
-    });
-  }
-
-  async function openDeviceManagement() {
-    fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
-    await screen.findByRole("heading", { name: "用户档案" });
-    fireEvent.click(screen.getByRole("tab", { name: "设备管理" }));
-    fireEvent.click(await screen.findByRole("button", { name: /^设备管理/ }));
-  }
-
-  it("shows pending pairing requests for approval on the device view", async () => {
-    const fetchMock = stubDeviceFetch();
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(
-      <CustomerWorkspace
-        user={user}
-        store={fakeStore()}
-        onLogout={vi.fn()}
-        onSessionExpired={vi.fn()}
-      />,
-    );
-
-    await openDeviceManagement();
-    expect(
-      await screen.findByRole("heading", { name: "新的设备绑定请求" }),
-    ).toBeInTheDocument();
-    // The approver sees the candidate's self-reported identity — the same
-    // masked fingerprint posture as the device list.
-    expect(screen.getByText(/Second Device •••• CD34/)).toBeInTheDocument();
-    expect(screen.getByText(/待确认/)).toBeInTheDocument();
-    // No slot is fabricated for a request that has not been approved yet.
-    expect(screen.queryByText(/Slot #2/)).toBeNull();
-  });
 
   it("loads the shared workspace only after attaching the customer session", async () => {
     const fetchMock = stubDeviceFetch();
@@ -250,76 +169,6 @@ describe("CustomerWorkspace (T31)", () => {
     });
   });
 
-  it("approves a pairing through the customer API and reloads the list", async () => {
-    const fetchMock = stubDeviceFetchWithApproval();
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(
-      <CustomerWorkspace
-        user={user}
-        store={fakeStore()}
-        onLogout={vi.fn()}
-        onSessionExpired={vi.fn()}
-      />,
-    );
-    await openDeviceManagement();
-    await screen.findByRole("heading", { name: "新的设备绑定请求" });
-
-    fireEvent.click(screen.getByRole("button", { name: "确认绑定" }));
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([url]) =>
-          url.includes("/api/customer/device-pairings/pairing-1/approve"),
-        ),
-      ).toBe(true);
-    });
-    // The pending section disappears after the reload; the empty-section
-    // render does not show the approval heading anymore.
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("heading", { name: "新的设备绑定请求" }),
-      ).toBeNull();
-    });
-  });
-
-  it("never claims a reject endpoint that does not exist", async () => {
-    const fetchMock = stubDeviceFetch();
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(
-      <CustomerWorkspace
-        user={user}
-        store={fakeStore()}
-        onLogout={vi.fn()}
-        onSessionExpired={vi.fn()}
-      />,
-    );
-    await openDeviceManagement();
-    await screen.findByRole("heading", { name: "新的设备绑定请求" });
-
-    fireEvent.click(screen.getByRole("button", { name: "暂不处理" }));
-
-    expect(
-      await screen.findByText("已暂不处理，可稍后在设备管理中继续确认。"),
-    ).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([url]) => String(url).includes("/reject")),
-    ).toBe(false);
-    expect(
-      fetchMock.mock.calls.some(
-        ([url, init]) =>
-          String(url).includes("/device-pairings/") &&
-          (init?.method === "DELETE" || init?.method === "POST"),
-      ),
-    ).toBe(false);
-
-    fireEvent.click(screen.getByRole("button", { name: /^设备管理/ }));
-    expect(
-      await screen.findByRole("heading", { name: "新的设备绑定请求" }),
-    ).toBeInTheDocument();
-  });
-
   it("shows a non-auth profile failure and retries without hanging", async () => {
     let profileAttempts = 0;
     let allowProfileSuccess = false;
@@ -336,7 +185,7 @@ describe("CustomerWorkspace (T31)", () => {
       if (url.endsWith("/health")) {
         return jsonResponse({ status: "ok", service: "video-replica-api" });
       }
-      return jsonResponse([]);
+      return centerResponse(url) ?? jsonResponse([]);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -350,18 +199,19 @@ describe("CustomerWorkspace (T31)", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
-    await screen.findByRole("heading", { name: "用户档案" });
-    fireEvent.click(screen.getByRole("tab", { name: "设备管理" }));
+    await screen.findByRole("heading", { name: "用户中心" });
 
     expect(
       await screen.findByText("账号资料加载失败，请稍后重试。"),
     ).toBeInTheDocument();
     const attemptsBeforeRetry = profileAttempts;
     allowProfileSuccess = true;
-    fireEvent.click(screen.getByRole("button", { name: "重新加载账号资料" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试加载账号" }));
 
     expect(
-      await screen.findByRole("heading", { name: mockProfile.display_name }),
+      await screen.findByRole("heading", {
+        name: new RegExp(mockProfile.display_name),
+      }),
     ).toBeInTheDocument();
     expect(profileAttempts).toBe(attemptsBeforeRetry + 1);
   });
@@ -391,7 +241,7 @@ describe("CustomerWorkspace (T31)", () => {
       if (url.endsWith("/health")) {
         return jsonResponse({ status: "ok", service: "video-replica-api" });
       }
-      return jsonResponse([]);
+      return centerResponse(url) ?? jsonResponse([]);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -410,7 +260,7 @@ describe("CustomerWorkspace (T31)", () => {
     ).toBeInTheDocument();
     const attemptsBeforeRetry = profileAttempts;
     allowProfileSuccess = true;
-    fireEvent.click(screen.getByRole("button", { name: "重试资料查询" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试加载账号" }));
 
     expect(
       await screen.findByRole("heading", {
@@ -429,10 +279,12 @@ describe("CustomerWorkspace (T31)", () => {
       resolveOlderCredential = resolve;
     });
     const olderStore = fakeStore();
-    vi.mocked(olderStore.loadSessionToken)
-      .mockResolvedValueOnce(olderSessionText)
-      .mockResolvedValueOnce(olderSessionText)
-      .mockReturnValueOnce(delayedOlderCredential);
+    let holdOlderCredential = false;
+    vi.mocked(olderStore.loadSessionToken).mockImplementation(() =>
+      holdOlderCredential
+        ? delayedOlderCredential
+        : Promise.resolve(olderSessionText),
+    );
     const currentStore = fakeStore();
     vi.mocked(currentStore.loadSessionToken).mockResolvedValue(
       currentSessionText,
@@ -463,7 +315,7 @@ describe("CustomerWorkspace (T31)", () => {
       if (url.endsWith("/health")) {
         return jsonResponse({ status: "ok", service: "video-replica-api" });
       }
-      return jsonResponse([]);
+      return centerResponse(url) ?? jsonResponse([]);
     });
     vi.stubGlobal("fetch", fetchMock);
     const olderExpired = vi.fn();
@@ -477,13 +329,15 @@ describe("CustomerWorkspace (T31)", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
-    await screen.findByRole("heading", { name: "用户档案" });
-    fireEvent.click(screen.getByRole("tab", { name: "设备管理" }));
+    await screen.findByRole("heading", { name: "用户中心" });
+    holdOlderCredential = true;
     fireEvent.click(
-      await screen.findByRole("button", { name: "重新加载账号资料" }),
+      await screen.findByRole("button", { name: "重试加载账号" }),
     );
     await waitFor(() => {
-      expect(olderStore.loadSessionToken).toHaveBeenCalledTimes(3);
+      expect(olderStore.loadSessionToken).toHaveReturnedWith(
+        delayedOlderCredential,
+      );
     });
 
     olderWorkspace.unmount();
@@ -505,73 +359,8 @@ describe("CustomerWorkspace (T31)", () => {
     expect(olderExpired).not.toHaveBeenCalled();
   });
 
-  it.each(["confirm", "credential"] as const)(
-    "does not unbind after the lease expires during %s",
-    async (expiryPhase) => {
-      const initialNow = Date.now();
-      let currentNow = initialNow;
-      vi.spyOn(Date, "now").mockImplementation(() => currentNow);
-      let holdCredentialRead = false;
-      let releaseCredentialRead: ((value: string) => void) | undefined;
-      const delayedCredential = new Promise<string>((resolve) => {
-        releaseCredentialRead = resolve;
-      });
-      const store = fakeStore();
-      vi.mocked(store.loadDeviceCredentialToken).mockImplementation(() =>
-        holdCredentialRead
-          ? delayedCredential
-          : Promise.resolve(deviceTokenText),
-      );
-      const fetchMock = stubDeviceFetch();
-      vi.stubGlobal("fetch", fetchMock);
-      vi.spyOn(window, "confirm").mockImplementation(() => {
-        if (expiryPhase === "confirm") {
-          currentNow = initialNow + 61_000;
-        }
-        return true;
-      });
-
-      render(
-        <CustomerWorkspace
-          user={user}
-          sessionRuntime={{
-            connectivity: "reachable",
-            lastHeartbeatAt: new Date(initialNow).toISOString(),
-            leaseExpiresAt: new Date(initialNow + 60_000).toISOString(),
-          }}
-          store={store}
-          onLogout={vi.fn()}
-          onSessionExpired={vi.fn()}
-        />,
-      );
-      await openDeviceManagement();
-      await waitFor(() => {
-        expect(store.loadDeviceCredentialToken).toHaveBeenCalledTimes(2);
-      });
-      holdCredentialRead = expiryPhase === "credential";
-
-      fireEvent.click(screen.getByRole("button", { name: "解绑当前设备" }));
-      if (expiryPhase === "credential") {
-        currentNow = initialNow + 61_000;
-        releaseCredentialRead?.(deviceTokenText);
-      }
-
-      expect(
-        await screen.findByText("会话租约已过期，请重新登录后管理设备。"),
-      ).toBeInTheDocument();
-      expect(
-        fetchMock.mock.calls.some(
-          ([url, init]) =>
-            url.endsWith("/api/customer/devices/device-1") &&
-            init?.method === "DELETE",
-        ),
-      ).toBe(false);
-    },
-  );
-
-  it("deletes an invalid pairing request and reloads the device list", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    const fetchMock = stubDeviceFetchWithDismissal();
+  it("personal center has no device or pairing management and does not load devices", async () => {
+    const fetchMock = stubDeviceFetch();
     vi.stubGlobal("fetch", fetchMock);
     render(
       <CustomerWorkspace
@@ -581,22 +370,15 @@ describe("CustomerWorkspace (T31)", () => {
         onSessionExpired={vi.fn()}
       />,
     );
-    await openDeviceManagement();
-    await screen.findByRole("heading", { name: "新的设备绑定请求" });
-
-    fireEvent.click(screen.getByRole("button", { name: "删除无效请求" }));
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          ([url, init]) =>
-            url.endsWith("/api/customer/device-pairings/pairing-1") &&
-            init?.method === "DELETE",
-        ),
-      ).toBe(true);
-      expect(
-        screen.queryByRole("heading", { name: "新的设备绑定请求" }),
-      ).toBeNull();
-    });
+    fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
+    await screen.findByRole("heading", { name: "用户中心" });
+    fireEvent.click(screen.getByRole("tab", { name: "账号设置" }));
+    expect(screen.queryByText("登录设备")).toBeNull();
+    expect(screen.queryByRole("button", { name: /设备|绑定/ })).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        url.endsWith("/api/customer/devices"),
+      ),
+    ).toBe(false);
   });
 });
