@@ -34,7 +34,7 @@ DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # 取代旧的 SKIP_REASON 常量（已无引用，随 main 基线删除）。
 # HEAD_REVISION 取本分支链尾 20260912T1400：本分支 = main(→090) + 注册线，
 # 迁移后 alembic 版本头即 20260912T1400，9 处 assert version == HEAD_REVISION 依赖此值。
-HEAD_REVISION = "20260912T1910_xiaohongshu_link_import"
+HEAD_REVISION = "20260912T2200_customer_token_lifecycle"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(

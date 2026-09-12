@@ -42,6 +42,7 @@ function testKeys() {
     ACTIVATION: randomBytes(36).toString("base64url"),
     FINGERPRINT: randomBytes(36).toString("base64url"),
     ADMIN_SESSION: randomBytes(36).toString("base64url"),
+    API_KEY: randomBytes(36).toString("base64url"),
     IDEMPOTENCY_AEAD: randomBytes(32).toString("base64url").replace(/=+$/, ""),
   };
 }
@@ -132,6 +133,7 @@ with psycopg.connect("${adminDsn}", autocommit=True) as c:
     VIDEO_REPLICA_ACTIVATION_CODE_HMAC_KEY: keys.ACTIVATION,
     VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY: keys.FINGERPRINT,
     VIDEO_REPLICA_ADMIN_SESSION_HMAC_KEY: keys.ADMIN_SESSION,
+    VIDEO_REPLICA_API_KEY_HMAC_KEY: keys.API_KEY,
     VIDEO_REPLICA_CUSTOMER_IDEMPOTENCY_AEAD_KEY: keys.IDEMPOTENCY_AEAD,
     VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_IP: "100000",
     VIDEO_REPLICA_RATE_LIMIT_ACTIVATE_CODE: "100000",

@@ -11,7 +11,7 @@ from app.db import alembic_config, connect_database, initialize_database
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository
 
-HEAD_REVISION = "20260912T1910_xiaohongshu_link_import"
+HEAD_REVISION = "20260912T2200_customer_token_lifecycle"
 
 
 def seed_subjects(conn: sqlite3.Connection) -> None:

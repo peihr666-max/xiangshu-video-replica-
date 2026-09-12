@@ -187,6 +187,194 @@ def png_with_dimensions(width: int, height: int) -> bytes:
     )
 
 
+def test_w20_download_uses_validated_ip_and_never_the_urllib_get_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import first_frames
+
+    resolved: list[str] = []
+    connections: list[tuple[object, ...]] = []
+    requests: list[tuple[object, ...]] = []
+    closed: list[str] = []
+
+    def dns(host: str, *_args, **_kwargs):
+        resolved.append(host)
+        ip = "93.184.216.34" if len(resolved) == 1 else "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))]
+
+    class Response:
+        status = 200
+        headers = {"Content-Type": "image/png", "Content-Length": "5"}
+
+        def read(self, size: int) -> bytes:
+            assert size == first_frames.MAX_PROVIDER_IMAGE_BYTES + 1
+            return b"image"
+
+        def close(self):
+            closed.append("response")
+
+    class Connection:
+        def connect(self):
+            pass
+
+        def request(self, *args, **kwargs):
+            requests.append((args, kwargs))
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            closed.append("connection")
+
+    def connection_factory(*args):
+        connections.append(args)
+        return Connection()
+
+    monkeypatch.setattr(socket, "getaddrinfo", dns)
+    monkeypatch.setattr(first_frames, "_pinned_connection", connection_factory, raising=False)
+    monkeypatch.setattr(
+        first_frames.UrllibApilioTransport,
+        "_open",
+        lambda *_: pytest.fail("unsafe domain reconnect"),
+    )
+    result = first_frames.UrllibApilioTransport(timeout_seconds=7).get(
+        "https://cdn.example/image.png?sig=synthetic"
+    )
+    assert result[0] == b"image"
+    assert resolved == ["cdn.example"]
+    assert connections == [("https", "cdn.example", 443, "93.184.216.34", 7)]
+    assert requests[0][0] == ("GET", "/image.png?sig=synthetic")
+    assert requests[0][1]["headers"]["Host"] == "cdn.example"
+    assert closed == ["response", "connection"]
+
+
+@pytest.mark.parametrize(
+    "url", ["https://name:password@cdn.example/a.png", "https://cdn.example:8443/a.png"]
+)
+def test_w20_download_rejects_credentials_and_nonstandard_ports(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("reject URL before DNS")
+    )
+    with pytest.raises(ImageProviderFailed):
+        require_safe_provider_download_url(url)
+
+
+def test_w20_rejects_unexpected_socket_peer_before_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import first_frames
+
+    closed: list[bool] = []
+
+    class Socket:
+        def getpeername(self):
+            return ("127.0.0.1", 443)
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: Socket())
+    with pytest.raises(ImageProviderFailed, match="not verified"):
+        first_frames.UrllibApilioTransport().get("https://cdn.example/image.png")
+    assert closed == [True]
+
+
+@pytest.mark.parametrize(
+    "addresses", [["127.0.0.1"], ["10.0.0.1"], ["169.254.169.254"], ["93.184.216.34", "127.0.0.1"]]
+)
+def test_w20_private_and_mixed_dns_answers_never_connect(
+    addresses: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import first_frames
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443)) for ip in addresses
+        ],
+    )
+    monkeypatch.setattr(
+        first_frames, "_pinned_connection", lambda *_a: pytest.fail("must not connect")
+    )
+    with pytest.raises(ImageProviderFailed, match="public address"):
+        first_frames.UrllibApilioTransport().get("https://cdn.example/image.png")
+
+
+@pytest.mark.parametrize(
+    "response_case", ["ok", "redirect", "declared_too_large", "body_too_large"]
+)
+def test_w20_address_fallback_preserves_download_guards(
+    response_case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import first_frames
+
+    dns_calls: list[bool] = []
+    connected: list[str] = []
+    closed: list[str] = []
+    read_sizes: list[int] = []
+    monkeypatch.setattr(first_frames, "MAX_PROVIDER_IMAGE_BYTES", 4)
+
+    def dns(*_a, **_k):
+        dns_calls.append(True)
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))
+            for ip in ["93.184.216.34", "93.184.216.35"]
+        ]
+
+    class Response:
+        status = 302 if response_case == "redirect" else 200
+        headers = {
+            "Content-Length": "5" if response_case == "declared_too_large" else "4",
+            "Location": "https://127.0.0.1/internal",
+        }
+
+        def read(self, size):
+            read_sizes.append(size)
+            return b"abcde" if response_case == "body_too_large" else b"abcd"
+
+        def close(self):
+            closed.append("response")
+
+    class Connection:
+        def __init__(self, ip):
+            self.ip = ip
+
+        def connect(self):
+            connected.append(self.ip)
+            if self.ip.endswith("34"):
+                raise OSError("synthetic unreachable address")
+
+        def request(self, *_a, **_k):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            closed.append(self.ip)
+
+    monkeypatch.setattr(socket, "getaddrinfo", dns)
+    monkeypatch.setattr(
+        first_frames, "_pinned_connection", lambda _s, _h, _p, ip, _t: Connection(ip)
+    )
+    transport = first_frames.UrllibApilioTransport()
+    if response_case == "ok":
+        assert transport.get("https://cdn.example/image.png")[0] == b"abcd"
+    else:
+        with pytest.raises(ImageProviderFailed):
+            transport.get("https://cdn.example/image.png")
+    assert dns_calls == [True]
+    assert connected == ["93.184.216.34", "93.184.216.35"]
+    assert closed == ["93.184.216.34", "response", "93.184.216.35"]
+    assert read_sizes == ([] if response_case in {"redirect", "declared_too_large"} else [5])
+
+
 def jpeg_with_dimensions(width: int, height: int) -> bytes:
     return (
         b"\xff\xd8"

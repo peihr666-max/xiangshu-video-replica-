@@ -5875,3 +5875,92 @@ export async function verifyPublishAccount(accountId: string): Promise<void> {
     { method: "POST" },
   );
 }
+
+export type CustomerApiKey = {
+  id: string;
+  token_group_id: string;
+  credential_version: number;
+  key_prefix: string;
+  label: string;
+  scopes: string[];
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  is_default: boolean;
+  total_consumed_credits: number;
+};
+export type CreatedCustomerApiKey = CustomerApiKey & {
+  plaintext: string | null;
+};
+export type CustomerCenterSummary = {
+  user_id: string;
+  available_credits: number;
+  reserved_credits: number;
+  total_consumed_credits: number;
+  active_tokens: number;
+};
+export async function customerGetCenterSummary(
+  credential: CustomerSessionCredential,
+): Promise<CustomerCenterSummary> {
+  return (
+    await customerJson<CustomerCenterSummary>("/api/customer/center-summary", {
+      credential,
+    })
+  ).body;
+}
+export async function customerListApiKeys(
+  credential: CustomerSessionCredential,
+): Promise<{ items: CustomerApiKey[]; total: number }> {
+  return (
+    await customerJson<{ items: CustomerApiKey[]; total: number }>(
+      "/api/customer/api-keys",
+      { credential },
+    )
+  ).body;
+}
+export async function customerInitializeDefaultApiKey(
+  credential: CustomerSessionCredential,
+  idempotencyKey: string,
+): Promise<CreatedCustomerApiKey> {
+  return (
+    await customerJson<CreatedCustomerApiKey>(
+      "/api/customer/api-keys/default",
+      { credential, method: "POST", body: {}, idempotencyKey },
+    )
+  ).body;
+}
+export async function customerCreateApiKey(
+  credential: CustomerSessionCredential,
+  label: string,
+  idempotencyKey: string,
+): Promise<CreatedCustomerApiKey> {
+  return (
+    await customerJson<CreatedCustomerApiKey>("/api/customer/api-keys", {
+      credential,
+      method: "POST",
+      body: { label },
+      idempotencyKey,
+    })
+  ).body;
+}
+export async function customerRotateApiKey(
+  credential: CustomerSessionCredential,
+  id: string,
+  idempotencyKey: string,
+): Promise<CreatedCustomerApiKey> {
+  return (
+    await customerJson<CreatedCustomerApiKey>(
+      `/api/customer/api-keys/${encodeURIComponent(id)}/rotate`,
+      { credential, method: "POST", body: {}, idempotencyKey },
+    )
+  ).body;
+}
+export async function customerRevokeApiKey(
+  credential: CustomerSessionCredential,
+  id: string,
+): Promise<void> {
+  await customerJson<undefined>(
+    `/api/customer/api-keys/${encodeURIComponent(id)}`,
+    { credential, method: "DELETE" },
+  );
+}

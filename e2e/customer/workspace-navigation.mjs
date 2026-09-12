@@ -9,27 +9,24 @@ export async function waitForCustomerWorkspace(page) {
   return profileEntry;
 }
 
-export async function openCustomerDevices(page) {
+export async function openCustomerCenter(page) {
   const profileEntry = await waitForCustomerWorkspace(page);
+  const summary = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/customer/center-summary") &&
+      response.request().method() === "GET",
+  );
   await profileEntry.click();
-  // V1.4 navigation is two-level:
-  //  1) the 设备管理 tab (role=tab) on the 用户档案 page calls openLive("profile"),
-  //     mounting CustomerProfilePanel which defaults to the 账号概览 tab;
-  //  2) the 设备管理 nav button (role=button) inside that panel switches to the
-  //     devices tab, which renders DeviceManagementPage (a region labelled by
-  //     its 设备管理 heading).
-  await page.getByRole("tab", { name: "设备管理", exact: true }).click();
-  await page.getByRole("button", { name: "设备管理", exact: true }).click();
-  const devices = page.getByRole("region", { name: "设备管理" });
-  await expect(devices).toBeVisible({ timeout: 20_000 });
-  return devices;
-}
-
-export async function openCustomerWallet(page) {
-  const profileEntry = await waitForCustomerWorkspace(page);
-  await profileEntry.click();
-  // V1.4: the 使用记录 tab opens the wallet page (余额与充值) directly.
-  await page.getByRole("tab", { name: "使用记录", exact: true }).click();
+  expect((await summary).status()).toBe(200);
+  await expect(
+    page.getByRole("heading", { name: "用户中心", exact: true }),
+  ).toBeVisible();
+  // Only the first visit creates a default credential. Wait for its lifecycle
+  // request before dismissing the one-time display, without reading its value.
+  await expect(page.locator(".uc-tokens tbody tr")).toHaveCount(1);
+  await expect(page.getByText("自动生成", { exact: true })).toBeVisible();
+  const saved = page.getByRole("button", { name: "已保存，关闭", exact: true });
+  if (await saved.isVisible()) await saved.click();
 }
 
 /** A throwaway account exercises the actual public password entry. */

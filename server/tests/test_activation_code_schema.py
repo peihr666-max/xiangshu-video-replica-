@@ -28,7 +28,7 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
-_HEAD_REVISION = "20260912T1910_xiaohongshu_link_import"
+_HEAD_REVISION = "20260912T2200_customer_token_lifecycle"
 
 
 def _pg_dsn() -> str:
