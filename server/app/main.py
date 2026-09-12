@@ -23,6 +23,7 @@ from app.admin_rate_routes import router as admin_rate_router
 from app.admin_runtime_routes import router as admin_runtime_router
 from app.admin_session_routes import router as admin_session_router
 from app.analysis_routes import router as analysis_router
+from app.api_key_routes import router as api_key_router
 from app.bootstrap import (
     check_customer_production_runtime_dependencies,
     customer_public_origin,
@@ -361,6 +362,7 @@ app.include_router(admin_audit_router)
 app.include_router(customer_activation_router)
 app.include_router(customer_device_router)
 app.include_router(customer_session_router)
+app.include_router(api_key_router)
 app.include_router(admin_activation_router)
 app.include_router(admin_device_router)
 app.include_router(recharge_router)

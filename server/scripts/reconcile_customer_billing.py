@@ -53,6 +53,8 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "activation_code_exports",
         "activation_code_activations",
         "activation_code_events",
+        # 089_customer_api_keys: 客户程序 API Key 泳道，PG-only（089 明确 SQLite lane 不建表）。
+        "customer_api_keys",
         "customer_devices",
         "device_pairing_requests",
         "customer_session_state",
