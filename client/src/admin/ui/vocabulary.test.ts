@@ -8,10 +8,32 @@ import {
   formatFen,
   formatYuanFromFen,
   labelFrom,
+  ledgerExportMessage,
   rechargeOrderStatusLabel,
+  shanghaiDate,
 } from "./vocabulary";
 
 describe("vocabulary", () => {
+  it("uses Shanghai midnight and calendar offsets", () => {
+    expect(shanghaiDate(0, new Date("2026-09-11T15:59:59Z"))).toBe(
+      "2026-09-11",
+    );
+    expect(shanghaiDate(0, new Date("2026-09-11T16:00:00Z"))).toBe(
+      "2026-09-12",
+    );
+    expect(shanghaiDate(1, new Date("2026-12-31T17:00:00Z"))).toBe(
+      "2027-01-02",
+    );
+  });
+  it("makes limited exports and unknown completeness explicit", () => {
+    expect(
+      ledgerExportMessage({ total: 5001, returned: 5000, truncated: true }),
+    ).toContain("仅导出 5000 条");
+    expect(
+      ledgerExportMessage({ total: 3, returned: 3, truncated: false }),
+    ).toContain("已全部导出");
+    expect(ledgerExportMessage(null)).toContain("完整性待核对");
+  });
   it("maps every known activation code status and falls back to the raw value", () => {
     expect(activationCodeStatusLabel("GENERATED")).toBe("待启用");
     expect(activationCodeStatusLabel("ISSUED")).toBe("可使用");

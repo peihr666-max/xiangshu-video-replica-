@@ -12,6 +12,7 @@ import { FundsPage } from "./admin/FundsPage";
 import { GenerationRecordsPage } from "./admin/GenerationRecordsPage";
 import { OverviewPage } from "./admin/OverviewPage";
 import { SystemSettingsPage } from "./admin/SystemSettingsPage";
+import { shanghaiDate } from "./admin/ui/vocabulary";
 import "./admin/admin-login.css";
 import { PageBanner } from "./admin/ui/PageBanner";
 import { TabBar } from "./admin/ui/TabBar";
@@ -627,9 +628,7 @@ export function AdminApp() {
           </span>
         </div>
         <div className="admin-session">
-          <time dateTime={new Date().toISOString().slice(0, 10)}>
-            {new Date().toLocaleDateString("zh-CN")}
-          </time>
+          <time dateTime={shanghaiDate()}>{shanghaiDate()}</time>
           <div className="admin-session__identity">
             <span>{actor.display_name}</span>
             <span>{roleLabel(actor.role)}</span>

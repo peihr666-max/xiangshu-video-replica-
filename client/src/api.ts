@@ -1518,16 +1518,49 @@ export async function downloadCustomersCsv(
   );
 }
 
-export async function downloadControlRechargeOrdersCsv(): Promise<void> {
-  await downloadControlCsv(
-    "/api/control/recharge-orders.csv",
+export type LedgerExportSummary = {
+  total: number;
+  returned: number;
+  truncated: boolean;
+} | null;
+export type LedgerExportFilters = {
+  username?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  userId?: string;
+};
+
+function ledgerExportQuery(options: LedgerExportFilters): URLSearchParams {
+  const query = new URLSearchParams();
+  if (options.username) query.set("username", options.username);
+  if (options.userId) query.set("user_id", options.userId);
+  if (options.createdFrom) query.set("created_from", options.createdFrom);
+  if (options.createdTo) query.set("created_to", options.createdTo);
+  return query;
+}
+
+export async function downloadControlRechargeOrdersCsv(
+  options: LedgerExportFilters & {
+    status?: RechargeOrderStatus;
+    channel?: string;
+  } = {},
+): Promise<LedgerExportSummary> {
+  const query = ledgerExportQuery(options);
+  if (options.status) query.set("status", options.status);
+  if (options.channel) query.set("channel", options.channel);
+  return downloadControlCsv(
+    `/api/control/recharge-orders.csv${query.size ? `?${query}` : ""}`,
     "recharge-orders.csv",
   );
 }
 
-export async function downloadControlWalletTransactionsCsv(): Promise<void> {
-  await downloadControlCsv(
-    "/api/control/wallet-transactions.csv",
+export async function downloadControlWalletTransactionsCsv(
+  options: LedgerExportFilters & { type?: string } = {},
+): Promise<LedgerExportSummary> {
+  const query = ledgerExportQuery(options);
+  if (options.type) query.set("type", options.type);
+  return downloadControlCsv(
+    `/api/control/wallet-transactions.csv${query.size ? `?${query}` : ""}`,
     "wallet-transactions.csv",
   );
 }
@@ -4108,7 +4141,7 @@ export async function downloadDiagnosticReport(
 async function downloadControlCsv(
   path: string,
   filename: string,
-): Promise<void> {
+): Promise<LedgerExportSummary> {
   const response = await requestControl(
     path,
     { method: "GET" },
@@ -4119,6 +4152,26 @@ async function downloadControlCsv(
   }
 
   downloadBlob(await response.blob(), filename);
+  const totalText = response.headers.get("X-Export-Total");
+  const returnedText = response.headers.get("X-Export-Returned");
+  const truncatedText = response.headers.get("X-Export-Truncated");
+  if (
+    !totalText ||
+    !returnedText ||
+    !/^\d+$/.test(totalText) ||
+    !/^\d+$/.test(returnedText)
+  )
+    return null;
+  const total = Number(totalText);
+  const returned = Number(returnedText);
+  if (
+    !Number.isSafeInteger(total) ||
+    !Number.isSafeInteger(returned) ||
+    returned > total ||
+    truncatedText !== String(total > returned)
+  )
+    return null;
+  return { total, returned, truncated: total > returned };
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

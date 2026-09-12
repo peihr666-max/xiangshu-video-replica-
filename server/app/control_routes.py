@@ -6,7 +6,6 @@ import io
 import json
 import logging
 import os
-import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
+from app.admin_dates import append_admin_date_filters
 from app.admin_write_contract import (
     AdminWriteContract,
 )
@@ -67,13 +67,6 @@ GenerationRecordType = Literal[
 ]
 ProviderCostStatus = Literal["KNOWN", "ESTIMATED", "UNAVAILABLE", "NOT_APPLICABLE"]
 RecordDataStatus = Literal["VALID", "UNAVAILABLE", "CORRUPTED"]
-_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _inclusive_created_to(value: str) -> str:
-    if _DATE_ONLY.match(value):
-        return f"{value} 23:59:59.999999+00:00"
-    return value
 
 
 class AccountWallet(BaseModel):
@@ -552,6 +545,7 @@ def list_recharge_orders(
     offset: int = Query(default=0, ge=0),
 ) -> ControlRechargeOrderPage:
     where, params = _order_filters(
+        postgres=conn.is_postgres,
         status=status,
         user_id=user_id,
         username=username,
@@ -610,6 +604,7 @@ def list_wallet_transactions(
     offset: int = Query(default=0, ge=0),
 ) -> ControlWalletTransactionPage:
     where, params = _transaction_filters(
+        postgres=conn.is_postgres,
         user_id=user_id,
         transaction_type=type,
         username=username,
@@ -683,6 +678,7 @@ def list_generation_records(
     records: list[ControlGenerationRecord] = []
     scan_limit = offset + limit
     video_where, video_params = _generation_record_filters(
+        postgres=conn.is_postgres,
         record_types=("VIDEO",),
         username=username,
         status=status,
@@ -691,6 +687,7 @@ def list_generation_records(
         created_to=created_to,
     )
     oral_where, oral_params = _generation_record_filters(
+        postgres=conn.is_postgres,
         record_types=("ORAL_VIDEO",),
         username=username,
         status=status,
@@ -699,6 +696,7 @@ def list_generation_records(
         created_to=created_to,
     )
     first_where, first_params = _generation_record_filters(
+        postgres=conn.is_postgres,
         record_types=("FIRST_FRAME_IMAGE",),
         username=username,
         status=status,
@@ -707,6 +705,7 @@ def list_generation_records(
         created_to=created_to,
     )
     sheet_where, sheet_params = _generation_record_filters(
+        postgres=conn.is_postgres,
         record_types=("CHARACTER_SHEET_IMAGE",),
         username=username,
         status=status,
@@ -715,6 +714,7 @@ def list_generation_records(
         created_to=created_to,
     )
     view_where, view_params = _generation_record_filters(
+        postgres=conn.is_postgres,
         record_types=("CHARACTER_VIEW_IMAGE",),
         username=username,
         status=status,
@@ -723,6 +723,7 @@ def list_generation_records(
         created_to=created_to,
     )
     source_where, source_params = _generation_record_filters(
+        postgres=conn.is_postgres,
         record_types=("SOURCE_FRAME_PROCESS", "SOURCE_FRAME_AI_SCORE"),
         username=username,
         status=status,
@@ -1342,6 +1343,10 @@ def export_recharge_orders_csv(
     actor: ControlUser,
     status: OrderStatus | None = None,
     user_id: str | None = None,
+    username: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    channel: str | None = None,
     limit: int = Query(default=5000, ge=1, le=5000),
 ) -> Response:
     _guard_ledger_export(
@@ -1350,12 +1355,27 @@ def export_recharge_orders_csv(
         kind="recharge_orders",
         filters={
             key: value
-            for key, value in (("status", status or ""), ("user_id", user_id or ""))
+            for key, value in [
+                ("user_id", user_id),
+                ("username", username),
+                ("created_from", created_from),
+                ("created_to", created_to),
+                ("status", status),
+                ("channel", channel),
+            ]
             if value
         },
         row_limit=limit,
     )
-    where, params = _order_filters(status=status, user_id=user_id)
+    where, params = _order_filters(
+        status=status,
+        user_id=user_id,
+        channel=channel,
+        username=username,
+        created_from=created_from,
+        created_to=created_to,
+        postgres=conn.is_postgres,
+    )
     rows = conn.execute(
         f"""
         SELECT
@@ -1368,7 +1388,8 @@ def export_recharge_orders_csv(
             COALESCE(orders.channel, '') AS channel,
             COALESCE(orders.provider_trade_no, '') AS provider_trade_no,
             orders.created_at,
-            COALESCE(orders.paid_at, '') AS paid_at
+            COALESCE(orders.paid_at, '') AS paid_at,
+            COUNT(*) OVER () AS export_total
         FROM recharge_orders AS orders
         JOIN users ON users.id = orders.user_id
         {where}
@@ -1392,6 +1413,7 @@ def export_recharge_orders_csv(
             "paid_at",
         ),
         rows=rows,
+        total=int(rows[0]["export_total"]) if rows else 0,
     )
 
 
@@ -1401,6 +1423,9 @@ def export_wallet_transactions_csv(
     actor: ControlUser,
     user_id: str | None = None,
     type: TransactionType | None = None,
+    username: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
     limit: int = Query(default=5000, ge=1, le=5000),
 ) -> Response:
     _guard_ledger_export(
@@ -1409,15 +1434,25 @@ def export_wallet_transactions_csv(
         kind="wallet_transactions",
         filters={
             key: value
-            for key, value in (
-                ("type", type or ""),
-                ("user_id", user_id or ""),
-            )
+            for key, value in [
+                ("user_id", user_id),
+                ("username", username),
+                ("created_from", created_from),
+                ("created_to", created_to),
+                ("type", type),
+            ]
             if value
         },
         row_limit=limit,
     )
-    where, params = _transaction_filters(user_id=user_id, transaction_type=type)
+    where, params = _transaction_filters(
+        user_id=user_id,
+        transaction_type=type,
+        username=username,
+        created_from=created_from,
+        created_to=created_to,
+        postgres=conn.is_postgres,
+    )
     rows = conn.execute(
         f"""
         SELECT
@@ -1430,8 +1465,9 @@ def export_wallet_transactions_csv(
             COALESCE(tx.recharge_order_id, '') AS recharge_order_id,
             COALESCE(tx.task_id, '') AS task_id,
             COALESCE(tx.oral_task_id, '') AS oral_task_id,
-            COALESCE(tx.billing_round, '') AS billing_round,
-            tx.created_at
+            COALESCE(CAST(tx.billing_round AS TEXT), '') AS billing_round,
+            tx.created_at,
+            COUNT(*) OVER () AS export_total
         FROM wallet_transactions AS tx
         JOIN users ON users.id = tx.user_id
         {where}
@@ -1456,6 +1492,7 @@ def export_wallet_transactions_csv(
             "created_at",
         ),
         rows=rows,
+        total=int(rows[0]["export_total"]) if rows else 0,
     )
 
 
@@ -1506,6 +1543,7 @@ def _guard_ledger_export(
 
 def _order_filters(
     *,
+    postgres: bool = False,
     status: OrderStatus | None,
     user_id: str | None,
     username: str | None = None,
@@ -1527,17 +1565,20 @@ def _order_filters(
     if channel:
         clauses.append("orders.channel = %s")
         params.append(channel)
-    if created_from:
-        clauses.append("orders.created_at >= %s")
-        params.append(created_from)
-    if created_to:
-        clauses.append("orders.created_at <= %s")
-        params.append(_inclusive_created_to(created_to))
+    append_admin_date_filters(
+        clauses,
+        params,
+        column="orders.created_at",
+        created_from=created_from,
+        created_to=created_to,
+        postgres=postgres,
+    )
     return (f"WHERE {' AND '.join(clauses)}" if clauses else "", tuple(params))
 
 
 def _transaction_filters(
     *,
+    postgres: bool = False,
     user_id: str | None,
     transaction_type: TransactionType | None,
     username: str | None = None,
@@ -1555,17 +1596,20 @@ def _transaction_filters(
     if username:
         clauses.append("users.username LIKE %s")
         params.append(f"%{username}%")
-    if created_from:
-        clauses.append("tx.created_at >= %s")
-        params.append(created_from)
-    if created_to:
-        clauses.append("tx.created_at <= %s")
-        params.append(_inclusive_created_to(created_to))
+    append_admin_date_filters(
+        clauses,
+        params,
+        column="tx.created_at",
+        created_from=created_from,
+        created_to=created_to,
+        postgres=postgres,
+    )
     return (f"WHERE {' AND '.join(clauses)}" if clauses else "", tuple(params))
 
 
 def _generation_record_filters(
     *,
+    postgres: bool = False,
     record_types: tuple[GenerationRecordType, ...],
     username: str | None,
     status: str | None,
@@ -1583,12 +1627,14 @@ def _generation_record_filters(
     if status:
         clauses.append("task.status = %s")
         params.append(status)
-    if created_from:
-        clauses.append("task.created_at >= %s")
-        params.append(created_from)
-    if created_to:
-        clauses.append("task.created_at <= %s")
-        params.append(_inclusive_created_to(created_to))
+    append_admin_date_filters(
+        clauses,
+        params,
+        column="task.created_at",
+        created_from=created_from,
+        created_to=created_to,
+        postgres=postgres,
+    )
     return (f"WHERE {' AND '.join(clauses)}" if clauses else "", tuple(params))
 
 
@@ -1696,6 +1742,7 @@ def _csv_response(
     filename: str,
     headers: tuple[str, ...],
     rows: list[sqlite3.Row],
+    total: int | None = None,
 ) -> Response:
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
@@ -1705,7 +1752,21 @@ def _csv_response(
     return Response(
         content="\ufeff" + output.getvalue(),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            **(
+                {
+                    "X-Export-Total": str(total),
+                    "X-Export-Returned": str(len(rows)),
+                    "X-Export-Truncated": str(total > len(rows)).lower(),
+                }
+                if total is not None
+                else {}
+            ),
+            "Access-Control-Expose-Headers": (
+                "X-Export-Total, X-Export-Returned, X-Export-Truncated"
+            ),
+        },
     )
 
 
