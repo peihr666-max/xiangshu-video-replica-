@@ -3,12 +3,15 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
 import { downloadCustomersCsv } from "../api";
 import {
   type AdjustmentListItem,
+  type AdjustmentWriteResult,
+  AdminActivationError,
   type AdminRechargeOrder,
   type AdminWalletTransaction,
   type CustomerListItem,
@@ -81,8 +84,11 @@ export function CustomersPage({
   const [balanceMax, setBalanceMax] = useState("");
   const [detailUserId, setDetailUserId] = useState<string | null>(null);
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+  const [grantRevision, setGrantRevision] = useState(0);
+  const loadSequence = useRef(0);
 
   const loadCustomers = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     try {
       setLoading(true);
       setError("");
@@ -96,16 +102,18 @@ export function CustomersPage({
         balanceMin: balanceMin ? Number(balanceMin) : undefined,
         balanceMax: balanceMax ? Number(balanceMax) : undefined,
       });
+      if (sequence !== loadSequence.current) return;
       setCustomers(response.items);
       setTotal(response.total);
     } catch (err) {
+      if (sequence !== loadSequence.current) return;
       setError(
         err instanceof Error && err.message
           ? `加载失败：${err.message}`
           : "加载失败：未知错误",
       );
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
   }, [
     balanceMax,
@@ -119,7 +127,10 @@ export function CustomersPage({
   ]);
 
   useEffect(() => {
-    loadCustomers();
+    void loadCustomers();
+    return () => {
+      loadSequence.current += 1;
+    };
   }, [loadCustomers]);
 
   const handleFilterSubmit = (e: FormEvent) => {
@@ -181,6 +192,22 @@ export function CustomersPage({
     return (
       <CustomerDetailView
         customer={focusedCustomer}
+        grantRevision={grantRevision}
+        refreshError={error}
+        onGranted={(result) => {
+          setCustomers((current) =>
+            current.map((customer) =>
+              customer.user_id === focusedCustomer.user_id
+                ? {
+                    ...customer,
+                    available_credits: result.wallet_balance_after,
+                  }
+                : customer,
+            ),
+          );
+          setGrantRevision((revision) => revision + 1);
+          void loadCustomers();
+        }}
         readOnly={readOnly}
         onBack={() => setExpandedUserId(null)}
         onOpenAdjustments={() => setDetailUserId(focusedCustomer.user_id)}
@@ -415,6 +442,7 @@ function Customer360Data({ userId }: { userId: string }) {
   useEffect(() => {
     let cancelled = false;
     setError("");
+    setSnapshot(null);
     void Promise.all([
       listAdminRechargeOrders({ userId, limit: 3, offset: 0 }),
       listAdminWalletTransactions({ userId, limit: 3, offset: 0 }),
@@ -571,6 +599,9 @@ function Customer360Empty() {
 
 function CustomerDetailView({
   customer,
+  grantRevision,
+  refreshError,
+  onGranted,
   readOnly,
   onBack,
   onOpenAdjustments,
@@ -578,6 +609,9 @@ function CustomerDetailView({
   onOpenSessions,
 }: {
   customer: CustomerListItem;
+  grantRevision: number;
+  refreshError: string;
+  onGranted: (result: AdjustmentWriteResult) => void;
   readOnly: boolean;
   onBack: () => void;
   onOpenAdjustments: () => void;
@@ -589,6 +623,9 @@ function CustomerDetailView({
       className="customers-page customer-focused-detail"
       id={`customer-detail-${customer.user_id}`}
     >
+      {refreshError ? (
+        <PageBanner tone="error">{refreshError}</PageBanner>
+      ) : null}
       <button
         className="customer-detail-back btn-secondary"
         type="button"
@@ -709,10 +746,17 @@ function CustomerDetailView({
         </dl>
       </section>
 
-      <Customer360Data userId={customer.user_id} />
+      <Customer360Data
+        key={`${customer.user_id}:${grantRevision}`}
+        userId={customer.user_id}
+      />
       <div className="customer-detail-settings-grid">
         <CustomerPriceEditor readOnly={readOnly} userId={customer.user_id} />
-        <FreeCreditsSection readOnly={readOnly} userId={customer.user_id} />
+        <FreeCreditsSection
+          readOnly={readOnly}
+          userId={customer.user_id}
+          onGranted={onGranted}
+        />
       </div>
     </div>
   );
@@ -896,9 +940,11 @@ function CustomerPriceEditor({
 function FreeCreditsSection({
   userId,
   readOnly,
+  onGranted,
 }: {
   userId: string;
   readOnly: boolean;
+  onGranted: (result: AdjustmentWriteResult) => void;
 }) {
   const [credits, setCredits] = useState("");
   const [sourceRef, setSourceRef] = useState("");
@@ -906,12 +952,22 @@ function FreeCreditsSection({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogError, setDialogError] = useState("");
   const [notice, setNotice] = useState("");
-  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
+  const [pendingGrant, setPendingGrant] = useState<{
+    key: string;
+    credits: number;
+    sourceRef: string;
+    reason: string;
+  } | null>(null);
+  const submitLock = useRef(false);
 
   function requestGrant(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const creditsNumber = Number.parseInt(credits, 10);
-    if (!Number.isFinite(creditsNumber) || creditsNumber <= 0) {
+    const creditsNumber = Number(credits);
+    if (
+      !Number.isSafeInteger(creditsNumber) ||
+      creditsNumber <= 0 ||
+      creditsNumber > 2147483647
+    ) {
       setDialogError("免费秒数必须是大于 0 的整数");
       setDialogOpen(true);
       return;
@@ -926,43 +982,58 @@ function FreeCreditsSection({
   }
 
   async function submitGrant(reason: string) {
-    if (submitting) {
+    if (submitLock.current) {
       return;
     }
-    const creditsNumber = Number.parseInt(credits, 10);
-    const key = idempotencyKey ?? crypto.randomUUID();
-    setIdempotencyKey(key);
+    const intent = pendingGrant ?? {
+      key: crypto.randomUUID(),
+      credits: Number(credits),
+      sourceRef: sourceRef.trim(),
+      reason,
+    };
+    const creditsNumber = intent.credits;
+    setPendingGrant(intent);
+    submitLock.current = true;
     setSubmitting(true);
     try {
       const result = await createCustomerAdjustment(
         userId,
         {
           sourceDocumentType: "FREE_GRANT",
-          sourceDocumentRef: sourceRef.trim(),
+          sourceDocumentRef: intent.sourceRef,
           credits: creditsNumber,
         },
-        reason,
-        key,
+        intent.reason,
+        intent.key,
       );
       setNotice(
         `已发放 ${creditsNumber} 秒免费时长（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 秒`,
       );
       setCredits("");
       setSourceRef("");
-      setIdempotencyKey(null);
+      setPendingGrant(null);
       setDialogOpen(false);
       setDialogError("");
+      onGranted(result);
     } catch (cause) {
       setDialogError(
         cause instanceof Error && cause.message.trim()
           ? cause.message
           : "发放免费秒数失败",
       );
-      if (cause instanceof Error && cause.name === "AdminActivationError") {
-        // 明确失败释放幂等键；超时等模糊失败保留键以便重试重放。
-        setIdempotencyKey(null);
+      if (
+        cause instanceof AdminActivationError &&
+        cause.status !== undefined &&
+        cause.status >= 400 &&
+        cause.status < 500 &&
+        ![408, 409, 429].includes(cause.status)
+      ) {
+        // Only definitive rejections release the intent. A timeout, gateway
+        // failure, conflict or lost response must replay the exact original body.
+        setPendingGrant(null);
       }
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   }
@@ -988,11 +1059,19 @@ function FreeCreditsSection({
         账面金额记 0，来源单号与原因写入审计。
       </p>
       {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
+      {pendingGrant ? (
+        <p className="admin-hint">
+          正在确认上次发放：{pendingGrant.credits} 秒，来源{" "}
+          {pendingGrant.sourceRef}，原因 {pendingGrant.reason}
+          。重试将核对同一笔发放。
+        </p>
+      ) : null}
       <form className="admin-form" onSubmit={requestGrant}>
         <label>
           发放秒数
           <input
             min={1}
+            disabled={pendingGrant !== null}
             placeholder="例如：10"
             step={1}
             type="number"
@@ -1004,6 +1083,7 @@ function FreeCreditsSection({
           来源单号
           <input
             placeholder="必填，例如：PROMO-2026-09-001"
+            disabled={pendingGrant !== null}
             value={sourceRef}
             onChange={(event) => setSourceRef(event.target.value)}
           />
@@ -1016,7 +1096,7 @@ function FreeCreditsSection({
         confirmLabel="确认发放"
         description="免费秒数会立即进入客户钱包并可立即用于生成视频。原因将写入审计日志。"
         error={dialogError}
-        level="reasonAndAck"
+        level={pendingGrant ? "standard" : "reasonAndAck"}
         open={dialogOpen}
         title="发放免费秒数"
         onClose={() => {
