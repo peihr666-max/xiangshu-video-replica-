@@ -752,8 +752,9 @@ def classify(method: str, path: str, deps: tuple[str, ...]) -> str:
         # Session/device lifecycle endpoints authenticate their own device
         # credential or session token inside the handler (CW-016/017 lanes).
         return "SESSION_LIFECYCLE"
-    if path.startswith("/api/payments/zpay/"):
-        # Signature-verified provider callbacks / redirect returns.
+    if path.startswith("/api/payments/zpay/") or path == "/api/payments/wechat_native/notify":
+        # Signature-verified provider callbacks / redirect returns
+        # (the WeChat V3 callback verifies the raw body in-handler).
         return "PAYMENT_CALLBACK"
     if path in EXEMPT_PUBLIC_SIGNED:
         return "PUBLIC_SIGNED"

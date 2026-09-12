@@ -93,6 +93,16 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # tests (test_admin_h3_extended_modes.py), migrated to alembic head
         # with admin_u/auditor_u operator seeds.
         "cw063_h3_extended_modes_test",
+        # CW-070 WeChat Pay V3 Native settlement: dedicated database for the
+        # PG-only wechat_native recharge_order settlement matrix
+        # (test_wechat_native_callback_pg.py) — confirm_recharge_payment under
+        # WECHAT_NATIVE_SETTLEMENT_SPEC writes the 083 transaction_id column
+        # (provider_trade_no stays NULL), credits the wallet once, and stays
+        # idempotent on replay. wechat_native orders cannot exist on SQLite
+        # (022 provider CHECK + 083 is PostgreSQL-only), so this half of the
+        # callback suite only runs on real PostgreSQL, reset per test and
+        # migrated to alembic head.
+        "cw070_wechat_callback_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):

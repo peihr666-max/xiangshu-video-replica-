@@ -13,7 +13,10 @@ based, so create_payment_code is the supported flow while create_payment_form
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from app.db_portable import BusinessConnection
 from app.payment_provider import (
@@ -31,16 +34,53 @@ from app.payment_provider import (
 )
 from app.settings import SettingsRepository
 from app.wechat_native_client import (
+    PlatformCertificateManager,
     WeChatDeploymentConfig,
     WeChatNativeClient,
     WeChatNativeError,
+    build_response_verify_message,
+    decrypt_aes_256_gcm,
     deployment_config_from_environment,
     merchant_config_from_settings,
+    verify_sha256_rsa,
 )
 
 WECHAT_NATIVE_PROVIDER_NAME = "wechat_native"
 WECHAT_NATIVE_CHANNEL = "wxpay"
 WECHAT_NATIVE_CALLBACK_UNSUPPORTED = "WECHAT_NATIVE_CALLBACK_UNSUPPORTED"
+
+# Raw-body callback verification outcomes (CW-070). These are stable error codes the
+# notify route maps onto the WeChat JSON acknowledgement shape.
+WECHAT_CALLBACK_MISSING_HEADERS = "WECHAT_CALLBACK_MISSING_HEADERS"
+WECHAT_CALLBACK_CONFIG_INVALID = "WECHAT_CALLBACK_CONFIG_INVALID"
+WECHAT_CALLBACK_CERT_UNAVAILABLE = "WECHAT_CALLBACK_CERT_UNAVAILABLE"
+WECHAT_CALLBACK_BODY_INVALID = "WECHAT_CALLBACK_BODY_INVALID"
+WECHAT_CALLBACK_SIGNATURE_INVALID = "WECHAT_CALLBACK_SIGNATURE_INVALID"
+WECHAT_CALLBACK_RESOURCE_INVALID = "WECHAT_CALLBACK_RESOURCE_INVALID"
+WECHAT_CALLBACK_DECRYPT_FAILED = "WECHAT_CALLBACK_DECRYPT_FAILED"
+WECHAT_CALLBACK_PAYLOAD_INVALID = "WECHAT_CALLBACK_PAYLOAD_INVALID"
+
+
+@dataclass(frozen=True)
+class WeChatNotificationResult:
+    """Outcome of raw-body WeChat Native callback verification.
+
+    ``authenticated`` is True only when the signature verified against the platform
+    certificate AND the resource decrypted with the api_v3_key. ``provider_trade_no``
+    carries the WeChat ``transaction_id`` (the settlement trade reference for the
+    wechat_native spec). ``error_code`` is None on a clean, settleable notification;
+    an authentic-but-unusable payload keeps ``authenticated`` True while naming the
+    ``WECHAT_CALLBACK_*`` reason so the route can ACK vs FAIL correctly.
+    """
+
+    authenticated: bool
+    trade_state: str | None = None
+    merchant_order_no: str | None = None
+    provider_trade_no: str | None = None
+    amount_fen: int | None = None
+    channel: str | None = None
+    source_digest: str | None = None
+    error_code: str | None = None
 
 
 class WeChatNativeProvider(PaymentProvider):
@@ -51,8 +91,17 @@ class WeChatNativeProvider(PaymentProvider):
     default client using the real urllib opener is created lazily per call.
     """
 
-    def __init__(self, *, client: WeChatNativeClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        client: WeChatNativeClient | None = None,
+        cert_manager: PlatformCertificateManager | None = None,
+    ) -> None:
         self._client = client
+        # Provider-level certificate manager for raw callback verification. Injected in
+        # tests (a stub with a canned self-signed platform cert); defaults to the real
+        # downloader, which is only exercised in production callbacks.
+        self._cert_manager = cert_manager or PlatformCertificateManager()
 
     @property
     def name(self) -> str:
@@ -170,6 +219,151 @@ class WeChatNativeProvider(PaymentProvider):
             channel=None,
             source_digest=None,
             error_code=WECHAT_NATIVE_CALLBACK_UNSUPPORTED,
+        )
+
+    def verify_notification_raw(
+        self,
+        *,
+        raw_body: bytes,
+        timestamp: str | None,
+        nonce: str | None,
+        signature: str | None,
+        serial: str | None,
+        merchant: MerchantConfig,
+    ) -> WeChatNotificationResult:
+        """Verify a raw WeChat Native callback body against its Wechatpay-* headers.
+
+        Mirrors ``WeChatNativeClient._verify_response``: the signature is checked over
+        the exact raw bytes (the TIMESTAMP / NONCE / BODY verification message) against
+        the platform certificate selected by ``Wechatpay-Serial``, then ``resource`` is
+        AES-256-GCM decrypted with the merchant ``api_v3_key`` to recover the
+        transaction plaintext. Fail-closed: a bad callback never raises — it returns
+        ``authenticated=False`` with a ``WECHAT_CALLBACK_*`` ``error_code``. An
+        authentic notification whose plaintext is not a settleable SUCCESS keeps
+        ``authenticated=True`` and names the reason so the route can ACK vs FAIL.
+        """
+        if timestamp is None or nonce is None or signature is None or serial is None:
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_MISSING_HEADERS
+            )
+        try:
+            wechat_merchant = merchant_config_from_settings(merchant.raw)
+        except ValueError:
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_CONFIG_INVALID
+            )
+        try:
+            certificate = self._cert_manager.get_certificate(wechat_merchant, serial)
+        except WeChatNativeError:
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_CERT_UNAVAILABLE
+            )
+        try:
+            body_text = raw_body.decode("utf-8")
+        except UnicodeDecodeError:
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_BODY_INVALID
+            )
+        message = build_response_verify_message(timestamp=timestamp, nonce=nonce, body=body_text)
+        if not verify_sha256_rsa(
+            public_key=certificate.public_key, signature_b64=signature, message=message
+        ):
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_SIGNATURE_INVALID
+            )
+
+        # Signature is valid from here on: the bytes are authentically WeChat's.
+        digest = hashlib.sha256(raw_body).hexdigest()
+        try:
+            envelope = json.loads(body_text)
+        except json.JSONDecodeError:
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_BODY_INVALID
+            )
+        if not isinstance(envelope, dict):
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_BODY_INVALID
+            )
+        resource = envelope.get("resource")
+        if not isinstance(resource, dict):
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_RESOURCE_INVALID
+            )
+        ciphertext = resource.get("ciphertext")
+        resource_nonce = resource.get("nonce")
+        if not isinstance(ciphertext, str) or not isinstance(resource_nonce, str):
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_RESOURCE_INVALID
+            )
+        associated_data = resource.get("associated_data")
+        associated = associated_data if isinstance(associated_data, str) else ""
+        try:
+            plaintext = decrypt_aes_256_gcm(
+                api_v3_key=wechat_merchant.api_v3_key,
+                nonce=resource_nonce,
+                associated_data=associated,
+                ciphertext_b64=ciphertext,
+            )
+        except WeChatNativeError:
+            return WeChatNotificationResult(
+                authenticated=False, error_code=WECHAT_CALLBACK_DECRYPT_FAILED
+            )
+
+        return self._parse_transaction_plaintext(plaintext, digest=digest)
+
+    def _parse_transaction_plaintext(
+        self, plaintext: bytes, *, digest: str
+    ) -> WeChatNotificationResult:
+        """Parse the decrypted transaction plaintext into a settlement-ready result."""
+        try:
+            payload = json.loads(plaintext.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if not isinstance(payload, dict):
+            return WeChatNotificationResult(
+                authenticated=True,
+                channel=WECHAT_NATIVE_CHANNEL,
+                source_digest=digest,
+                error_code=WECHAT_CALLBACK_PAYLOAD_INVALID,
+            )
+        out_trade_no = payload.get("out_trade_no")
+        trade_state = payload.get("trade_state")
+        transaction_id = payload.get("transaction_id")
+        amount = payload.get("amount")
+        amount_fen: int | None = None
+        if isinstance(amount, dict):
+            total = amount.get("total")
+            if isinstance(total, int):
+                amount_fen = total
+        merchant_order_no = out_trade_no if isinstance(out_trade_no, str) else None
+        state = trade_state if isinstance(trade_state, str) else None
+        trade_no = transaction_id if isinstance(transaction_id, str) else None
+        # A SUCCESS notification must carry the transaction_id (settlement reference)
+        # and the amount; anything else is authentic but not settleable.
+        incomplete = (
+            state is None
+            or merchant_order_no is None
+            or (state == "SUCCESS" and (trade_no is None or amount_fen is None))
+        )
+        if incomplete:
+            return WeChatNotificationResult(
+                authenticated=True,
+                trade_state=state,
+                merchant_order_no=merchant_order_no,
+                provider_trade_no=trade_no,
+                amount_fen=amount_fen,
+                channel=WECHAT_NATIVE_CHANNEL,
+                source_digest=digest,
+                error_code=WECHAT_CALLBACK_PAYLOAD_INVALID,
+            )
+        return WeChatNotificationResult(
+            authenticated=True,
+            trade_state=state,
+            merchant_order_no=merchant_order_no,
+            provider_trade_no=trade_no,
+            amount_fen=amount_fen,
+            channel=WECHAT_NATIVE_CHANNEL,
+            source_digest=digest,
         )
 
 
