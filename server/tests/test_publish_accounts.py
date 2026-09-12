@@ -64,6 +64,158 @@ from app.settings import LOCAL_KEYSTORE_DISABLED_ENV, SETTINGS_KEY_ENV
 
 CW068_TEST_DB = "cw068_publish_accounts_test"
 
+
+def test_w19_publish_stop_prevents_any_new_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    from threading import Event
+
+    from app import publish_worker
+
+    stop = Event()
+    stop.set()
+    monkeypatch.setattr(publish_worker, "check_pg_ready", lambda: object())
+    monkeypatch.setattr(publish_worker, "_pg_round", lambda **_: pytest.fail("claim after stop"))
+    publish_worker.run_pg_forever(worker_id="instance", idle_seconds=2, stop_event=stop)
+
+
+def test_w19_publish_stops_after_busy_round_and_reuses_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threading import Event
+
+    from app import publish_worker
+
+    stop = Event()
+    observed: list[str] = []
+    monkeypatch.setattr(publish_worker, "check_pg_ready", lambda: object())
+
+    def process(*, worker_id: str) -> int:
+        observed.append(worker_id)
+        if len(observed) == 2:
+            stop.set()
+        assert len(observed) <= 2
+        return 1
+
+    monkeypatch.setattr(publish_worker, "_pg_round", process)
+    publish_worker.run_pg_forever(worker_id="same-startup", idle_seconds=2, stop_event=stop)
+    assert observed == ["same-startup", "same-startup"]
+
+
+def test_w19_publish_idle_wait_can_be_interrupted(monkeypatch: pytest.MonkeyPatch) -> None:
+    from threading import Event
+
+    from app import publish_worker
+
+    stop = Event()
+    waited: list[float] = []
+    monkeypatch.setattr(publish_worker, "check_pg_ready", lambda: object())
+    monkeypatch.setattr(publish_worker, "_pg_round", lambda **_: 0)
+
+    def wait(seconds: float) -> bool:
+        waited.append(seconds)
+        stop.set()
+        return True
+
+    monkeypatch.setattr(stop, "wait", wait)
+    publish_worker.run_pg_forever(worker_id="instance", idle_seconds=3600, stop_event=stop)
+    assert len(waited) == 1 and 0 < waited[0] <= 0.2
+
+
+def test_w19_publish_signal_during_event_wait_cannot_deadlock() -> None:
+    import subprocess
+    import sys
+    import textwrap
+
+    # Isolate the old deadlock: the parent always reaps the child on timeout.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+            import signal
+            import sys
+            from threading import Event
+            from types import SimpleNamespace
+            from app import publish_worker as worker
+
+            class SignalDuringWait(Event):
+                def wait(self, timeout=None):
+                    with self._cond:
+                        signal.raise_signal(signal.SIGTERM)
+                    return self.is_set()
+
+            previous = {kind: signal.getsignal(kind)
+                        for kind in (signal.SIGINT, signal.SIGTERM)}
+            closed = []
+            rounds = []
+            worker.Event = SignalDuringWait
+            worker.check_pg_ready = lambda: object()
+            worker.resolve_database_config = lambda: SimpleNamespace(
+                mode=worker.DatabaseMode.POSTGRESQL)
+            worker.validate_customer_production = lambda _: None
+            worker.close_pg_pool = lambda: closed.append(True)
+            def idle(**kwargs):
+                rounds.append(kwargs['worker_id'])
+                assert len(rounds) == 1, 'new claim after SIGTERM'
+                return 0
+            worker._pg_round = idle
+            sys.argv = ['publish-worker', '--idle-seconds', '3600']
+            worker.main()
+            assert closed == [True]
+            assert len(rounds) == 1
+            assert all(signal.getsignal(kind) == handler
+                       for kind, handler in previous.items())
+            print('shutdown completed')
+        """),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "shutdown completed" in result.stdout
+
+
+def test_w19_publish_cli_closes_pool_and_restores_signals_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import signal
+    import sys
+    from types import SimpleNamespace
+
+    from app import publish_worker
+
+    handlers: dict[Any, Any] = {}
+    original = object()
+    closed: list[bool] = []
+    observed: list[str] = []
+    monkeypatch.setattr(sys, "argv", ["publish-worker", "--worker-id", "pool-a"])
+    monkeypatch.setattr(signal, "getsignal", lambda _: original)
+    monkeypatch.setattr(signal, "signal", lambda kind, handler: handlers.__setitem__(kind, handler))
+    monkeypatch.setattr(
+        publish_worker,
+        "resolve_database_config",
+        lambda: SimpleNamespace(mode=publish_worker.DatabaseMode.POSTGRESQL),
+    )
+    monkeypatch.setattr(publish_worker, "validate_customer_production", lambda _: None)
+    monkeypatch.setattr(publish_worker, "close_pg_pool", lambda: closed.append(True))
+
+    def fail(**kwargs: Any) -> None:
+        observed.append(kwargs["worker_id"])
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        assert kwargs["stop_requested"]()
+        raise RuntimeError("synthetic loop failure")
+
+    monkeypatch.setattr(publish_worker, "run_pg_forever", fail)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="synthetic loop failure"):
+            publish_worker.main()
+        assert handlers[signal.SIGTERM] is original
+        assert handlers[signal.SIGINT] is original
+    assert len(closed) == 2 and observed[0] != observed[1]
+    assert all(value.startswith("pool-a:") for value in observed)
+
+
 ACCOUNTS_URL = "/api/studio/publish/accounts"
 
 _TEST_KEY = Fernet.generate_key().decode("ascii")

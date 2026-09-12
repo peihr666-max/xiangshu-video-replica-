@@ -1168,6 +1168,10 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 
 
+## FIX-W19-20260912 / W19
+
+AUTOMATED_VERIFIED（本地）；独立只读评审及信号修复复审 PASS；main@9bfe593 整合代码 d515e02 完整本地门通过：后端 2950 passed、1 原有 TLS 跳过，前端 1348 passed，secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 全部通过。PR、远程 CI 和合并待完成；全部人工联合调试留第二部分。[任务证据](evidence/FIX-W19-20260912.md)。
+
 ## FIX-W20-20260912 / W20
 
 AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2858 passed、1 原有 TLS 场景跳过；前端 1344 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W20-20260912.md)。
@@ -1205,3 +1209,9 @@ AUTOMATED_VERIFIED（本地）；独立只读 review_w13 PASS；完整本地质�
 第三批从 main@791fd66 开工并集成 820c3d8；后台积分价与前端真实读价、Token 来源及共享钱包、消费筛选/跳转、充值快照已实现。完整门禁及收尾自检中；前两批 #79/#86 三门禁通过且已合并，旧状态以本次回填为准。[第三批证据](evidence/UC-BATCH03-POINTS-PRICING.md)。
 
 第三批最终本地：2972 PG passed / 1 原有 TLS skip，1354 前端 passed，完整静态门全绿，自检发现项已修复。证据层级 AUTOMATED_VERIFIED，PR/CI/合并待完成。
+
+## W19 主干前置合并与第二部分隔离联调补充
+
+2026-09-13 最新记录：PR #88 已以820c3d8合入main，本任务整合为8cca2e1。独立只读review_w13确认Worker实现无回退、W13认证及TESTREADY与main一致；认领记录“尚无PR”已修正。新主干相关前端142 passed及secret/Biome/TypeScript通过，后端认证/Worker/发布143 passed（W19-testready-{frontend,backend}.log）。首次专项因新建数据库名未列入仓库白名单而拒绝，64 passed/79 setup errors的环境失败日志保留；使用同一独享新容器内已登记customer_v3_test后通过，未修改测试白名单。完整门仍对应此前记录的实际基线，PR #87当前门禁待更新提交。
+
+用户授权第二部分后，真实四generation CLI并发启动使用同一逻辑标签，4个实例ID均唯一，均PG就绪并--once退出0；真实publish CLI在30秒空闲中收到SIGTERM后0.214秒退出0，PG连接恢复基线0。3项进程检查通过，证据在仓库上级 outputs/remediation-20260912/joint-round2/w19/。首次缺COS配置时4实例失败记录保留；后续仅写合成配置、空队列验证，没有调用供应商或真实平台。不能据此声明实际平台探测、带任务租约恢复、生产编排或容量通过。
