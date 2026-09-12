@@ -56,10 +56,10 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
-# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→080 + 081）。
-HEAD_REVISION = "083_recharge_orders_multi_provider"
+# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→083 + CW-075 090）。
+HEAD_REVISION = "090_customer_discounts"
 
-# 最后一个已发布（受支持）起点。其后的 056–082 尚未随任何受支持版本发布，
+# 最后一个已发布（受支持）起点。其后的 056–090 尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
 # 那不是「冻结已发布历史」而是「冻结开发中」。
 PUBLISHED_HEAD_REVISION = "055_customer_batch_visibility"
@@ -115,13 +115,20 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "primary_keys": 77,
 }
 
-# head 的表名全集（77）。counts 只能证明「数量没漂」，证明不了「同一批表」：
-# 掉一张旧表再建一张新表，tables 计数仍是 77。表名集合与下面的完整目录
+# head 的表名全集。counts 只能证明「数量没漂」，证明不了「同一批表」：
+# 掉一张旧表再建一张新表，tables 计数仍不变。表名集合与下面的完整目录
 # 摘要一起构成结构等价的两级断言，失配时的报错可直接指出 missing/unexpected。
 # 082 的增量：tables/primary_keys +1（publish_accounts）、columns +15、
 # check_constraints +3（platform/status/verify_flag 三条 CHECK）、foreign_keys +1
 # （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
 # partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
+# CW-075 090 的增量：本表名集追加 customer_discounts（本分支链尾迁移 090 新建的表，
+# 已 linearize 到 main 现头 083 之上：082→086→083→090）。HEAD_SCHEMA_COUNTS 与
+# HEAD_SCHEMA_DIGEST 仍冻结在 main 的 083 基线（tables=77、columns=913、
+# check_constraints=227）——它们是全局 post-linearization 不变量，须待 integrator
+# 折叠其余并行迁移（088/089/090）后一次性重算（沿 CW-076 先例）。故 B 组真实 PG 矩阵
+# 在重算前预期红：表名集断言（inventory 的 tables 与 HEAD_TABLE_NAMES 排序相等）
+# 因已含 customer_discounts 而通过，counts/digest 断言随 090 漂移而红，重算后转绿。
 HEAD_TABLE_NAMES: tuple[str, ...] = (
     "activation_code_activations",
     "activation_code_batches",
@@ -149,6 +156,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
     "customer_authorization_evidence",
     "customer_batch_visibility",
     "customer_devices",
+    "customer_discounts",
     "customer_fencing_write_evidence",
     "customer_idempotency_envelopes",
     "customer_session_events",
