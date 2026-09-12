@@ -819,7 +819,7 @@ def test_saved_prompts_aggregate_across_projects(
         pg.execute(
             "INSERT INTO customer_session_state (user_id, activation_code_id, device_id, "
             "session_id, token_digest, session_epoch, lease_until) VALUES "
-            "(%s, %s, %s, %s, %s, 1, '2099-06-01T00:00:00+00:00') ON CONFLICT (user_id) "
+            "(%s, %s, %s, %s, %s, 1, '2099-06-01T00:00:00+00:00') ON CONFLICT (device_id) "
             "DO NOTHING",
             (
                 user_id,

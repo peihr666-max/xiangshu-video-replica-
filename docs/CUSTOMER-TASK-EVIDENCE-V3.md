@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## UC 第一批 / CW-077 — 在制验证
+
+2026-09-12：账号注册登录、无限多设备独立会话、工作台修正和小红书导入增量。Linux 静态门及 1346 前端测试通过；真实注册→自动登录→主界面→头像资料通过；后端全量 2872 passed / 1 既有 TLS 重复覆盖 skipped；真实浏览器 4 passed，PR/CI/合并未完成。详见 [批次证据](evidence/UC-BATCH01-ACCOUNT-ACCESS.md)，不将该记录视作上线结论。
+
 > 当前执行清单已更新为[本地实现去重V3](../outputs/customer-cloud-convergence-analysis-2026-09-08/v3/客户版收敛剩余任务清单与验收完工标准-V3.md)：57项剩余排程，复用既有代码；原60项及CW-006/008/011保留追溯，当前状态仅见任务账本§18。此更新不代表代码或数据迁移已完成。
 
 ## PostgreSQL全面统一文档评审（2026-09-08，定义更新）

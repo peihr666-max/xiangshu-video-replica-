@@ -57,7 +57,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260912T1400_customer_registration_credentials"
+HEAD_REVISION = "20260912T1910_xiaohongshu_link_import"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -109,7 +109,7 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "timestamptz_columns": 20,
     "triggers": 18,
     "partial_indexes": 24,
-    "unique_constraints": 27,
+    "unique_constraints": 26,
     "check_constraints": 236,
     "foreign_keys": 149,
     "primary_keys": 79,
@@ -220,7 +220,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
 # CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
-HEAD_SCHEMA_DIGEST = "b678939f2f410b10d6d3bae0f0d371c5cb54d7b6807099a1fef73febbdef6abe"
+HEAD_SCHEMA_DIGEST = "30356748a0be0ac36a980d56f35e698a011aed2a863363faa9ab88a8a373ef92"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

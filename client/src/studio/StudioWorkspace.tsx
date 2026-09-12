@@ -123,7 +123,7 @@ type WalletSummary = Pick<
 
 function walletSummaryLabel(summary: WalletSummary) {
   if (summary.walletStatus === "ready" && summary.availableCredits !== null) {
-    return `${summary.availableCredits} 秒`;
+    return `${summary.availableCredits} 积分`;
   }
   if (summary.walletStatus === "loading") return "查询中";
   if (summary.walletStatus === "error") return "读取失败";
@@ -202,7 +202,7 @@ const creationPages = new Set<StudioPage>([
   "oral",
   "oral-audio",
 ]);
-const navGroups: {
+export const navGroups: {
   label?: string;
   pages: { id: StudioPage; title: string; icon: string }[];
 }[] = [

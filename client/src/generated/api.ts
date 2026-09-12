@@ -594,6 +594,58 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/studio/publish/accounts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Publish Accounts */
+    get: operations["read_publish_accounts_api_studio_publish_accounts_get"];
+    put?: never;
+    /** Create Publish Account */
+    post: operations["create_publish_account_api_studio_publish_accounts_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/accounts/{account_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /** Delete Publish Account */
+    delete: operations["delete_publish_account_api_studio_publish_accounts__account_id__delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/accounts/{account_id}/verify": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Verify Publish Account */
+    post: operations["verify_publish_account_api_studio_publish_accounts__account_id__verify_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/studio/materials": {
     parameters: {
       query?: never;
@@ -1196,6 +1248,33 @@ export interface paths {
     get: operations["zpay_return_api_payments_zpay_return_get"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/payments/wechat_native/notify": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Wechat Native Notify
+     * @description WeChat Pay V3 Native transaction callback.
+     *
+     *     Verifies the exact raw body against the Wechatpay-* headers (platform-certificate
+     *     signature + AES-256-GCM resource decryption) then idempotently settles the recharge
+     *     order through the shared confirm routine with the wechat_native spec (which writes
+     *     the transaction_id column, not provider_trade_no). Answers the WeChat JSON
+     *     acknowledgement shape rather than zpay's plain text: ``{"code":"SUCCESS"}`` stops
+     *     retries, ``{"code":"FAIL"}`` (with a 5xx status for transient faults) triggers them.
+     */
+    post: operations["wechat_native_notify_api_payments_wechat_native_notify_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1927,6 +2006,45 @@ export interface paths {
     patch: operations["update_queue_mode_api_control_settings_queue_mode_patch"];
     trace?: never;
   };
+  "/api/control/settings/h3-extended-modes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read H3 Extended Modes
+     * @description CW-063: current h3_extended_modes_enabled flag for the admin UI.
+     *
+     *     Mirrors ``read_queue_mode``: reads the single boolean off the
+     *     runtime_settings row and defaults to FALSE when the row does not exist
+     *     yet (a fresh database whose limits were never configured). The per-mode
+     *     capability breakdown stays on ``GET /api/independent/capabilities`` and is
+     *     deliberately not duplicated here.
+     */
+    get: operations["read_h3_extended_modes_api_control_settings_h3_extended_modes_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Update H3 Extended Modes
+     * @description CW-063: flip the H3 extended-modes gate as an audited, idempotent admin
+     *     write behind the shared write contract.
+     *
+     *     Mirrors ``update_queue_mode`` exactly. The reason field is the operator's
+     *     attestation that the supplier paid-probe (缺口 4a) completed, so a
+     *     real-money enablement is always attributable. When the settings row does
+     *     not exist yet (a fresh database whose limits were never configured), the
+     *     documented defaults seed it — with ``fair_queue_enabled`` left FALSE and
+     *     ``h3_extended_modes_enabled`` set to the requested value — so the switch
+     *     always lands on a real row.
+     */
+    patch: operations["update_h3_extended_modes_api_control_settings_h3_extended_modes_patch"];
+    trace?: never;
+  };
   "/api/control/audit-log": {
     parameters: {
       query?: never;
@@ -1943,6 +2061,46 @@ export interface paths {
     get: operations["list_audit_log_api_control_audit_log_get"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/register": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Register Customer
+     * @description Create one customer account (users + wallets) from username + password.
+     */
+    post: operations["register_customer_api_customer_register_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/login": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Password Login
+     * @description Password -> real fenced session; never manufactures an activation code.
+     */
+    post: operations["password_login_api_customer_login_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2193,6 +2351,50 @@ export interface paths {
      */
     post: operations["logout_api_customer_sessions_logout_post"];
     delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/api-keys": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Customer Api Keys
+     * @description List this customer's keys (including revoked, as audit) — metadata only.
+     */
+    get: operations["list_customer_api_keys_api_customer_api_keys_get"];
+    put?: never;
+    /**
+     * Create Customer Api Key
+     * @description Mint one API Key under the session fence; return its plaintext once.
+     */
+    post: operations["create_customer_api_key_api_customer_api_keys_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/api-keys/{key_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Revoke Customer Api Key
+     * @description Soft-revoke one of this customer's keys; idempotent, no IDOR oracle.
+     */
+    delete: operations["revoke_customer_api_key_api_customer_api_keys__key_id__delete"];
     options?: never;
     head?: never;
     patch?: never;
@@ -2571,8 +2773,9 @@ export interface paths {
     };
     /**
      * List Customer Recharge Orders
-     * @description Customer-lane order list: only this session's orders, ownership-checked
-     *     inside the fenced read transaction.
+     * @description Customer-lane order list on the API-Key whitelist (§2.2): only this
+     *     principal's orders — a session is re-verified inside the fenced read
+     *     transaction, an ``xsk_live_`` key rides the independent lane.
      */
     get: operations["list_customer_recharge_orders_api_customer_recharge_orders_get"];
     put?: never;
@@ -2603,9 +2806,10 @@ export interface paths {
     };
     /**
      * Read Customer Recharge Order Status
-     * @description Customer-lane order status: the session is re-verified inside the
-     *     fenced read transaction and another user's order number is a 404 (no
-     *     existence leak), mirroring the internal-lane route's ownership check.
+     * @description Customer-lane order status on the API-Key whitelist (§2.2): a session
+     *     token is re-verified inside the fenced read transaction, an ``xsk_live_``
+     *     key rides the independent lane, and another user's order number is a 404
+     *     (no existence leak), mirroring the internal-lane route's ownership check.
      */
     get: operations["read_customer_recharge_order_status_api_customer_recharge_orders__order_no__get"];
     put?: never;
@@ -2675,11 +2879,10 @@ export interface paths {
     };
     /**
      * Read Customer Wallet
-     * @description Customer-lane wallet read: balance + billing under the fenced session.
-     *
-     *     Mirrors the internal /api/wallet read but re-verifies the customer session
-     *     inside the transaction (BILL-01: credits live in the same customer wallet
-     *     the activation grant funded).
+     * @description Customer-lane wallet read on the API-Key whitelist (§2.2): balance +
+     *     billing under the fenced session, or the independent lane for an
+     *     ``xsk_live_`` key. Mirrors the internal /api/wallet read (BILL-01: credits
+     *     live in the same customer wallet the activation grant funded).
      */
     get: operations["read_customer_wallet_api_customer_wallet_get"];
     put?: never;
@@ -2786,6 +2989,23 @@ export interface paths {
     /** Update Provider Settings */
     put: operations["update_provider_settings_api_admin_settings_providers__provider__put"];
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/admin/settings/providers/{provider}/secrets/{field}/reveal": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Reveal Provider Secret */
+    post: operations["reveal_provider_secret_api_admin_settings_providers__provider__secrets__field__reveal_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -4487,6 +4707,33 @@ export interface components {
       /** Completed At */
       completed_at: string | null;
     };
+    /** ApiKeyListResponse */
+    ApiKeyListResponse: {
+      /** Items */
+      items: components["schemas"]["ApiKeyRecordResponse"][];
+      /** Total */
+      total: number;
+    };
+    /**
+     * ApiKeyRecordResponse
+     * @description Key metadata for the management view — never the plaintext or digest.
+     */
+    ApiKeyRecordResponse: {
+      /** Id */
+      id: string;
+      /** Key Prefix */
+      key_prefix: string;
+      /** Label */
+      label: string;
+      /** Scopes */
+      scopes: string[];
+      /** Created At */
+      created_at: string;
+      /** Last Used At */
+      last_used_at: string | null;
+      /** Revoked At */
+      revoked_at: string | null;
+    };
     /** ApplySavedPromptRequest */
     ApplySavedPromptRequest: {
       /** Base Prompt Version Id */
@@ -5537,6 +5784,14 @@ export interface components {
        */
       reuse_existing: boolean;
     };
+    /** CreateApiKeyRequest */
+    CreateApiKeyRequest: {
+      /**
+       * Label
+       * @default
+       */
+      label: string;
+    };
     /** CreateProjectRequest */
     CreateProjectRequest: {
       /** Name */
@@ -5546,6 +5801,28 @@ export interface components {
     CreateRechargeOrderRequest: {
       /** Amount Fen */
       amount_fen: number;
+    };
+    /**
+     * CreatedApiKeyResponse
+     * @description The one and only response that carries the plaintext key (§2.5 B).
+     */
+    CreatedApiKeyResponse: {
+      /** Plaintext */
+      plaintext: string;
+      /** Id */
+      id: string;
+      /** Key Prefix */
+      key_prefix: string;
+      /** Label */
+      label: string;
+      /** Scopes */
+      scopes: string[];
+      /** Created At */
+      created_at: string;
+      /** Last Used At */
+      last_used_at: string | null;
+      /** Revoked At */
+      revoked_at: string | null;
     };
     /** CreatedIdentityUploadIntent */
     CreatedIdentityUploadIntent: {
@@ -5599,6 +5876,46 @@ export interface components {
       /** Session Lease Expires At */
       session_lease_expires_at: string;
     };
+    /** CustomerPasswordLoginRequest */
+    CustomerPasswordLoginRequest: {
+      /** Username */
+      username: string;
+      /** Password */
+      password: string;
+      /** Device Fingerprint */
+      device_fingerprint: string;
+      /**
+       * Device Platform
+       * @default web
+       */
+      device_platform: string;
+      /**
+       * Takeover
+       * @default false
+       */
+      takeover: boolean;
+    };
+    /** CustomerPasswordLoginResponse */
+    CustomerPasswordLoginResponse: {
+      /** User Id */
+      user_id: string;
+      /** Username */
+      username: string;
+      /** Display Name */
+      display_name: string;
+      /** Device Id */
+      device_id: string;
+      /** Device Token */
+      device_token: string;
+      /** Session Id */
+      session_id: string;
+      /** Session Token */
+      session_token: string;
+      /** Session Epoch */
+      session_epoch: number;
+      /** Session Lease Expires At */
+      session_lease_expires_at: string;
+    };
     /** CustomerPaymentCodeResponse */
     CustomerPaymentCodeResponse: {
       /** Order No */
@@ -5631,7 +5948,23 @@ export interface components {
       /** Device Slots Used */
       device_slots_used: number;
       /** Device Slots Total */
-      device_slots_total: number;
+      device_slots_total: number | null;
+    };
+    /** CustomerRegistrationRequest */
+    CustomerRegistrationRequest: {
+      /** Username */
+      username: string;
+      /** Password */
+      password: string;
+    };
+    /** CustomerRegistrationResponse */
+    CustomerRegistrationResponse: {
+      /** User Id */
+      user_id: string;
+      /** Username */
+      username: string;
+      /** Display Name */
+      display_name: string;
     };
     /** CustomerUnitPriceResponse */
     CustomerUnitPriceResponse: {
@@ -6163,6 +6496,47 @@ export interface components {
       /** Retry Reason */
       retry_reason: string;
     };
+    /**
+     * H3ExtendedModesResponse
+     * @description CW-063: read-side of the h3_extended_modes_enabled admin toggle.
+     *
+     *     The column gates real paid submissions of the T2V / R2V / last_frame H3
+     *     forms (docs/视频生成独立创作-设计与实施-2026-09-07.md §五.1). It defaults
+     *     to FALSE (migration 075) and may only be flipped after the supplier
+     *     paid-probe verification (缺口 4a) completes. The response deliberately
+     *     echoes only the single boolean — the per-mode capability breakdown
+     *     (t2v_enabled / r2v_enabled / last_frame_enabled) is served by
+     *     ``GET /api/independent/capabilities`` and must not be duplicated here.
+     */
+    H3ExtendedModesResponse: {
+      /** H3 Extended Modes Enabled */
+      h3_extended_modes_enabled: boolean;
+    };
+    /**
+     * H3ExtendedModesUpdateRequest
+     * @description CW-063: write-side of the h3_extended_modes_enabled admin toggle.
+     *
+     *     Mirrors ``QueueModeUpdateRequest`` exactly: the shared admin write
+     *     contract (idempotency key header, ``confirm: true``, non-blank reason)
+     *     rides ``AdminWriteContract``, and the audit row names the operator's
+     *     reason so a paid-mode enablement is always attributable. The reason
+     *     field is the operator's attestation that the supplier paid-probe
+     *     (缺口 4a) has completed — the UI warns before opening the dialog.
+     */
+    H3ExtendedModesUpdateRequest: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** H3 Extended Modes Enabled */
+      h3_extended_modes_enabled: boolean;
+    };
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
@@ -6217,9 +6591,19 @@ export interface components {
       last_frame_enabled: boolean;
       /**
        * Max Reference Images
-       * @default 4
+       * @default 8
        */
       max_reference_images: number;
+      /**
+       * Max Reference Videos
+       * @default 3
+       */
+      max_reference_videos: number;
+      /**
+       * Max Reference Audios
+       * @default 3
+       */
+      max_reference_audios: number;
       /** Max Quantity */
       max_quantity: number;
     };
@@ -6423,7 +6807,7 @@ export interface components {
       /** Group */
       group?: string | null;
       /** Audio Purpose */
-      audio_purpose?: ("oral_audio" | "voice_clone") | null;
+      audio_purpose?: ("oral_audio" | "voice_clone" | "reference") | null;
       /** Duration Seconds */
       duration_seconds?: number | null;
     };
@@ -6911,6 +7295,51 @@ export interface components {
       test_kind: string;
       /** Account Credit */
       account_credit?: number | null;
+    };
+    /** PublishAccountCreateRequest */
+    PublishAccountCreateRequest: {
+      /** Platform */
+      platform: string;
+      /** Display Name */
+      display_name: string;
+      /** Cookie */
+      cookie: string;
+      /** Security Sdk */
+      security_sdk?: string | null;
+    };
+    /** PublishAccountDeleteResponse */
+    PublishAccountDeleteResponse: {
+      /** Deleted */
+      deleted: boolean;
+    };
+    /** PublishAccountListResponse */
+    PublishAccountListResponse: {
+      /** Accounts */
+      accounts: components["schemas"]["PublishAccountResponse"][];
+    };
+    /** PublishAccountResponse */
+    PublishAccountResponse: {
+      /** Id */
+      id: string;
+      /** Platform */
+      platform: string;
+      /** Display Name */
+      display_name: string;
+      /** Status */
+      status: string;
+      /** Last Verified At */
+      last_verified_at: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Security Sdk Required */
+      security_sdk_required: boolean;
+      /** Created At */
+      created_at: string;
+    };
+    /** PublishVerifyResponse */
+    PublishVerifyResponse: {
+      /** Submitted */
+      submitted: boolean;
     };
     /** QueueModeResponse */
     QueueModeResponse: {
@@ -8081,7 +8510,7 @@ export interface components {
        * Platform
        * @enum {string}
        */
-      platform: "douyin" | "wechat_channels";
+      platform: "douyin" | "wechat_channels" | "xiaohongshu";
       /** Videoid */
       videoId: string;
       /**
@@ -9815,6 +10244,133 @@ export interface operations {
       };
     };
   };
+  read_publish_accounts_api_studio_publish_accounts_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishAccountListResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_publish_account_api_studio_publish_accounts_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PublishAccountCreateRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishAccountResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  delete_publish_account_api_studio_publish_accounts__account_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        account_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishAccountDeleteResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  verify_publish_account_api_studio_publish_accounts__account_id__verify_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        account_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishVerifyResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_materials_api_studio_materials_get: {
     parameters: {
       query?: {
@@ -11195,6 +11751,26 @@ export interface operations {
         };
         content: {
           "text/html": string;
+        };
+      };
+    };
+  };
+  wechat_native_notify_api_payments_wechat_native_notify_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
         };
       };
     };
@@ -12613,6 +13189,59 @@ export interface operations {
       };
     };
   };
+  read_h3_extended_modes_api_control_settings_h3_extended_modes_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["H3ExtendedModesResponse"];
+        };
+      };
+    };
+  };
+  update_h3_extended_modes_api_control_settings_h3_extended_modes_patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["H3ExtendedModesUpdateRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["H3ExtendedModesResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   list_audit_log_api_control_audit_log_get: {
     parameters: {
       query?: {
@@ -12641,6 +13270,72 @@ export interface operations {
           "application/json": {
             [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  register_customer_api_customer_register_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CustomerRegistrationRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CustomerRegistrationResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  password_login_api_customer_login_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CustomerPasswordLoginRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CustomerPasswordLoginResponse"];
         };
       };
       /** @description Validation Error */
@@ -12977,6 +13672,88 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+    };
+  };
+  list_customer_api_keys_api_customer_api_keys_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiKeyListResponse"];
+        };
+      };
+    };
+  };
+  create_customer_api_key_api_customer_api_keys_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateApiKeyRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CreatedApiKeyResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  revoke_customer_api_key_api_customer_api_keys__key_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        key_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
       };
     };
   };
@@ -14059,6 +14836,41 @@ export interface operations {
           "application/json": {
             [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  reveal_provider_secret_api_admin_settings_providers__provider__secrets__field__reveal_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        provider: string;
+        field: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
         };
       };
       /** @description Validation Error */

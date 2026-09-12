@@ -1,43 +1,10 @@
-"""T16 / DEV-01 — two current device slots, credentials and unbind history.
+"""Customer devices, credentials, independent sessions and append-only history.
 
-The device-slot half of the customer runtime (code checklist §3.2, frozen
-name ``customer_device_service.py``). Revision 028 already proved the slot
-invariants in PostgreSQL — the partial unique indexes on
-``(activation_code_id, slot_no)`` and ``fingerprint_hmac`` for ``BOUND``
-rows, the global ``token_digest`` uniqueness and the three-state shape
-coupling. This module is the application layer on top:
-
-- ``lookup_device_credential`` resolves a presented device token to its
-  ``BOUND`` device row. The token is probed against *every* configured
-  device-domain key version, so a credential issued under a retained older
-  version keeps authenticating through a rotation window (the PR #44
-  review P1 precedent on the fingerprint dimension). The return value
-  distinguishes "no such credential" from "credential of a released
-  device" so the routes can answer 401 ``DEVICE_CREDENTIAL_INVALID`` versus
-  401 ``DEVICE_REVOKED`` — the client-side signal to wipe stored
-  credentials (dev doc §13.2). Only keyed digests ever reach the database.
-- ``list_device_slots`` builds the two-slot status view: slot 1 and slot 2
-  each hold at most one currently ``BOUND`` device, and every released row
-  stays in the history (dev doc §3.2: unbinding releases the current
-  occupancy but never deletes the audit trail).
-- ``unbind_device`` flips one ``BOUND`` row of the *caller's own* user to
-  ``UNBOUND`` and, when the user's single live session rides that device,
-  revokes it atomically in the same transaction: epoch bump, lease pulled
-  into the past and a ``LOGOUT`` event with reason ``device_unbound``
-  (dev doc §9.2: device revocation must atomically invalidate the current
-  session). A missing or foreign device reports ``not_found`` — one
-  answer, no IDOR oracle.
-- ``next_free_slot`` reports the lowest free slot of an activation code,
-  or ``None`` when both are ``BOUND`` — the third-device block that the
-  T17 second-device enroll flow will consult before binding.
-
-No-Go red lines: no plaintext device token in a column, event or log
-record — only keyed digests; unbind history is never deleted or overwritten.
-CW-073: the per-user device limit lives in ``users.max_devices`` (migration 086);
-the hard-coded two-slot model is removed.
-
-PostgreSQL is the customer source of truth, so every entry point expects a
-live PG connection (the routes fail closed with 503 on the SQLite lane).
+The user-confirmed account policy has no device count limit. Slot numbers are
+stable display ordinals, not capacity reservations. Released devices remain in
+history. Unbinding or revoking one device atomically revokes only that device's
+session; administrator audit events also support password accounts without an
+activation code. HMAC key rotation retains existing device identity.
 """
 
 from __future__ import annotations
@@ -108,7 +75,7 @@ class AuthenticatedDevice:
 
     id: str
     user_id: str
-    activation_code_id: str
+    activation_code_id: str | None
     slot_no: int
     display_name: str
     platform: str
@@ -244,7 +211,7 @@ def lookup_device_credential(conn: psycopg.Connection, token: str) -> DeviceCred
     matched_device = AuthenticatedDevice(
         id=str(row[0]),
         user_id=str(row[1]),
-        activation_code_id=str(row[2]),
+        activation_code_id=str(row[2]) if row[2] is not None else None,
         slot_no=int(row[3]),
         display_name=str(row[4]),
         platform=str(row[5]),
@@ -263,13 +230,13 @@ def lookup_device_credential(conn: psycopg.Connection, token: str) -> DeviceCred
 
 
 # ---------------------------------------------------------------------------
-# The two-slot status view
+# The current device status view
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class DeviceSlotView:
-    """One slot of the two-slot status: its number and current device."""
+    """A display ordinal and its current device."""
 
     slot_no: int
     device: dict[str, object] | None
@@ -308,14 +275,8 @@ def list_device_slots(
     status view, released rows fall through to the history list. Rows are
     never deleted, so the history outlives slot reuse (dev doc §3.2).
 
-    CW-073: the slot count is now driven by ``users.max_devices`` instead of
-    the hard-coded ``MAX_DEVICE_SLOTS``.
+    Only bound devices are returned; there are no reserved capacity slots.
     """
-    max_devices_row = conn.execute(
-        "SELECT max_devices FROM users WHERE id = %s",
-        (user_id,),
-    ).fetchone()
-    max_devices = int(max_devices_row[0]) if max_devices_row else _DEFAULT_MAX_DEVICES
     rows = conn.execute(
         "SELECT id, display_name, platform, status, bound_at, last_active_at, "
         "unbound_at, revoked_at, slot_no "
@@ -343,37 +304,24 @@ def list_device_slots(
                 else None
             ),
         )
-        for slot_no in range(1, max_devices + 1)
+        for slot_no in sorted(occupied)
     ]
     return DeviceSlotsSnapshot(slots=slots, history=history)
 
 
 # ---------------------------------------------------------------------------
-# The third-device block
+# Display ordinal allocation
 # ---------------------------------------------------------------------------
 
 
 def next_free_slot(conn: psycopg.Connection, activation_code_id: str) -> int | None:
-    """The lowest free slot of the activation code, or ``None`` when full.
-
-    CW-073: the slot range is now driven by ``users.max_devices`` instead of
-    the hard-coded ``MAX_DEVICE_SLOTS``.  The activation code's bound user
-    determines the limit.
-    """
-    # Resolve the user's max_devices through the activation code.
-    limit_row = conn.execute(
-        "SELECT u.max_devices FROM activation_codes ac "
-        "JOIN users u ON u.id = ac.bound_user_id "
-        "WHERE ac.id = %s",
-        (activation_code_id,),
-    ).fetchone()
-    max_devices = int(limit_row[0]) if limit_row else _DEFAULT_MAX_DEVICES
+    """Return the lowest unused display ordinal, without a device count cap."""
     rows = conn.execute(
         "SELECT slot_no FROM customer_devices WHERE activation_code_id = %s AND status = 'BOUND'",
         (activation_code_id,),
     ).fetchall()
     taken = {int(row[0]) for row in rows}
-    for slot_no in range(1, max_devices + 1):
+    for slot_no in range(1, len(taken) + 2):
         if slot_no not in taken:
             return slot_no
     return None
@@ -414,7 +362,7 @@ def unbind_device(
         return OUTCOME_NOT_FOUND
     if str(row[0]) != BOUND:
         return OUTCOME_NOT_BOUND
-    activation_code_id = str(row[2])
+    activation_code_id = str(row[2]) if row[2] is not None else None
 
     # PR #47 Codex review P2: keep the PostgreSQL microsecond precision —
     # trimming the timestamp to whole seconds is what once forced the
@@ -452,7 +400,7 @@ def _revoke_session_riding_device(
     *,
     device_id: str,
     owner_user_id: str,
-    activation_code_id: str,
+    activation_code_id: str | None,
     actor_user_id: str,
     reason: str,
     request_id: str,
@@ -818,7 +766,7 @@ def _insert_admin_device_event(
     target_user_id: str,
     device_id: str | None,
     pairing_request_id: str | None,
-    activation_code_id: str,
+    activation_code_id: str | None,
     reason: str,
     request_id: str,
 ) -> None:
@@ -1068,7 +1016,7 @@ def admin_unbind_device(
     if str(row[0]) != BOUND:
         return OUTCOME_NOT_BOUND
     owner_user_id = str(row[1])
-    activation_code_id = str(row[2])
+    activation_code_id = str(row[2]) if row[2] is not None else None
 
     now_iso = server_now.isoformat()
     conn.execute(
@@ -1126,7 +1074,7 @@ def revoke_device_credential(
     if str(row[0]) != BOUND:
         return OUTCOME_NOT_BOUND
     owner_user_id = str(row[1])
-    activation_code_id = str(row[2])
+    activation_code_id = str(row[2]) if row[2] is not None else None
 
     now_iso = server_now.isoformat()
     conn.execute(
