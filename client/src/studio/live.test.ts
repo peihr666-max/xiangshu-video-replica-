@@ -1135,8 +1135,8 @@ describe("真实 Studio 只读适配器", () => {
     const data = await loadStudioData(user);
 
     expect(data.materials).toHaveLength(60);
+    // R2V 参考支持图片/视频/音频混合，启动不再限定 mediaType，一次拉全部类型。
     expect(api.listMaterials).toHaveBeenCalledWith({
-      mediaType: "image",
       pageSize: 60,
     });
     expect(api.getAssetDownloadUrl).toHaveBeenCalledOnce();
@@ -1733,5 +1733,44 @@ describe("buildReplicaPromptText（拆解 Prompt 文本）", () => {
     expect(text).toContain("台词：采光设计");
     expect(text).toContain("【原片口播稿】");
     expect(text).toContain("原片口播");
+  });
+});
+
+describe("studioAssetFromMaterial（素材映射数值时长）", () => {
+  const baseMaterial = {
+    id: "asset:video-1",
+    owner_user_id: "user-1",
+    asset_id: "video-1",
+    generation_task_id: null,
+    project_id: null,
+    person_id: null,
+    title: "参考视频.mp4",
+    group: "参考素材",
+    media_type: "video",
+    source: "upload",
+    status: "ready",
+    delivery: "stored",
+    content_type: "video/mp4",
+    size_bytes: 2048,
+    duration_seconds: 12.4,
+    created_at: "2026-09-06 10:00:00",
+    hidden: false,
+    saved: true,
+    allowed_uses: ["reference"],
+    allowed_actions: ["preview", "download"],
+  } satisfies MaterialItem;
+
+  it("把 duration_seconds 映射为数值 durationSeconds 供选取路径 ≤15s 比较", () => {
+    const asset = live.studioAssetFromMaterial(baseMaterial);
+    expect(asset.durationSeconds).toBe(12.4);
+    expect(asset.duration).toBe("00:12");
+  });
+
+  it("时长缺失时 durationSeconds 为 undefined（未知时长按放行处理）", () => {
+    const asset = live.studioAssetFromMaterial({
+      ...baseMaterial,
+      duration_seconds: null,
+    });
+    expect(asset.durationSeconds).toBeUndefined();
   });
 });

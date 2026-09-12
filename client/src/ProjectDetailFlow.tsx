@@ -38,6 +38,10 @@ type ProjectDetailFlowProps = {
   onBusyChange?: (isBusy: boolean) => void;
   project: Project;
   readOnly: boolean;
+  /** 余额不足时的充值引导动作（可选；内部 lane 缺省）。 */
+  onRecharge?: () => void;
+  /** 客户 lane 提供钱包余额读取，用于提交前的软预检（F-05）。 */
+  walletProvider?: () => Promise<number | null>;
 };
 
 type GenerationPhase = "idle" | "running" | "done";
@@ -68,8 +72,10 @@ export function ProjectDetailFlow({
   onBack,
   onBatchCreated,
   onBusyChange,
+  onRecharge,
   project,
   readOnly,
+  walletProvider,
 }: ProjectDetailFlowProps) {
   const [analysisVersion, setAnalysisVersion] =
     useState<AnalysisVersion | null>(null);
@@ -104,6 +110,10 @@ export function ProjectDetailFlow({
   const [priceQuoteError, setPriceQuoteError] = useState("");
   const [priceQuoteRevision, setPriceQuoteRevision] = useState(0);
   const [generationError, setGenerationError] = useState("");
+  const [insufficientBalance, setInsufficientBalance] = useState<{
+    neededSeconds: number;
+    balanceSeconds: number | null;
+  } | null>(null);
   const [generationMessage, setGenerationMessage] = useState("");
   // 用户在第一段编辑并另存过的提示词文本。自定义文案未变时提交会复用；
   // 文案变化时必须让服务端重新编译，避免旧的完整 Prompt 覆盖新文案。
@@ -536,6 +546,29 @@ export function ProjectDetailFlow({
       if (!isCurrent()) {
         throw new Error("生成参数已变化，请按最新报价重新提交。");
       }
+      // F-05 软预检：余额明显不足时直接给出充值引导，不打服务端。
+      if (walletProvider) {
+        const neededSeconds =
+          envelope.request.output_duration_seconds * envelope.request.quantity;
+        const balanceSeconds = await walletProvider().catch(() => null);
+        if (!isCurrent()) {
+          throw new Error("生成参数已变化，请按最新报价重新提交。");
+        }
+        if (balanceSeconds !== null && balanceSeconds < neededSeconds) {
+          if (idempotencyEnvelopeRef.current === envelope) {
+            idempotencyEnvelopeRef.current = null;
+          }
+          if (frozenDetailRequests.get(frozenRequestKey) === envelope) {
+            frozenDetailRequests.delete(frozenRequestKey);
+          }
+          throw Object.assign(
+            new Error(
+              `余额不足：本次预计消耗 ${neededSeconds} 秒，当前余额 ${balanceSeconds} 秒，请充值后重试。`,
+            ),
+            { code: "INSUFFICIENT_CREDITS", balanceSeconds },
+          );
+        }
+      }
       const batch = await createGenerationBatch(project.id, envelope.request);
       if (idempotencyEnvelopeRef.current === envelope) {
         idempotencyEnvelopeRef.current = null;
@@ -550,6 +583,18 @@ export function ProjectDetailFlow({
     } catch (error) {
       if (submissionOperationRef.current === operation) {
         setGenerationPhase("idle");
+        setInsufficientBalance(
+          (error as { code?: string })?.code === "INSUFFICIENT_CREDITS"
+            ? {
+                neededSeconds: generationDuration * generationQuantity,
+                balanceSeconds:
+                  typeof (error as { balanceSeconds?: number })
+                    .balanceSeconds === "number"
+                    ? (error as { balanceSeconds: number }).balanceSeconds
+                    : null,
+              }
+            : null,
+        );
         setGenerationError(
           error instanceof Error ? error.message : "创建生成任务失败，请重试。",
         );
@@ -768,6 +813,13 @@ export function ProjectDetailFlow({
           <p className="settings-error" role="alert">
             {generationError}
           </p>
+        ) : null}
+        {insufficientBalance && onRecharge ? (
+          <div className="settings-error" role="alert">
+            <button onClick={onRecharge} type="button">
+              余额不足，去充值
+            </button>
+          </div>
         ) : null}
         {firstFrameAssetId ? (
           <>

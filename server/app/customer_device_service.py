@@ -32,8 +32,9 @@ coupling. This module is the application layer on top:
   T17 second-device enroll flow will consult before binding.
 
 No-Go red lines: no plaintext device token in a column, event or log
-record — only keyed digests; slot numbers are 1 or 2 only; unbind history
-is never deleted or overwritten.
+record — only keyed digests; unbind history is never deleted or overwritten.
+CW-073: the per-user device limit lives in ``users.max_devices`` (migration 086);
+the hard-coded two-slot model is removed.
 
 PostgreSQL is the customer source of truth, so every entry point expects a
 live PG connection (the routes fail closed with 503 on the SQLite lane).
@@ -56,7 +57,11 @@ from app.activation_code_service import ActivationKeyError
 DEVICE_FINGERPRINT_HMAC_KEY_ENV = "VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY"
 MIN_HMAC_KEY_BYTES = 32
 MAX_KEY_VERSION = 64
-MAX_DEVICE_SLOTS = 2
+# CW-073: MAX_DEVICE_SLOTS removed — the per-user limit now lives in
+# ``users.max_devices`` (migration 086).  The constant is retained only as
+# the server_default for the migration and for backward-compatible display
+# when the column has not been read yet.
+_DEFAULT_MAX_DEVICES = 2
 
 BOUND = "BOUND"
 UNBOUND = "UNBOUND"
@@ -296,13 +301,21 @@ def _device_view(row: tuple[object, ...], *, slot_no: int, is_current: bool) -> 
 def list_device_slots(
     conn: psycopg.Connection, *, user_id: str, current_device_id: str
 ) -> DeviceSlotsSnapshot:
-    """The two-slot status plus the unbind history for one user.
+    """The device status plus the unbind history for one user.
 
     Every row of the user is read (slot number, current status and the
     shape-coupled timestamps); ``BOUND`` rows occupy their slot in the
     status view, released rows fall through to the history list. Rows are
     never deleted, so the history outlives slot reuse (dev doc §3.2).
+
+    CW-073: the slot count is now driven by ``users.max_devices`` instead of
+    the hard-coded ``MAX_DEVICE_SLOTS``.
     """
+    max_devices_row = conn.execute(
+        "SELECT max_devices FROM users WHERE id = %s",
+        (user_id,),
+    ).fetchone()
+    max_devices = int(max_devices_row[0]) if max_devices_row else _DEFAULT_MAX_DEVICES
     rows = conn.execute(
         "SELECT id, display_name, platform, status, bound_at, last_active_at, "
         "unbound_at, revoked_at, slot_no "
@@ -314,8 +327,6 @@ def list_device_slots(
     for row in rows:
         slot_no = int(row[8])
         if str(row[3]) == BOUND:
-            # The partial unique index guarantees at most one BOUND row per
-            # slot, so a plain assignment cannot lose an occupant.
             occupied[slot_no] = row
         else:
             history.append(_device_view(row, slot_no=slot_no, is_current=False))
@@ -332,7 +343,7 @@ def list_device_slots(
                 else None
             ),
         )
-        for slot_no in range(1, MAX_DEVICE_SLOTS + 1)
+        for slot_no in range(1, max_devices + 1)
     ]
     return DeviceSlotsSnapshot(slots=slots, history=history)
 
@@ -345,18 +356,24 @@ def list_device_slots(
 def next_free_slot(conn: psycopg.Connection, activation_code_id: str) -> int | None:
     """The lowest free slot of the activation code, or ``None`` when full.
 
-    Slot 1 and slot 2 are the only legal numbers (the 028 CHECK); with both
-    currently ``BOUND`` there is no free slot — the third-device block the
-    T17 enroll flow must answer with 409 ``DEVICE_SLOTS_FULL``. An unbound
-    row does not occupy its slot (partial unique index, DEV-01 No-Go), so
-    the released slot is immediately reusable.
+    CW-073: the slot range is now driven by ``users.max_devices`` instead of
+    the hard-coded ``MAX_DEVICE_SLOTS``.  The activation code's bound user
+    determines the limit.
     """
+    # Resolve the user's max_devices through the activation code.
+    limit_row = conn.execute(
+        "SELECT u.max_devices FROM activation_codes ac "
+        "JOIN users u ON u.id = ac.bound_user_id "
+        "WHERE ac.id = %s",
+        (activation_code_id,),
+    ).fetchone()
+    max_devices = int(limit_row[0]) if limit_row else _DEFAULT_MAX_DEVICES
     rows = conn.execute(
         "SELECT slot_no FROM customer_devices WHERE activation_code_id = %s AND status = 'BOUND'",
         (activation_code_id,),
     ).fetchall()
     taken = {int(row[0]) for row in rows}
-    for slot_no in range(1, MAX_DEVICE_SLOTS + 1):
+    for slot_no in range(1, max_devices + 1):
         if slot_no not in taken:
             return slot_no
     return None

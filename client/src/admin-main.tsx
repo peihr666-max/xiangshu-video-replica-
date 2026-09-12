@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { AdminApp } from "./AdminApp";
+import "./styles.css";
 
 // CW-019: 管理端独立入口挂载文件。
 // 与客户入口 main.tsx 物理分离：客户构建制品（client/dist）不含本文件，

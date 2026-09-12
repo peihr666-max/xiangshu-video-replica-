@@ -918,6 +918,88 @@ describe("V1.4 工作台新版首页布局", () => {
   });
 });
 
+describe("V1.4 工作台对齐网格", () => {
+  const clock = new Date("2026-09-06T10:00:00");
+
+  beforeEach(() => {
+    useStudio.mockReset();
+    vi.useFakeTimers({ now: clock, toFake: ["Date"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function workbench(
+    overrides: Partial<StudioContextValue> = {},
+  ): StudioContextValue {
+    return studio(undefined, {
+      state: { ...createState("workbench") },
+      data: data([runningTask]),
+      ...overrides,
+    });
+  }
+
+  it("四区块锁定为两行等高网格，标题收进卡片内部", () => {
+    useStudio.mockReturnValue(workbench());
+    const { container } = render(<WorkbenchPage />);
+
+    const grid = container.querySelector<HTMLElement>(".studio-home-grid");
+    if (!grid) throw new Error("未找到 .studio-home-grid 网格容器");
+    const areas = Array.from(grid.children).map(
+      (cell) => (cell as HTMLElement).dataset.area,
+    );
+    expect(areas).toEqual(["running", "activity", "viral", "shortcuts"]);
+
+    // 标题必须位于卡片内部（此前左栏 h2 悬在卡片外，行首高度受外部标题影响）
+    const runningCell = grid.children[0] as HTMLElement;
+    expect(runningCell.querySelector("h2")?.textContent).toBe("正在进行");
+    const viralCell = grid.children[2] as HTMLElement;
+    expect(viralCell.querySelector("h2")?.textContent).toBe("爆款视频精选");
+  });
+
+  it("任务动态最多展示 4 条，超出时提供进入任务中心出口", () => {
+    const extraA = { ...taskA, id: "t-extra-1", title: "王宅庭院巡检" };
+    const extraB = { ...taskA, id: "t-extra-2", title: "赵宅封顶记录" };
+    const extraC = { ...taskA, id: "t-extra-3", title: "钱宅交付回访" };
+    useStudio.mockReturnValue(
+      workbench({
+        data: data([runningTask, taskA, taskB, extraA, extraB, extraC]),
+      }),
+    );
+    render(<WorkbenchPage />);
+
+    expect(screen.getByText(/王宅庭院巡检/)).toBeInTheDocument();
+    expect(screen.queryByText(/赵宅封顶记录/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "进入任务中心" }),
+    ).toBeInTheDocument();
+  });
+
+  it("正在进行为空时保留空态卡片并给出上传入口", () => {
+    const clickSpy = vi
+      .spyOn(HTMLInputElement.prototype, "click")
+      .mockImplementation(() => {});
+    useStudio.mockReturnValue(workbench({ data: data([]) }));
+    render(<WorkbenchPage />);
+
+    const cta = screen.getByRole("button", {
+      name: "上传视频，开始第一支创作",
+    });
+    fireEvent.click(cta);
+    expect(clickSpy).toHaveBeenCalled();
+    clickSpy.mockRestore();
+  });
+
+  it("任务动态为空时渲染带说明的空态", () => {
+    useStudio.mockReturnValue(workbench({ data: data([]) }));
+    render(<WorkbenchPage />);
+
+    expect(screen.getByText("暂无任务动态")).toBeInTheDocument();
+    expect(screen.getByText(/任务提交后这里会实时更新/)).toBeInTheDocument();
+  });
+});
+
 describe("formatTaskTime", () => {
   const now = new Date("2026-09-06T10:00:00");
 

@@ -102,13 +102,13 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "tables": 77,
-    "columns": 912,
+    "columns": 913,
     "identity_columns": 0,
     "sequences": 3,
     "jsonb_columns": 0,
     "timestamptz_columns": 16,
     "triggers": 18,
-    "partial_indexes": 25,
+    "partial_indexes": 24,
     "unique_constraints": 27,
     "check_constraints": 227,
     "foreign_keys": 146,
@@ -207,7 +207,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 这是「空库→head」与「旧起点→head」必须**收敛到同一 schema** 的机器化断言 ——
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
-HEAD_SCHEMA_DIGEST = "4e62368d2697ff3c8c71129d2254ca561e93074174e5d9a2978d5c8d3928bc89"
+HEAD_SCHEMA_DIGEST = "c6b1d59f2d529463dfcd1a0400d3173e8bb6d0c9341cc158946200394befa891"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

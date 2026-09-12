@@ -715,7 +715,8 @@ def _customer_profile(conn: psycopg.Connection, *, user_id: str) -> CustomerProf
                    SELECT COUNT(*)
                    FROM customer_devices device
                    WHERE device.user_id = u.id AND device.status = 'BOUND'
-               ) AS device_slots_used
+               ) AS device_slots_used,
+               u.max_devices
         FROM users u
         LEFT JOIN LATERAL (
             SELECT masked_code, status, activated_at
@@ -745,7 +746,7 @@ def _customer_profile(conn: psycopg.Connection, *, user_id: str) -> CustomerProf
         activation_status=str(row[4]) if row[4] is not None else None,
         activated_at=str(row[5]) if row[5] is not None else None,
         device_slots_used=int(row[6]),
-        device_slots_total=2,
+        device_slots_total=int(row[7]),
     )
 
 

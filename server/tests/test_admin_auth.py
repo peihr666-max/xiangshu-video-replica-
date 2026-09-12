@@ -686,6 +686,39 @@ def test_admin_session_context_change_revokes_cookie_and_is_audited(
     assert json.loads(str(audit[0]))["code"] == "ADMIN_SESSION_CONTEXT_CHANGED"
 
 
+def test_admin_session_survives_client_ip_change(
+    client: TestClient,
+    clean_sessions: str,
+    admin_session: dict[str, str],
+) -> None:
+    """ADMIN-SESSION-BINDING-20260912（用户拍板方案②）：会话仅绑定浏览器环境。
+
+    网络出口/IP 变化不得吊销管理员会话——办公网络出口漂移不再表现为频繁掉线；
+    created_ip_digest 仍照常落库供审计。UA 变化仍拒绝，由既有
+    test_admin_session_context_change_revokes_cookie_and_is_audited 钉住。
+    """
+    rotated = TestClient(client.app, client=("203.0.113.77", 51000))
+    rotated.cookies.set(ADMIN_SESSION_COOKIE, client.cookies.get(ADMIN_SESSION_COOKIE))
+
+    survived = rotated.get("/api/control/admin/session")
+
+    assert survived.status_code == 200
+    assert survived.json()["actor"]["user_id"] == "admin_u"
+    with psycopg.connect(clean_sessions) as conn:
+        row = conn.execute(
+            "SELECT revoked_at, created_ip_digest FROM admin_sessions WHERE id = %s",
+            (admin_session["session_id"],),
+        ).fetchone()
+        audit_count = conn.execute(
+            "SELECT count(*) FROM audit_logs "
+            "WHERE action = 'admin_session.security_rejected' AND entity_id = %s",
+            (admin_session["session_id"],),
+        ).fetchone()[0]
+    assert row is not None and row[0] is None
+    assert row[1]
+    assert int(audit_count) == 0
+
+
 def test_exchange_recovery_sets_password_then_password_login_survives_refresh(
     client: TestClient,
     clean_sessions: str,

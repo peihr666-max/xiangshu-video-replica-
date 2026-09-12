@@ -100,6 +100,9 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     # 083_recharge_orders_multi_provider: WeChat Native 支付回执列仅存在于
     # PG（T07 的 SQLite 源 schema 冻结于 042 前基线）。
     "recharge_orders": frozenset({"prepay_id", "code_url", "transaction_id"}),
+    # 086_remove_device_slot_constraints: 每用户设备上限列仅存在于 PG
+    # （T07 的 SQLite 源 schema 冻结于 042 前基线）。
+    "users": frozenset({"max_devices"}),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000
 _DIGEST_MODULUS = 1 << 256

@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "083_recharge_orders_multi_provider"
-down_revision = "082_publish_accounts"
+down_revision = "086_remove_device_slot_constraints"
 branch_labels = None
 depends_on = None
 

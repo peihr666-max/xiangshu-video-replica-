@@ -143,6 +143,7 @@ export function studioAssetFromMaterial(item: MaterialItem): StudioAsset {
     name: item.title,
     kind: item.media_type,
     duration: materialDuration(item.duration_seconds),
+    durationSeconds: item.duration_seconds ?? undefined,
     group: item.group,
     personId: item.person_id ?? undefined,
     source: materialSourceLabels[item.source],
@@ -182,6 +183,30 @@ export function readAudioDuration(file: File): Promise<number> {
       reject(new Error("无法读取音频时长，请重新选择 MP3 文件。"));
     };
     audio.src = url;
+  });
+}
+
+/** 探测本机视频时长（秒）：R2V 参考视频上传前用于 ≤15s 拦截，与 readAudioDuration 同构。 */
+export function readVideoDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    const cleanup = () => {
+      video.removeAttribute("src");
+      URL.revokeObjectURL(url);
+    };
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const duration = video.duration;
+      cleanup();
+      if (Number.isFinite(duration) && duration > 0) resolve(duration);
+      else reject(new Error("无法读取视频时长，请重新选择 MP4 或 MOV 文件。"));
+    };
+    video.onerror = () => {
+      cleanup();
+      reject(new Error("无法读取视频时长，请重新选择 MP4 或 MOV 文件。"));
+    };
+    video.src = url;
   });
 }
 
@@ -1020,9 +1045,9 @@ export async function loadStudioData(
   };
 }
 
-/** 启动阶段只读取图片素材元数据；预览地址由实际可见的选择器按页签发。 */
+/** 启动阶段读取图片/视频/音频素材元数据（R2V 参考支持三类混合）；预览地址由实际可见的选择器按页签发。 */
 async function loadVideoMaterialMetadata(): Promise<StudioAsset[]> {
-  const page = await listMaterials({ mediaType: "image", pageSize: 60 });
+  const page = await listMaterials({ pageSize: 60 });
   return page.items.map(studioAssetFromMaterial);
 }
 
@@ -1059,6 +1084,30 @@ export async function uploadOralAudioMaterial(
     title: file.name,
     group: purpose === "oral_audio" ? "完整口播音频" : "声音克隆样本",
     audioPurpose: purpose,
+    durationSeconds,
+  });
+  await uploadMaterial(intent, file, onProgress, signal);
+  const material = await completeMaterialUpload(intent.asset_id);
+  const asset = studioAssetFromMaterial(material);
+  const url = material.asset_id
+    ? await getAssetDownloadUrl(material.asset_id)
+        .then((result) => result.url)
+        .catch(() => undefined)
+    : undefined;
+  return { ...asset, url };
+}
+
+/** R2V 参考音频：以 reference 用途上传（后端强制 ≤15s 并探测时长），供参考选取器消费。 */
+export async function uploadReferenceAudioMaterial(
+  file: File,
+  durationSeconds: number,
+  onProgress: (progress: number) => void,
+  signal?: AbortSignal,
+): Promise<StudioAsset> {
+  const intent = await createMaterialUploadIntent(file, {
+    title: file.name,
+    group: "参考素材",
+    audioPurpose: "reference",
     durationSeconds,
   });
   await uploadMaterial(intent, file, onProgress, signal);

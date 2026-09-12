@@ -25,6 +25,7 @@ export function CustomerProfilePanel({
   onDismissPairing,
   onManualHeartbeat,
   onLogout,
+  onPairDevice,
   onProfileUpdated,
   onRefreshProfile,
   onRecharge,
@@ -45,6 +46,8 @@ export function CustomerProfilePanel({
   onDismissPairing: (pairingId: string) => void;
   onManualHeartbeat?: () => void;
   onLogout: () => Promise<CustomerLogoutOutcome>;
+  /** 设备管理页"绑定第二台设备"的页内导航回调（缺省时隐藏入口）。 */
+  onPairDevice?: () => void;
   onProfileUpdated: (profile: CustomerProfile) => void;
   onRefreshProfile: () => Promise<void>;
   onRecharge: (amountYuan?: number) => void;
@@ -441,6 +444,7 @@ export function CustomerProfilePanel({
               devices={devices}
               isOnline={isOnline}
               leaseExpiresAt={sessionRuntime?.leaseExpiresAt ?? null}
+              onPairDevice={onPairDevice}
               onRecharge={() => onRecharge()}
               onUnbind={onUnbind}
             />

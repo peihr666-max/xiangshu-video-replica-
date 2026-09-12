@@ -4,12 +4,17 @@ export function DeviceManagementPage({
   devices,
   isOnline,
   leaseExpiresAt,
+  onPairDevice,
   onUnbind,
   onRecharge,
 }: {
   devices: CustomerDeviceListResponse;
   isOnline: boolean;
   leaseExpiresAt?: string | null;
+  /** 页内导航到配对流程。必须是回调而非 <a href>：Tauri 桌面壳里原生
+   * 导航会整页重载，配对流程状态与挂载都由上层状态机持有。
+   * 缺省（内部 lane）时不渲染绑定入口。 */
+  onPairDevice?: () => void;
   onUnbind: (deviceId: string) => void;
   onRecharge: () => void;
 }): React.JSX.Element {
@@ -86,7 +91,11 @@ export function DeviceManagementPage({
               ) : (
                 <div className="device-slot-card__empty">
                   <p>这个位置还没有绑定设备。</p>
-                  <a href="/customer/pairing">绑定第二台设备</a>
+                  {onPairDevice ? (
+                    <button onClick={onPairDevice} type="button">
+                      绑定第二台设备
+                    </button>
+                  ) : null}
                 </div>
               )}
             </article>
