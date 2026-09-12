@@ -24,6 +24,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from typing import Any
 
 import psycopg
 
@@ -103,7 +104,7 @@ def _parse_interfaces(raw: str | None) -> tuple[str, ...]:
     return tuple(str(item) for item in loaded)
 
 
-def _row_to_record(row: tuple) -> DiscountRecord:
+def _row_to_record(row: tuple[Any, ...]) -> DiscountRecord:
     rate = row[2]
     return DiscountRecord(
         id=str(row[0]),
