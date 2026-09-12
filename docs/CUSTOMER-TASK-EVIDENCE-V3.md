@@ -16,6 +16,26 @@
 > 实施与验收以[唯一数据库规范](PostgreSQL唯一数据库实施与验收规范.md)及 CW-001—060 为准。此前仅客户生产 PG、默认开发 SQLite、SQLite 业务测试可作为当前验收的口径不再适用。
 > 本次更新只确认规范和任务定义；原代码仍有 SQLite 分支，历史任务/测试记录保留原文，不据此声明实际迁移或生产切换已完成。
 
+## COORD-W6-UNBLOCK-20260912 — W6 清理组解锁决策 + 批次实施（2026-09-12，owner 签认）
+
+owner 决策正本 [COORD-W6-UNBLOCK-20260912.md](evidence/COORD-W6-UNBLOCK-20260912.md)：D1=CW-042 拆 042-a/b（照 CW042-SCOPE-INVENTORY §2.4 申请签认）；D2=CW-040/041 pre-GA 范围沿 CW-001 P1 落地为「入口 fail-closed」；D3=CW-039 拆「手册定版（纯文档可先做）/真实演练（维持 GA 冻结）」不记 N/A；D4=单 worktree 统一批次开发授权。CW001 §6 增 P3 行、§7 增签认行；排班清单 §2.4 四行备注、账本 §18 五行同步。背景：039 前置全为 GA 触发/环境阻塞，pre-GA 结构性无法闭环（盘点 §2.2），是 W6 清理组唯一死闸门。
+
+## CW-042-a — SQLite 回退入口进程级 fail-closed（2026-09-12，AUTOMATED_VERIFIED）
+
+批次分支 `feat/customer-v3-w6-unblock`，基线 `origin/main@55220f7`。唯一生产码改动 `server/app/db.py`（+31）：`_refuse_sqlite_in_customer_production` 挂 connect/initialize/upgrade 三入口（常量与既有三处声明同款，bootstrap 反向 import 成环故不引入）；TDD RED 9 failed→GREEN 14 passed（[CW042A-EVIDENCE.md](evidence/CW042A-EVIDENCE.md)）。内部 lane 回归 test_db+local_settings_key 35 passed；CW-056 internal-lane 迁移锁不受影响（alembic 直连不经 app.db）。
+
+## CW-041 — 内部身份入口 fail-closed（pre-GA，2026-09-12，AUTOMATED_VERIFIED）
+
+零生产码改动；新增 `test_cw041_internal_identity_exit.py` 5 用例：internal_accounts CLI 客户生产态拒绝（真实缺口——该 CLI 从不运行 lifespan，此前无任何生产守卫，由 042-a 扼流点闭合）+ 内部 lane 端到端保持 + CLI-only 结构钉（app 零导入方）+ 解析器契约；既有四层守卫（cw026/cw025 lifespan/identity 门/数据级）登记引用不重复。见 [CW041-EVIDENCE.md](evidence/CW041-EVIDENCE.md)。
+
+## CW-040 — 内部发行/专属运维入口 fail-closed（pre-GA，2026-09-12，AUTOMATED_VERIFIED）
+
+零生产码改动；新增 `test_cw040_internal_release_exit.py` 7 用例全离线：NSIS 三重扫描标记集契约锁、packaging_tools 仅 paths-filter 提及禁执行、npm/签名通道/deploy/customer 零内部制品引用、backup CLI 生产态拒绝 + 内部 lane 端到端保持。入口面实测表与 CI filter 联动处置登记见 [CW040-EVIDENCE.md](evidence/CW040-EVIDENCE.md)。
+
+## CW-043 — A4 独立复核签署（2026-09-12，非实现会话）
+
+按 §E.3 核验包独立复跑（ZCode 会话，实现者为 Qoder 会话，满足独立性）：12 新用例 + §B 五文件 82 用例 = **94 passed @ vs-pg-cw043a@5444**；全量复跑 42F 归因（22 pitr 平台 + 17 viral 滚动日期炸弹[FIX-TESTBASE #78 已修] + 3 例 W6 回归已修复）与文档核验见 CW043-IMPLEMENTATION-EVIDENCE.md §F 签字段。
+
 ## CW-063 — 管理端 h3_extended_modes_enabled 开关（缺口 4b 控制面补齐，2026-09-11，AUTOMATED_VERIFIED）
 
 分支 `feat/customer-v3-cw063-h3-extended-modes-toggle`，基线 `origin/main@a093f61`（开工即最新、`merge-base --is-ancestor` rc=0 无需 rebase）；独立 worktree + 原子认领 `.git/codex-task-claims/CW-063/`（六层查重确认独占）。补齐缺口 4b：数据列 `runtime_settings.h3_extended_modes_enabled`（075 迁移 `server_default FALSE`）与消费逻辑 `independent.py:108-112` 基线已就绪，唯管理端读/写端点 + UI 从未实施。交付：①后端 `admin_runtime_routes.py` +144——Pydantic `H3ExtendedModesResponse`/`H3ExtendedModesUpdateRequest(AdminWriteContract)`（:61-91）、`GET /api/control/settings/h3-extended-modes`（:451-467，AdminReader）、`PATCH`（:470-547，AdminWriter + `write_with_idempotency` + upsert 兜底空表 + `audit_logs` action='runtime_settings.update' metadata.setting='h3_extended_modes'），完全复用 queue-mode 模板；②前端 `H3ExtendedModesSection.tsx`（116 行，镜像 `QueueModeSection.tsx`）+ `api.admin.ts` `fetchH3ExtendedModes`/`updateH3ExtendedModes`（+39，复用 `adminWrite`）+ `SystemSettingsPage.tsx` services tab 挂载（+2）。TDD 先红后绿：后端 RED（端点缺失）→GREEN、前端 RED（`Failed to resolve import ./H3ExtendedModesSection`）→GREEN 3 passed。**真实 PG16 首跑暴露 4 处测试自身缺陷（非生产码）逐项根因修复**：`_audit_rows` 误用 `metadata_json->>'setting'` 于 `sa.Text()` 列（迁移 001，非 jsonb）→ `UndefinedFunction: operator does not exist: text ->> unknown`，改为按 action 查询 + Python `json.loads` 解析过滤；`requires_reason`/`requires_confirm` 期望 422 但共享 `require_write_contract`（`admin_write_contract.py:77-87`）对空 reason/confirm=false 抛 `http_error(400)`（参考 `test_admin_rate_routes.py:167/175` 同断言 400），修为 400 + `detail.code` 校验。验证：后端 pytest **10 passed**（真实 PG16 `vs-pg-cw063@5442`、专属库 `cw063_h3_extended_modes_test` alembic head + admin_u/auditor_u 种子、fcntl shim 仓外注入不入库）+ ruff check/format --check + mypy 全绿；前端 `vitest src/admin` **22 文件 141 passed** + biome 4 文件 clean + tsc -b rc=0；`pg_test_kit.py` +5 仅登记 allowlist（纯增量，与 CW-056/058/059 同款）。安全可观测：读写分离、auditor 403、无 session 401、写契约（confirm+reason+Idempotency-Key+CSRF）、幂等重放不重复写审计、每次翻转留 audit_logs、PG 不可用 fail-closed 503；零迁移改动、默认关不变。诚实边界：4a 真实付费 H3 探针属 §15 人工授权（需真实 metaso key + 预算 + 人工），本任务只交付控制面、默认关上线零风险、不声称探针已跑；与 CW-056（independent.py 在制）文件零重叠；本机仅跑受影响专项 + 静态门，全量 pytest 与三门禁最终归 push 后 CI。完整 §14 记录见 [CW063-EVIDENCE.md](evidence/CW063-EVIDENCE.md)。
@@ -1152,6 +1172,9 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 独立评审 PASS；完整本地静态门通过（前端 1344 passed、TypeScript、Biome、Tauri、ruff、format、mypy）；服务端四个独占 PG16 分片合计 2845 passed、1 原有 TLS 场景跳过，覆盖检查通过、退出码均为 0。此前中断的慢速分片保留日志，不记作通过。最终 PG 使用临时内存盘，fsync 和 synchronous_commit 保持默认开启；未执行生产或真实服务验收。 [任务证据](evidence/FIX-TESTBASE-20260912.md)。
 
+## FIX-WALLETSTATUS-20260912 / 钱包提示竞态前置修复
+
+AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2845 passed、1 原有 TLS 场景跳过；前端 1348 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-WALLETSTATUS-20260912.md)。
 
 ## FIX-W20-20260912 / W20
 
