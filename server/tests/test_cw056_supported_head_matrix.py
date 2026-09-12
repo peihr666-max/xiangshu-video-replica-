@@ -57,7 +57,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→089 + CW-075 090）。
-HEAD_REVISION = "090_customer_discounts"
+HEAD_REVISION = "20260912T1353_customer_discounts"
 
 # 最后一个已发布（受支持）起点。其后的 056–090 尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，

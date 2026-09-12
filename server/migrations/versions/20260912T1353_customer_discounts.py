@@ -1,8 +1,11 @@
-"""090_customer_discounts — CW-075 折扣数据模型（技术方案 §3.1 line 158-160 / §2.3 / §4 Phase 5）.
+"""20260912T1353_customer_discounts — CW-075 折扣数据模型.
 
-合并文档计划的三支 Phase 5 折扣迁移（089 customer_discounts 表 / 090
-generation_tasks.discount_rate_snapshot / 091 wallet_transactions.discount_rate）为单一
-090——因 089 号已被 CW-078 customer_api_keys 占用，本分支 re-linearize 到 089 之上取 090。
+技术方案 §3.1 line 158-160 / §2.3 / §4 Phase 5.
+
+合并文档计划的三支 Phase 5 折扣迁移（customer_discounts 表 /
+generation_tasks.discount_rate_snapshot / wallet_transactions.discount_rate）为单一迁移——
+因 089 号已被 CW-078 customer_api_keys 占用，本分支 re-linearize 到 089 之上；并按
+MIGRATION-GUARD-20260912 命名策略改用时间戳前缀（原编号 090）。
 
 customer_discounts 保存客户的消耗侧折扣配置：折扣率（0 < rate ≤ 1.0）、优先级（互斥取最高）、
 有效期（valid_from/valid_until）、适用接口范围（applicable_interfaces TEXT-JSON 数组，维持 head
@@ -25,7 +28,7 @@ downgrade：generation_tasks.discount_rate_snapshot / wallet_transactions.discou
 append-only 历史账目（R-D），一旦落了非空折扣快照，删列会孤儿化历史，故按 R-B / 039/044/089
 先例——有数据显式 RuntimeError 拒绝，空库对称回退。
 
-Revision ID: 090_customer_discounts
+Revision ID: 20260912T1353_customer_discounts
 Revises: 089_customer_api_keys
 """
 
@@ -34,7 +37,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "090_customer_discounts"
+revision = "20260912T1353_customer_discounts"
 down_revision = "089_customer_api_keys"
 branch_labels = None
 depends_on = None
@@ -151,7 +154,7 @@ def downgrade() -> None:
     ).scalar()
     if has_discount_history:
         raise RuntimeError(
-            "cannot downgrade 090_customer_discounts: discount_rate_snapshot / "
+            "cannot downgrade 20260912T1353_customer_discounts: discount_rate_snapshot / "
             "discount_rate historical ledger rows must survive the rollback (R-D frozen "
             "account history). Keep revision 090, or manually export the discount trail "
             "before rolling back."

@@ -381,7 +381,7 @@ def test_migration_090_leaves_wallet_shape_check_compatible(pg_dsn: str) -> None
     assert "discount_rate" in str(rate_range[0])
 
 
-def test_migration_090_customer_discounts_rate_range_check(pg_dsn: str) -> None:
+def test_migration_20260912T1353_customer_discounts_rate_range_check(pg_dsn: str) -> None:
     """customer_discounts 值域 CHECK 拒绝 rate <= 0 或 > 1.0（DB 侧兜底）。"""
     user_id = _new_user("range")
     _seed_customer(pg_dsn, user_id)

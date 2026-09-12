@@ -55,7 +55,8 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "activation_code_events",
         # 089_customer_api_keys: 客户程序 API Key 泳道，PG-only（089 明确 SQLite lane 不建表）。
         "customer_api_keys",
-        # 090_customer_discounts: 客户消耗侧折扣配置，PG-only（090 明确非 postgresql 方言 return）。
+        # 20260912T1353_customer_discounts: 客户消耗侧折扣配置，PG-only
+        # （非 postgresql 方言 return）。
         "customer_discounts",
         "customer_devices",
         "device_pairing_requests",
@@ -107,8 +108,8 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     # 086_remove_device_slot_constraints: 每用户设备上限列仅存在于 PG
     # （T07 的 SQLite 源 schema 冻结于 042 前基线）。
     "users": frozenset({"max_devices"}),
-    # 090_customer_discounts: wallet_transactions.discount_rate 仅存在于 PG
-    # （090 非 postgresql 方言 return，SQLite lane 不建此列）。
+    # 20260912T1353_customer_discounts: wallet_transactions.discount_rate 仅存在于 PG
+    # （本迁移非 postgresql 方言 return，SQLite lane 不建此列）。
     "wallet_transactions": frozenset({"discount_rate"}),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000
