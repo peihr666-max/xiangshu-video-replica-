@@ -74,6 +74,14 @@ def rates_pg_dsn() -> Iterator[str]:
     try:
         yield _w10_dsn()
     finally:
+        # Close the module-level pool BEFORE dropping the database: the
+        # singleton survives this module, and a later file that trusts the
+        # singleton would otherwise reconnect against a dropped database
+        # (exposed by the CW-042-b shard re-layout: bootstrap followed this
+        # module in shard 2 and PoolTimed out on the missing database).
+        from app.db_pg import close_pg_pool
+
+        close_pg_pool()
         with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
             conn.execute(f'DROP DATABASE IF EXISTS "{W10_DB_NAME}" WITH (FORCE)')
 
