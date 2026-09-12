@@ -97,6 +97,9 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     "runtime_settings": frozenset({"fair_queue_enabled"}),
     "audit_logs": frozenset({"occurred_at"}),
     "generation_tasks": frozenset({"created_at_utc"}),
+    # 086_remove_device_slot_constraints: 每用户设备上限列仅存在于 PG
+    # （T07 的 SQLite 源 schema 冻结于 042 前基线）。
+    "users": frozenset({"max_devices"}),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000
 _DIGEST_MODULUS = 1 << 256

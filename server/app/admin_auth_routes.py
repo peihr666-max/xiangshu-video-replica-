@@ -613,7 +613,6 @@ def create_password_admin_session(
 def load_admin_session(
     session_token: str,
     *,
-    client_ip: str | None = None,
     user_agent: str | None = None,
 ) -> tuple[AdminActor, str]:
     """Verify an admin session cookie and refresh its activity timestamp.
@@ -622,6 +621,13 @@ def load_admin_session(
     ``now()`` fetched in the same transaction. Actor, revocation, expiry and
     role are re-checked on every request, so disabling a user or revoking a
     session invalidates it immediately.
+
+    ADMIN-SESSION-BINDING-20260912 (user-approved option ②): the session binds
+    to the browser environment (User-Agent) only. A changed network egress IP
+    must no longer revoke an operator mid-session — office NAT rotation used to
+    surface as repeated forced logouts. ``created_ip_digest`` is still recorded
+    for audit, and the IP dimension of the *login* rate limiter
+    (``_spend_admin_password_budget``) is unchanged.
     """
     rejection: tuple[str, str] | None = None
     actor: AdminActor | None = None
@@ -650,18 +656,18 @@ def load_admin_session(
             )
         last_activity_at = _as_datetime(row[3])
         idle_timeout = timedelta(seconds=resolve_admin_session_idle_timeout_seconds())
-        context_changed = (
-            client_ip is not None and not hmac.compare_digest(str(row[9]), _sha256_hex(client_ip))
-        ) or (
-            user_agent is not None
-            and not hmac.compare_digest(str(row[10]), _sha256_hex(user_agent))
+        # Browser environment (User-Agent) only — see the docstring: a rotated
+        # network egress IP (row[9]/created_ip_digest stays audit-only) must not
+        # revoke the operator's session.
+        context_changed = user_agent is not None and not hmac.compare_digest(
+            str(row[10]), _sha256_hex(user_agent)
         )
         if db_now >= last_activity_at + idle_timeout:
             rejection = ("ADMIN_SESSION_IDLE_EXPIRED", "Admin session was idle for too long.")
         elif context_changed:
             rejection = (
                 "ADMIN_SESSION_CONTEXT_CHANGED",
-                "Admin session network or browser context changed; sign in again.",
+                "Admin session browser context changed; sign in again.",
             )
         if rejection is not None:
             conn.execute(
@@ -737,7 +743,6 @@ def get_admin_actor(request: Request) -> AdminActor:
     try:
         actor, csrf_digest = load_admin_session(
             token,
-            client_ip=client_ip_from_request(request),
             user_agent=request.headers.get("user-agent", ""),
         )
     except RuntimeError as exc:

@@ -125,7 +125,9 @@ FINGERPRINT_UNIQUE_CONSTRAINT = "uq_customer_devices_fingerprint"
 # violation is the same "device already holds an activation" fact.
 FINGERPRINT_CANONICAL_UNIQUE_CONSTRAINT = "uq_customer_devices_fingerprint_canonical"
 USERS_USERNAME_CONSTRAINT = "users_username_key"
-DEVICE_SLOT_UNIQUE_CONSTRAINT = "uq_customer_devices_slot"
+# CW-073: DEVICE_SLOT_UNIQUE_CONSTRAINT removed — the partial unique index
+# uq_customer_devices_slot was dropped by migration 086.  The device limit
+# is now enforced by the next_free_slot() pre-check against users.max_devices.
 ACTIVATION_CODE_UNIQUE_CONSTRAINTS = frozenset(
     {
         "activation_code_activations_code_id_key",
@@ -1139,12 +1141,6 @@ def activate_first_device(
             # partial-unique-index race (same-string or cross-version
             # canonical): exactly one binding survives.
             raise _unavailable() from exc
-        if constraint == DEVICE_SLOT_UNIQUE_CONSTRAINT:
-            raise _http(
-                409,
-                "DEVICE_SLOTS_FULL",
-                "This activation code has reached its device limit.",
-            ) from exc
         if constraint in ACTIVATION_CODE_UNIQUE_CONSTRAINTS:
             raise _http(
                 409,

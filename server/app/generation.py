@@ -21,7 +21,7 @@ from math import floor, isfinite
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -147,6 +147,15 @@ METASO_CREATE_PATH = "/api/minimax/v2/video_generation"
 METASO_QUERY_PATH = "/api/minimax/v2/query/video_generation"
 SUPPORTED_RESOLUTIONS = {"768P", "2K"}
 SUPPORTED_RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
+# 秘塔原生 H3 查询端点返回 6 种任务状态，其中尚未到达终态的 3 种（排队/生成中/处理中）
+# 统一映射为 RUNNING 交给轮询继续等待；终态 succeeded/failed/cancelled 单独处理。
+H3_PENDING_PROVIDER_STATUSES = {"queued", "running", "processing"}
+# R2V 多模态参考：role 到 content 元素里媒体字段名的映射（与秘塔前端构造一致）。
+REFERENCE_ROLE_MEDIA_KEYS = {
+    "reference_image": "image_url",
+    "reference_video": "video_url",
+    "reference_audio": "audio_url",
+}
 CUSTOMER_DURATION_OPTIONS = {4, 15}
 CUSTOMER_QUANTITY_OPTIONS = {1, 2, 4}
 MAX_GENERATION_PROMPT_CHARS = 7_000
@@ -506,8 +515,8 @@ class MetasoH3Provider(H3Provider):
 
     def submit_image_to_video(self, request: dict[str, Any]) -> str:
         validate_h3_request(request)
-        if not _h3_request_has_https_first_frame(request):
-            raise H3ProviderFailed("METASO H3 requires an HTTPS first-frame URL")
+        if not _h3_request_media_urls_are_https(request):
+            raise H3ProviderFailed("METASO H3 requires HTTPS media URLs")
         provider_request = _metaso_create_request(request)
         try:
             response = self.transport.request(
@@ -550,6 +559,14 @@ class MetasoH3Provider(H3Provider):
             return H3QueryResult(status="FAILED")
         if status == "cancelled":
             return H3QueryResult(status="CANCELLED")
+        # queued / running / processing 以及任何未知状态都视为进行中：轮询继续等待，
+        # 由轮询超时与对账机制兜底，绝不把仍在排队的任务误判为终态。
+        if status not in H3_PENDING_PROVIDER_STATUSES:
+            logger.warning(
+                "METASO query returned unrecognized status %r for task %s; treating as RUNNING",
+                status,
+                provider_task_id,
+            )
         return H3QueryResult(status="RUNNING")
 
     def _poll_for_result(self, provider_task_id: str) -> H3CreateResult:
@@ -592,19 +609,13 @@ class MetasoH3Provider(H3Provider):
         return self.transport.request("GET", url, headers={})
 
     def _query_task(self, provider_task_id: str) -> dict[str, Any]:
-        url = f"{METASO_BASE_URL}{METASO_QUERY_PATH}?{urlencode({'task_id': provider_task_id})}"
+        # 秘塔原生查询端点是路径式 /v2/query/video_generation/{task_id}（与官方 v2 及
+        # 秘塔前端一致），返回单任务对象；task_id 做 URL 编码避免特殊字符破坏路径。
+        url = f"{METASO_BASE_URL}{METASO_QUERY_PATH}/{quote(provider_task_id, safe='')}"
         payload = _metaso_json_object(
             self.transport.request("GET", url, headers=self._api_headers())
         )
-        items = payload.get("items")
-        if not isinstance(items, list):
-            raise H3ProviderFailed(
-                "METASO query response is missing items", provider_task_id=provider_task_id
-            )
-        for item in items:
-            if isinstance(item, dict) and item.get("id") == provider_task_id:
-                return cast(dict[str, Any], item)
-        return {}
+        return _extract_metaso_task(payload, provider_task_id)
 
     def _api_headers(self) -> dict[str, str]:
         return {
@@ -2890,6 +2901,16 @@ def run_next_generation_task(
             for image in (lease.get("reference_images") or [])
             if isinstance(image, dict) and image.get("uri")
         ]
+        reference_videos = [
+            {"url": _signed_url(str(video["uri"]))}
+            for video in (lease.get("reference_videos") or [])
+            if isinstance(video, dict) and video.get("uri")
+        ]
+        reference_audios = [
+            {"url": _signed_url(str(audio["uri"]))}
+            for audio in (lease.get("reference_audios") or [])
+            if isinstance(audio, dict) and audio.get("uri")
+        ]
     except (StorageBackendUnavailable, StoragePermissionError, ValueError):
         mark_task_first_frame_url_sign_failed(
             conn,
@@ -2901,6 +2922,8 @@ def run_next_generation_task(
         first_frame_url=first_frame_url,
         last_frame_url=last_frame_url,
         reference_images=reference_images,
+        reference_videos=reference_videos,
+        reference_audios=reference_audios,
         duration_seconds=int(lease["output_duration_seconds"]),
         resolution=str(lease["resolution"]),
         ratio=str(lease["ratio"]),
@@ -4897,6 +4920,8 @@ def load_worker_task(conn: BusinessConnection, task_id: str) -> dict[str, Any]:
     payload["generation_mode"] = prompt_snapshot.get("generation_mode", "I2V")
     payload["last_frame_uri"] = prompt_snapshot.get("last_frame_uri")
     payload["reference_images"] = prompt_snapshot.get("reference_images", [])
+    payload["reference_videos"] = prompt_snapshot.get("reference_videos", [])
+    payload["reference_audios"] = prompt_snapshot.get("reference_audios", [])
     payload["output_duration_seconds"] = request_snapshot["output_duration_seconds"]
     payload["resolution"] = request_snapshot["resolution"]
     payload["ratio"] = request_snapshot.get("ratio", "adaptive")
@@ -4929,6 +4954,8 @@ def prepare_generation_submission(
     first_frame_uri = lease.get("first_frame_uri")
     last_frame_uri = lease.get("last_frame_uri")
     reference_images = lease.get("reference_images") or []
+    reference_videos = lease.get("reference_videos") or []
+    reference_audios = lease.get("reference_audios") or []
     provider_request = build_h3_request(
         prompt_text=str(lease["prompt_text"]),
         first_frame_url=_signed_url(str(first_frame_uri))
@@ -4941,6 +4968,16 @@ def prepare_generation_submission(
             {"name": str(image.get("name", "")), "url": _signed_url(str(image["uri"]))}
             for image in reference_images
             if isinstance(image, dict) and image.get("uri")
+        ],
+        reference_videos=[
+            {"url": _signed_url(str(video["uri"]))}
+            for video in reference_videos
+            if isinstance(video, dict) and video.get("uri")
+        ],
+        reference_audios=[
+            {"url": _signed_url(str(audio["uri"]))}
+            for audio in reference_audios
+            if isinstance(audio, dict) and audio.get("uri")
         ],
         duration_seconds=int(lease["output_duration_seconds"]),
         resolution=str(lease["resolution"]),
@@ -6193,12 +6230,15 @@ def build_h3_request(
     ratio: str = "adaptive",
     last_frame_url: str | None = None,
     reference_images: Sequence[Mapping[str, str]] = (),
+    reference_videos: Sequence[Mapping[str, str]] = (),
+    reference_audios: Sequence[Mapping[str, str]] = (),
 ) -> dict[str, Any]:
     """Build an H3 request for any generation mode.
 
     I2V (default, 复刻流契约): text + first_frame（可选 last_frame）。
-    T2V: 仅 text。R2V: text + reference_image 对象编排，不得携带首尾帧
-    （docs/短视频复刻桌面端开发说明.md §21 H3 输入互斥规则）。
+    T2V: 仅 text。R2V: text + 多模态参考（reference_image / reference_video /
+    reference_audio）编排，不得携带首尾帧（H3 输入互斥规则）。参考视频/音频的
+    content 元素结构与秘塔前端一致：``{type, video_url|audio_url: {url}, role}``。
     """
     if not prompt_text.strip():
         raise ValueError("prompt_text is required")
@@ -6209,7 +6249,8 @@ def build_h3_request(
     if ratio not in SUPPORTED_RATIOS:
         raise ValueError("ratio is unsupported")
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt_text}]
-    if reference_images:
+    has_reference = bool(reference_images or reference_videos or reference_audios)
+    if has_reference:
         if first_frame_url or last_frame_url:
             raise ValueError("reference mode must not carry first/last frame")
         for image in reference_images:
@@ -6223,6 +6264,28 @@ def build_h3_request(
                     "image_url": {"url": url},
                     "role": "reference_image",
                     "name": name,
+                }
+            )
+        for video in reference_videos:
+            url = str(video.get("url", "")).strip()
+            if not url:
+                raise ValueError("reference video requires a url")
+            content.append(
+                {
+                    "type": "video_url",
+                    "video_url": {"url": url},
+                    "role": "reference_video",
+                }
+            )
+        for audio in reference_audios:
+            url = str(audio.get("url", "")).strip()
+            if not url:
+                raise ValueError("reference audio requires a url")
+            content.append(
+                {
+                    "type": "audio_url",
+                    "audio_url": {"url": url},
+                    "role": "reference_audio",
                 }
             )
     else:
@@ -6279,14 +6342,14 @@ def validate_h3_request(request: dict[str, Any]) -> None:
         _validate_h3_image_element(content[1], expected_role="first_frame")
         _validate_h3_image_element(content[2], expected_role="last_frame")
         return
-    if "reference_image" in roles:
+    if any(role in REFERENCE_ROLE_MEDIA_KEYS for role in roles):
         _validate_h3_reference_request(request, content, roles)
         return
     raise ValueError("H3 I2V content must contain text and first_frame only")
 
 
 def _validate_h3_image_element(element: Any, *, expected_role: str) -> None:
-    # HTTPS 强校验只在真实 metaso 提交路径（_h3_request_has_https_first_frame）；
+    # HTTPS 强校验只在真实 metaso 提交路径（_h3_request_media_urls_are_https）；
     # 本地/fake 存储的签名 URL 走 fake:// 协议，这里只校验角色契约。
     if not isinstance(element, dict) or element.get("role") != expected_role:
         raise ValueError(f"H3 I2V image must use {expected_role} role")
@@ -6304,13 +6367,20 @@ def _validate_h3_reference_request(
     if len(content) < 2:
         raise ValueError("H3 R2V content requires at least one reference object")
     for element, role in zip(content[1:], roles):
-        if role != "reference_image":
-            raise ValueError("H3 R2V supports reference_image objects only")
-        if not isinstance(element, dict) or not str(element.get("name", "")).strip():
-            raise ValueError("H3 R2V reference object requires a name")
-        image_url = element.get("image_url")
-        if not isinstance(image_url, dict) or not str(image_url.get("url", "")).strip():
-            raise ValueError("H3 R2V reference object requires a url")
+        media_key = REFERENCE_ROLE_MEDIA_KEYS.get(role) if isinstance(role, str) else None
+        if media_key is None:
+            raise ValueError(
+                "H3 R2V supports reference_image/reference_video/reference_audio objects only"
+            )
+        if not isinstance(element, dict):
+            raise ValueError("H3 R2V reference object must be a JSON object")
+        # 参考图片沿用既有命名契约（供 UI 标注用途）；参考视频/音频与秘塔前端一致，
+        # 不强制 name，只要求媒体 url。
+        if role == "reference_image" and not str(element.get("name", "")).strip():
+            raise ValueError("H3 R2V reference image requires a name")
+        media = element.get(media_key)
+        if not isinstance(media, dict) or not str(media.get("url", "")).strip():
+            raise ValueError(f"H3 R2V {role} object requires a url")
     if request.get("ratio") not in SUPPORTED_RATIOS:
         raise ValueError("H3 R2V ratio is unsupported")
     duration = request.get("duration")
@@ -6333,6 +6403,27 @@ def _metaso_task_id(content: bytes) -> str:
     if not isinstance(task_id, str) or not task_id:
         raise H3ProviderFailed("METASO create response is missing task_id")
     return task_id
+
+
+def _extract_metaso_task(payload: dict[str, Any], provider_task_id: str) -> dict[str, Any]:
+    """把秘塔查询响应归一化为单个任务字典。
+
+    秘塔原生查询端点 ``/v2/query/video_generation/{task_id}`` 返回单任务对象，
+    这里兼容三种形态：官方 ``{"task": {...}}`` 包装、裸任务对象（含 status/id），
+    以及历史 ``{"items": [...]}`` 列表（按 task_id 精确匹配，绝不把无关任务当结果）。
+    无法识别时返回空字典，由调用方按 RUNNING 继续轮询。
+    """
+    task = payload.get("task")
+    if isinstance(task, dict):
+        return cast(dict[str, Any], task)
+    if isinstance(payload.get("status"), str) or isinstance(payload.get("id"), str):
+        return payload
+    items = payload.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and item.get("id") == provider_task_id:
+                return cast(dict[str, Any], item)
+    return {}
 
 
 def _metaso_create_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -6393,19 +6484,29 @@ def _metaso_output_seconds(item: dict[str, Any]) -> float | None:
     return seconds if isfinite(seconds) and seconds >= 0 else None
 
 
-def _h3_request_has_https_first_frame(request: dict[str, Any]) -> bool:
-    """Every image element must be HTTPS; a text-only T2V request passes."""
+def _h3_request_media_urls_are_https(request: dict[str, Any]) -> bool:
+    """所有输入媒体（首尾帧/参考图片、参考视频、参考音频）都必须是 HTTPS 公网 URL。
+
+    纯文本 T2V 请求没有媒体元素，直接通过。秘塔需要据此公网拉取素材，
+    非 HTTPS（含 fake:// 本地签名 URL）一律拒绝，避免提交后供应商无法访问。
+    """
     content = request.get("content")
     if not isinstance(content, list):
         return False
-    image_elements = [
-        item for item in content[1:] if isinstance(item, dict) and item.get("type") == "image_url"
-    ]
-    if not image_elements:
-        return True
-    for image in image_elements:
-        image_url = image.get("image_url") if isinstance(image, dict) else None
-        value = image_url.get("url") if isinstance(image_url, dict) else None
+    media_field_by_type = {
+        "image_url": "image_url",
+        "video_url": "video_url",
+        "audio_url": "audio_url",
+    }
+    for item in content[1:]:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        media_field = media_field_by_type.get(item_type) if isinstance(item_type, str) else None
+        if media_field is None:
+            continue
+        media = item.get(media_field)
+        value = media.get("url") if isinstance(media, dict) else None
         parsed = urlparse(value) if isinstance(value, str) else None
         if not (parsed and parsed.scheme == "https" and parsed.hostname):
             return False

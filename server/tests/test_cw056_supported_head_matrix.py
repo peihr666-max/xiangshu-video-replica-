@@ -56,7 +56,7 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
-# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→082 + 089）。
+# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→086 + CW-078 089）。
 HEAD_REVISION = "089_customer_api_keys"
 
 # 最后一个已发布（受支持）起点。其后的 056–089 尚未随任何受支持版本发布，
@@ -102,13 +102,13 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "tables": 77,
-    "columns": 909,
+    "columns": 910,
     "identity_columns": 0,
     "sequences": 3,
     "jsonb_columns": 0,
     "timestamptz_columns": 16,
     "triggers": 18,
-    "partial_indexes": 25,
+    "partial_indexes": 24,
     "unique_constraints": 27,
     "check_constraints": 224,
     "foreign_keys": 146,
@@ -123,11 +123,11 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
 # （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
 # partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
 # CW-078 089 的增量：本表名集追加 customer_api_keys（本分支链尾迁移新建的表），
-# 但 HEAD_SCHEMA_COUNTS/HEAD_SCHEMA_DIGEST 仍冻结在 082 基线（tables=77）——它们是
-# 全局 post-linearization 不变量，须待 integrator 折叠 083/086/088/089 并行迁移后
-# 一次性重算（沿 CW-076 先例）。故 B 组真实 PG 矩阵在重算前预期红：表名集断言
-# （sorted(inventory["tables"]) == sorted(HEAD_TABLE_NAMES)）已含 customer_api_keys
-# 而通过，counts/digest 断言因 089 漂移而红，integrator 重算后一并转绿。
+# 而 HEAD_SCHEMA_COUNTS/HEAD_SCHEMA_DIGEST 仍冻结在 086 基线（main 现状，tables=77）
+# ——它们是全局 post-linearization 不变量，须待 integrator 折叠 083/088/089 并行
+# 迁移后一次性重算（沿 CW-076 先例）。故 B 组真实 PG 矩阵在重算前预期红：表名集
+# 断言（sorted(inventory["tables"]) == sorted(HEAD_TABLE_NAMES)）已含 customer_api_keys
+# 而通过，counts/digest 断言随 089 漂移而红，integrator 重算后一并转绿。
 HEAD_TABLE_NAMES: tuple[str, ...] = (
     "activation_code_activations",
     "activation_code_batches",
@@ -214,8 +214,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 这是「空库→head」与「旧起点→head」必须**收敛到同一 schema** 的机器化断言 ——
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
-# 082 追加 publish_accounts 后由 cw068 freeze probe 在真实 PG（16-alpine）上重算。
-HEAD_SCHEMA_DIGEST = "a23fa2756885009a3faa9af9d73472c21667bbce057283cdbf3d64dd456bf071"
+HEAD_SCHEMA_DIGEST = "04522ed4825f28a1966366b60502944455e2486cd51d0040127b687d804c3fcd"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

@@ -88,6 +88,11 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # FOR UPDATE SKIP LOCKED 并发抢占，reset per test and migrated to
         # alembic head so publish_accounts (082_publish_accounts) is present.
         "cw068_publish_accounts_test",
+        # CW-063 h3_extended_modes_enabled admin toggle: dedicated database
+        # for the GET/PATCH /api/control/settings/h3-extended-modes route
+        # tests (test_admin_h3_extended_modes.py), migrated to alembic head
+        # with admin_u/auditor_u operator seeds.
+        "cw063_h3_extended_modes_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):

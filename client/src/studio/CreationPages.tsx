@@ -45,8 +45,10 @@ import { useStudio } from "./context";
 import {
   loadSavedScriptList,
   readAudioDuration,
+  readVideoDuration,
   runReplicaGeneration,
   uploadOralAudioMaterial,
+  uploadReferenceAudioMaterial,
   uploadVideoMaterial,
   uploadWorkbenchSourceVideo,
   validateOralAudioFile,
@@ -60,9 +62,12 @@ import {
 import {
   buildReplicaPromptText,
   createDraft,
+  DEFAULT_MAX_REFERENCE_AUDIOS,
   DEFAULT_MAX_REFERENCE_IMAGES,
+  DEFAULT_MAX_REFERENCE_VIDEOS,
+  MAX_REFERENCE_MEDIA_SECONDS,
   SUPPORTED_VIDEO_RATIOS,
-  validateReferenceImages,
+  validateReferences,
 } from "./state";
 import type {
   StudioAsset,
@@ -2391,15 +2396,25 @@ function SavedPromptImporter({
   );
 }
 
+type UploadKind = "image" | "video" | "audio";
+
+const UPLOAD_ACCEPT: Record<UploadKind, string[]> = {
+  image: ["image/png", "image/jpeg"],
+  video: ["video/mp4", "video/quicktime"],
+  audio: ["audio/mpeg"],
+};
+
 function VideoMaterialUpload({
   disabled = false,
   group,
   label,
+  acceptKinds = ["image"],
   onUploaded,
 }: {
   disabled?: boolean;
   group: string;
   label: string;
+  acceptKinds?: UploadKind[];
   onUploaded: (asset: StudioAsset) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -2409,6 +2424,8 @@ function VideoMaterialUpload({
   const onUploadedRef = useRef(onUploaded);
   const mountedRef = useRef(false);
   onUploadedRef.current = onUploaded;
+  const acceptsMedia =
+    acceptKinds.includes("video") || acceptKinds.includes("audio");
 
   useEffect(() => {
     mountedRef.current = true;
@@ -2419,8 +2436,15 @@ function VideoMaterialUpload({
 
   const upload = async (file: File) => {
     if (readOnly) return;
-    if (!["image/png", "image/jpeg"].includes(file.type)) {
-      notify("仅支持 PNG 或 JPEG 图片。");
+    const kind = acceptKinds.find((item) =>
+      UPLOAD_ACCEPT[item].includes(file.type),
+    );
+    if (!kind) {
+      notify(
+        acceptsMedia
+          ? "仅支持 PNG、JPEG 图片，MP4、MOV 视频或 MP3 音频。"
+          : "仅支持 PNG 或 JPEG 图片。",
+      );
       return;
     }
     if (review) {
@@ -2429,7 +2453,29 @@ function VideoMaterialUpload({
     }
     setProgress(0);
     try {
-      const asset = await uploadVideoMaterial(file, group, setProgress);
+      let asset: StudioAsset;
+      if (kind === "image") {
+        asset = await uploadVideoMaterial(file, group, setProgress);
+      } else {
+        // 视频/音频参考上传前先探测时长，超过 15 秒直接拦截、不发上传请求。
+        const duration =
+          kind === "video"
+            ? await readVideoDuration(file)
+            : await readAudioDuration(file);
+        if (duration > MAX_REFERENCE_MEDIA_SECONDS) {
+          if (mountedRef.current)
+            notify(
+              kind === "video"
+                ? "参考视频时长不能超过 15 秒，请裁剪后再上传。"
+                : "参考音频时长不能超过 15 秒，请裁剪后再上传。",
+            );
+          return;
+        }
+        asset =
+          kind === "video"
+            ? await uploadVideoMaterial(file, group, setProgress)
+            : await uploadReferenceAudioMaterial(file, duration, setProgress);
+      }
       if (mountedRef.current) {
         onUploadedRef.current(asset);
         notify(`${label}「${file.name}」已上传到素材库。`);
@@ -2452,7 +2498,7 @@ function VideoMaterialUpload({
         {progress !== undefined ? `上传中 ${progress}%` : "本机上传"}
       </button>
       <input
-        accept="image/png,image/jpeg"
+        accept={acceptKinds.flatMap((item) => UPLOAD_ACCEPT[item]).join(",")}
         aria-label={`上传${label}`}
         disabled={readOnly || disabled}
         hidden
@@ -2464,6 +2510,9 @@ function VideoMaterialUpload({
         ref={inputRef}
         type="file"
       />
+      {acceptsMedia && (
+        <small className="creation-upload-hint">视频/音频 ≤15 秒</small>
+      )}
     </>
   );
 }
@@ -2583,12 +2632,19 @@ export function VideoPage() {
   const tailFrame =
     findAsset(data.assets, state.draft.tailFrameId) ??
     findAsset(data.materials, state.draft.tailFrameId);
-  const referenceValidation = validateReferenceImages(
+  const referenceValidation = validateReferences(
     state.draft.referenceIds,
     [...data.assets, ...data.materials],
-    videoCapabilities?.max_reference_images ?? DEFAULT_MAX_REFERENCE_IMAGES,
+    {
+      maxReferenceImages:
+        videoCapabilities?.max_reference_images ?? DEFAULT_MAX_REFERENCE_IMAGES,
+      maxReferenceVideos:
+        videoCapabilities?.max_reference_videos ?? DEFAULT_MAX_REFERENCE_VIDEOS,
+      maxReferenceAudios:
+        videoCapabilities?.max_reference_audios ?? DEFAULT_MAX_REFERENCE_AUDIOS,
+    },
   );
-  const references = referenceValidation.images;
+  const references = referenceValidation.assets;
   const effectiveCapabilitiesStatus = review
     ? "ready"
     : (videoCapabilitiesStatus ?? (videoCapabilities ? "ready" : "loading"));
@@ -2603,7 +2659,10 @@ export function VideoPage() {
     !referenceAssetsError &&
     referenceValidation.issues.length > 0;
   const referenceAtLimit =
-    references.length >= referenceValidation.limit && !referenceHasIssues;
+    !referenceHasIssues &&
+    referenceValidation.imageCount >= referenceValidation.imageLimit &&
+    referenceValidation.videoCount >= referenceValidation.videoLimit &&
+    referenceValidation.audioCount >= referenceValidation.audioLimit;
   const ready =
     Boolean(state.draft.prompt.trim()) &&
     (referenceMode
@@ -2631,20 +2690,28 @@ export function VideoPage() {
 
   const addReference = (asset: StudioAsset) => {
     appendMaterial(asset);
-    if (asset.kind !== "image") {
-      notify("参考图仅支持图片，请重新选择。");
-      return;
-    }
     if (referenceHasIssues) {
       notify("请先整理旧草稿中的无效参考素材。");
       return;
     }
     if (state.draft.referenceIds.includes(asset.id)) {
-      notify("该参考图已选择，请勿重复添加。");
+      notify("该参考素材已选择，请勿重复添加。");
       return;
     }
-    if (referenceAtLimit) {
-      notify(`当前最多选择 ${referenceValidation.limit} 张参考图。`);
+    const atKindLimit =
+      asset.kind === "image"
+        ? referenceValidation.imageCount >= referenceValidation.imageLimit
+        : asset.kind === "video"
+          ? referenceValidation.videoCount >= referenceValidation.videoLimit
+          : referenceValidation.audioCount >= referenceValidation.audioLimit;
+    if (atKindLimit) {
+      notify(
+        asset.kind === "image"
+          ? `当前最多选择 ${referenceValidation.imageLimit} 张参考图。`
+          : asset.kind === "video"
+            ? `当前最多选择 ${referenceValidation.videoLimit} 个参考视频。`
+            : `当前最多选择 ${referenceValidation.audioLimit} 个参考音频。`,
+      );
       return;
     }
     patchDraft({
@@ -2707,8 +2774,8 @@ export function VideoPage() {
                   <span>从素材库选择</span>
                   <small>
                     {referenceAtLimit
-                      ? `已选 ${references.length}/${referenceValidation.limit} 张参考图，需移除后才能继续添加。`
-                      : `本批生成最多 ${referenceValidation.limit} 张参考图`}
+                      ? "已达参考素材上限，需移除后才能继续添加。"
+                      : `参考图 ${referenceValidation.imageCount}/${referenceValidation.imageLimit} · 视频 ${referenceValidation.videoCount}/${referenceValidation.videoLimit} · 音频 ${referenceValidation.audioCount}/${referenceValidation.audioLimit}`}
                   </small>
                 </button>
                 <VideoMaterialUpload
@@ -2723,8 +2790,9 @@ export function VideoPage() {
                     referenceAssetsError ||
                     referenceAtLimit
                   }
+                  acceptKinds={["image", "video", "audio"]}
                   group="参考素材"
-                  label="参考图"
+                  label="参考素材"
                   onUploaded={addReference}
                 />
               </div>
@@ -2779,7 +2847,7 @@ export function VideoPage() {
                   }
                   variant="outline"
                 >
-                  整理参考图
+                  整理参考素材
                 </Button>
               )}
               <div className="creation-reference-list">

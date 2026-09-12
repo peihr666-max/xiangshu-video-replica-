@@ -3,13 +3,18 @@ import {
   buildOralInput,
   createDraft,
   createState,
+  DEFAULT_MAX_REFERENCE_AUDIOS,
+  DEFAULT_MAX_REFERENCE_IMAGES,
+  DEFAULT_MAX_REFERENCE_VIDEOS,
   draftFromTask,
   patchStudioDraft,
   routeFromHash,
   studioHashForState,
   studioRouteFromHash,
+  validateReferences,
   withImportedProject,
 } from "./state";
+import type { StudioAsset } from "./types";
 
 describe("V1.4 交接合同", () => {
   it("选择另一条来源时清空旧项目、资产和终稿，保留已选人物", () => {
@@ -353,5 +358,119 @@ describe("V1.4 交接合同", () => {
     const input = buildOralInput(ready, "text");
     expect(input).not.toHaveProperty("audioAssetId");
     expect(input).toHaveProperty("scriptVersion", ready.script.version);
+  });
+});
+
+const referenceFixture = (
+  id: string,
+  kind: StudioAsset["kind"],
+  name = id,
+): StudioAsset => ({
+  id,
+  name,
+  kind,
+  group: "参考素材",
+  source: "素材库",
+  saved: true,
+});
+
+describe("R2V 参考素材统一混合列表校验", () => {
+  it("默认每类上限为图 8 / 视频 3 / 音频 3", () => {
+    expect(DEFAULT_MAX_REFERENCE_IMAGES).toBe(8);
+    expect(DEFAULT_MAX_REFERENCE_VIDEOS).toBe(3);
+    expect(DEFAULT_MAX_REFERENCE_AUDIOS).toBe(3);
+  });
+
+  it("按 kind 分流图片/视频/音频并保持选择顺序", () => {
+    const available = [
+      referenceFixture("img-1", "image"),
+      referenceFixture("vid-1", "video"),
+      referenceFixture("aud-1", "audio"),
+      referenceFixture("img-2", "image"),
+    ];
+    const result = validateReferences(
+      ["vid-1", "img-1", "aud-1", "img-2"],
+      available,
+    );
+    expect(result.referenceIds).toEqual(["vid-1", "img-1", "aud-1", "img-2"]);
+    expect(result.imageIds).toEqual(["img-1", "img-2"]);
+    expect(result.videoIds).toEqual(["vid-1"]);
+    expect(result.audioIds).toEqual(["aud-1"]);
+    expect(result.imageCount).toBe(2);
+    expect(result.videoCount).toBe(1);
+    expect(result.audioCount).toBe(1);
+    expect(result.imageLimit).toBe(DEFAULT_MAX_REFERENCE_IMAGES);
+    expect(result.videoLimit).toBe(DEFAULT_MAX_REFERENCE_VIDEOS);
+    expect(result.audioLimit).toBe(DEFAULT_MAX_REFERENCE_AUDIOS);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("去重并把重复项报告为问题", () => {
+    const result = validateReferences(
+      ["img-1", "img-1"],
+      [referenceFixture("img-1", "image")],
+    );
+    expect(result.duplicateCount).toBe(1);
+    expect(result.referenceIds).toEqual(["img-1"]);
+    expect(result.issues.some((issue) => issue.includes("不能重复选择"))).toBe(
+      true,
+    );
+  });
+
+  it("无法解析的引用计入无效素材", () => {
+    const result = validateReferences(
+      ["img-1", "ghost"],
+      [referenceFixture("img-1", "image")],
+    );
+    expect(result.invalidCount).toBe(1);
+    expect(result.referenceIds).toEqual(["img-1"]);
+    expect(result.issues.some((issue) => issue.includes("无效素材"))).toBe(
+      true,
+    );
+  });
+
+  it("每类分别限制上限并按选择顺序裁剪整理", () => {
+    const available = [
+      referenceFixture("img-1", "image"),
+      referenceFixture("vid-1", "video"),
+      referenceFixture("img-2", "image"),
+      referenceFixture("vid-2", "video"),
+      referenceFixture("aud-1", "audio"),
+    ];
+    const result = validateReferences(
+      ["img-1", "vid-1", "img-2", "vid-2", "aud-1"],
+      available,
+      { maxReferenceImages: 1, maxReferenceVideos: 1, maxReferenceAudios: 1 },
+    );
+    expect(result.imageCount).toBe(2);
+    expect(result.videoCount).toBe(2);
+    expect(result.audioCount).toBe(1);
+    expect(result.overLimitCount).toBe(2);
+    expect(result.repairIds).toEqual(["img-1", "vid-1", "aud-1"]);
+    expect(result.issues.some((issue) => issue.includes("1 张参考图"))).toBe(
+      true,
+    );
+    expect(result.issues.some((issue) => issue.includes("1 个参考视频"))).toBe(
+      true,
+    );
+  });
+
+  it("视频/音频参考时长超过 15 秒计为问题并在整理时移除", () => {
+    const available = [
+      { ...referenceFixture("vid-ok", "video"), durationSeconds: 12 },
+      { ...referenceFixture("vid-long", "video"), durationSeconds: 20 },
+      { ...referenceFixture("aud-long", "audio"), durationSeconds: 30 },
+      referenceFixture("aud-unknown", "audio"),
+    ];
+    const result = validateReferences(
+      ["vid-ok", "vid-long", "aud-long", "aud-unknown"],
+      available,
+    );
+    expect(result.overDurationCount).toBe(2);
+    expect(
+      result.issues.some((issue) => issue.includes("不能超过 15 秒")),
+    ).toBe(true);
+    // 整理时移除超时素材，保留合规与时长未知（放行）的素材
+    expect(result.repairIds).toEqual(["vid-ok", "aud-unknown"]);
   });
 });

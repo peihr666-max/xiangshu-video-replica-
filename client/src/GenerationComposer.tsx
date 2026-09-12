@@ -9,6 +9,8 @@ type GenerationComposerProps = {
   firstFrameAssetId: string;
   firstFrameSelectionVersionId: string;
   onBatchCreated: (batch: GenerationBatch) => void;
+  /** 余额不足时的充值引导动作（客户 lane 打开充值弹窗，内部 lane 跳钱包页）。 */
+  onRecharge?: () => void;
   readOnly?: boolean;
   referenceSelectionId: string | null;
   shotCardVersionId: string;
@@ -23,6 +25,7 @@ export function GenerationComposer({
   firstFrameAssetId,
   firstFrameSelectionVersionId,
   onBatchCreated,
+  onRecharge,
   readOnly = false,
   referenceSelectionId,
   shotCardVersionId,
@@ -43,6 +46,13 @@ export function GenerationComposer({
       </div>
 
       {drafts.error ? <p className="settings-error">{drafts.error}</p> : null}
+      {drafts.insufficientBalance && onRecharge ? (
+        <div className="settings-error" role="alert">
+          <button onClick={onRecharge} type="button">
+            余额不足，去充值
+          </button>
+        </div>
+      ) : null}
       {drafts.message ? (
         <p className="setup-success">{drafts.message}</p>
       ) : null}

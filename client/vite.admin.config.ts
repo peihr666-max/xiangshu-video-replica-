@@ -31,6 +31,33 @@ const scriptDir = fileURLToPath(new URL(".", import.meta.url));
  * public/ 的全量复制（见下方注释），而 admin.html 的 `<link rel="icon"
  * href="/favicon.svg">` 已被 base 改写成 `/admin/favicon.svg`，不补就 404。
  */
+/**
+ * Dev-only: Vite's SPA fallback with base="/admin/" strips the prefix and
+ * serves index.html (the customer entry) for /admin/ requests. This plugin
+ * rewrites those requests to /admin.html so the correct admin entry is served.
+ * In production build, renameAdminHtmlPlugin handles the rename to index.html.
+ */
+const adminDevEntryPlugin: Plugin = {
+  name: "admin-dev-entry-rewrite",
+  apply: "serve",
+  configureServer(server) {
+    server.middlewares.use((req, _res, next) => {
+      const url = req.url ?? "";
+      // Rewrite /admin/ → /admin/admin.html so that after Vite strips the
+      // base prefix ("/admin/"), it resolves to /admin.html in the project root.
+      // Without this, Vite's SPA fallback serves index.html (customer entry).
+      if (
+        url === "/admin/" ||
+        url === "/admin" ||
+        url === "/admin/index.html"
+      ) {
+        req.url = "/admin/admin.html";
+      }
+      next();
+    });
+  },
+};
+
 const renameAdminHtmlPlugin: Plugin = {
   name: "cw019-rename-admin-html",
   apply: "build",
@@ -68,7 +95,7 @@ const renameAdminHtmlPlugin: Plugin = {
 };
 
 export default defineConfig({
-  plugins: [react(), renameAdminHtmlPlugin],
+  plugins: [react(), adminDevEntryPlugin, renameAdminHtmlPlugin],
   base: "/admin/",
   clearScreen: false,
   server: {

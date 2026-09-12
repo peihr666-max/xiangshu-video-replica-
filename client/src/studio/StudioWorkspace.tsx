@@ -74,7 +74,10 @@ import {
   buildOralInput,
   createDraft,
   createState,
+  DEFAULT_MAX_REFERENCE_AUDIOS,
   DEFAULT_MAX_REFERENCE_IMAGES,
+  DEFAULT_MAX_REFERENCE_VIDEOS,
+  MAX_REFERENCE_MEDIA_SECONDS,
   navigateStudioState,
   pageTitles,
   patchStudioDraft,
@@ -82,7 +85,7 @@ import {
   SUPPORTED_VIDEO_RATIOS,
   studioHashForState,
   studioRouteFromHash,
-  validateReferenceImages,
+  validateReferences,
   withImportedProject,
 } from "./state";
 import type {
@@ -874,13 +877,17 @@ export function StudioWorkspace({
     if (!videoCapabilities) return "视频生成能力尚未读取完成，请稍后重试。";
     if (!videoCapabilities.r2v_enabled)
       return "该模式需要完成供应商核对后开放，敬请期待。";
-    const validation = validateReferenceImages(
+    const validation = validateReferences(
       draft.referenceIds,
       [...data.assets, ...data.materials],
-      videoCapabilities.max_reference_images,
+      {
+        maxReferenceImages: videoCapabilities.max_reference_images,
+        maxReferenceVideos: videoCapabilities.max_reference_videos,
+        maxReferenceAudios: videoCapabilities.max_reference_audios,
+      },
     );
     if (validation.issues[0]) return validation.issues[0];
-    if (validation.imageIds.length === 0) return "请至少选择一张参考图";
+    if (validation.referenceIds.length === 0) return "请至少选择一个参考素材";
     return undefined;
   };
 
@@ -1395,7 +1402,7 @@ export function StudioWorkspace({
           }
         }
         if (mode === "r2v" && state.draft.referenceIds.length === 0) {
-          throw new Error("请至少选择一张参考图");
+          throw new Error("请至少选择一个参考素材");
         }
         if (mode === "r2v") {
           const error = referenceDraftError(state.draft);
@@ -2321,7 +2328,7 @@ function StudioPicker({
       usesCloudImages
         ? data.materials.filter(
             (material) =>
-              material.kind === "image" &&
+              (kind === "reference" || material.kind === "image") &&
               !data.assets.some((asset) => asset.id === material.id) &&
               (kind !== "reference" ||
                 !state.draft.referenceIds.includes(material.id)),
@@ -2420,14 +2427,21 @@ function StudioPicker({
     ...material,
     url: material.url ?? cloudImageUrls[material.id],
   }));
-  const referenceValidation = validateReferenceImages(
+  const referenceValidation = validateReferences(
     state.draft.referenceIds,
     [...data.assets, ...data.materials],
-    videoCapabilities?.max_reference_images ?? DEFAULT_MAX_REFERENCE_IMAGES,
+    {
+      maxReferenceImages:
+        videoCapabilities?.max_reference_images ?? DEFAULT_MAX_REFERENCE_IMAGES,
+      maxReferenceVideos:
+        videoCapabilities?.max_reference_videos ?? DEFAULT_MAX_REFERENCE_VIDEOS,
+      maxReferenceAudios:
+        videoCapabilities?.max_reference_audios ?? DEFAULT_MAX_REFERENCE_AUDIOS,
+    },
   );
   const assets = [...materials, ...data.assets].filter((asset) =>
     kind === "reference"
-      ? asset.kind === "image" && !state.draft.referenceIds.includes(asset.id)
+      ? !state.draft.referenceIds.includes(asset.id)
       : asset.kind === "image" &&
         !asset.composite &&
         (kind !== "avatar-photo" || asset.source === "人物库场景造型") &&
@@ -2508,17 +2522,39 @@ function StudioPicker({
                           return;
                         }
                         if (
-                          referenceValidation.imageIds.length >=
-                          referenceValidation.limit
+                          asset.kind !== "image" &&
+                          asset.durationSeconds !== undefined &&
+                          asset.durationSeconds > MAX_REFERENCE_MEDIA_SECONDS
                         ) {
                           notify(
-                            `当前最多选择 ${referenceValidation.limit} 张参考图。`,
+                            asset.kind === "video"
+                              ? "参考视频时长不能超过 15 秒，请裁剪后再选取。"
+                              : "参考音频时长不能超过 15 秒，请裁剪后再选取。",
+                          );
+                          return;
+                        }
+                        const atKindLimit =
+                          asset.kind === "image"
+                            ? referenceValidation.imageCount >=
+                              referenceValidation.imageLimit
+                            : asset.kind === "video"
+                              ? referenceValidation.videoCount >=
+                                referenceValidation.videoLimit
+                              : referenceValidation.audioCount >=
+                                referenceValidation.audioLimit;
+                        if (atKindLimit) {
+                          notify(
+                            asset.kind === "image"
+                              ? `当前最多选择 ${referenceValidation.imageLimit} 张参考图。`
+                              : asset.kind === "video"
+                                ? `当前最多选择 ${referenceValidation.videoLimit} 个参考视频。`
+                                : `当前最多选择 ${referenceValidation.audioLimit} 个参考音频。`,
                           );
                           return;
                         }
                         select({
                           referenceIds: [
-                            ...referenceValidation.imageIds,
+                            ...referenceValidation.referenceIds,
                             asset.id,
                           ],
                         });

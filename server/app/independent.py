@@ -54,7 +54,19 @@ _FRAME_IMAGE_KINDS = {
     "character_source_image",
     "character_contact_sheet",
 }
-MAX_REFERENCE_IMAGES = 4
+# R2V 多模态参考允许的视频/音频资产类别：用户素材通道（materials）产物。
+# 与“复刻源视频”（kind=reference_video，被拆解的原始爆款）区分——那不是 H3
+# R2V 的生成参考输入。
+_REFERENCE_VIDEO_KINDS = {"video", "material_video"}
+_REFERENCE_AUDIO_KINDS = {"audio", "material_audio"}
+# R2V 参考素材允许的类别并集：统一混合列表 reference_asset_ids 里的资产按
+# kind 自动分流到图片/视频/音频三个 role。
+_REFERENCE_ANY_KINDS = _FRAME_IMAGE_KINDS | _REFERENCE_VIDEO_KINDS | _REFERENCE_AUDIO_KINDS
+MAX_REFERENCE_IMAGES = 8
+MAX_REFERENCE_VIDEOS = 3
+MAX_REFERENCE_AUDIOS = 3
+# 统一混合列表的总兜底上限：各类上限之和；分流后再按类分别校验。
+_MAX_REFERENCE_TOTAL = MAX_REFERENCE_IMAGES + MAX_REFERENCE_VIDEOS + MAX_REFERENCE_AUDIOS
 
 
 class IndependentVideoRequest(BaseModel):
@@ -64,7 +76,7 @@ class IndependentVideoRequest(BaseModel):
     prompt_text: str = Field(min_length=1, max_length=4000)
     first_frame_asset_id: str | None = Field(default=None, min_length=1)
     last_frame_asset_id: str | None = Field(default=None, min_length=1)
-    reference_asset_ids: list[str] = Field(default_factory=list, max_length=MAX_REFERENCE_IMAGES)
+    reference_asset_ids: list[str] = Field(default_factory=list, max_length=_MAX_REFERENCE_TOTAL)
     output_duration_seconds: int = Field(ge=4, le=15)
     resolution: Literal["768P", "2K"] = "768P"
     ratio: Literal["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] = "adaptive"
@@ -82,6 +94,8 @@ class IndependentCapabilities(BaseModel):
     r2v_enabled: bool
     last_frame_enabled: bool
     max_reference_images: int = MAX_REFERENCE_IMAGES
+    max_reference_videos: int = MAX_REFERENCE_VIDEOS
+    max_reference_audios: int = MAX_REFERENCE_AUDIOS
     max_quantity: int
 
 
@@ -131,13 +145,15 @@ def _validated_frame_asset(
     asset_id: str,
     role: str,
     provider: str,
+    allowed_kinds: set[str] = _FRAME_IMAGE_KINDS,
+    kind_phrase: str = "an image",
 ) -> dict[str, str]:
     asset = require_asset_access(conn, actor=actor, asset_id=asset_id, action="independent.create")
-    if str(asset["kind"]) not in _FRAME_IMAGE_KINDS:
+    if str(asset["kind"]) not in allowed_kinds:
         raise generation_error(
             422,
             "INDEPENDENT_ASSET_KIND_UNSUPPORTED",
-            f"{role} must be an image asset.",
+            f"{role} must be {kind_phrase} asset.",
         )
     storage_uri = str(asset["storage_uri"] or "")
     if not storage_uri:
@@ -148,7 +164,94 @@ def _validated_frame_asset(
         )
     if provider == "metaso":
         require_cos_first_frame_storage(conn, storage_uri=storage_uri)
-    return {"asset_id": str(asset["id"]), "uri": storage_uri}
+    return {
+        "asset_id": str(asset["id"]),
+        "uri": storage_uri,
+        "kind": str(asset["kind"]),
+    }
+
+
+def _validate_independent_mode_assets(
+    request: IndependentVideoRequest, *, extended_enabled: bool
+) -> None:
+    """模式/素材矩阵校验（H3 输入互斥规则）。
+
+    抽成不触库的纯函数，便于在无 PostgreSQL 的环境单测。统一混合列表
+    ``reference_asset_ids``（图/视频/音频共用一个字段，由后端按资产 kind 自动
+    分流）仅 R2V 可携带：R2V 至少一项参考、不得带首尾帧、参考不得重复；
+    T2V/I2V 携带任何参考列表即冲突（参考仅 R2V）；I2V 必需首帧；T2V 不得带
+    首尾帧。扩展模式（T2V/R2V/尾帧）未核对开放时统一 409。每类数量上限
+    （图≤8/视≤3/音≤3）依赖资产 kind，在触库分流后由
+    ``_validate_reference_kind_limits`` 校验。
+    """
+    uses_tail_frame = request.last_frame_asset_id is not None
+    uses_references = bool(request.reference_asset_ids)
+    if (request.mode in {"t2v", "r2v"} or uses_tail_frame) and not extended_enabled:
+        raise generation_error(
+            409,
+            "EXTENDED_MODE_PENDING_VERIFICATION",
+            "该模式需要完成供应商核对后开放，敬请期待。",
+        )
+    if request.mode == "t2v" and (request.first_frame_asset_id or uses_tail_frame):
+        raise generation_error(
+            422, "INDEPENDENT_MODE_ASSET_CONFLICT", "文生视频不能携带首帧或尾帧。"
+        )
+    if request.mode in {"t2v", "i2v"} and uses_references:
+        raise generation_error(
+            422,
+            "INDEPENDENT_MODE_ASSET_CONFLICT",
+            "参考素材仅支持参考生视频(R2V)。",
+        )
+    if request.mode == "i2v" and not request.first_frame_asset_id:
+        raise generation_error(
+            422, "INDEPENDENT_FIRST_FRAME_REQUIRED", "图生视频需要选择首帧图片。"
+        )
+    if request.mode == "r2v":
+        if request.first_frame_asset_id or uses_tail_frame:
+            raise generation_error(
+                422,
+                "INDEPENDENT_MODE_ASSET_CONFLICT",
+                "参考生视频不能携带首帧或尾帧。",
+            )
+        if not uses_references:
+            raise generation_error(
+                422,
+                "INDEPENDENT_REFERENCE_REQUIRED",
+                "参考生视频至少选择一个参考素材。",
+            )
+        if len(set(request.reference_asset_ids)) != len(request.reference_asset_ids):
+            raise generation_error(
+                422,
+                "INDEPENDENT_REFERENCE_DUPLICATE",
+                "参考素材不能重复选择。",
+            )
+
+
+def _validate_reference_kind_limits(
+    *, image_count: int, video_count: int, audio_count: int
+) -> None:
+    """R2V 每类参考数量上限（图≤8/视≤3/音≤3）。
+
+    统一混合列表按资产 kind 分流后调用；抽成不触库的纯函数便于单测。
+    """
+    if image_count > MAX_REFERENCE_IMAGES:
+        raise generation_error(
+            422,
+            "INDEPENDENT_REFERENCE_LIMIT_EXCEEDED",
+            f"参考图最多 {MAX_REFERENCE_IMAGES} 张。",
+        )
+    if video_count > MAX_REFERENCE_VIDEOS:
+        raise generation_error(
+            422,
+            "INDEPENDENT_REFERENCE_LIMIT_EXCEEDED",
+            f"参考视频最多 {MAX_REFERENCE_VIDEOS} 个。",
+        )
+    if audio_count > MAX_REFERENCE_AUDIOS:
+        raise generation_error(
+            422,
+            "INDEPENDENT_REFERENCE_LIMIT_EXCEEDED",
+            f"参考音频最多 {MAX_REFERENCE_AUDIOS} 个。",
+        )
 
 
 def create_independent_batch(
@@ -167,41 +270,7 @@ def create_independent_batch(
 
     mode_upper = _MODE_UPPPER[request.mode]
     extended_enabled = _extended_modes_enabled(conn)
-    uses_tail_frame = request.last_frame_asset_id is not None
-    uses_references = bool(request.reference_asset_ids)
-    if (request.mode in {"t2v", "r2v"} or uses_tail_frame) and not extended_enabled:
-        raise generation_error(
-            409,
-            "EXTENDED_MODE_PENDING_VERIFICATION",
-            "该模式需要完成供应商核对后开放，敬请期待。",
-        )
-
-    # 模式与素材矩阵（H3 输入互斥规则）。
-    if request.mode == "t2v" and (request.first_frame_asset_id or uses_tail_frame):
-        raise generation_error(
-            422, "INDEPENDENT_MODE_ASSET_CONFLICT", "文生视频不能携带首帧或尾帧。"
-        )
-    if request.mode == "i2v" and not request.first_frame_asset_id:
-        raise generation_error(
-            422, "INDEPENDENT_FIRST_FRAME_REQUIRED", "图生视频需要选择首帧图片。"
-        )
-    if request.mode == "r2v":
-        if request.first_frame_asset_id or uses_tail_frame:
-            raise generation_error(
-                422,
-                "INDEPENDENT_MODE_ASSET_CONFLICT",
-                "参考生视频不能携带首帧或尾帧。",
-            )
-        if not uses_references:
-            raise generation_error(
-                422, "INDEPENDENT_REFERENCE_REQUIRED", "参考生视频至少选择一张参考图。"
-            )
-        if len(set(request.reference_asset_ids)) != len(request.reference_asset_ids):
-            raise generation_error(
-                422,
-                "INDEPENDENT_REFERENCE_DUPLICATE",
-                "参考图不能重复选择。",
-            )
+    _validate_independent_mode_assets(request, extended_enabled=extended_enabled)
 
     # 与复刻流同源的生产红线：客户生产禁止模拟任务；metaso 需配置就绪并
     # 遵守付费试用限额。仅对“真正的新提交”生效，幂等回放在此之前返回。
@@ -268,19 +337,40 @@ def create_independent_batch(
         if request.last_frame_asset_id
         else None
     )
-    reference_images = [
-        {
-            **_validated_frame_asset(
-                conn,
-                actor=actor,
-                asset_id=asset_id,
-                role="Reference image",
-                provider=request.provider,
-            ),
-            "name": f"ref-{index + 1}",
-        }
-        for index, asset_id in enumerate(request.reference_asset_ids)
-    ]
+    # 统一混合列表：逐个解析参考素材并按资产 kind 自动分流到图片/视频/音频。
+    # 图片保留 name（build_h3_request 的 image content 需要 name+url），视频/
+    # 音频只携带 uri（build_h3_request 只读 url）。
+    reference_images: list[dict[str, str]] = []
+    reference_videos: list[dict[str, str]] = []
+    reference_audios: list[dict[str, str]] = []
+    for asset_id in request.reference_asset_ids:
+        resolved = _validated_frame_asset(
+            conn,
+            actor=actor,
+            asset_id=asset_id,
+            role="Reference",
+            provider=request.provider,
+            allowed_kinds=_REFERENCE_ANY_KINDS,
+            kind_phrase="an image, video, or audio",
+        )
+        kind = resolved["kind"]
+        if kind in _FRAME_IMAGE_KINDS:
+            reference_images.append(
+                {
+                    "asset_id": resolved["asset_id"],
+                    "uri": resolved["uri"],
+                    "name": f"ref-{len(reference_images) + 1}",
+                }
+            )
+        elif kind in _REFERENCE_VIDEO_KINDS:
+            reference_videos.append({"asset_id": resolved["asset_id"], "uri": resolved["uri"]})
+        else:
+            reference_audios.append({"asset_id": resolved["asset_id"], "uri": resolved["uri"]})
+    _validate_reference_kind_limits(
+        image_count=len(reference_images),
+        video_count=len(reference_videos),
+        audio_count=len(reference_audios),
+    )
 
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -322,6 +412,8 @@ def create_independent_batch(
             "first_frame_uri": first_frame["uri"] if first_frame else None,
             "last_frame_uri": last_frame["uri"] if last_frame else None,
             "reference_images": reference_images,
+            "reference_videos": reference_videos,
+            "reference_audios": reference_audios,
         }
         conn.execute(
             """

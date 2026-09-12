@@ -250,6 +250,14 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                 "SELECT count(*) FROM customer_devices WHERE status = 'BOUND'",
             )
         )
+        # CW-073: total device capacity is the sum of per-user max_devices
+        # instead of the hard-coded active_customers * 2.
+        total_device_capacity = int(
+            _one(
+                conn,
+                "SELECT COALESCE(SUM(max_devices), 0) FROM users WHERE role = 'customer'",
+            )
+        )
         unconfigured_rates = int(
             _one(
                 conn,
@@ -315,6 +323,6 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
         },
         "device_slots": {
             "bound": bound_devices,
-            "total": active_customers * 2,
+            "total": total_device_capacity,
         },
     }
