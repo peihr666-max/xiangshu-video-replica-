@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import heapq
 import hmac
 import logging
 import os
@@ -122,6 +123,7 @@ class StorageAdapter(Protocol):
         *,
         content_type: str,
         expires_in: timedelta,
+        size_bytes: int | None = None,
     ) -> UploadIntent: ...
 
     def create_download_intent(
@@ -150,6 +152,10 @@ class StorageAdapter(Protocol):
     def head_object(self, key: str) -> StoredObject | None: ...
 
     def check_readiness(self) -> None: ...
+
+    def list_upload_keys(
+        self, asset_id: str, *, after: str = "", limit: int = 100
+    ) -> list[str]: ...
 
     def archive_result(
         self,
@@ -271,12 +277,21 @@ class _BaseStorageAdapter:
     def audit_events(self) -> list[StorageAuditEvent]:
         return self._audit_events
 
+    def _upload_prefix(self, asset_id: str, after: str, limit: int) -> str:
+        if not asset_id or "/" in asset_id or "\\" in asset_id or not 1 <= limit <= 1000:
+            raise ValueError("invalid upload inventory bounds")
+        prefix = self._object_key(f"verified-uploads/{asset_id}/entry").removesuffix("entry")
+        if after and not after.startswith(prefix):
+            raise ValueError("inventory cursor is outside the upload prefix")
+        return prefix
+
     def create_upload_intent(
         self,
         key: str,
         *,
         content_type: str,
         expires_in: timedelta,
+        size_bytes: int | None = None,
     ) -> UploadIntent:
         object_key = self._object_key(key)
         expires_at = _expires_at(expires_in)
@@ -392,6 +407,12 @@ class _BaseStorageAdapter:
 
 
 class FakeStorageAdapter(_BaseStorageAdapter):
+    def list_upload_keys(self, asset_id: str, *, after: str = "", limit: int = 100) -> list[str]:
+        prefix = self._upload_prefix(asset_id, after, limit)
+        return heapq.nsmallest(
+            limit, (key for key in self._objects if key.startswith(prefix) and key > after)
+        )
+
     def __init__(
         self,
         *,
@@ -464,6 +485,27 @@ class FakeStorageAdapter(_BaseStorageAdapter):
 
 
 class LocalStorageAdapter(_BaseStorageAdapter):
+    def list_upload_keys(self, asset_id: str, *, after: str = "", limit: int = 100) -> list[str]:
+        prefix = self._upload_prefix(asset_id, after, limit)
+        base = self._path_for(prefix)
+
+        def keys(directory: Path) -> Iterator[str]:
+            if not directory.exists():
+                return
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        yield from keys(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        key = Path(entry.path).relative_to(self.root).as_posix()
+                        if key > after:
+                            yield key
+
+        try:
+            return heapq.nsmallest(limit, keys(base))
+        except OSError as exc:
+            raise StorageBackendUnavailable("local upload inventory failed") from exc
+
     def __init__(
         self,
         *,
@@ -572,6 +614,24 @@ class LocalStorageAdapter(_BaseStorageAdapter):
 
 
 class CloudStorageAdapter(_BaseStorageAdapter):
+    def list_upload_keys(self, asset_id: str, *, after: str = "", limit: int = 100) -> list[str]:
+        prefix = self._upload_prefix(asset_id, after, limit)
+        try:
+            response = self._client.list_objects(
+                Bucket=self.bucket, Prefix=prefix, Marker=after, MaxKeys=limit
+            )
+            contents = response.get("Contents", [])
+            if not isinstance(contents, list) or len(contents) > limit:
+                raise ValueError("invalid object inventory")
+            keys = [str(item["Key"]) for item in contents]
+            if keys != sorted(set(keys)) or any(
+                not key.startswith(prefix) or key <= after for key in keys
+            ):
+                raise ValueError("object inventory escaped upload prefix")
+            return keys
+        except Exception as exc:
+            raise StorageBackendUnavailable("cloud upload inventory failed") from exc
+
     def __init__(self, config: CloudStorageConfig, *, client: Any | None = None) -> None:
         super().__init__(
             provider=config.provider,
@@ -611,10 +671,18 @@ class CloudStorageAdapter(_BaseStorageAdapter):
         *,
         content_type: str,
         expires_in: timedelta,
+        size_bytes: int | None = None,
     ) -> UploadIntent:
         object_key = self._object_key(key)
         expires_at = _expires_at(expires_in)
         headers = {"Content-Type": content_type}
+        signed_headers = dict(headers)
+        if size_bytes is not None:
+            if size_bytes < 0:
+                raise ValueError("upload size must be non-negative")
+            # Browsers set Content-Length from the Blob; do not ask JavaScript
+            # to set this forbidden header, but require it in the COS signature.
+            signed_headers["Content-Length"] = str(size_bytes)
         try:
             url = self._client.get_presigned_url(
                 Bucket=self.bucket,
@@ -623,7 +691,7 @@ class CloudStorageAdapter(_BaseStorageAdapter):
                 Expired=_seconds(expires_in),
                 # qcloud_cos 会在签名时把 Authorization 原地写入传入的 Headers
                 # 字典；传副本避免签名泄漏到下发给客户端的上传头里。
-                Headers=dict(headers),
+                Headers=signed_headers,
                 SignHost=True,
             )
         except Exception as exc:
@@ -660,11 +728,16 @@ class CloudStorageAdapter(_BaseStorageAdapter):
 
     def get_object(self, key: str) -> bytes:
         object_key = self._object_key(key)
+        stream = None
         try:
             response = self._client.get_object(Bucket=self.bucket, Key=object_key)
-            return bytes(response["Body"].get_raw_stream().read())
+            stream = response["Body"].get_raw_stream()
+            return bytes(stream.read())
         except Exception as exc:
             raise StorageBackendUnavailable("cloud object download failed") from exc
+        finally:
+            if stream is not None:
+                _close_provider_stream(stream)
 
     def iter_object(
         self,
@@ -678,6 +751,7 @@ class CloudStorageAdapter(_BaseStorageAdapter):
         request: dict[str, object] = {"Bucket": self.bucket, "Key": object_key}
         if start or end is not None:
             request["Range"] = f"bytes={start}-{'' if end is None else end}"
+        stream = None
         try:
             response = self._client.get_object(**request)
             stream = response["Body"].get_raw_stream()
@@ -688,6 +762,9 @@ class CloudStorageAdapter(_BaseStorageAdapter):
                 yield bytes(chunk)
         except Exception as exc:
             raise StorageBackendUnavailable("cloud object stream failed") from exc
+        finally:
+            if stream is not None:
+                _close_provider_stream(stream)
 
     def copy_object(self, source_key: str, destination_key: str) -> StoredObject:
         source_object_key = self._object_key(source_key)
@@ -859,6 +936,52 @@ def _is_not_found(exc: Exception) -> bool:
 
 def _header(headers: dict[str, Any], name: str, default: str) -> Any:
     return next((value for key, value in headers.items() if key.lower() == name), default)
+
+
+def _close_provider_stream(stream: Any) -> None:
+    # COS exposes requests.Response.raw (urllib3.HTTPResponse). Closing a
+    # partially consumed socket does not return its pool slot by itself.
+    try:
+        stream.close()
+    finally:
+        release = getattr(stream, "release_conn", None)
+        if release is not None:
+            release()
+
+
+class UploadedObjectSizeMismatch(ValueError):
+    pass
+
+
+def read_uploaded_object(
+    storage: StorageAdapter, key: str, *, expected_size: int, max_bytes: int
+) -> bytes:
+    if expected_size < 0 or expected_size > max_bytes:
+        raise UploadedObjectSizeMismatch("declared upload size is outside the allowed budget")
+    source = storage.iter_object(key)
+    content = bytearray()
+    try:
+        for chunk in source:
+            if len(content) + len(chunk) > expected_size or len(content) + len(chunk) > max_bytes:
+                raise UploadedObjectSizeMismatch("object changed while reading the upload")
+            content.extend(chunk)
+        if len(content) != expected_size:
+            raise UploadedObjectSizeMismatch("object ended before the declared upload size")
+    finally:
+        close = getattr(source, "close", None)
+        if close is not None:
+            close()
+    return bytes(content)
+
+
+def store_verified_upload(
+    storage: StorageAdapter, *, asset_id: str, source_key: str, content: bytes, content_type: str
+) -> StoredObject:
+    digest = hashlib.sha256(content).hexdigest()
+    key = f"verified-uploads/{asset_id}/{digest}/{Path(source_key).name}"
+    # No upload-intent code ever signs this namespace. Every consumer persists
+    # this exact byte snapshot after validating the same bytes.
+    return storage.put_object(key, content, content_type=content_type)
 
 
 def _stored_object(

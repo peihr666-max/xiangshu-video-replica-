@@ -5,6 +5,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from qcloud_cos import CosConfig, CosS3Client
@@ -65,6 +66,14 @@ class FakeCosClient:
 class FakeCosBody:
     def __init__(self, content: bytes) -> None:
         self.content = content
+        self.closed = False
+        self.released = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def release_conn(self) -> None:
+        self.released = True
 
     def get_raw_stream(self) -> FakeCosBody:
         return self
@@ -89,6 +98,51 @@ class FakeCosNoSuchBucketClient(FakeCosClient):
     def head_bucket(self, **kwargs: object) -> dict[str, str]:
         del kwargs
         raise RuntimeError("NoSuchBucket: The specified bucket does not exist")
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_w18_upload_inventory_has_bounded_pages_and_scope(tmp_path: Path, local: bool) -> None:
+    storage = (
+        LocalStorageAdapter(root=tmp_path)
+        if local
+        else FakeStorageAdapter(provider="fake", bucket="test")
+    )
+    for key in (
+        "verified-uploads/a/1/x",
+        "verified-uploads/a/2/x",
+        "verified-uploads/b/1/x",
+        "other/x",
+    ):
+        storage.put_object(key, b"test", content_type="text/plain")
+    first = storage.list_upload_keys("a", limit=1)
+    assert first == ["verified-uploads/a/1/x"]
+    assert storage.list_upload_keys("a", after=first[0], limit=1) == ["verified-uploads/a/2/x"]
+    with pytest.raises(ValueError):
+        storage.list_upload_keys("a", after="verified-uploads/b/1/x")
+
+
+def test_w18_cos_upload_inventory_rejects_outside_keys() -> None:
+    class InventoryClient(FakeCosClient):
+        outside = False
+
+        def list_objects(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["MaxKeys"] == 2
+            assert kwargs["Prefix"] == "verified-uploads/a/"
+            return {
+                "Contents": [{"Key": "other/file" if self.outside else "verified-uploads/a/1/x"}]
+            }
+
+    client = InventoryClient()
+    storage = CloudStorageAdapter(
+        CloudStorageConfig(
+            provider="cos", bucket="test", access_key_id="test", secret_access_key="test"
+        ),
+        client=client,
+    )
+    assert storage.list_upload_keys("a", limit=2) == ["verified-uploads/a/1/x"]
+    client.outside = True
+    with pytest.raises(StorageBackendUnavailable):
+        storage.list_upload_keys("a", limit=2)
 
 
 def _flow(adapter: FakeStorageAdapter) -> tuple[str, str]:
@@ -319,6 +373,52 @@ def test_cloud_adapter_streams_with_provider_range() -> None:
     )
 
 
+def test_cloud_stream_releases_response_when_consumer_cancels() -> None:
+    body = FakeCosBody(b"video")
+
+    class StreamingClient(FakeCosClient):
+        def get_object(self, **kwargs: object) -> dict[str, object]:
+            return {"Body": body}
+
+    adapter = CloudStorageAdapter(
+        CloudStorageConfig(
+            provider="cos",
+            bucket="private-bucket",
+            access_key_id="public-id",
+            secret_access_key="synthetic-test-secret",
+            region="ap-shanghai",
+        ),
+        client=StreamingClient(),
+    )
+    chunks = adapter.iter_object("video.mp4", chunk_size=2)
+    assert next(chunks) == b"vi"
+    chunks.close()
+    assert body.closed is True
+    assert body.released is True
+
+
+def test_cloud_upload_signature_binds_size_without_forbidden_browser_header() -> None:
+    client = FakeCosClient()
+    adapter = CloudStorageAdapter(
+        CloudStorageConfig(
+            provider="cos",
+            bucket="private-bucket",
+            access_key_id="public-id",
+            secret_access_key="synthetic-test-secret",
+            region="ap-shanghai",
+        ),
+        client=client,
+    )
+    intent = adapter.create_upload_intent(
+        "video.mp4",
+        content_type="video/mp4",
+        expires_in=timedelta(minutes=15),
+        size_bytes=123,
+    )
+    assert client.calls[0][1]["Headers"] == {"Content-Type": "video/mp4", "Content-Length": "123"}
+    assert intent.headers == {"Content-Type": "video/mp4"}
+
+
 def test_cloud_upload_intent_headers_isolated_from_sdk_auth_mutation() -> None:
     # 真实 qcloud_cos 客户端会把签名原地注入调用方传入的 Headers 字典。
     # 预签名 URL 已携带签名，intent 不得把 SDK 注入的 Authorization 下发给客户端，
@@ -346,10 +446,46 @@ def test_cloud_upload_intent_headers_isolated_from_sdk_auth_mutation() -> None:
         key="projects/p1/source/reference.mp4",
         content_type="video/mp4",
         expires_in=timedelta(minutes=10),
+        size_bytes=7,
     )
 
     assert upload.url.startswith("https://private-bucket-1250000000.cos.ap-shanghai.myqcloud.com/")
     assert upload.headers == {"Content-Type": "video/mp4"}
+    assert "content-length" in parse_qs(urlsplit(upload.url).query)["q-header-list"][0].split(";")
+
+
+@pytest.mark.parametrize("failure", ["read", "close"])
+def test_cloud_stream_returns_pool_slot_on_failure(failure: str) -> None:
+    class BrokenBody(FakeCosBody):
+        def read(self, size: int = -1) -> bytes:
+            if failure == "read":
+                raise OSError("synthetic read failure")
+            return super().read(size)
+
+        def close(self) -> None:
+            super().close()
+            if failure == "close":
+                raise OSError("synthetic close failure")
+
+    body = BrokenBody(b"video")
+
+    class Client(FakeCosClient):
+        def get_object(self, **kwargs: object) -> dict[str, object]:
+            return {"Body": body}
+
+    adapter = CloudStorageAdapter(
+        CloudStorageConfig(
+            provider="cos",
+            bucket="private-bucket",
+            access_key_id="public-id",
+            secret_access_key="synthetic-test-secret",
+            region="ap-shanghai",
+        ),
+        client=Client(),
+    )
+    with pytest.raises((OSError, StorageBackendUnavailable)):
+        list(adapter.iter_object("video.mp4", chunk_size=2))
+    assert body.closed and body.released
 
 
 def test_cos_head_maps_deleted_object_no_such_resource_to_none() -> None:

@@ -632,3 +632,18 @@ def test_default_pinned_connections_use_ip_but_keep_https_sni(
 
     assert connected == [(("93.184.216.34", 443), 4.0)]
     assert context.server_names == ["media.example"]
+
+
+def test_peer_lookup_failure_closes_the_socket() -> None:
+    closed: list[bool] = []
+
+    class Socket:
+        def getpeername(self):
+            raise OSError("synthetic peer lookup failure")
+
+        def close(self):
+            closed.append(True)
+
+    with pytest.raises(OSError):
+        viral_media._verify_peer(Socket(), "93.184.216.34")
+    assert closed == [True]

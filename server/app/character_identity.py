@@ -40,8 +40,11 @@ from app.permissions import require_role, write_audit
 from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
+    UploadedObjectSizeMismatch,
+    read_uploaded_object,
     require_storage_match,
     storage_object_ref_from_uri,
+    store_verified_upload,
 )
 
 logger = logging.getLogger(__name__)
@@ -459,6 +462,7 @@ def create_identity_upload_intent(
             storage_key,
             content_type=content_type,
             expires_in=UPLOAD_INTENT_EXPIRES_IN,
+            size_bytes=size_bytes,
         )
     except (StorageBackendUnavailable, ValueError) as exc:
         raise character_error(
@@ -473,6 +477,8 @@ def create_identity_upload_intent(
         "purpose": purpose,
         "requested_size_bytes": size_bytes,
         "upload_status": "PENDING",
+        "intent_expires_at": intent.expires_at.isoformat(),
+        "upload_source_uri": storage_uri,
     }
     with conn:
         conn.execute(
@@ -502,6 +508,8 @@ def create_identity_upload_intent(
             "identity_id": identity_id,
             "object_key": intent.key,
             "purpose": purpose,
+            "upload_source_uri": storage_uri,
+            "intent_expires_at": intent.expires_at.isoformat(),
         },
     )
     return CreatedIdentityUploadIntent(
@@ -548,6 +556,13 @@ def complete_authorization_upload(
         size_bytes=stored.size,
     )
     validate_authorization_content(content, content_type=content_type)
+    stored = store_verified_upload(
+        storage,
+        asset_id=asset_id,
+        source_key=storage_object_ref_from_uri(str(asset["storage_uri"])).key,
+        content=content,
+        content_type=content_type,
+    )
     sha256 = hashlib.sha256(content).hexdigest()
     metadata = completed_asset_metadata(asset, stored_uri=stored.uri, stored_size=stored.size)
     state_error: HTTPException | None = None
@@ -561,7 +576,7 @@ def complete_authorization_upload(
             content_type=content_type,
             metadata=metadata,
         )
-        latest_identity = read_identity_row(conn, identity_id)
+        latest_identity = read_identity_row(conn, identity_id, for_update=True)
         try:
             require_identity_accepts_authorization_upload(latest_identity)
         except HTTPException as exc:
@@ -643,6 +658,13 @@ def complete_source_upload(
         size_bytes=stored.size,
     )
     width, height = image_dimensions(content, content_type=content_type)
+    stored = store_verified_upload(
+        storage,
+        asset_id=asset_id,
+        source_key=storage_object_ref_from_uri(str(asset["storage_uri"])).key,
+        content=content,
+        content_type=content_type,
+    )
     sha256 = hashlib.sha256(content).hexdigest()
     started = time.monotonic()
     try:
@@ -681,7 +703,7 @@ def complete_source_upload(
             content_type=content_type,
             metadata=metadata,
         )
-        latest_identity = read_identity_row(conn, identity_id)
+        latest_identity = read_identity_row(conn, identity_id, for_update=True)
         try:
             require_current_authorization(latest_identity)
         except HTTPException as exc:
@@ -1278,9 +1300,11 @@ def evaluate_source_image_quality(
     )
 
 
-def read_identity_row(conn: BusinessConnection, identity_id: str) -> sqlite3.Row:
+def read_identity_row(
+    conn: BusinessConnection, identity_id: str, *, for_update: bool = False
+) -> sqlite3.Row:
     row = conn.execute(
-        "SELECT * FROM person_identities WHERE id = %s",
+        "SELECT * FROM person_identities WHERE id = %s" + (" FOR UPDATE" if for_update else ""),
         (identity_id,),
     ).fetchone()
     if row is None:
@@ -1517,6 +1541,8 @@ def read_uploaded_identity_asset(
     if asset is None:
         raise character_not_found("ASSET_NOT_FOUND", "上传记录不存在。")
     metadata = decode_object(asset["metadata_json"])
+    if metadata.get("upload_status") == "EXPIRED":
+        raise character_error(409, "UPLOAD_EXPIRED", "上传已过期，请重新创建上传。")
     if (
         asset["project_id"] is not None
         or str(asset["kind"]) != identity_asset_kind(purpose)
@@ -1538,7 +1564,23 @@ def read_uploaded_identity_asset(
                 "UPLOAD_OBJECT_MISSING",
                 "上传对象尚未就绪，请等待上传完成后重试。",
             )
-        content = storage.get_object(reference.key)
+        expected_size = (
+            int(asset["size_bytes"])
+            if int(asset["size_bytes"]) > 0
+            else metadata.get("requested_size_bytes")
+        )
+        if not isinstance(expected_size, int) or stored.size != expected_size:
+            raise character_error(409, "UPLOAD_SIZE_MISMATCH", "上传文件大小不一致。")
+        maximum = MAX_SOURCE_IMAGE_BYTES if purpose == "source" else MAX_AUTHORIZATION_BYTES
+        if expected_size > maximum:
+            raise character_error(413, "UPLOAD_TOO_LARGE", "上传文件超出大小限制。")
+        content = read_uploaded_object(
+            storage, reference.key, expected_size=expected_size, max_bytes=maximum
+        )
+        if str(asset["sha256"]) and hashlib.sha256(content).hexdigest() != str(asset["sha256"]):
+            raise character_error(409, "UPLOAD_HASH_MISMATCH", "已完成上传内容发生变化。")
+    except UploadedObjectSizeMismatch as exc:
+        raise character_error(409, "UPLOAD_SIZE_MISMATCH", "上传文件大小不一致。") from exc
     except HTTPException:
         raise
     except (KeyError, OSError, StorageBackendUnavailable, ValueError) as exc:
@@ -1602,6 +1644,11 @@ def completed_asset_metadata(
     metadata = decode_object(asset["metadata_json"])
     metadata.update(
         {
+            "_completion_expected_state": [
+                str(asset["storage_uri"]),
+                str(asset["sha256"]),
+                int(asset["size_bytes"]),
+            ],
             "stored_size_bytes": stored_size,
             "storage_uri_scheme": storage_object_ref_from_uri(stored_uri).provider,
             "upload_status": "COMPLETE",
@@ -1620,6 +1667,16 @@ def update_completed_asset(
     content_type: str,
     metadata: dict[str, object],
 ) -> None:
+    metadata = dict(metadata)
+    expected = metadata.pop("_completion_expected_state", None)
+    current = conn.execute(
+        "SELECT storage_uri, sha256, size_bytes, metadata_json FROM assets WHERE id=%s FOR UPDATE",
+        (asset_id,),
+    ).fetchone()
+    if current is None or expected != [str(current[0]), str(current[1]), int(current[2])]:
+        raise character_error(409, "UPLOAD_STATE_CHANGED", "上传记录已变化，请重试完成上传。")
+    if decode_object(current[3]).get("upload_status") == "EXPIRED":
+        raise character_error(409, "UPLOAD_EXPIRED", "上传已过期，请重新创建上传。")
     conn.execute(
         """
         UPDATE assets
@@ -1656,7 +1713,7 @@ def persist_source_inspection_failure(
             content_type=content_type,
             metadata=metadata,
         )
-        latest_identity = read_identity_row(conn, identity_id)
+        latest_identity = read_identity_row(conn, identity_id, for_update=True)
         try:
             require_current_authorization(latest_identity)
         except HTTPException as exc:

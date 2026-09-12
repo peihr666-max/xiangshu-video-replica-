@@ -306,13 +306,16 @@ def test_admin_completes_authorized_source_upload_without_persisting_signed_url(
     assert {row["project_id"] for row in assets} == {None}
     assert all(str(row["sha256"]) for row in assets)
     assert all("?" not in str(row["storage_uri"]) for row in assets)
-    assert any(
-        f"users/employee_1/identities/{identity_id}/authorization/" in str(row["storage_uri"])
+    assert all(
+        f"verified-uploads/{row['id']}/{row['sha256']}/" in str(row["storage_uri"])
         for row in assets
     )
-    assert any(
-        f"users/employee_1/identities/{identity_id}/source/" in str(row["storage_uri"])
-        for row in assets
+    assert {json.loads(str(row["metadata_json"]))["purpose"] for row in assets} == {
+        "authorization",
+        "source",
+    }
+    assert all(
+        json.loads(str(row["metadata_json"]))["identity_id"] == identity_id for row in assets
     )
     assert all("http" not in payload and "sig=" not in payload for payload in audit_payloads)
 
