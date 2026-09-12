@@ -223,9 +223,12 @@ def _build_client() -> TestClient:
 
 
 @pytest.fixture()
-def client(pg_env: str) -> Iterator[TestClient]:
+def client(pg_env: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """PG 客户泳道 TestClient（DATABASE_URL_ENV 指向共享库、HMAC key 已配）。"""
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_IDEMPOTENCY_AEAD_KEY", secrets.token_urlsafe(32))
+    monkeypatch.setenv("VIDEO_REPLICA_ACTIVATION_CODE_HMAC_KEY", secrets.token_urlsafe(48))
     with _build_client() as test_client:
+        test_client.headers["Idempotency-Key"] = str(uuid4())
         yield test_client
 
 
@@ -436,6 +439,9 @@ def test_migration_089_creates_table_columns_and_indexes(pg_dsn: str) -> None:
         "created_at",
         "last_used_at",
         "revoked_at",
+        "token_group_id",
+        "credential_version",
+        "is_default",
     }
     # R-A / cw056 §617：JSON 全存 TEXT，维持 head jsonb_columns=0 不变量。
     assert columns["scopes"] == "text"
@@ -572,9 +578,9 @@ def test_unique_prefix_index_rejects_a_second_row(
         with pytest.raises(psycopg.errors.UniqueViolation):
             conn.execute(
                 "INSERT INTO customer_api_keys "
-                "(id, user_id, key_prefix, key_digest, key_version) "
-                "VALUES (%s, %s, %s, %s, 1)",
-                (_new_user("dup"), user_id, record.key_prefix, "0" * 64),
+                "(id, user_id, key_prefix, key_digest, key_version, token_group_id) "
+                "VALUES (%s, %s, %s, %s, 1, %s)",
+                (_new_user("dup"), user_id, record.key_prefix, "0" * 64, record.id),
             )
 
 

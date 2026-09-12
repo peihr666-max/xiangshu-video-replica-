@@ -112,7 +112,8 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     "users": frozenset({"max_devices", "password_hash", "registration_source"}),
     # 20260912T1353_customer_discounts: wallet_transactions.discount_rate 仅存在于 PG
     # （本迁移非 postgresql 方言 return，SQLite lane 不建此列）。
-    "wallet_transactions": frozenset({"discount_rate"}),
+    # 20260912T2200: legacy records have no API key attribution; import as NULL.
+    "wallet_transactions": frozenset({"discount_rate", "api_key_id"}),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000
 _DIGEST_MODULUS = 1 << 256

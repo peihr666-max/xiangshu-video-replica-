@@ -26,6 +26,7 @@ import {
   listMaterials,
   type Project,
 } from "../api";
+import { CustomerCenterPage } from "../customer/CustomerCenterPage";
 import { SettingsPanel } from "../SettingsPanel";
 import type { WorkspaceShellProps } from "../workspace-shell";
 import { AnalyticsPage } from "./AnalyticsPage";
@@ -1689,7 +1690,7 @@ export function StudioWorkspace({
   return (
     <StudioContext.Provider value={context}>
       <div
-        className={`studio-shell ${menuOpen ? "studio-shell--menu-open" : ""}`}
+        className={`studio-shell ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""}`}
       >
         <aside className="studio-sidebar">
           <button
@@ -1845,6 +1846,7 @@ export function StudioWorkspace({
               <StudioPageContent
                 page={state.page}
                 accountSummary={accountSummary}
+                customerAccount={customerAccount}
               />
             )}
           </div>
@@ -2037,9 +2039,11 @@ export function StudioWorkspace({
 function StudioPageContent({
   page,
   accountSummary,
+  customerAccount,
 }: {
   page: StudioPage;
   accountSummary: StudioAccountSummary;
+  customerAccount?: WorkspaceShellProps["customerAccount"];
 }) {
   switch (page) {
     case "workbench":
@@ -2080,7 +2084,14 @@ function StudioPageContent({
     case "settings":
       return <StudioSettingsPage />;
     case "profile":
-      return <ProfilePage accountSummary={accountSummary} />;
+      return customerAccount ? (
+        <CustomerCenterPage
+          key={customerAccount.profile?.user_id}
+          account={customerAccount}
+        />
+      ) : (
+        <ProfilePage accountSummary={accountSummary} />
+      );
   }
 }
 

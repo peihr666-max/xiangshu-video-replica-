@@ -102,7 +102,7 @@ describe("CustomerRechargeDialog", () => {
     const qr = await screen.findByRole("img", { name: "充值支付二维码" });
     expect(qr).toHaveAttribute("src", "https://payment.example/qr.png");
     expect(screen.getByText("正在等待支付结果")).toBeInTheDocument();
-    expect(screen.getByText(/到账 10 秒/)).toBeInTheDocument();
+    expect(screen.getByText(/到账 10 积分/)).toBeInTheDocument();
     expect(onOrderCreated).toHaveBeenCalledOnce();
     expect(screen.queryByText(/zpay|微信支付商户|支付宝商户/i)).toBeNull();
     await waitFor(() =>
