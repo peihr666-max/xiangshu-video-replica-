@@ -1172,6 +1172,8 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2879 passed、1 原有 TLS 场景跳过；前端 1350 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W15-20260912.md)。
 
+已通过独立只读复审，完整本地门保留原实测基线；账号主干791fd66整合专项后端134/前端53和静态通过。W13已正常合并PR #84（cd8bccf），本任务合入该主干至1839c86后权限、日期、导出及幂等专项后端322/前端141和静态全部通过。远程PR #85即将更新，必须以更新后当前SHA三门禁成功为合并条件；人工联合调试仍留第二部分。
+
 ## FIX-W20-20260912 / W20
 
 AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2858 passed、1 原有 TLS 场景跳过；前端 1344 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W20-20260912.md)。
