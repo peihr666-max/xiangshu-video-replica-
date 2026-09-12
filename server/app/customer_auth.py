@@ -72,7 +72,7 @@ class CustomerSessionContext:
     """
 
     user_id: str
-    activation_code_id: str
+    activation_code_id: str | None
     device_id: str
     session_id: str
     session_epoch: int
@@ -127,7 +127,7 @@ def verify_session_context(
         raise _replaced("This session was replaced by another device.")
 
     user_id = str(row[0])
-    activation_code_id = str(row[1])
+    activation_code_id = str(row[1]) if row[1] is not None else None
     device_id = str(row[2])
     session_id = str(row[3])
     session_epoch = int(row[4])
@@ -167,17 +167,34 @@ def verify_session_context(
     # code or a released device fences the write even if the lease still
     # looks alive. Plain snapshot reads: no second lock is needed, the row
     # lock above already serializes the outcome against the writers.
-    code_row = conn.execute(
-        "SELECT status FROM activation_codes WHERE id = %s", (activation_code_id,)
-    ).fetchone()
-    if code_row is None or str(code_row[0]) != "ACTIVE":
-        raise _replaced("The activation code behind this session is no longer active.")
+    if activation_code_id is None:
+        account = conn.execute(
+            "SELECT is_active, role, password_hash, registration_source FROM users WHERE id = %s",
+            (user_id,),
+        ).fetchone()
+        if (
+            account is None
+            or not account[0]
+            or account[1] != "customer"
+            or not account[2]
+            or account[3] != "self_register"
+        ):
+            raise _replaced("The customer account is unavailable.")
+    else:
+        code_row = conn.execute(
+            "SELECT status FROM activation_codes WHERE id = %s", (activation_code_id,)
+        ).fetchone()
+        if code_row is None or str(code_row[0]) != "ACTIVE":
+            raise _replaced("The activation code behind this session is no longer active.")
 
     device_row = conn.execute(
-        "SELECT status FROM customer_devices WHERE id = %s", (device_id,)
+        "SELECT status, user_id, activation_code_id FROM customer_devices WHERE id = %s",
+        (device_id,),
     ).fetchone()
     if device_row is None or str(device_row[0]) != "BOUND":
         raise _replaced("The device behind this session has been released.")
+    if activation_code_id is None and (str(device_row[1]) != user_id or device_row[2] is not None):
+        raise _replaced("The device does not belong to this registered customer.")
 
     return CustomerSessionContext(
         user_id=user_id,

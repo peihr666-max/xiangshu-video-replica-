@@ -342,8 +342,7 @@ export function CustomersPage({
                       <CustomerStatusBadge status={customer.status} />
                     </td>
                     <td data-label="设备占用">
-                      {customer.device_slots_used ?? 0}/
-                      {customer.device_slots_total ?? 2}
+                      {customer.device_slots_used ?? 0} 台
                     </td>
                     <td data-label="可用额度">
                       <strong>{customer.available_credits ?? 0} 秒</strong>
@@ -689,11 +688,8 @@ function CustomerDetailView({
             </dd>
           </div>
           <div>
-            <dt>设备槽位</dt>
-            <dd>
-              {customer.device_slots_used ?? 0}/
-              {customer.device_slots_total ?? 2}
-            </dd>
+            <dt>登录设备</dt>
+            <dd>{customer.device_slots_used ?? 0} 台 · 数量不限</dd>
           </div>
           <div>
             <dt>生成成功</dt>

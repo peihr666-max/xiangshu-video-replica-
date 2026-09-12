@@ -92,10 +92,10 @@ ALERT_QUERIES: dict[str, str] = {
     "double_online": """
         SELECT count(*) FROM (
             SELECT user_id FROM (
-                SELECT user_id, session_epoch
+                SELECT user_id, session_id, session_epoch
                 FROM customer_session_events
                 WHERE event = 'HEARTBEAT' AND occurred_at >= %s
-                GROUP BY user_id, session_epoch
+                GROUP BY user_id, session_id, session_epoch
                 HAVING count(DISTINCT device_id) > 1
                 LIMIT %s
             ) AS same_epoch_devices
@@ -107,6 +107,7 @@ ALERT_QUERIES: dict[str, str] = {
                     SELECT login.session_epoch
                     FROM customer_session_events AS login
                     WHERE login.user_id = heartbeat.user_id
+                      AND login.device_id = heartbeat.device_id
                       AND login.event = 'LOGIN'
                       AND login.occurred_at <= heartbeat.occurred_at
                     ORDER BY login.occurred_at DESC, login.id DESC

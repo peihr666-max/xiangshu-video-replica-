@@ -323,19 +323,10 @@ export function OverviewPage({
       </div>
 
       <div className="dashboard-bottom-grid">
-        <section className="admin-panel" aria-label="设备槽位占用">
-          <h2>设备槽位占用</h2>
-          <strong className="slot-count">
-            {device_slots.bound} / {device_slots.total}
-          </strong>
-          <div className="slot-meter">
-            <i
-              style={{
-                width: `${device_slots.total ? Math.min(100, (device_slots.bound / device_slots.total) * 100) : 0}%`,
-              }}
-            />
-          </div>
-          <p className="admin-hint">已绑定 / 总槽位</p>
+        <section className="admin-panel" aria-label="登录设备">
+          <h2>登录设备</h2>
+          <strong className="slot-count">{device_slots.bound} 台</strong>
+          <p className="admin-hint">设备数量不限，支持多设备同时在线</p>
         </section>
         {!readOnly ? (
           <section className="admin-panel" aria-label="快捷操作">

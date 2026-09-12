@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import {
   act,
   fireEvent,
@@ -5,7 +6,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CUSTOMER_SESSION_REPLACED_EVENT } from "./api";
 import { RootApp } from "./RootApp";
@@ -27,12 +28,14 @@ const sessionTokenText = "session-token-1";
 
 const customerActivationBody = {
   username: "user-1",
+  display_name: "user-1",
+  session_id: "session-1",
   user_id: "user-1",
   device_id: "device-1",
   device_token: deviceTokenText,
   session_token: sessionTokenText,
   session_epoch: 1,
-  session_lease_expires_at: "2026-08-24T12:01:00Z",
+  session_lease_expires_at: new Date(Date.now() + 3600_000).toISOString(),
   request_id: "req-1",
 };
 
@@ -43,6 +46,9 @@ const customerActivationBody = {
  * contract so the T31 device view can mount. */
 function stubCustomerWorkspaceFetch() {
   return vi.fn((url: string) => {
+    if (url.endsWith("/api/customer/login")) {
+      return jsonResponse(customerActivationBody);
+    }
     if (url.endsWith("/api/customer/activate")) {
       return jsonResponse(customerActivationBody, 201);
     }
@@ -63,7 +69,24 @@ function stubCustomerWorkspaceFetch() {
   });
 }
 
+async function loginThroughAccountForm() {
+  await screen.findByRole("heading", { name: "工作台" });
+  fireEvent.click(screen.getByRole("button", { name: "用户档案" }));
+  await screen.findByRole("heading", { name: "登录账号" });
+  fireEvent.change(screen.getByLabelText("用户名"), {
+    target: { value: "user-1" },
+  });
+  fireEvent.change(screen.getByLabelText("密码"), {
+    target: { value: "test-6" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "登录" }));
+  await screen.findByRole("button", { name: "用户档案，积分 读取失败" });
+}
+
 describe("RootApp", () => {
+  beforeEach(() => {
+    vi.stubGlobal("crypto", webcrypto);
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
@@ -86,7 +109,7 @@ describe("RootApp", () => {
 
       // 客户壳兜底：落到激活屏，不是管理后台。
       expect(
-        await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+        await screen.findByRole("heading", { name: "工作台" }),
       ).toBeInTheDocument();
       // 管理标识文案不得出现（AdminApp 的 h1 与其内部 TabBar 文案）。
       expect(
@@ -113,7 +136,7 @@ describe("RootApp", () => {
     render(<RootApp path="/" />);
 
     expect(
-      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+      await screen.findByRole("heading", { name: "工作台" }),
     ).toBeInTheDocument();
     // 内部兜底删除：根路径既不出现内部访问令牌输入，也不是管理后台。
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
@@ -132,7 +155,7 @@ describe("RootApp", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<RootApp path="/" />);
-    await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" });
+    await screen.findByRole("heading", { name: "工作台" });
 
     const called = fetchMock.mock.calls.map(([url]) => String(url));
     expect(called.some((url) => url.endsWith("/api/auth/me"))).toBe(false);
@@ -162,7 +185,7 @@ describe("RootApp", () => {
     render(<RootApp />);
 
     expect(
-      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+      await screen.findByRole("heading", { name: "工作台" }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
     expect(
@@ -183,9 +206,7 @@ describe("RootApp", () => {
       render(<RootApp />);
 
       const heading =
-        path === "/customer/pairing"
-          ? "添加已有账号设备"
-          : "激活众墅之家 · AI 即创";
+        path === "/customer/pairing" ? "添加已有账号设备" : "工作台";
       expect(
         await screen.findByRole("heading", { name: heading }),
       ).toBeInTheDocument();
@@ -206,14 +227,14 @@ describe("RootApp", () => {
     vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
     window.history.replaceState(null, "", "/customer");
     const first = render(<RootApp />);
-    await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" });
+    await screen.findByRole("heading", { name: "工作台" });
     first.unmount();
 
     window.history.replaceState(null, "", "/");
     render(<RootApp />);
 
     expect(
-      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+      await screen.findByRole("heading", { name: "工作台" }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });
@@ -228,7 +249,7 @@ describe("RootApp", () => {
       render(<RootApp path={path} />);
 
       expect(
-        await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+        await screen.findByRole("heading", { name: "工作台" }),
       ).toBeInTheDocument();
       expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
       expect(
@@ -259,7 +280,7 @@ describe("RootApp", () => {
     render(<RootApp path="/" />);
 
     expect(
-      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+      await screen.findByRole("heading", { name: "工作台" }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });
@@ -287,7 +308,7 @@ describe("RootApp", () => {
       render(<RootApp path={path} />);
 
       expect(
-        await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+        await screen.findByRole("heading", { name: "工作台" }),
       ).toBeInTheDocument();
       expect(
         screen.queryByRole("heading", { name: "运营管理后台" }),
@@ -312,7 +333,7 @@ describe("RootApp", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "返回首次激活" }));
     expect(
-      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+      await screen.findByRole("heading", { name: "工作台" }),
     ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([url]) => url.endsWith("/sessions/login")),
@@ -329,7 +350,7 @@ describe("RootApp", () => {
         session_id: "session-2",
         session_token: sessionTokenText,
         session_epoch: 2,
-        session_lease_expires_at: "2026-08-24T12:02:00Z",
+        session_lease_expires_at: new Date(Date.now() + 3600_000).toISOString(),
         request_id: "req-paired-login",
       };
       const fetchMock = vi.fn((url: string, init?: RequestInit) => {
@@ -409,26 +430,19 @@ describe("RootApp", () => {
     render(<RootApp path="/customer" />);
 
     expect(
-      await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" }),
+      await screen.findByRole("heading", { name: "工作台" }),
     ).toBeInTheDocument();
     // FE-02 No-Go: the internal access-token input must never be the
     // customer's entry — the customer lane has its own activation flow.
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });
 
-  it("activates on /customer and lands in the workspace under the customer identity", async () => {
+  it("logs in with a password and lands in the workspace under the customer identity", async () => {
     vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
 
     render(<RootApp path="/customer" />);
 
-    await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" });
-    fireEvent.change(screen.getByLabelText("激活码"), {
-      target: { value: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD" },
-    });
-    fireEvent.change(screen.getByLabelText("设备名称"), {
-      target: { value: "工作电脑" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "激活并进入工作台" }));
+    await loginThroughAccountForm();
 
     expect(
       await screen.findByRole("heading", {
@@ -447,7 +461,7 @@ describe("RootApp", () => {
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });
 
-  it("logs out from the customer profile and keeps the device login available", async () => {
+  it("logs out to the public workbench and requires account login again", async () => {
     const workspaceFetch = stubCustomerWorkspaceFetch();
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
       if (url.endsWith("/api/customer/profile")) {
@@ -472,21 +486,14 @@ describe("RootApp", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<RootApp path="/customer" />);
-    await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" });
-    fireEvent.change(screen.getByLabelText("激活码"), {
-      target: { value: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD" },
-    });
-    fireEvent.change(screen.getByLabelText("设备名称"), {
-      target: { value: "工作电脑" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "激活并进入工作台" }));
+    await loginThroughAccountForm();
     fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
     await screen.findByRole("heading", { name: "用户档案" });
     fireEvent.click(screen.getByRole("tab", { name: "设备管理" }));
     fireEvent.click(await screen.findByRole("button", { name: "退出登录" }));
 
     expect(
-      await screen.findByRole("heading", { name: "欢迎回来" }),
+      await screen.findByRole("heading", { name: "工作台" }),
     ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.filter(([url]) =>
@@ -512,7 +519,7 @@ describe("RootApp", () => {
       session_id: "session-2",
       session_token: sessionTokenText,
       session_epoch: 2,
-      session_lease_expires_at: "2026-09-07T13:00:00Z",
+      session_lease_expires_at: new Date(Date.now() + 3600_000).toISOString(),
       request_id: "req-relogin",
     };
     const fetchMock = vi.fn((url: string) => {
@@ -543,21 +550,12 @@ describe("RootApp", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<RootApp path="/customer" />);
-    await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" });
-    fireEvent.change(screen.getByLabelText("激活码"), {
-      target: { value: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD" },
-    });
-    fireEvent.change(screen.getByLabelText("设备名称"), {
-      target: { value: "工作电脑" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "激活并进入工作台" }));
+    await loginThroughAccountForm();
     fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
     await screen.findByRole("heading", { name: "用户档案" });
     fireEvent.click(screen.getByRole("tab", { name: "设备管理" }));
     fireEvent.click(await screen.findByRole("button", { name: "退出登录" }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "使用本机设备登录" }),
-    );
+    await loginThroughAccountForm();
     await waitFor(() => {
       expect(profileCalls).toBe(2);
       expect(
@@ -591,14 +589,7 @@ describe("RootApp", () => {
     vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
 
     render(<RootApp path="/customer" />);
-    await screen.findByRole("heading", { name: "激活众墅之家 · AI 即创" });
-    fireEvent.change(screen.getByLabelText("激活码"), {
-      target: { value: "XS04-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD" },
-    });
-    fireEvent.change(screen.getByLabelText("设备名称"), {
-      target: { value: "工作电脑" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "激活并进入工作台" }));
+    await loginThroughAccountForm();
     await screen.findByRole("heading", {
       name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
     });
@@ -610,7 +601,7 @@ describe("RootApp", () => {
     ).toBeInTheDocument();
     // §4.2 red line: a displaced session must be reported as exactly that —
     // never as a balance, network, or generic service failure.
-    expect(screen.getByText(/已在另一台设备上登录/)).toBeInTheDocument();
+    expect(screen.getByText(/本次登录凭据已失效/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "重新登录" }),
     ).toBeInTheDocument();

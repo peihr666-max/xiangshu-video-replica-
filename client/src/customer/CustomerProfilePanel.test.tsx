@@ -90,7 +90,7 @@ describe("CustomerProfilePanel", () => {
 
     expect(screen.getByRole("heading", { name: "李丽" })).toBeInTheDocument();
     expect(screen.getByText("XS04-ABCD••••WXYZ")).toBeInTheDocument();
-    expect(screen.getByText("1 / 2")).toBeInTheDocument();
+    expect(screen.getByText("1 台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "设备管理" }));
     expect(defaultProps.onRefreshDevices).toHaveBeenCalled();

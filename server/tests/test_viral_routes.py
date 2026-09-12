@@ -90,7 +90,7 @@ def _video(
         comments=4 if platform == "douyin" else None,
         shares=5 if platform == "douyin" else None,
         collects=6 if platform == "douyin" else None,
-        published_at=1788602461,
+        published_at=int(time.time()) - 86400,
         published_display="1天前" if platform == "wechat_channels" else None,
         like_display="1.2万" if platform == "wechat_channels" else None,
         tags=["标签一", "标签二"],

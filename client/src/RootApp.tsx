@@ -1,9 +1,10 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 // 客户 lane 基础与账户屏样式（F-01/P0-1 修复）：客户制品不含 styles.css，
 // 全局 reset、:root 令牌与激活/登录/配对等屏样式必须随本入口加载。
 import "./customer/customer-access.css";
-import { ActivationPage } from "./customer/ActivationPage";
+import { AccountAccessPage } from "./customer/AccountAccessPage";
 import { CustomerPairingFlow } from "./customer/CustomerPairingFlow";
+import { CustomerWelcomePage } from "./customer/CustomerWelcomePage";
 import { CustomerWorkspace } from "./customer/CustomerWorkspace";
 import { LoginPage } from "./customer/LoginPage";
 import { SessionConflictDialog } from "./customer/SessionConflictDialog";
@@ -89,6 +90,39 @@ function CustomerSessionShell({
   onPairDevice(): void;
 }) {
   const session = useCustomerSession(store);
+  const [accessOpen, setAccessOpen] = useState(
+    () =>
+      window.location.pathname === "/login" ||
+      window.location.pathname === "/register" ||
+      (window.location.hash.startsWith("#studio/") &&
+        window.location.hash !== "#studio/workbench"),
+  );
+  const [accessMode, setAccessMode] = useState<"login" | "register">(
+    window.location.pathname === "/register" ? "register" : "login",
+  );
+  useEffect(() => {
+    function syncAccessRoute() {
+      const path = window.location.pathname;
+      setAccessMode(path === "/register" ? "register" : "login");
+      setAccessOpen(
+        path === "/login" ||
+          path === "/register" ||
+          (window.location.hash.startsWith("#studio/") &&
+            window.location.hash !== "#studio/workbench"),
+      );
+    }
+    window.addEventListener("popstate", syncAccessRoute);
+    window.addEventListener("hashchange", syncAccessRoute);
+    return () => {
+      window.removeEventListener("popstate", syncAccessRoute);
+      window.removeEventListener("hashchange", syncAccessRoute);
+    };
+  }, []);
+  function openAccess(mode: "login" | "register") {
+    window.history.pushState(null, "", `/${mode}`);
+    setAccessMode(mode);
+    setAccessOpen(true);
+  }
 
   switch (session.screen) {
     case "checking":
@@ -101,22 +135,22 @@ function CustomerSessionShell({
         </main>
       );
     case "activation":
-      return (
-        <ActivationPage
-          onActivate={(input) => void session.activate(input)}
-          isBusy={session.isBusy}
-          error={session.error}
-          onPairDevice={onPairDevice}
-        />
-      );
     case "login":
-      return (
-        <LoginPage
-          onRetryLogin={() => void session.retryLogin()}
-          isBusy={session.isBusy}
-          error={session.error}
-          conflict={session.conflict}
+      return accessOpen ? (
+        <AccountAccessPage
+          initialMode={accessMode}
+          onModeChange={openAccess}
+          onSubmit={async (input) => {
+            await session.loginWithPassword(input);
+            setAccessOpen(false);
+          }}
+          onHome={() => {
+            setAccessOpen(false);
+            window.history.replaceState(null, "", "/#studio/workbench");
+          }}
         />
+      ) : (
+        <CustomerWelcomePage onLogin={() => openAccess("login")} />
       );
     case "binding-conflict":
       // The conflict screen only exists with conflict metadata; the reducer
@@ -174,7 +208,7 @@ function CustomerSessionShell({
       return (
         <CustomerTerminalScreen
           title="本设备已下线"
-          description="您的账号已在另一台设备上登录，本设备会话已被切换下线。"
+          description="本次登录凭据已失效，请重新登录。其他设备的登录不受影响。"
           actionLabel="重新登录"
           onAction={session.restartAfterExpiry}
         />
@@ -183,8 +217,8 @@ function CustomerSessionShell({
       return (
         <CustomerTerminalScreen
           title="设备已被解绑"
-          description="本设备已被解绑，请重新激活后使用。"
-          actionLabel="重新激活"
+          description="本设备已被解绑，请重新登录后使用。"
+          actionLabel="重新登录"
           onAction={session.restartAfterRevocation}
         />
       );

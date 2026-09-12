@@ -70,7 +70,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
 
 from app.activation_code_service import ActivationKeyError
+from app.customer_auth import SessionFencingError, verify_session_context
 from app.customer_device_service import (
+    AuthenticatedDevice,
     DeviceCredentialLookup,
     _token_digests,
     lookup_device_credential,
@@ -358,7 +360,7 @@ def _replay_validated_login_response(
             raise _http(401, "DEVICE_REVOKED", "This device credential has been revoked.")
         raise _http(401, "DEVICE_CREDENTIAL_INVALID", "The device credential is invalid.")
     device = lookup.device
-    _require_active_code(conn, device.activation_code_id)
+    _require_device_authority(conn, device, replayed.session_token)
     try:
         session_digests = _token_digests(replayed.session_token)
     except ActivationKeyError:
@@ -385,7 +387,7 @@ def _replay_validated_login_response(
         row is None
         or str(row[0]) != replayed.user_id
         or str(row[0]) != device.user_id
-        or str(row[1]) != device.activation_code_id
+        or (str(row[1]) if row[1] is not None else None) != device.activation_code_id
         or str(row[2]) != replayed.device_id
         or str(row[2]) != device.id
         or str(row[3]) != replayed.session_id
@@ -435,6 +437,26 @@ def _recovery_expires_at(conn: psycopg.Connection) -> str:
 # ---------------------------------------------------------------------------
 # POST /login + POST /switch — the §12.3 state-machine routes (shared core)
 # ---------------------------------------------------------------------------
+
+
+def _require_device_authority(
+    conn: psycopg.Connection,
+    device: AuthenticatedDevice,
+    session_token: str | None,
+) -> None:
+    if device.activation_code_id is not None:
+        _require_active_code(conn, device.activation_code_id)
+        return
+    # Password accounts may restore a live session, but a cached device credential
+    # alone cannot log back in after logout/expiry and bypass the password gate.
+    if not session_token:
+        raise _http(401, "PASSWORD_LOGIN_REQUIRED", "请使用账号密码登录。")
+    try:
+        context = verify_session_context(conn, presentation_session_token=session_token)
+    except SessionFencingError as exc:
+        raise _http(401, "PASSWORD_LOGIN_REQUIRED", "请使用账号密码重新登录。") from exc
+    if context.user_id != device.user_id or context.device_id != device.id:
+        raise _http(401, "PASSWORD_LOGIN_REQUIRED", "请使用账号密码重新登录。")
 
 
 def _require_active_code(conn: psycopg.Connection, activation_code_id: str) -> None:
@@ -621,7 +643,7 @@ def _establish_session_route(
         # never establishes (or re-establishes) a session. Inside the
         # business transaction, so the refused attempt rolls the envelope
         # back with it and the key stays reusable after a resume.
-        _require_active_code(conn, device.activation_code_id)
+        _require_device_authority(conn, device, body.session_token)
 
         envelope_id = insert_envelope(
             conn,
@@ -796,12 +818,15 @@ def heartbeat(request: Request) -> HeartbeatResponse:
             # PostgreSQL clock; the token digests need the device-domain key —
             # misconfiguration fails closed with 503 (never a 500, never a
             # client-credential error).
+            verify_session_context(conn, presentation_session_token=session_token)
             result = heartbeat_session(
                 conn,
                 presentation_session_token=session_token,
                 request_id=request_id,
                 now=_transaction_now(conn),
             )
+        except SessionFencingError as exc:
+            raise _http(401, exc.code, exc.message) from exc
         except ActivationKeyError:
             logger.warning("device keys unavailable: configuration is incomplete")
             raise _http(

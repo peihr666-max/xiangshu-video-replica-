@@ -5,7 +5,7 @@
       "001_core"
     ],
     "heads": [
-      "20260912T1400_customer_registration_credentials"
+      "20260912T1910_xiaohongshu_link_import"
     ],
     "parents": {
       "001_core": null,
@@ -92,9 +92,11 @@
       "086_remove_device_slot_constraints": "082_publish_accounts",
       "089_customer_api_keys": "083_recharge_orders_multi_provider",
       "20260912T1353_customer_discounts": "089_customer_api_keys",
-      "20260912T1400_customer_registration_credentials": "20260912T1353_customer_discounts"
+      "20260912T1400_customer_registration_credentials": "20260912T1353_customer_discounts",
+      "20260912T1900_password_customer_sessions": "20260912T1400_customer_registration_credentials",
+      "20260912T1910_xiaohongshu_link_import": "20260912T1900_password_customer_sessions"
     },
-    "revision_count": 85
+    "revision_count": 87
   },
   "manifest_schema_version": 1,
   "naming_policy": {
@@ -448,6 +450,14 @@
     "20260912T1400_customer_registration_credentials": {
       "file": "versions/20260912T1400_customer_registration_credentials.py",
       "sha256": "a6ea47206cac5268b4ab835449986afbee0210b9c9327479ed613686fcba4b38"
+    },
+    "20260912T1900_password_customer_sessions": {
+      "file": "versions/20260912T1900_password_customer_sessions.py",
+      "sha256": "c9490aa905b0e9a76c52152f2c6181a26c396bb66b7775a9eb4bf65d120faefc"
+    },
+    "20260912T1910_xiaohongshu_link_import": {
+      "file": "versions/20260912T1910_xiaohongshu_link_import.py",
+      "sha256": "6bacd017e9bd4f8a7e86ece5fc97565125bd68e1d43a6f1485cc4b119e0fff12"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

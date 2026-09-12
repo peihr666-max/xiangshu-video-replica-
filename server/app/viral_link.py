@@ -29,6 +29,7 @@ _DOUYIN_HOSTS = {
     "iesdouyin.com",
     "www.iesdouyin.com",
 }
+_XIAOHONGSHU_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com", "xhslink.com", "www.xhslink.com"}
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class UrllibDouyidouHttpTransport(DouyidouHttpTransport):
 
 @dataclass(frozen=True)
 class ResolvedViralLink:
-    platform: Literal["douyin"]
+    platform: Literal["douyin", "xiaohongshu"]
     video_id: str
     title: str
     author: str
@@ -112,11 +113,24 @@ def normalize_supported_link(raw: str) -> str:
         raise ViralLinkError(
             422,
             "VIRAL_LINK_INVALID",
-            "请输入完整的抖音视频链接，或上传 MP4/MOV 文件。",
+            "请输入完整的抖音或小红书视频链接，或上传 MP4/MOV 文件。",
             retryable=False,
         )
     url = match.group(0).rstrip(_TRAILING_PUNCTUATION)
-    host = (urlsplit(url).hostname or "").lower()
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        invalid_authority = bool(parsed.username or parsed.password) or parsed.port not in (
+            None,
+            443 if parsed.scheme == "https" else 80,
+        )
+    except ValueError:
+        invalid_authority = True
+        host = ""
+    if invalid_authority:
+        raise ViralLinkError(
+            422, "VIRAL_LINK_INVALID", "视频链接格式无效，请重新复制分享链接。", retryable=False
+        )
     if host in _WECHAT_HOSTS or host.endswith(".weixin.qq.com"):
         raise ViralLinkError(
             422,
@@ -124,14 +138,19 @@ def normalize_supported_link(raw: str) -> str:
             "视频号链接暂不支持解析，请上传 MP4 或 MOV 文件。",
             retryable=False,
         )
-    if host not in _DOUYIN_HOSTS and not host.endswith(".douyin.com"):
+    if host not in _DOUYIN_HOSTS | _XIAOHONGSHU_HOSTS and not host.endswith(".douyin.com"):
         raise ViralLinkError(
             422,
             "VIRAL_LINK_PLATFORM_UNSUPPORTED",
-            "当前仅支持抖音视频链接，请上传 MP4 或 MOV 文件。",
+            "当前支持抖音和小红书视频链接，其他平台请上传 MP4 或 MOV 文件。",
             retryable=False,
         )
     return url
+
+
+def supported_link_platform(normalized_url: str) -> Literal["douyin", "xiaohongshu"]:
+    """Classify only URLs already checked by normalize_supported_link."""
+    return "xiaohongshu" if urlsplit(normalized_url).hostname in _XIAOHONGSHU_HOSTS else "douyin"
 
 
 def _first_url(value: object) -> str | None:
@@ -210,6 +229,7 @@ class DouyidouLinkClient:
 
     def resolve(self, raw_url: str, *, purpose: str) -> ResolvedViralLink:
         source_url = normalize_supported_link(raw_url)
+        platform = supported_link_platform(source_url)
         response = self._request(source_url)
         if response.get("code") != 0:
             message = str(response.get("message") or response.get("msg") or "")
@@ -239,19 +259,24 @@ class DouyidouLinkClient:
         source_id = next(
             (
                 str(payload[key]).strip()
-                for key in ("aweme_id", "item_id", "id")
+                for key in (
+                    ("note_id", "item_id", "id")
+                    if platform == "xiaohongshu"
+                    else ("aweme_id", "item_id", "id")
+                )
                 if payload.get(key)
             ),
             "",
         )
-        if not re.fullmatch(r"\d{17,20}", source_id):
+        id_pattern = r"[0-9a-fA-F]{24}" if platform == "xiaohongshu" else r"\d{17,20}"
+        if not re.fullmatch(id_pattern, source_id):
             raise ViralLinkError(
                 502,
                 "VIRAL_LINK_NATIVE_ID_INVALID",
                 "链接未返回有效视频标识，请上传 MP4 或 MOV 文件。",
                 retryable=False,
             )
-        video_id = source_id
+        video_id = source_id.lower() if platform == "xiaohongshu" else source_id
         author = payload.get("author")
         author_name = ""
         if isinstance(author, dict):
@@ -262,7 +287,7 @@ class DouyidouLinkClient:
         title = str(payload.get("title") or "").strip() or text[:40] or "链接视频"
         cover = payload.get("cover")
         return ResolvedViralLink(
-            platform="douyin",
+            platform=platform,
             video_id=video_id,
             title=title[:200],
             author=author_name[:120],

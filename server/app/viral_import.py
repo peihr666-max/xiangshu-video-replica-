@@ -34,7 +34,7 @@ VIRAL_IMPORT_LEASE_MINUTES = 20
 class ViralImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    platform: Literal["douyin", "wechat_channels"]
+    platform: Literal["douyin", "wechat_channels", "xiaohongshu"]
     video_id: str = Field(alias="videoId", min_length=1, max_length=256)
     purpose: Literal["copy", "replica"]
     project_id: str | None = Field(default=None, alias="projectId", max_length=128)
