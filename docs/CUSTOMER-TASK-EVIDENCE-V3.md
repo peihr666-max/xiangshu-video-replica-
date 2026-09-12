@@ -1199,3 +1199,8 @@ AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门
 ## FIX-TESTREADY-20260912 / 自动化测试前置
 
 AUTOMATED_VERIFIED（本地）；独立只读 review_w13 PASS；完整本地质量门在 a44672a（已整合主干 cd8bccf）通过：后端 2957 passed、1 个原有 TLS 跳过；前端 1350 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 全部通过。PR、当前提交远程 CI 和合并待完成；产品文件未改动，F06另行发现的产品竞态未在此修复。人工联合调试全部留第二部分。[证据](evidence/FIX-TESTREADY-20260912.md)。
+
+
+## JT2-20260913 第二部分隔离联调记录
+
+JT2-20260913：用户新授权下已完成28项不同范围隔离检查（管理9、导出3、Worker3、网络9、存储协议4），覆盖原40行中的11行且含部分验证/重复引用；18行仍有代码或最终制品前置，11类人工输入单列。未声明原40行或任何生产整体验收完成。证据见[JT2-20260913](evidence/JT2-20260913.md)。
