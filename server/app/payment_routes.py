@@ -6,7 +6,7 @@ from typing import Annotated
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 # Import to trigger provider registration
 import app.zpay_provider  # noqa: F401
@@ -24,7 +24,12 @@ from app.payment_provider import (
 )
 from app.permissions import write_audit
 from app.recharge_routes import RechargeOrderStatusResponse
+from app.wechat_native_provider import (
+    WECHAT_CALLBACK_CERT_UNAVAILABLE,
+    WeChatNativeProvider,
+)
 from app.zpay_payments import (
+    WECHAT_NATIVE_SETTLEMENT_SPEC,
     PaymentConfirmationError,
     confirm_recharge_payment,
     read_recharge_order,
@@ -41,6 +46,16 @@ def get_zpay_provider() -> PaymentProvider:
 
 
 ZPayProviderDep = Annotated[PaymentProvider, Depends(get_zpay_provider)]
+
+
+def get_wechat_provider() -> WeChatNativeProvider:
+    """Dependency: the WeChat Native provider, typed for raw-body callback verify."""
+    provider = get_payment_provider("wechat_native")
+    assert isinstance(provider, WeChatNativeProvider)
+    return provider
+
+
+WeChatProviderDep = Annotated[WeChatNativeProvider, Depends(get_wechat_provider)]
 
 
 @router.get("/payments/zpay/notify", response_class=PlainTextResponse)
@@ -90,6 +105,80 @@ def zpay_return() -> HTMLResponse:
         "<title>支付确认中</title></head><body><main><h1>正在确认支付</h1>"
         "<p>请返回内部系统查看充值状态。</p></main></body></html>"
     )
+
+
+@router.post("/payments/wechat_native/notify")
+async def wechat_native_notify(
+    request: Request,
+    conn: Database,
+    provider: WeChatProviderDep,
+) -> JSONResponse:
+    """WeChat Pay V3 Native transaction callback.
+
+    Verifies the exact raw body against the Wechatpay-* headers (platform-certificate
+    signature + AES-256-GCM resource decryption) then idempotently settles the recharge
+    order through the shared confirm routine with the wechat_native spec (which writes
+    the transaction_id column, not provider_trade_no). Answers the WeChat JSON
+    acknowledgement shape rather than zpay's plain text: ``{"code":"SUCCESS"}`` stops
+    retries, ``{"code":"FAIL"}`` (with a 5xx status for transient faults) triggers them.
+    """
+    raw_body = await request.body()
+    try:
+        merchant = provider.load_merchant_config(conn)
+    except ValueError as exc:
+        logger.warning("WeChat callback rejected: merchant config invalid: %s", exc)
+        return _wechat_fail("WECHAT_CONFIGURATION_INVALID", status_code=503)
+
+    result = provider.verify_notification_raw(
+        raw_body=raw_body,
+        timestamp=request.headers.get("Wechatpay-Timestamp"),
+        nonce=request.headers.get("Wechatpay-Nonce"),
+        signature=request.headers.get("Wechatpay-Signature"),
+        serial=request.headers.get("Wechatpay-Serial"),
+        merchant=merchant,
+    )
+    if not result.authenticated:
+        # A missing/unfetchable platform certificate is transient -> 503 so WeChat
+        # retries; a bad signature/body is final -> 400.
+        status_code = 503 if result.error_code == WECHAT_CALLBACK_CERT_UNAVAILABLE else 400
+        logger.warning("WeChat callback rejected: %s", result.error_code)
+        return _wechat_fail(
+            result.error_code or "WECHAT_CALLBACK_REJECTED", status_code=status_code
+        )
+    if result.error_code is not None:
+        # Authentic but not settleable (e.g. SUCCESS missing its transaction_id).
+        logger.warning("WeChat callback payload invalid: %s", result.error_code)
+        return _wechat_fail(result.error_code, status_code=400)
+    if result.trade_state != "SUCCESS":
+        # Authentic non-final state (NOTPAY/USERPAYING/...): ACK so WeChat stops this
+        # push and re-notifies when the trade reaches a terminal state.
+        return _wechat_success()
+
+    # An authentic SUCCESS with no error_code carries every settlement field (the
+    # provider's payload guard rejects an incomplete SUCCESS as PAYLOAD_INVALID).
+    assert result.merchant_order_no is not None
+    assert result.provider_trade_no is not None
+    assert result.amount_fen is not None
+    assert result.channel is not None
+    assert result.source_digest is not None
+    try:
+        confirm_recharge_payment(
+            conn,
+            merchant_order_no=result.merchant_order_no,
+            provider_trade_no=result.provider_trade_no,
+            amount_fen=result.amount_fen,
+            channel=result.channel,
+            source_digest=result.source_digest,
+            allowed_channels=merchant.allowed_channels,
+            provider_spec=WECHAT_NATIVE_SETTLEMENT_SPEC,
+        )
+    except PaymentConfirmationError as exc:
+        logger.warning("WeChat callback settlement rejected: %s", exc.code)
+        return _wechat_fail(exc.code, status_code=exc.status_code)
+    except (sqlite3.OperationalError, psycopg.errors.OperationalError) as exc:
+        logger.warning("WeChat callback deferred because the payment database is busy: %s", exc)
+        return _wechat_fail("PAYMENT_DATABASE_BUSY", status_code=503)
+    return _wechat_success()
 
 
 @router.post(
@@ -234,3 +323,13 @@ def _unique_query_params(request: Request) -> dict[str, str]:
             )
         params[name] = value
     return params
+
+
+def _wechat_success() -> JSONResponse:
+    """WeChat JSON acknowledgement that stops the notification retries."""
+    return JSONResponse(content={"code": "SUCCESS", "message": "OK"})
+
+
+def _wechat_fail(code: str, *, status_code: int) -> JSONResponse:
+    """WeChat JSON failure; a 5xx status makes WeChat retry the notification."""
+    return JSONResponse(content={"code": "FAIL", "message": code}, status_code=status_code)
