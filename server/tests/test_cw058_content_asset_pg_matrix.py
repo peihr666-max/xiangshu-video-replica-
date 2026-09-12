@@ -795,6 +795,487 @@ def test_media_upload_persists_asset_analysis_and_project_status_on_pg(
     assert tasks is not None and tasks[0] == 1
 
 
+def test_w18_pg_cleanup_expires_pending_and_preserves_completed(
+    bus: BusinessConnection, lane_env: str, pg: psycopg.Connection
+) -> None:
+    from app.upload_cleanup import cleanup_upload_page
+
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    ids = []
+    for name, status in (("pending", "PENDING"), ("ready", "COMPLETE")):
+        asset_id = f"cleanup-{name}"
+        ids.append(asset_id)
+        source = storage.put_object(f"uploads/{asset_id}.mp4", b"staging", content_type="video/mp4")
+        final = storage.put_object(
+            f"verified-uploads/{asset_id}/digest/video.mp4", b"verified", content_type="video/mp4"
+        )
+        storage.put_object(
+            f"verified-uploads/{asset_id}/loser/video.mp4", b"orphan", content_type="video/mp4"
+        )
+        bus.execute(
+            "INSERT INTO assets (id, kind, storage_uri, sha256, size_bytes, content_type, "
+            "created_by_user_id, metadata_json) "
+            "VALUES (%s, 'video', %s, %s, %s, 'video/mp4', 'employee_1', %s)",
+            (
+                asset_id,
+                source.uri if status == "PENDING" else final.uri,
+                "" if status == "PENDING" else final.sha256,
+                0 if status == "PENDING" else final.size,
+                json.dumps(
+                    {
+                        "upload_status": status,
+                        "upload_source_uri": source.uri,
+                        "intent_expires_at": "2020-01-01T00:00:00+00:00",
+                    }
+                ),
+            ),
+        )
+    preview = cleanup_upload_page(lane_env, storage=storage)
+    assert preview["deleted"] == 0
+    assert storage.head_object("uploads/cleanup-pending.mp4") is not None
+    result = cleanup_upload_page(lane_env, storage=storage, apply=True)
+    assert result["failed"] == 0
+    assert result["deleted"] == 5
+    assert storage.head_object("verified-uploads/cleanup-ready/digest/video.mp4") is not None
+    assert storage.head_object("uploads/cleanup-ready.mp4") is None
+    row = pg.execute("SELECT metadata_json FROM assets WHERE id = 'cleanup-pending'").fetchone()
+    assert row is not None and json.loads(row[0])["upload_status"] == "EXPIRED"
+    assert cleanup_upload_page(lane_env, storage=storage, apply=True)["failed"] == 0
+
+
+def test_w18_pg_material_and_identity_uploads_keep_verified_bytes(bus: BusinessConnection) -> None:
+    import struct
+
+    from app.character_identity import (
+        FakeSourceImageInspector,
+        complete_authorization_upload,
+        complete_source_upload,
+        create_identity_upload_intent,
+        create_person_identity,
+    )
+    from app.materials import (
+        MaterialUploadIntentRequest,
+        create_material_upload_intent,
+        persist_material_upload,
+        prepare_material_upload,
+        probe_material_upload,
+    )
+    from app.storage import storage_object_ref_from_uri
+
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    admin = actor("admin_1", "admin")
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 1024, 1024)
+    material = create_material_upload_intent(
+        bus,
+        actor=admin,
+        storage=storage,
+        request=MaterialUploadIntentRequest(
+            filename="picture.png", content_type="image/png", size_bytes=len(png)
+        ),
+    )
+    storage.put_object(material.storage_key, png, content_type="image/png")
+    prepared = prepare_material_upload(bus, actor=admin, asset_id=material.asset_id)
+    probed = probe_material_upload(prepared, storage=storage)
+    persist_material_upload(bus, actor=admin, probed=probed)
+    with pytest.raises(HTTPException) as denied:
+        prepare_material_upload(bus, actor=admin, asset_id=material.asset_id, pending_only=True)
+    assert denied.value.status_code == 409
+    uploads = [(material.asset_id, material.storage_key, png)]
+    identity = create_person_identity(
+        bus,
+        actor=admin,
+        display_name="Upload test",
+        owner_user_id="admin_1",
+        authorization_scope=["video"],
+        authorization_expires_at=None,
+    )
+    for purpose in ("authorization", "source"):
+        content = b"%PDF-1.7 authorization" if purpose == "authorization" else png
+        content_type = "application/pdf" if purpose == "authorization" else "image/png"
+        intent = create_identity_upload_intent(
+            bus,
+            actor=admin,
+            storage=storage,
+            identity_id=identity.id,
+            purpose=cast(Any, purpose),
+            filename="auth.pdf" if purpose == "authorization" else "source.png",
+            content_type=content_type,
+            size_bytes=len(content),
+        )
+        storage.put_object(intent.storage_key, content, content_type=content_type)
+        if purpose == "authorization":
+            complete_authorization_upload(
+                bus, actor=admin, storage=storage, identity_id=identity.id, asset_id=intent.asset_id
+            )
+        else:
+            complete_source_upload(
+                bus,
+                actor=admin,
+                storage=storage,
+                identity_id=identity.id,
+                asset_id=intent.asset_id,
+                inspector=FakeSourceImageInspector(),
+            )
+        uploads.append((intent.asset_id, intent.storage_key, content))
+    for asset_id, source_key, content in uploads:
+        storage.put_object(
+            source_key, b"malicious replacement", content_type="application/octet-stream"
+        )
+        row = bus.execute(
+            "SELECT storage_uri, sha256 FROM assets WHERE id=%s", (asset_id,)
+        ).fetchone()
+        assert row is not None
+        assert f"/verified-uploads/{asset_id}/" in row[0]
+        assert storage.get_object(storage_object_ref_from_uri(row[0]).key) == content
+        assert row[1] == hashlib.sha256(content).hexdigest()
+
+
+def test_w18_pg_cleanup_fences_inflight_completion_and_retries(
+    lane_env: str, pg: psycopg.Connection
+) -> None:
+    from app.media import (
+        persist_upload_completion,
+        prepare_upload_completion,
+        probe_upload_completion,
+    )
+    from app.storage import StorageBackendUnavailable
+    from app.upload_cleanup import cleanup_upload_page
+
+    class FailingDeleteStorage(FakeStorageAdapter):
+        fail = True
+
+        def delete_object(self, key: str, *, actor_id: str | None = None) -> None:
+            if self.fail:
+                raise StorageBackendUnavailable("temporary fixture failure")
+            super().delete_object(key, actor_id=actor_id)
+
+    seed_project(pg, "w18-expired", "employee_1")
+    storage = FailingDeleteStorage(provider="fake", bucket="cw058-tests")
+    employee = actor("employee_1", "employee")
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        intent = create_upload_intent(
+            conn,
+            actor=employee,
+            storage=storage,
+            project_id="w18-expired",
+            filename="video.mp4",
+            content_type="video/mp4",
+            size_bytes=5,
+        )
+        prepared = prepare_upload_completion(conn, actor=employee, asset_id=intent.asset_id)
+    storage.put_object(intent.storage_key, b"video", content_type="video/mp4")
+
+    class Probe:
+        def probe(self, content: bytes, *, filename: str) -> VideoMetadata:
+            return VideoMetadata(duration_seconds=8)
+
+    probed = probe_upload_completion(prepared, storage=storage, probe=Probe())
+    assert cleanup_upload_page(lane_env, storage=storage, apply=True)["eligible"] == 0
+    pg.execute(
+        "UPDATE assets SET metadata_json = jsonb_set(metadata_json::jsonb, '{intent_expires_at}', "
+        "'\"2020-01-01T00:00:00+00:00\"')::text WHERE id=%s",
+        (intent.asset_id,),
+    )
+    assert cleanup_upload_page(lane_env, storage=storage, apply=True)["failed"] == 1
+    with pytest.raises(HTTPException) as denied, pg_transaction() as raw:
+        persist_upload_completion(BusinessConnection.postgres(raw), actor=employee, probed=probed)
+    assert denied.value.detail["code"] == "UPLOAD_EXPIRED"
+    storage.fail = False
+    result = cleanup_upload_page(lane_env, storage=storage, apply=True)
+    assert result["failed"] == 0 and result["deleted"] == 2
+
+
+@pytest.mark.parametrize("delete_before_probe", [False, True])
+def test_w18_pg_deleted_project_upload_receipt_is_still_reclaimed(
+    lane_env: str, pg: psycopg.Connection, delete_before_probe: bool
+) -> None:
+    from dataclasses import replace
+
+    from app.media import (
+        persist_upload_completion,
+        prepare_upload_completion,
+        probe_upload_completion,
+    )
+    from app.upload_cleanup import cleanup_upload_page
+
+    class OldGrantStorage(FakeStorageAdapter):
+        def create_upload_intent(self, key: str, **kwargs: Any) -> Any:
+            return replace(
+                super().create_upload_intent(key, **kwargs),
+                expires_at=datetime(2020, 1, 1, tzinfo=UTC),
+            )
+
+    class Probe:
+        def probe(self, content: bytes, *, filename: str) -> VideoMetadata:
+            return VideoMetadata(duration_seconds=8)
+
+    seed_project(pg, "w18-deleted", "employee_1")
+    storage = OldGrantStorage(provider="fake", bucket="cw058-tests")
+    employee = actor("employee_1", "employee")
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        intent = create_upload_intent(
+            conn,
+            actor=employee,
+            storage=storage,
+            project_id="w18-deleted",
+            filename="video.mp4",
+            content_type="video/mp4",
+            size_bytes=5,
+        )
+        prepared = prepare_upload_completion(conn, actor=employee, asset_id=intent.asset_id)
+    storage.put_object(intent.storage_key, b"video", content_type="video/mp4")
+    if delete_before_probe:
+        pg.execute("DELETE FROM projects WHERE id='w18-deleted'")
+    probed = probe_upload_completion(prepared, storage=storage, probe=Probe())
+    if not delete_before_probe:
+        with pg_transaction() as raw:
+            persist_upload_completion(
+                BusinessConnection.postgres(raw), actor=employee, probed=probed
+            )
+        pg.execute("DELETE FROM projects WHERE id='w18-deleted'")
+    result = cleanup_upload_page(lane_env, storage=storage, apply=True)
+    assert result["failed"] == 0 and result["deleted"] == 2
+
+
+def test_w18_pg_deduplicated_completion_keeps_existing_verified_uri(
+    lane_env: str, pg: psycopg.Connection
+) -> None:
+    from app.media import (
+        persist_upload_completion,
+        prepare_upload_completion,
+        probe_upload_completion,
+    )
+    from app.upload_cleanup import cleanup_upload_page
+
+    seed_project(pg, "w18-original", "employee_1")
+    seed_project(pg, "w18-duplicate", "employee_1")
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    employee = actor("employee_1", "employee")
+    with pg_transaction() as raw:
+        original = _upload_and_complete(
+            BusinessConnection.postgres(raw),
+            storage,
+            actor_id="employee_1",
+            project_id="w18-original",
+        )
+    row = pg.execute(
+        "SELECT sha256, size_bytes, storage_uri FROM assets WHERE id=%s", (original.asset_id,)
+    ).fetchone()
+    assert row is not None
+    pg.execute(
+        "UPDATE assets SET metadata_json=jsonb_set(metadata_json::jsonb, '{intent_expires_at}', "
+        "'\"2020-01-01T00:00:00+00:00\"')::text WHERE id=%s",
+        (original.asset_id,),
+    )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        duplicate = create_upload_intent(
+            conn,
+            actor=employee,
+            storage=storage,
+            project_id="w18-duplicate",
+            filename="video.mp4",
+            content_type="video/mp4",
+            sha256=row[0],
+            size_bytes=row[1],
+        )
+        prepared = prepare_upload_completion(conn, actor=employee, asset_id=duplicate.asset_id)
+
+    class Probe:
+        def probe(self, content: bytes, *, filename: str) -> VideoMetadata:
+            return VideoMetadata(duration_seconds=8)
+
+    probed = probe_upload_completion(prepared, storage=storage, probe=Probe())
+    assert probed.storage_uri == row[2]
+    cleanup_upload_page(lane_env, storage=storage, apply=True)
+    with pg_transaction() as raw:
+        persist_upload_completion(BusinessConnection.postgres(raw), actor=employee, probed=probed)
+    assert storage.head_object(duplicate.storage_key) is not None
+    metadata = pg.execute(
+        "SELECT metadata_json FROM assets WHERE id=%s", (duplicate.asset_id,)
+    ).fetchone()
+    assert metadata is not None and "upload_source_uri" not in json.loads(metadata[0])
+
+
+def test_w18_pg_cleanup_cursor_survives_an_earlier_receipt_expiring(
+    bus: BusinessConnection, lane_env: str, pg: psycopg.Connection
+) -> None:
+    from app.upload_cleanup import cleanup_upload_page
+
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    for asset_id, expires in (
+        ("cursor-a", "2099-01-01T00:00:00+00:00"),
+        ("cursor-b", "2020-01-01T00:00:00+00:00"),
+    ):
+        source = storage.put_object(f"uploads/{asset_id}", b"test", content_type="text/plain")
+        bus.execute(
+            "INSERT INTO assets (id, kind, storage_uri, sha256, size_bytes, metadata_json) "
+            "VALUES (%s, 'video', %s, '', 0, %s)",
+            (
+                asset_id,
+                source.uri,
+                json.dumps(
+                    {
+                        "upload_status": "PENDING",
+                        "upload_source_uri": source.uri,
+                        "intent_expires_at": expires,
+                    }
+                ),
+            ),
+        )
+    for index in range(105):
+        storage.put_object(
+            f"verified-uploads/cursor-b/{index:03d}/video", b"test", content_type="text/plain"
+        )
+    first = cleanup_upload_page(lane_env, storage=storage, apply=True)
+    assert first["next_asset_id"] == "cursor-a"
+    assert first["next_object_cursor"].startswith("verified-uploads/cursor-b/")
+    assert first["next_object_asset_id"] == "cursor-b"
+    # A new receipt sorted between A and B must not inherit B's object cursor.
+    source = storage.put_object("uploads/cursor-ab", b"new", content_type="text/plain")
+    bus.execute(
+        "INSERT INTO assets (id, kind, storage_uri, sha256, size_bytes, metadata_json) "
+        "VALUES ('cursor-ab', 'video', %s, '', 0, %s)",
+        (
+            source.uri,
+            json.dumps(
+                {
+                    "upload_status": "PENDING",
+                    "upload_source_uri": source.uri,
+                    "intent_expires_at": "2020-01-01T00:00:00+00:00",
+                }
+            ),
+        ),
+    )
+    pg.execute(
+        "UPDATE assets SET metadata_json=jsonb_set(metadata_json::jsonb, '{intent_expires_at}', "
+        "'\"2020-01-01T00:00:00+00:00\"')::text WHERE id='cursor-a'"
+    )
+    second = cleanup_upload_page(
+        lane_env,
+        storage=storage,
+        apply=True,
+        after_asset_id=first["next_asset_id"],
+        object_cursor=first["next_object_cursor"],
+        object_asset_id=first["next_object_asset_id"],
+    )
+    assert second["failed"] == 0 and second["deleted"] == 5
+    assert storage.head_object("uploads/cursor-a") is not None
+    assert cleanup_upload_page(lane_env, storage=storage, apply=True)["deleted"] == 2
+
+
+def test_w18_pg_completed_asset_never_follows_replaced_upload(
+    lane_env: str, pg: psycopg.Connection
+) -> None:
+    from app.media import storage_key_from_uri
+
+    seed_project(pg, "w18-project", "employee_1")
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    with pg_transaction() as raw:
+        intent = _upload_and_complete(
+            BusinessConnection.postgres(raw),
+            storage,
+            actor_id="employee_1",
+            project_id="w18-project",
+        )
+    completed = pg.execute(
+        "SELECT storage_uri, sha256 FROM assets WHERE id=%s", (intent.asset_id,)
+    ).fetchone()
+    storage.put_object(intent.storage_key, b"replacement", content_type="video/mp4")
+    assert storage.get_object(storage_key_from_uri(str(completed[0]))) == b"video-bytes"
+    with pg_transaction() as raw:
+        replay = complete_upload(
+            BusinessConnection.postgres(raw),
+            actor=actor("employee_1", "employee"),
+            storage=storage,
+            probe=FakeVideoProbe(8),
+            asset_id=intent.asset_id,
+        )
+    assert replay.storage_uri == completed[0]
+    assert replay.sha256 == completed[1]
+
+
+def test_w18_pg_legacy_video_remains_a_reference_after_completion(
+    lane_env: str, pg: psycopg.Connection
+) -> None:
+    from app.media import is_reference_video_asset
+
+    seed_project(pg, "w18-project", "employee_1")
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    owner = actor("employee_1", "employee")
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        intent = create_upload_intent(
+            conn,
+            actor=owner,
+            storage=storage,
+            project_id="w18-project",
+            filename="clip.mp4",
+            content_type="video/mp4",
+            size_bytes=4,
+        )
+        conn.execute("UPDATE assets SET kind='video' WHERE id=%s", (intent.asset_id,))
+    storage.put_object(intent.storage_key, b"AAAA", content_type="video/mp4")
+    with pg_transaction() as raw:
+        complete_upload(
+            BusinessConnection.postgres(raw),
+            actor=owner,
+            storage=storage,
+            probe=FakeVideoProbe(8),
+            asset_id=intent.asset_id,
+        )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        current = conn.execute("SELECT * FROM assets WHERE id=%s", (intent.asset_id,)).fetchone()
+        assert current["kind"] == "reference_video"
+        assert is_reference_video_asset(current)
+        complete_upload(
+            conn, actor=owner, storage=storage, probe=FakeVideoProbe(8), asset_id=intent.asset_id
+        )
+
+
+def test_w18_pg_concurrent_completions_cannot_replace_committed_content(
+    lane_env: str, pg: psycopg.Connection
+) -> None:
+    from app.media import (
+        persist_upload_completion,
+        prepare_upload_completion,
+        probe_upload_completion,
+    )
+
+    seed_project(pg, "w18-project", "employee_1")
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    owner = actor("employee_1", "employee")
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        intent = create_upload_intent(
+            conn,
+            actor=owner,
+            storage=storage,
+            project_id="w18-project",
+            filename="clip.mp4",
+            content_type="video/mp4",
+            size_bytes=4,
+        )
+        prepared = prepare_upload_completion(conn, actor=owner, asset_id=intent.asset_id)
+    storage.put_object(intent.storage_key, b"AAAA", content_type="video/mp4")
+    first = probe_upload_completion(prepared, storage=storage, probe=FakeVideoProbe(8))
+    storage.put_object(intent.storage_key, b"BBBB", content_type="video/mp4")
+    second = probe_upload_completion(prepared, storage=storage, probe=FakeVideoProbe(8))
+    with pg_transaction() as raw:
+        persist_upload_completion(BusinessConnection.postgres(raw), actor=owner, probed=first)
+    with pytest.raises(HTTPException) as caught:
+        with pg_transaction() as raw:
+            persist_upload_completion(BusinessConnection.postgres(raw), actor=owner, probed=second)
+    assert caught.value.detail["code"] == "UPLOAD_STATE_CHANGED"
+    current = pg.execute(
+        "SELECT storage_uri, sha256 FROM assets WHERE id=%s", (intent.asset_id,)
+    ).fetchone()
+    assert current == (first.storage_uri, first.sha256)
+
+
 def test_media_upload_dedup_reuses_owned_hash_never_foreign_on_pg(
     lane_env: str, pg: psycopg.Connection
 ) -> None:

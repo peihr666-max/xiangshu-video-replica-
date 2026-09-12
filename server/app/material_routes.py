@@ -105,7 +105,7 @@ async def put_local_material(
 ) -> Response:
     if storage.provider != "local":
         raise HTTPException(status_code=404, detail={"code": "LOCAL_UPLOAD_UNAVAILABLE"})
-    prepared = prepare_material_upload(conn, actor=actor, asset_id=asset_id)
+    prepared = prepare_material_upload(conn, actor=actor, asset_id=asset_id, pending_only=True)
     content_length = request.headers.get("content-length")
     if (
         content_length
@@ -116,7 +116,12 @@ async def put_local_material(
     content_type = request.headers.get("content-type", "application/octet-stream")
     if content_type != prepared.content_type:
         raise HTTPException(status_code=415, detail={"code": "CONTENT_TYPE_MISMATCH"})
-    content = await request.body()
+    content_buffer = bytearray()
+    async for chunk in request.stream():
+        if len(content_buffer) + len(chunk) > prepared.requested_size_bytes:
+            raise HTTPException(status_code=413, detail={"code": "PAYLOAD_TOO_LARGE"})
+        content_buffer.extend(chunk)
+    content = bytes(content_buffer)
     if len(content) != prepared.requested_size_bytes:
         raise HTTPException(status_code=409, detail={"code": "UPLOAD_SIZE_MISMATCH"})
     try:

@@ -26,8 +26,11 @@ from app.permissions import require_asset_access, require_not_auditor, write_aud
 from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
+    UploadedObjectSizeMismatch,
+    read_uploaded_object,
     require_storage_match,
     storage_object_ref_from_uri,
+    store_verified_upload,
 )
 
 MaterialMediaType = Literal["image", "video", "audio"]
@@ -629,6 +632,7 @@ def create_material_upload_intent(
         object_key,
         content_type=request.content_type,
         expires_in=UPLOAD_INTENT_EXPIRES_IN,
+        size_bytes=request.size_bytes,
     )
     metadata = {
         "upload_status": "PENDING",
@@ -638,6 +642,7 @@ def create_material_upload_intent(
         "requested_content_type": request.content_type,
         "expected_sha256": request.sha256,
         "intent_expires_at": intent.expires_at.isoformat(),
+        "upload_source_uri": f"{storage.provider}://{storage.bucket}/{intent.key}",
     }
     if request.audio_purpose is not None:
         metadata["audio_purpose"] = request.audio_purpose
@@ -676,7 +681,12 @@ def create_material_upload_intent(
             action="studio.material.upload_intent",
             entity_type="asset",
             entity_id=asset_id,
-            metadata={"media_type": media_type, "size_bytes": request.size_bytes},
+            metadata={
+                "media_type": media_type,
+                "size_bytes": request.size_bytes,
+                "upload_source_uri": storage_uri,
+                "intent_expires_at": intent.expires_at.isoformat(),
+            },
             commit=False,
         )
     return MaterialUploadIntentResponse(
@@ -695,6 +705,7 @@ def prepare_material_upload(
     *,
     actor: CurrentUser,
     asset_id: str,
+    pending_only: bool = False,
 ) -> PreparedMaterialUpload:
     row = require_asset_access(
         conn,
@@ -708,6 +719,8 @@ def prepare_material_upload(
     if media_type is None:
         raise material_error(409, "MATERIAL_UPLOAD_INVALID", "该素材不是通用上传任务。")
     metadata = _metadata(row["metadata_json"])
+    if pending_only and metadata.get("upload_status") != "PENDING":
+        raise material_error(409, "MATERIAL_UPLOAD_INVALID", "该上传已完成或失效，请重新创建上传。")
     requested_size: object
     if metadata.get("upload_status") == "READY":
         requested_size = int(row["size_bytes"])
@@ -728,7 +741,11 @@ def prepare_material_upload(
         content_type=str(row["content_type"]),
         requested_size_bytes=requested_size,
         expected_sha256=(
-            str(metadata["expected_sha256"]) if metadata.get("expected_sha256") else None
+            str(row["sha256"])
+            if metadata.get("upload_status") == "READY"
+            else str(metadata["expected_sha256"])
+            if metadata.get("expected_sha256")
+            else None
         ),
         audio_purpose=(
             cast(AudioPurpose, metadata["audio_purpose"])
@@ -756,7 +773,14 @@ def probe_material_upload(
     if stored.size != prepared.requested_size_bytes:
         raise material_error(409, "MATERIAL_SIZE_MISMATCH", "上传文件大小不一致。")
     try:
-        content = storage.get_object(prepared.storage_key)
+        content = read_uploaded_object(
+            storage,
+            prepared.storage_key,
+            expected_size=prepared.requested_size_bytes,
+            max_bytes=IMAGE_UPLOAD_LIMIT if prepared.media_type == "image" else MAX_UPLOAD_BYTES,
+        )
+    except UploadedObjectSizeMismatch as exc:
+        raise material_error(409, "MATERIAL_SIZE_MISMATCH", "上传文件大小不一致。") from exc
     except OSError as exc:
         raise StorageBackendUnavailable("material object read failed") from exc
     if not _content_matches(prepared.media_type, content):
@@ -776,6 +800,13 @@ def probe_material_upload(
     digest = hashlib.sha256(content).hexdigest()
     if prepared.expected_sha256 and digest != prepared.expected_sha256:
         raise material_error(409, "MATERIAL_HASH_MISMATCH", "上传文件校验失败。")
+    stored = store_verified_upload(
+        storage,
+        asset_id=prepared.asset_id,
+        source_key=prepared.storage_key,
+        content=content,
+        content_type=prepared.content_type,
+    )
     return ProbedMaterialUpload(
         prepared=prepared,
         storage_uri=stored.uri,
@@ -791,6 +822,9 @@ def persist_material_upload(
     actor: CurrentUser,
     probed: ProbedMaterialUpload,
 ) -> MaterialItem:
+    conn.execute(
+        "SELECT id FROM assets WHERE id=%s FOR UPDATE", (probed.prepared.asset_id,)
+    ).fetchone()
     prepared = prepare_material_upload(conn, actor=actor, asset_id=probed.prepared.asset_id)
     if prepared.storage_uri != probed.prepared.storage_uri:
         raise material_error(409, "MATERIAL_UPLOAD_CHANGED", "上传记录已变化。")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app import media_routes
@@ -39,6 +40,160 @@ class FakeVideoProbe:
         assert content
         assert filename
         return VideoMetadata(duration_seconds=self.duration_seconds)
+
+
+def test_w18_completed_content_survives_replacing_the_upload_object() -> None:
+    from app.media import PreparedUploadCompletion, probe_upload_completion
+
+    storage = FakeStorageAdapter(provider="fake", bucket="private-bucket")
+    source = storage.put_object(
+        "projects/p/uploads/a/video.mp4", b"original", content_type="video/mp4"
+    )
+    prepared = PreparedUploadCompletion(
+        asset_id="a",
+        project_id="p",
+        storage_uri=source.uri,
+        storage_key=source.key,
+        content_type="video/mp4",
+    )
+    result = probe_upload_completion(prepared, storage=storage, probe=FakeVideoProbe(8))
+    storage.put_object(source.key, b"replaced", content_type="video/mp4")
+    assert result.storage_uri != source.uri
+    assert storage.get_object(storage_key_from_uri(result.storage_uri)) == b"original"
+    assert result.sha256 == hashlib.sha256(b"original").hexdigest()
+
+
+def test_w18_completion_rejects_replacement_between_head_and_stream() -> None:
+    from app.media import PreparedUploadCompletion, probe_upload_completion
+
+    class ReplacingStorage(FakeStorageAdapter):
+        def iter_object(self, key: str, **kwargs: object) -> Iterator[bytes]:
+            yield b"a much larger replacement"
+
+    storage = ReplacingStorage(provider="fake", bucket="private-bucket")
+    source = storage.put_object(
+        "projects/p/uploads/a/video.mp4", b"original", content_type="video/mp4"
+    )
+    prepared = PreparedUploadCompletion(
+        asset_id="a",
+        project_id="p",
+        storage_uri=source.uri,
+        storage_key=source.key,
+        content_type="video/mp4",
+    )
+    with pytest.raises(HTTPException) as caught:
+        probe_upload_completion(prepared, storage=storage, probe=FakeVideoProbe(8))
+    assert caught.value.detail["code"] == "UPLOAD_SIZE_MISMATCH"
+
+
+@pytest.mark.parametrize("mismatch", ["size", "hash"])
+def test_w18_completion_binds_declared_size_and_digest(mismatch: str) -> None:
+    from app.media import PreparedUploadCompletion, probe_upload_completion
+
+    storage = FakeStorageAdapter(provider="fake", bucket="private-bucket")
+    stored = storage.put_object("video.mp4", b"video", content_type="video/mp4")
+    prepared = PreparedUploadCompletion(
+        asset_id="a",
+        project_id="p",
+        storage_uri=stored.uri,
+        storage_key=stored.key,
+        content_type="video/mp4",
+        expected_size=6 if mismatch == "size" else 5,
+        expected_sha256="0" * 64,
+    )
+    with pytest.raises(HTTPException) as caught:
+        probe_upload_completion(prepared, storage=storage, probe=FakeVideoProbe(8))
+    assert caught.value.detail["code"] == f"UPLOAD_{mismatch.upper()}_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_w18_download_disconnect_closes_source() -> None:
+    from starlette.requests import ClientDisconnect
+
+    closed: list[bool] = []
+
+    def source() -> Iterator[bytes]:
+        try:
+            yield b"first chunk"
+            raise AssertionError("do not read after a disconnected client")
+        finally:
+            closed.append(True)
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            raise OSError("test client disconnected")
+
+    response = media_routes._ObjectStreamingResponse(source())
+    with pytest.raises(ClientDisconnect):
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("chunks", [[b"too many"], [b"ab"]])
+def test_w18_download_rejects_changed_length_and_closes_source(chunks: list[bytes]) -> None:
+    from app.storage import StorageBackendUnavailable
+
+    closed: list[bool] = []
+
+    def source() -> Iterator[bytes]:
+        try:
+            yield from chunks
+        finally:
+            closed.append(True)
+
+    with pytest.raises(StorageBackendUnavailable):
+        list(media_routes._bounded_object_chunks(source(), 4))
+    assert closed == [True]
+
+
+@pytest.mark.parametrize(
+    ("range_header", "status", "expected"),
+    [
+        (None, 200, b"0123456789"),
+        ("bytes=2-4", 206, b"234"),
+        ("bytes=-3", 206, b"789"),
+        ("bytes=7-", 206, b"789"),
+        ("bytes=20-", 416, None),
+        ("bytes=0-1,3-4", 416, None),
+    ],
+)
+def test_w18_download_is_bounded_and_supports_ranges(
+    range_header: str | None,
+    status: int,
+    expected: bytes | None,
+    tmp_path: Path,
+) -> None:
+
+    class StreamingOnlyStorage(LocalStorageAdapter):
+        def get_object(self, key: str) -> bytes:
+            raise AssertionError("downloads must not read the entire object")
+
+    storage = StreamingOnlyStorage(root=tmp_path)
+    storage.put_object("video.mp4", b"0123456789", content_type="video/mp4")
+    test_app = FastAPI()
+
+    @test_app.get("/object")
+    def download(request: Request):
+        return media_routes._read_stored_object(
+            storage,
+            object_key="video.mp4",
+            range_header=request.headers.get("range"),
+        )
+
+    with TestClient(test_app) as test_client:
+        result = test_client.get(
+            "/object", headers={} if range_header is None else {"Range": range_header}
+        )
+    assert result.status_code == status
+    if expected is not None:
+        assert result.content == expected
+        assert result.headers["content-length"] == str(len(expected))
+        assert result.headers["accept-ranges"] == "bytes"
+    else:
+        assert result.headers["content-range"] == "bytes */10"
 
 
 def test_upload_completion_probes_storage_between_short_database_scopes(
@@ -216,7 +371,7 @@ def create_upload_intent(
     project_id: str = "project_owned",
     filename: str = "reference.mp4",
     content_type: str = "video/mp4",
-    size_bytes: int = 1024,
+    size_bytes: int = 11,
     user_id: str = "employee_1",
 ) -> dict[str, object]:
     response = client.post(
@@ -286,7 +441,7 @@ def test_customer_upload_responses_hide_storage_topology(
             "project_id": "project_owned",
             "filename": "customer-reference.mp4",
             "content_type": "video/mp4",
-            "size_bytes": 1024,
+            "size_bytes": len(b"video-bytes"),
         },
     )
 
@@ -374,7 +529,7 @@ def test_upload_completion_rolls_back_when_analysis_enqueue_cannot_commit(
             project_id="project_owned",
             filename="reference.mp4",
             content_type="video/mp4",
-            size_bytes=1024,
+            size_bytes=len(b"video-bytes"),
         )
         storage.put_object(
             intent.storage_key,
@@ -477,7 +632,15 @@ def test_upload_intent_reuses_an_owned_completed_video_by_content_hash(
     assert cloned["storage_uri"] == original["storage_uri"]
     assert cloned["sha256"] == digest
     assert int(cloned["size_bytes"]) == len(content)
-    assert cloned["metadata_json"] == original["metadata_json"]
+    original_metadata = json.loads(original["metadata_json"])
+    cloned_metadata = json.loads(cloned["metadata_json"])
+    grant_fields = {"upload_source_uri", "intent_expires_at", "cleanup_object_cursor"}
+    assert "upload_source_uri" in original_metadata
+    assert "intent_expires_at" in original_metadata
+    assert not grant_fields.intersection(cloned_metadata)
+    assert cloned_metadata == {
+        key: value for key, value in original_metadata.items() if key not in grant_fields
+    }
 
 
 def test_upload_deduplication_never_reuses_another_users_private_asset(
@@ -750,7 +913,7 @@ def test_local_storage_intent_url_and_upload_endpoint(
                 "project_id": "project_owned",
                 "filename": "clip.mp4",
                 "content_type": "video/mp4",
-                "size_bytes": 123,
+                "size_bytes": len(b"mp4-bytes"),
             },
         )
         assert intent_resp.status_code == 200
@@ -760,7 +923,7 @@ def test_local_storage_intent_url_and_upload_endpoint(
         put_resp = client.put(
             f"/api/assets/local-objects/{intent['storage_key']}",
             content=b"mp4-bytes",
-            headers=auth_headers("employee_1"),
+            headers={**auth_headers("employee_1"), "Content-Type": "video/mp4"},
         )
         assert put_resp.status_code == 204
         assert storage.get_object(intent["storage_key"]) == b"mp4-bytes"
@@ -812,6 +975,7 @@ def test_local_upload_endpoint_enforces_role_and_project_gates(
     monkeypatch.setenv("VIDEO_REPLICA_STORAGE_ROOT", str(tmp_path / "local-storage"))
     monkeypatch.setattr("app.media_routes.MAX_UPLOAD_BYTES", 8)
     storage = LocalStorageAdapter(root=tmp_path / "local-storage")
+    monkeypatch.setenv("VIDEO_REPLICA_DB_PATH", str(db_path))
 
     def database_override() -> Iterator[BusinessConnection]:
         conn = BusinessConnection.sqlite(connect_database(db_path))
@@ -824,7 +988,8 @@ def test_local_upload_endpoint_enforces_role_and_project_gates(
     app.dependency_overrides[get_media_storage] = lambda: storage
     try:
         client = TestClient(app)
-        key = "projects/project_owned/uploads/asset-1/demo.mp4"
+        intent = create_upload_intent(client, size_bytes=3)
+        key = str(intent["storage_key"])
 
         auditor_resp = client.put(
             f"/api/assets/local-objects/{key}",
@@ -849,7 +1014,7 @@ def test_local_upload_endpoint_enforces_role_and_project_gates(
         ok_resp = client.put(
             f"/api/assets/local-objects/{key}",
             content=b"mp4",
-            headers=auth_headers("employee_1"),
+            headers={**auth_headers("employee_1"), "Content-Type": "video/mp4"},
         )
         assert ok_resp.status_code == 204
         assert storage.get_object(key) == b"mp4"
@@ -857,7 +1022,7 @@ def test_local_upload_endpoint_enforces_role_and_project_gates(
         big_resp = client.put(
             f"/api/assets/local-objects/{key}",
             content=b"x" * 9,
-            headers=auth_headers("employee_1"),
+            headers={**auth_headers("employee_1"), "Content-Type": "video/mp4"},
         )
         assert big_resp.status_code == 413
     finally:
@@ -1038,7 +1203,7 @@ def test_default_probe_failure_does_not_mark_upload_complete(
             project_id="project_owned",
             filename="reference.mp4",
             content_type="video/mp4",
-            size_bytes=1024,
+            size_bytes=len(b"video-bytes"),
         )
         storage.put_object(intent.storage_key, b"video-bytes", content_type="video/mp4")
 
