@@ -75,6 +75,7 @@ from app.viral_store import (
 from app.viral_tikhub import (
     PLATFORM_DOUYIN,
     PLATFORM_WECHAT,
+    PLATFORM_XIAOHONGSHU,
     ViralSourceClient,
     ViralSourceError,
     ViralSourceUnavailable,
@@ -88,6 +89,7 @@ SORT_HOT = "hot"
 SORT_LATEST = "latest"
 _VALID_SORTS = (SORT_HOT, SORT_LATEST)
 _VALID_PLATFORMS = (PLATFORM_DOUYIN, PLATFORM_WECHAT)
+_STORED_PLATFORMS = (*_VALID_PLATFORMS, PLATFORM_XIAOHONGSHU)
 
 _DOUYIN_SORT_TYPE = {SORT_HOT: "1", SORT_LATEST: "2"}
 _WECHAT_SORT = {SORT_HOT: "hot", SORT_LATEST: "latest"}
@@ -510,7 +512,7 @@ def list_viral_favorites(
     limit: Annotated[int, Query(ge=1, le=50)] = 24,
     cursor: Annotated[str | None, Query(max_length=2048)] = None,
 ) -> ViralFavoritesResponse:
-    if platform is not None and platform not in _VALID_PLATFORMS:
+    if platform is not None and platform not in _STORED_PLATFORMS:
         raise HTTPException(
             status_code=400,
             detail={"code": "VIRAL_PLATFORM_INVALID", "message": "不支持的视频平台"},
@@ -559,7 +561,7 @@ def _require_stored_video(
     video_id: str,
     require_available: bool = False,
 ) -> ViralVideo:
-    if platform not in _VALID_PLATFORMS:
+    if platform not in _STORED_PLATFORMS:
         raise HTTPException(
             status_code=400,
             detail={"code": "VIRAL_PLATFORM_INVALID", "message": "不支持的视频平台"},
@@ -604,7 +606,7 @@ def remove_viral_video_favorite(
     platform: str,
     video_id: str,
 ) -> ViralFavoriteMutationResponse:
-    if platform not in _VALID_PLATFORMS:
+    if platform not in _STORED_PLATFORMS:
         raise HTTPException(
             status_code=400,
             detail={"code": "VIRAL_PLATFORM_INVALID", "message": "不支持的视频平台"},
@@ -632,14 +634,14 @@ def fetch_viral_video_media(
     actor: AuthenticatedUser,
     client: ViralSourceClientDep,
 ) -> ViralMediaResponse:
-    if payload.platform not in _VALID_PLATFORMS:
+    if payload.platform not in _STORED_PLATFORMS:
         raise HTTPException(
             status_code=400,
             detail={"code": "VIRAL_PLATFORM_INVALID", "message": "不支持的视频平台"},
         )
     video = get_viral_video(conn, platform=payload.platform, video_id=payload.videoId)
-    if video is None:
-        # 库中暂无：回源一次（新库/视频首次被直接引用）。
+    if video is None and payload.platform in _VALID_PLATFORMS:
+        # 自动采集平台可回源；小红书仅支持用户主动解析的已存链接素材。
         try:
             refreshed = _collect_videos(
                 conn,
@@ -832,7 +834,7 @@ def get_viral_cover(
     无需登录：封面本身是公开内容，对象 key 由路由参数确定性派生，
     不接受任意 key。视频号 ID 是可含斜杠的 opaque ID，必须与库中记录精确匹配。
     """
-    if platform not in _VALID_PLATFORMS or not video_id:
+    if platform not in _STORED_PLATFORMS or not video_id:
         raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
     video = get_viral_video(conn, platform=platform, video_id=video_id)
     if (

@@ -70,7 +70,7 @@ describe("OverviewPage", () => {
     expect(screen.getByText("¥4850.00")).toBeInTheDocument();
     expect(screen.getByText("¥486.20")).toBeInTheDocument();
     expect(screen.getByText("¥1128.40")).toBeInTheDocument();
-    expect(screen.getByText("918 / 1024")).toBeInTheDocument();
+    expect(screen.getByText("918 台")).toBeInTheDocument();
     expect(screen.getByText("近 7 日生成与成本")).toBeInTheDocument();
     expect(screen.getByText("成本（元）")).toBeInTheDocument();
     expect(screen.getByText("成功生成数（条）")).toBeInTheDocument();

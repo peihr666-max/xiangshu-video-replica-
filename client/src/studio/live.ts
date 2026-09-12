@@ -893,7 +893,13 @@ export function studioVideoFromViral(item: ViralVideoItem): StudioVideo {
     id: `${item.platform}-${item.videoId}`,
     title: item.title,
     author: item.author,
-    platform: item.platform === "douyin" ? "抖音" : "视频号",
+    platform: (
+      {
+        douyin: "抖音",
+        wechat_channels: "视频号",
+        xiaohongshu: "小红书",
+      } as const
+    )[item.platform],
     category: item.category,
     poster: item.coverUrl ?? "",
     duration: formatViralDuration(item.durationMs),

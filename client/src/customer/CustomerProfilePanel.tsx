@@ -299,16 +299,17 @@ export function CustomerProfilePanel({
           <div className="customer-profile__metrics">
             <article>
               <span>账号状态</span>
-              <strong>{activationStatus(profile?.activation_status)}</strong>
-              <small>已激活，可正常使用</small>
+              <strong>
+                {profile && !profile.activation_code_masked
+                  ? "正常"
+                  : activationStatus(profile?.activation_status)}
+              </strong>
+              <small>已登录，可正常使用</small>
             </article>
             <article>
               <span>已绑定设备</span>
-              <strong>
-                {profile?.device_slots_used ?? 0} /{" "}
-                {profile?.device_slots_total ?? 2}
-              </strong>
-              <small>同时仅一台设备在线</small>
+              <strong>{profile?.device_slots_used ?? 0} 台</strong>
+              <small>设备数量不限，支持同时在线</small>
             </article>
             <article>
               <span>待确认设备</span>
@@ -317,53 +318,55 @@ export function CustomerProfilePanel({
             </article>
           </div>
 
-          <article className="customer-profile__license">
-            <div>
-              <span>当前激活凭证</span>
-              <strong>
-                {profile?.activation_code_masked ?? "正在读取激活信息…"}
-              </strong>
-              <small>
-                {profile?.activated_at
-                  ? `${formatDate(profile.activated_at)} 激活`
-                  : "完整激活码不会在个人中心再次显示"}
-              </small>
-            </div>
-            <div className="customer-profile__license-actions">
-              <button
-                className="secondary-button"
-                disabled={!profile?.activation_code_masked}
-                onClick={() =>
-                  void copyText(
-                    profile?.activation_code_masked ?? "",
-                    "授权编号已复制。",
-                  )
-                }
-                type="button"
-              >
-                复制授权编号
-              </button>
-              <button
-                className="secondary-button"
-                disabled={
-                  isResettingCode || profile?.activation_status !== "ACTIVE"
-                }
-                onClick={() => void resetActivationCode()}
-                type="button"
-              >
-                {isResettingCode ? "正在重置" : "重置激活码"}
-              </button>
-              <button
-                onClick={() => {
-                  setTab("devices");
-                  void onRefreshDevices();
-                }}
-                type="button"
-              >
-                管理关联设备
-              </button>
-            </div>
-          </article>
+          {profile?.activation_code_masked && (
+            <article className="customer-profile__license">
+              <div>
+                <span>当前激活凭证</span>
+                <strong>
+                  {profile?.activation_code_masked ?? "正在读取激活信息…"}
+                </strong>
+                <small>
+                  {profile?.activated_at
+                    ? `${formatDate(profile.activated_at)} 激活`
+                    : "完整激活码不会在个人中心再次显示"}
+                </small>
+              </div>
+              <div className="customer-profile__license-actions">
+                <button
+                  className="secondary-button"
+                  disabled={!profile?.activation_code_masked}
+                  onClick={() =>
+                    void copyText(
+                      profile?.activation_code_masked ?? "",
+                      "授权编号已复制。",
+                    )
+                  }
+                  type="button"
+                >
+                  复制授权编号
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={
+                    isResettingCode || profile?.activation_status !== "ACTIVE"
+                  }
+                  onClick={() => void resetActivationCode()}
+                  type="button"
+                >
+                  {isResettingCode ? "正在重置" : "重置激活码"}
+                </button>
+                <button
+                  onClick={() => {
+                    setTab("devices");
+                    void onRefreshDevices();
+                  }}
+                  type="button"
+                >
+                  管理关联设备
+                </button>
+              </div>
+            </article>
+          )}
 
           {replacementCode ? (
             <section className="customer-profile__replacement" role="status">

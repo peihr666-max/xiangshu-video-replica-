@@ -101,7 +101,7 @@ export type StudioVideo = {
   id: string;
   title: string;
   author: string;
-  platform: "抖音" | "视频号";
+  platform: "抖音" | "视频号" | "小红书";
   category: string;
   poster: string;
   videoUrl?: string;
@@ -111,7 +111,7 @@ export type StudioVideo = {
   shares: number | null;
   description: string;
   /** C4 重启：爆款数据源规范化字段（列表/详情按平台展示，审核样例可缺省）。 */
-  platformKey?: "douyin" | "wechat_channels";
+  platformKey?: "douyin" | "wechat_channels" | "xiaohongshu";
   nativeId?: string;
   authorAvatar?: string | null;
   verified?: boolean;
@@ -291,6 +291,7 @@ export type LivePanel =
   | "wallet"
   | "analysis";
 export type StudioContextValue = {
+  requireLogin?: () => void;
   state: StudioState;
   data: StudioData;
   review: boolean;

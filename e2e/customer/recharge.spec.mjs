@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { openCustomerWallet } from "./workspace-navigation.mjs";
-
-const CODE_RECHARGE = "XS04-1234567-89ABCDE-FGHJKMN-PQRSTVW";
+import {
+  enterCustomerAccount,
+  openCustomerWallet,
+} from "./workspace-navigation.mjs";
 
 test("customer wallet creates a recharge order under the customer session", async ({
   page,
@@ -28,10 +29,7 @@ test("customer wallet creates a recharge order under the customer session", asyn
     },
   );
 
-  await page.goto("/customer");
-  await page.getByLabel("激活码").fill(CODE_RECHARGE);
-  await page.getByLabel("设备名称").fill("E2E Recharge Device");
-  await page.getByRole("button", { name: "激活并进入工作台" }).click();
+  await enterCustomerAccount(page, "e2e_recharge_account");
 
   // The V1.4 workspace reaches the customer wallet through 用户档案 > 使用记录.
   await openCustomerWallet(page);
