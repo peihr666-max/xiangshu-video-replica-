@@ -1168,6 +1168,10 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 
 
+## FIX-W19-20260912 / W19
+
+AUTOMATED_VERIFIED（本地）；独立只读评审及信号修复复审 PASS；main@9bfe593 整合代码 d515e02 完整本地门通过：后端 2950 passed、1 原有 TLS 跳过，前端 1348 passed，secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 全部通过。PR、远程 CI 和合并待完成；全部人工联合调试留第二部分。[任务证据](evidence/FIX-W19-20260912.md)。
+
 ## FIX-W20-20260912 / W20
 
 AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2858 passed、1 原有 TLS 场景跳过；前端 1344 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W20-20260912.md)。
