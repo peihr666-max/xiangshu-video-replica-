@@ -48,6 +48,7 @@ from fastapi.responses import Response as HttpResponse
 from pydantic import BaseModel, ConfigDict, StrictInt
 
 from app.admin_auth_routes import AdminReader, AdminWriter
+from app.admin_dates import append_admin_date_filters
 from app.admin_write_contract import (
     AdminWriteActor,
     DeferredHTTPWriteError,
@@ -721,12 +722,9 @@ def list_all_admin_adjustments(
     if source_document_type.strip():
         clauses.append("aa.source_document_type = %s")
         params.append(source_document_type.strip())
-    if created_from.strip():
-        clauses.append("aa.created_at::timestamptz >= %s::date")
-        params.append(created_from.strip())
-    if created_to.strip():
-        clauses.append("aa.created_at::timestamptz < (%s::date + INTERVAL '1 day')")
-        params.append(created_to.strip())
+    append_admin_date_filters(
+        clauses, params, column="aa.created_at", created_from=created_from, created_to=created_to
+    )
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     joins = """
         FROM admin_adjustments aa
@@ -844,12 +842,9 @@ def list_customers(
     if status.strip():
         clauses.append("ac.status = %s")
         params.append(status.strip().upper())
-    if created_from.strip():
-        clauses.append("aca.activated_at::timestamptz >= %s::date")
-        params.append(created_from.strip())
-    if created_to.strip():
-        clauses.append("aca.activated_at::timestamptz < (%s::date + INTERVAL '1 day')")
-        params.append(created_to.strip())
+    append_admin_date_filters(
+        clauses, params, column="aca.activated_at", created_from=created_from, created_to=created_to
+    )
     if balance_min is not None:
         clauses.append("COALESCE(w.available_credits, 0) >= %s")
         params.append(max(0, balance_min))
@@ -1017,12 +1012,13 @@ def export_customers_csv(
             if normalized_status:
                 clauses.append("ac.status = %s")
                 params.append(normalized_status)
-            if created_from.strip():
-                clauses.append("aca.activated_at::timestamptz >= %s::date")
-                params.append(created_from.strip())
-            if created_to.strip():
-                clauses.append("aca.activated_at::timestamptz < (%s::date + INTERVAL '1 day')")
-                params.append(created_to.strip())
+            append_admin_date_filters(
+                clauses,
+                params,
+                column="aca.activated_at",
+                created_from=created_from,
+                created_to=created_to,
+            )
             if balance_min is not None:
                 clauses.append("COALESCE(w.available_credits, 0) >= %s")
                 params.append(max(0, balance_min))

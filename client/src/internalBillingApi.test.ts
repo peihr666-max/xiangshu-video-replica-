@@ -220,12 +220,15 @@ describe("internal billing API", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers(),
       blob: async () => new Blob(["id\n1"], { type: "text/csv" }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await downloadControlRechargeOrdersCsv();
-    await downloadControlWalletTransactionsCsv();
+    // Older servers can omit export counts; the download still completes and
+    // the caller receives an explicitly unknown total instead of a false zero.
+    expect(await downloadControlRechargeOrdersCsv()).toBeNull();
+    expect(await downloadControlWalletTransactionsCsv()).toBeNull();
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://127.0.0.1:8000/api/control/recharge-orders.csv",

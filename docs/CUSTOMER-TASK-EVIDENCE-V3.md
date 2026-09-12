@@ -1168,6 +1168,12 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 
 
+## FIX-W15-20260912 / 第一组 W15 / ADM-08、ADM-09：上海业务日与一致的 CSV 导出
+
+AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2879 passed、1 原有 TLS 场景跳过；前端 1350 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W15-20260912.md)。
+
+已通过独立只读复审，完整本地门保留原实测基线；账号主干791fd66整合专项后端134/前端53和静态通过。W13已正常合并PR #84（cd8bccf），本任务合入该主干至1839c86后权限、日期、导出及幂等专项后端322/前端141和静态全部通过。远程PR #85即将更新，必须以更新后当前SHA三门禁成功为合并条件；人工联合调试仍留第二部分。
+
 ## FIX-W19-20260912 / W19
 
 AUTOMATED_VERIFIED（本地）；独立只读评审及信号修复复审 PASS；main@9bfe593 整合代码 d515e02 完整本地门通过：后端 2950 passed、1 原有 TLS 跳过，前端 1348 passed，secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 全部通过。PR、远程 CI 和合并待完成；全部人工联合调试留第二部分。[任务证据](evidence/FIX-W19-20260912.md)。
@@ -1196,6 +1202,7 @@ AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门
 
 AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2881 passed、1 原有 TLS 场景跳过；前端 1347 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W13-20260912.md)。
 
+
 ## UC-BATCH-02（UC-06—10）
 
 第一批前置 PR #79 已合并 @37a2633；第二批个人中心前后端联调及 38 项后端专项通过；最终集成 PG 2906 passed/1 原有跳过、真实浏览器 4 passed，静态门及评审恢复增量见证据。用户去重反馈已纳入五页签及无设备展示。[完整证据](evidence/UC-BATCH02-PERSONAL-CENTER.md)。后续积分计价/来源归属/管理员加分尚未验收。
@@ -1205,8 +1212,24 @@ AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门
 AUTOMATED_VERIFIED（本地）；独立只读 review_w13 PASS；完整本地质量门在 a44672a（已整合主干 cd8bccf）通过：后端 2957 passed、1 个原有 TLS 跳过；前端 1350 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 全部通过。PR、当前提交远程 CI 和合并待完成；产品文件未改动，F06另行发现的产品竞态未在此修复。人工联合调试全部留第二部分。[证据](evidence/FIX-TESTREADY-20260912.md)。
 
 
+## W15 主干前置合并与第二部分隔离联调补充
+
+2026-09-13 最新记录：PR #88 已以 820c3d8 合入主干，本任务整合为 b2f37a9，独立只读 review_w12 PASS。生产代码未变，新增前端受影响复验117 passed，secret/Biome/TypeScript通过（W15-testready-frontend.log）；此前完整门及322后端/141前端结果保留实际基线。PR #85 将更新，当前远程门禁待新提交结果，不引用旧绿灯代替。
+
+按用户新授权开展第二部分：真实 Chromium—Vite—uvicorn—专属PG验证3项通过：上海日界5条中命中3条，列表与真实CSV订单/流水一致；5001条导出5000条及响应头/页面截断提示一致。证据在仓库上级 outputs/remediation-20260912/joint-round2/w15/。本轮使用仓库既定本地代理认证车道，503 CONTROL_AUTH_NOT_CONFIGURED首次环境记录保留；并未核销生产模式Cookie路由或目标数据库时区验收。管理员设密/恢复/角色9项实际会话检查另有记录，不与旧代理车道混计。代码未因联调修改。
+
 ## W19 主干前置合并与第二部分隔离联调补充
 
 2026-09-13 最新记录：PR #88 已以820c3d8合入main，本任务整合为8cca2e1。独立只读review_w13确认Worker实现无回退、W13认证及TESTREADY与main一致；认领记录“尚无PR”已修正。新主干相关前端142 passed及secret/Biome/TypeScript通过，后端认证/Worker/发布143 passed（W19-testready-{frontend,backend}.log）。首次专项因新建数据库名未列入仓库白名单而拒绝，64 passed/79 setup errors的环境失败日志保留；使用同一独享新容器内已登记customer_v3_test后通过，未修改测试白名单。完整门仍对应此前记录的实际基线，PR #87当前门禁待更新提交。
 
-用户授权第二部分后，真实四generation CLI并发启动使用同一逻辑标签，4个实例ID均唯一，均PG就绪并--once退出0；真实publish CLI在30秒空闲中收到SIGTERM后0.214秒退出0，PG连接恢复基线0。3项进程检查通过，证据在仓库上级 outputs/remediation-20260912/joint-round2/w19/。首次缺COS配置时4实例失败记录保留；后续仅写合成配置、空队列验证，没有调用供应商或真实平台。不能据此声明实际平台探测、带任务租约恢复、生产编排或容量通过。
+用户授权第二部分后，真实四generation CLI并发启动使用同一逻辑标签，4个实例ID均唯一，均PG就绪并--once退出0；真实publish CLI配置30秒空闲间隔时收到SIGTERM后0.214秒退出0（未直接探测具体等待阶段），PG连接恢复基线0。3项进程检查通过，证据在仓库上级 outputs/remediation-20260912/joint-round2/w19/。首次缺COS配置时4实例失败记录保留；后续仅写合成配置、空队列验证，没有调用供应商或真实平台。不能据此声明实际平台探测、带任务租约恢复、生产编排或容量通过。
+
+
+2026-09-13 W15整合续记：W19已正常合并PR #87，当前7ce8502三门禁全部成功，squash e8445c4。上文未合并状态为历史记录。W15合入该已合并主干，四份共享文档分别保留两个任务的事实，不按勾选并集推定完成；业务文件没有文字冲突，整合专项与当前提交CI待记录。
+
+
+### W15 合并Worker主干后复核
+
+W19主干整合最终复验：PR87正常合并为main e8445c4，本任务整合提交fbbcbfe。独立只读review_w12 PASS：W19三个生产文件及两个测试与main完全一致，W15业务和测试未改变；四共享文档保留双方事实与真实合并状态。新专项test_customer_ha_smoke/test_publish_accounts/test_admin_customer_routes共121 passed，服务端ruff/format/mypy通过（W15-w19-integration-backend.log、W15-w19-integration-static.log）。未因仅后端主干增量重复全量前端；此前117前端及完整本地门保留实际基线。PR85当前更新提交的CI需另行通过。
+
+第二部分补验：W15实际浏览器/HTTP/CSV三个场景在UTC、Asia/Tokyo、America/Los_Angeles数据库连接会话时区均通过，五条日界记录命中三条、导出5001/5000提示一致；timezone-results.json按时区归档，不重复累加为新场景。本地代理认证车道不冒充生产Cookie入口。最终联调统计和人工输入见JT2独立证据。

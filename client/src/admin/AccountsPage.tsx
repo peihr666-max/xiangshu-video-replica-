@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { downloadControlWalletTransactionsCsv } from "../api";
 
 import {
   type AdminWalletTransaction,
@@ -9,7 +10,11 @@ import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
 import { StatusBadge } from "./ui/StatusBadge";
 import { useAutoRefresh } from "./ui/useAutoRefresh";
-import { formatDateTime, transactionTypeLabel } from "./ui/vocabulary";
+import {
+  formatDateTime,
+  ledgerExportMessage,
+  transactionTypeLabel,
+} from "./ui/vocabulary";
 
 const PAGE_SIZE = 20;
 
@@ -25,6 +30,8 @@ export function AccountsPage() {
   const [transactionOffset, setTransactionOffset] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [exporting, setExporting] = useState(false);
   const [username, setUsername] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [createdFrom, setCreatedFrom] = useState("");
@@ -65,9 +72,40 @@ export function AccountsPage() {
     void loadAccounts();
   }, [loadAccounts]);
 
+  async function exportTransactions() {
+    if (exporting) return;
+    setExporting(true);
+    setError("");
+    setNotice("");
+    try {
+      const summary = await downloadControlWalletTransactionsCsv({
+        username: username || undefined,
+        type: typeFilter || undefined,
+        createdFrom: createdFrom || undefined,
+        createdTo: createdTo || undefined,
+      });
+      setNotice(ledgerExportMessage(summary));
+    } catch (cause) {
+      setError(
+        cause instanceof Error && cause.message
+          ? cause.message
+          : "导出账务流水失败。",
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <section aria-label="账号与钱包" className="admin-panel">
       <div className="admin-actions">
+        <button
+          type="button"
+          disabled={exporting || loading}
+          onClick={() => void exportTransactions()}
+        >
+          导出账务流水 CSV
+        </button>
         <button
           aria-pressed={autoRefresh}
           type="button"
@@ -76,6 +114,7 @@ export function AccountsPage() {
           {autoRefresh ? "自动刷新：开（30 秒）" : "自动刷新：关"}
         </button>
       </div>
+      {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
       {error ? <PageBanner tone="error">{error}</PageBanner> : null}
       {loading ? <div className="loading">加载中...</div> : null}
       <form

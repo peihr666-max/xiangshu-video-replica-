@@ -16,6 +16,11 @@ function blobResponse() {
   return Promise.resolve({
     ok: true,
     status: 200,
+    headers: new Headers({
+      "X-Export-Total": "5001",
+      "X-Export-Returned": "5000",
+      "X-Export-Truncated": "true",
+    }),
     blob: async () => new Blob(["id\n1"], { type: "text/csv" }),
   });
 }
@@ -61,8 +66,8 @@ function installFetch() {
       return jsonResponse({ ...pendingOrder, status: "PAID" });
     }
     if (
-      url.endsWith("/api/control/recharge-orders.csv") ||
-      url.endsWith("/api/control/wallet-transactions.csv")
+      new URL(url).pathname.endsWith("/api/control/recharge-orders.csv") ||
+      new URL(url).pathname.endsWith("/api/control/wallet-transactions.csv")
     ) {
       return blobResponse();
     }
@@ -79,6 +84,51 @@ function installFetch() {
 }
 
 describe("OrdersPage", () => {
+  it("exports the active filters and reports a limited result", async () => {
+    const fetchMock = installFetch();
+    render(<OrdersPage />);
+    await screen.findByText("¥100.50");
+    fireEvent.change(screen.getByLabelText("订单账号"), {
+      target: { value: "customer" },
+    });
+    fireEvent.change(screen.getByLabelText("支付渠道"), {
+      target: { value: "alipay" },
+    });
+    fireEvent.change(screen.getByLabelText("订单起始时间"), {
+      target: { value: "2026-09-12" },
+    });
+    fireEvent.change(screen.getByLabelText("订单截止时间"), {
+      target: { value: "2026-09-12" },
+    });
+    fireEvent.change(screen.getByLabelText("订单状态"), {
+      target: { value: "PAID" },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "筛选" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+    const button = screen.getByRole("button", { name: "导出充值订单 CSV" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(
+      await screen.findByText(/当前筛选共 5001 条，本次仅导出 5000 条/),
+    ).toBeInTheDocument();
+    const call = fetchMock.mock.calls.find(([url]) =>
+      new URL(url).pathname.endsWith("recharge-orders.csv"),
+    );
+    expect(call).toBeDefined();
+    const query = new URL(String(call?.[0])).searchParams;
+    expect(Object.fromEntries(query)).toEqual({
+      status: "PAID",
+      username: "customer",
+      channel: "alipay",
+      created_from: "2026-09-12",
+      created_to: "2026-09-12",
+    });
+    expect(
+      screen.queryByRole("button", { name: "导出账务流水 CSV" }),
+    ).toBeNull();
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();

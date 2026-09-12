@@ -335,7 +335,14 @@ app.add_middleware(
     # PR #46 review P2: Retry-After joins the exposed list — the browser/
     # Tauri client must read the 429 backoff hint, or it retries blind and
     # keeps burning the (shared, PG-backed) abuse budget.
-    expose_headers=["X-Request-Id", "X-Idempotent-Replay", "Retry-After"],
+    expose_headers=[
+        "X-Request-Id",
+        "X-Idempotent-Replay",
+        "Retry-After",
+        "X-Export-Total",
+        "X-Export-Returned",
+        "X-Export-Truncated",
+    ],
 )
 # Starlette applies the last registered middleware first. Keep observability
 # outside CORS so direct OPTIONS responses also receive a request id, log and

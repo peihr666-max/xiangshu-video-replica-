@@ -22,12 +22,12 @@ table stores a real actor id; machine-only rows surface with an empty actor.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 
 from app.admin_auth_routes import AdminReader
+from app.admin_dates import append_admin_date_filters, utc_timestamp_sql
 from app.db_pg import MissingDatabaseConfigError, pg_transaction
 
 router = APIRouter(prefix="/api/control", tags=["admin-audit"])
@@ -36,21 +36,6 @@ DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
 AUDIT_SERVICE_UNAVAILABLE = "AUDIT_SERVICE_UNAVAILABLE"
 AUDIT_SERVICE_UNAVAILABLE_MESSAGE = "Audit log requires the PostgreSQL runtime."
-
-# PR #85 review P2: the sources write two text shapes — the Python lanes store
-# ISO ``T`` timestamps while the ``CURRENT_TIMESTAMP`` defaults store the
-# space-separated form — so every union arm is cast to timestamptz and the
-# date-only ``created_to`` bound is widened to the last microsecond of that
-# day; lexicographic ordering/paging on mixed formats grouped same-day events
-# by shape instead of time, and a bare date excluded everything after midnight.
-_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _inclusive_created_to(value: str) -> str:
-    """A date-only end bound covers the whole day (UTC), inclusive."""
-    if _DATE_ONLY.match(value):
-        return f"{value} 23:59:59.999999+00:00"
-    return value
 
 
 def _format_created_at(value: object) -> str:
@@ -132,6 +117,11 @@ _UNION_SQL = """
     FROM audit_logs al
     LEFT JOIN users u4 ON u4.id = al.actor_user_id
 """
+_UNION_SQL = _UNION_SQL.replace("aa.created_at::timestamptz", utc_timestamp_sql("aa.created_at"))
+_UNION_SQL = _UNION_SQL.replace("de.created_at::timestamptz", utc_timestamp_sql("de.created_at"))
+_UNION_SQL = _UNION_SQL.replace("ae.created_at::timestamptz", utc_timestamp_sql("ae.created_at"))
+_UNION_SQL = _UNION_SQL.replace("d.delivered_at::timestamptz", utc_timestamp_sql("d.delivered_at"))
+_UNION_SQL = _UNION_SQL.replace("al.created_at::timestamptz", utc_timestamp_sql("al.created_at"))
 
 
 @router.get("/audit-log")
@@ -171,12 +161,9 @@ def list_audit_log(
     if target_username:
         clauses.append("tu.username ILIKE %s")
         params.append(f"%{target_username}%")
-    if created_from:
-        clauses.append("ev.created_at >= %s")
-        params.append(created_from)
-    if created_to:
-        clauses.append("ev.created_at <= %s")
-        params.append(_inclusive_created_to(created_to))
+    append_admin_date_filters(
+        clauses, params, column="ev.created_at", created_from=created_from, created_to=created_to
+    )
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     try:

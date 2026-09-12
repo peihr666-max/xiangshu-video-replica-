@@ -166,3 +166,27 @@ export function formatDateTime(value: string | null | undefined): string {
 export function formatCredits(count: number | null | undefined): string {
   return `${count ?? 0} 秒`;
 }
+
+/** Shanghai calendar date, including day offsets independent of the host timezone. */
+export function shanghaiDate(days = 0, now = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((item) => item.type === type)?.value);
+  return new Date(Date.UTC(part("year"), part("month") - 1, part("day") + days))
+    .toISOString()
+    .slice(0, 10);
+}
+
+export function ledgerExportMessage(
+  summary: { total: number; returned: number; truncated: boolean } | null,
+): string {
+  if (!summary) return "文件已下载，服务端未提供记录统计，完整性待核对。";
+  return summary.truncated
+    ? `当前筛选共 ${summary.total} 条，本次仅导出 ${summary.returned} 条。请缩小日期范围后分批导出。`
+    : `当前筛选共 ${summary.total} 条，已全部导出。`;
+}
