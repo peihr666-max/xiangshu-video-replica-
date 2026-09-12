@@ -57,7 +57,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→080 + 081）。
-HEAD_REVISION = "086_remove_device_slot_constraints"
+HEAD_REVISION = "083_recharge_orders_multi_provider"
 
 # 最后一个已发布（受支持）起点。其后的 056–082 尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -102,7 +102,7 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "tables": 77,
-    "columns": 910,
+    "columns": 913,
     "identity_columns": 0,
     "sequences": 3,
     "jsonb_columns": 0,
@@ -110,7 +110,7 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "triggers": 18,
     "partial_indexes": 24,
     "unique_constraints": 27,
-    "check_constraints": 224,
+    "check_constraints": 227,
     "foreign_keys": 146,
     "primary_keys": 77,
 }
@@ -207,7 +207,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 这是「空库→head」与「旧起点→head」必须**收敛到同一 schema** 的机器化断言 ——
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
-HEAD_SCHEMA_DIGEST = "04522ed4825f28a1966366b60502944455e2486cd51d0040127b687d804c3fcd"
+HEAD_SCHEMA_DIGEST = "c6b1d59f2d529463dfcd1a0400d3173e8bb6d0c9341cc158946200394befa891"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

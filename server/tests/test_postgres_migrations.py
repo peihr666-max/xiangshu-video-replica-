@@ -34,7 +34,7 @@ DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # 取代旧的 SKIP_REASON 常量（已无引用，随 main 基线删除）。
 # HEAD_REVISION 取本分支链尾 086：本分支 = main(→081) + CW-073 086_remove_device_slot_constraints，
 # 迁移后 alembic 版本头即 086，9 处 assert version == HEAD_REVISION 依赖此值。
-HEAD_REVISION = "086_remove_device_slot_constraints"
+HEAD_REVISION = "083_recharge_orders_multi_provider"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(
