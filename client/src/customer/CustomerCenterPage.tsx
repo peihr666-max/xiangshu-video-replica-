@@ -148,6 +148,17 @@ export function CustomerCenterPage({
               }
               if (active) setTokens(result.items);
             } catch (cause) {
+              // A definitive rejection ends recovery. The next reload reads the
+              // persisted default before deciding whether initialization is needed.
+              // Transport/5xx failures retain the key to recover a committed write.
+              if (
+                cause instanceof CustomerApiError &&
+                cause.status &&
+                cause.status < 500
+              ) {
+                defaultPending.current = false;
+                defaultKey.current = crypto.randomUUID();
+              }
               if (active) setTokenError(message(cause));
             }
           })(),

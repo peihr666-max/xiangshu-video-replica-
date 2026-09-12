@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { CustomerApiError } from "../api";
 import type { WorkspaceShellProps } from "../workspace-shell";
 import { CustomerCenterPage } from "./CustomerCenterPage";
 
@@ -177,4 +178,21 @@ test("each function has one destination and account settings contain no device s
   expect(screen.queryByText("登录设备")).toBeNull();
   expect(screen.queryByRole("button", { name: /设备/ })).toBeNull();
   expect(screen.getByRole("switch", { name: "任务与公告通知" })).toBeVisible();
+});
+
+test("expired default recovery reloads existing credentials instead of looping on the expired key", async () => {
+  const account = setup();
+  mocks.list.mockResolvedValueOnce({ items: [], total: 0 });
+  mocks.initialize.mockRejectedValue(
+    new CustomerApiError({
+      message: "恢复窗口已结束，请刷新列表后重试。",
+      status: 409,
+      code: "TOKEN_RETRY_EXPIRED",
+    }),
+  );
+  render(<CustomerCenterPage account={account} />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("恢复窗口已结束");
+  fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+  expect(await screen.findByText("默认 Token")).toBeVisible();
+  expect(mocks.initialize).toHaveBeenCalledTimes(1);
 });
