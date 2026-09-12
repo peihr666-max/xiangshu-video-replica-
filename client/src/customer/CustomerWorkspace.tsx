@@ -161,9 +161,7 @@ export function CustomerWorkspace({
     }
   }, [store, onSessionExpired]);
 
-  useEffect(() => {
-    void loadDevices();
-  }, [loadDevices]);
+  // Device management is not part of the personal center; load only on an explicit legacy action.
 
   async function handleUnbind(deviceId: string) {
     const hasActiveLease = () => {

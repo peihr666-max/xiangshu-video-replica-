@@ -1021,3 +1021,42 @@ def validate_recharge_amount(amount_fen: int, billing: dict[str, int]) -> None:
                 "message": "Recharge amount must meet the configured minimum and step.",
             },
         )
+
+
+class CustomerCenterSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str
+    available_credits: int
+    reserved_credits: int
+    total_consumed_credits: int
+    active_tokens: int
+
+
+@router.get("/customer/center-summary", response_model=CustomerCenterSummaryResponse)
+def read_customer_center_summary(
+    request: Request, response: Response
+) -> CustomerCenterSummaryResponse:
+    snapshot = customer_session_snapshot(request)
+    if snapshot is None:
+        raise HTTPException(401, detail={"code": "SESSION_REQUIRED", "message": "请先登录账号。"})
+    response.headers["Cache-Control"] = "no-store"
+    with fenced_pg_transaction(snapshot) as (conn, ctx):
+        row = conn.execute(
+            "SELECT available_credits, reserved_credits, "
+            "(SELECT COALESCE(SUM(-reserved_delta), 0) FROM wallet_transactions "
+            "WHERE user_id = %s AND type = 'SETTLE'), "
+            "(SELECT COUNT(*) FROM customer_api_keys WHERE user_id = %s AND revoked_at IS NULL) "
+            "FROM wallets WHERE user_id = %s",
+            (ctx.user_id, ctx.user_id, ctx.user_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(
+                404, detail={"code": "WALLET_NOT_FOUND", "message": "账号钱包不存在。"}
+            )
+        return CustomerCenterSummaryResponse(
+            user_id=ctx.user_id,
+            available_credits=int(row[0]),
+            reserved_credits=int(row[1]),
+            total_consumed_credits=int(row[2]),
+            active_tokens=int(row[3]),
+        )

@@ -389,6 +389,7 @@ class ApiKeyUser:
     key_id: str
     user_id: str
     scopes: tuple[str, ...]
+    required_scope: str | None = None
 
 
 def _api_key_bearer(request: Request) -> str | None:
@@ -537,7 +538,50 @@ def resolve_api_key_user(request: Request) -> ApiKeyUser | None:
             },
         )
     ops_metrics.set_current_trace_fields(user_id=authed.user_id)
-    return ApiKeyUser(key_id=authed.key_id, user_id=authed.user_id, scopes=authed.scopes)
+    path = request.url.path.rstrip("/")
+    required_scope = None
+    if path == "/api/customer/wallet" or path == "/api/customer/wallet/transactions":
+        if request.method == "GET":
+            required_scope = "wallet"
+    elif path == "/api/customer/recharge-orders":
+        if request.method in {"GET", "POST"}:
+            required_scope = "recharge"
+    elif path.startswith("/api/customer/recharge-orders/") and request.method == "GET":
+        required_scope = "recharge"
+    if required_scope is None or required_scope not in authed.scopes:
+        raise HTTPException(
+            403, detail={"code": "API_KEY_SCOPE_DENIED", "message": "Token 无权执行此操作。"}
+        )
+    return ApiKeyUser(
+        key_id=authed.key_id,
+        user_id=authed.user_id,
+        scopes=authed.scopes,
+        required_scope=required_scope,
+    )
+
+
+def _verify_api_key_in_transaction(conn: psycopg.Connection, principal: ApiKeyUser) -> None:
+    """Lock owner then credential, matching management lock order until commit.
+
+    A revoke or account disable committed after the early lookup cannot enter
+    business work. Concurrent changes wait for already accepted work to finish.
+    """
+    owner = conn.execute(
+        "SELECT is_active, role FROM users WHERE id = %s FOR SHARE", (principal.user_id,)
+    ).fetchone()
+    key = conn.execute(
+        "SELECT revoked_at, scopes FROM customer_api_keys "
+        "WHERE id = %s AND user_id = %s FOR UPDATE",
+        (principal.key_id, principal.user_id),
+    ).fetchone()
+    if owner is None or not owner[0] or owner[1] != "customer" or key is None or key[0]:
+        raise HTTPException(
+            401, detail={"code": "API_KEY_INVALID", "message": "Token 已失效或账号不可用。"}
+        )
+    if principal.required_scope and principal.required_scope not in json.loads(key[1]):
+        raise HTTPException(
+            403, detail={"code": "API_KEY_SCOPE_DENIED", "message": "Token 权限已变更。"}
+        )
 
 
 @contextmanager
@@ -556,6 +600,7 @@ def customer_read_transaction(
     api_key = resolve_api_key_user(request)
     if api_key is not None:
         with pg_transaction() as conn:
+            _verify_api_key_in_transaction(conn, api_key)
             touch_last_used(conn, key_id=api_key.key_id)
             yield conn, api_key.user_id
         return
@@ -665,14 +710,15 @@ class BusinessDb:
 
         ``last_used_at`` is written back as the authentication side effect and
         the owning customer is the acting user. There is no session to
-        re-verify under a row lock — the credential was resolved once at the
-        early gate (``resolve_api_key_user``); any row lock a whitelisted write
+        verify; the owning account and credential are rechecked under row locks
+        before work is accepted. Any additional row lock a whitelisted write
         needs (e.g. ``FOR UPDATE`` on a wallet row) is the caller's to take
         inside the yielded connection, exactly as on the session lane. A
         business exception rolls the whole transaction back.
         """
         assert self.api_key is not None
         with pg_transaction(isolation=isolation) as conn:
+            _verify_api_key_in_transaction(conn, self.api_key)
             touch_last_used(conn, key_id=self.api_key.key_id)
             bc = BusinessConnection.postgres(conn)
             actor = CurrentUser(

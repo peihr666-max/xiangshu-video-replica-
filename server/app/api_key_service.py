@@ -45,8 +45,7 @@ KEY_SECRET_LEN = 40
 _BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 # 默认授予的白名单能力（§2.5 B：充值/查询钱包/价目表）。CW-078 只存储与回显
-# scopes，任何有效未吊销的 key 均可访问全部白名单端点；细粒度按 scope 门禁留待
-# 后续任务在既定语义下接入（避免臆造未规格的授权规则）。
+# Scope membership is checked at the request gate and under the transaction lock.
 DEFAULT_API_KEY_SCOPES: tuple[str, ...] = ("recharge", "wallet", "pricing")
 
 
@@ -75,6 +74,10 @@ class ApiKeyRecord:
     created_at: str
     last_used_at: str | None
     revoked_at: str | None
+    token_group_id: str = ""
+    credential_version: int = 1
+    is_default: bool = False
+    total_consumed_credits: int = 0
 
 
 @dataclass(frozen=True)
@@ -209,6 +212,9 @@ def create_api_key(
     user_id: str,
     label: str = "",
     scopes: tuple[str, ...] | None = None,
+    token_group_id: str | None = None,
+    credential_version: int = 1,
+    is_default: bool = False,
 ) -> tuple[str, ApiKeyRecord]:
     """为一个用户铸造并落库一枚 key；返回 ``(plaintext, record)``。
 
@@ -219,10 +225,12 @@ def create_api_key(
     key_id = str(uuid.uuid4())
     effective_scopes = DEFAULT_API_KEY_SCOPES if scopes is None else tuple(scopes)
     created_at = _now_iso()
+    group_id = token_group_id or key_id
     conn.execute(
         "INSERT INTO customer_api_keys "
-        "(id, user_id, key_prefix, key_digest, key_version, scopes, label, created_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        "(id, user_id, key_prefix, key_digest, key_version, scopes, label, created_at, "
+        "token_group_id, credential_version, is_default) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
             key_id,
             user_id,
@@ -232,6 +240,9 @@ def create_api_key(
             json.dumps(list(effective_scopes), ensure_ascii=True, separators=(",", ":")),
             label,
             created_at,
+            group_id,
+            credential_version,
+            int(is_default),
         ),
     )
     record = ApiKeyRecord(
@@ -242,29 +253,44 @@ def create_api_key(
         created_at=created_at,
         last_used_at=None,
         revoked_at=None,
+        token_group_id=group_id,
+        credential_version=credential_version,
+        is_default=is_default,
     )
     return generated.plaintext, record
 
 
 def list_api_keys(conn: psycopg.Connection, *, user_id: str) -> list[ApiKeyRecord]:
-    """列出某用户的全部 key 元数据（含已吊销，作审计）——永不返回 digest/明文。"""
+    """Latest credential in each logical group, including fully revoked groups."""
     rows = conn.execute(
-        "SELECT id, key_prefix, label, scopes, created_at, last_used_at, revoked_at "
-        "FROM customer_api_keys WHERE user_id = %s "
-        "ORDER BY created_at DESC, id DESC",
+        "SELECT k.id, k.key_prefix, k.label, k.scopes, k.created_at, "
+        "(SELECT max(v.last_used_at) FROM customer_api_keys v "
+        "WHERE v.token_group_id = k.token_group_id), "
+        "k.revoked_at, k.token_group_id, k.credential_version, k.is_default, "
+        "(SELECT COALESCE(SUM(-wt.reserved_delta), 0) FROM wallet_transactions wt "
+        "JOIN customer_api_keys v ON v.id = wt.api_key_id "
+        "WHERE v.token_group_id = k.token_group_id "
+        "AND wt.user_id = k.user_id AND wt.type = 'SETTLE') "
+        "FROM (SELECT DISTINCT ON (token_group_id) * FROM customer_api_keys "
+        "WHERE user_id = %s ORDER BY token_group_id, credential_version DESC) k "
+        "ORDER BY k.created_at DESC, k.id DESC",
         (user_id,),
     ).fetchall()
     return [
         ApiKeyRecord(
-            id=str(row[0]),
-            key_prefix=str(row[1]),
-            label=str(row[2]),
-            scopes=_parse_scopes(row[3]),
-            created_at=str(row[4]),
-            last_used_at=(None if row[5] is None else str(row[5])),
-            revoked_at=(None if row[6] is None else str(row[6])),
+            id=str(r[0]),
+            key_prefix=str(r[1]),
+            label=str(r[2]),
+            scopes=_parse_scopes(r[3]),
+            created_at=str(r[4]),
+            last_used_at=None if r[5] is None else str(r[5]),
+            revoked_at=None if r[6] is None else str(r[6]),
+            token_group_id=str(r[7]),
+            credential_version=int(r[8]),
+            is_default=bool(r[9]),
+            total_consumed_credits=int(r[10]),
         )
-        for row in rows
+        for r in rows
     ]
 
 
@@ -312,8 +338,9 @@ def authenticate_api_key(conn: psycopg.Connection, plaintext: str) -> Authentica
     if prefix is None:
         return None
     row = conn.execute(
-        "SELECT id, user_id, key_digest, scopes, revoked_at "
-        "FROM customer_api_keys WHERE key_prefix = %s",
+        "SELECT k.id, k.user_id, k.key_digest, k.scopes, k.revoked_at "
+        "FROM customer_api_keys k JOIN users u ON u.id = k.user_id "
+        "WHERE k.key_prefix = %s AND u.is_active = 1 AND u.role = 'customer'",
         (prefix,),
     ).fetchone()
     if row is None:

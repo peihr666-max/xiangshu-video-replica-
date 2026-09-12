@@ -143,7 +143,7 @@ def test_characters_migration_creates_library_tables(db_path: Path) -> None:
             ).fetchall()
         }
 
-    assert version == "20260912T1910_xiaohongshu_link_import"
+    assert version == "20260912T2200_customer_token_lifecycle"
     assert {
         "characters",
         "project_main_characters",
