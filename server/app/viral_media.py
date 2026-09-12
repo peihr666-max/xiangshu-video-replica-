@@ -214,10 +214,13 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
 
 def _verify_peer(sock: socket.socket, expected_ip: str) -> None:
-    actual_ip = str(sock.getpeername()[0])
-    if ipaddress.ip_address(actual_ip) != ipaddress.ip_address(expected_ip):
+    try:
+        actual_ip = str(sock.getpeername()[0])
+        if ipaddress.ip_address(actual_ip) != ipaddress.ip_address(expected_ip):
+            raise ViralMediaError("媒体连接地址与已验证地址不一致")
+    except BaseException:
         sock.close()
-        raise ViralMediaError("媒体连接地址与已验证地址不一致")
+        raise
 
 
 def _pinned_connection(
