@@ -781,7 +781,7 @@ export interface CustomerListItem {
   available_credits?: number;
   reserved_credits?: number;
   device_slots_used?: number;
-  device_slots_total?: number;
+  device_slots_total?: number | null;
   generation_total?: number;
   generation_succeeded?: number;
   generation_failed?: number;
@@ -906,7 +906,7 @@ export const AdminDeviceError = AdminControlError;
 
 export interface DeviceListItem {
   device_id: string;
-  activation_code_id: string;
+  activation_code_id: string | null;
   user_id: string;
   slot_no: number;
   display_name: string | null;
@@ -1675,7 +1675,7 @@ export type DashboardSummary = {
     unconfigured_rates?: number;
     unknown_cost_records?: number;
   };
-  device_slots: { bound: number; total: number };
+  device_slots: { bound: number; total: number | null };
 };
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {

@@ -283,13 +283,18 @@ def signed_asset_session_epoch(conn: BusinessConnection, actor: CurrentUser) -> 
     """Bind customer grants to the live session epoch; internal grants use zero."""
     if actor.role != "customer":
         return "0"
+    from app.customer_auth import CustomerSessionContext
+
+    if isinstance(conn.ctx, CustomerSessionContext):
+        return f"{conn.ctx.session_id}:{conn.ctx.session_epoch}"
     row = conn.execute(
-        "SELECT session_epoch FROM customer_session_state WHERE user_id = %s",
+        "SELECT session_id, session_epoch FROM customer_session_state WHERE user_id = %s "
+        "AND lease_until::timestamptz > clock_timestamp() ORDER BY session_id LIMIT 2",
         (actor.id,),
-    ).fetchone()
-    if row is None:
+    ).fetchall()
+    if len(row) != 1:
         raise HTTPException(status_code=401, detail={"code": "SESSION_REPLACED"})
-    return str(row["session_epoch"])
+    return f"{row[0]['session_id']}:{row[0]['session_epoch']}"
 
 
 def validate_signed_asset_grant(
@@ -335,7 +340,8 @@ def validate_signed_asset_grant(
                 detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},
             )
         return asset
-    if not session_epoch.isdigit():
+    grant_session_id, separator, epoch = session_epoch.partition(":")
+    if not separator or not epoch.isdigit():
         raise HTTPException(
             status_code=403,
             detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},
@@ -343,13 +349,14 @@ def validate_signed_asset_grant(
     state = conn.execute(
         """
         SELECT css.session_epoch, css.lease_until, ac.status AS code_status,
+               css.activation_code_id,
                device.status AS device_status
         FROM customer_session_state AS css
-        JOIN activation_codes AS ac ON ac.id = css.activation_code_id
+        LEFT JOIN activation_codes AS ac ON ac.id = css.activation_code_id
         JOIN customer_devices AS device ON device.id = css.device_id
-        WHERE css.user_id = %s
+        WHERE css.user_id = %s AND css.session_id = %s
         """,
-        (user_id,),
+        (user_id, grant_session_id),
     ).fetchone()
     if state is None:
         raise HTTPException(status_code=403, detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"})
@@ -357,8 +364,8 @@ def validate_signed_asset_grant(
     if lease_until.tzinfo is None:
         lease_until = lease_until.replace(tzinfo=UTC)
     if (
-        int(state["session_epoch"]) != int(session_epoch)
-        or str(state["code_status"]) != "ACTIVE"
+        int(state["session_epoch"]) != int(epoch)
+        or (state["activation_code_id"] is not None and str(state["code_status"]) != "ACTIVE")
         or str(state["device_status"]) != "BOUND"
         or lease_until <= datetime.now(UTC)
     ):

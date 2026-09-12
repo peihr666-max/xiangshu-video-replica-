@@ -66,11 +66,11 @@ describe("DeviceManagementPage (FE-04 / T31)", () => {
 
   it("空槽位的绑定入口走页内回调而不是 <a href> 整页导航（F-01 review）", () => {
     renderWithProps();
-    const bindButton = screen.getByRole("button", { name: "绑定第二台设备" });
+    const bindButton = screen.getByRole("button", { name: "绑定其他设备" });
     expect(bindButton).toBeInTheDocument();
     // Tauri 桌面壳里 <a href> 会整页重载、丢失状态机；必须是回调按钮
     expect(
-      screen.queryByRole("link", { name: "绑定第二台设备" }),
+      screen.queryByRole("link", { name: "绑定其他设备" }),
     ).not.toBeInTheDocument();
     fireEvent.click(bindButton);
     expect(mockOnPairDevice).toHaveBeenCalledTimes(1);

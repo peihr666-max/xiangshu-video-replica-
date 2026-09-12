@@ -947,7 +947,7 @@ def test_customer_profile_returns_masked_activation_and_device_summary(
     assert payload["activation_code_masked"] == mask_activation_code(code)
     assert payload["activation_status"] == "ACTIVE"
     assert payload["device_slots_used"] == 1
-    assert payload["device_slots_total"] == 2
+    assert payload["device_slots_total"] is None
     assert code not in response.text
 
 

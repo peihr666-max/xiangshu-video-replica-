@@ -250,14 +250,8 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                 "SELECT count(*) FROM customer_devices WHERE status = 'BOUND'",
             )
         )
-        # CW-073: total device capacity is the sum of per-user max_devices
-        # instead of the hard-coded active_customers * 2.
-        total_device_capacity = int(
-            _one(
-                conn,
-                "SELECT COALESCE(SUM(max_devices), 0) FROM users WHERE role = 'customer'",
-            )
-        )
+        # Unlimited concurrent devices; there is no capacity denominator.
+        total_device_capacity = None
         unconfigured_rates = int(
             _one(
                 conn,

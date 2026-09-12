@@ -81,10 +81,10 @@
 | 覆盖点 | 用例 | method-path |
 | --- | --- | --- |
 | **session fixation（新增专项）** | `test_customer_sessions.py::test_session_fixation_injection_is_never_adopted`（**CW-009 新增**） | POST `/api/customer/sessions/{heartbeat,logout,login}`：自造 token 全部 401/403 且 0 状态行/0 事件；真实 login 只采纳服务端签发 token |
-| token 重放/替换 | `test_customer_fencing.py::test_verify_rejects_the_replaced_token_after_a_switch`、`test_customer_fencing.py::test_verify_rejects_unknown_token`、`test_customer_sessions.py::test_heartbeat_rejects_forged_session_token`、`test_customer_sessions.py::test_login_lost_response_replays_same_token_and_epoch`、`test_customer_sessions.py::test_switch_lost_response_replays_same_token_and_epoch`、`test_customer_sessions.py::test_switch_replay_rejects_a_session_replaced_by_later_switch` | heartbeat/login/switch |
+| token 重放/替换 | `test_customer_fencing.py::test_verify_rejects_the_replaced_token_after_a_switch`、`test_customer_fencing.py::test_verify_rejects_unknown_token`、`test_customer_sessions.py::test_heartbeat_rejects_forged_session_token`、`test_customer_sessions.py::test_login_lost_response_replays_same_token_and_epoch`、`test_customer_sessions.py::test_another_device_login_preserves_both_live_sessions`、`test_customer_sessions.py::test_idempotent_response_survives_other_device_login_but_not_own_recovery` | heartbeat/login/switch |
 | epoch 回退 | `test_customer_fencing.py::test_verify_enforces_the_expected_epoch`、`test_customer_fencing.py::test_regressed_verifier_leaves_a_durable_committed_stale_write_fact`、`test_customer_fencing.py::test_request_scoped_pg_reads_persist_denials_after_dependency_rollback`、`test_customer_fencing.py::test_verify_judges_the_lease_on_the_post_lock_clock` | fenced 写路径 |
-| 切换竞态 | `test_customer_sessions.py::test_concurrent_switches_from_both_devices_serialize`、`test_customer_sessions.py::test_hundred_concurrent_second_device_logins_all_409_while_first_online`、`test_customer_sessions.py::test_hundred_concurrent_logins_at_lease_expiry_leave_one_current_device`、`test_customer_sessions.py::test_concurrent_logins_from_lapsed_state_leave_one_current_device` | login/switch |
-| 旧设备迟到写入 | `test_customer_sessions.py::test_late_logout_after_takeover_never_touches_the_new_session`、`test_customer_fencing.py::test_cluster_probe_detects_heartbeat_from_a_displaced_session_epoch`、`test_customer_fencing.py::test_verify_fences_a_lease_snapshot_that_changed`、`test_customer_fencing.py::test_fenced_transaction_fences_a_stale_snapshot_and_leaves_no_write` | heartbeat/logout/业务写 |
+| 切换竞态 | `test_customer_sessions.py::test_hundred_concurrent_logins_keep_device_epochs_independent`、`test_customer_sessions.py::test_hundred_concurrent_logins_keep_device_epochs_independent`、`test_customer_sessions.py::test_expired_session_recovery_is_limited_to_its_device`、`test_customer_sessions.py::test_expired_session_recovery_is_limited_to_its_device` | login/switch |
+| 旧设备迟到写入 | `test_customer_sessions.py::test_logout_never_changes_another_devices_session`、`test_customer_fencing.py::test_cluster_probe_detects_heartbeat_from_a_displaced_session_epoch`、`test_customer_fencing.py::test_verify_fences_a_lease_snapshot_that_changed`、`test_customer_fencing.py::test_fenced_transaction_fences_a_stale_snapshot_and_leaves_no_write` | heartbeat/logout/业务写 |
 
 入口后切换 0 副作用（独立 PG 多连接）：由 `test_customer_fencing.py::test_fenced_transaction_fences_a_stale_snapshot_and_leaves_no_write`、`test_customer_fencing.py::test_regressed_verifier_leaves_a_durable_committed_stale_write_fact` 承载；多 Worker 不重复领取由 `test_customer_queue_fairness.py::test_concurrent_workers_do_not_double_claim` 佐证。
 
@@ -124,3 +124,7 @@
 ## 结果汇总
 
 9 条要求：S1/S2/S3/S4/S5/S6/S7/S8 = FULL（S2/S4/S6 缺口由本轮 4 个新增用例补齐），S9 = PARTIAL（Python 依赖审计缺口去向 CW-044；Code Review 为流程项）。失败=0、skip=0（全部用例在必需 TEST-PG 门禁下运行，CW-007 硬门保证缺库即失败）。
+
+## 2026-09-12 用户设备策略变更
+
+允许同一账号无限设备同时在线。上表历史单在线条目现在按每设备独立会话核销：跨设备登录不撤销其他会话；本设备恢复、退出、撤销仍使旧凭据失效。并行心跳不应产生告警，见 `test_customer_fencing.py::test_cluster_probe_accepts_parallel_device_heartbeats`。既有双在线告警名保留用于运维兼容，其检测范围收敛到同一 session 绑定冲突及同设备陈旧 epoch 心跳。

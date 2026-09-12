@@ -934,7 +934,7 @@ def list_customers(
             "available_credits": int(row[7]),
             "reserved_credits": int(row[8]),
             "device_slots_used": int(row[9]),
-            "device_slots_total": int(row[10]),
+            "device_slots_total": None,
             "generation_total": int(row[11]),
             "generation_succeeded": int(row[12]),
             "generation_failed": int(row[13]),
