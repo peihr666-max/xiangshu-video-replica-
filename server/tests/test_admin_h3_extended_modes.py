@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from pg_test_kit import (
     create_test_database,
     drop_test_database,
+    password_admin_session,
     require_pg_or_explicit_skip,
     resolve_test_dsn,
 )
@@ -34,7 +35,6 @@ from pg_test_kit import (
 from app.admin_auth_routes import (
     ADMIN_CSRF_HEADER,
     ADMIN_SESSION_HMAC_KEY_ENV,
-    issue_exchange_credential,
 )
 from app.admin_write_contract import IDEMPOTENCY_KEY_HEADER
 from app.db_pg import DATABASE_URL_ENV, close_pg_pool
@@ -99,10 +99,7 @@ def client(h3_app: FastAPI) -> Iterator[TestClient]:
 
 
 def _exchange(client: TestClient, actor: str = "admin_u") -> dict[str, str]:
-    response = client.post(
-        "/api/control/admin/session/exchange",
-        json={"credential": issue_exchange_credential(actor, ttl_seconds=3600)},
-    )
+    response = password_admin_session(client, actor)
     assert response.status_code == 201, response.text
     return {ADMIN_CSRF_HEADER: response.json()["csrf_token"]}
 

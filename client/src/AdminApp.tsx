@@ -252,7 +252,10 @@ export function AdminApp() {
           return;
         }
         setActor(session.actor);
-        setAuthPhase("ready");
+        setLoginUsername(session.actor.username);
+        setAuthPhase(
+          session.auth_method === "exchange" ? "password-setup" : "ready",
+        );
       } catch (cause) {
         if (cancelled) {
           return;

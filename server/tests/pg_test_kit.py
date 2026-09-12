@@ -26,6 +26,50 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from fastapi import Request, Response
+from fastapi.testclient import TestClient
+from httpx import Response as ClientResponse
+
+
+def password_admin_session(client: TestClient, actor_user_id: str) -> ClientResponse:
+    """Seed a routine session for business tests, without misusing recovery.
+
+    Authentication-route tests exercise real password verification separately.
+    This fixture calls the actual session service on an allowlisted test PG;
+    it does not override authorization dependencies or change session rows.
+    """
+    from app.admin_auth_routes import (
+        _exchange_response,
+        _set_admin_session_cookie,
+        create_password_admin_session,
+    )
+    from app.db_pg import DATABASE_URL_ENV
+
+    assert_safe_test_database(database_name_of(os.environ[DATABASE_URL_ENV]))
+    outgoing = client.build_request("POST", "/api/control/admin/session/password")
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": outgoing.url.path,
+            "headers": list(outgoing.headers.raw),
+            "client": ("testclient", 50000),
+            "scheme": outgoing.url.scheme,
+            "server": (outgoing.url.host, outgoing.url.port or 80),
+        }
+    )
+    actor, token, csrf, ttl = create_password_admin_session(actor_user_id, request)
+    response = Response(status_code=201)
+    _set_admin_session_cookie(response, token, ttl)
+    result = ClientResponse(
+        201,
+        json=_exchange_response(actor, csrf).model_dump(),
+        headers=dict(response.headers),
+        request=outgoing,
+    )
+    client.cookies.extract_cookies(result)
+    return result
+
 
 # The canonical local fixture (scripts/pg-fixture.sh start) maps host 5433
 # to the container's 5432 with trust auth for user postgres.
@@ -37,6 +81,18 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
     {
         "t13_customer_activation_test",
         "customer_v3_test",
+        # Existing business fixtures using W13 routine admin sessions.
+        "t09_admin_session_test",
+        "t12_admin_activation_test",
+        "t34_admin_audit_test",
+        "t23_admin_adjustments_test",
+        "w15_dashboard_test",
+        "w08_profit_test",
+        "w10_rates_test",
+        "t34_admin_sessions_test",
+        "t16_customer_devices_test",
+        "t19_customer_sessions_test",
+        "cw027_admin_matrix_test",
         "cw007_kit_alpha_test",
         "cw007_kit_beta_test",
         # CW-010 per-category recovery baselines: each owns a dedicated migrated

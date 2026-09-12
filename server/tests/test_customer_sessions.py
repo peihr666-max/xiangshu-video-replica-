@@ -70,7 +70,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pg_test_kit import require_pg_or_explicit_skip
+from pg_test_kit import password_admin_session, require_pg_or_explicit_skip
 
 from app.activation_code_service import (
     ACTIVATION_CODE_HMAC_KEY_ENV,
@@ -1198,12 +1198,9 @@ def test_no_plaintext_credentials_in_session_events(client: TestClient) -> None:
 
 def _admin_csrf(client: TestClient) -> dict[str, str]:
     """Exchange one admin session for its CSRF header (the T12 precedent)."""
-    from app.admin_auth_routes import ADMIN_CSRF_HEADER, issue_exchange_credential
+    from app.admin_auth_routes import ADMIN_CSRF_HEADER
 
-    response = client.post(
-        ADMIN_EXCHANGE_PATH,
-        json={"credential": issue_exchange_credential("admin_u", ttl_seconds=3600)},
-    )
+    response = password_admin_session(client, "admin_u")
     assert response.status_code == 201, response.text
     return {ADMIN_CSRF_HEADER: response.json()["csrf_token"]}
 
