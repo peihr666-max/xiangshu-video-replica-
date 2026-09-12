@@ -56,7 +56,7 @@ CW076_DB_NAME = "cw076_registration_test"
 CW076_MIGRATION_DB_NAME = "cw076_migration_test"
 
 REGISTER_PATH = "/api/customer/register"
-HEAD_REVISION = "20260912T1400_customer_registration_credentials"
+HEAD_REVISION = "20260912T1910_xiaohongshu_link_import"
 PRIOR_REVISION = "20260912T1353_customer_discounts"
 
 # A policy-valid password (>= MIN_PASSWORD_LENGTH, not blank). Never a secret.
@@ -89,6 +89,13 @@ def _alembic_config(dsn: str) -> Any:
 # ---------------------------------------------------------------------------
 # Lane 1 — password hashing units (no database) — always run
 # ---------------------------------------------------------------------------
+
+
+def test_customer_password_accepts_six_characters() -> None:
+    assert MIN_PASSWORD_LENGTH == 6
+    assert verify_password("test-6", hash_password("test-6"))
+    with pytest.raises(PasswordPolicyError):
+        hash_password("short")
 
 
 def test_hash_password_is_scrypt_encoded_and_hides_plaintext() -> None:
@@ -141,7 +148,7 @@ def test_validate_password_policy_enforces_length_and_blank() -> None:
 
 def test_hash_password_propagates_policy_error() -> None:
     with pytest.raises(PasswordPolicyError):
-        hash_password("too-short")
+        hash_password("short")
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +205,7 @@ def route_state(registration_dsn: str) -> Iterator[str]:
     close_pg_pool()
     with psycopg.connect(registration_dsn, autocommit=True) as conn:
         conn.execute("SET session_replication_role = replica")
-        conn.execute("TRUNCATE wallets, users CASCADE")
+        conn.execute("TRUNCATE wallets, users, security_rate_limit_counters CASCADE")
         conn.execute("SET session_replication_role = DEFAULT")
     yield registration_dsn
     close_pg_pool()
@@ -207,13 +214,178 @@ def route_state(registration_dsn: str) -> Iterator[str]:
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch, route_state: str) -> Iterator[TestClient]:
     from app.customer_auth_routes import router as customer_auth_router
+    from app.customer_session_routes import router as session_router
+    from app.recharge_routes import router as recharge_router
+    from app.viral_import_routes import router as viral_import_router
 
     app = FastAPI()
     app.include_router(customer_auth_router)
+    app.include_router(session_router)
+    app.include_router(recharge_router)
+    app.include_router(viral_import_router)
     monkeypatch.setenv(DATABASE_URL_ENV, route_state)
+    import base64
+    import secrets
+
+    for name in (
+        "VIDEO_REPLICA_ACTIVATION_CODE_HMAC_KEY",
+        "VIDEO_REPLICA_ADMIN_SESSION_HMAC_KEY",
+        "VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY",
+    ):
+        monkeypatch.setenv(name, secrets.token_urlsafe(48))
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_CUSTOMER_IDEMPOTENCY_AEAD_KEY",
+        base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("="),
+    )
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_IP", "1000")
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_ACCOUNT", "1000")
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
     with TestClient(app) as test_client:
         yield test_client
+
+
+def _password_login(client: TestClient, **overrides: Any) -> Any:
+    return client.post(
+        "/api/customer/login",
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+        json={
+            "username": "alice",
+            "password": VALID_PASSWORD,
+            "device_fingerprint": "cw077-web-device-0001",
+            **overrides,
+        },
+    )
+
+
+def test_password_login_profile_heartbeat_logout_and_no_device_bypass(client: TestClient) -> None:
+    assert (
+        client.post(
+            REGISTER_PATH,
+            json={
+                "username": "alice",
+                "password": VALID_PASSWORD,
+            },
+        ).status_code
+        == 201
+    )
+    login = _password_login(client)
+    assert login.status_code == 200, login.text
+    body = login.json()
+    headers = {"Authorization": "Bearer " + body["session_token"]}
+    assert client.get("/api/customer/profile", headers=headers).json()["username"] == "alice"
+    assert client.post("/api/customer/sessions/heartbeat", headers=headers).status_code == 200
+    restored = client.post(
+        "/api/customer/sessions/login",
+        json={
+            "session_token": body["session_token"],
+        },
+        headers={
+            "Authorization": "Bearer " + body["device_token"],
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+    )
+    assert restored.status_code == 200, restored.text
+    assert (
+        client.post(
+            "/api/customer/sessions/logout",
+            headers={
+                **headers,
+                "Idempotency-Key": str(uuid.uuid4()),
+            },
+        ).status_code
+        == 204
+    )
+    bypass = client.post(
+        "/api/customer/sessions/login",
+        json={},
+        headers={
+            "Authorization": "Bearer " + body["device_token"],
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+    )
+    assert bypass.status_code == 401, bypass.text
+    assert _password_login(client).status_code == 200
+
+
+def test_password_login_unlimited_devices_and_retains_identity_on_key_rotation(
+    client: TestClient,
+    route_state: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import secrets
+
+    user_id = client.post(
+        REGISTER_PATH,
+        json={
+            "username": "alice",
+            "password": VALID_PASSWORD,
+        },
+    ).json()["user_id"]
+    with psycopg.connect(route_state) as conn:
+        conn.execute("UPDATE users SET max_devices = 1 WHERE id = %s", (user_id,))
+    first = _password_login(client)
+    assert first.status_code == 200, first.text
+    monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY_V2", secrets.token_urlsafe(48))
+    again = _password_login(client)
+    assert again.status_code == 200, again.text
+    assert again.json()["device_id"] == first.json()["device_id"]
+    other = _password_login(client, device_fingerprint="cw077-web-device-0002", takeover=True)
+    assert other.status_code == 200, other.text
+    for index in range(3, 8):
+        another = _password_login(client, device_fingerprint=f"cw077-web-device-{index:04}")
+        assert another.status_code == 200, another.text
+    for token in (again.json()["session_token"], other.json()["session_token"]):
+        assert (
+            client.post(
+                "/api/customer/sessions/heartbeat",
+                headers={
+                    "Authorization": "Bearer " + token,
+                },
+            ).status_code
+            == 200
+        )
+    assert (
+        client.post(
+            "/api/customer/sessions/logout",
+            headers={
+                "Authorization": "Bearer " + again.json()["session_token"],
+                "Idempotency-Key": str(uuid.uuid4()),
+            },
+        ).status_code
+        == 204
+    )
+    assert (
+        client.post(
+            "/api/customer/sessions/heartbeat",
+            headers={
+                "Authorization": "Bearer " + other.json()["session_token"],
+            },
+        ).status_code
+        == 200
+    )
+
+
+def test_password_login_expired_session_can_be_replaced_without_activation(
+    client: TestClient, route_state: str
+) -> None:
+    user = client.post(
+        REGISTER_PATH,
+        json={
+            "username": "alice",
+            "password": VALID_PASSWORD,
+        },
+    ).json()
+    assert _password_login(client).status_code == 200
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "UPDATE customer_session_state SET "
+            "created_at = now() - interval '5 minutes', "
+            "last_heartbeat_at = now() - interval '3 minutes', "
+            "lease_until = now() - interval '1 minute' WHERE user_id = %s",
+            (user["user_id"],),
+        )
+    response = _password_login(client)
+    assert response.status_code == 200, response.text
 
 
 def test_register_creates_user_and_wallet_atomically(client: TestClient) -> None:
@@ -441,3 +613,332 @@ def test_registration_revision_downgrade_guard_refuses_then_succeeds_symmetrical
 
     # Restore head so this rehearsal cannot disturb any later test in the module.
     command.upgrade(config, "head")
+
+
+@pytest.mark.parametrize("username,password", [("alice", "wrong-6"), ("missing", VALID_PASSWORD)])
+def test_password_login_rejects_invalid_credentials_without_session(
+    client: TestClient,
+    route_state: str,
+    username: str,
+    password: str,
+) -> None:
+    client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD})
+    response = _password_login(client, username=username, password=password)
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "INVALID_CREDENTIALS"
+    assert password not in response.text
+    with psycopg.connect(route_state) as conn:
+        assert conn.execute("SELECT count(*) FROM customer_session_state").fetchone()[0] == 0
+
+
+def test_disabled_password_account_cannot_login_heartbeat_or_read_profile(
+    client: TestClient,
+    route_state: str,
+) -> None:
+    user = client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD}).json()
+    sessions = [
+        _password_login(client, device_fingerprint=f"account-device-{i:04}").json()
+        for i in range(2)
+    ]
+    with psycopg.connect(route_state) as conn:
+        conn.execute("UPDATE users SET is_active = 0 WHERE id = %s", (user["user_id"],))
+    assert _password_login(client).status_code == 401
+    for session in sessions:
+        headers = {"Authorization": "Bearer " + session["session_token"]}
+        assert client.get("/api/customer/profile", headers=headers).status_code == 401
+        assert client.post("/api/customer/sessions/heartbeat", headers=headers).status_code == 401
+
+
+def test_password_response_replay_retains_identity_during_key_rotation(
+    client: TestClient,
+    route_state: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import secrets
+
+    client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD})
+    headers = {"Idempotency-Key": "password-retry-stable"}
+    body = {
+        "username": "alice",
+        "password": VALID_PASSWORD,
+        "device_fingerprint": "retry-device-0001",
+    }
+    first = client.post("/api/customer/login", headers=headers, json=body)
+    assert first.status_code == 200, first.text
+    monkeypatch.setenv("VIDEO_REPLICA_DEVICE_FINGERPRINT_HMAC_KEY_V2", secrets.token_urlsafe(48))
+    replay = client.post("/api/customer/login", headers=headers, json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == first.json()
+    assert replay.headers["Cache-Control"] == "no-store"
+    assert replay.headers["X-Idempotent-Replay"] == "true"
+    changed = client.post(
+        "/api/customer/login",
+        headers=headers,
+        json={**body, "device_fingerprint": "retry-device-0002"},
+    )
+    assert changed.status_code == 409
+    with psycopg.connect(route_state) as conn:
+        assert conn.execute("SELECT count(*) FROM customer_devices").fetchone()[0] == 1
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM customer_session_events WHERE event = 'LOGIN'"
+            ).fetchone()[0]
+            == 1
+        )
+        conn.execute(
+            "UPDATE customer_idempotency_envelopes SET ciphertext = 'invalid' "
+            "WHERE operation = 'password_login'"
+        )
+    damaged = client.post("/api/customer/login", headers=headers, json=body)
+    assert damaged.status_code == 503, damaged.text
+    assert "session_token" not in damaged.text
+
+
+def test_registration_and_failed_login_limits_persist_after_rejection(
+    client: TestClient,
+    route_state: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIDEO_REPLICA_RATE_LIMIT_LOGIN_IP", "1")
+    assert (
+        client.post(
+            REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD}
+        ).status_code
+        == 201
+    )
+    limited = client.post(REGISTER_PATH, json={"username": "bobby", "password": VALID_PASSWORD})
+    assert limited.status_code == 429
+    assert int(limited.headers["Retry-After"]) > 0
+    assert _password_login(client, password="wrong-6").status_code == 401
+    assert _password_login(client).status_code == 429
+    with psycopg.connect(route_state) as conn:
+        assert (
+            conn.execute("SELECT count(*) FROM users WHERE username = 'bobby'").fetchone()[0] == 0
+        )
+
+
+def test_concurrent_password_retries_create_one_device_and_one_session(
+    client: TestClient,
+    route_state: str,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD})
+    barrier = Barrier(4)
+
+    def submit(_: int) -> Any:
+        barrier.wait(timeout=30)
+        return client.post(
+            "/api/customer/login",
+            headers={"Idempotency-Key": "concurrent-retry"},
+            json={
+                "username": "alice",
+                "password": VALID_PASSWORD,
+                "device_fingerprint": "retry-device-0001",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        responses = list(pool.map(submit, range(4)))
+    assert [r.status_code for r in responses] == [200] * 4
+    assert all(r.json() == responses[0].json() for r in responses)
+    with psycopg.connect(route_state) as conn:
+        assert conn.execute("SELECT count(*) FROM customer_devices").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM customer_session_state").fetchone()[0] == 1
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM customer_session_events WHERE event = 'LOGIN'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
+    client: TestClient,
+    route_state: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.viral_import as domain
+    import app.viral_import_routes as routes
+    from app.db_portable import BusinessConnection
+    from app.generation_worker import run_worker_once
+    from app.storage import FakeStorageAdapter
+    from app.viral_link import DouyidouHttpTransport, DouyidouLinkClient
+    from app.viral_media import ViralMediaResult
+    from app.viral_tikhub import ViralVideo
+
+    class Transport(DouyidouHttpTransport):
+        calls = 0
+
+        def request(self, url: str, *, headers: Any) -> bytes:
+            self.calls += 1
+            return b'{"code":0,"data":{"note_id":"66e012345678901234abcdef","video":["https://cdn.example/note.mp4"]}}'
+
+    storage = FakeStorageAdapter(provider="fake", bucket="private")
+
+    class Pipeline:
+        def __init__(self, *, client: Any, storage: Any) -> None:
+            self.storage = storage
+
+        def fetch(self, video: ViralVideo, *, prefer: str | None = None) -> ViralMediaResult:
+            assert video.platform == "xiaohongshu"
+            assert prefer == "video"
+            stored = self.storage.put_object(
+                "viral/xiaohongshu/note.mp4", b"contract-video", content_type="video/mp4"
+            )
+            return ViralMediaResult(
+                kind="video",
+                storage_uri=stored.uri,
+                url="https://cdn.example/note.mp4",
+                size=stored.size,
+                content_type=stored.content_type,
+                cache_hit=False,
+                sha256=stored.sha256,
+            )
+
+    transport = Transport()
+    resolver = DouyidouLinkClient(
+        app_id="local-contract", app_secret="local-contract", transport=transport
+    )
+    monkeypatch.setattr(routes, "douyidou_link_client_from_settings", lambda conn: resolver)
+    monkeypatch.setattr(routes, "get_media_storage", lambda conn: storage)
+    monkeypatch.setattr(routes, "preflight_resolved_media", lambda *args, **kwargs: None)
+    monkeypatch.setattr(domain, "ViralMediaPipeline", Pipeline)
+    monkeypatch.setattr(domain, "viral_source_client_from_settings", lambda conn: None)
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "INSERT INTO viral_runtime_controls (id, collection_enabled, import_enabled) "
+            "VALUES (1, 1, 1) ON CONFLICT (id) DO UPDATE SET import_enabled = 1"
+        )
+    user = client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD}).json()
+    session = _password_login(client).json()
+    headers = {
+        "Authorization": "Bearer " + session["session_token"],
+        "Idempotency-Key": "xhs-resolve",
+    }
+    payload = {"url": "https://xhslink.com/a/local-contract", "purpose": "replica"}
+    resolved = client.post("/api/viral/link-resolutions", headers=headers, json=payload)
+    assert resolved.status_code == 200, resolved.text
+    replay = client.post("/api/viral/link-resolutions", headers=headers, json=payload)
+    assert replay.json() == resolved.json()
+    assert transport.calls == 1
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "INSERT INTO runtime_settings (id, max_generation_count_per_batch, "
+            "max_concurrent_h3_tasks, active_storage_provider, updated_by_user_id) "
+            "VALUES (1, 4, 2, 'cos', %s)",
+            (user["user_id"],),
+        )
+    item = resolved.json()["item"]
+    assert item["platform"] == "xiaohongshu"
+    assert item["videoId"] == "66e012345678901234abcdef"
+    headers["Idempotency-Key"] = resolved.json()["importIdempotencyKey"]
+    task_body = {"platform": item["platform"], "videoId": item["videoId"], "purpose": "replica"}
+    imported = client.post("/api/viral/videos/import-tasks", headers=headers, json=task_body)
+    assert imported.status_code == 202, imported.text
+    repeated = client.post("/api/viral/videos/import-tasks", headers=headers, json=task_body)
+    assert repeated.json()["id"] == imported.json()["id"]
+    with psycopg.connect(route_state) as raw:
+        assert (
+            run_worker_once(
+                BusinessConnection.postgres(raw), worker_id="xhs-account-test", storage=storage
+            )
+            == 1
+        )
+    completed = client.get("/api/viral/import-tasks/" + imported.json()["id"], headers=headers)
+    assert completed.json()["status"] == "SUCCEEDED", completed.text
+    with psycopg.connect(route_state) as conn:
+        assert conn.execute("SELECT count(*) FROM viral_import_tasks").fetchone()[0] == 1
+        assert conn.execute("SELECT owner_user_id FROM projects").fetchone()[0] == user["user_id"]
+        assert (
+            conn.execute(
+                "SELECT project_id FROM assets WHERE id = %s", (completed.json()["sourceAssetId"],)
+            ).fetchone()[0]
+            == completed.json()["projectId"]
+        )
+
+
+@pytest.mark.parametrize("operation", ["unbind", "revoke"])
+def test_password_device_admin_revocation_and_signed_grants_are_isolated(
+    client: TestClient, route_state: str, operation: str
+) -> None:
+    from datetime import UTC, datetime
+
+    from fastapi import HTTPException
+
+    from app.auth import authenticate_user
+    from app.customer_auth import verify_session_context
+    from app.customer_device_service import admin_unbind_device, revoke_device_credential
+    from app.db_portable import BusinessConnection
+    from app.media_routes import signed_asset_session_epoch, validate_signed_asset_grant
+
+    user = client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD}).json()
+    first = _password_login(client).json()
+    second = _password_login(client, device_fingerprint="password-device-two").json()
+    with psycopg.connect(route_state) as raw:
+        raw.execute(
+            "INSERT INTO users (id, username, display_name, role) "
+            "VALUES ('admin-test', 'admin-test', 'Admin', 'admin')"
+        )
+        raw.execute(
+            "INSERT INTO projects (id, owner_user_id, name) VALUES ('grant-project', %s, 'Grant')",
+            (user["user_id"],),
+        )
+        raw.execute(
+            "INSERT INTO assets (id, project_id, kind, storage_uri, sha256, size_bytes, "
+            "content_type, created_by_user_id) VALUES ('grant-asset', 'grant-project', "
+            "'reference_video', 'cos://test/grant.mp4', %s, 8, 'video/mp4', %s)",
+            ("0" * 64, user["user_id"]),
+        )
+    grants = []
+    for session in (first, second):
+        with psycopg.connect(route_state) as raw:
+            conn = BusinessConnection.postgres(raw)
+            conn.ctx = verify_session_context(
+                raw, presentation_session_token=session["session_token"]
+            )
+            actor = authenticate_user(conn, user["user_id"])
+            grant = signed_asset_session_epoch(conn, actor)
+            assert grant == f"{session['session_id']}:{session['session_epoch']}"
+            assert (
+                validate_signed_asset_grant(
+                    conn, user_id=user["user_id"], asset_id="grant-asset", session_epoch=grant
+                )["id"]
+                == "grant-asset"
+            )
+            grants.append(grant)
+    assert grants[0] != grants[1]
+    with psycopg.connect(route_state) as raw:
+        fn = admin_unbind_device if operation == "unbind" else revoke_device_credential
+        fn(
+            raw,
+            device_id=first["device_id"],
+            admin_user_id="admin-test",
+            reason="contract test",
+            request_id="admin-device-test",
+            server_now=datetime.now(UTC),
+        )
+    with psycopg.connect(route_state) as raw:
+        conn = BusinessConnection.postgres(raw)
+        with pytest.raises(HTTPException) as denied:
+            validate_signed_asset_grant(
+                conn, user_id=user["user_id"], asset_id="grant-asset", session_epoch=grants[0]
+            )
+        assert denied.value.status_code == 403
+        assert (
+            validate_signed_asset_grant(
+                conn, user_id=user["user_id"], asset_id="grant-asset", session_epoch=grants[1]
+            )["id"]
+            == "grant-asset"
+        )
+        assert (
+            raw.execute("SELECT activation_code_id FROM admin_device_events").fetchone()[0] is None
+        )
+    assert (
+        client.post(
+            "/api/customer/sessions/heartbeat",
+            headers={"Authorization": "Bearer " + second["session_token"]},
+        ).status_code
+        == 200
+    )

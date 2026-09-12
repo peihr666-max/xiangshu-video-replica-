@@ -123,7 +123,7 @@ class CustomerProfileResponse(BaseModel):
     activation_status: str | None
     activated_at: str | None
     device_slots_used: int
-    device_slots_total: int
+    device_slots_total: int | None
 
 
 class UpdateCustomerProfileRequest(BaseModel):
@@ -739,7 +739,7 @@ def _customer_profile(conn: psycopg.Connection, *, user_id: str) -> CustomerProf
         activation_status=str(row[4]) if row[4] is not None else None,
         activated_at=str(row[5]) if row[5] is not None else None,
         device_slots_used=int(row[6]),
-        device_slots_total=int(row[7]),
+        device_slots_total=None,
     )
 
 

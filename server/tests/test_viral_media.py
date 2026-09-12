@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, Lock
@@ -141,6 +142,24 @@ def _pipeline(
 def test_viral_media_key_naming() -> None:
     assert viral_media_key("douyin", "v1", "audio") == "viral/douyin/v1.mp3"
     assert viral_media_key("wechat_channels", "v2", "video") == ("viral/wechat_channels/v2.mp4")
+
+
+@pytest.mark.parametrize("prefer,expected", [(None, "audio"), ("video", "video")])
+def test_xiaohongshu_media_uses_plain_download_and_cache(prefer: str | None, expected: str) -> None:
+    video = replace(_video("douyin", "note"), platform="xiaohongshu")
+    fetcher = FakeFetcher(
+        {
+            "https://cdn.test/note.mp3": b"ID3sample",
+            "https://cdn.test/note.mp4": b"\x00\x00\x00\x18ftypisom-sample",
+        }
+    )
+    pipeline, storage, _, detail_transport = _pipeline(fetcher=fetcher)
+    result = pipeline.fetch(video, prefer=prefer)
+    assert result.kind == expected
+    assert "viral/xiaohongshu/" in result.storage_uri
+    assert pipeline.fetch(video, prefer=prefer).cache_hit is True
+    assert len(fetcher.calls) == 1
+    assert detail_transport.bodies == []
 
 
 def test_unsafe_video_id_uses_stable_flat_storage_name(tmp_path: Path) -> None:

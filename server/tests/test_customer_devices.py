@@ -403,21 +403,21 @@ def test_list_devices_rejects_unknown_token(client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "DEVICE_CREDENTIAL_INVALID"
 
 
-def test_list_devices_shows_slot_one_bound_slot_two_free(client: TestClient) -> None:
+def test_list_devices_shows_only_bound_slots_without_capacity_placeholders(
+    client: TestClient,
+) -> None:
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-dev-1", suffix="d1")
     response = client.get(DEVICES_PATH, headers=_bearer(customer["device_token"]))
     assert response.status_code == 200, response.text
     body = response.json()
 
-    assert [slot["slot_no"] for slot in body["slots"]] == [1, 2]
+    assert [slot["slot_no"] for slot in body["slots"]] == [1]
     slot_one = body["slots"][0]
-    slot_two = body["slots"][1]
     assert slot_one["device"] is not None
     assert slot_one["device"]["id"] == customer["device_id"]
     assert slot_one["device"]["status"] == "BOUND"
     assert slot_one["device"]["is_current"] is True
     assert slot_one["device"]["bound_at"]
-    assert slot_two["device"] is None
     assert body["history"] == []
 
 
@@ -637,7 +637,7 @@ def test_unbind_other_device_keeps_own_slot_and_session(client: TestClient) -> N
     assert listing.status_code == 200, listing.text
     body = listing.json()
     assert body["slots"][0]["device"] is not None
-    assert body["slots"][1]["device"] is None
+    assert len(body["slots"]) == 1
     assert [device["id"] for device in body["history"]] == [second_device_id]
 
 
@@ -700,7 +700,7 @@ def test_next_free_slot_reports_availability(devices_dsn: str) -> None:
             _bind_raw(conn, "code-slot", "slot_u", "dev-slot-1", 1)
             assert next_free_slot(conn, "code-slot") == 2, "slot 1 taken: slot 2 is free"
             _bind_raw(conn, "code-slot", "slot_u", "dev-slot-2", 2)
-            assert next_free_slot(conn, "code-slot") is None, "both slots taken: no free slot"
+            assert next_free_slot(conn, "code-slot") == 3, "no device capacity limit"
             # Releasing a slot frees it again for reuse.
             conn.execute(
                 "UPDATE customer_devices SET status = 'UNBOUND', unbound_at = %s "
@@ -1240,8 +1240,8 @@ def test_enroll_rejects_already_bound_fingerprint(client: TestClient) -> None:
     assert _count_rows("SELECT COUNT(*) FROM device_pairing_requests") == 0
 
 
-def test_enroll_third_device_blocked_slots_full(client: TestClient) -> None:
-    """Both slots BOUND: the third device cannot even start pairing."""
+def test_third_device_can_request_pairing(client: TestClient) -> None:
+    """Existing bound devices do not cap new pairing requests."""
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-pair-6", suffix="p6")
     _second_device_row(
         user_id=customer["user_id"],
@@ -1250,9 +1250,9 @@ def test_enroll_third_device_blocked_slots_full(client: TestClient) -> None:
         slot_no=2,
     )
     response = _enroll(client, code=FIRST_CODE, fingerprint="fp-pair-6-third", key="idem-p6")
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "DEVICE_SLOTS_FULL"
-    assert _count_rows("SELECT COUNT(*) FROM device_pairing_requests") == 0
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "PENDING"
+    assert _count_rows("SELECT COUNT(*) FROM device_pairing_requests") == 1
 
 
 def test_enroll_consumes_approved_pairing_binds_slot2(client: TestClient) -> None:
@@ -1339,9 +1339,8 @@ def test_enroll_same_key_different_body_conflicts(client: TestClient) -> None:
     assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
 
 
-def test_enroll_concurrent_slot2_exactly_one_winner(client: TestClient) -> None:
+def test_concurrent_pairing_allocates_distinct_available_slots(client: TestClient) -> None:
     """Two approved candidates race for slot 2: exactly one binds (§12.2-5)."""
-    import json as _json
     import threading
 
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-pair-10", suffix="p10")
@@ -1383,13 +1382,11 @@ def test_enroll_concurrent_slot2_exactly_one_winner(client: TestClient) -> None:
         assert not thread.is_alive(), "a concurrent enroll worker hung"
 
     statuses = sorted(status for status, _ in results)
-    assert statuses == [201, 409], results
-    loser_body = _json.loads([body for status, body in results if status == 409][0])
-    assert loser_body["detail"]["code"] == "DEVICE_SLOTS_FULL"
+    assert statuses == [201, 201], results
 
-    assert _count_rows("SELECT COUNT(*) FROM customer_devices WHERE status = 'BOUND'") == 2
+    assert _count_rows("SELECT COUNT(*) FROM customer_devices WHERE status = 'BOUND'") == 3
     consumed = _count_rows("SELECT COUNT(*) FROM device_pairing_requests WHERE status = 'CONSUMED'")
-    assert consumed == 1
+    assert consumed == 2
 
 
 def test_enroll_expired_pending_flips_and_creates_new(client: TestClient) -> None:
@@ -1429,14 +1426,8 @@ def test_enroll_approved_then_expired_restarts(client: TestClient) -> None:
     assert row[3] is not None  # the lapsed approval stays visible in the audit
 
 
-def test_enroll_consume_with_slots_full_keeps_approved(client: TestClient) -> None:
-    """Consumption against two BOUND slots: 409 now, pairing still APPROVED.
-
-    The rolled-back consumption must also leave *no* envelope placeholder
-    behind (the idempotency key stays spendable — PR #49 Codex review P2),
-    and a slot freed afterwards must let the very same key finish the
-    consumption inside the expiry window.
-    """
+def test_pairing_consumption_allocates_third_slot_and_replays(client: TestClient) -> None:
+    """A newly occupied slot does not block an approved pairing; replay is stable."""
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-pair-13", suffix="p13")
     enroll = _enroll(client, code=FIRST_CODE, fingerprint="fp-pair-13-second", key="idem-p13")
     assert enroll.status_code == 202, enroll.text
@@ -1445,42 +1436,21 @@ def test_enroll_consume_with_slots_full_keeps_approved(client: TestClient) -> No
 
     # Slot 2 gets taken by another binding before the consume retry.
     rival_device_id = str(uuid.uuid4())
-    rival_token = _second_device_row(
+    _second_device_row(
         user_id=customer["user_id"],
         activation_code_id=_code_id_of_user(customer["user_id"]),
         device_id=rival_device_id,
         slot_no=2,
     )
-    blocked = _enroll(client, code=FIRST_CODE, fingerprint="fp-pair-13-second", key="idem-p13")
-    assert blocked.status_code == 409, blocked.text
-    assert blocked.json()["detail"]["code"] == "DEVICE_SLOTS_FULL"
-
-    with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
-        row = _pairing_row(conn, pairing_id)
-    assert row is not None and row[0] == "APPROVED"
-
-    # The rolled-back consumption took its envelope placeholder with it: no
-    # half-spent device_enroll envelope survives the 409.
-    assert (
-        _count_rows(
-            "SELECT COUNT(*) FROM customer_idempotency_envelopes WHERE operation = 'device_enroll'"
-        )
-        == 0
-    )
-
-    # Free slot 2 through the unbind route, then finish the consumption with
-    # the very same key — the pairing row rides the full round trip.
-    unbind = client.delete(
-        f"{DEVICES_PATH}/{rival_device_id}",
-        headers={**_bearer(rival_token), IDEMPOTENCY_KEY_HEADER: "idem-p13-free"},
-    )
-    assert unbind.status_code == 204, unbind.text
-    retry = _enroll(client, code=FIRST_CODE, fingerprint="fp-pair-13-second", key="idem-p13")
-    assert retry.status_code == 201, retry.text
-    assert retry.json()["slot_no"] == 2
+    created = _enroll(client, code=FIRST_CODE, fingerprint="fp-pair-13-second", key="idem-p13")
+    assert created.status_code == 201, created.text
+    assert created.json()["slot_no"] == 3
+    replay = _enroll(client, code=FIRST_CODE, fingerprint="fp-pair-13-second", key="idem-p13")
+    assert replay.json() == created.json()
     with psycopg.connect(_t16_dsn(), autocommit=True) as conn:
         row = _pairing_row(conn, pairing_id)
     assert row is not None and row[0] == "CONSUMED"
+    assert _count_rows("SELECT COUNT(*) FROM customer_devices WHERE status = 'BOUND'") == 3
 
 
 def test_approve_requires_bearer_token(client: TestClient) -> None:
@@ -2848,7 +2818,7 @@ def test_admin_device_events_downgrade_guard(route_state: str) -> None:
         command.downgrade(config, "037_device_pairing_requests")
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "20260912T1400_customer_registration_credentials"
+    assert version == "20260912T1910_xiaohongshu_link_import"
 
 
 # ---------------------------------------------------------------------------
@@ -2925,7 +2895,7 @@ def test_pairing_downgrade_refuses_once_rows_exist(route_state: str) -> None:
     # the version stays at the current head.
     with psycopg.connect(_t16_dsn()) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-    assert version == "20260912T1400_customer_registration_credentials"
+    assert version == "20260912T1910_xiaohongshu_link_import"
 
     # An emptied table downgrades symmetrically, and upgrading back restores
     # the schema for any rerun of this module. Revision 038 added the

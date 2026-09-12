@@ -208,6 +208,7 @@ function RunningRowMenu({ task }: { task: StudioTask }) {
 
 export function WorkbenchPage() {
   const {
+    requireLogin,
     data,
     user,
     review,
@@ -415,6 +416,10 @@ export function WorkbenchPage() {
     ? data.videos.find((video) => video.id === state.draft.sourceId)
     : undefined;
   const begin = async (mode: "copy" | "replica") => {
+    if (requireLogin) {
+      requireLogin();
+      return;
+    }
     if (review) {
       navigate(mode);
       return;
@@ -504,6 +509,10 @@ export function WorkbenchPage() {
     openLive("projects");
   };
   const handleUploadFile = (file: File) => {
+    if (requireLogin) {
+      requireLogin();
+      return;
+    }
     if (!/\.(mp4|mov)$/i.test(file.name)) {
       notify("目前仅支持 MP4 / MOV 视频文件。");
       return;
@@ -612,6 +621,10 @@ export function WorkbenchPage() {
             className="studio-upload-icon"
             aria-label="上传视频"
             onClick={() => {
+              if (requireLogin) {
+                requireLogin();
+                return;
+              }
               if (review) {
                 notify("审核示例不执行真实上传。");
                 return;
@@ -623,7 +636,7 @@ export function WorkbenchPage() {
           </button>
           <input
             aria-label="视频链接"
-            placeholder="粘贴抖音视频链接"
+            placeholder="粘贴抖音或小红书视频链接"
             value={sourceLink}
             onChange={(event) => {
               linkOperationRef.current += 1;
@@ -674,8 +687,7 @@ export function WorkbenchPage() {
           </p>
         )}
         <p className="studio-start-helper">
-          链接解析当前支持抖音视频；视频号及其他平台请上传 MP4/MOV
-          文件。解析最长约 60 秒。
+          支持抖音、小红书视频链接；其他平台请上传 MP4/MOV 文件。
         </p>
         {linkState.status === "error" && (
           <p className="viral-media-status is-error" role="alert">
@@ -1881,7 +1893,7 @@ export function ProfilePage({
                   <dd>
                     {accountSummary?.walletStatus === "ready" &&
                     accountSummary.availableCredits !== null
-                      ? `${accountSummary.availableCredits} 秒`
+                      ? `${accountSummary.availableCredits} 积分`
                       : accountSummary?.walletStatus === "loading"
                         ? "查询中"
                         : accountSummary?.walletStatus === "error"
@@ -1929,7 +1941,7 @@ export function ProfilePage({
               <div className="studio-device-summary">
                 <span>
                   {review
-                    ? "已绑定 2 台 · 同时 1 台在线"
+                    ? "多台设备可同时在线"
                     : "进入设备管理查看当前绑定记录"}
                 </span>
                 <Button onClick={() => openLive("profile")}>管理设备</Button>

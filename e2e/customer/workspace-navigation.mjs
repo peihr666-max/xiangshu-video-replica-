@@ -31,3 +31,20 @@ export async function openCustomerWallet(page) {
   // V1.4: the 使用记录 tab opens the wallet page (余额与充值) directly.
   await page.getByRole("tab", { name: "使用记录", exact: true }).click();
 }
+
+/** A throwaway account exercises the actual public password entry. */
+export async function enterCustomerAccount(page, username, register = true) {
+  await page.goto(register ? "/register" : "/login");
+  await page.getByLabel("用户名", { exact: true }).fill(username);
+  await page.getByLabel("密码", { exact: true }).fill("test-6");
+  if (register)
+    await page.getByLabel("确认密码", { exact: true }).fill("test-6");
+  await page
+    .getByRole("button", {
+      name: register ? "注册并登录" : "登录",
+      exact: true,
+    })
+    .click();
+  await waitForCustomerWorkspace(page);
+  await expect(page).toHaveURL(/#studio\/workbench$/);
+}

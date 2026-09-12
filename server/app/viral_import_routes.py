@@ -34,6 +34,7 @@ from app.viral_link import (
     ViralLinkError,
     douyidou_link_client_from_settings,
     normalize_supported_link,
+    supported_link_platform,
 )
 from app.viral_media import UrlFetcher, ViralMediaError, ViralMediaPipeline
 from app.viral_routes import ViralVideoItem
@@ -343,7 +344,7 @@ def resolve_viral_link(
                     actor=actor,
                     action="viral.link.resolve",
                     entity_type="viral_link",
-                    entity_id="douyin",
+                    entity_id=supported_link_platform(normalized_url),
                 )
                 receipt, created = _claim_link_receipt(
                     conn,

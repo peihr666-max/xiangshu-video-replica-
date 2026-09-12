@@ -29,6 +29,7 @@ export type CustomerScreenEvent =
   // The activation form (or an idempotent replay of it) established the
   // account, the first device credential, and a live session.
   | { type: "activation-succeeded" }
+  | { type: "password-login-succeeded" }
   // A login with the stored device credential established a session.
   | { type: "login-succeeded" }
   // 401 OTHER_DEVICE_ONLINE during login: another device holds the live lease.
@@ -77,6 +78,13 @@ export function customerScreenReducer(
       // anywhere else it would be a stale dispatch (e.g. a late reply racing
       // the boot check) and must not move the UI.
       return screen === "activation" ? "workspace" : screen;
+
+    case "password-login-succeeded":
+      return screen === "activation" ||
+        screen === "login" ||
+        screen === "binding-conflict"
+        ? "workspace"
+        : screen;
 
     case "login-succeeded":
       // A login ends on the workspace; the explicit switch ends there too —
