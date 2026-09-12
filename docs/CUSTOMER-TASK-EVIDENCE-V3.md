@@ -1142,3 +1142,8 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 - 证据层级：**AUTOMATED_VERIFIED**（真实 PG 16 容器 vs-pg-cw068@5441、专属库 cw068_publish_accounts_test，不触碰他任务端口）。真实平台探测/发布链路**不得标 PRODUCTION_GO**——按硬红线需真实凭据人工授权，本轮全部使用合成凭据且 `_dispatch_probe` 被 monkeypatch 替换**不触网**；整个 `server/app/publishers/`（21 文件）无测试直接执行，如实登记为 **CODE_PRESENT**。
 - 详细证据：`docs/evidence/CW068-EVIDENCE.md`（§2.3 CW-060 修复与注释字面量陷阱、§3.3 CW-056 冻结矩阵四项常量实质同步 + digest 真实 PG 重算 `a23fa275…`、§4.2 A1–A12 映射、§6.5 baseline 归因表、§8.1 计划偏离 **24** 项、§8.2 CODE_PRESENT 面、**§8.5 基线已过时的合并前置动作清单**——origin/main 已前进到 `2be7c3d`，冲突面精确 5 文件：`pg_test_kit.py` 双方同一插入点需保留两侧注册项、4 个 `shard-*.txt` 双方均重生成故**不可手工合并**，须在合并后树上重跑 `build-test-shards.py --shards 4` 使覆盖数达 **119**，否则 CW-061 的 CI-7 fail-closed 守卫报红）。本分支**未 commit、未 push**（owner 未授权）。
 
+
+
+## FIX-TESTBASE-20260912 / 独立前置：日期敏感测试夹具
+
+独立评审 PASS；完整本地静态门通过（前端 1344 passed、TypeScript、Biome、Tauri、ruff、format、mypy）；服务端四个独占 PG16 分片合计 2845 passed、1 原有 TLS 场景跳过，覆盖检查通过、退出码均为 0。此前中断的慢速分片保留日志，不记作通过。最终 PG 使用临时内存盘，fsync 和 synchronous_commit 保持默认开启；未执行生产或真实服务验收。 [任务证据](evidence/FIX-TESTBASE-20260912.md)。
