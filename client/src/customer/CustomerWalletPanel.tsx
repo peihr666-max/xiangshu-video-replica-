@@ -49,6 +49,7 @@ export function CustomerWalletPanel({
   const [pendingOrderNo, setPendingOrderNo] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [pollingError, setPollingError] = useState("");
   const [summaryError, setSummaryError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -265,6 +266,7 @@ export function CustomerWalletPanel({
   }, []);
 
   useEffect(() => {
+    setPollingError("");
     if (!pendingOrderNo) {
       return;
     }
@@ -286,7 +288,7 @@ export function CustomerWalletPanel({
         if (!active) {
           return;
         }
-        setError("");
+        setPollingError("");
         if (order.status === "PAID") {
           setPendingOrderNo(null);
           setNotice("充值已到账，钱包余额已更新。");
@@ -309,7 +311,7 @@ export function CustomerWalletPanel({
         if (!active) {
           return;
         }
-        setError(errorMessage(cause, "暂时无法查询充值状态。"));
+        setPollingError(errorMessage(cause, "暂时无法查询充值状态。"));
         if (attempts >= MAX_ORDER_POLL_ATTEMPTS) {
           return;
         }
@@ -520,9 +522,9 @@ export function CustomerWalletPanel({
             {isCreating ? "正在创建订单" : "确认充值"}
           </button>
         </form>
-        {error ? (
+        {error || pollingError ? (
           <p className="settings-error" role="alert">
-            {error}
+            {error || pollingError}
           </p>
         ) : null}
         {notice ? (
