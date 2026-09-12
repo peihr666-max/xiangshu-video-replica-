@@ -1154,4 +1154,4 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 ## FIX-WALLETSTATUS-20260912 / 钱包提示竞态前置修复
 
-确定性验证删除失败后流水完成、轮询成功/失败均保留用户错误；轮询恢复可清理自身错误。独立只读评审 review_w13 PASS，11 项组件测试通过；全量门禁待完成。[任务证据](evidence/FIX-WALLETSTATUS-20260912.md)。
+AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2845 passed、1 原有 TLS 场景跳过；前端 1348 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-WALLETSTATUS-20260912.md)。
