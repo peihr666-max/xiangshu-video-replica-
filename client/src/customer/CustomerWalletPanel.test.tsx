@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -648,71 +649,175 @@ describe("CustomerWalletPanel", () => {
     ).toBeGreaterThanOrEqual(2);
   });
 
-  it("does not clear a newer order-action error when the initial ledger finishes", async () => {
-    let resolveLedger:
-      | ((value: Awaited<ReturnType<typeof jsonResponse>>) => void)
-      | undefined;
-    const delayedLedger = new Promise<Awaited<ReturnType<typeof jsonResponse>>>(
-      (resolve) => {
+  it.each(["success", "failure"] as const)(
+    "preserves an order-action error after the initial ledger and a late %s poll",
+    async (pollOutcome) => {
+      let resolveLedger:
+        | ((value: Awaited<ReturnType<typeof jsonResponse>>) => void)
+        | undefined;
+      const delayedLedger = new Promise<
+        Awaited<ReturnType<typeof jsonResponse>>
+      >((resolve) => {
         resolveLedger = resolve;
+      });
+      let resolvePoll: (
+        value: Awaited<ReturnType<typeof jsonResponse>>,
+      ) => void = () => undefined;
+      let rejectPoll: (error: Error) => void = () => undefined;
+      const delayedPoll = new Promise<Awaited<ReturnType<typeof jsonResponse>>>(
+        (resolve, reject) => {
+          resolvePoll = resolve;
+          rejectPoll = reject;
+        },
+      );
+      const pendingOrder = {
+        order_no: "order-pending",
+        status: "PENDING",
+        amount_fen: 10000,
+        credits: 10,
+        channel: "wxpay",
+        created_at: "2026-09-07 10:00:00",
+        paid_at: null,
+      };
+      const fetchMock = vi.fn((url: string, options?: RequestInit) => {
+        if (url.endsWith("/api/customer/wallet")) {
+          return jsonResponse(wallet);
+        }
+        if (url.includes("/api/customer/wallet/transactions?")) {
+          return delayedLedger;
+        }
+        if (url.includes("/api/customer/recharge-orders?")) {
+          return jsonResponse({
+            items: [pendingOrder],
+            total: 1,
+            limit: 20,
+            offset: 0,
+          });
+        }
+        if (
+          url.endsWith("/api/customer/recharge-orders/order-pending") &&
+          options?.method === "DELETE"
+        ) {
+          return Promise.reject(new Error("关闭订单失败"));
+        }
+        if (url.endsWith("/api/customer/recharge-orders/order-pending")) {
+          return delayedPoll;
+        }
+        return jsonResponse({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(
+        <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
+      );
+
+      await screen.findByText("order-pending");
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining(
+            "/api/customer/recharge-orders/order-pending",
+          ),
+          expect.objectContaining({ method: "GET" }),
+        ),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "删除待支付订单" }));
+      await waitFor(() => {
+        expect(screen.getByText("关闭订单失败")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        resolveLedger?.(
+          await jsonResponse({
+            items: [
+              {
+                id: "late-ledger",
+                user_id: "user-1",
+                type: "CHARGE",
+                available_delta: 37,
+                reserved_delta: 0,
+                recharge_order_id: "ledger-order",
+                task_id: null,
+                billing_round: null,
+                created_at: "2026-09-07 11:00:00",
+              },
+            ],
+            total: 1,
+            limit: 20,
+            offset: 0,
+          }),
+        );
+      });
+      expect(await screen.findByText("+37 秒")).toBeInTheDocument();
+      expect(screen.getByText("关闭订单失败")).toBeInTheDocument();
+
+      // Deliver the real polling result after the user operation and ledger.
+      // No sleep or transient DOM node can accidentally satisfy this ordering.
+      await act(async () => {
+        if (pollOutcome === "success") {
+          resolvePoll(await jsonResponse(pendingOrder));
+        } else {
+          rejectPoll(new Error("查询订单失败"));
+        }
+      });
+      expect(screen.getByText("关闭订单失败")).toBeInTheDocument();
+      expect(screen.queryByText("查询订单失败")).not.toBeInTheDocument();
+    },
+  );
+
+  it("clears a polling error when the next status poll succeeds", async () => {
+    const pendingOrder = {
+      order_no: "poll-recovery",
+      status: "PENDING",
+      amount_fen: 10000,
+      credits: 10,
+      channel: "wxpay",
+      created_at: "2026-09-07 10:00:00",
+      paid_at: null,
+    };
+    const poll = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("查询订单暂时失败"))
+      .mockImplementation(() => jsonResponse(pendingOrder));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.endsWith("/api/customer/wallet")) return jsonResponse(wallet);
+        if (url.endsWith("/api/customer/recharge-orders/poll-recovery"))
+          return poll();
+        if (url.includes("/api/customer/recharge-orders?")) {
+          return jsonResponse({
+            items: [pendingOrder],
+            total: 1,
+            limit: 20,
+            offset: 0,
+          });
+        }
+        return jsonResponse({ items: [], total: 0, limit: 20, offset: 0 });
+      }),
+    );
+    const realTimeout = window.setTimeout.bind(window);
+    let runNextPoll: (() => void) | undefined;
+    vi.spyOn(window, "setTimeout").mockImplementation(
+      (handler, delay, ...args) => {
+        if (delay === 2000 && typeof handler === "function") {
+          runNextPoll = handler as () => void;
+          return 0;
+        }
+        return realTimeout(handler, delay, ...args);
       },
     );
-    const fetchMock = vi.fn((url: string, options?: RequestInit) => {
-      if (url.endsWith("/api/customer/wallet")) {
-        return jsonResponse(wallet);
-      }
-      if (url.includes("/api/customer/wallet/transactions?")) {
-        return delayedLedger;
-      }
-      if (url.includes("/api/customer/recharge-orders?")) {
-        return jsonResponse({
-          items: [
-            {
-              order_no: "order-pending",
-              status: "PENDING",
-              amount_fen: 10000,
-              credits: 10,
-              channel: "wxpay",
-              created_at: "2026-09-07 10:00:00",
-              paid_at: null,
-            },
-          ],
-          total: 1,
-          limit: 20,
-          offset: 0,
-        });
-      }
-      if (
-        url.endsWith("/api/customer/recharge-orders/order-pending") &&
-        options?.method === "DELETE"
-      ) {
-        return Promise.reject(new Error("关闭订单失败"));
-      }
-      return jsonResponse({});
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(
       <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
     );
-
-    await screen.findByText("order-pending");
-    fireEvent.click(screen.getByRole("button", { name: "删除待支付订单" }));
-    // waitFor + getByText 而非 findByText + toBeInTheDocument：CI 慢环境下
-    // checkOrder 轮询 useEffect 与 closePendingOrder 竞态会让 findByText
-    // 拿到短暂出现后被 replace 的 stale DOM node，导致 toBeInTheDocument
-    // 报 "element could not be found in the document"。waitFor 会重试整个
-    // 断言直到 error 元素稳定挂载（asyncUtilTimeout 3000ms 全局配置）。
-    await waitFor(() => {
-      expect(screen.getByText("关闭订单失败")).toBeInTheDocument();
+    expect(await screen.findByText("查询订单暂时失败")).toBeInTheDocument();
+    expect(runNextPoll).toBeTypeOf("function");
+    await act(async () => {
+      runNextPoll?.();
     });
-
-    resolveLedger?.(
-      await jsonResponse({ items: [], total: 0, limit: 20, offset: 0 }),
-    );
-    await delayedLedger;
-    await waitFor(() => {
-      expect(screen.getByText("关闭订单失败")).toBeInTheDocument();
-    });
+    expect(poll).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("查询订单暂时失败")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("支付结果确认中，请完成支付后返回本页。"),
+    ).toBeInTheDocument();
   });
 });
