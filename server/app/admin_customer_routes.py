@@ -865,6 +865,7 @@ def list_customers(
                 "ac.id, ac.masked_code, ac.status, "
                 "COALESCE(w.available_credits, 0), COALESCE(w.reserved_credits, 0), "
                 "COALESCE(devices.slots_used, 0), "
+                "u.max_devices, "
                 "COALESCE(usage.generation_total, 0), "
                 "COALESCE(usage.generation_succeeded, 0), "
                 "COALESCE(usage.generation_failed, 0), "
@@ -938,13 +939,13 @@ def list_customers(
             "available_credits": int(row[7]),
             "reserved_credits": int(row[8]),
             "device_slots_used": int(row[9]),
-            "device_slots_total": 2,
-            "generation_total": int(row[10]),
-            "generation_succeeded": int(row[11]),
-            "generation_failed": int(row[12]),
-            "generation_in_progress": int(row[13]),
-            "generation_attention": int(row[14]),
-            "credits_spent": int(row[15]),
+            "device_slots_total": int(row[10]),
+            "generation_total": int(row[11]),
+            "generation_succeeded": int(row[12]),
+            "generation_failed": int(row[13]),
+            "generation_in_progress": int(row[14]),
+            "generation_attention": int(row[15]),
+            "credits_spent": int(row[16]),
         }
         for row in rows
     ]
