@@ -21,7 +21,7 @@ downgrade 的维度收窄会孤儿化 ``security_auth_failures`` 里已落的 ``
 （该表 append-only，无法删除），故按 R-B / 039 先例显式 ``RuntimeError`` 拒绝。
 
 Revision ID: 089_customer_api_keys
-Revises: 086_remove_device_slot_constraints
+Revises: 083_recharge_orders_multi_provider
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "089_customer_api_keys"
-down_revision = "086_remove_device_slot_constraints"
+down_revision = "083_recharge_orders_multi_provider"
 branch_labels = None
 depends_on = None
 

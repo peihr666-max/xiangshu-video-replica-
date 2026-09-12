@@ -56,7 +56,7 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
-# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→086 + CW-078 089）。
+# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→083 + CW-078 089）。
 HEAD_REVISION = "089_customer_api_keys"
 
 # 最后一个已发布（受支持）起点。其后的 056–089 尚未随任何受支持版本发布，
@@ -102,7 +102,7 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "tables": 77,
-    "columns": 910,
+    "columns": 913,
     "identity_columns": 0,
     "sequences": 3,
     "jsonb_columns": 0,
@@ -110,7 +110,7 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "triggers": 18,
     "partial_indexes": 24,
     "unique_constraints": 27,
-    "check_constraints": 224,
+    "check_constraints": 227,
     "foreign_keys": 146,
     "primary_keys": 77,
 }
@@ -122,12 +122,13 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
 # check_constraints +3（platform/status/verify_flag 三条 CHECK）、foreign_keys +1
 # （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
 # partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
-# CW-078 089 的增量：本表名集追加 customer_api_keys（本分支链尾迁移新建的表），
-# 而 HEAD_SCHEMA_COUNTS/HEAD_SCHEMA_DIGEST 仍冻结在 086 基线（main 现状，tables=77）
-# ——它们是全局 post-linearization 不变量，须待 integrator 折叠 083/088/089 并行
-# 迁移后一次性重算（沿 CW-076 先例）。故 B 组真实 PG 矩阵在重算前预期红：表名集
-# 断言（sorted(inventory["tables"]) == sorted(HEAD_TABLE_NAMES)）已含 customer_api_keys
-# 而通过，counts/digest 断言随 089 漂移而红，integrator 重算后一并转绿。
+# CW-078 089 的增量：本表名集追加 customer_api_keys（本分支链尾迁移 089 新建的表，
+# 已 linearize 到 main 现头 083 之上：082→086→083→089）。HEAD_SCHEMA_COUNTS 与
+# HEAD_SCHEMA_DIGEST 仍冻结在 main 的 083 基线（tables=77、columns=913、
+# check_constraints=227）——它们是全局 post-linearization 不变量，须待 integrator
+# 折叠其余并行迁移（088/089）后一次性重算（沿 CW-076 先例）。故 B 组真实 PG 矩阵
+# 在重算前预期红：表名集断言（inventory 的 tables 与 HEAD_TABLE_NAMES 排序相等）
+# 因已含 customer_api_keys 而通过，counts/digest 断言随 089 漂移而红，重算后转绿。
 HEAD_TABLE_NAMES: tuple[str, ...] = (
     "activation_code_activations",
     "activation_code_batches",
@@ -214,7 +215,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 这是「空库→head」与「旧起点→head」必须**收敛到同一 schema** 的机器化断言 ——
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
-HEAD_SCHEMA_DIGEST = "04522ed4825f28a1966366b60502944455e2486cd51d0040127b687d804c3fcd"
+HEAD_SCHEMA_DIGEST = "c6b1d59f2d529463dfcd1a0400d3173e8bb6d0c9341cc158946200394befa891"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (
