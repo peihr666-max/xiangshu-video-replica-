@@ -64,6 +64,7 @@ CUSTOMER_PRODUCTION_ENV = "VIDEO_REPLICA_CUSTOMER_PRODUCTION"
 
 DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 3600
 DEFAULT_ADMIN_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60
+MAX_ADMIN_RECOVERY_TTL_SECONDS = 10 * 60
 MIN_ADMIN_SESSION_TTL_SECONDS = 60
 MAX_ADMIN_SESSION_TTL_SECONDS = 24 * 3600
 MIN_HMAC_KEY_BYTES = 32
@@ -83,6 +84,13 @@ ADMIN_CSRF_CONTEXT = b"video-replica:admin-csrf:v1"
 _TRUTHY = {"1", "true", "yes", "on"}
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _ADMIN_ROLES = frozenset({"admin", "auditor"})
+_RECOVERY_OPERATIONS = frozenset(
+    {
+        ("GET", "/api/control/admin/session"),
+        ("DELETE", "/api/control/admin/session"),
+        ("PUT", "/api/control/admin/password"),
+    }
+)
 
 
 class ExchangeCredentialError(ValueError):
@@ -504,6 +512,8 @@ def _create_admin_session_for_actor(
     reject_duplicate_as_reused: bool = False,
 ) -> tuple[AdminActor, str, str, int]:
     ttl_seconds = resolve_admin_session_ttl_seconds()
+    if auth_method == "exchange":
+        ttl_seconds = min(ttl_seconds, MAX_ADMIN_RECOVERY_TTL_SECONDS)
     session_token = secrets.token_urlsafe(32)
     csrf_token = _admin_csrf_token(session_token)
     client_ip = client_ip_from_request(request)
@@ -634,7 +644,10 @@ def load_admin_session(
     csrf_digest = ""
     with pg_transaction() as conn:
         row = conn.execute(
-            "SELECT s.id, s.csrf_digest, s.expires_at, s.last_activity_at, "
+            "SELECT s.id, s.csrf_digest, "
+            "CASE WHEN s.auth_method = 'exchange' THEN "
+            "LEAST(s.expires_at::timestamptz, s.created_at::timestamptz + interval '10 minutes') "
+            "ELSE s.expires_at::timestamptz END, s.last_activity_at, "
             "       s.auth_method, s.actor_user_id, u.username, u.display_name, u.role, "
             "       s.created_ip_digest, s.created_ua_digest, now() AS db_now "
             "FROM admin_sessions s JOIN users u ON u.id = s.actor_user_id "
@@ -770,6 +783,16 @@ def get_admin_actor(request: Request) -> AdminActor:
             raise _http(403, "ADMIN_CSRF_REQUIRED", "The CSRF header is required.")
         if not hmac.compare_digest(_sha256_hex(supplied), csrf_digest):
             raise _http(403, "ADMIN_CSRF_INVALID", "The CSRF token does not match.")
+    route = getattr(request.scope.get("route"), "path", request.url.path)
+    if (
+        actor.auth_method == "exchange"
+        and (request.method.upper(), route) not in _RECOVERY_OPERATIONS
+    ):
+        raise _http(
+            403,
+            "ADMIN_PASSWORD_RECOVERY_ONLY",
+            "This recovery session only permits password setup, session status and logout.",
+        )
     return actor
 
 
@@ -814,6 +837,7 @@ class ExchangeResponse(BaseModel):
     expires_at: str
     csrf_token: str
     actor: AdminActorInfo
+    auth_method: str
 
 
 class AdminSessionInfo(BaseModel):
@@ -822,6 +846,7 @@ class AdminSessionInfo(BaseModel):
     last_activity_at: str
     csrf_token: str | None = None
     actor: AdminActorInfo
+    auth_method: str
 
 
 router = APIRouter(prefix="/api/control/admin", tags=["admin-auth"])
@@ -845,6 +870,7 @@ def _exchange_response(actor: AdminActor, csrf_token: str) -> ExchangeResponse:
         session_id=actor.session_id,
         expires_at=actor.session_expires_at,
         csrf_token=csrf_token,
+        auth_method=actor.auth_method,
         actor=AdminActorInfo(
             user_id=actor.user_id,
             username=actor.username,
@@ -1013,7 +1039,7 @@ def login_admin_with_password(
 @router.put("/password", status_code=204)
 def recover_admin_password(
     body: PasswordRecoveryRequest,
-    actor: AdminWriter,
+    actor: AdminReader,
     response: Response,
 ) -> None:
     if actor.auth_method != "exchange":
@@ -1033,10 +1059,33 @@ def recover_admin_password(
         ) from exc
     try:
         with pg_transaction() as conn:
-            now_row = conn.execute("SELECT now()").fetchone()
-            if now_row is None:  # pragma: no cover - SELECT now() always returns a row
+            # Serialize recovery for an account, then re-check the one-time
+            # session inside the password-write transaction (hashing can take
+            # long enough for another request to revoke it in the meantime).
+            user_row = conn.execute(
+                "SELECT role FROM users WHERE id = %s AND is_active = 1 FOR UPDATE",
+                (actor.user_id,),
+            ).fetchone()
+            session_row = conn.execute(
+                "SELECT expires_at, created_at FROM admin_sessions "
+                "WHERE id = %s AND actor_user_id = %s "
+                "AND auth_method = 'exchange' AND revoked_at IS NULL "
+                "FOR UPDATE",
+                (actor.session_id, actor.user_id),
+            ).fetchone()
+            if user_row is None or str(user_row[0]) not in _ADMIN_ROLES or session_row is None:
+                raise _http(401, "ADMIN_SESSION_INVALID", "Recovery session is no longer valid.")
+            # now() is frozen at transaction start; a lock wait can cross expiry.
+            now_row = conn.execute("SELECT clock_timestamp()").fetchone()
+            if now_row is None:  # pragma: no cover - database clock always returns a row
                 raise RuntimeError("database clock unavailable")
             db_now = _as_datetime(now_row[0])
+            recovery_expires_at = min(
+                _as_datetime(session_row[0]),
+                _as_datetime(session_row[1]) + timedelta(seconds=MAX_ADMIN_RECOVERY_TTL_SECONDS),
+            )
+            if recovery_expires_at <= db_now:
+                raise _http(401, "ADMIN_SESSION_INVALID", "Recovery session is no longer valid.")
             conn.execute(
                 "INSERT INTO admin_password_credentials "
                 "(user_id, password_hash, credential_version, password_changed_at) "
@@ -1080,6 +1129,7 @@ def get_current_admin_session(
         session_id=actor.session_id,
         expires_at=actor.session_expires_at,
         last_activity_at=actor.last_activity_at,
+        auth_method=actor.auth_method,
         csrf_token=getattr(request.state, "admin_csrf_token", None),
         actor=AdminActorInfo(
             user_id=actor.user_id,

@@ -41,7 +41,7 @@ import psycopg
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pg_test_kit import require_pg_or_explicit_skip
+from pg_test_kit import password_admin_session, require_pg_or_explicit_skip
 
 from app.admin_auth_routes import (
     ADMIN_CSRF_HEADER,
@@ -195,10 +195,7 @@ def client(admin_app: FastAPI) -> Iterator[TestClient]:
 
 def _admin_session(client: TestClient, actor: str = "admin_u") -> dict[str, str]:
     """Exchange a real admin session cookie + CSRF header (the T12 pattern)."""
-    response = client.post(
-        "/api/control/admin/session/exchange",
-        json={"credential": issue_exchange_credential(actor, ttl_seconds=3600)},
-    )
+    response = password_admin_session(client, actor)
     assert response.status_code == 201, response.text
     cookie = response.cookies.get("admin_session") or ""
     return {"admin_session": cookie, ADMIN_CSRF_HEADER: response.json()["csrf_token"]}
@@ -251,9 +248,13 @@ ADMIN_WRITE_AUTHORITIES = {
 }
 ADMIN_READ_AUTHORITIES = ADMIN_WRITE_AUTHORITIES | {"get_admin_actor"}
 
-# Self-scoped logout revokes the caller's own session only; an auditor may
-# end their own read session, so the reader dependency is correct there.
-SELF_SCOPED_EXEMPT = {("DELETE", "/api/control/admin/session")}
+# Self-scoped recovery changes only the caller's password and revokes their
+# sessions. The recovery restriction is enforced inside get_admin_actor and
+# the password route; admin/auditor business writes retain writer authority.
+SELF_SCOPED_EXEMPT = {
+    ("DELETE", "/api/control/admin/session"),
+    ("PUT", "/api/control/admin/password"),
+}
 # Session establishment (credential exchange / password login) runs before
 # any session exists — they are the only dep-less admin routes.
 BOOTSTRAP_EXEMPT = {
@@ -312,7 +313,10 @@ def test_every_admin_method_path_carries_an_admin_authority() -> None:
             writes.append((method, path, deps))
         else:
             reads.append((method, path, deps))
-        if (method, path) in SELF_SCOPED_EXEMPT or (method, path) in BOOTSTRAP_EXEMPT:
+        if (method, path) in SELF_SCOPED_EXEMPT:
+            assert "get_admin_actor" in deps
+            continue
+        if (method, path) in BOOTSTRAP_EXEMPT:
             continue
         authority = ADMIN_WRITE_AUTHORITIES if kind == "WRITE" else ADMIN_READ_AUTHORITIES
         assert authority & set(deps), (
