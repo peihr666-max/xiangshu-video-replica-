@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
+import signal
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from threading import Event
+from types import FrameType
 
 from app.db_pg import (
     DatabaseMode,
@@ -38,6 +40,7 @@ from app.publish import (
     finalize_account_verify,
 )
 from app.settings import fernet_from_environment
+from app.worker_identity import new_worker_instance_id
 
 logger = logging.getLogger(__name__)
 
@@ -116,35 +119,89 @@ def _pg_round(*, worker_id: str) -> int:  # pragma: no cover - process loop
 
 
 def run_pg_forever(
-    *, worker_id: str, idle_seconds: float
+    *,
+    worker_id: str,
+    idle_seconds: float,
+    stop_event: Event | None = None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> None:  # pragma: no cover - process loop
+    stop = stop_event if stop_event is not None else Event()
+
+    def stopping() -> bool:
+        return stop.is_set() or (stop_requested is not None and stop_requested())
+
     if check_pg_ready() is None:
         raise RuntimeError("PostgreSQL publish worker readiness check returned no result")
-    while True:
+    while not stopping():
         try:
             processed = _pg_round(worker_id=worker_id)
         except Exception:
             logger.exception("publish worker iteration failed")
             processed = 0
         if processed == 0:
-            time.sleep(idle_seconds)
+            deadline = time.monotonic() + max(0.0, idle_seconds)
+            while not stopping():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                # Signals only set a lock-free flag. Bound the wait so even a
+                # long idle interval observes that flag within 200 milliseconds.
+                stop.wait(min(remaining, 0.2))
+
+
+@contextmanager
+def _shutdown_signals() -> Iterator[Callable[[], bool]]:
+    """Finish an in-flight probe, then exit without beginning another round."""
+    previous = {}
+    requested = False
+
+    def request_stop(_signum: int, _frame: FrameType | None) -> None:
+        # Event.set() can deadlock if a signal interrupts Event.wait() while
+        # its non-reentrant condition lock is held on this same main thread.
+        nonlocal requested
+        requested = True
+
+    def is_requested() -> bool:
+        return requested
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, request_stop)
+        yield is_requested
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def main() -> None:  # pragma: no cover - CLI entry
     parser = argparse.ArgumentParser(description="Run the platform publish worker")
     parser.add_argument("--idle-seconds", type=float, default=2.0)
-    parser.add_argument("--worker-id", default=f"publish-worker-{os.getpid()}")
+    parser.add_argument(
+        "--worker-id", help="logical worker label; each startup adds a unique suffix"
+    )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    worker_id = new_worker_instance_id("publish-worker", args.worker_id)
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s %(levelname)s worker_id={worker_id} %(message)s",
+    )
+    logger.info("publish worker starting instance=%s", worker_id)
 
     config = resolve_database_config()
     validate_customer_production(config)
     if config.mode is DatabaseMode.POSTGRESQL:
         try:
-            run_pg_forever(worker_id=args.worker_id, idle_seconds=args.idle_seconds)
+            with _shutdown_signals() as stop_requested:
+                run_pg_forever(
+                    worker_id=worker_id,
+                    idle_seconds=args.idle_seconds,
+                    stop_requested=stop_requested,
+                )
         finally:
             close_pg_pool()
+            logger.info("publish worker stopped instance=%s", worker_id)
         return
 
     # CW-025: resolve_database_config() 全环境 fail-closed 后，SQLite 分支 unreachable。

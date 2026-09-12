@@ -29,6 +29,58 @@ def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def test_w19_startup_ids_distinguish_identical_container_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import worker_identity
+
+    monkeypatch.setattr(worker_identity.os, "getpid", lambda: 1)
+    monkeypatch.setattr(worker_identity.socket, "gethostname", lambda: "same-host")
+    ids = [worker_identity.new_worker_instance_id("generation-worker", "pool-a") for _ in range(4)]
+    assert len(set(ids)) == 4
+    assert all(value.startswith("pool-a:same-host:1:") for value in ids)
+    unsafe = worker_identity.new_worker_instance_id("publish-worker", "line\n%(message)s" * 50)
+    assert len(unsafe) <= 160
+    assert "\n" not in unsafe and "%" not in unsafe
+
+
+def test_w19_generation_cli_reuses_one_instance_id_and_changes_it_on_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    from app import bootstrap, generation_worker
+
+    observed: list[str] = []
+    closed: list[bool] = []
+    monkeypatch.setattr(sys, "argv", ["worker", "--once", "--worker-id", "pool-a"])
+    monkeypatch.setattr(
+        generation_worker,
+        "resolve_database_config",
+        lambda: SimpleNamespace(mode=generation_worker.DatabaseMode.POSTGRESQL),
+    )
+    monkeypatch.setattr(generation_worker, "validate_customer_production", lambda _: None)
+    monkeypatch.setattr(bootstrap, "assert_customer_production_security", lambda: None)
+    monkeypatch.setattr(bootstrap, "is_customer_production", lambda: False)
+    monkeypatch.setattr(
+        generation_worker,
+        "check_pg_ready",
+        lambda: SimpleNamespace(pool_size=1, server_now=datetime.now(UTC)),
+    )
+    monkeypatch.setattr(generation_worker, "close_pg_pool", lambda: closed.append(True))
+
+    def process(**kwargs: Any) -> int:
+        observed.append(kwargs["worker_id"])
+        return 1
+
+    monkeypatch.setattr(generation_worker, "run_pg_worker_round", process)
+    generation_worker.main()
+    generation_worker.main()
+    assert len(observed) == len(closed) == 2
+    assert observed[0] != observed[1]
+    assert all(value.startswith("pool-a:") for value in observed)
+
+
 def test_liveness_and_readiness_are_separate_endpoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

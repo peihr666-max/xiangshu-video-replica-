@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -146,6 +145,7 @@ from app.viral_refresh import (
     fail_viral_refresh_task,
 )
 from app.viral_routes import _collect_videos, get_viral_source_client
+from app.worker_identity import new_worker_instance_id
 
 logger = logging.getLogger(__name__)
 
@@ -1630,7 +1630,9 @@ def main() -> None:
         "--once", action="store_true", help="process current eligible tasks then exit"
     )
     parser.add_argument("--idle-seconds", type=float, default=1.0)
-    parser.add_argument("--worker-id", default=f"generation-worker-{os.getpid()}")
+    parser.add_argument(
+        "--worker-id", help="logical worker label; each startup adds a unique suffix"
+    )
     parser.add_argument(
         "--max-tasks",
         type=int,
@@ -1640,7 +1642,12 @@ def main() -> None:
     if args.max_tasks is not None and not args.once:
         parser.error("--max-tasks requires --once")
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    worker_id = new_worker_instance_id("generation-worker", args.worker_id)
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s %(levelname)s worker_id={worker_id} %(message)s",
+    )
+    logger.info("generation worker starting instance=%s", worker_id)
 
     # T05: resolve the database mode first so customer production fails closed
     # before any SQLite file is touched.
@@ -1675,17 +1682,19 @@ def main() -> None:
         if args.once:
             try:
                 processed = run_pg_worker_round(
-                    worker_id=args.worker_id,
+                    worker_id=worker_id,
                     max_tasks=args.max_tasks,
                 )
             finally:
                 close_pg_pool()
+                logger.info("generation worker stopped instance=%s", worker_id)
             logger.info("PostgreSQL worker processed %s task(s)", processed)
             return
         try:
-            run_forever_pg(worker_id=args.worker_id, idle_seconds=args.idle_seconds)
+            run_forever_pg(worker_id=worker_id, idle_seconds=args.idle_seconds)
         finally:
             close_pg_pool()
+            logger.info("generation worker stopped instance=%s", worker_id)
         return
 
     # CW-025: resolve_database_config() 全环境 fail-closed 后，SQLite 分支 unreachable。
