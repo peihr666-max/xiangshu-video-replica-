@@ -82,8 +82,13 @@ def profit_pg_dsn() -> Iterator[str]:
 def profit_app(monkeypatch: pytest.MonkeyPatch, profit_pg_dsn: str) -> Iterator[FastAPI]:
     from app.admin_auth_routes import router as admin_auth_router
     from app.admin_profit_routes import router as admin_profit_router
+    from app.security_rate_limit import COUNTERS_TABLE
 
     close_pg_pool()
+    # Each case establishes its own real session. Budget from earlier cases in
+    # this dedicated database must not make later business tests fail at login.
+    with psycopg.connect(profit_pg_dsn) as conn:
+        conn.execute(f"DELETE FROM {COUNTERS_TABLE}")
     monkeypatch.setenv(DATABASE_URL_ENV, profit_pg_dsn)
     monkeypatch.setenv(ADMIN_SESSION_HMAC_KEY_ENV, TEST_KEY)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
@@ -199,6 +204,77 @@ def test_daily_price_upsert_and_overwrite(
     ]
     assert len(same_day) == 1
     assert same_day[0]["price_768p_fen"] == 15
+
+
+def test_daily_price_replays_same_result_and_request_id(
+    admin_headers: dict[str, str], client: TestClient, profit_pg_dsn: str
+) -> None:
+    body = {
+        "price_date": str(dt.date.today()),
+        "price_768p_fen": 19,
+        "price_2k_fen": 29,
+        "confirm": True,
+        "reason": "ADM-02 replay regression",
+    }
+    headers = _write_headers(admin_headers)
+    with psycopg.connect(profit_pg_dsn) as conn:
+        before = conn.execute(
+            "SELECT count(*) FROM audit_logs WHERE action = 'profit.daily_price.upsert'"
+        ).fetchone()[0]
+    first = client.put("/api/control/profit/daily-price", json=body, headers=headers)
+    assert first.status_code == 200, first.text
+    second = client.put("/api/control/profit/daily-price", json=body, headers=headers)
+    assert second.status_code == 200, second.text
+    assert second.json() == first.json()
+    assert second.headers["X-Request-Id"] == first.headers["X-Request-Id"]
+    assert second.headers["X-Idempotent-Replay"] == "true"
+    conflict = client.put(
+        "/api/control/profit/daily-price",
+        json={**body, "price_768p_fen": 20},
+        headers=headers,
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
+    with psycopg.connect(profit_pg_dsn) as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM audit_logs WHERE action = 'profit.daily_price.upsert'"
+            ).fetchone()[0]
+            == before + 1
+        )
+        assert conn.execute(
+            "SELECT price_768p_fen FROM daily_external_prices WHERE price_date = %s",
+            (body["price_date"],),
+        ).fetchone() == (19,)
+
+
+def test_daily_price_legacy_list_snapshot_still_replays(
+    admin_headers: dict[str, str], client: TestClient, profit_pg_dsn: str
+) -> None:
+    import json
+
+    from app.admin_write_contract import idempotency_key_digest
+
+    body = {
+        "price_date": str(dt.date.today()),
+        "price_768p_fen": 19,
+        "price_2k_fen": 29,
+        "confirm": True,
+        "reason": "ADM-02 legacy snapshot regression",
+    }
+    headers = _write_headers(admin_headers)
+    first = client.put("/api/control/profit/daily-price", json=body, headers=headers)
+    assert first.status_code == 200
+    with psycopg.connect(profit_pg_dsn) as conn:
+        conn.execute(
+            "UPDATE admin_write_idempotency SET response_body = %s "
+            "WHERE actor_user_id = 'admin_u' AND idempotency_key_digest = %s",
+            (json.dumps(first.json()), idempotency_key_digest(headers[IDEMPOTENCY_KEY_HEADER])),
+        )
+    second = client.put("/api/control/profit/daily-price", json=body, headers=headers)
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert second.headers["X-Idempotent-Replay"] == "true"
 
 
 def test_daily_price_rejects_invalid_date(

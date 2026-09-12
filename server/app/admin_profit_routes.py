@@ -189,7 +189,7 @@ def upsert_daily_price(
             },
         )
 
-    def business(conn: psycopg.Connection, request_id: str) -> Any:
+    def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
         conn.execute(
             """
             INSERT INTO daily_external_prices (
@@ -244,7 +244,7 @@ def upsert_daily_price(
             LIMIT 60
             """
         ).fetchall()
-        return [
+        prices = [
             DailyPriceRow(
                 price_date=row[0].isoformat(),
                 price_768p_fen=int(row[1]),
@@ -254,21 +254,22 @@ def upsert_daily_price(
             ).model_dump()
             for row in rows
         ]
+        return {"prices": prices, "request_id": request_id}
 
-    # 快照层按 JSON 序列化业务结果；列表响应与 dict 同样可重放。
-    return cast(
-        list[DailyPriceRow],
-        write_with_idempotency(
-            request,
-            response,
-            actor,
-            payload,
-            business,
-            success_status=200,
-            unavailable_code=PROFIT_SERVICE_UNAVAILABLE,
-            unavailable_message=PROFIT_SERVICE_UNAVAILABLE_MESSAGE,
-        ),
+    # Keep the public list DTO; store its request id in the internal envelope
+    # so a lost-response replay retains the original audit correlation.
+    result = write_with_idempotency(
+        request,
+        response,
+        actor,
+        payload,
+        business,
+        success_status=200,
+        unavailable_code=PROFIT_SERVICE_UNAVAILABLE,
+        unavailable_message=PROFIT_SERVICE_UNAVAILABLE_MESSAGE,
     )
+    # Compatibility with already-committed bare-list snapshots.
+    return cast(list[DailyPriceRow], result if isinstance(result, list) else result["prices"])
 
 
 @router.get("/profit/overview", response_model=ProfitOverviewResponse)
