@@ -55,14 +55,16 @@ def test_w19_generation_cli_reuses_one_instance_id_and_changes_it_on_restart(
     closed: list[bool] = []
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--worker-id", "pool-a"])
     monkeypatch.setattr(
-        generation_worker, "resolve_database_config",
+        generation_worker,
+        "resolve_database_config",
         lambda: SimpleNamespace(mode=generation_worker.DatabaseMode.POSTGRESQL),
     )
     monkeypatch.setattr(generation_worker, "validate_customer_production", lambda _: None)
     monkeypatch.setattr(bootstrap, "assert_customer_production_security", lambda: None)
     monkeypatch.setattr(bootstrap, "is_customer_production", lambda: False)
     monkeypatch.setattr(
-        generation_worker, "check_pg_ready",
+        generation_worker,
+        "check_pg_ready",
         lambda: SimpleNamespace(pool_size=1, server_now=datetime.now(UTC)),
     )
     monkeypatch.setattr(generation_worker, "close_pg_pool", lambda: closed.append(True))

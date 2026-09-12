@@ -137,7 +137,8 @@ def test_w19_publish_cli_closes_pool_and_restores_signals_on_failure(
     monkeypatch.setattr(signal, "getsignal", lambda _: original)
     monkeypatch.setattr(signal, "signal", lambda kind, handler: handlers.__setitem__(kind, handler))
     monkeypatch.setattr(
-        publish_worker, "resolve_database_config",
+        publish_worker,
+        "resolve_database_config",
         lambda: SimpleNamespace(mode=publish_worker.DatabaseMode.POSTGRESQL),
     )
     monkeypatch.setattr(publish_worker, "validate_customer_production", lambda _: None)
@@ -157,6 +158,7 @@ def test_w19_publish_cli_closes_pool_and_restores_signals_on_failure(
         assert handlers[signal.SIGINT] is original
     assert len(closed) == 2 and observed[0] != observed[1]
     assert all(value.startswith("pool-a:") for value in observed)
+
 
 ACCOUNTS_URL = "/api/studio/publish/accounts"
 
