@@ -12,6 +12,13 @@ import { createReviewData, createReviewState, reviewUser } from "./fixtures";
 import { StudioWorkspace } from "./StudioWorkspace";
 import { createState } from "./state";
 
+async function findEnabledButton(name: string, container?: HTMLElement) {
+  const queries = container ? within(container) : screen;
+  const button = await queries.findByRole("button", { name });
+  await waitFor(() => expect(button).toBeEnabled());
+  return button;
+}
+
 const live = vi.hoisted(() => ({
   CREATION_KIND_LABELS: {
     replica: "视频复刻",
@@ -2847,9 +2854,7 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createReviewState("oral")}
       />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "生成口播视频" }),
-    );
+    fireEvent.click(await findEnabledButton("生成口播视频"));
 
     expect(await screen.findByText("口播报价暂不可用")).toBeInTheDocument();
     const submit = screen.getByRole("button", { name: "确认费用并提交" });
@@ -2871,11 +2876,9 @@ describe("视频生成（C2 独立创作）", () => {
       />,
     );
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "生成口播视频" }),
-    );
+    fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认费用并提交" }));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
 
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
     expect(api.createOralTask.mock.calls[0]?.[0]).not.toHaveProperty(
@@ -2894,9 +2897,9 @@ describe("视频生成（C2 独立创作）", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "添加" }));
-    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认费用并提交" }));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
 
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
     expect(api.createOralTask.mock.calls[0]?.[0]).toEqual(
@@ -2919,15 +2922,13 @@ describe("视频生成（C2 独立创作）", () => {
     initial.draft.subtitles = true;
     render(<StudioWorkspace currentUser={reviewUser} initialState={initial} />);
 
-    expect(
-      await screen.findByRole("button", { name: "生成口播视频" }),
-    ).toBeEnabled();
+    expect(await findEnabledButton("生成口播视频")).toBeEnabled();
     expect(
       screen.queryByRole("button", { name: "添加" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认费用并提交" }));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
 
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
     expect(api.createOralTask.mock.calls[0]?.[0]).toEqual(
@@ -2961,20 +2962,18 @@ describe("视频生成（C2 独立创作）", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "添加" }));
-    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(await findEnabledButton("生成口播视频"));
     const firstDialog = await screen.findByRole("dialog", {
       name: "生成确认 · 数字人口播",
     });
     expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
-    fireEvent.click(
-      within(firstDialog).getByRole("button", { name: "确认费用并提交" }),
-    );
+    fireEvent.click(await findEnabledButton("确认费用并提交", firstDialog));
     fireEvent.click(within(firstDialog).getByRole("button", { name: "关闭" }));
     fireEvent.click(screen.getByRole("tab", { name: "用已有音频生成" }));
     expect(
       screen.queryByRole("button", { name: "添加" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(
       await screen.findByRole("dialog", { name: "生成确认 · 数字人口播" }),
     ).toBeInTheDocument();
@@ -3009,11 +3008,9 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createReviewState("oral")}
       />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "生成口播视频" }),
-    );
+    fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
-    const submit = screen.getByRole("button", { name: "确认费用并提交" });
+    const submit = await findEnabledButton("确认费用并提交");
 
     fireEvent.click(submit);
     fireEvent.click(submit);
@@ -3036,12 +3033,10 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createReviewState("oral")}
       />,
     );
-    const open = await screen.findByRole("button", {
-      name: "生成口播视频",
-    });
+    const open = await findEnabledButton("生成口播视频");
     fireEvent.click(open);
     expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认费用并提交" }));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
     expect(
       await screen.findByText("提交结果未知，请安全重试。"),
     ).toBeInTheDocument();
@@ -3053,7 +3048,7 @@ describe("视频生成（C2 独立创作）", () => {
 
     fireEvent.click(open);
     expect(await screen.findByText("6.00 元/条")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认费用并提交" }));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
     expect(
       await screen.findByText("提交结果仍未知，请继续安全重试。"),
     ).toBeInTheDocument();
@@ -3081,16 +3076,12 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createReviewState("oral")}
       />,
     );
-    const open = await screen.findByRole("button", {
-      name: "生成口播视频",
-    });
+    const open = await findEnabledButton("生成口播视频");
     fireEvent.click(open);
     const firstDialog = await screen.findByRole("dialog", {
       name: "生成确认 · 数字人口播",
     });
-    fireEvent.click(
-      within(firstDialog).getByRole("button", { name: "确认费用并提交" }),
-    );
+    fireEvent.click(await findEnabledButton("确认费用并提交", firstDialog));
     fireEvent.click(within(firstDialog).getByRole("button", { name: "关闭" }));
 
     fireEvent.click(open);
@@ -3106,7 +3097,7 @@ describe("视频生成（C2 独立创作）", () => {
     expect(
       screen.getByRole("dialog", { name: "生成确认 · 数字人口播" }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认费用并提交" }));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
     expect(api.createOralTask).toHaveBeenCalledTimes(2);
     expect(api.createOralTask.mock.calls[1]).toEqual(
       api.createOralTask.mock.calls[0],
@@ -3130,15 +3121,11 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createReviewState("oral")}
       />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "生成口播视频" }),
-    );
+    fireEvent.click(await findEnabledButton("生成口播视频"));
     const dialog = await screen.findByRole("dialog", {
       name: "生成确认 · 数字人口播",
     });
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "确认费用并提交" }),
-    );
+    fireEvent.click(await findEnabledButton("确认费用并提交", dialog));
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledOnce());
     const previousHash = window.location.hash;
 
@@ -3176,12 +3163,8 @@ describe("视频生成（C2 独立创作）", () => {
     const view = render(
       <StudioWorkspace currentUser={reviewUser} initialState={state} />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "生成口播视频" }),
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "确认费用并提交" }),
-    );
+    fireEvent.click(await findEnabledButton("生成口播视频"));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledOnce());
 
     view.rerender(
@@ -3194,12 +3177,8 @@ describe("视频生成（C2 独立创作）", () => {
     view.rerender(
       <StudioWorkspace currentUser={reviewUser} initialState={state} />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "生成口播视频" }),
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "确认费用并提交" }),
-    );
+    fireEvent.click(await findEnabledButton("生成口播视频"));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(2));
     expect(screen.getByRole("button", { name: "提交中…" })).toBeDisabled();
 
@@ -3233,15 +3212,12 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createReviewState("oral")}
       />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "生成口播视频" }),
-    );
+    fireEvent.click(await findEnabledButton("生成口播视频"));
     const dialog = await screen.findByRole("dialog", {
       name: "生成确认 · 数字人口播",
     });
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "确认费用并提交" }),
-    );
+    fireEvent.click(await findEnabledButton("确认费用并提交", dialog));
+    await waitFor(() => expect(api.createOralTask).toHaveBeenCalledOnce());
     const previousHash = window.location.hash;
     view.unmount();
 
