@@ -12,7 +12,6 @@ server/tests/test_customer_recharge.py
 server/tests/test_customer_sessions.py
 server/tests/test_cw028_shared_settings_contract.py
 server/tests/test_cw033_evidence_boundary.py
-server/tests/test_cw033_pitr_drill_validation.py
 server/tests/test_cw056_supported_head_matrix.py
 server/tests/test_cw059_rbac_pg_matrix.py
 server/tests/test_cw075_discount_model.py
@@ -27,3 +26,4 @@ server/tests/test_source_frames.py
 server/tests/test_storage_cross_instance.py
 server/tests/test_studio_notification_preferences.py
 server/tests/test_viral_statistics.py
+server/tests/test_zpay.py
