@@ -1151,4 +1151,4 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 ## FIX-W20-20260912 / W20
 
-受控DNS/传输专项49 passed、mypy/ruff通过；独立评审提出的多地址回退问题已修复。完整质量门与PR CI待回填。 [任务证据](evidence/FIX-W20-20260912.md)。
+AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2858 passed、1 原有 TLS 场景跳过；前端 1344 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W20-20260912.md)。
