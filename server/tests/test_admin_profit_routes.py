@@ -300,7 +300,8 @@ def test_profit_overview_aggregates_revenue_cost_margin(
 ) -> None:
     import psycopg
 
-    # 种子：一天前录入售价（768P 0.10 元/秒）；客户/项目/批次/任务 + 结算流水。
+    # Anchor all receipts to yesterday's Shanghai noon. Relative now()+2h
+    # crosses a business day after 22:00 and selects another case's price.
     with psycopg.connect(profit_pg_dsn, autocommit=True) as conn:
         conn.execute(
             """
@@ -340,8 +341,10 @@ def test_profit_overview_aggregates_revenue_cost_margin(
             VALUES ('t1', 'b1', 'I2V', 'metaso', 'MiniMax-H3', 'SUCCEEDED', 'DIRECT',
                     '{"resolution": "768P", "output_duration_seconds": 10}'::json,
                     0.90,
-                    to_char(now() - interval '1 day' + interval '2 hours',
-                            'YYYY-MM-DD HH24:MI:SS'),
+                    to_char(
+                        (((now() AT TIME ZONE 'Asia/Shanghai')::date - 1 + time '12:00')
+                            AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD HH24:MI:SS'),
                     10)
             ON CONFLICT (id) DO NOTHING
             """
@@ -360,13 +363,17 @@ def test_profit_overview_aggregates_revenue_cost_margin(
             ) VALUES (
                 'tx_settle_1', 'cust_1', 'RESERVE', -10, 10, 't1', 1,
                 'reserve:t1:1',
-                to_char(now() - interval '1 day' + interval '2 hours',
-                        'YYYY-MM-DD HH24:MI:SS')
+                to_char(
+                    (((now() AT TIME ZONE 'Asia/Shanghai')::date - 1 + time '12:00')
+                        AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC',
+                    'YYYY-MM-DD HH24:MI:SS')
             ), (
                 'tx_settle_2', 'cust_1', 'SETTLE', 0, -10, 't1', 1,
                 'settle:t1:1',
-                to_char(now() - interval '1 day' + interval '2 hours',
-                        'YYYY-MM-DD HH24:MI:SS')
+                to_char(
+                    (((now() AT TIME ZONE 'Asia/Shanghai')::date - 1 + time '12:00')
+                        AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC',
+                    'YYYY-MM-DD HH24:MI:SS')
             ) ON CONFLICT (id) DO NOTHING
             """
         )
@@ -379,7 +386,8 @@ def test_profit_overview_aggregates_revenue_cost_margin(
             ) VALUES (
                 'cost_t1', 'generation_task', 't1', 'video_generation_768p',
                 'cust_1', 't1', '768P', 'second', 10, 9, 90, 'ACTUAL',
-                now() - interval '1 day' + interval '2 hours', now()
+                (((now() AT TIME ZONE 'Asia/Shanghai')::date - 1 + time '12:00')
+                    AT TIME ZONE 'Asia/Shanghai'), now()
             ) ON CONFLICT (id) DO NOTHING
             """
         )
@@ -569,7 +577,9 @@ def test_unknown_provider_usage_keeps_profit_unresolved(
                 status, occurred_at
             ) VALUES (
                 'unknown_context_t1', 'generation_task', 't1', 'context_ir',
-                'call', 5, 'UNKNOWN', now() - interval '1 day' + interval '2 hours'
+                'call', 5, 'UNKNOWN',
+                (((now() AT TIME ZONE 'Asia/Shanghai')::date - 1 + time '12:00')
+                    AT TIME ZONE 'Asia/Shanghai')
             )
             """
         )
