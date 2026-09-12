@@ -159,8 +159,11 @@ def _clean_cw078(dsn: str) -> None:
         conn.execute("DELETE FROM wallets WHERE user_id LIKE %s", (like,))
         conn.execute("DELETE FROM users WHERE id LIKE %s", (like,))
         conn.execute(
-            "DELETE FROM security_rate_limit_counters WHERE dimension IN (%s, %s)",
-            (DIMENSION_APIKEY_IP, DIMENSION_APIKEY_KEY),
+            # counters 表按 032 设计只有复合 bucket_key（"{dimension}|{identifier}"），
+            # 无独立 dimension 列——按前缀匹配清 apikey:* 桶。
+            "DELETE FROM security_rate_limit_counters "
+            "WHERE bucket_key LIKE %s OR bucket_key LIKE %s",
+            (f"{DIMENSION_APIKEY_IP}|%", f"{DIMENSION_APIKEY_KEY}|%"),
         )
 
 
@@ -812,8 +815,11 @@ def test_api_key_failure_budget_trips_429_with_retry_after(
     # 复位 CW-078 独占的 apikey:* 桶，避免兄弟用例消耗泄漏进本用例预算判定。
     with psycopg.connect(pg_dsn, autocommit=True) as conn:
         conn.execute(
-            "DELETE FROM security_rate_limit_counters WHERE dimension IN (%s, %s)",
-            (DIMENSION_APIKEY_IP, DIMENSION_APIKEY_KEY),
+            # counters 表按 032 设计只有复合 bucket_key（"{dimension}|{identifier}"），
+            # 无独立 dimension 列——按前缀匹配清 apikey:* 桶。
+            "DELETE FROM security_rate_limit_counters "
+            "WHERE bucket_key LIKE %s OR bucket_key LIKE %s",
+            (f"{DIMENSION_APIKEY_IP}|%", f"{DIMENSION_APIKEY_KEY}|%"),
         )
     monkeypatch.setenv(RATE_LIMIT_APIKEY_IP_ENV, "1")
 
