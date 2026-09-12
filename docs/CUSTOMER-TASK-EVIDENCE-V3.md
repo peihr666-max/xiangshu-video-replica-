@@ -1151,4 +1151,4 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 ## FIX-ADM02-20260912 / W12
 
-[每日售价重放证据](evidence/FIX-ADM02-20260912.md)：专项 68 passed；完整本地质量门、独立评审及 PR CI 待完成。人工联调留用户团队第二部分。
+[每日售价重放证据](evidence/FIX-ADM02-20260912.md)：独立评审 PASS；最新主分支集成后完整本地门通过，前端 1344 passed、服务端 2847 passed 和 1 原有 TLS 场景跳过；覆盖检查及全部退出码为 0。当前 PR CI 与合并待完成；人工联调留用户团队第二部分。
