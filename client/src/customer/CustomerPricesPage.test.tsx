@@ -26,7 +26,7 @@ test("loads server prices and retries failures without showing a fake price", as
     });
   render(
     <CustomerPricesPage
-      credential={async () => ({ kind: "session", token: "test-session" })}
+      credential={async () => ({ kind: "session", token: crypto.randomUUID() })}
     />,
   );
   expect(await screen.findByRole("alert")).toHaveTextContent("暂不可用");

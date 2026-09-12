@@ -483,11 +483,19 @@ def test_metaso_h3_provider_submit_returns_task_id_without_polling() -> None:
 
 def test_generation_price_quote_exposes_external_price_only() -> None:
     class QuoteCursor:
-        def fetchone(self) -> dict[str, int]:
+        def fetchone(self) -> dict[str, int | None]:
             return {"unit_price_fen": 25}
 
+    class PricingCursor(QuoteCursor):
+        def fetchone(self) -> dict[str, int | None]:
+            return {"version": 0, "config_json": None}
+
     class QuoteConnection:
-        def execute(self, query: str, params: tuple[str]) -> QuoteCursor:
+        is_postgres = True
+
+        def execute(self, query: str, params: tuple[str] = ()) -> QuoteCursor:
+            if "customer_credit_pricing" in query:
+                return PricingCursor()
             assert "kind = 'external_price'" in query
             assert params == ("external_price_2k",)
             return QuoteCursor()

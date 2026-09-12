@@ -76,8 +76,9 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_recharge_orders_credit_calculation",
         "recharge_orders",
-        "(credit_pricing_snapshot_json IS NULL AND credits::bigint * "
-        "charged_unit_price_fen_snapshot = amount_fen) OR "
+        "(credit_pricing_snapshot_json IS NULL AND (credits::bigint * "
+        "charged_unit_price_fen_snapshot = amount_fen OR "
+        "(provider = 'admin_adjustment' AND amount_fen = 0))) OR "
         "(credit_pricing_snapshot_json IS NOT NULL AND "
         "COALESCE((credit_pricing_snapshot_json::jsonb->>'points_per_yuan')::bigint "
         "BETWEEN 1 AND 1000000, false) AND "
@@ -110,7 +111,8 @@ def downgrade() -> None:
     op.create_check_constraint(
         "ck_recharge_orders_credit_calculation",
         "recharge_orders",
-        "credits * charged_unit_price_fen_snapshot = amount_fen",
+        "credits * charged_unit_price_fen_snapshot = amount_fen "
+        "OR (provider = 'admin_adjustment' AND amount_fen = 0)",
     )
     op.drop_column("recharge_orders", "credit_pricing_snapshot_json")
     op.drop_constraint("ck_wallet_key_source", "wallet_transactions", type_="check")

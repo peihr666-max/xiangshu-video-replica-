@@ -604,6 +604,9 @@ export function CustomerCenterPage({
                       type="button"
                       onClick={() =>
                         navigate("task-detail", {
+                          selectedTaskId: item.oral_task_id
+                            ? `oral-${item.oral_task_id}`
+                            : item.generation_batch_id || undefined,
                           selectedTaskKind: item.oral_task_id
                             ? "oral_task"
                             : "generation_batch",

@@ -467,7 +467,7 @@
     },
     "20260912T2330_customer_credit_pricing": {
       "file": "versions/20260912T2330_customer_credit_pricing.py",
-      "sha256": "d96ebb53653aedc405d14fbcc8140ef050b0ca3482f53d37044a9e4d0767a03b"
+      "sha256": "ca99eba7576ea2a3dd2eec09416b3ec796af8b8812d7c2707f18bb88643aa6c1"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

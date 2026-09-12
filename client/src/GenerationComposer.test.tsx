@@ -591,7 +591,7 @@ describe("GenerationComposer", () => {
     const quantity = screen.getByLabelText("生成数量");
     fireEvent.change(quantity, { target: { value: "4" } });
     expect(screen.getByText("将创建 4 个付费生成任务")).toBeInTheDocument();
-    expect(screen.getByText("预计消耗 60 秒额度")).toBeInTheDocument();
+    expect(screen.getByText("预计输出 60 秒视频")).toBeInTheDocument();
     const createFour = screen.getByRole("button", {
       name: "创建 4 个生成任务",
     });
@@ -753,7 +753,7 @@ describe("GenerationComposer", () => {
       target: { value: "4" },
     });
     expect(screen.queryByText(/约 ¥1\.35/)).toBeNull();
-    expect(screen.getByText("预计消耗 4 秒额度")).toBeInTheDocument();
+    expect(screen.getByText("预计输出 4 秒视频")).toBeInTheDocument();
 
     await act(async () => {
       resolveQuote?.({
