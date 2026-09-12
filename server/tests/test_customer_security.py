@@ -1030,6 +1030,12 @@ def test_cors_exposes_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.main import app as main_app
 
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    monkeypatch.setenv(
+        DATABASE_URL_ENV,
+        os.environ.get(
+            "TEST_POSTGRESQL_URL", "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
+        ),
+    )
     with TestClient(main_app) as main_client:
         # A validation failure still passes through the CORS middleware, so
         # the status does not matter — only the readable header contract.

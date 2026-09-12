@@ -83,7 +83,9 @@ class HealthResponse(BaseModel):
 class ReadinessResponse(BaseModel):
     status: Literal["ready"]
     service: str
-    database: Literal["internal", "postgresql"]
+    # "internal" was the retired SQLite lane label (CW-042-b); kept only in
+    # this comment — the field now always reports "postgresql".
+    database: Literal["postgresql"]
     storage: Literal["local", "cos"]
 
 
@@ -126,23 +128,16 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     from app.bootstrap import assert_customer_production_security
     from app.db_pg import resolve_database_config, validate_customer_production
 
-    # CW-025: internal lane（DATABASE_URL 未设置或为 SQLite URL）直接通过，
-    # 由请求级别的 customer_fence 解析数据库（DB_PATH 通道）。
-    # 内部 P0 是"已完成收口"的独立线，不属于客户版 V3 的运行环境
-    # （dev/test/CI/staging/production），归 CW-030/CW-040 后续处理。
-    # customer lane（DATABASE_URL_ENV=postgresql://）走 resolve_database_config()
-    # 全环境 fail-closed。
-    # 但 customer production 环境下不允许 internal lane（必须配置 PG DSN）。
+    # CW-042-b: the internal/desktop SQLite lane is physically retired —
+    # a missing or SQLite DATABASE_URL fails closed in EVERY environment
+    # (previously only customer production refused; the lane itself is gone).
     url = os.environ.get(DATABASE_URL_ENV, "").strip()
     if not url or url.startswith(SQLITE_URL_SCHEMES):
-        if is_customer_production():
-            raise RuntimeError(
-                "customer production requires PostgreSQL: "
-                f"{DATABASE_URL_ENV} must be set to a postgresql:// DSN "
-                f"(internal lane is not allowed in customer production)"
-            )
-        yield
-        return
+        raise RuntimeError(
+            "PostgreSQL is required: "
+            f"{DATABASE_URL_ENV} must be set to a postgresql:// DSN "
+            f"(the internal SQLite lane is retired, CW-042-b)"
+        )
 
     assert_customer_production_security()
     _database_config = resolve_database_config()
@@ -412,10 +407,12 @@ def ready() -> ReadinessResponse | JSONResponse:
     prevent the dependency-free liveness endpoint from responding.
     """
     if not is_customer_production():
+        # CW-042-b: every lane is PostgreSQL now; dev/test/CI only differ in
+        # using local object storage instead of COS.
         return ReadinessResponse(
             status="ready",
             service="video-replica-api",
-            database="internal",
+            database="postgresql",
             storage="local",
         )
     try:

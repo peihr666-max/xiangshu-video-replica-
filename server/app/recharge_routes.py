@@ -504,7 +504,7 @@ def create_customer_recharge_order(
 def _pg_conn(conn: BusinessConnection) -> psycopg.Connection:
     """Narrow the BusinessConnection backend to the PostgreSQL connection the
     idempotency engine and the server clock operate on (customer lane only)."""
-    return cast(psycopg.Connection, conn.raw)
+    return conn.raw
 
 
 def _enforce_envelope_conflicts(

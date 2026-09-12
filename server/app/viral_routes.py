@@ -19,7 +19,6 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path as FilePath
 from typing import Annotated, Any, Literal
 from urllib.parse import quote, unquote, urlsplit
 
@@ -29,7 +28,6 @@ from pydantic import BaseModel, Field
 
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
-from app.db import connect_database
 from app.db_pg import DATABASE_URL_ENV, get_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media_routes import api_base_url, get_media_storage
@@ -222,11 +220,10 @@ def _open_worker_connection() -> tuple[BusinessConnection, Callable[[], None]]:
             stack.close()
             raise
 
-    db_path = os.environ.get("VIDEO_REPLICA_DB_PATH")
-    if not db_path:
-        raise RuntimeError("VIDEO_REPLICA_DB_PATH is required for cover enrichment")
-    conn = BusinessConnection.sqlite(connect_database(FilePath(db_path)))
-    return conn, conn.close
+    raise RuntimeError(
+        "cover enrichment requires VIDEO_REPLICA_DATABASE_URL "
+        "(the SQLite lane is retired, CW-042-b)"
+    )
 
 
 @contextmanager
@@ -247,9 +244,10 @@ def _refresh_connection(request_conn: BusinessConnection | None) -> Iterator[Bus
             borrowed.raw.autocommit = True
             yield borrowed
         return
-    if request_conn is None:
-        raise RuntimeError("SQLite viral refresh requires a live business connection")
-    yield request_conn
+    raise RuntimeError(
+        "viral refresh requires VIDEO_REPLICA_DATABASE_URL (the SQLite lane is retired, CW-042-b)"
+    )
+    yield request_conn  # pragma: no cover - unreachable after CW-042-b
 
 
 def _spawn_cover_enrich(enricher: CoverEnricher | None, videos: list[ViralVideo]) -> None:

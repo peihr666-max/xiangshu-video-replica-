@@ -20,7 +20,6 @@ from starlette.types import Receive, Scope, Send
 
 from app.auth import AuthenticatedUser, CurrentUser, Database, authenticate_user
 from app.customer_fence import BusinessDbDep, BusinessReadConn
-from app.db import connect_database
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media import (
@@ -590,19 +589,7 @@ def _prepare_signed_object_read(
         except AuditedSecurityDenial as exc:
             persist_security_denial(exc)
             raise
-    db_path = os.environ.get("VIDEO_REPLICA_DB_PATH", "").strip()
-    if not db_path:
-        raise HTTPException(status_code=503, detail={"code": "DATABASE_NOT_CONFIGURED"})
-    conn = BusinessConnection.sqlite(connect_database(Path(db_path)))
-    try:
-        asset = _validate_signed_object_request(
-            conn,
-            object_key=object_key,
-            request=request,
-        )
-        return storage_for_asset(conn, str(asset["storage_uri"]))
-    finally:
-        conn.close()
+    raise HTTPException(status_code=503, detail={"code": "DATABASE_NOT_CONFIGURED"})
 
 
 @router.post(
