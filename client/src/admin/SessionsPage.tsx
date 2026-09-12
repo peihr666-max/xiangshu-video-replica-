@@ -245,9 +245,9 @@ export function SessionsPage({
     event.preventDefault();
     setWriteError("");
     setError("");
-    const seconds = Number.parseInt(credits, 10);
-    if (!Number.isFinite(seconds) || seconds <= 0) {
-      setError("请输入大于 0 的加款秒数");
+    const seconds = Number(credits);
+    if (!Number.isSafeInteger(seconds) || seconds <= 0) {
+      setError("请输入大于 0 的积分整数");
       return;
     }
     if (!sourceRef.trim()) {
@@ -259,7 +259,7 @@ export function SessionsPage({
 
   async function submitAdjustment(reason: string) {
     if (!activeUserId || submitting) return;
-    const seconds = Number.parseInt(credits, 10);
+    const seconds = Number(credits);
     const input: AdjustmentWriteInput = {
       sourceDocumentType: sourceType,
       sourceDocumentRef: sourceRef.trim(),
@@ -278,7 +278,7 @@ export function SessionsPage({
       );
       if (contextIdRef.current !== actionContextId) return;
       setNotice(
-        `加秒成功（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 秒`,
+        `增加积分成功（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 积分`,
       );
       setCredits("");
       setSourceRef("");
@@ -288,7 +288,7 @@ export function SessionsPage({
     } catch (cause) {
       if (contextIdRef.current !== actionContextId) return;
       setWriteError(
-        cause instanceof Error ? cause.message : "加秒失败：未知错误",
+        cause instanceof Error ? cause.message : "增加积分失败：未知错误",
       );
       if (cause instanceof AdminActivationError && cause.status !== undefined) {
         setAdjustKey(null);
@@ -410,13 +410,13 @@ export function SessionsPage({
             type="button"
             onClick={() => setAdjustOpen((open) => !open)}
           >
-            {adjustOpen ? "收起后台加秒" : "展开后台加秒"}
+            {adjustOpen ? "收起后台增加积分" : "展开后台增加积分"}
           </button>
           {adjustOpen ? (
             <form className="admin-form" onSubmit={handleAdjustSubmit}>
-              <h3>为 {activeUserId} 后台加秒</h3>
+              <h3>为 {activeUserId} 后台增加积分</h3>
               <label>
-                加款秒数
+                积分整数
                 <input
                   min={1}
                   step={1}
@@ -445,7 +445,7 @@ export function SessionsPage({
                   onChange={(event) => setSourceRef(event.target.value)}
                 />
               </label>
-              <button type="submit">执行后台加秒</button>
+              <button type="submit">执行后台增加积分</button>
             </form>
           ) : null}
         </section>
@@ -472,12 +472,12 @@ export function SessionsPage({
       />
       <ConfirmDialog
         busy={submitting}
-        confirmLabel="确认加秒"
+        confirmLabel="确认增加积分"
         description={`即将为 ${activeUserId ?? ""} 增加 ${credits || "0"} 秒。`}
         error={writeError}
         level="reasonAndAck"
         open={adjustConfirmOpen}
-        title="确认后台加秒"
+        title="确认后台增加积分"
         onClose={() => {
           setAdjustConfirmOpen(false);
           setWriteError("");

@@ -3,9 +3,9 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
-
 import { downloadCustomersCsv } from "../api";
 import {
   type AdjustmentListItem,
@@ -25,7 +25,9 @@ import {
   listDevices,
   updateCustomerUnitPrice,
 } from "../api.admin";
+import { AccountCreditPanel } from "./AccountCreditPanel";
 import { AdjustmentsPage } from "./AdjustmentsPage";
+import { LegacyCreditPolicyManager } from "./LegacyCreditPolicyManager";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
@@ -181,6 +183,7 @@ export function CustomersPage({
     return (
       <CustomerDetailView
         customer={focusedCustomer}
+        onChanged={() => void loadCustomers()}
         readOnly={readOnly}
         onBack={() => setExpandedUserId(null)}
         onOpenAdjustments={() => setDetailUserId(focusedCustomer.user_id)}
@@ -230,7 +233,7 @@ export function CustomersPage({
           />
         </label>
         <label className="admin-toolbar__field">
-          <span>最低余额（秒）</span>
+          <span>最低余额（积分）</span>
           <input
             aria-label="最低余额"
             min="0"
@@ -240,7 +243,7 @@ export function CustomersPage({
           />
         </label>
         <label className="admin-toolbar__field">
-          <span>最高余额（秒）</span>
+          <span>最高余额（积分）</span>
           <input
             aria-label="最高余额"
             min="0"
@@ -283,7 +286,9 @@ export function CustomersPage({
         </span>
         <small>数据范围：当前筛选页</small>
       </section>
-      <p className="admin-hint">计费单位：秒；视频按提交档位秒数计费。</p>
+      <p className="admin-hint">
+        计费单位：积分；单价与充值兑换比例在系统设置中配置。
+      </p>
 
       {loading && <div className="loading">加载中...</div>}
 
@@ -345,16 +350,16 @@ export function CustomersPage({
                       {customer.device_slots_used ?? 0} 台
                     </td>
                     <td data-label="可用额度">
-                      <strong>{customer.available_credits ?? 0} 秒</strong>
+                      <strong>{customer.available_credits ?? 0} 积分</strong>
                     </td>
                     <td data-label="冻结">
-                      {customer.reserved_credits ?? 0} 秒
+                      {customer.reserved_credits ?? 0} 积分
                     </td>
                     <td
                       aria-label={`${customer.username} 已结算消耗`}
                       data-label="累计消耗"
                     >
-                      {customer.credits_spent ?? 0} 秒
+                      {customer.credits_spent ?? 0} 积分
                     </td>
                     <td data-label="生成情况">
                       <span>
@@ -475,11 +480,11 @@ function Customer360Data({ userId }: { userId: string }) {
           snapshot.transactions.map((transaction) => (
             <div className="customer-360-row" key={transaction.id}>
               <span>{transactionTypeLabel(transaction.type)}</span>
-              <strong>{transaction.available_delta} 秒</strong>
+              <strong>{transaction.available_delta} 积分</strong>
               <span>
                 {transaction.available_balance_after === null
                   ? "历史未记录"
-                  : `余额 ${transaction.available_balance_after} 秒`}
+                  : `余额 ${transaction.available_balance_after} 积分`}
               </span>
               <small>{formatDateTime(transaction.created_at)}</small>
             </div>
@@ -537,7 +542,7 @@ function Customer360Data({ userId }: { userId: string }) {
             <div className="customer-360-row" key={adjustment.adjustment_id}>
               <span>{adjustment.admin_username || "管理员"}</span>
               <code>{adjustment.source_document_ref}</code>
-              <strong>+{adjustment.credits} 秒</strong>
+              <strong>+{adjustment.credits} 积分</strong>
               <small>{formatDateTime(adjustment.created_at)}</small>
             </div>
           ))
@@ -570,6 +575,7 @@ function Customer360Empty() {
 
 function CustomerDetailView({
   customer,
+  onChanged,
   readOnly,
   onBack,
   onOpenAdjustments,
@@ -577,6 +583,7 @@ function CustomerDetailView({
   onOpenSessions,
 }: {
   customer: CustomerListItem;
+  onChanged: () => void;
   readOnly: boolean;
   onBack: () => void;
   onOpenAdjustments: () => void;
@@ -659,17 +666,17 @@ function CustomerDetailView({
         <article>
           <span>可用额度</span>
           <strong>{customer.available_credits ?? 0}</strong>
-          <small>秒</small>
+          <small>积分</small>
         </article>
         <article>
           <span>冻结额度</span>
           <strong>{customer.reserved_credits ?? 0}</strong>
-          <small>秒</small>
+          <small>积分</small>
         </article>
         <article>
           <span>累计消耗</span>
           <strong>{customer.credits_spent ?? 0}</strong>
-          <small>秒</small>
+          <small>积分</small>
         </article>
         <article>
           <span>累计生成</span>
@@ -705,10 +712,32 @@ function CustomerDetailView({
         </dl>
       </section>
 
-      <Customer360Data userId={customer.user_id} />
+      <AccountCreditPanel
+        key={`${customer.user_id}:${customer.available_credits}`}
+        onChanged={onChanged}
+        userId={customer.user_id}
+        readOnly={readOnly}
+      />
+      <Customer360Data
+        key={`${customer.user_id}:${customer.available_credits}`}
+        userId={customer.user_id}
+      />
       <div className="customer-detail-settings-grid">
-        <CustomerPriceEditor readOnly={readOnly} userId={customer.user_id} />
-        <FreeCreditsSection readOnly={readOnly} userId={customer.user_id} />
+        {customer.activation_code !== "账号注册" && (
+          <CustomerPriceEditor readOnly={readOnly} userId={customer.user_id} />
+        )}
+        {customer.activation_code !== "账号注册" && (
+          <LegacyCreditPolicyManager
+            onChanged={onChanged}
+            userId={customer.user_id}
+            readOnly={readOnly}
+          />
+        )}
+        <FreeCreditsSection
+          onChanged={onChanged}
+          readOnly={readOnly}
+          userId={customer.user_id}
+        />
       </div>
     </div>
   );
@@ -815,6 +844,9 @@ function CustomerPriceEditor({
   return (
     <section aria-label="客户售价" className="customer-detail-section">
       <h3>客户售价</h3>
+      <p className="admin-hint">
+        历史充值兼容配置；启用系统积分计价后，以系统设置中的积分兑换比例为准。
+      </p>
       {loading ? <p className="admin-hint">正在读取客户售价…</p> : null}
       {pricing ? (
         <p className="admin-hint">
@@ -886,29 +918,32 @@ function CustomerPriceEditor({
 }
 
 /**
- * 免费秒数发放（FREE_GRANT，054）：为激活码对应的账号发放免费生成秒数。
+ * 赠送积分发放（FREE_GRANT，054）：为账号发放无收款积分。
  * 走 T23 审计调账闭环——账面金额为 0、钱包照增、来源单与原因必填。
  */
 function FreeCreditsSection({
   userId,
+  onChanged,
   readOnly,
 }: {
   userId: string;
+  onChanged: () => void;
   readOnly: boolean;
 }) {
   const [credits, setCredits] = useState("");
+  const [sourceType, setSourceType] = useState("FREE_GRANT");
   const [sourceRef, setSourceRef] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogError, setDialogError] = useState("");
   const [notice, setNotice] = useState("");
-  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
+  const retry = useRef<{ fingerprint: string; key: string } | null>(null);
 
   function requestGrant(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const creditsNumber = Number.parseInt(credits, 10);
-    if (!Number.isFinite(creditsNumber) || creditsNumber <= 0) {
-      setDialogError("免费秒数必须是大于 0 的整数");
+    const creditsNumber = Number(credits);
+    if (!Number.isSafeInteger(creditsNumber) || creditsNumber <= 0) {
+      setDialogError("赠送积分必须是大于 0 的整数");
       setDialogOpen(true);
       return;
     }
@@ -922,18 +957,34 @@ function FreeCreditsSection({
   }
 
   async function submitGrant(reason: string) {
-    if (submitting) {
+    if (submitting || readOnly) {
       return;
     }
-    const creditsNumber = Number.parseInt(credits, 10);
-    const key = idempotencyKey ?? crypto.randomUUID();
-    setIdempotencyKey(key);
+    const creditsNumber = Number(credits);
+    if (
+      !Number.isSafeInteger(creditsNumber) ||
+      creditsNumber <= 0 ||
+      !sourceRef.trim()
+    ) {
+      setDialogError("请填写有效整数积分和来源单号");
+      return;
+    }
+    const fingerprint = JSON.stringify({
+      userId,
+      creditsNumber,
+      sourceType,
+      sourceRef: sourceRef.trim(),
+      reason,
+    });
+    if (retry.current?.fingerprint !== fingerprint)
+      retry.current = { fingerprint, key: crypto.randomUUID() };
+    const key = retry.current.key;
     setSubmitting(true);
     try {
       const result = await createCustomerAdjustment(
         userId,
         {
-          sourceDocumentType: "FREE_GRANT",
+          sourceDocumentType: sourceType,
           sourceDocumentRef: sourceRef.trim(),
           credits: creditsNumber,
         },
@@ -941,23 +992,20 @@ function FreeCreditsSection({
         key,
       );
       setNotice(
-        `已发放 ${creditsNumber} 秒免费时长（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 秒`,
+        `已发放 ${creditsNumber} 赠送积分（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 积分`,
       );
+      onChanged();
       setCredits("");
       setSourceRef("");
-      setIdempotencyKey(null);
+      retry.current = null;
       setDialogOpen(false);
       setDialogError("");
     } catch (cause) {
       setDialogError(
         cause instanceof Error && cause.message.trim()
           ? cause.message
-          : "发放免费秒数失败",
+          : "发放赠送积分失败",
       );
-      if (cause instanceof Error && cause.name === "AdminActivationError") {
-        // 明确失败释放幂等键；超时等模糊失败保留键以便重试重放。
-        setIdempotencyKey(null);
-      }
     } finally {
       setSubmitting(false);
     }
@@ -965,28 +1013,41 @@ function FreeCreditsSection({
 
   if (readOnly) {
     return (
-      <section aria-label="免费秒数" className="customer-detail-section">
-        <h3>免费秒数</h3>
-        <p className="admin-hint">审计员仅可查看，不能发放免费秒数。</p>
+      <section aria-label="赠送积分" className="customer-detail-section">
+        <h3>赠送积分</h3>
+        <p className="admin-hint">审计员仅可查看，不能发放赠送积分。</p>
       </section>
     );
   }
 
   return (
     <section
-      aria-label="免费秒数"
+      aria-label="赠送积分"
       className="customer-detail-section"
       id="customer-free-grant"
     >
-      <h3>免费秒数</h3>
+      <h3>赠送积分</h3>
       <p className="admin-hint">
-        发放的免费秒数直接进入该账号钱包，生成视频时与充值秒数同等冻结与结算；
+        发放的赠送积分直接进入该账号钱包，生成视频时与充值积分同等冻结与结算；
         账面金额记 0，来源单号与原因写入审计。
       </p>
       {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
       <form className="admin-form" onSubmit={requestGrant}>
         <label>
-          发放秒数
+          积分来源
+          <select
+            value={sourceType}
+            onChange={(event) => {
+              setSourceType(event.target.value);
+              retry.current = null;
+            }}
+          >
+            <option value="FREE_GRANT">积分赠送</option>
+            <option value="CREDIT_COMPENSATION">无收款补偿</option>
+          </select>
+        </label>
+        <label>
+          发放积分
           <input
             min={1}
             placeholder="例如：10"
@@ -1004,17 +1065,17 @@ function FreeCreditsSection({
             onChange={(event) => setSourceRef(event.target.value)}
           />
         </label>
-        <button type="submit">发放免费秒数</button>
+        <button type="submit">发放赠送积分</button>
       </form>
 
       <ConfirmDialog
         busy={submitting}
         confirmLabel="确认发放"
-        description="免费秒数会立即进入客户钱包并可立即用于生成视频。原因将写入审计日志。"
+        description="赠送积分会立即进入客户钱包并可立即用于生成视频。原因将写入审计日志。"
         error={dialogError}
         level="reasonAndAck"
         open={dialogOpen}
-        title="发放免费秒数"
+        title="发放赠送积分"
         onClose={() => {
           setDialogOpen(false);
           setDialogError("");

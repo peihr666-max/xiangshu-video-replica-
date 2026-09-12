@@ -110,7 +110,8 @@ export function AdjustmentsPage({ userId }: { userId?: string }) {
               <option value="REFUND_APPROVAL">退款审批</option>
               <option value="COMPENSATION_APPROVAL">补偿审批</option>
               <option value="LEDGER_CORRECTION">账本修正</option>
-              <option value="FREE_GRANT">免费发放</option>
+              <option value="FREE_GRANT">积分赠送</option>
+              <option value="CREDIT_COMPENSATION">积分补偿</option>
             </select>
           </label>
           <button type="submit">查询</button>
@@ -136,7 +137,7 @@ export function AdjustmentsPage({ userId }: { userId?: string }) {
                 <th>来源单编号</th>
                 <th>原因</th>
                 <th>金额</th>
-                <th>秒数</th>
+                <th>积分</th>
                 <th>调整前后余额</th>
                 <th>时间</th>
               </>
@@ -162,14 +163,14 @@ export function AdjustmentsPage({ userId }: { userId?: string }) {
                 </td>
                 <td>{adj.reason}</td>
                 <td className="amount">{formatFen(adj.amount_fen)}</td>
-                <td>+{adj.credits} 秒</td>
+                <td>+{adj.credits} 积分</td>
                 <td>
                   {adj.balance_before === null ||
                   adj.balance_before === undefined ||
                   adj.balance_after === null ||
                   adj.balance_after === undefined
                     ? "历史未记录"
-                    : `${adj.balance_before} → ${adj.balance_after} 秒`}
+                    : `${adj.balance_before} → ${adj.balance_after} 积分`}
                 </td>
                 <td>{formatDateTime(adj.created_at)}</td>
               </tr>

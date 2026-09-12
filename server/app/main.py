@@ -11,6 +11,8 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
+from app.account_admin_routes import router as account_admin_router
+from app.account_migration_routes import router as account_migration_router
 from app.activation_code_routes import router as customer_activation_router
 from app.admin_activation_routes import router as admin_activation_router
 from app.admin_audit_routes import router as admin_audit_router
@@ -36,6 +38,7 @@ from app.character_identity_routes import router as character_identity_router
 from app.character_reference_routes import router as character_reference_router
 from app.character_routes import router as character_router
 from app.control_routes import router as control_router
+from app.credit_conversion import router as credit_conversion_router
 from app.customer_auth_routes import router as customer_auth_router
 from app.customer_device_routes import router as customer_device_router
 from app.customer_pricing_routes import router as customer_pricing_router
@@ -367,6 +370,9 @@ app.include_router(admin_session_router)
 app.include_router(admin_profit_router)
 app.include_router(admin_rate_router)
 app.include_router(customer_pricing_router)
+app.include_router(account_admin_router)
+app.include_router(account_migration_router)
+app.include_router(credit_conversion_router)
 app.include_router(admin_runtime_router)
 app.include_router(admin_audit_router)
 app.include_router(customer_auth_router)

@@ -153,7 +153,7 @@ def test_settings_migration_creates_tables_and_defaults(tmp_path: Path, settings
             """
         ).fetchone()
 
-    assert version == "20260912T2330_customer_credit_pricing"
+    assert version == "20260913T0630_account_credit_operations"
     assert {"provider_settings", "runtime_settings"}.issubset(tables)
     assert dict(runtime) == {
         "max_generation_count_per_batch": 4,
@@ -195,7 +195,7 @@ def test_oral_unit_price_migration_upgrades_downgrades_and_reupgrades(tmp_path: 
     command.upgrade(config, "head")
     with connect_database(db_path) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
-            "20260912T2330_customer_credit_pricing"
+            "20260913T0630_account_credit_operations"
         )
         assert (
             conn.execute(

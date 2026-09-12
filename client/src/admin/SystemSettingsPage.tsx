@@ -9,6 +9,7 @@ import {
 import { type SettingsBackend, SettingsPanel } from "../SettingsPanel";
 import { CustomerPricingManager } from "./CustomerPricingManager";
 import { H3ExtendedModesSection } from "./H3ExtendedModesSection";
+import { LegacyCreditPolicyManager } from "./LegacyCreditPolicyManager";
 import { PaymentSettingsSection } from "./PaymentSettingsSection";
 import { QueueModeSection } from "./QueueModeSection";
 import { RatesManager } from "./RatesManager";
@@ -59,6 +60,7 @@ export function SystemSettingsPage({
         <>
           <CustomerPricingManager readOnly={readOnly} />
           <PaymentSettingsSection readOnly={readOnly} />
+          <LegacyCreditPolicyManager readOnly={readOnly} />
         </>
       ) : null}
       {tab === "rates" ? <RatesManager readOnly={readOnly} /> : null}

@@ -47,7 +47,85 @@ export function updateCustomerPricing(
   );
 }
 
+import type { BillingSettings, ControlSettings, CustomerApiKey } from "./api";
 import type { components } from "./generated/api";
+
+export type CustomerPaymentSettings = Pick<ControlSettings, "billing" | "zpay">;
+export async function getCustomerPaymentSettings(): Promise<CustomerPaymentSettings> {
+  const response = await requestControl(
+    "/api/control/settings/customer-payments",
+    {},
+  );
+  if (!response.ok)
+    throw await parseActivationError(response, "读取支付配置失败");
+  return response.json();
+}
+export function updateCustomerPaymentBilling(
+  input: Omit<BillingSettings, "charged_unit_price_fen">,
+  reason: string,
+  key?: string,
+): Promise<BillingSettings> {
+  return adminWrite(
+    "/api/control/settings/customer-payments/billing",
+    input,
+    reason,
+    "保存支付配置失败",
+    key,
+    "PATCH",
+  );
+}
+export function updateCustomerPaymentZPay(
+  input: {
+    pid: string;
+    key?: string;
+    enabled_channels: Array<"alipay" | "wxpay">;
+  },
+  reason: string,
+  key?: string,
+): Promise<ControlSettings["zpay"]> {
+  return adminWrite(
+    "/api/control/settings/customer-payments/zpay",
+    input,
+    reason,
+    "保存支付配置失败",
+    key,
+    "PATCH",
+  );
+}
+export type AccountCreditSummary = {
+  user_id: string;
+  available_credits: number;
+  reserved_credits: number;
+  total_consumed_credits: number;
+  software_consumed_credits: number;
+  other_consumed_credits: number;
+  tokens: CustomerApiKey[];
+};
+export function reconcileAccountRecharge(
+  userId: string,
+  orderNo: string,
+  reason: string,
+  key: string,
+): Promise<unknown> {
+  return adminWrite(
+    `/api/control/customers/${encodeURIComponent(userId)}/recharge-orders/${encodeURIComponent(orderNo)}/reconcile`,
+    {},
+    reason,
+    "充值订单核验失败",
+    key,
+  );
+}
+export async function getAccountCreditSummary(
+  userId: string,
+): Promise<AccountCreditSummary> {
+  const response = await requestControl(
+    `/api/control/customers/${encodeURIComponent(userId)}/account-summary`,
+    {},
+  );
+  if (!response.ok)
+    throw await parseActivationError(response, "读取账号查账失败");
+  return response.json();
+}
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CSRF_HEADER = "X-Admin-CSRF";
@@ -1716,4 +1794,68 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     throw await parseActivationError(response, "读取仪表盘失败");
   }
   return (await response.json()) as DashboardSummary;
+}
+export type LegacyCreditPolicy = {
+  version: number;
+  mode: "keep" | "convert";
+  numerator: number;
+  denominator: number;
+};
+export type LegacyCreditConversion = {
+  user_id: string;
+  before_credits: number;
+  after_credits: number;
+  converted: boolean;
+  policy: LegacyCreditPolicy;
+};
+export async function getLegacyCreditPolicy(): Promise<LegacyCreditPolicy> {
+  const response = await requestControl(
+    "/api/control/settings/legacy-credit-policy",
+    {},
+  );
+  if (!response.ok)
+    throw await parseActivationError(response, "历史积分策略加载失败");
+  return response.json();
+}
+export function saveLegacyCreditPolicy(
+  policy: Omit<LegacyCreditPolicy, "version"> & { expected_version: number },
+  reason: string,
+  key: string,
+): Promise<LegacyCreditPolicy> {
+  return adminWrite(
+    "/api/control/settings/legacy-credit-policy",
+    policy,
+    reason,
+    "保存历史积分策略失败",
+    key,
+    "PUT",
+  );
+}
+export async function getLegacyCreditConversion(
+  userId: string,
+): Promise<LegacyCreditConversion> {
+  const response = await requestControl(
+    `/api/control/customers/${encodeURIComponent(userId)}/credit-conversion`,
+    {},
+  );
+  if (!response.ok)
+    throw await parseActivationError(response, "转换预览不可用");
+  return response.json();
+}
+export function applyLegacyCreditConversion(
+  userId: string,
+  preview: LegacyCreditConversion,
+  reason: string,
+  key: string,
+): Promise<LegacyCreditConversion> {
+  return adminWrite(
+    `/api/control/customers/${encodeURIComponent(userId)}/credit-conversion`,
+    {
+      expected_version: preview.policy.version,
+      expected_balance: preview.before_credits,
+    },
+    reason,
+    "历史积分转换失败",
+    key,
+  );
 }

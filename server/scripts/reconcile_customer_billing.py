@@ -59,6 +59,8 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         # （非 postgresql 方言 return）。
         "customer_discounts",
         "customer_credit_pricing",
+        "legacy_credit_policy",
+        "wallet_credit_conversions",
         "customer_devices",
         "device_pairing_requests",
         "customer_session_state",
@@ -82,7 +84,7 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
 # one exception: revision 056 seeds these exact defaults. Any edit, omission,
 # or extra subject is pre-existing target state and must still fail closed.
 PG_ONLY_SEEDED_TABLES: frozenset[str] = frozenset(
-    {"operation_cost_rates", "customer_credit_pricing"}
+    {"operation_cost_rates", "customer_credit_pricing", "legacy_credit_policy"}
 )
 _OPERATION_COST_RATE_SEEDS = (
     ("character_sheet_image", "upstream_cost", "image", None, 5, None),
@@ -697,6 +699,14 @@ def _count_rows(
 
 
 def pg_only_table_has_divergent_state(conn: psycopg.Connection[Any], table: str) -> bool:
+    if table == "legacy_credit_policy":
+        rows = conn.execute(
+            "SELECT id, version, mode, numerator, denominator FROM legacy_credit_policy"
+        ).fetchall()
+        return len(rows) != 1 or tuple(
+            _row_value(rows[0], name, i)
+            for i, name in enumerate(("id", "version", "mode", "numerator", "denominator"))
+        ) != (1, 0, "keep", 1, 1)
     if table == "customer_credit_pricing":
         rows = conn.execute(
             "SELECT id, version, config_json FROM customer_credit_pricing"

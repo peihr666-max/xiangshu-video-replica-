@@ -12,6 +12,18 @@ import { CustomersPage } from "./CustomersPage";
 
 // Mock the admin API module
 vi.mock("../api.admin", () => ({
+  getAccountCreditSummary: vi.fn().mockResolvedValue({
+    user_id: "user-1",
+    available_credits: 0,
+    reserved_credits: 0,
+    total_consumed_credits: 0,
+    software_consumed_credits: 0,
+    other_consumed_credits: 0,
+    tokens: [],
+  }),
+  getLegacyCreditConversion: vi
+    .fn()
+    .mockRejectedValue(new Error("已有新积分，不适用转换")),
   listCustomers: vi.fn(),
   fetchCustomerUnitPrice: vi.fn(),
   updateCustomerUnitPrice: vi.fn(),
@@ -158,9 +170,9 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       }),
       "活跃",
       "0 台",
-      "0 秒",
-      "0 秒",
-      "5 秒",
+      "0 积分",
+      "0 积分",
+      "5 积分",
       "5 / 8 · 1 失败 · 1 进行中",
       "1",
       "展开详情",
@@ -490,20 +502,22 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     render(<CustomersPage />);
     fireEvent.click(await screen.findByRole("button", { name: "展开详情" }));
 
-    fireEvent.change(await screen.findByLabelText("发放秒数"), {
+    fireEvent.change(await screen.findByLabelText("发放积分"), {
       target: { value: "10" },
     });
     fireEvent.change(screen.getByLabelText("来源单号"), {
       target: { value: "PROMO-2026-09-001" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "发放免费秒数" }));
+    fireEvent.click(screen.getByRole("button", { name: "发放赠送积分" }));
 
     // 高危对话框：原因必填 + 我已知晓勾选。
-    await screen.findByRole("dialog", { name: "发放免费秒数" });
+    await screen.findByRole("dialog", { name: "发放赠送积分" });
     fireEvent.click(screen.getByRole("button", { name: "确认发放" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "请填写操作原因",
-    );
+    expect(
+      await within(
+        screen.getByRole("dialog", { name: "发放赠送积分" }),
+      ).findByRole("alert"),
+    ).toHaveTextContent("请填写操作原因");
     expect(adminApi.createCustomerAdjustment).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText("操作原因"), {
@@ -524,7 +538,7 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         expect.any(String),
       );
     });
-    expect(await screen.findByText(/已发放 10 秒免费时长/)).toBeInTheDocument();
+    expect(await screen.findByText(/已发放 10 赠送积分/)).toBeInTheDocument();
   });
 
   it("keeps customer pricing read-only for auditors", async () => {
