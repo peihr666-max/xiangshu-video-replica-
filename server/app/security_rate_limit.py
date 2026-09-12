@@ -21,6 +21,14 @@ Dimensions (CHECK-constrained in 032 and extended by 042):
   one-shot administrator exchange credential (added by revision 042/T37).
 - ``session:fencing`` — durable old-session write rejects (added by
   revision 042/T37; audit-only, never consumed as a rate-limit bucket).
+- ``apikey:ip`` / ``apikey:key`` — the CW-078 API-Key lane (added by
+  revision 089): ``apikey:ip`` is the per-address brute-force budget on
+  failed ``Authorization: Bearer xsk_live_...`` authentications,
+  ``apikey:key`` is the keyed digest of the presented key prefix (never
+  the plaintext secret — a hammering attacker burns the budget without
+  the audit ever storing a candidate key). Successful authentications
+  draw no budget, so a legitimate high-frequency program is never
+  throttled by its own traffic.
 
 Failure auditing: every code-side rejection is appended to
 ``security_auth_failures`` (append-only trigger) with the dimension, the
@@ -70,6 +78,9 @@ DIMENSION_ACTIVATION_RESET_DEVICE = "activation-reset:device"
 # A2（2026-09-02 admin-console assessment）: control-plane ledger exports are
 # the heaviest reads in the system and previously had no budget at all.
 DIMENSION_CONTROL_EXPORT_ACCOUNT = "control:export:account"
+# CW-078 API-Key lane (revision 089): failed Bearer xsk_live_ authentications.
+DIMENSION_APIKEY_IP = "apikey:ip"
+DIMENSION_APIKEY_KEY = "apikey:key"
 RATE_LIMIT_DIMENSIONS = (
     DIMENSION_ACTIVATE_IP,
     DIMENSION_ACTIVATE_CODE,
@@ -80,6 +91,8 @@ RATE_LIMIT_DIMENSIONS = (
     DIMENSION_ACTIVATION_RESET_IP,
     DIMENSION_ACTIVATION_RESET_DEVICE,
     DIMENSION_CONTROL_EXPORT_ACCOUNT,
+    DIMENSION_APIKEY_IP,
+    DIMENSION_APIKEY_KEY,
 )
 AUDIT_DIMENSIONS = (
     DIMENSION_ACTIVATE_IP,
@@ -88,6 +101,8 @@ AUDIT_DIMENSIONS = (
     DIMENSION_LOGIN_ACCOUNT,
     DIMENSION_ADMIN_EXCHANGE_IP,
     DIMENSION_SESSION_FENCING,
+    DIMENSION_APIKEY_IP,
+    DIMENSION_APIKEY_KEY,
 )
 # Backward-compatible public vocabulary for callers/tests that inspect all
 # durable security dimensions. Spending a bucket uses RATE_LIMIT_DIMENSIONS.
@@ -102,6 +117,8 @@ RATE_LIMIT_CUSTOMER_PREAUTH_IP_ENV = "VIDEO_REPLICA_RATE_LIMIT_CUSTOMER_PREAUTH_
 RATE_LIMIT_ACTIVATION_RESET_IP_ENV = "VIDEO_REPLICA_RATE_LIMIT_ACTIVATION_RESET_IP"
 RATE_LIMIT_ACTIVATION_RESET_DEVICE_ENV = "VIDEO_REPLICA_RATE_LIMIT_ACTIVATION_RESET_DEVICE"
 RATE_LIMIT_CONTROL_EXPORT_ACCOUNT_ENV = "VIDEO_REPLICA_RATE_LIMIT_CONTROL_EXPORT"
+RATE_LIMIT_APIKEY_IP_ENV = "VIDEO_REPLICA_RATE_LIMIT_APIKEY_IP"
+RATE_LIMIT_APIKEY_KEY_ENV = "VIDEO_REPLICA_RATE_LIMIT_APIKEY_KEY"
 RATE_LIMIT_WINDOW_ENV = "VIDEO_REPLICA_RATE_LIMIT_WINDOW_SECONDS"
 RATE_LIMIT_FAILURE_ALERT_ENV = "VIDEO_REPLICA_RATE_LIMIT_FAILURE_ALERT_THRESHOLD"
 
@@ -114,6 +131,8 @@ DEFAULT_CUSTOMER_PREAUTH_IP_LIMIT = 60
 DEFAULT_ACTIVATION_RESET_IP_LIMIT = 10
 DEFAULT_ACTIVATION_RESET_DEVICE_LIMIT = 3
 DEFAULT_CONTROL_EXPORT_LIMIT = 20
+DEFAULT_APIKEY_IP_LIMIT = 20
+DEFAULT_APIKEY_KEY_LIMIT = 10
 DEFAULT_WINDOW_SECONDS = 300
 DEFAULT_FAILURE_ALERT_THRESHOLD = 20
 
@@ -225,6 +244,24 @@ def rate_limit_window_seconds() -> int:
 def control_export_account_limit() -> int:
     """Per-account ledger-export budget shared by every API replica (A2)."""
     return _positive_int_env(RATE_LIMIT_CONTROL_EXPORT_ACCOUNT_ENV, DEFAULT_CONTROL_EXPORT_LIMIT)
+
+
+def apikey_ip_limit() -> int:
+    """Per-address budget on failed API-Key authentications (CW-078).
+
+    Drawn only by a rejected ``xsk_live_`` bearer, so a legitimate program
+    hammering the whitelisted endpoints with a valid key is never throttled.
+    """
+    return _positive_int_env(RATE_LIMIT_APIKEY_IP_ENV, DEFAULT_APIKEY_IP_LIMIT)
+
+
+def apikey_key_limit() -> int:
+    """Per-presented-key-prefix budget on failed authentications (CW-078).
+
+    Mirrors ``activation_code_limit``: one candidate key can only be hammered
+    a bounded number of times before its address budget trips first.
+    """
+    return _positive_int_env(RATE_LIMIT_APIKEY_KEY_ENV, DEFAULT_APIKEY_KEY_LIMIT)
 
 
 def failure_alert_threshold() -> int:

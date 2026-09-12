@@ -56,10 +56,10 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
-# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→081 + 082）。
-HEAD_REVISION = "082_publish_accounts"
+# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→082 + 089）。
+HEAD_REVISION = "089_customer_api_keys"
 
-# 最后一个已发布（受支持）起点。其后的 056–082 尚未随任何受支持版本发布，
+# 最后一个已发布（受支持）起点。其后的 056–089 尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
 # 那不是「冻结已发布历史」而是「冻结开发中」。
 PUBLISHED_HEAD_REVISION = "055_customer_batch_visibility"
@@ -115,13 +115,19 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "primary_keys": 77,
 }
 
-# head 的表名全集（77）。counts 只能证明「数量没漂」，证明不了「同一批表」：
-# 掉一张旧表再建一张新表，tables 计数仍是 77。表名集合与下面的完整目录
+# head 的表名全集。counts 只能证明「数量没漂」，证明不了「同一批表」：
+# 掉一张旧表再建一张新表，tables 计数仍不变。表名集合与下面的完整目录
 # 摘要一起构成结构等价的两级断言，失配时的报错可直接指出 missing/unexpected。
 # 082 的增量：tables/primary_keys +1（publish_accounts）、columns +15、
 # check_constraints +3（platform/status/verify_flag 三条 CHECK）、foreign_keys +1
 # （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
 # partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
+# CW-078 089 的增量：本表名集追加 customer_api_keys（本分支链尾迁移新建的表），
+# 但 HEAD_SCHEMA_COUNTS/HEAD_SCHEMA_DIGEST 仍冻结在 082 基线（tables=77）——它们是
+# 全局 post-linearization 不变量，须待 integrator 折叠 083/086/088/089 并行迁移后
+# 一次性重算（沿 CW-076 先例）。故 B 组真实 PG 矩阵在重算前预期红：表名集断言
+# （sorted(inventory["tables"]) == sorted(HEAD_TABLE_NAMES)）已含 customer_api_keys
+# 而通过，counts/digest 断言因 089 漂移而红，integrator 重算后一并转绿。
 HEAD_TABLE_NAMES: tuple[str, ...] = (
     "activation_code_activations",
     "activation_code_batches",
@@ -146,6 +152,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
     "character_sheet_tasks",
     "character_versions",
     "characters",
+    "customer_api_keys",
     "customer_authorization_evidence",
     "customer_batch_visibility",
     "customer_devices",

@@ -16,6 +16,7 @@ from app.auth import AuthenticatedUser, Database
 from app.customer_fence import (
     BusinessDbDep,
     CustomerSessionSnapshot,
+    customer_read_transaction,
     customer_session_snapshot,
     fenced_pg_transaction,
 )
@@ -546,22 +547,14 @@ def read_customer_recharge_order_status(
     order_no: str,
     request: Request,
 ) -> RechargeOrderStatusResponse:
-    """Customer-lane order status: the session is re-verified inside the
-    fenced read transaction and another user's order number is a 404 (no
-    existence leak), mirroring the internal-lane route's ownership check."""
-    snapshot = customer_session_snapshot(request)
-    if snapshot is None:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "SESSION_REQUIRED",
-                "message": "A customer session token is required.",
-            },
-        )
-    with fenced_pg_transaction(snapshot) as (conn, ctx):
+    """Customer-lane order status on the API-Key whitelist (§2.2): a session
+    token is re-verified inside the fenced read transaction, an ``xsk_live_``
+    key rides the independent lane, and another user's order number is a 404
+    (no existence leak), mirroring the internal-lane route's ownership check."""
+    with customer_read_transaction(request) as (conn, user_id):
         business_conn = BusinessConnection.postgres(conn)
         order = read_recharge_order(business_conn, merchant_order_no=order_no)
-        if order is None or str(order["user_id"]) != ctx.user_id:
+        if order is None or str(order["user_id"]) != user_id:
             raise HTTPException(
                 status_code=404,
                 detail={
@@ -834,24 +827,14 @@ def update_customer_profile(
 
 @router.get("/customer/wallet", response_model=WalletResponse)
 def read_customer_wallet(request: Request) -> WalletResponse:
-    """Customer-lane wallet read: balance + billing under the fenced session.
-
-    Mirrors the internal /api/wallet read but re-verifies the customer session
-    inside the transaction (BILL-01: credits live in the same customer wallet
-    the activation grant funded)."""
-    snapshot = customer_session_snapshot(request)
-    if snapshot is None:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "SESSION_REQUIRED",
-                "message": "A customer session token is required.",
-            },
-        )
-    with fenced_pg_transaction(snapshot) as (conn, ctx):
+    """Customer-lane wallet read on the API-Key whitelist (§2.2): balance +
+    billing under the fenced session, or the independent lane for an
+    ``xsk_live_`` key. Mirrors the internal /api/wallet read (BILL-01: credits
+    live in the same customer wallet the activation grant funded)."""
+    with customer_read_transaction(request) as (conn, user_id):
         row = conn.execute(
             "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s",
-            (ctx.user_id,),
+            (user_id,),
         ).fetchone()
         if row is None:
             raise HTTPException(
@@ -860,9 +843,9 @@ def read_customer_wallet(request: Request) -> WalletResponse:
             )
         billing = SettingsRepository(
             BusinessConnection.postgres(conn)
-        ).read_customer_billing_settings(user_id=ctx.user_id)
+        ).read_customer_billing_settings(user_id=user_id)
         try:
-            billing = effective_customer_billing_settings(billing, user_id=ctx.user_id)
+            billing = effective_customer_billing_settings(billing, user_id=user_id)
         except ValueError as exc:
             raise HTTPException(
                 status_code=503,
@@ -888,19 +871,10 @@ def list_customer_wallet_transactions(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> WalletTransactionPage:
-    snapshot = customer_session_snapshot(request)
-    if snapshot is None:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "SESSION_REQUIRED",
-                "message": "A customer session token is required.",
-            },
-        )
-    with fenced_pg_transaction(snapshot) as (conn, ctx):
+    with customer_read_transaction(request) as (conn, user_id):
         total_row = conn.execute(
             "SELECT COUNT(*) FROM wallet_transactions WHERE user_id = %s",
-            (ctx.user_id,),
+            (user_id,),
         ).fetchone()
         assert total_row is not None
         total = int(total_row[0])
@@ -913,7 +887,7 @@ def list_customer_wallet_transactions(
             ORDER BY created_at DESC, id DESC
             LIMIT %s OFFSET %s
             """,
-            (ctx.user_id, limit, offset),
+            (user_id, limit, offset),
         ).fetchall()
         return WalletTransactionPage(
             items=[
@@ -943,18 +917,10 @@ def list_customer_recharge_orders(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> RechargeOrderPage:
-    """Customer-lane order list: only this session's orders, ownership-checked
-    inside the fenced read transaction."""
-    snapshot = customer_session_snapshot(request)
-    if snapshot is None:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "SESSION_REQUIRED",
-                "message": "A customer session token is required.",
-            },
-        )
-    with fenced_pg_transaction(snapshot) as (conn, ctx):
+    """Customer-lane order list on the API-Key whitelist (§2.2): only this
+    principal's orders — a session is re-verified inside the fenced read
+    transaction, an ``xsk_live_`` key rides the independent lane."""
+    with customer_read_transaction(request) as (conn, user_id):
         # Codex P1 (PR #65): serialize_recharge_order reads named columns, so
         # the rows must come from a connection with the named-row factory
         # installed. BusinessConnection.postgres() sets it; a raw pooled
@@ -963,7 +929,7 @@ def list_customer_recharge_orders(
         business_conn = BusinessConnection.postgres(conn)
         total_row = business_conn.execute(
             "SELECT COUNT(*) FROM recharge_orders WHERE user_id = %s",
-            (ctx.user_id,),
+            (user_id,),
         ).fetchone()
         assert total_row is not None
         total = int(total_row[0])
@@ -976,7 +942,7 @@ def list_customer_recharge_orders(
             ORDER BY created_at DESC, id DESC
             LIMIT %s OFFSET %s
             """,
-            (ctx.user_id, limit, offset),
+            (user_id, limit, offset),
         ).fetchall()
         return RechargeOrderPage(
             items=[
