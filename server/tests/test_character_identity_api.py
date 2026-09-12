@@ -926,10 +926,12 @@ def test_customer_production_rejects_fake_source_inspector_override(
     db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    # CW-042-a: connect BEFORE raising the production flag — the SQLite
+    # connection is only this unit test's vehicle, and the entry guard now
+    # refuses SQLite once the flag is up.
     monkeypatch.setenv("VIDEO_REPLICA_FAKE_SOURCE_IMAGE_INSPECTOR", "1")
-
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
         with pytest.raises(HTTPException) as error:
             get_source_image_inspector(conn)
 

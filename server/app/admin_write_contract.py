@@ -273,7 +273,11 @@ def write_with_idempotency(
                 replayed: dict[str, object] = json.loads(snapshot.response_body)
                 response.status_code = snapshot.response_status
                 response.headers[REPLAY_HEADER] = "true"
-                replay_request_id = replayed.get("request_id")
+                # Older daily-price writes stored a bare JSON list. Replaying
+                # those must not call dict methods on that historical snapshot.
+                replay_request_id = (
+                    replayed.get("request_id") if isinstance(replayed, dict) else None
+                )
                 if isinstance(replay_request_id, str):
                     response.headers[REQUEST_ID_HEADER] = replay_request_id
                 return replayed

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -9,8 +10,30 @@ from alembic.config import Config
 BUSY_TIMEOUT_MS = 5000
 SERVER_DIR = Path(__file__).resolve().parent.parent
 
+# CW-042-a (owner-signed split, CW042-SCOPE-INVENTORY §2.4): the internal /
+# desktop SQLite lane stays for now (042-b defers physical deletion behind
+# CW-039), but customer production must fail closed on every process-level
+# SQLite entry. The HTTP surface is guarded by the CW-025 lifespan check in
+# app.main; these guards close the entries that never run a lifespan —
+# operator CLIs and bootstrap helpers. The env name mirrors the existing
+# declarations in admin_auth_routes/control_routes/control_auth (importing
+# app.bootstrap here would be circular: bootstrap imports this module).
+CUSTOMER_PRODUCTION_ENV = "VIDEO_REPLICA_CUSTOMER_PRODUCTION"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _refuse_sqlite_in_customer_production() -> None:
+    if os.environ.get(CUSTOMER_PRODUCTION_ENV, "").strip().lower() not in _TRUTHY:
+        return
+    raise RuntimeError(
+        "customer production is PostgreSQL-only: the SQLite lane "
+        "(VIDEO_REPLICA_DB_PATH / app.db entry points) is not available here; "
+        "configure VIDEO_REPLICA_DATABASE_URL instead"
+    )
+
 
 def connect_database(db_path: str | Path) -> sqlite3.Connection:
+    _refuse_sqlite_in_customer_production()
     path = Path(db_path)
     if path != Path(":memory:"):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,6 +56,7 @@ def initialize_database(db_path: str | Path) -> sqlite3.Connection:
 
 
 def upgrade_database(db_path: str | Path, revision: str = "head") -> None:
+    _refuse_sqlite_in_customer_production()
     path = Path(db_path)
     if path != Path(":memory:"):
         path.parent.mkdir(parents=True, exist_ok=True)
