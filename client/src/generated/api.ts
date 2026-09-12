@@ -11640,6 +11640,10 @@ export interface operations {
       query?: {
         status?: ("PENDING" | "PAID" | "FAILED" | "CLOSED") | null;
         user_id?: string | null;
+        username?: string | null;
+        created_from?: string | null;
+        created_to?: string | null;
+        channel?: string | null;
         limit?: number;
       };
       header?: {
@@ -11675,6 +11679,9 @@ export interface operations {
       query?: {
         user_id?: string | null;
         type?: ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE") | null;
+        username?: string | null;
+        created_from?: string | null;
+        created_to?: string | null;
         limit?: number;
       };
       header?: {

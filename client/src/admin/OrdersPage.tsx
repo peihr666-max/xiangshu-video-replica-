@@ -9,7 +9,6 @@ import {
 import {
   type ControlReconciliation,
   downloadControlRechargeOrdersCsv,
-  downloadControlWalletTransactionsCsv,
   getControlReconciliation,
   type RechargeOrderStatus,
   syncControlRechargeOrder,
@@ -21,7 +20,11 @@ import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
 import { OrderStatusBadge } from "./ui/StatusBadge";
 import { useAutoRefresh } from "./ui/useAutoRefresh";
-import { formatDateTime, formatFen } from "./ui/vocabulary";
+import {
+  formatDateTime,
+  formatFen,
+  ledgerExportMessage,
+} from "./ui/vocabulary";
 
 const PAGE_SIZE = 20;
 
@@ -52,6 +55,7 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [exporting, setExporting] = useState(false);
   const [pendingSyncOrderNo, setPendingSyncOrderNo] = useState<string | null>(
     null,
   );
@@ -136,28 +140,27 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
   }
 
   async function exportRechargeOrders() {
+    if (exporting) return;
+    setExporting(true);
     setError("");
+    setNotice("");
     try {
-      await downloadControlRechargeOrdersCsv();
+      const summary = await downloadControlRechargeOrdersCsv({
+        status: (statusFilter || undefined) as RechargeOrderStatus | undefined,
+        username: usernameFilter || undefined,
+        channel: channelFilter || undefined,
+        createdFrom: createdFrom || undefined,
+        createdTo: createdTo || undefined,
+      });
+      setNotice(ledgerExportMessage(summary));
     } catch (cause) {
       setError(
         cause instanceof Error && cause.message
           ? cause.message
           : "导出充值订单失败。",
       );
-    }
-  }
-
-  async function exportWalletTransactions() {
-    setError("");
-    try {
-      await downloadControlWalletTransactionsCsv();
-    } catch (cause) {
-      setError(
-        cause instanceof Error && cause.message
-          ? cause.message
-          : "导出账务流水失败。",
-      );
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -171,11 +174,12 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
         >
           {autoRefresh ? "自动刷新：开（30 秒）" : "自动刷新：关"}
         </button>
-        <button type="button" onClick={() => void exportRechargeOrders()}>
+        <button
+          type="button"
+          disabled={exporting || loading}
+          onClick={() => void exportRechargeOrders()}
+        >
           导出充值订单 CSV
-        </button>
-        <button type="button" onClick={() => void exportWalletTransactions()}>
-          导出账务流水 CSV
         </button>
       </div>
 

@@ -42,6 +42,11 @@ function blobResponse() {
   return Promise.resolve({
     ok: true,
     status: 200,
+    headers: new Headers({
+      "X-Export-Total": "1",
+      "X-Export-Returned": "1",
+      "X-Export-Truncated": "false",
+    }),
     blob: async () => new Blob(["id\n1"], { type: "text/csv" }),
   });
 }
@@ -308,8 +313,8 @@ function installFetch(options?: {
       return jsonResponse({ ...ordersPage.items[0], status: "PAID" });
     }
     if (
-      url.endsWith("/api/control/recharge-orders.csv") ||
-      url.endsWith("/api/control/wallet-transactions.csv")
+      new URL(url).pathname.endsWith("/api/control/recharge-orders.csv") ||
+      new URL(url).pathname.endsWith("/api/control/wallet-transactions.csv")
     ) {
       return blobResponse();
     }
@@ -322,10 +327,8 @@ function installFetch(options?: {
     throw new Error(`unexpected request: ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
-  vi.stubGlobal("URL", {
-    createObjectURL: vi.fn(() => "blob:test"),
-    revokeObjectURL: vi.fn(),
-  });
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:test");
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
   vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
     () => undefined,
   );
@@ -496,9 +499,17 @@ describe("AdminApp", () => {
       target: { value: "客服反馈未到账" },
     });
     fireEvent.click(screen.getByRole("button", { name: "确认查单" }));
+    await screen.findByText("订单 202608190001 状态已同步。");
 
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "导出充值订单 CSV" }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "导出充值订单 CSV" }));
-    fireEvent.click(screen.getByRole("button", { name: "导出账务流水 CSV" }));
+    expect(
+      screen.queryByRole("button", { name: "导出账务流水 CSV" }),
+    ).toBeNull();
 
     await waitFor(() =>
       expect(
@@ -510,6 +521,24 @@ describe("AdminApp", () => {
       ).toBe(true),
     );
     expect(screen.queryByRole("button", { name: /补单|改余额/ })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "额度流水" }));
+    const walletExport = await screen.findByRole("button", {
+      name: "导出账务流水 CSV",
+    });
+    await waitFor(() => expect(walletExport).toBeEnabled());
+    fireEvent.click(walletExport);
+    await waitFor(() => {
+      for (const pathname of [
+        "/api/control/recharge-orders.csv",
+        "/api/control/wallet-transactions.csv",
+      ]) {
+        expect(
+          fetchMock.mock.calls.some(
+            ([url]) => new URL(String(url)).pathname === pathname,
+          ),
+        ).toBe(true);
+      }
+    });
   });
 
   it("saves ZPay and price settings while deployment URLs stay server-owned", async () => {
@@ -1055,7 +1084,11 @@ describe("AdminApp", () => {
       screen.getByRole("button", { name: "导出充值订单 CSV" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "导出账务流水 CSV" }),
+      screen.queryByRole("button", { name: "导出账务流水 CSV" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "额度流水" }));
+    expect(
+      await screen.findByRole("button", { name: "导出账务流水 CSV" }),
     ).toBeInTheDocument();
   });
 

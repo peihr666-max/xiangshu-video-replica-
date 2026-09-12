@@ -1790,3 +1790,126 @@ def test_customer_code_materials_never_reach_control_csv_exports(
     assert "digest-cu" not in response.text
     assert raw_code not in response.text
     assert code_digest not in response.text
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "Asia/Tokyo", "America/Los_Angeles"])
+def test_w15_order_and_wallet_exports_match_shanghai_filters(
+    route_state: str, timezone: str
+) -> None:
+    import csv
+    import io
+
+    from app.auth import CurrentUser
+    from app.control_routes import (
+        export_recharge_orders_csv,
+        export_wallet_transactions_csv,
+        list_recharge_orders,
+        list_wallet_transactions,
+    )
+    from app.db_portable import BusinessConnection
+
+    admin = CurrentUser(id="admin_u", username="admin_u", display_name="Admin User", role="admin")
+    with psycopg.connect(route_state, autocommit=True) as raw:
+        raw.execute("SELECT set_config('TimeZone', %s, false)", (timezone,))
+        for index, created in enumerate(
+            (
+                "2030-09-11 15:59:59",
+                "2030-09-11 16:00:00",
+                "2030-09-12T00:00:00Z",
+                "2030-09-12T23:59:59.999999+08:00",
+                "2030-09-12T16:00:00+00:00",
+            )
+        ):
+            raw.execute(
+                "INSERT INTO recharge_orders (id, user_id, merchant_order_no, provider, status, "
+                "pricing_scope, base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+                "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits, "
+                "paid_at, created_at, channel, provider_trade_no) "
+                "SELECT %s, user_id, %s, 'zpay', status, pricing_scope, "
+                "base_unit_price_fen_snapshot, "
+                "charged_unit_price_fen_snapshot, min_recharge_fen_snapshot, "
+                "recharge_step_fen_snapshot, "
+                "amount_fen, credits, paid_at, %s, 'alipay', %s FROM recharge_orders WHERE "
+                "id='opening-customer_u'",
+                (f"w15-order-{index}", f"W15-{index}", created, f"w15-provider-{index}"),
+            )
+            raw.execute(
+                "INSERT INTO wallet_transactions (id, user_id, type, available_delta, "
+                "reserved_delta, "
+                "recharge_order_id, idempotency_key, created_at) VALUES (%s, 'customer_u', "
+                "'CHARGE', 50, 0, %s, %s, %s)",
+                (f"w15-tx-{index}", f"w15-order-{index}", f"w15-key-{index}", created),
+            )
+        conn = BusinessConnection.postgres(raw)
+        options = {
+            "username": "customer_u",
+            "created_from": "2030-09-12",
+            "created_to": "2030-09-12",
+        }
+        orders = list_recharge_orders(
+            conn=conn, _actor=admin, status="PAID", channel="alipay", limit=50, offset=0, **options
+        )
+        csv_response = export_recharge_orders_csv(
+            conn=conn, actor=admin, status="PAID", channel="alipay", limit=5000, **options
+        )
+        records = list(csv.DictReader(io.StringIO(bytes(csv_response.body).decode("utf-8-sig"))))
+        assert {item.order_no for item in orders.items} == {"W15-1", "W15-2", "W15-3"}
+        assert {row["order_no"] for row in records} == {item.order_no for item in orders.items}
+        assert sum(int(row["amount_fen"]) for row in records) == sum(
+            item.amount_fen for item in orders.items
+        )
+        assert csv_response.headers["X-Export-Total"] == "3"
+        assert csv_response.headers["X-Export-Truncated"] == "false"
+        wallet = list_wallet_transactions(
+            conn=conn, _actor=admin, type="CHARGE", limit=50, offset=0, **options
+        )
+        csv_response = export_wallet_transactions_csv(
+            conn=conn, actor=admin, type="CHARGE", limit=5000, **options
+        )
+        records = list(csv.DictReader(io.StringIO(bytes(csv_response.body).decode("utf-8-sig"))))
+        assert (
+            {row["id"] for row in records}
+            == {item.id for item in wallet.items}
+            == {"w15-tx-1", "w15-tx-2", "w15-tx-3"}
+        )
+        assert csv_response.headers["X-Export-Returned"] == "3"
+
+
+def test_w15_large_export_reports_real_filtered_total(route_state: str) -> None:
+    import csv
+    import io
+
+    from app.auth import CurrentUser
+    from app.control_routes import export_recharge_orders_csv
+    from app.db_portable import BusinessConnection
+
+    with psycopg.connect(route_state, autocommit=True) as raw:
+        raw.execute(
+            "INSERT INTO recharge_orders (id, user_id, merchant_order_no, provider, status, "
+            "pricing_scope, base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+            "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits, "
+            "paid_at, created_at, channel, provider_trade_no) "
+            "SELECT 'w15-large-'||g, user_id, 'W15-LARGE-'||g, 'zpay', status, pricing_scope, "
+            "base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+            "min_recharge_fen_snapshot, "
+            "recharge_step_fen_snapshot, amount_fen, credits, paid_at, '2030-09-12 00:00:00', "
+            "'alipay', 'w15-provider-'||g "
+            "FROM recharge_orders CROSS JOIN generate_series(1,5001) g WHERE "
+            "id='opening-customer_u'"
+        )
+        response = export_recharge_orders_csv(
+            conn=BusinessConnection.postgres(raw),
+            actor=CurrentUser(id="admin_u", username="admin_u", display_name="Admin", role="admin"),
+            username="customer_u",
+            status="PAID",
+            channel="alipay",
+            created_from="2030-09-12",
+            created_to="2030-09-12",
+            limit=5000,
+        )
+        assert response.headers["X-Export-Total"] == "5001"
+        assert response.headers["X-Export-Returned"] == "5000"
+        assert response.headers["X-Export-Truncated"] == "true"
+        assert (
+            len(list(csv.DictReader(io.StringIO(bytes(response.body).decode("utf-8-sig"))))) == 5000
+        )

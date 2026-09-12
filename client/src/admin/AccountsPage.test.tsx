@@ -40,6 +40,18 @@ function installFetch() {
   const fetchMock = vi.fn((url: string) => {
     const { searchParams, pathname } = new URL(String(url));
     const offset = Number(searchParams.get("offset") ?? "0");
+    if (pathname.endsWith("/api/control/wallet-transactions.csv")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          "X-Export-Total": "3",
+          "X-Export-Returned": "3",
+          "X-Export-Truncated": "false",
+        }),
+        blob: async () => new Blob(["id\n1"]),
+      });
+    }
     if (pathname.endsWith("/api/control/wallet-transactions")) {
       return jsonResponse(transactionPage(offset, 41));
     }
@@ -50,8 +62,49 @@ function installFetch() {
 }
 
 describe("AccountsPage", () => {
+  it("exports wallet filters from the wallet page", async () => {
+    const fetchMock = installFetch();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:test");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      () => undefined,
+    );
+    render(<AccountsPage />);
+    await screen.findByText("operator-1");
+    fireEvent.change(screen.getByLabelText("流水账号"), {
+      target: { value: "operator" },
+    });
+    fireEvent.change(screen.getByLabelText("流水类型"), {
+      target: { value: "CHARGE" },
+    });
+    fireEvent.change(screen.getByLabelText("流水起始时间"), {
+      target: { value: "2026-09-12" },
+    });
+    fireEvent.change(screen.getByLabelText("流水截止时间"), {
+      target: { value: "2026-09-12" },
+    });
+    const button = screen.getByRole("button", { name: "导出账务流水 CSV" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(
+      await screen.findByText("当前筛选共 3 条，已全部导出。"),
+    ).toBeInTheDocument();
+    const call = fetchMock.mock.calls.find(([url]) =>
+      new URL(url).pathname.endsWith("wallet-transactions.csv"),
+    );
+    expect(call).toBeDefined();
+    expect(Object.fromEntries(new URL(String(call?.[0])).searchParams)).toEqual(
+      {
+        username: "operator",
+        type: "CHARGE",
+        created_from: "2026-09-12",
+        created_to: "2026-09-12",
+      },
+    );
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("renders wallet transactions with deterministic balances", async () => {

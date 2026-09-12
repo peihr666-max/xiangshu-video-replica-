@@ -8,15 +8,10 @@ import {
   upsertDailyPrice,
 } from "../api.admin";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
+import { shanghaiDate } from "./ui/vocabulary";
 
 function fenToYuan(fen: number): string {
   return (fen / 100).toFixed(2);
-}
-
-function todayPlus(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
 }
 
 type PriceForm = {
@@ -28,18 +23,6 @@ type PriceForm = {
 };
 
 type EconomicsProfitDay = ProfitDayRow & { cost_unknown_count?: number };
-
-function shanghaiToday(): string {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((item) => item.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
-}
 
 type ChartPoint = { x: number; y: number };
 
@@ -85,7 +68,7 @@ export function ProfitOverview({ readOnly = false }: { readOnly?: boolean }) {
     null,
   );
   const [form, setForm] = useState<PriceForm>({
-    priceDate: todayPlus(1),
+    priceDate: shanghaiDate(1),
     price768pYuan: "0.12",
     price2kYuan: "0.20",
     note: "",
@@ -174,7 +157,7 @@ export function ProfitOverview({ readOnly = false }: { readOnly?: boolean }) {
   }
 
   const currentPrice = prices.reduce<DailyPriceRow | null>((current, price) => {
-    if (price.price_date > shanghaiToday()) return current;
+    if (price.price_date > shanghaiDate()) return current;
     if (!current || price.price_date > current.price_date) return price;
     return current;
   }, null);

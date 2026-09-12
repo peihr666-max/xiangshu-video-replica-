@@ -17,7 +17,7 @@ import csv
 import io
 import json
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Any, cast
 
 import psycopg
@@ -25,6 +25,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.admin_auth_routes import AdminReader, AdminWriter
+from app.admin_dates import SHANGHAI
 from app.admin_write_contract import AdminWriteContract, write_with_idempotency
 from app.db_pg import pg_transaction
 
@@ -180,7 +181,7 @@ def upsert_daily_price(
 ) -> list[DailyPriceRow]:
     """录入/更新某日的对外售价（写契约 + 审计 + 返回最新价格列表）。"""
     price_date = _validate_price_date(payload.price_date)
-    if (price_date - date.today()).days > 7:
+    if (price_date - datetime.now(SHANGHAI).date()).days > 7:
         raise HTTPException(
             status_code=400,
             detail={

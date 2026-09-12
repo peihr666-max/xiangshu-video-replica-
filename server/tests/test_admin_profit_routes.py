@@ -82,8 +82,13 @@ def profit_pg_dsn() -> Iterator[str]:
 def profit_app(monkeypatch: pytest.MonkeyPatch, profit_pg_dsn: str) -> Iterator[FastAPI]:
     from app.admin_auth_routes import router as admin_auth_router
     from app.admin_profit_routes import router as admin_profit_router
+    from app.security_rate_limit import COUNTERS_TABLE
 
     close_pg_pool()
+    # Each case establishes its own real session. Budget from earlier cases in
+    # this dedicated database must not make later business tests fail at login.
+    with psycopg.connect(profit_pg_dsn) as conn:
+        conn.execute(f"DELETE FROM {COUNTERS_TABLE}")
     monkeypatch.setenv(DATABASE_URL_ENV, profit_pg_dsn)
     monkeypatch.setenv(ADMIN_SESSION_HMAC_KEY_ENV, TEST_KEY)
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
@@ -120,6 +125,43 @@ def _write_headers(base: dict[str, str]) -> dict[str, str]:
     import uuid
 
     return {**base, IDEMPOTENCY_KEY_HEADER: f"key-{uuid.uuid4()}"}
+
+
+def test_w15_price_date_seven_day_limit_uses_shanghai(
+    admin_headers: dict[str, str], client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ShanghaiBoundaryClock(dt.datetime):
+        @classmethod
+        def now(cls, tz: dt.tzinfo | None = None) -> dt.datetime:
+            return dt.datetime(2030, 9, 11, 18, tzinfo=dt.UTC).astimezone(tz or dt.UTC)
+
+    monkeypatch.setattr("app.admin_profit_routes.datetime", ShanghaiBoundaryClock)
+    body = {
+        "price_date": "2030-09-19",
+        "price_768p_fen": 12,
+        "price_2k_fen": 20,
+        "note": "date boundary",
+        "reason": "Shanghai seven day boundary",
+        "confirm": True,
+    }
+    try:
+        response = client.put(
+            "/api/control/profit/daily-price", json=body, headers=_write_headers(admin_headers)
+        )
+        assert response.status_code == 200, response.text
+        body["price_date"] = "2030-09-20"
+        response = client.put(
+            "/api/control/profit/daily-price", json=body, headers=_write_headers(admin_headers)
+        )
+        assert response.status_code == 400
+    finally:
+        # This module intentionally shares its price history; the synthetic
+        # future boundary must not change later cases' carry-forward pricing.
+        with psycopg.connect(_w08_dsn()) as conn:
+            conn.execute(
+                "DELETE FROM daily_external_prices WHERE price_date IN (%s, %s)",
+                ("2030-09-19", "2030-09-20"),
+            )
 
 
 def test_daily_price_upsert_requires_contract(

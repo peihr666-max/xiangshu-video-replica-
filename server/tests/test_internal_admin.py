@@ -208,7 +208,7 @@ def test_control_date_only_end_filter_includes_the_whole_day() -> None:
         _transaction_filters,
     )
 
-    expected_end = "2026-09-05 23:59:59.999999+00:00"
+    expected_end = "2026-09-05T16:00:00+00:00"
     assert _order_filters(
         status=None,
         user_id=None,
@@ -996,7 +996,10 @@ def test_control_reconciliation_and_csv_are_read_only(
         )
 
     summary = client.get("/api/control/billing-reconciliation", headers=control_headers)
-    orders_csv = client.get("/api/control/recharge-orders.csv", headers=control_headers)
+    orders_csv = client.get(
+        "/api/control/recharge-orders.csv",
+        headers={**control_headers, "Origin": "tauri://localhost"},
+    )
     ledger_csv = client.get("/api/control/wallet-transactions.csv", headers=control_headers)
 
     assert summary.status_code == 200
@@ -1010,6 +1013,11 @@ def test_control_reconciliation_and_csv_are_read_only(
     assert orders_csv.status_code == 200
     assert orders_csv.headers["content-type"].startswith("text/csv")
     assert "attachment;" in orders_csv.headers["content-disposition"]
+    exposed = {
+        name.strip().lower()
+        for name in orders_csv.headers["access-control-expose-headers"].split(",")
+    }
+    assert {"x-export-total", "x-export-returned", "x-export-truncated", "x-request-id"} <= exposed
     assert "202608190000000000000000000001" in orders_csv.text
     assert "'=2+2" in orders_csv.text
     assert "merchant-secret" not in orders_csv.text
@@ -1150,3 +1158,12 @@ def test_control_ledger_export_rate_limit_dimension_is_registered() -> None:
 
     assert DIMENSION_CONTROL_EXPORT_ACCOUNT in RATE_LIMIT_DIMENSIONS
     assert control_export_account_limit() >= 1
+
+
+def test_w15_shanghai_calendar_range_is_half_open_utc() -> None:
+    from app.admin_dates import admin_date_bounds
+
+    assert admin_date_bounds("2026-09-12", "2026-09-12") == [
+        (">=", "2026-09-11T16:00:00+00:00"),
+        ("<", "2026-09-12T16:00:00+00:00"),
+    ]
