@@ -1178,4 +1178,8 @@ AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门
 
 ## FIX-WALLETSTATUS-20260912 / 钱包提示竞态前置修复
 
-AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2845 passed、1 原有 TLS 场景跳过；前端 1348 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-WALLETSTATUS-20260912.md)。
+AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2845 passed、1 原有 TLS 场景跳过；前端 1348 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。PR #81 三门禁全成功后已合并为 `4d2e598`；人工联合调试全部留第二部分。[任务证据](evidence/FIX-WALLETSTATUS-20260912.md)。
+
+## FIX-ADM02-20260912 / W12
+
+[每日售价重放证据](evidence/FIX-ADM02-20260912.md)：独立评审 PASS；最新主分支集成后完整本地门通过，前端 1344 passed、服务端 2847 passed 和 1 原有 TLS 场景跳过；覆盖检查及全部退出码为 0。当前 PR CI 与合并待完成；人工联调留用户团队第二部分。
