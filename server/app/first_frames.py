@@ -7,11 +7,12 @@ import json
 import logging
 import socket
 import sqlite3
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
@@ -45,6 +46,7 @@ from app.storage import (
     require_storage_match,
     storage_object_ref_from_uri,
 )
+from app.viral_media import ViralMediaError, _pinned_connection
 
 logger = logging.getLogger(__name__)
 
@@ -505,11 +507,74 @@ class UrllibApilioTransport:
         return self._open(Request(url, data=body, headers=dict(headers), method="POST"))
 
     def get(self, url: str) -> tuple[bytes, Mapping[str, str]]:
-        require_safe_provider_download_url(url)
-        # Apilio's CDN rejects the default urllib user agent even for a valid signed URL.
-        return self._open(
-            Request(url, headers={"User-Agent": APILIO_OUTPUT_USER_AGENT}, method="GET")
-        )
+        hostname, connect_ips = require_safe_provider_download_url(url)
+        parsed = urlsplit(url)
+        target = parsed.path or "/"
+        if parsed.query:
+            target += f"?{parsed.query}"
+        connection = None
+        last_error: OSError | None = None
+        deadline = time.monotonic() + self.timeout_seconds
+        for index, connect_ip in enumerate(connect_ips):
+            remaining = self.timeout_seconds if index == 0 else deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            candidate = _pinned_connection("https", hostname, 443, connect_ip, remaining)
+            try:
+                candidate.connect()
+            except ViralMediaError as exc:
+                candidate.close()
+                raise ImageProviderFailed(
+                    "Apilio image connection address was not verified"
+                ) from exc
+            except OSError as exc:
+                candidate.close()
+                last_error = exc
+                continue
+            connection = candidate
+            break
+        if connection is None:
+            raise RetryableImageProviderFailed("Apilio image request failed") from last_error
+        response = None
+        try:
+            # Connect to the validated IP while retaining hostname SNI and Host.
+            # Direct http.client connections also ignore environment HTTP proxies.
+            connection.request(
+                "GET",
+                target,
+                headers={
+                    "Host": f"[{hostname}]" if ":" in hostname else hostname,
+                    "User-Agent": APILIO_OUTPUT_USER_AGENT,
+                },
+            )
+            response = connection.getresponse()
+            if not 200 <= response.status < 300:
+                failure_type = (
+                    RetryableImageProviderFailed
+                    if response.status == 429 or response.status >= 500
+                    else ImageProviderFailed
+                )
+                raise failure_type(f"Apilio returned HTTP {response.status}")
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    declared_size = int(content_length)
+                except ValueError as exc:
+                    raise ImageProviderFailed("Apilio returned an invalid image size") from exc
+                if declared_size < 0 or declared_size > MAX_PROVIDER_IMAGE_BYTES:
+                    raise ImageProviderFailed("Apilio response exceeds the image size limit")
+            body = response.read(MAX_PROVIDER_IMAGE_BYTES + 1)
+            if len(body) > MAX_PROVIDER_IMAGE_BYTES:
+                raise ImageProviderFailed("Apilio response exceeds the image size limit")
+            return body, dict(response.headers.items())
+        except ViralMediaError as exc:
+            raise ImageProviderFailed("Apilio image connection address was not verified") from exc
+        except (TimeoutError, OSError) as exc:
+            raise RetryableImageProviderFailed("Apilio image request failed") from exc
+        finally:
+            if response is not None:
+                response.close()
+            connection.close()
 
     def _open(self, request: Request) -> tuple[bytes, Mapping[str, str]]:
         try:
@@ -1021,12 +1086,20 @@ def valid_provider_output_url(value: str) -> bool:
     return parsed.scheme == "https" and bool(parsed.hostname)
 
 
-def require_safe_provider_download_url(value: str) -> None:
+def require_safe_provider_download_url(value: str) -> tuple[str, tuple[str, ...]]:
     if not valid_provider_output_url(value):
         raise ImageProviderFailed("Apilio output URL must use HTTPS")
-    hostname = urlparse(value).hostname
+    parsed = urlsplit(value)
+    hostname = parsed.hostname
     if hostname is None:
         raise ImageProviderFailed("Apilio output URL is invalid")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ImageProviderFailed("Apilio output URL port is invalid") from exc
+    if parsed.username is not None or parsed.password is not None or port not in {None, 443}:
+        raise ImageProviderFailed("Apilio output URL credentials or port are not allowed")
+    hostname = hostname.encode("idna").decode("ascii")
     try:
         addresses = socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
@@ -1039,6 +1112,7 @@ def require_safe_provider_download_url(value: str) -> None:
         proxy_fake_ip = trusted_output_host and ip in APILIO_PROXY_FAKE_IP_NETWORK
         if not ip.is_global and not proxy_fake_ip:
             raise ImageProviderFailed("Apilio output URL must resolve to a public address")
+    return hostname, tuple(dict.fromkeys(str(address[4][0]) for address in addresses))
 
 
 class NoRedirectHandler(HTTPRedirectHandler):
