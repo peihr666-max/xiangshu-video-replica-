@@ -1144,6 +1144,11 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 
 
+## FIX-TESTBASE-20260912 / 独立前置：日期敏感测试夹具
+
+独立评审 PASS；完整本地静态门通过（前端 1344 passed、TypeScript、Biome、Tauri、ruff、format、mypy）；服务端四个独占 PG16 分片合计 2845 passed、1 原有 TLS 场景跳过，覆盖检查通过、退出码均为 0。此前中断的慢速分片保留日志，不记作通过。最终 PG 使用临时内存盘，fsync 和 synchronous_commit 保持默认开启；未执行生产或真实服务验收。 [任务证据](evidence/FIX-TESTBASE-20260912.md)。
+
+
 ## FIX-W15-20260912 / 第一组 W15 / ADM-08、ADM-09：上海业务日与一致的 CSV 导出
 
 原失败回归日志和修复结果保存在工作区 outputs/remediation-20260912/W15-*.log。隔离 PG 日期/5001条/CORS/售价边界专项 8 passed；前端五文件 48 passed，tsc 通过。完整受影响 PG 套件及本地全量质量门待完成；专项计数有重叠，不累计为全量。 [任务证据](evidence/FIX-W15-20260912.md)。
