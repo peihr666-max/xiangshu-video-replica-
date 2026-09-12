@@ -481,6 +481,8 @@ class BusinessConnection:
     def __init__(self, backend: SQLiteBackend | PostgresBackend) -> None:
         self._backend = backend
         self.ctx: object | None = None  # CustomerSessionContext (T21 fencing)
+        self.api_key_id: str | None = None  # Authenticated credential, never client input.
+        self.auth_source: str = "internal"
         self._trace_callback: Callable[[str], object] | None = None  # CW-054
 
     # --- sqlite3-shaped surface ---

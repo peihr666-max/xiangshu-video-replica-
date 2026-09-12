@@ -376,7 +376,7 @@ def test_missing_hmac_key_is_a_service_error(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_default_scopes_are_the_whitelist_capabilities() -> None:
     """默认授予 §2.5 B 白名单能力：充值 / 钱包 / 价目表。"""
-    assert DEFAULT_API_KEY_SCOPES == ("recharge", "wallet", "pricing")
+    assert DEFAULT_API_KEY_SCOPES == ("recharge", "wallet", "pricing", "generation")
 
 
 def test_apikey_rate_limit_dimensions_are_registered() -> None:

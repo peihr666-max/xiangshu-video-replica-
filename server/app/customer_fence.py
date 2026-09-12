@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import Iterator
@@ -540,6 +541,28 @@ def resolve_api_key_user(request: Request) -> ApiKeyUser | None:
     ops_metrics.set_current_trace_fields(user_id=authed.user_id)
     path = request.url.path.rstrip("/")
     required_scope = None
+    generation_reads = (
+        r"/api/generation/(price-quote|runtime-limits)",
+        r"/api/generation-batches(?:/[^/]+)?",
+        r"/api/independent/capabilities",
+        r"/api/oral/(price|tasks(?:/[^/]+)?)",
+    )
+    generation_writes = (
+        r"/api/projects/[^/]+/generation-batches",
+        r"/api/generation-batches/[^/]+/(cancel|regenerate)",
+        r"/api/generation-tasks/[^/]+/(retry|regenerate|cancel|archive-retry)",
+        r"/api/independent/video-tasks",
+        r"/api/oral/tasks(?:/[^/]+/(cancel|archive-retry))?",
+    )
+    if (
+        request.method == "GET" and any(re.fullmatch(pattern, path) for pattern in generation_reads)
+    ) or (
+        request.method == "POST"
+        and any(re.fullmatch(pattern, path) for pattern in generation_writes)
+    ):
+        required_scope = "generation"
+    if path == "/api/customer/pricing" and request.method == "GET":
+        required_scope = "pricing"
     if path == "/api/customer/wallet" or path == "/api/customer/wallet/transactions":
         if request.method == "GET":
             required_scope = "wallet"
@@ -651,6 +674,7 @@ class BusinessDb:
             ) as (conn, ctx):
                 bc = BusinessConnection.postgres(conn)
                 bc.ctx = ctx
+                bc.auth_source = "session"
                 actor = CurrentUser(
                     id=ctx.user_id,
                     username=ctx.user_id,
@@ -721,6 +745,8 @@ class BusinessDb:
             _verify_api_key_in_transaction(conn, self.api_key)
             touch_last_used(conn, key_id=self.api_key.key_id)
             bc = BusinessConnection.postgres(conn)
+            bc.api_key_id = self.api_key.key_id
+            bc.auth_source = "api_key"
             actor = CurrentUser(
                 id=self.api_key.user_id,
                 username=self.api_key.user_id,

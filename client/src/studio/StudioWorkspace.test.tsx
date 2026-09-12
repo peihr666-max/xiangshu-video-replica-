@@ -3176,6 +3176,11 @@ describe("视频生成（C2 独立创作）", () => {
     const view = render(
       <StudioWorkspace currentUser={reviewUser} initialState={state} />,
     );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "生成口播视频" }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(
       await screen.findByRole("button", { name: "生成口播视频" }),
     );
@@ -3193,6 +3198,11 @@ describe("视频生成（C2 独立创作）", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     view.rerender(
       <StudioWorkspace currentUser={reviewUser} initialState={state} />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "生成口播视频" }),
+      ).toBeEnabled(),
     );
     fireEvent.click(
       await screen.findByRole("button", { name: "生成口播视频" }),

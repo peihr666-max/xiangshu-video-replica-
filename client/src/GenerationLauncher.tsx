@@ -322,16 +322,17 @@ export function GenerationLauncher({
               个付费生成任务
             </strong>
             <span>
-              预计消耗{" "}
+              预计输出{" "}
               {priceQuoteStatus === "ready" && priceQuote
                 ? priceQuote.estimated_seconds
                 : displayedDuration * displayedQuantity}{" "}
-              秒额度
+              秒视频
             </span>
             {priceQuoteStatus === "ready" && priceQuote ? (
               <span>
-                约 ¥{(priceQuote.estimated_price_fen / 100).toFixed(2)}（
-                {priceQuote.unit_price_fen_per_second} 分/秒）
+                {priceQuote.estimated_credits !== undefined
+                  ? `${priceQuote.estimated_credits} 积分（${priceQuote.unit_credits} 积分/秒）`
+                  : `约 ¥${(priceQuote.estimated_price_fen / 100).toFixed(2)}（${priceQuote.unit_price_fen_per_second} 分/秒）`}
               </span>
             ) : priceQuoteStatus === "loading" ? (
               <span>正在读取准确费用…</span>

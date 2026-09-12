@@ -35,6 +35,7 @@ from app.customer_idempotency import (
     request_hash,
     seal_response,
 )
+from app.customer_pricing import read_pricing
 from app.db_portable import BusinessConnection
 from app.ops_metrics import set_current_trace_fields
 from app.payment_provider import (
@@ -179,6 +180,14 @@ def _stage_recharge_preconditions(
                     "message": "The controlled payment rehearsal is not configured safely.",
                 },
             ) from exc
+    if customer_user_id is not None:
+        price_version, credit_config = read_pricing(conn)
+        if credit_config is not None:
+            billing = {
+                **billing,
+                "points_per_yuan": credit_config.points_per_yuan,
+                "credit_price_version": price_version,
+            }
     validate_recharge_amount(amount_fen, billing)
     try:
         merchant = provider.load_merchant_config(conn)
@@ -205,7 +214,27 @@ def _insert_recharge_order(
 ) -> RechargeOrderResponse:
     """Insert one PENDING recharge order and build its payment form."""
     charged_unit_price_fen = billing["charged_unit_price_fen"]
-    credits = amount_fen // charged_unit_price_fen
+    credits = (
+        amount_fen * billing["points_per_yuan"] // 100
+        if "points_per_yuan" in billing
+        else amount_fen // charged_unit_price_fen
+    )
+    if not 1 <= credits <= INT4_MAX_FEN:
+        raise HTTPException(
+            422, detail={"code": "INVALID_RECHARGE_AMOUNT", "message": "充值积分超出允许范围。"}
+        )
+    price_snapshot = (
+        json.dumps(
+            {
+                "version": billing["credit_price_version"],
+                "points_per_yuan": billing["points_per_yuan"],
+            }
+        )
+        if "points_per_yuan" in billing
+        else None
+    )
+    extra_column = ", credit_pricing_snapshot_json" if conn.is_postgres else ""
+    extra_value = ", %s" if conn.is_postgres else ""
     payment_form = provider.create_payment_form(
         merchant_order_no=merchant_order_no,
         amount_fen=amount_fen,
@@ -220,9 +249,9 @@ def _insert_recharge_order(
             "    channel, status, pricing_scope,\n"
             "    base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot,\n"
             "    min_recharge_fen_snapshot, recharge_step_fen_snapshot,\n"
-            "    amount_fen, credits\n"
+            f"    amount_fen, credits{extra_column}\n"
             ") VALUES (%s, %s, %s, %s, NULL, %s, 'PENDING', %s, "
-            "%s, %s, %s, %s, %s, %s)\n",
+            f"%s, %s, %s, %s, %s, %s{extra_value})\n",
             (
                 str(uuid4()),
                 user_id,
@@ -236,7 +265,8 @@ def _insert_recharge_order(
                 billing["recharge_step_fen"],
                 amount_fen,
                 credits,
-            ),
+            )
+            + ((price_snapshot,) if conn.is_postgres else ()),
         )
     set_current_trace_fields(user_id=user_id, order_id=merchant_order_no)
     return RechargeOrderResponse(
@@ -855,6 +885,7 @@ def read_customer_wallet(request: Request) -> WalletResponse:
                     "message": "The controlled payment rehearsal is not configured safely.",
                 },
             ) from exc
+        price_version, credit_config = read_pricing(BusinessConnection.postgres(conn))
         return WalletResponse(
             available_credits=int(row[0]),
             reserved_credits=int(row[1]),
@@ -863,6 +894,8 @@ def read_customer_wallet(request: Request) -> WalletResponse:
             internal_unit_price_fen=billing["charged_unit_price_fen"],
             min_recharge_fen=billing["min_recharge_fen"],
             recharge_step_fen=billing["recharge_step_fen"],
+            points_per_yuan=credit_config.points_per_yuan if credit_config else None,
+            credit_price_version=price_version,
         )
 
 
@@ -871,24 +904,70 @@ def list_customer_wallet_transactions(
     request: Request,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    token_group_id: str | None = Query(default=None, max_length=128),
+    auth_source: Literal["session", "api_key", "internal", "historical"] | None = None,
+    transaction_type: Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE"] | None = None,
+    business: Literal["video", "oral", "recharge"] | None = None,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
 ) -> WalletTransactionPage:
+    if any(value is not None and value.tzinfo is None for value in (started_at, ended_at)):
+        raise HTTPException(422, detail="筛选时间必须包含时区。")
+    if started_at and ended_at and ended_at <= started_at:
+        raise HTTPException(422, detail="结束时间必须晚于开始时间。")
     with customer_read_transaction(request) as (conn, user_id):
+        clauses = ["wt.user_id = %s"]
+        params: list[object] = [user_id]
+        if token_group_id:
+            clauses.append("k.token_group_id = %s")
+            params.append(token_group_id)
+        if auth_source == "historical":
+            clauses.append("wt.auth_source IS NULL")
+        elif auth_source:
+            clauses.append("wt.auth_source = %s")
+            params.append(auth_source)
+        if transaction_type:
+            clauses.append("wt.type = %s")
+            params.append(transaction_type)
+        if business:
+            clauses.append(
+                {
+                    "video": "wt.task_id IS NOT NULL",
+                    "oral": "wt.oral_task_id IS NOT NULL",
+                    "recharge": "wt.type = 'CHARGE'",
+                }[business]
+            )
+        if started_at:
+            clauses.append("wt.created_at::timestamptz >= %s")
+            params.append(started_at)
+        if ended_at:
+            clauses.append("wt.created_at::timestamptz < %s")
+            params.append(ended_at)
+        from_sql = (
+            " FROM wallet_transactions wt LEFT JOIN customer_api_keys k ON k.id = "
+            "wt.api_key_id AND k.user_id = wt.user_id WHERE " + " AND ".join(clauses)
+        )
         total_row = conn.execute(
-            "SELECT COUNT(*) FROM wallet_transactions WHERE user_id = %s",
-            (user_id,),
+            "SELECT COUNT(*)" + from_sql,
+            params,
         ).fetchone()
         assert total_row is not None
         total = int(total_row[0])
         rows = conn.execute(
             """
-            SELECT id, user_id, type, available_delta, reserved_delta,
-                   recharge_order_id, task_id, oral_task_id, billing_round, created_at
-            FROM wallet_transactions
-            WHERE user_id = %s
-            ORDER BY created_at DESC, id DESC
+            SELECT wt.id, wt.user_id, wt.type, wt.available_delta, wt.reserved_delta,
+                   wt.recharge_order_id, wt.task_id, wt.oral_task_id,
+                   wt.billing_round, wt.created_at,
+                   wt.api_key_id, k.token_group_id, k.label, k.credential_version, wt.auth_source,
+                   wt.pricing_snapshot_json,
+                   (SELECT task.batch_id FROM generation_tasks task WHERE task.id = wt.task_id)
+            """
+            + from_sql
+            + """
+            ORDER BY wt.created_at DESC, wt.id DESC
             LIMIT %s OFFSET %s
             """,
-            (user_id, limit, offset),
+            [*params, limit, offset],
         ).fetchall()
         return WalletTransactionPage(
             items=[
@@ -903,6 +982,13 @@ def list_customer_wallet_transactions(
                     oral_task_id=str(row[7]) if row[7] is not None else None,
                     billing_round=int(row[8]) if row[8] is not None else None,
                     created_at=str(row[9]),
+                    api_key_id=row[10],
+                    token_group_id=row[11],
+                    token_label=row[12],
+                    credential_version=row[13],
+                    auth_source=row[14],
+                    credit_price_version=json.loads(row[15])["version"] if row[15] else None,
+                    generation_batch_id=row[16],
                 )
                 for row in rows
             ],
@@ -1011,7 +1097,9 @@ def validate_recharge_amount(amount_fen: int, billing: dict[str, int]) -> None:
     if (
         amount_fen < billing["min_recharge_fen"]
         or amount_fen % billing["recharge_step_fen"] != 0
-        or amount_fen % billing["charged_unit_price_fen"] != 0
+        or (
+            "points_per_yuan" not in billing and amount_fen % billing["charged_unit_price_fen"] != 0
+        )
         or amount_fen > INT4_MAX_FEN
     ):
         raise HTTPException(

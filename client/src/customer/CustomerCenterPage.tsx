@@ -29,6 +29,7 @@ import { useStudio } from "../studio/context";
 import { PublishAccountsPanel } from "../studio/MainPages";
 import { Icon } from "../studio/ui";
 import type { WorkspaceShellProps } from "../workspace-shell";
+import { CustomerPricesPage } from "./CustomerPricesPage";
 import { CustomerRechargeDialog } from "./CustomerRechargeDialog";
 import "./customer-center.css";
 
@@ -36,6 +37,7 @@ const tabs = [
   ["tokens", "Token 管理"],
   ["consumption", "消费记录"],
   ["recharge", "充值记录"],
+  ["prices", "接口价格"],
   ["publishing", "发布账号"],
   ["settings", "账号设置"],
 ] as const;
@@ -84,6 +86,18 @@ export function CustomerCenterPage({
     useState<WalletTransactionPage | null>(null);
   const [orderPage, setOrderPage] = useState<RechargeOrderPage | null>(null);
   const [offset, setOffset] = useState(0);
+  const [filters, setFilters] = useState({
+    source: "",
+    type: "",
+    business: "",
+    start: "",
+    end: "",
+  });
+  function updateFilter(key: keyof typeof filters, value: string) {
+    setFilters((previous) => ({ ...previous, [key]: value }));
+    setOffset(0);
+    setTransactionPage(null);
+  }
   const [recordsError, setRecordsError] = useState("");
   const [recordsBusy, setRecordsBusy] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -204,6 +218,30 @@ export function CustomerCenterPage({
           const result = await customerListWalletTransactions(auth, {
             limit: 20,
             offset,
+            filters: {
+              ...(filters.source.startsWith("token:")
+                ? { token_group_id: filters.source.slice(6) }
+                : filters.source
+                  ? { auth_source: filters.source }
+                  : {}),
+              ...(filters.type ? { transaction_type: filters.type } : {}),
+              ...(filters.business ? { business: filters.business } : {}),
+              ...(filters.start
+                ? {
+                    started_at: new Date(
+                      `${filters.start}T00:00:00+08:00`,
+                    ).toISOString(),
+                  }
+                : {}),
+              ...(filters.end
+                ? {
+                    ended_at: new Date(
+                      new Date(`${filters.end}T00:00:00+08:00`).getTime() +
+                        86400000,
+                    ).toISOString(),
+                  }
+                : {}),
+            },
           });
           if (active) setTransactionPage(result);
         }
@@ -217,7 +255,7 @@ export function CustomerCenterPage({
     return () => {
       active = false;
     };
-  }, [credential, tab, offset, refresh]);
+  }, [credential, tab, offset, refresh, filters]);
   function selectTab(value: Tab) {
     setTab(value);
     setOffset(0);
@@ -462,6 +500,68 @@ export function CustomerCenterPage({
       <header>
         <h2>消费与积分流水</h2>
       </header>
+      <div className="uc-record-filters">
+        <label>
+          消费来源
+          <select
+            value={filters.source}
+            onChange={(event) => updateFilter("source", event.target.value)}
+          >
+            <option value="">全部来源</option>
+            <option value="session">软件操作</option>
+            <option value="historical">历史来源未记录</option>
+            {tokens?.map((token) => (
+              <option
+                key={token.token_group_id}
+                value={`token:${token.token_group_id}`}
+              >
+                {token.label || "未命名 Token"}（含历史版本）
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          流水类型
+          <select
+            value={filters.type}
+            onChange={(event) => updateFilter("type", event.target.value)}
+          >
+            <option value="">全部类型</option>
+            <option value="SETTLE">最终消费</option>
+            <option value="RESERVE">任务预扣</option>
+            <option value="RELEASE">积分退回</option>
+            <option value="CHARGE">积分入账</option>
+          </select>
+        </label>
+        <label>
+          业务
+          <select
+            value={filters.business}
+            onChange={(event) => updateFilter("business", event.target.value)}
+          >
+            <option value="">全部业务</option>
+            <option value="video">视频生成</option>
+            <option value="oral">数字人口播</option>
+            <option value="recharge">充值 / 赠送</option>
+          </select>
+        </label>
+        <label>
+          开始日期
+          <input
+            type="date"
+            value={filters.start}
+            onChange={(event) => updateFilter("start", event.target.value)}
+          />
+        </label>
+        <label>
+          结束日期
+          <input
+            type="date"
+            value={filters.end}
+            onChange={(event) => updateFilter("end", event.target.value)}
+          />
+        </label>
+      </div>
       {recordsError && (
         <div role="alert" className="uc-error">
           {recordsError}
@@ -474,6 +574,7 @@ export function CustomerCenterPage({
             <tr>
               <th>时间（北京时间）</th>
               <th>业务</th>
+              <th>来源</th>
               <th>可用积分变化</th>
               <th>待结算变化</th>
             </tr>
@@ -498,6 +599,37 @@ export function CustomerCenterPage({
                         ? "视频生成"
                         : "充值 / 赠送"}
                   </small>
+                  {(item.generation_batch_id || item.oral_task_id) && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navigate("task-detail", {
+                          selectedTaskKind: item.oral_task_id
+                            ? "oral_task"
+                            : "generation_batch",
+                          selectedTaskBackendId:
+                            item.oral_task_id ||
+                            item.generation_batch_id ||
+                            undefined,
+                          returnTo: "profile",
+                        })
+                      }
+                    >
+                      查看任务
+                    </button>
+                  )}
+                </td>
+                <td>
+                  {item.api_key_id
+                    ? `${item.token_label || "Token"} · V${item.credential_version ?? 1}`
+                    : item.auth_source === "session"
+                      ? "软件操作"
+                      : item.auth_source === "internal"
+                        ? "内部操作"
+                        : "历史来源未记录"}
+                  {item.credit_price_version != null && (
+                    <small>价格 V{item.credit_price_version}</small>
+                  )}
                 </td>
                 <td>
                   {item.available_delta > 0 ? "+" : ""}
@@ -511,7 +643,7 @@ export function CustomerCenterPage({
             ))}
             {!transactionPage?.items.length && (
               <tr>
-                <td colSpan={4}>
+                <td colSpan={5}>
                   {recordsError
                     ? "记录暂未读取成功"
                     : recordsBusy
@@ -697,6 +829,7 @@ export function CustomerCenterPage({
         >
           {tab === "tokens" && tokenPanel}
           {tab === "consumption" && recordPanel}
+          {tab === "prices" && <CustomerPricesPage credential={credential} />}
           {tab === "recharge" && (
             <section className="uc-card">
               <header>

@@ -97,10 +97,11 @@ function setup() {
   return account;
 }
 
-test("renders real account points and five focused tabs without reissuing an existing default", async () => {
+test("renders real account points and six focused tabs without reissuing an existing default", async () => {
   render(<CustomerCenterPage account={setup()} />);
   expect(await screen.findByText("125")).toBeVisible();
-  expect(screen.getAllByRole("tab")).toHaveLength(5);
+  expect(screen.getAllByRole("tab")).toHaveLength(6);
+  expect(screen.getByRole("tab", { name: "接口价格" })).toBeVisible();
   expect(screen.getByText("alice-id")).toBeVisible();
   expect(mocks.initialize).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "返回主界面" }));

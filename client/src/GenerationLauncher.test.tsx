@@ -182,7 +182,7 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
     });
 
     expect(screen.getByText("将创建 2 个付费生成任务")).toBeInTheDocument();
-    expect(screen.getByText("预计消耗 30 秒额度")).toBeInTheDocument();
+    expect(screen.getByText("预计输出 30 秒视频")).toBeInTheDocument();
   });
 
   it("数量错误显示提示", () => {

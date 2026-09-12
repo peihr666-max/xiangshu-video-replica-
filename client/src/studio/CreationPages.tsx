@@ -1695,9 +1695,9 @@ export function ReplicaPage() {
                   {replicaQuoteReady ? (
                     <Hint>
                       预计费用{" "}
-                      {(replicaQuote.estimated_price_fen / 100).toFixed(2)} 元
-                      （{replicaQuote.unit_price_fen_per_second} 分/秒 ×{" "}
-                      {replicaQuote.estimated_seconds} 秒）
+                      {replicaQuote.estimated_credits !== undefined
+                        ? `${replicaQuote.estimated_credits} 积分（${replicaQuote.unit_credits} 积分/秒 × ${replicaQuote.estimated_seconds} 秒）`
+                        : `${(replicaQuote.estimated_price_fen / 100).toFixed(2)} 元（${replicaQuote.unit_price_fen_per_second} 分/秒 × ${replicaQuote.estimated_seconds} 秒）`}
                     </Hint>
                   ) : null}
                   <Button

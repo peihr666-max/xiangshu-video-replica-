@@ -321,6 +321,7 @@ def _seed_oral(dsn: str) -> None:
     lock reads.
     """
     with psycopg.connect(dsn, autocommit=True) as pg:
+        pg.execute("UPDATE customer_credit_pricing SET version = 0, config_json = NULL")
         pg.execute("SET session_replication_role = replica")
         pg.execute(f"TRUNCATE {_ORAL_TABLES} CASCADE")
         pg.execute("SET session_replication_role = DEFAULT")
@@ -2394,7 +2395,47 @@ def test_oral_task_snapshots_configured_unit_price(scene: str) -> None:
     )
 
     assert created.estimated_cost_fen == 1800
-    assert _price_quote() == {"unit_price_fen": 1800}
+    assert _price_quote() == {"unit_price_fen": 1800, "unit_credits": 1, "credit_price_version": 0}
+
+
+def test_oral_credit_release_uses_reserved_price_after_repricing(scene: str) -> None:
+    _seed_ready_assets()
+    _exec(
+        "UPDATE customer_credit_pricing SET version = 1, config_json = %s",
+        (json.dumps({"video_768p": 3, "video_2k": 7, "oral": 11, "points_per_yuan": 100}),),
+    )
+    created = _create_task(
+        actor=actor(),
+        identity_id="ident-1",
+        avatar_id="avatar-ready",
+        voice_id="voice-ready",
+        mode="TTS",
+        title="积分冻结",
+        script_text="测试积分冻结与退款",
+        audio_asset_id=None,
+        subtitle=None,
+        idempotency_key="oral-credit-snapshot",
+    )
+    assert _wallet() == (9, 11)
+    _exec(
+        "UPDATE customer_credit_pricing SET version = 2, config_json = %s",
+        (json.dumps({"video_768p": 3, "video_2k": 7, "oral": 19, "points_per_yuan": 100}),),
+    )
+    _exec(
+        "UPDATE oral_tasks SET status = 'FAILED', provider_charge_state = 'NOT_CHARGED' "
+        "WHERE id = %s",
+        (created.task_id,),
+    )
+    _finalize_billing(oral_task_id=created.task_id)
+    _finalize_billing(oral_task_id=created.task_id)
+    assert _wallet() == (20, 0)
+    rows = _fetchall(
+        "SELECT reserved_delta, pricing_snapshot_json FROM wallet_transactions "
+        "WHERE oral_task_id = %s ORDER BY ledger_sequence",
+        (created.task_id,),
+    )
+    assert [r["reserved_delta"] for r in rows] == [11, -11]
+    assert rows[0]["pricing_snapshot_json"] == rows[1]["pricing_snapshot_json"]
 
 
 def test_oral_clone_claim_is_exclusive_and_expired_submit_is_quarantined(

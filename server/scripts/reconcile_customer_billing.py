@@ -58,6 +58,7 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         # 20260912T1353_customer_discounts: 客户消耗侧折扣配置，PG-only
         # （非 postgresql 方言 return）。
         "customer_discounts",
+        "customer_credit_pricing",
         "customer_devices",
         "device_pairing_requests",
         "customer_session_state",
@@ -80,7 +81,9 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
 # Most PG-only tables must be empty before cutover. Rate configuration is the
 # one exception: revision 056 seeds these exact defaults. Any edit, omission,
 # or extra subject is pre-existing target state and must still fail closed.
-PG_ONLY_SEEDED_TABLES: frozenset[str] = frozenset({"operation_cost_rates"})
+PG_ONLY_SEEDED_TABLES: frozenset[str] = frozenset(
+    {"operation_cost_rates", "customer_credit_pricing"}
+)
 _OPERATION_COST_RATE_SEEDS = (
     ("character_sheet_image", "upstream_cost", "image", None, 5, None),
     ("context_ir", "upstream_cost", "call", None, 5, None),
@@ -104,7 +107,9 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     "generation_tasks": frozenset({"created_at_utc", "discount_rate_snapshot"}),
     # 083_recharge_orders_multi_provider: WeChat Native 支付回执列仅存在于
     # PG（T07 的 SQLite 源 schema 冻结于 042 前基线）。
-    "recharge_orders": frozenset({"prepay_id", "code_url", "transaction_id"}),
+    "recharge_orders": frozenset(
+        {"prepay_id", "code_url", "transaction_id", "credit_pricing_snapshot_json"}
+    ),
     # 086_remove_device_slot_constraints: 每用户设备上限列仅存在于 PG
     # （T07 的 SQLite 源 schema 冻结于 042 前基线）。
     # 20260912T1400_customer_registration_credentials: 自助注册凭证列仅存在于 PG
@@ -113,7 +118,9 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     # 20260912T1353_customer_discounts: wallet_transactions.discount_rate 仅存在于 PG
     # （本迁移非 postgresql 方言 return，SQLite lane 不建此列）。
     # 20260912T2200: legacy records have no API key attribution; import as NULL.
-    "wallet_transactions": frozenset({"discount_rate", "api_key_id"}),
+    "wallet_transactions": frozenset(
+        {"discount_rate", "api_key_id", "auth_source", "pricing_snapshot_json"}
+    ),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000
 _DIGEST_MODULUS = 1 << 256
@@ -690,6 +697,15 @@ def _count_rows(
 
 
 def pg_only_table_has_divergent_state(conn: psycopg.Connection[Any], table: str) -> bool:
+    if table == "customer_credit_pricing":
+        rows = conn.execute(
+            "SELECT id, version, config_json FROM customer_credit_pricing"
+        ).fetchall()
+        return len(rows) != 1 or (
+            _row_value(rows[0], "id", 0) != 1
+            or _row_value(rows[0], "version", 1) != 0
+            or _row_value(rows[0], "config_json", 2) is not None
+        )
     if table not in PG_ONLY_SEEDED_TABLES:
         query = sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table))
         return bool(_count_rows(conn, query))

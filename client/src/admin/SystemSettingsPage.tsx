@@ -7,6 +7,7 @@ import {
   updateControlRuntimeSettings,
 } from "../api";
 import { type SettingsBackend, SettingsPanel } from "../SettingsPanel";
+import { CustomerPricingManager } from "./CustomerPricingManager";
 import { H3ExtendedModesSection } from "./H3ExtendedModesSection";
 import { PaymentSettingsSection } from "./PaymentSettingsSection";
 import { QueueModeSection } from "./QueueModeSection";
@@ -55,7 +56,10 @@ export function SystemSettingsPage({
         onChange={setTab}
       />
       {tab === "payment" ? (
-        <PaymentSettingsSection readOnly={readOnly} />
+        <>
+          <CustomerPricingManager readOnly={readOnly} />
+          <PaymentSettingsSection readOnly={readOnly} />
+        </>
       ) : null}
       {tab === "rates" ? <RatesManager readOnly={readOnly} /> : null}
       {tab === "services" ? (

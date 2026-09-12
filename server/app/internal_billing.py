@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 from uuid import uuid4
 
+from app.customer_pricing import quote_snapshot
 from app.db_portable import BusinessConnection
 
 BillingOutcome = Literal["success", "failed", "cancelled"]
@@ -24,6 +25,36 @@ class InsufficientCreditsError(InternalBillingError):
 
 class BillingInvariantError(InternalBillingError):
     pass
+
+
+def _record_source(conn: BusinessConnection, key: str, snapshot: str) -> None:
+    if conn.is_postgres:
+        conn.execute(
+            "UPDATE wallet_transactions SET api_key_id = %s, auth_source = %s, "
+            "pricing_snapshot_json = %s WHERE idempotency_key = %s",
+            (conn.api_key_id, conn.auth_source, snapshot, key),
+        )
+
+
+def _copy_source(
+    conn: BusinessConnection,
+    key: str,
+    *,
+    task_id: str | None = None,
+    oral_task_id: str | None = None,
+    billing_round: int,
+) -> None:
+    if conn.is_postgres:
+        conn.execute(
+            "UPDATE wallet_transactions AS terminal SET api_key_id = reserve.api_key_id, "
+            "auth_source = reserve.auth_source, pricing_snapshot_json = "
+            "reserve.pricing_snapshot_json "
+            "FROM wallet_transactions AS reserve WHERE terminal.idempotency_key = %s "
+            "AND reserve.type = 'RESERVE' AND reserve.billing_round = %s "
+            "AND (reserve.task_id = %s OR reserve.oral_task_id = %s) "
+            "AND terminal.user_id = reserve.user_id",
+            (key, billing_round, task_id, oral_task_id),
+        )
 
 
 @dataclass(frozen=True)
@@ -145,9 +176,11 @@ def reserve_internal_billing(
     默认 1 保持旧调用与历史任务语义（每轮 1 条 = 1 秒）。"""
     if seconds < 1:
         raise BillingInvariantError("reserved seconds must be positive")
+    if conn.is_postgres:
+        conn.execute("SELECT id FROM generation_tasks WHERE id = %s FOR UPDATE", (task_id,))
     task = conn.execute(
         """
-        SELECT batch.created_by_user_id
+        SELECT batch.created_by_user_id, task.prompt_snapshot_json
         FROM generation_tasks AS task
         JOIN generation_batches AS batch ON batch.id = task.batch_id
         WHERE task.id = %s
@@ -219,6 +252,11 @@ def reserve_internal_billing(
         if previous_terminal is None:
             raise BillingInvariantError("previous billing round is still active")
 
+    payload = json.loads(str(task["prompt_snapshot_json"] or "{}"))
+    resolution = str(payload.get("resolution", "768P")).upper()
+    seconds, price_snapshot = quote_snapshot(
+        conn, "video_2k" if resolution == "2K" else "video_768p", seconds
+    )
     cursor = conn.execute(
         """
         UPDATE wallets
@@ -238,7 +276,7 @@ def reserve_internal_billing(
         if wallet is None:
             raise BillingInvariantError("wallet does not exist")
         raise InsufficientCreditsError(
-            f"available credits are insufficient: need {seconds} seconds"
+            f"available credits are insufficient: need {seconds} credits"
         )
 
     conn.execute(
@@ -258,6 +296,7 @@ def reserve_internal_billing(
             f"reserve:{task_id}:{billing_round}",
         ),
     )
+    _record_source(conn, f"reserve:{task_id}:{billing_round}", price_snapshot)
     return billing_round
 
 
@@ -268,7 +307,10 @@ def reserve_oral_billing(
     oral_task_id: str,
     billing_round: int = 1,
 ) -> int:
-    """Reserve one wallet credit for an oral task in the caller transaction."""
+    """Reserve the configured oral credits in the caller transaction."""
+    if conn.is_postgres:
+        _lock_oral_capacity_row(conn)
+        conn.execute("SELECT id FROM oral_tasks WHERE id = %s FOR UPDATE", (oral_task_id,))
     task = conn.execute(
         "SELECT owner_user_id FROM oral_tasks WHERE id = %s", (oral_task_id,)
     ).fetchone()
@@ -291,15 +333,16 @@ def reserve_oral_billing(
             raise BillingInvariantError("existing reservation belongs to another wallet")
         return billing_round
 
+    credits, price_snapshot = quote_snapshot(conn, "oral", 1)
     cursor = conn.execute(
         """
         UPDATE wallets
-        SET available_credits = available_credits - 1,
-            reserved_credits = reserved_credits + 1,
+        SET available_credits = available_credits - %s,
+            reserved_credits = reserved_credits + %s,
             updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = %s AND available_credits >= 1
+        WHERE user_id = %s AND available_credits >= %s
         """,
-        (user_id,),
+        (credits, credits, user_id, credits),
     )
     if cursor.rowcount != 1:
         wallet = conn.execute("SELECT 1 FROM wallets WHERE user_id = %s", (user_id,)).fetchone()
@@ -312,16 +355,19 @@ def reserve_oral_billing(
         INSERT INTO wallet_transactions (
             id, user_id, type, available_delta, reserved_delta,
             oral_task_id, billing_round, idempotency_key
-        ) VALUES (%s, %s, 'RESERVE', -1, 1, %s, %s, %s)
+        ) VALUES (%s, %s, 'RESERVE', %s, %s, %s, %s, %s)
         """,
         (
             str(uuid4()),
             user_id,
+            -credits,
+            credits,
             oral_task_id,
             billing_round,
             f"oral-reserve:{oral_task_id}:{billing_round}",
         ),
     )
+    _record_source(conn, f"oral-reserve:{oral_task_id}:{billing_round}", price_snapshot)
     conn.execute(
         "UPDATE oral_tasks SET billing_round = %s WHERE id = %s",
         (billing_round, oral_task_id),
@@ -364,6 +410,9 @@ def finalize_oral_billing(
     oral_task_id: str,
 ) -> BillingFinalization:
     """Settle archived success or release an explicitly failed/cancelled oral task."""
+    if conn.is_postgres:
+        _lock_oral_capacity_row(conn)
+        conn.execute("SELECT id FROM oral_tasks WHERE id = %s FOR UPDATE", (oral_task_id,))
     task = conn.execute(
         """
         SELECT task.status, task.owner_user_id, task.result_asset_id,
@@ -378,7 +427,7 @@ def finalize_oral_billing(
         raise BillingInvariantError("oral task does not exist")
     reservation = conn.execute(
         """
-        SELECT user_id, billing_round FROM wallet_transactions
+        SELECT user_id, billing_round, reserved_delta FROM wallet_transactions
         WHERE oral_task_id = %s AND type = 'RESERVE'
         ORDER BY billing_round DESC LIMIT 1
         """,
@@ -388,6 +437,7 @@ def finalize_oral_billing(
         return BillingFinalization(task_id=oral_task_id, billing_round=None, transaction_type=None)
     user_id = str(reservation["user_id"])
     billing_round = int(reservation["billing_round"])
+    credits = int(reservation["reserved_delta"])
     if user_id != str(task["owner_user_id"]):
         raise BillingInvariantError("reservation owner does not match oral task owner")
     existing = conn.execute(
@@ -416,7 +466,7 @@ def finalize_oral_billing(
         "NOT_CHARGED",
     }:
         transaction_type = "RELEASE"
-        available_delta = 1
+        available_delta = credits
     else:
         raise BillingInvariantError("oral reservation must remain frozen for non-terminal status")
 
@@ -424,11 +474,11 @@ def finalize_oral_billing(
         """
         UPDATE wallets
         SET available_credits = available_credits + %s,
-            reserved_credits = reserved_credits - 1,
+            reserved_credits = reserved_credits - %s,
             updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = %s AND reserved_credits >= 1
+        WHERE user_id = %s AND reserved_credits >= %s
         """,
-        (available_delta, user_id),
+        (available_delta, credits, user_id, credits),
     )
     if cursor.rowcount != 1:
         raise BillingInvariantError("reserved wallet credit is missing")
@@ -437,17 +487,24 @@ def finalize_oral_billing(
         INSERT INTO wallet_transactions (
             id, user_id, type, available_delta, reserved_delta,
             oral_task_id, billing_round, idempotency_key
-        ) VALUES (%s, %s, %s, %s, -1, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid4()),
             user_id,
             transaction_type,
             available_delta,
+            -credits,
             oral_task_id,
             billing_round,
             f"oral-{transaction_type.lower()}:{oral_task_id}:{billing_round}",
         ),
+    )
+    _copy_source(
+        conn,
+        f"oral-{transaction_type.lower()}:{oral_task_id}:{billing_round}",
+        oral_task_id=oral_task_id,
+        billing_round=billing_round,
     )
     release_oral_queue_slot(conn, oral_task_id=oral_task_id)
     return BillingFinalization(
@@ -543,7 +600,7 @@ def reconcile_oral_billing_by_evidence(
         raise BillingInvariantError("oral task does not exist")
     reservation = conn.execute(
         """
-        SELECT user_id, billing_round
+        SELECT user_id, billing_round, reserved_delta
         FROM wallet_transactions
         WHERE oral_task_id = %s AND type = 'RESERVE'
         ORDER BY billing_round DESC LIMIT 1
@@ -575,16 +632,17 @@ def reconcile_oral_billing_by_evidence(
         raise BillingInvariantError("oral task does not require manual billing attention")
     if str(task["provider_charge_state"]) not in {"UNKNOWN", "CHARGED"}:
         raise BillingInvariantError("oral task does not require manual billing reconciliation")
-    available_delta = 1 if resolution == "RELEASE" else 0
+    credits = int(reservation["reserved_delta"])
+    available_delta = credits if resolution == "RELEASE" else 0
     wallet = conn.execute(
         """
         UPDATE wallets
         SET available_credits = available_credits + %s,
-            reserved_credits = reserved_credits - 1,
+            reserved_credits = reserved_credits - %s,
             updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = %s AND reserved_credits >= 1
+        WHERE user_id = %s AND reserved_credits >= %s
         """,
-        (available_delta, user_id),
+        (available_delta, credits, user_id, credits),
     )
     if wallet.rowcount != 1:
         raise BillingInvariantError("reserved wallet credit is missing")
@@ -593,17 +651,24 @@ def reconcile_oral_billing_by_evidence(
         INSERT INTO wallet_transactions (
             id, user_id, type, available_delta, reserved_delta,
             oral_task_id, billing_round, idempotency_key
-        ) VALUES (%s, %s, %s, %s, -1, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid4()),
             user_id,
             resolution,
             available_delta,
+            -credits,
             oral_task_id,
             billing_round,
             f"oral-manual-{resolution.lower()}:{oral_task_id}:{billing_round}",
         ),
+    )
+    _copy_source(
+        conn,
+        f"oral-manual-{resolution.lower()}:{oral_task_id}:{billing_round}",
+        oral_task_id=oral_task_id,
+        billing_round=billing_round,
     )
     conn.execute(
         """
@@ -661,6 +726,8 @@ def finalize_internal_billing(
     outcome: BillingOutcome,
 ) -> BillingFinalization:
     """Settle or release the latest reserved round in the caller's transaction."""
+    if conn.is_postgres:
+        conn.execute("SELECT id FROM generation_tasks WHERE id = %s FOR UPDATE", (task_id,))
     task = conn.execute(
         """
         SELECT
@@ -774,6 +841,12 @@ def finalize_internal_billing(
             billing_round,
             f"{transaction_type.lower()}:{task_id}:{billing_round}",
         ),
+    )
+    _copy_source(
+        conn,
+        f"{transaction_type.lower()}:{task_id}:{billing_round}",
+        task_id=task_id,
+        billing_round=billing_round,
     )
     return BillingFinalization(
         task_id=task_id,

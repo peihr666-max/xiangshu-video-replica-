@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.analysis import get_version, insert_version, next_version_number
 from app.auth import CurrentUser, Role
 from app.bootstrap import is_customer_production
+from app.customer_pricing import Subject, read_pricing, task_credits
 from app.db_portable import BusinessConnection
 from app.first_frames import (
     FirstFrameQualityInspector,
@@ -751,6 +752,9 @@ class GenerationPriceQuote(BaseModel):
     unit_price_fen_per_second: int
     estimated_seconds: int
     estimated_price_fen: int
+    unit_credits: int
+    estimated_credits: int
+    credit_price_version: int
 
 
 class TaskSummary(BaseModel):
@@ -6964,6 +6968,8 @@ def generation_price_quote(
     quantity: int,
 ) -> GenerationPriceQuote:
     # 按秒单价线性外推，任意 4–15 秒档位均可计价。
+    price_version, config = read_pricing(conn)
+    subject: Subject = "video_2k" if resolution == "2K" else "video_768p"
     row = conn.execute(
         """
         SELECT unit_price_fen
@@ -6972,14 +6978,31 @@ def generation_price_quote(
         """,
         (f"external_price_{resolution.lower()}",),
     ).fetchone()
-    if row is None:
+    if row is None and config is None:
         raise generation_error(
             503,
             "EXTERNAL_PRICE_UNAVAILABLE",
             "The customer generation price is not configured.",
         )
-    unit_price = int(row["unit_price_fen"])
+    unit_price = (
+        (int(getattr(config, subject)) * 100 + config.points_per_yuan - 1) // config.points_per_yuan
+        if config
+        else int(row["unit_price_fen"])
+        if row is not None
+        else 0
+    )
     estimated_seconds = duration_seconds * quantity
+    try:
+        estimated_credits = (
+            task_credits(config, subject, duration_seconds, quantity)
+            if config
+            else estimated_seconds
+        )
+        if estimated_credits > 2_147_483_647:
+            raise ValueError("积分金额超出允许范围")
+    except ValueError as exc:
+        raise generation_error(422, "CREDIT_AMOUNT_OUT_OF_RANGE", str(exc)) from exc
+    unit_credits = int(getattr(config, subject)) if config else 1
     return GenerationPriceQuote(
         resolution=resolution,
         duration_seconds=duration_seconds,
@@ -6987,6 +7010,9 @@ def generation_price_quote(
         unit_price_fen_per_second=unit_price,
         estimated_seconds=estimated_seconds,
         estimated_price_fen=unit_price * estimated_seconds,
+        unit_credits=unit_credits,
+        estimated_credits=estimated_credits,
+        credit_price_version=price_version,
     )
 
 

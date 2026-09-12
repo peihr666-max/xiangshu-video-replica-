@@ -203,14 +203,14 @@ export function PaymentSettingsSection({
       </form>
 
       <form className="admin-form" onSubmit={saveBilling}>
-        <h2>内部价格</h2>
+        <h2>充值限制与旧版兼容价格</h2>
         <p className="admin-hint">
-          当前内部单价{" "}
+          旧版兑换单价{" "}
           {billing ? formatFen(billing.internal_base_unit_price_fen) : "—"} /
-          秒；最低充值与步长只约束 ZPay 在线充值。
+          积分。发布客户积分价格后，在线充值使用上方的新兑换规则；最低充值与步长仍然有效。
         </p>
         <label>
-          内部单价（分/秒）
+          旧版兑换单价（分/积分）
           <input
             disabled={readOnly || !billing}
             inputMode="numeric"

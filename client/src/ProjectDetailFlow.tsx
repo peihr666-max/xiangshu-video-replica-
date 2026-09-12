@@ -611,7 +611,9 @@ export function ProjectDetailFlow({
       <p className="flow-cost">
         预计消耗 {generationDuration * generationQuantity} 秒额度
         {priceQuoteReady && priceQuote
-          ? `，约 ¥${(priceQuote.estimated_price_fen / 100).toFixed(2)}（${priceQuote.unit_price_fen_per_second} 分/秒）`
+          ? priceQuote.estimated_credits !== undefined
+            ? `，预计 ${priceQuote.estimated_credits} 积分（${priceQuote.unit_credits} 积分/秒）`
+            : `，约 ¥${(priceQuote.estimated_price_fen / 100).toFixed(2)}（${priceQuote.unit_price_fen_per_second} 分/秒）`
           : ""}
         。
       </p>
