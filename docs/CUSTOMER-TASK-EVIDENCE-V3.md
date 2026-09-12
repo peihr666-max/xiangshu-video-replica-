@@ -1226,3 +1226,10 @@ AUTOMATED_VERIFIED（本地）；独立只读 review_w13 PASS；完整本地质�
 
 
 2026-09-13 W15整合续记：W19已正常合并PR #87，当前7ce8502三门禁全部成功，squash e8445c4。上文未合并状态为历史记录。W15合入该已合并主干，四份共享文档分别保留两个任务的事实，不按勾选并集推定完成；业务文件没有文字冲突，整合专项与当前提交CI待记录。
+
+
+### W15 合并Worker主干后复核
+
+W19主干整合最终复验：PR87正常合并为main e8445c4，本任务整合提交fbbcbfe。独立只读review_w12 PASS：W19三个生产文件及两个测试与main完全一致，W15业务和测试未改变；四共享文档保留双方事实与真实合并状态。新专项test_customer_ha_smoke/test_publish_accounts/test_admin_customer_routes共121 passed，服务端ruff/format/mypy通过（W15-w19-integration-backend.log、W15-w19-integration-static.log）。未因仅后端主干增量重复全量前端；此前117前端及完整本地门保留实际基线。PR85当前更新提交的CI需另行通过。
+
+第二部分补验：W15实际浏览器/HTTP/CSV三个场景在UTC、Asia/Tokyo、America/Los_Angeles数据库连接会话时区均通过，五条日界记录命中三条、导出5001/5000提示一致；timezone-results.json按时区归档，不重复累加为新场景。本地代理认证车道不冒充生产Cookie入口。最终联调统计和人工输入见JT2独立证据。
