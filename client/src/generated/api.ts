@@ -1939,6 +1939,41 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/customer/pricing": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Customer Prices */
+    get: operations["customer_prices_api_customer_pricing_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/settings/customer-pricing": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Admin Prices */
+    get: operations["admin_prices_api_control_settings_customer_pricing_get"];
+    /** Update Prices */
+    put: operations["update_prices_api_control_settings_customer_pricing_put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/settings/viral": {
     parameters: {
       query?: never;
@@ -6551,6 +6586,12 @@ export interface components {
       estimated_seconds: number;
       /** Estimated Price Fen */
       estimated_price_fen: number;
+      /** Unit Credits */
+      unit_credits: number;
+      /** Estimated Credits */
+      estimated_credits: number;
+      /** Credit Price Version */
+      credit_price_version: number;
     };
     /** GenerationReconcileOperationResponse */
     GenerationReconcileOperationResponse: {
@@ -7175,6 +7216,74 @@ export interface components {
       authorization_status?: "REVOKED" | null;
       /** Status */
       status?: "ARCHIVED" | null;
+    };
+    /** PriceEntry */
+    PriceEntry: {
+      /** Subject */
+      subject: string;
+      /** Name */
+      name: string;
+      /** Specification */
+      specification: string;
+      /** Unit */
+      unit: string;
+      /** Unit Credits */
+      unit_credits: number;
+      /** Configurable */
+      configurable: boolean;
+    };
+    /** PricingConfig */
+    PricingConfig: {
+      /** Video 768P */
+      video_768p: number;
+      /** Video 2K */
+      video_2k: number;
+      /** Oral */
+      oral: number;
+      /** Points Per Yuan */
+      points_per_yuan: number;
+      /**
+       * Discount Basis Points
+       * @default 10000
+       */
+      discount_basis_points: number;
+      /**
+       * Consumption Rounding
+       * @default ceil
+       * @enum {string}
+       */
+      consumption_rounding: "ceil" | "floor";
+    };
+    /** PricingResponse */
+    PricingResponse: {
+      /** Version */
+      version: number;
+      /** Configured */
+      configured: boolean;
+      config: components["schemas"]["PricingConfig"] | null;
+      /** Prices */
+      prices: components["schemas"]["PriceEntry"][];
+      /**
+       * Recharge Rounding
+       * @default 按支付金额换算，向下取整到整数积分
+       */
+      recharge_rounding: string;
+    };
+    /** PricingUpdate */
+    PricingUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Expected Version */
+      expected_version: number;
+      config: components["schemas"]["PricingConfig"];
     };
     /** ProfitDayRow */
     ProfitDayRow: {
@@ -8892,6 +9001,10 @@ export interface components {
       min_recharge_fen?: number | null;
       /** Recharge Step Fen */
       recharge_step_fen?: number | null;
+      /** Points Per Yuan */
+      points_per_yuan?: number | null;
+      /** Credit Price Version */
+      credit_price_version?: number | null;
     };
     /** WalletTransactionPage */
     WalletTransactionPage: {
@@ -8929,6 +9042,20 @@ export interface components {
       created_at: string;
       /** Oral Task Id */
       oral_task_id?: string | null;
+      /** Api Key Id */
+      api_key_id?: string | null;
+      /** Token Group Id */
+      token_group_id?: string | null;
+      /** Token Label */
+      token_label?: string | null;
+      /** Credential Version */
+      credential_version?: number | null;
+      /** Auth Source */
+      auth_source?: string | null;
+      /** Credit Price Version */
+      credit_price_version?: number | null;
+      /** Generation Batch Id */
+      generation_batch_id?: string | null;
     };
     /** ZPaySettingsUpdate */
     ZPaySettingsUpdate: {
@@ -13159,6 +13286,79 @@ export interface operations {
       };
     };
   };
+  customer_prices_api_customer_pricing_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PricingResponse"];
+        };
+      };
+    };
+  };
+  admin_prices_api_control_settings_customer_pricing_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PricingResponse"];
+        };
+      };
+    };
+  };
+  update_prices_api_control_settings_customer_pricing_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PricingUpdate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PricingResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_viral_runtime_api_control_settings_viral_get: {
     parameters: {
       query?: never;
@@ -14810,6 +15010,14 @@ export interface operations {
       query?: {
         limit?: number;
         offset?: number;
+        token_group_id?: string | null;
+        auth_source?:
+          | ("session" | "api_key" | "internal" | "historical")
+          | null;
+        transaction_type?: ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE") | null;
+        business?: ("video" | "oral" | "recharge") | null;
+        started_at?: string | null;
+        ended_at?: string | null;
       };
       header?: never;
       path?: never;

@@ -13,11 +13,40 @@
 // `request_id` that the pages surface to the operator.
 
 import {
+  type CustomerCreditConfig,
+  type CustomerPricing,
   clearAdminCsrfToken,
   getAdminCsrfToken,
   resolveApiBaseUrl,
   setAdminCsrfToken,
 } from "./api";
+
+export async function getCustomerPricing(): Promise<CustomerPricing> {
+  const response = await requestControl(
+    "/api/control/settings/customer-pricing",
+    {},
+  );
+  if (!response.ok)
+    throw await parseActivationError(response, "读取积分价格失败");
+  return (await response.json()) as CustomerPricing;
+}
+
+export function updateCustomerPricing(
+  config: CustomerCreditConfig,
+  expectedVersion: number,
+  reason: string,
+  idempotencyKey: string,
+): Promise<CustomerPricing> {
+  return adminWrite<CustomerPricing>(
+    "/api/control/settings/customer-pricing",
+    { config, expected_version: expectedVersion },
+    reason,
+    "保存积分价格失败",
+    idempotencyKey,
+    "PUT",
+  );
+}
+
 import type { components } from "./generated/api";
 
 const DEFAULT_TIMEOUT_MS = 5_000;

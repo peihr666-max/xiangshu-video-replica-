@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from uuid import uuid4
 
+from app.customer_pricing import read_pricing
 from app.db_portable import BusinessConnection
 
 
@@ -48,7 +49,12 @@ def snapshot_generation_rates(
     if not getattr(conn, "is_postgres", False):
         return GenerationRateSnapshot(cost_subject, None, None, billed_seconds)
     _, cost_price = _rate(conn, cost_subject)
-    _, external_price = _rate(conn, f"external_price_{suffix}")
+    _, config = read_pricing(conn)
+    if config:
+        points = config.video_2k if suffix == "2k" else config.video_768p
+        external_price = (points * 100 + config.points_per_yuan - 1) // config.points_per_yuan
+    else:
+        _, external_price = _rate(conn, f"external_price_{suffix}")
     updated = conn.execute(
         """
         UPDATE generation_tasks

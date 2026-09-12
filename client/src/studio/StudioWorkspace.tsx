@@ -321,6 +321,7 @@ export function StudioWorkspace({
     profileLoadError: customerAccount?.profileLoadError ?? "",
   };
   const [oralPriceFen, setOralPriceFen] = useState<number | null>(null);
+  const [oralPriceCredits, setOralPriceCredits] = useState<number | null>(null);
   const [oralQuoteStatus, setOralQuoteStatus] = useState<QuoteStatus>("idle");
   const [oralQuoteError, setOralQuoteError] = useState("");
   const [oralQuoteRevision, setOralQuoteRevision] = useState(0);
@@ -666,6 +667,7 @@ export function StudioWorkspace({
       .then((price) => {
         if (active) {
           setOralPriceFen(price.unit_price_fen);
+          setOralPriceCredits(price.unit_credits ?? null);
           setOralQuoteStatus("ready");
         }
       })
@@ -1926,9 +1928,13 @@ export function StudioWorkspace({
                   {generation === "数字人口播" &&
                   oralQuoteStatus === "ready" &&
                   oralPriceFen !== null
-                    ? `${(oralPriceFen / 100).toFixed(2)} 元/条`
+                    ? oralPriceCredits !== null
+                      ? `${oralPriceCredits} 积分/次`
+                      : `${(oralPriceFen / 100).toFixed(2)} 元/条`
                     : generation === "视频生成" && videoQuoteReady
-                      ? `${(videoQuote.estimated_price_fen / 100).toFixed(2)} 元（${videoQuote.unit_price_fen_per_second} 分/秒 × ${videoQuote.estimated_seconds} 秒）`
+                      ? videoQuote.estimated_credits !== undefined
+                        ? `${videoQuote.estimated_credits} 积分（${videoQuote.unit_credits} 积分/秒 × ${videoQuote.estimated_seconds} 秒）`
+                        : `${(videoQuote.estimated_price_fen / 100).toFixed(2)} 元（${videoQuote.unit_price_fen_per_second} 分/秒 × ${videoQuote.estimated_seconds} 秒）`
                       : oralQuoteStatus === "loading" ||
                           videoQuoteStatus === "loading"
                         ? "正在读取服务端报价…"

@@ -46,7 +46,7 @@ _BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 # 默认授予的白名单能力（§2.5 B：充值/查询钱包/价目表）。CW-078 只存储与回显
 # Scope membership is checked at the request gate and under the transaction lock.
-DEFAULT_API_KEY_SCOPES: tuple[str, ...] = ("recharge", "wallet", "pricing")
+DEFAULT_API_KEY_SCOPES: tuple[str, ...] = ("recharge", "wallet", "pricing", "generation")
 
 
 class ApiKeyError(Exception):

@@ -97,15 +97,52 @@ function setup() {
   return account;
 }
 
-test("renders real account points and five focused tabs without reissuing an existing default", async () => {
+test("renders real account points and six focused tabs without reissuing an existing default", async () => {
   render(<CustomerCenterPage account={setup()} />);
   expect(await screen.findByText("125")).toBeVisible();
-  expect(screen.getAllByRole("tab")).toHaveLength(5);
+  expect(screen.getAllByRole("tab")).toHaveLength(6);
+  expect(screen.getByRole("tab", { name: "接口价格" })).toBeVisible();
   expect(screen.getByText("alice-id")).toBeVisible();
   expect(mocks.initialize).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "返回主界面" }));
   expect(mocks.navigate).toHaveBeenCalledWith("workbench");
 });
+
+test.each([
+  ["oral-1", null, "oral-oral-1", "oral_task", "oral-1"],
+  [null, "batch-1", "batch-1", "generation_batch", "batch-1"],
+])(
+  "opens the exact ledger task and returns to profile (%s)",
+  async (oral, batch, selected, kind, backend) => {
+    const account = setup();
+    mocks.transactions.mockResolvedValue({
+      items: [
+        {
+          id: "ledger-1",
+          type: "SETTLE",
+          created_at: "2026-09-13T00:00:00Z",
+          available_delta: 0,
+          reserved_delta: -42,
+          oral_task_id: oral,
+          generation_batch_id: batch,
+        },
+      ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    render(<CustomerCenterPage account={account} />);
+    await screen.findByText("125");
+    fireEvent.click(screen.getByRole("tab", { name: "消费记录" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看任务" }));
+    expect(mocks.navigate).toHaveBeenCalledWith("task-detail", {
+      selectedTaskId: selected,
+      selectedTaskKind: kind,
+      selectedTaskBackendId: backend,
+      returnTo: "profile",
+    });
+  },
+);
 
 test("creates a Token through the API and clears its one-time secret on close", async () => {
   const account = setup();

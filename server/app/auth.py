@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 
 from app.db import connect_database
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
@@ -72,10 +72,21 @@ Database = Annotated[BusinessConnection, Depends(get_database)]
 
 
 def get_current_user(
+    request: Request,
     conn: Database,
     dev_user_id: Annotated[str | None, Header(alias="X-Dev-User-Id")] = None,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> CurrentUser:
+    from app.api_key_service import touch_last_used
+    from app.customer_fence import _verify_api_key_in_transaction, resolve_api_key_user
+
+    principal = resolve_api_key_user(request)
+    if principal is not None:
+        _verify_api_key_in_transaction(cast(Any, conn.raw), principal)
+        touch_last_used(cast(Any, conn.raw), key_id=principal.key_id)
+        conn.api_key_id = principal.key_id
+        conn.auth_source = "api_key"
+        return authenticate_user(conn, principal.user_id)
     return authenticate_request(
         conn,
         authorization=authorization,

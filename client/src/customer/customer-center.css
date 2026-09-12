@@ -531,3 +531,19 @@
     margin: 7px 0 0;
   }
 }
+.uc-record-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+
+.uc-record-filters label {
+  display: grid;
+  gap: 8px;
+}
+.uc-record-filters input,
+.uc-record-filters select {
+  width: 100%;
+  min-width: 0;
+}

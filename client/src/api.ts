@@ -206,6 +206,9 @@ export type GenerationPriceQuote = {
   unit_price_fen_per_second: number;
   estimated_seconds: number;
   estimated_price_fen: number;
+  unit_credits?: number;
+  estimated_credits?: number;
+  credit_price_version?: number;
 };
 export type SavedPromptInput = {
   name: string;
@@ -937,7 +940,11 @@ export async function getLatestScriptFromAudioTask(
   );
 }
 
-export type OralPrice = { unit_price_fen: number };
+export type OralPrice = {
+  unit_price_fen: number;
+  unit_credits?: number;
+  credit_price_version?: number;
+};
 
 /** 数字人口播单价（每条）。 */
 export async function getOralPrice(): Promise<OralPrice> {
@@ -5464,15 +5471,18 @@ export async function customerListWalletTransactions(
   {
     limit = 20,
     offset = 0,
+    filters = {},
   }: {
     limit?: number;
     offset?: number;
+    filters?: Record<string, string>;
   } = {},
 ): Promise<WalletTransactionPage> {
   const { body } = await customerJson<WalletTransactionPage>(
     `/api/customer/wallet/transactions?${new URLSearchParams({
       limit: String(limit),
       offset: String(offset),
+      ...filters,
     })}`,
     { credential },
   );
@@ -5889,6 +5899,37 @@ export type CustomerApiKey = {
   is_default: boolean;
   total_consumed_credits: number;
 };
+
+export type CustomerCreditConfig = {
+  video_768p: number;
+  video_2k: number;
+  oral: number;
+  points_per_yuan: number;
+  discount_basis_points?: number;
+  consumption_rounding?: "ceil" | "floor";
+};
+export type CustomerPricing = {
+  version: number;
+  configured: boolean;
+  config: CustomerCreditConfig | null;
+  prices: Array<{
+    subject: string;
+    name: string;
+    specification: string;
+    unit: string;
+    unit_credits: number;
+    configurable: boolean;
+  }>;
+  recharge_rounding: string;
+};
+
+export async function customerGetPricing(
+  credential: CustomerSessionCredential,
+): Promise<CustomerPricing> {
+  return (
+    await customerJson<CustomerPricing>("/api/customer/pricing", { credential })
+  ).body;
+}
 export type CreatedCustomerApiKey = CustomerApiKey & {
   plaintext: string | null;
 };

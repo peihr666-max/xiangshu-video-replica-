@@ -1308,11 +1308,13 @@ export function AnalysisWorkspace({
               {generationDrafts.priceQuoteStatus !== "ready" ||
               !generationDrafts.priceQuote
                 ? "预计费用暂不可用"
-                : `预计费用：¥${(
-                    generationDrafts.priceQuote.estimated_price_fen / 100
-                  ).toFixed(
-                    2,
-                  )}（${generationDrafts.priceQuote.unit_price_fen_per_second} 分/秒）`}
+                : generationDrafts.priceQuote.estimated_credits !== undefined
+                  ? `预计费用：${generationDrafts.priceQuote.estimated_credits} 积分（${generationDrafts.priceQuote.unit_credits} 积分/秒）`
+                  : `预计费用：¥${(
+                      generationDrafts.priceQuote.estimated_price_fen / 100
+                    ).toFixed(
+                      2,
+                    )}（${generationDrafts.priceQuote.unit_price_fen_per_second} 分/秒）`}
             </span>
           </>
         ) : null}

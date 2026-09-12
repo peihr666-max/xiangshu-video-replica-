@@ -25,6 +25,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.auth import CurrentUser
+from app.customer_pricing import read_pricing, task_credits
 from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
 from app.internal_billing import finalize_oral_billing, reserve_oral_billing
@@ -1372,7 +1373,12 @@ def list_oral_tasks(
 
 
 def oral_price_quote(conn: BusinessConnection) -> dict[str, int]:
-    return {"unit_price_fen": oral_unit_price_fen(conn)}
+    version, config = read_pricing(conn)
+    return {
+        "unit_price_fen": oral_unit_price_fen(conn),
+        "unit_credits": task_credits(config, "oral", 1) if config else 1,
+        "credit_price_version": version,
+    }
 
 
 def oral_task_available_actions(row: dict[str, Any]) -> list[str]:

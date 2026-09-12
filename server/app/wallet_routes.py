@@ -19,6 +19,8 @@ class WalletResponse(BaseModel):
     internal_unit_price_fen: int | None = None
     min_recharge_fen: int | None = None
     recharge_step_fen: int | None = None
+    points_per_yuan: int | None = None
+    credit_price_version: int | None = None
 
 
 class WalletTransactionResponse(BaseModel):
@@ -34,6 +36,13 @@ class WalletTransactionResponse(BaseModel):
     billing_round: int | None
     created_at: str
     oral_task_id: str | None = None
+    api_key_id: str | None = None
+    token_group_id: str | None = None
+    token_label: str | None = None
+    credential_version: int | None = None
+    auth_source: str | None = None
+    credit_price_version: int | None = None
+    generation_batch_id: str | None = None
 
 
 class WalletTransactionPage(BaseModel):

@@ -1216,6 +1216,11 @@ AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门
 
 AUTOMATED_VERIFIED（本地）；独立只读 review_w13 PASS；完整本地质量门在 a44672a（已整合主干 cd8bccf）通过：后端 2957 passed、1 个原有 TLS 跳过；前端 1350 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 全部通过。PR、当前提交远程 CI 和合并待完成；产品文件未改动，F06另行发现的产品竞态未在此修复。人工联合调试全部留第二部分。[证据](evidence/FIX-TESTREADY-20260912.md)。
 
+## UC-BATCH-03 / UC-11—15
+
+第三批从 main@791fd66 开工并集成 820c3d8；后台积分价与前端真实读价、Token 来源及共享钱包、消费筛选/跳转、充值快照已实现。完整门禁及收尾自检中；前两批 #79/#86 三门禁通过且已合并，旧状态以本次回填为准。[第三批证据](evidence/UC-BATCH03-POINTS-PRICING.md)。
+
+第三批最终本地：2972 PG passed / 1 原有 TLS skip，1354 前端 passed，完整静态门全绿，自检发现项已修复。证据层级 AUTOMATED_VERIFIED，PR/CI/合并待完成。
 
 ## W15 主干前置合并与第二部分隔离联调补充
 

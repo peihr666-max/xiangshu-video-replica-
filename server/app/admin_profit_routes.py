@@ -298,7 +298,10 @@ def profit_overview(
                        NULLIF(t.prompt_snapshot_json::json ->> 'resolution', ''),
                        '768P'
                    ) AS resolution,
-                   SUM(-wt.reserved_delta) AS settled_seconds,
+                   SUM(COALESCE(
+                       (wt.pricing_snapshot_json::json ->> 'units')::integer,
+                       -wt.reserved_delta
+                   )) AS settled_seconds,
                    COUNT(DISTINCT wt.task_id) AS video_count
             FROM wallet_transactions wt
             JOIN generation_tasks t ON t.id = wt.task_id

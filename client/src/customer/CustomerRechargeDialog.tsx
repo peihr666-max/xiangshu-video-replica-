@@ -294,7 +294,7 @@ export function CustomerRechargeDialog({
           <div className="recharge-dialog__chooser">
             <p>
               {wallet
-                ? `当前可用 ${wallet.available_credits} 积分，兑换单价 ${formatFen(wallet.internal_unit_price_fen)}/积分。`
+                ? `当前可用 ${wallet.available_credits} 积分，${wallet.points_per_yuan ? `1 元 = ${wallet.points_per_yuan} 积分` : `兑换单价 ${formatFen(wallet.internal_unit_price_fen)}/积分`}。`
                 : "正在读取充值信息…"}
             </p>
             <div className="recharge-dialog__presets">
@@ -308,7 +308,7 @@ export function CustomerRechargeDialog({
                   <strong>{amount} 元</strong>
                   <span>
                     {wallet
-                      ? `约 ${Math.floor((amount * 100) / wallet.internal_unit_price_fen)} 积分`
+                      ? `约 ${wallet.points_per_yuan ? amount * wallet.points_per_yuan : Math.floor((amount * 100) / wallet.internal_unit_price_fen)} 积分`
                       : "—"}
                   </span>
                 </button>
@@ -333,6 +333,20 @@ export function CustomerRechargeDialog({
                   : "生成支付二维码"}
               </button>
             </form>
+            {wallet &&
+              Number.isSafeInteger(Number(amountYuan)) &&
+              Number(amountYuan) > 0 && (
+                <p role="status">
+                  预计到账{" "}
+                  {wallet.points_per_yuan
+                    ? Number(amountYuan) * wallet.points_per_yuan
+                    : Math.floor(
+                        (Number(amountYuan) * 100) /
+                          wallet.internal_unit_price_fen,
+                      )}{" "}
+                  积分，以创建订单时的兑换规则为准。
+                </p>
+              )}
             {order && !paymentCode ? (
               <button
                 className="secondary-button"

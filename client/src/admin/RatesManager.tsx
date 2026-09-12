@@ -289,6 +289,9 @@ export function RatesManager({ readOnly = false }: { readOnly?: boolean }) {
       {error ? <p role="alert">{error}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
       {renderRateTable("upstream_cost", "上游成本费率", "上游成本费率")}
+      <p>
+        发布“支付与价格”中的客户积分价格后，客户报价与预扣使用积分配置。以下对外售价仅保留旧版兼容；上游成本用于内部核算。
+      </p>
       {renderRateTable("external_price", "对外售价（按秒计费）", "对外售价")}
       <section className="admin-panel" aria-label="历史变更">
         <h2>历史变更（最近 {history.length} 条）</h2>
