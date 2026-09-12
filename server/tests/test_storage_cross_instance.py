@@ -23,6 +23,7 @@ CW-007 硬门（fixture 不可达即 fail，不 skip）。
 from __future__ import annotations
 
 import base64
+import io
 import json
 import secrets
 import shutil
@@ -671,6 +672,7 @@ class _SharedMemoryCosClient:
 
     def __init__(self) -> None:
         self.objects: dict[str, tuple[bytes, str]] = {}
+        self.responses: list[_FakeBody] = []
 
     def get_presigned_url(self, **kwargs: object) -> str:
         return "https://cos.example/upload"
@@ -685,7 +687,9 @@ class _SharedMemoryCosClient:
 
     def get_object(self, **kwargs: object) -> dict[str, object]:
         content, content_type = self.objects[str(kwargs["Key"])]
-        return {"Body": _FakeBody(content), "ContentType": content_type}
+        body = _FakeBody(content)
+        self.responses.append(body)
+        return {"Body": body, "ContentType": content_type}
 
     def head_object(self, **kwargs: object) -> dict[str, str]:
         key = str(kwargs["Key"])
@@ -702,16 +706,9 @@ class _SharedMemoryCosClient:
         self.objects.pop(str(kwargs["Key"]), None)
 
 
-class _FakeBody:
-    def __init__(self, content: bytes) -> None:
-        self._content = content
-
+class _FakeBody(io.BytesIO):
     def get_raw_stream(self) -> _FakeBody:
         return self
-
-    def read(self, size: int = -1) -> bytes:
-        del size
-        return self._content
 
 
 def _cloud_adapter(client: _SharedMemoryCosClient) -> CloudStorageAdapter:
@@ -794,6 +791,8 @@ def test_asset_uploaded_on_api_a_is_readable_by_api_b_and_worker(
     stored_w = worker_adapter.head_object(storage_key_a)
     assert stored_w is not None
     assert worker_adapter.get_object(storage_key_a) == content
+    assert len(backend.responses) == 2
+    assert all(response.closed for response in backend.responses)
 
 
 class SimpleActor:

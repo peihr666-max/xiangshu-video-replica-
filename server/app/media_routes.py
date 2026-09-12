@@ -5,14 +5,18 @@ import json
 import logging
 import os
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
 
+from anyio import CancelScope
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
+from starlette.types import Receive, Scope, Send
 
 from app.auth import AuthenticatedUser, CurrentUser, Database, authenticate_user
 from app.customer_fence import BusinessDbDep, BusinessReadConn
@@ -58,6 +62,8 @@ LOCAL_API_BASE_URL = "http://127.0.0.1:8000"
 PUBLIC_BASE_URL_ENV = "PUBLIC_BASE_URL"
 LOCAL_API_BASE_URL_ENV = "VIDEO_REPLICA_LOCAL_API_BASE_URL"
 AUTH_MODE_ENV = "VIDEO_REPLICA_AUTH_MODE"
+MAX_OBJECT_DOWNLOAD_BYTES = 512 * 1024 * 1024
+OBJECT_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -423,27 +429,138 @@ def _signed_object_response(
         asset = _validate_signed_object_request(conn, object_key=object_key, request=request)
     reference = storage_object_ref_from_uri(str(asset["storage_uri"]))
     require_storage_match(storage, reference)
-    return _read_stored_object(storage, object_key=object_key)
+    return _read_stored_object(
+        storage, object_key=object_key, range_header=request.headers.get("range")
+    )
 
 
-def _read_stored_object(storage: StorageAdapter, *, object_key: str) -> Response:
+class _ObjectStreamingResponse(StreamingResponse):
+    def __init__(
+        self, source: Iterator[bytes], *, resource: Iterator[bytes] | None = None, **kwargs: Any
+    ) -> None:
+        self._source = source
+        self._resource = resource
+        super().__init__(source, **kwargs)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Starlette's threadpool wrapper need not close the underlying
+            # synchronous generator when sending fails or the client disconnects.
+            try:
+                close = getattr(self._source, "close", None)
+                if close is not None:
+                    with CancelScope(shield=True):
+                        await run_in_threadpool(close)
+            finally:
+                resource_close = getattr(self._resource, "close", None)
+                if resource_close is not None:
+                    with CancelScope(shield=True):
+                        await run_in_threadpool(resource_close)
+
+
+def _object_range(value: str | None, size: int) -> tuple[int, int, bool]:
+    if value is None:
+        return 0, size - 1, False
+    try:
+        if size <= 0 or len(value) > 100 or not value.startswith("bytes=") or "," in value:
+            raise ValueError
+        first, separator, last = value[6:].partition("-")
+        if not separator or (first and not first.isascii()) or (last and not last.isascii()):
+            raise ValueError
+        if first:
+            if not first.isdecimal() or (last and not last.isdecimal()):
+                raise ValueError
+            start, end = int(first), min(int(last), size - 1) if last else size - 1
+        else:
+            if not last.isdecimal() or int(last) <= 0:
+                raise ValueError
+            start, end = max(0, size - int(last)), size - 1
+        if start < 0 or start >= size or end < start:
+            raise ValueError
+    except ValueError as exc:
+        raise HTTPException(
+            416,
+            detail={"code": "OBJECT_RANGE_INVALID"},
+            headers={"Content-Range": f"bytes */{size}"},
+        ) from exc
+    return start, end, True
+
+
+def _bounded_object_chunks(source: Iterator[bytes], expected: int) -> Iterator[bytes]:
+    consumed = 0
+    try:
+        for chunk in source:
+            if len(chunk) > OBJECT_DOWNLOAD_CHUNK_BYTES or consumed + len(chunk) > expected:
+                raise StorageBackendUnavailable("object exceeded the declared download length")
+            consumed += len(chunk)
+            yield chunk
+        if consumed != expected:
+            raise StorageBackendUnavailable("object ended before the declared download length")
+    finally:
+        close = getattr(source, "close", None)
+        if close is not None:
+            close()
+
+
+def _prefetched_object_chunks(first: bytes, source: Iterator[bytes]) -> Iterator[bytes]:
+    try:
+        yield first
+        yield from source
+    finally:
+        close = getattr(source, "close", None)
+        if close is not None:
+            close()
+
+
+def _read_stored_object(
+    storage: StorageAdapter,
+    *,
+    object_key: str,
+    range_header: str | None = None,
+) -> Response:
     try:
         stored = storage.head_object(object_key)
         if stored is None:
             raise HTTPException(status_code=404, detail={"code": "OBJECT_NOT_FOUND"})
-        content = storage.get_object(object_key)
+        if stored.size < 0 or stored.size > MAX_OBJECT_DOWNLOAD_BYTES:
+            raise HTTPException(413, detail={"code": "OBJECT_TOO_LARGE"})
     except StorageBackendUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
         ) from exc
-    return Response(
-        content=content,
+    start, end, partial = _object_range(range_header, stored.size)
+    length = end - start + 1
+    filename = quote(Path(object_key).name, safe="")
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(length),
+        "Cache-Control": "private, no-store",
+    }
+    if partial:
+        headers["Content-Range"] = f"bytes {start}-{end}/{stored.size}"
+    if length == 0:
+        return Response(content=b"", media_type=stored.content_type, headers=headers)
+    source = _bounded_object_chunks(
+        storage.iter_object(
+            object_key, start=start, end=end, chunk_size=OBJECT_DOWNLOAD_CHUNK_BYTES
+        ),
+        length,
+    )
+    try:
+        first = next(source)
+    except StorageBackendUnavailable as exc:
+        raise HTTPException(503, detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"}) from exc
+    return _ObjectStreamingResponse(
+        _prefetched_object_chunks(first, source),
+        resource=source,
+        status_code=206 if partial else 200,
         media_type=stored.content_type,
-        headers={
-            "X-Content-Type-Options": "nosniff",
-            "Content-Disposition": f'attachment; filename="{Path(object_key).name}"',
-        },
+        headers=headers,
     )
 
 
@@ -592,6 +709,20 @@ async def put_local_object(
             project_id=project_id,
             action="asset.object.put",
         )
+        pending = conn.execute(
+            "SELECT content_type, metadata_json FROM assets WHERE project_id = %s "
+            "AND storage_uri = %s AND sha256 = '' AND size_bytes = 0",
+            (project_id, f"{storage.provider}://{storage.bucket}/{object_key}"),
+        ).fetchone()
+        if pending is None:
+            raise HTTPException(409, detail={"code": "UPLOAD_INTENT_REQUIRED"})
+        expected_content_type = str(pending["content_type"])
+        metadata = json.loads(str(pending["metadata_json"]))
+        if metadata.get("upload_status") == "EXPIRED":
+            raise HTTPException(409, detail={"code": "UPLOAD_EXPIRED"})
+        requested_size = metadata.get("requested_size_bytes")
+        if isinstance(requested_size, int):
+            expected_size = requested_size
     else:
         require_role(
             conn,
@@ -636,9 +767,12 @@ async def put_local_object(
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail={"code": "PAYLOAD_TOO_LARGE"})
-    content = await request.body()
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail={"code": "PAYLOAD_TOO_LARGE"})
+    content_buffer = bytearray()
+    async for chunk in request.stream():
+        if len(content_buffer) + len(chunk) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail={"code": "PAYLOAD_TOO_LARGE"})
+        content_buffer.extend(chunk)
+    content = bytes(content_buffer)
     content_type = request.headers.get("content-type", "application/octet-stream")
     if expected_content_type is not None and content_type != expected_content_type:
         raise HTTPException(status_code=415, detail={"code": "CONTENT_TYPE_MISMATCH"})
@@ -680,4 +814,6 @@ def get_signed_object(
 ) -> Response:
     """Proxy a revocable signed grant for local or private cloud storage."""
     storage = _prepare_signed_object_read(object_key=object_key, request=request)
-    return _read_stored_object(storage, object_key=object_key)
+    return _read_stored_object(
+        storage, object_key=object_key, range_header=request.headers.get("range")
+    )
