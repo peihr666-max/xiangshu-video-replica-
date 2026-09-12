@@ -291,6 +291,7 @@ export type AdminExchangeResult = {
   expires_at: string;
   csrf_token: string;
   actor: AdminActorInfo;
+  auth_method: "exchange" | "password";
 };
 
 export type AdminSessionInfo = {
@@ -299,6 +300,7 @@ export type AdminSessionInfo = {
   last_activity_at: string;
   csrf_token: string | null;
   actor: AdminActorInfo;
+  auth_method: "exchange" | "password";
 };
 
 export async function loginAdminWithPassword(
@@ -718,6 +720,7 @@ const CODE_MESSAGES: Record<string, string> = {
   ADMIN_LOGIN_INVALID: "管理员账号或密码错误",
   ADMIN_PASSWORD_INVALID: "密码需为 12 至 128 个字符",
   ADMIN_PASSWORD_RECOVERY_REQUIRED: "请先使用一次性恢复凭据验证身份",
+  ADMIN_PASSWORD_RECOVERY_ONLY: "请先设置密码，再使用账号和密码登录后台",
   ADMIN_SESSION_INVALID: "会话已失效，请重新登录",
   ADMIN_SESSION_EXPIRED: "会话已过期，请重新登录",
   ADMIN_SESSIONS_UNAVAILABLE: "管理会话服务暂不可用，请稍后重试",

@@ -25,7 +25,7 @@ import psycopg
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pg_test_kit import require_pg_or_explicit_skip
+from pg_test_kit import password_admin_session, require_pg_or_explicit_skip
 
 from app.admin_auth_routes import (
     ADMIN_CSRF_HEADER,
@@ -226,6 +226,193 @@ def test_admin_password_hash_is_memory_hard_salted_and_verifiable() -> None:
     assert verify_admin_password(password, first) is True
     assert verify_admin_password("wrong password", first) is False
     assert verify_admin_password(password, "malformed") is False
+
+
+@pytest.mark.parametrize("actor_id", ["admin_u", "auditor_u"])
+def test_recovery_session_is_limited_and_can_set_own_password(
+    client: TestClient, clean_sessions: str, actor_id: str
+) -> None:
+    response = client.post(
+        "/api/control/admin/session/exchange", json={"credential": _issue(actor_id)}
+    )
+    assert response.status_code == 201
+    session = response.json()
+    assert session["auth_method"] == "exchange"
+    current = client.get("/api/control/admin/session")
+    assert current.json()["auth_method"] == "exchange"
+    headers = {ADMIN_CSRF_HEADER: session["csrf_token"]}
+    denied = client.post("/api/control/_test/admin-write", headers=headers)
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "ADMIN_PASSWORD_RECOVERY_ONLY"
+    with psycopg.connect(clean_sessions) as conn:
+        lifetime = conn.execute(
+            "SELECT extract(epoch FROM expires_at::timestamptz-created_at::timestamptz) "
+            "FROM admin_sessions WHERE id=%s",
+            (session["session_id"],),
+        ).fetchone()[0]
+    assert 0 < lifetime <= 600
+    password = "W13 Recovery Passphrase 2026!"
+    saved = client.put("/api/control/admin/password", headers=headers, json={"password": password})
+    assert saved.status_code == 204, saved.text
+    assert client.get("/api/control/admin/session").status_code == 401
+    logged_in = client.post(
+        "/api/control/admin/session/password", json={"username": actor_id, "password": password}
+    )
+    assert logged_in.status_code == 201, logged_in.text
+    assert logged_in.json()["auth_method"] == "password"
+    write = client.post(
+        "/api/control/_test/admin-write",
+        headers={ADMIN_CSRF_HEADER: logged_in.json()["csrf_token"]},
+    )
+    assert write.status_code == (200 if actor_id == "admin_u" else 403)
+
+
+def test_recovery_cookie_cannot_read_control_business(
+    customer_production_control_client: TestClient,
+) -> None:
+    client = customer_production_control_client
+    response = client.post(
+        "/api/control/admin/session/exchange", json={"credential": _issue("admin_u")}
+    )
+    assert response.status_code == 201
+    denied = client.get("/api/control/accounts")
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "ADMIN_PASSWORD_RECOVERY_ONLY"
+
+
+def test_preexisting_recovery_cookie_also_expires_after_ten_minutes(
+    client: TestClient, clean_sessions: str, admin_session: dict[str, str]
+) -> None:
+    with psycopg.connect(clean_sessions) as conn:
+        conn.execute(
+            "UPDATE admin_sessions SET created_at=now()-interval '11 minutes', "
+            "last_activity_at=now(), expires_at=now()+interval '1 hour' WHERE id=%s",
+            (admin_session["session_id"],),
+        )
+    assert client.get("/api/control/admin/session").status_code == 401
+
+
+@pytest.mark.parametrize("change", ["revoke", "disable", "demote"])
+def test_recovery_rechecks_actor_and_session_after_hashing(
+    client: TestClient,
+    clean_sessions: str,
+    admin_session: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    from app import admin_auth_routes
+
+    original_hash = admin_auth_routes.hash_admin_password
+
+    def hash_after_revocation(password: str) -> str:
+        result = original_hash(password)
+        with psycopg.connect(clean_sessions) as conn:
+            if change == "revoke":
+                conn.execute(
+                    "UPDATE admin_sessions SET revoked_at=now() WHERE id=%s",
+                    (admin_session["session_id"],),
+                )
+            elif change == "disable":
+                conn.execute("UPDATE users SET is_active=0 WHERE id='admin_u'")
+            else:
+                conn.execute("UPDATE users SET role='employee' WHERE id='admin_u'")
+        return result
+
+    monkeypatch.setattr(admin_auth_routes, "hash_admin_password", hash_after_revocation)
+    try:
+        response = client.put(
+            "/api/control/admin/password",
+            headers={ADMIN_CSRF_HEADER: admin_session["csrf_token"]},
+            json={"password": "W13 Recheck Passphrase 2026!"},
+        )
+        assert response.status_code == 401
+        with psycopg.connect(clean_sessions) as conn:
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM admin_password_credentials WHERE user_id='admin_u'"
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM audit_logs WHERE action='admin_password.recover'"
+                ).fetchone()[0]
+                == 0
+            )
+    finally:
+        with psycopg.connect(clean_sessions) as conn:
+            conn.execute("UPDATE users SET is_active=1, role='admin' WHERE id='admin_u'")
+
+
+def test_recovery_expiring_while_waiting_for_user_lock_is_rejected(
+    client: TestClient,
+    clean_sessions: str,
+    admin_session: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    import time
+
+    from app import admin_auth_routes
+
+    original_hash = admin_auth_routes.hash_admin_password
+    observed_wait = threading.Event()
+    unlocker: threading.Thread | None = None
+
+    def hash_then_hold_user_lock(password: str) -> str:
+        nonlocal unlocker
+        result = original_hash(password)
+        with psycopg.connect(clean_sessions) as conn:
+            conn.execute(
+                "UPDATE admin_sessions SET expires_at=clock_timestamp()+interval '1 second' "
+                "WHERE id=%s",
+                (admin_session["session_id"],),
+            )
+        blocker = psycopg.connect(clean_sessions)
+        blocker.execute("SELECT id FROM users WHERE id='admin_u' FOR UPDATE")
+
+        def release_after_expiry() -> None:
+            try:
+                with psycopg.connect(clean_sessions, autocommit=True) as observer:
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        waiting = observer.execute(
+                            "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() "
+                            "AND wait_event_type='Lock' AND query LIKE 'SELECT role FROM users%'"
+                        ).fetchone()
+                        if waiting:
+                            observed_wait.set()
+                            observer.execute("SELECT pg_sleep(1.1)")
+                            break
+                        time.sleep(0.02)
+            finally:
+                blocker.rollback()
+                blocker.close()
+
+        unlocker = threading.Thread(target=release_after_expiry)
+        unlocker.start()
+        return result
+
+    monkeypatch.setattr(admin_auth_routes, "hash_admin_password", hash_then_hold_user_lock)
+    try:
+        response = client.put(
+            "/api/control/admin/password",
+            headers={ADMIN_CSRF_HEADER: admin_session["csrf_token"]},
+            json={"password": "W13 Expiring Lock Passphrase 2026!"},
+        )
+    finally:
+        if unlocker is not None:
+            unlocker.join(timeout=8)
+    assert observed_wait.is_set(), "the recovery transaction must actually wait for the lock"
+    assert response.status_code == 401
+    with psycopg.connect(clean_sessions) as conn:
+        assert conn.execute("SELECT count(*) FROM admin_password_credentials").fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM audit_logs WHERE action='admin_password.recover'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -1050,9 +1237,7 @@ def test_disabled_actor_invalidates_session(
 
 
 def test_auditor_is_read_only(client: TestClient) -> None:
-    response = client.post(
-        "/api/control/admin/session/exchange", json={"credential": _issue("auditor_u")}
-    )
+    response = password_admin_session(client, "auditor_u")
     assert response.status_code == 201, response.text
     csrf_token = response.json()["csrf_token"]
 
@@ -1068,8 +1253,9 @@ def test_auditor_is_read_only(client: TestClient) -> None:
 def test_admin_writer_dependency_allows_admin(
     client: TestClient, admin_session: dict[str, str]
 ) -> None:
+    routine = password_admin_session(client, "admin_u")
     response = client.post(
-        "/api/control/_test/admin-write", headers={ADMIN_CSRF_HEADER: admin_session["csrf_token"]}
+        "/api/control/_test/admin-write", headers={ADMIN_CSRF_HEADER: routine.json()["csrf_token"]}
     )
     assert response.status_code == 200, response.text
     assert response.json()["actor"] == "admin_u"
@@ -1085,9 +1271,7 @@ def test_customer_production_control_routes_use_operator_session(
     and therefore rejected every customer-production request as legacy 403.
     """
     client = customer_production_control_client
-    exchange = client.post(
-        "/api/control/admin/session/exchange", json={"credential": _issue("admin_u")}
-    )
+    exchange = password_admin_session(client, "admin_u")
     assert exchange.status_code == 201, exchange.text
 
     accounts = client.get("/api/control/accounts")
@@ -1117,9 +1301,7 @@ def test_customer_production_control_routes_keep_auditors_read_only(
     customer_production_control_client: TestClient,
 ) -> None:
     client = customer_production_control_client
-    exchange = client.post(
-        "/api/control/admin/session/exchange", json={"credential": _issue("auditor_u")}
-    )
+    exchange = password_admin_session(client, "auditor_u")
     assert exchange.status_code == 201, exchange.text
 
     assert client.get("/api/control/accounts").status_code == 200
@@ -1177,9 +1359,7 @@ def test_customer_production_control_settings_writes_require_admin_write_contrac
     payload: dict[str, object],
 ) -> None:
     client = customer_production_control_client
-    exchange = client.post(
-        "/api/control/admin/session/exchange", json={"credential": _issue("admin_u")}
-    )
+    exchange = password_admin_session(client, "admin_u")
     assert exchange.status_code == 201, exchange.text
     headers = {ADMIN_CSRF_HEADER: exchange.json()["csrf_token"]}
 
@@ -1217,9 +1397,7 @@ def test_customer_production_control_runtime_write_replays_and_conflicts_by_idem
     clean_sessions: str,
 ) -> None:
     client = customer_production_control_client
-    exchange = client.post(
-        "/api/control/admin/session/exchange", json={"credential": _issue("admin_u")}
-    )
+    exchange = password_admin_session(client, "admin_u")
     assert exchange.status_code == 201, exchange.text
     headers = {
         ADMIN_CSRF_HEADER: exchange.json()["csrf_token"],
