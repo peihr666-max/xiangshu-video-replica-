@@ -5,7 +5,7 @@
       "001_core"
     ],
     "heads": [
-      "20260912T1353_customer_discounts"
+      "20260912T1400_customer_registration_credentials"
     ],
     "parents": {
       "001_core": null,
@@ -91,9 +91,10 @@
       "083_recharge_orders_multi_provider": "086_remove_device_slot_constraints",
       "086_remove_device_slot_constraints": "082_publish_accounts",
       "089_customer_api_keys": "083_recharge_orders_multi_provider",
-      "20260912T1353_customer_discounts": "089_customer_api_keys"
+      "20260912T1353_customer_discounts": "089_customer_api_keys",
+      "20260912T1400_customer_registration_credentials": "20260912T1353_customer_discounts"
     },
-    "revision_count": 84
+    "revision_count": 85
   },
   "manifest_schema_version": 1,
   "naming_policy": {
@@ -443,6 +444,10 @@
     "20260912T1353_customer_discounts": {
       "file": "versions/20260912T1353_customer_discounts.py",
       "sha256": "4f1122f0febc80e56d8b8323c1c5f858912a9bdb3eaad35ddb41d31521a1e6ba"
+    },
+    "20260912T1400_customer_registration_credentials": {
+      "file": "versions/20260912T1400_customer_registration_credentials.py",
+      "sha256": "a6ea47206cac5268b4ab835449986afbee0210b9c9327479ed613686fcba4b38"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

@@ -32,9 +32,9 @@ from sqlalchemy.engine import make_url
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # PR#103(df7020c) 引入 pg_test_kit.require_pg_or_explicit_skip 模块级 autouse fixture，
 # 取代旧的 SKIP_REASON 常量（已无引用，随 main 基线删除）。
-# HEAD_REVISION 取本分支链尾 090：本分支 = main(→089) + CW-075 20260912T1353_customer_discounts，
-# 迁移后 alembic 版本头即 090，9 处 assert version == HEAD_REVISION 依赖此值。
-HEAD_REVISION = "20260912T1353_customer_discounts"
+# HEAD_REVISION 取本分支链尾 20260912T1400：本分支 = main(→090) + 注册线，
+# 迁移后 alembic 版本头即 20260912T1400，9 处 assert version == HEAD_REVISION 依赖此值。
+HEAD_REVISION = "20260912T1400_customer_registration_credentials"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(
@@ -1151,10 +1151,9 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
             )
 
         with pytest.raises(RuntimeError, match="cannot downgrade 026"):
-            # Eighteen steps from head: 090->089->083->086->081 (empty discount +
-            # api-key +
-            # multi-provider + device-slot layer, symmetric) then 054->053
-            # (empty free-grant layer,
+            # Nineteen steps from head: 1400->090->089->083->086->081 (empty
+            # registration-credential + discount + api-key + multi-provider +
+            # device-slot layer, symmetric) then 054->053 (empty free-grant layer,
             # symmetric on a fresh database) then 039->038 (empty admin adjustments
             # layer, symmetric) then 038->037 (empty admin device operations
             # layer, symmetric) then 037->036 (empty device pairing layer,
@@ -1177,8 +1176,8 @@ def test_pg_billing_constraints_downgrade_guard() -> None:
 
         # Remove the customer order (test data only — confirmed production rows
         # are never deleted, which is exactly why the guard exists) and the
-        # downgrade becomes possible again. Sixteen steps
-        # (20260912T1353->089->083->086->081->038->037->036->035->034->
+        # downgrade becomes possible again. Seventeen steps
+        # (20260912T1400->20260912T1353->089->083->086->081->038->037->036->035->034->
         #  033->032->029->028->031->027->026->025)
         # restore the 022 constraint set the final assertion exercises.
         with psycopg.connect(dsn, autocommit=True) as conn:

@@ -56,10 +56,10 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
-# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（本分支 = main→089 + CW-075 090）。
-HEAD_REVISION = "20260912T1353_customer_discounts"
+# 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
+HEAD_REVISION = "20260912T1400_customer_registration_credentials"
 
-# 最后一个已发布（受支持）起点。其后的 056–090 尚未随任何受支持版本发布，
+# 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
 # 那不是「冻结已发布历史」而是「冻结开发中」。
 PUBLISHED_HEAD_REVISION = "055_customer_batch_visibility"
@@ -102,7 +102,7 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "tables": 79,
-    "columns": 936,
+    "columns": 938,
     "identity_columns": 0,
     "sequences": 3,
     "jsonb_columns": 0,
@@ -110,7 +110,7 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "triggers": 18,
     "partial_indexes": 24,
     "unique_constraints": 27,
-    "check_constraints": 233,
+    "check_constraints": 236,
     "foreign_keys": 149,
     "primary_keys": 79,
 }
@@ -122,13 +122,16 @@ HEAD_SCHEMA_COUNTS: dict[str, int] = {
 # check_constraints +3（platform/status/verify_flag 三条 CHECK）、foreign_keys +1
 # （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
 # partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
-# CW-075 090 的增量：本表名集追加 customer_discounts（本分支链尾迁移 090 新建的表，
+# CW-075 090 的增量：本表名集追加 customer_discounts（main 链尾迁移 090 新建的表，
 # 已 re-linearize 到 main 现头 089 之上：089→090）。HEAD_SCHEMA_COUNTS 与
 # HEAD_SCHEMA_DIGEST 已随之重算为 090 的真实值——它们是全局 post-linearization 不变量：
 # CW-078 折叠 089 时在本地 PG 探针重算过一次（digest 8fe43e16），CW-075 折叠 090 后沿
 # 同一先例（postgres:16-alpine，与 CI pg-fixture 同主版本）再重算一次。故 B 组真实 PG
 # 矩阵断言全绿：表名集（inventory 的 tables 与 HEAD_TABLE_NAMES 排序相等，含
 # customer_api_keys 与 customer_discounts 两表）、counts、digest 三项均对齐 090 重算值。
+# CW-076 的增量：users.password_hash / users.registration_source 两列 + 三条 CHECK
+# （blank/known/self_register-has-password），090 之上重挂 20260912T1400 后探针再重算
+# （columns +2=938、check_constraints +3=236，digest b678939f…，表名集不变）。
 HEAD_TABLE_NAMES: tuple[str, ...] = (
     "activation_code_activations",
     "activation_code_batches",
@@ -216,7 +219,8 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 这是「空库→head」与「旧起点→head」必须**收敛到同一 schema** 的机器化断言 ——
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
-HEAD_SCHEMA_DIGEST = "9806dc1cd969c860396c6a4c07926f4063b3c83d0f6706f0cc28f7c5a7cd4fce"
+# CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
+HEAD_SCHEMA_DIGEST = "b678939f2f410b10d6d3bae0f0d371c5cb54d7b6807099a1fef73febbdef6abe"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (
