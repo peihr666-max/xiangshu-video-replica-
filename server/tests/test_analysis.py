@@ -471,8 +471,11 @@ def test_video_analysis_uses_the_fixed_apilio_origin_when_legacy_base_url_exists
 def test_customer_production_refuses_fake_video_analysis_provider(
     db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    # CW-042-a: connect BEFORE raising the production flag — the SQLite
+    # connection is only this unit test's vehicle, and the entry guard now
+    # refuses SQLite once the flag is up.
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
         with pytest.raises(HTTPException) as exc_info:
             get_video_analysis_provider(conn)
 

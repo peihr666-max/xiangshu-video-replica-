@@ -1582,9 +1582,12 @@ def test_customer_production_rejects_fake_first_frame_quality_override(
 ) -> None:
     from app.first_frame_routes import get_first_frame_quality_inspector
 
-    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    # CW-042-a: connect BEFORE raising the production flag — the SQLite
+    # connection is only this unit test's vehicle, and the entry guard now
+    # refuses SQLite once the flag is up.
     monkeypatch.setenv("VIDEO_REPLICA_FAKE_FIRST_FRAME_QUALITY_INSPECTOR", "1")
     with BusinessConnection.sqlite(connect_database(db_path)) as conn:
+        monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
         with pytest.raises(HTTPException) as error:
             get_first_frame_quality_inspector(conn)
 

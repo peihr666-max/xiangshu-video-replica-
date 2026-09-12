@@ -218,6 +218,19 @@
 | 复跑入口 | `.dev-env/run-cw043-pytest.ps1`（venv python + fcntl shim + TEST_POSTGRESQL_URL@5438）；12 新用例 `pytest tests/test_cw043_analytics_pg_matrix.py tests/test_cw043_viral_import_pg.py -v`（预期 12 passed）；全量 `pytest tests/ -q --tb=line -rf`（预期 2586 passed / 25 域外 failed / 2 skipped） |
 | 复核动作 | 独立跑 12 新用例 + §B 4 域抽样 + 全量确认 GREEN；核验 §C 补漏映射 + §D 44 项机制退役登记；核对 §E.2 shard 重生为 canonical；确认 25F 域外分类与路由无误；签署 A4 |
 
+## §F. A4 独立复核签署（2026-09-12，非实现会话）
+
+- **复核者**：ZCode session on behalf of honor.pei（实现会话为 Qoder session，满足 A4 独立性要求）；owner 指令授权（W6 统一批次，分支 `feat/customer-v3-w6-unblock`，基线 55220f7）。
+- **独立容器复跑**：vs-pg-cw043a@5444（全新 postgres:16-alpine，非实现时的 5438）。①12 新用例 + §B 五矩阵文件 82 用例 = **94 passed in 134.96s**——与实现者声称逐数一致，无 RED。
+- **§C 补漏映射核验**：R1–R5 退休登记与 §C.2 两真缺口（analytics/viral_import）校准逻辑复核通过；机械抽查三条声称逐一属实——R5 双通道（`_run_sqlite_viral_refresh_step` @generation_worker.py:432、调用点 :513、PG 侧 `run_pg_worker_once` @:1072）、`test_viral_import.py` 12 处 `BusinessConnection.sqlite` + `viral_import.py` 676 行、`pg_test_kit.upgrade_test_database_to_head` @:218。
+- **§D 机制退役登记核验**：EXPLAIN QUERY PLAN / sqlite_master / trace 计数三类登记齐备，「业务主不变量已在真实 PG 断言级证明」的核销口径与矩阵 §7 line 247 一致。
+- **§E.2 shard 重生 canonical 核验**：`build-test-shards.py --check-coverage` rc=0（本批次分支 132 文件口径）。
+- **全量复跑**（本批次分支，TEST_POSTGRESQL_URL@5444）：**42 failed / 2827 passed / 1 skipped in 1:30:43**。分类（git stash 归因法逐组实证）：
+  - 22× `test_cw033_pitr_drill_validation` = §A.1 已登记的 Windows 平台例外（`/usr/bin/env` 硬编码），Linux-CI-only；
+  - 17× `test_viral_routes` = **main 侧滚动日期窗口时间炸弹**（更正：初判「本机环境类」不成立——Linux 容器 solo 复跑同样失败）。fixture 固定日期滚出有效窗口，与改动面零交集；owner 已于本批次 CI 窗口内经 FIX-TESTBASE（#78，8ae7305，20:57）修复，rebase 后 35/35 全绿复证。初判时点该修复未落 main，如实记录判更过程；
+  - 3× `test_analysis/test_character_identity_api/test_first_frames` 的 customer_production 拒绝类单测 = **本批次 042-a 守卫引起的回归**（stash 归因实证：干净基线过、挂守卫即红）——由本批次修复（三测试重排为「先建连接、后升生产旗标」，断言不变），3 passed 验证；详见 CW042A-EVIDENCE.md §5。
+- **签署结论**：§C/§D/§E 核验包与实现者声称一致，12/12 真实 PG 全绿无 RED，核销确认成立；**A4 签署通过**。附带发现（viral 17F）确认为滚动日期窗口时间炸弹（非 CW-043 交付物缺陷），owner 已修复并复证；rebase 至 37a2633 后本批次门禁全绿（ruff/mypy/coverage/secrets/migration-guard + 专项 63P），不影响核销结论。
+
 ### §E.4 诚实边界
 
 1. **A2 的 25 failed 均为 main@a093f61 既有域外债务，非 CW-043 引入**：`git diff a093f61 HEAD` 为空 + 工作树零 app 改动即证。分组：**22×** `test_cw033_pitr_drill_validation.py`（Windows 平台缺陷：硬编码 `/usr/bin/env bash`、WinError 2；Linux-CI-only 落 shard-3，CI 上转绿；非 PG 债务）+ **3×** `test_storage_cross_instance.py`（CW-026 PR#20 收敛 PG lane 强制 Bearer → 打断 CW-031 PR#17 的 media_client+X-Dev-User-Id 测试；潜伏回归被 CW-061 分片纳入 + CW-043 审计暴露；平台无关 → CI shard-3 亦红）。处置=Option A（Owner 裁决，见 §A.3）：留在 CW-043 泳道、记录并路由给 CW-031 owner，不越界修改他任务测试。建议修法（供 CW-031，非 CW-043）：3 测试从 media_client+X-Dev-User-Id 迁到该文件既有 customer_lane+Bearer fixture。
