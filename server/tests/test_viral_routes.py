@@ -90,7 +90,7 @@ def _video(
         comments=4 if platform == "douyin" else None,
         shares=5 if platform == "douyin" else None,
         collects=6 if platform == "douyin" else None,
-        published_at=1788602461,
+        published_at=int((_now() - timedelta(days=1)).timestamp()),
         published_display="1天前" if platform == "wechat_channels" else None,
         like_display="1.2万" if platform == "wechat_channels" else None,
         tags=["标签一", "标签二"],
@@ -140,6 +140,39 @@ def client(tmp_path: Path) -> Iterator[tuple[TestClient, StubViralClient]]:
             yield TestClient(app), stub
     finally:
         app.dependency_overrides.clear()
+
+
+def test_list_filters_stale_and_future_provider_items(
+    client: tuple[TestClient, StubViralClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    http, stub = client
+    original_search = stub.douyin_search
+
+    def mixed_dates(**kwargs: Any) -> list[Any]:
+        items = original_search(**kwargs)
+        return [
+            *items,
+            replace(
+                items[0],
+                video_id=items[0].video_id + "-old",
+                published_at=int((_now() - timedelta(days=8)).timestamp()),
+            ),
+            replace(
+                items[0],
+                video_id=items[0].video_id + "-future",
+                published_at=int((_now() + timedelta(days=1)).timestamp()),
+            ),
+        ]
+
+    monkeypatch.setattr(stub, "douyin_search", mixed_dates)
+    response = http.get("/api/viral/videos", params={"platform": "douyin"}, headers=_AUTH_HEADERS)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 8
+    assert len(payload["items"]) == 8
+    assert all(not item["videoId"].endswith(("-old", "-future")) for item in payload["items"])
 
 
 def test_list_douyin_videos_aggregates_categories(
