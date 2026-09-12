@@ -354,9 +354,35 @@ def test_rollout_guard_idiom_is_the_one_we_mirror() -> None:
     assert "EXPECTED_DB_HEAD" in body
 
 
+def _revisions_at_or_after(graph_parents: dict[str, Any], head: str) -> set[str]:
+    """head 及其祖先闭包（沿 ``graph.parents`` 向上走，兼容 tuple 父节点）。"""
+    seen: set[str] = set()
+    stack = [head]
+    while stack:
+        rev = stack.pop()
+        if rev in seen:
+            continue
+        seen.add(rev)
+        down = graph_parents.get(rev)
+        if down is None:
+            continue
+        stack.extend(down if isinstance(down, tuple) else [down])
+    return seen
+
+
 def test_manifest_is_valid_json_with_the_expected_shape() -> None:
     manifest = json.loads(gen.MANIFEST_PATH.read_text(encoding="utf-8"))
     assert manifest["manifest_schema_version"] == gen.MANIFEST_SCHEMA_VERSION
     assert manifest["task"] == gen.TASK_ID
     assert "basis" in manifest, "the manifest must state what it does and does not prove"
-    assert manifest["graph"]["heads"] == [manifest["naming_policy"]["adoption_head"]]
+    # 结构性不变量：恰一个 head，且命名锚点是该 head 自身或其祖先。
+    # 不能断言 head == adoption_head：锚点恒定 089，而并行分支（如 CW-075 的折扣迁移）
+    # 合法地在 089 之上追加时间戳命名的新 head；旧的头等断言对任何 089 之后的新迁移
+    # 都会误红（merge 驱动的过拟合修正，与 run_check 的单 head + 命名策略不变量对齐）。
+    heads = manifest["graph"]["heads"]
+    assert len(heads) == 1, f"expected a single head, got {heads}"
+    adoption = manifest["naming_policy"]["adoption_head"]
+    assert adoption in _revisions_at_or_after(manifest["graph"]["parents"], heads[0]), (
+        f"naming-policy adoption_head {adoption!r} must equal the head or be an "
+        f"ancestor of it; recorded head is {heads[0]!r}"
+    )
