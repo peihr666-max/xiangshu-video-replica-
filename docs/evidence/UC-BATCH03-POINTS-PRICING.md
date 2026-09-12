@@ -48,3 +48,5 @@
 自检检查 API 权限与账号归属、SQL 参数化、账本守恒/并发/幂等、价格和 Token 历史冻结、充值未支付不入账、迁移与旧赠送兼容、任务跳转及返回。发现的赠送约束、报价读取耦合、软件/Token 来源和任务 ID 问题均已修复并有回归。达到本批 AUTOMATED_VERIFIED；PR 三门禁、合并及第四批仍待完成。最新 main 在本地门完成期间合入 #87；PR 合并候选由远程门禁验证，不将主分支差异逆向带入本批。
 
 PR #90 因 main@e8445c4（#87）追加文档产生冲突，1544580 已逐段合并双方证据并恢复可合并状态；Worker 无代码冲突。集成专项：secret/ruff/format/mypy 全通过，Worker/发布/积分 70 passed。三门禁将在更新 head 后验证完整合并候选。
+
+主干追加整合核验：2026-09-13 合入 origin/main@1b12737（日期筛选 #85、隔离联调文档 #89）；唯一任务账本冲突逐项保留真实记录。实际隔离 PG 的 admin_customer_routes / admin_profit_routes / customer_pricing 93 passed；前端 TypeScript、后端 ruff、mypy 134 模块通过。此前完整质量门仍对应原候选，最新合并提交的远程三门禁重新运行。
