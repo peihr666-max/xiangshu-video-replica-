@@ -711,13 +711,14 @@
 }
 .studio-hero {
   text-align: center;
-  margin: 24px 0 15px;
+  margin: 42px 0 28px;
 }
 .studio-hero h1 {
   font-size: 31px;
   font-weight: 600;
   letter-spacing: 0.015em;
   margin: 0;
+  line-height: 1.65;
 }
 .studio-hero h1 strong {
   color: #e9a82d;
@@ -765,7 +766,7 @@
 }
 .studio-start {
   width: min(1018px, 78%);
-  margin: 0 auto 22px;
+  margin: 0 auto 36px;
   text-align: center;
 }
 .studio-source-input {
@@ -784,14 +785,20 @@
   place-items: center;
   width: 36px;
   height: 36px;
+  padding: 0;
+  min-width: 36px;
   border: none;
   border-radius: 8px;
   background: none;
   color: #eec237;
   cursor: pointer;
 }
-.studio-upload-icon:hover {
+.studio-shell .studio-upload-icon:not(:disabled):hover {
   background: #262922;
+}
+.studio-upload-icon .studio-icon {
+  display: block;
+  margin: 0;
 }
 .studio-source-input input:not([type="file"]) {
   border: none;
@@ -816,7 +823,8 @@
 .studio-start .studio-start-helper {
   color: #999c93;
   font-size: 14px;
-  margin: 13px 0 0;
+  margin: 22px 0 0;
+  line-height: 1.8;
   text-align: center;
 }
 .studio-home-metrics {

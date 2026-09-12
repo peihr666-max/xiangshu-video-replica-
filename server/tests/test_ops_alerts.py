@@ -77,9 +77,10 @@ def test_double_online_uses_indexed_typed_event_timestamps() -> None:
     from scripts.check_ops_alerts import ALERT_QUERIES
 
     normalized = " ".join(ALERT_QUERIES["double_online"].lower().split())
-    assert "group by user_id, session_epoch" in normalized
+    assert "group by user_id, session_id, session_epoch" in normalized
     assert "latest_login.session_epoch > heartbeat.session_epoch" in normalized
     assert "login.event = 'login'" in normalized
+    assert "login.device_id = heartbeat.device_id" in normalized
     assert "heartbeat.occurred_at" in normalized
     assert "login.occurred_at" in normalized
     assert "created_at::timestamptz" not in normalized

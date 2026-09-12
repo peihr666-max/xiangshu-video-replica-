@@ -49,6 +49,9 @@ export default defineConfig({
     // CONTROL_PROXY_TOKEN_DIGEST 配对）。
     proxy: {
       "/api": {
+        // Forward the loopback development client's address to a trusted
+        // container proxy. Production continues to use its own nginx boundary.
+        xfwd: true,
         target:
           process.env.VITE_DEV_API_PROXY_TARGET ?? "http://127.0.0.1:8000",
         changeOrigin: true,

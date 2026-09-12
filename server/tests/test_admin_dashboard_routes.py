@@ -217,7 +217,7 @@ def test_dashboard_summary_counts(admin_headers: dict[str, str], client: TestCli
     assert todos["unconfigured_rates"] == 0
     assert todos["unknown_cost_records"] == 0
 
-    assert payload["device_slots"]["total"] == 2
+    assert payload["device_slots"]["total"] is None
     # 无会话租约 → 在线 0
     assert payload["today"]["online_devices"] == 0
 

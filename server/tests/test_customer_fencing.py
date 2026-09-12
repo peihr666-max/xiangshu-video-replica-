@@ -383,12 +383,7 @@ def test_verify_rejects_the_replaced_token_after_a_switch(client: TestClient) ->
     on every instance — the verifier answers SESSION_REPLACED even though the
     row still exists (a new epoch owns it)."""
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
-    second_token = _second_device_row(
-        user_id=customer["user_id"],
-        activation_code_id="code-a",
-        device_id="device-b",
-        slot_no=2,
-    )
+    second_token = customer["device_token"]
     switched = client.post(
         SWITCH_PATH,
         json={},
@@ -403,7 +398,7 @@ def test_verify_rejects_the_replaced_token_after_a_switch(client: TestClient) ->
     # The new token verifies fine and carries the bumped epoch.
     context = _verify(switched.json()["session_token"])
     assert context.session_epoch == 2
-    assert context.device_id == "device-b"
+    assert context.device_id == customer["device_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -495,12 +490,7 @@ def test_verify_enforces_the_expected_epoch(client: TestClient) -> None:
     """A request that observed epoch 1 and re-checks after a switch sees the
     epoch has moved — SESSION_REPLACED, no business write may follow."""
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
-    second_token = _second_device_row(
-        user_id=customer["user_id"],
-        activation_code_id="code-a",
-        device_id="device-b",
-        slot_no=2,
-    )
+    second_token = customer["device_token"]
     switched = client.post(
         SWITCH_PATH,
         json={},
@@ -814,12 +804,7 @@ def test_cluster_probe_detects_heartbeat_from_a_displaced_session_epoch(
 
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
     old_device_id, old_session_id, old_epoch, _ = _session_row()
-    second_token = _second_device_row(
-        user_id=customer["user_id"],
-        activation_code_id="code-a",
-        device_id="device-b",
-        slot_no=2,
-    )
+    second_token = customer["device_token"]
     with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
         conn.execute(
             "INSERT INTO customer_session_events "
@@ -1429,3 +1414,21 @@ def test_fenced_transaction_keeps_original_401_when_metrics_and_audit_fail(
     assert ei.value.detail["code"] == "SESSION_REPLACED"
     assert "secret-password" not in caplog.text
     assert "postgresql://" not in caplog.text
+
+
+def test_cluster_probe_accepts_parallel_device_heartbeats(client: TestClient) -> None:
+    from scripts import check_ops_alerts as alerts
+
+    customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
+    other = _second_device_row(
+        user_id=customer["user_id"], activation_code_id="code-a", device_id="device-b", slot_no=2
+    )
+    login = client.post(
+        SWITCH_PATH, json={}, headers={**_bearer(other), IDEMPOTENCY_KEY_HEADER: "parallel-probe"}
+    )
+    assert login.status_code == 201
+    for token in (customer["session_token"], login.json()["session_token"]):
+        assert client.post(HEARTBEAT_PATH, headers=_bearer(token)).status_code == 200
+    with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
+        observations = alerts.collect_observations(conn)
+    assert next(item for item in observations if item.name == "double_online").observed_count == 0

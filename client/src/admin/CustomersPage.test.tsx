@@ -157,7 +157,7 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         timeZone: "Asia/Shanghai",
       }),
       "活跃",
-      "0/2",
+      "0 台",
       "0 秒",
       "0 秒",
       "5 秒",

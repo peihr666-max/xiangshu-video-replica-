@@ -711,7 +711,7 @@ describe("V1.4 工作台新版首页布局", () => {
         name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/链接解析当前支持抖音视频/)).toHaveClass(
+    expect(screen.getByText(/支持抖音、小红书视频链接/)).toHaveClass(
       "studio-start-helper",
     );
     expect(
@@ -1547,13 +1547,13 @@ describe("V1.4 工作台上传与创作入口", () => {
     expect(createViralImportTask).not.toHaveBeenCalled();
   });
 
-  it("工作台明确说明支持范围、上传格式和解析超时", () => {
+  it("工作台明确说明支持抖音、小红书与上传格式，不展示解析耗时", () => {
     useStudio.mockReturnValue(workbench());
     render(<WorkbenchPage />);
 
     expect(
       screen.getByText(
-        "链接解析当前支持抖音视频；视频号及其他平台请上传 MP4/MOV 文件。解析最长约 60 秒。",
+        "支持抖音、小红书视频链接；其他平台请上传 MP4/MOV 文件。",
       ),
     ).toBeInTheDocument();
   });
@@ -1874,7 +1874,7 @@ describe("V1.4 个人中心通知偏好（C10b）", () => {
         }}
       />,
     );
-    expect(screen.getByText("0 秒")).toBeInTheDocument();
+    expect(screen.getByText("0 积分")).toBeInTheDocument();
 
     rerender(
       <ProfilePage

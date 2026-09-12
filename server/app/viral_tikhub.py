@@ -39,6 +39,7 @@ WECHAT_SEARCH_VIDEOS_PATH = "/api/v1/wechat_search/v2/fetch_search_videos"
 WECHAT_VIDEO_DETAIL_PATH = "/api/v1/wechat_channels/v2/fetch_video_detail"
 
 PLATFORM_DOUYIN = "douyin"
+PLATFORM_XIAOHONGSHU = "xiaohongshu"
 PLATFORM_WECHAT = "wechat_channels"
 
 MAX_TAGS = 6

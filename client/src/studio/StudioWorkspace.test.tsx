@@ -250,7 +250,7 @@ describe("V1.4 workspace integration", () => {
     onSessionExpired: vi.fn(),
   });
 
-  it("正式客户侧栏读取真实钱包，并把零余额明确显示为 0 秒", async () => {
+  it("正式客户侧栏读取真实钱包，并把零余额明确显示为 0 积分", async () => {
     api.customerGetWallet.mockResolvedValue({
       available_credits: 0,
       reserved_credits: 0,
@@ -273,14 +273,14 @@ describe("V1.4 workspace integration", () => {
     );
 
     expect(
-      await screen.findByRole("button", { name: "用户档案，积分 0 秒" }),
+      await screen.findByRole("button", { name: "用户档案，积分 0 积分" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("0 秒")).toHaveLength(2);
+    expect(screen.getAllByText("0 积分")).toHaveLength(2);
     expect(screen.getByText("客户甲")).toBeInTheDocument();
     expect(screen.getByText("customer-a")).toBeInTheDocument();
   });
 
-  it("正式内部工作区沿用已有钱包接口显示秒数", async () => {
+  it("正式内部工作区沿用已有钱包接口显示积分", async () => {
     api.getWallet.mockResolvedValue({
       available_credits: 21,
       reserved_credits: 0,
@@ -301,7 +301,7 @@ describe("V1.4 workspace integration", () => {
     );
 
     expect(
-      await screen.findByRole("button", { name: "用户档案，积分 21 秒" }),
+      await screen.findByRole("button", { name: "用户档案，积分 21 积分" }),
     ).toBeInTheDocument();
     expect(api.getWallet).toHaveBeenCalledOnce();
   });
@@ -355,7 +355,7 @@ describe("V1.4 workspace integration", () => {
     );
 
     expect(
-      await screen.findByRole("button", { name: "用户档案，积分 8 秒" }),
+      await screen.findByRole("button", { name: "用户档案，积分 8 积分" }),
     ).toBeInTheDocument();
     resolveOlder({
       available_credits: 99,
@@ -366,7 +366,7 @@ describe("V1.4 workspace integration", () => {
     });
     await act(async () => Promise.resolve());
     expect(
-      screen.getByRole("button", { name: "用户档案，积分 8 秒" }),
+      screen.getByRole("button", { name: "用户档案，积分 8 积分" }),
     ).toBeInTheDocument();
   });
 
@@ -401,7 +401,7 @@ describe("V1.4 workspace integration", () => {
     expect(screen.getAllByText("读取失败")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "重试余额查询" }));
     expect(
-      await screen.findByRole("button", { name: "用户档案，积分 12 秒" }),
+      await screen.findByRole("button", { name: "用户档案，积分 12 积分" }),
     ).toBeInTheDocument();
   });
 
@@ -495,7 +495,7 @@ describe("V1.4 workspace integration", () => {
     );
 
     const accountAvatar = screen
-      .getByRole("button", { name: "用户档案，积分 2680 秒" })
+      .getByRole("button", { name: "用户档案，积分 2680 积分" })
       .querySelector("img");
     const topAvatar = screen
       .getByRole("button", { name: "用户档案" })
@@ -601,7 +601,7 @@ describe("V1.4 workspace integration", () => {
     expect(screen.getByText("粘贴一条爆款乡墅视频链接，")).toBeInTheDocument();
     expect(screen.getByText("快速生成它的原创视频")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "用户档案，积分 2680 秒" }),
+      screen.getByRole("button", { name: "用户档案，积分 2680 积分" }),
     ).toBeInTheDocument();
     expect(live.loadStudioData).not.toHaveBeenCalled();
     expect(nav.queryByRole("button", { name: "系统设置" })).toBeNull();
