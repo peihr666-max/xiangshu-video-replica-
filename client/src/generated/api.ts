@@ -4707,6 +4707,8 @@ export interface components {
       /** Csrf Token */
       csrf_token?: string | null;
       actor: components["schemas"]["AdminActorInfo"];
+      /** Auth Method */
+      auth_method: string;
     };
     /**
      * AdminWriteContract
@@ -6343,6 +6345,8 @@ export interface components {
       /** Csrf Token */
       csrf_token: string;
       actor: components["schemas"]["AdminActorInfo"];
+      /** Auth Method */
+      auth_method: string;
     };
     /** ExtractSourceFramesRequest */
     ExtractSourceFramesRequest: {

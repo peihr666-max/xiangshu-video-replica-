@@ -28,6 +28,7 @@ const adminSession = {
   last_activity_at: "2026-08-27T16:00:00+00:00",
   csrf_token: CSRF_TOKEN_TEXT,
   actor: adminActor,
+  auth_method: "password",
 };
 
 function jsonResponse(payload: unknown, status = 200) {
@@ -352,6 +353,18 @@ async function signInWithPassword() {
 }
 
 describe("AdminApp", () => {
+  it("restores a recovery session to password setup without loading business pages", async () => {
+    const fetchMock = vi.fn(() =>
+      jsonResponse({ ...adminSession, auth_method: "exchange" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminApp />);
+    expect(await screen.findByLabelText("新管理员密码")).toBeVisible();
+    expect(
+      screen.queryByRole("heading", { name: "总览仪表盘" }),
+    ).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls).toHaveLength(1);
+  });
   beforeEach(() => {
     window.location.hash = "";
   });
