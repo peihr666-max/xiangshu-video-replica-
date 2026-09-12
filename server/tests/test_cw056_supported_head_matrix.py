@@ -57,7 +57,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260912T1910_xiaohongshu_link_import"
+HEAD_REVISION = "20260912T2200_customer_token_lifecycle"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -102,16 +102,16 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS: dict[str, int] = {
     "tables": 79,
-    "columns": 938,
+    "columns": 942,
     "identity_columns": 0,
     "sequences": 3,
     "jsonb_columns": 0,
     "timestamptz_columns": 20,
     "triggers": 18,
-    "partial_indexes": 24,
-    "unique_constraints": 26,
-    "check_constraints": 236,
-    "foreign_keys": 149,
+    "partial_indexes": 26,
+    "unique_constraints": 27,
+    "check_constraints": 238,
+    "foreign_keys": 151,
     "primary_keys": 79,
 }
 
@@ -220,7 +220,7 @@ HEAD_TABLE_NAMES: tuple[str, ...] = (
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
 # CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
-HEAD_SCHEMA_DIGEST = "30356748a0be0ac36a980d56f35e698a011aed2a863363faa9ab88a8a373ef92"
+HEAD_SCHEMA_DIGEST = "dc3c17b82a60c760c5388377af4250fea3950ba0fda2b99ad2bcd612271250cb"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

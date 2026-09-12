@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   enterCustomerAccount,
-  openCustomerDevices,
+  openCustomerCenter,
 } from "./workspace-navigation.mjs";
 
 test("three devices remain online and logout affects only the current device", async ({
@@ -23,18 +23,17 @@ test("three devices remain online and logout affects only the current device", a
       ).toHaveCount(0);
     }
     for (const page of pages) {
-      const devices = await openCustomerDevices(page);
-      await expect(devices.locator(".device-slot-card")).toHaveCount(3);
+      await openCustomerCenter(page);
     }
     await pages[1]
       .getByRole("button", { name: "退出登录", exact: true })
       .click();
     for (const page of [pages[0], pages[2]]) {
-      await page.getByRole("button", { name: "账号概览", exact: true }).click();
-      await page.getByRole("button", { name: "设备管理", exact: true }).click();
-      await expect(
-        page.getByRole("region", { name: "设备管理" }),
-      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "返回主界面", exact: true })
+        .click();
+      // A fresh authenticated summary read proves the other sessions survive.
+      await openCustomerCenter(page);
       await expect(page.getByText("会话已失效", { exact: true })).toHaveCount(
         0,
       );

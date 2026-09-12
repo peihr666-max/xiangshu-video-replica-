@@ -27,7 +27,12 @@ from app.permissions import (
     require_project_access,
     write_audit,
 )
-from app.storage import StorageAdapter, require_storage_match, storage_object_ref_from_uri
+from app.storage import (
+    StorageAdapter,
+    require_storage_match,
+    storage_object_ref_from_uri,
+    store_verified_upload,
+)
 
 ALLOWED_CONTENT_TYPES = {"video/mp4", "video/quicktime"}
 ALLOWED_SUFFIXES = {".mp4", ".mov"}
@@ -77,6 +82,9 @@ class PreparedUploadCompletion:
     storage_uri: str
     storage_key: str
     content_type: str | None
+    expected_size: int | None = None
+    expected_sha256: str | None = None
+    already_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -188,6 +196,7 @@ def create_upload_intent(
         storage_key,
         content_type=content_type,
         expires_in=UPLOAD_INTENT_EXPIRES_IN,
+        size_bytes=size_bytes,
     )
     storage_uri = f"{storage.provider}://{storage.bucket}/{intent.key}"
 
@@ -202,9 +211,10 @@ def create_upload_intent(
                 sha256,
                 size_bytes,
                 content_type,
-                created_by_user_id
+                created_by_user_id,
+                metadata_json
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 asset_id,
@@ -215,6 +225,15 @@ def create_upload_intent(
                 0,
                 content_type,
                 actor.id,
+                json.dumps(
+                    {
+                        "upload_status": "PENDING",
+                        "requested_size_bytes": size_bytes,
+                        "requested_sha256": sha256,
+                        "intent_expires_at": intent.expires_at.isoformat(),
+                        "upload_source_uri": storage_uri,
+                    }
+                ),
             ),
         )
 
@@ -224,7 +243,12 @@ def create_upload_intent(
         action="asset.upload_intent.create",
         entity_type="asset",
         entity_id=asset_id,
-        metadata={"project_id": project_id, "storage_key": intent.key},
+        metadata={
+            "project_id": project_id,
+            "storage_key": intent.key,
+            "upload_source_uri": storage_uri,
+            "intent_expires_at": intent.expires_at.isoformat(),
+        },
     )
     return CreatedUploadIntent(
         asset_id=asset_id,
@@ -280,6 +304,9 @@ def reuse_owned_completed_upload(
     asset_id = source_asset_id
     if str(source["project_id"]) != project_id:
         asset_id = str(uuid4())
+        reused_metadata = json.loads(str(source["metadata_json"]))
+        for field in ("upload_source_uri", "intent_expires_at", "cleanup_object_cursor"):
+            reused_metadata.pop(field, None)
         conn.execute(
             """
             INSERT INTO assets (
@@ -294,7 +321,7 @@ def reuse_owned_completed_upload(
                 str(source["sha256"]),
                 int(source["size_bytes"]),
                 None if source["content_type"] is None else str(source["content_type"]),
-                str(source["metadata_json"]),
+                json.dumps(reused_metadata, sort_keys=True),
                 actor.id,
             ),
         )
@@ -353,12 +380,26 @@ def prepare_upload_completion(
             "Only reference video uploads can be completed here.",
         )
     storage_uri = str(row["storage_uri"])
+    upload_metadata = json.loads(str(row["metadata_json"]))
+    if upload_metadata.get("upload_status") == "EXPIRED":
+        raise media_error(409, "UPLOAD_EXPIRED", "Upload expired; create a new upload intent.")
+    expected_size = upload_metadata.get("requested_size_bytes")
+    expected_sha256 = upload_metadata.get("requested_sha256")
+    if int(row["size_bytes"]) > 0 and str(row["sha256"]):
+        expected_size, expected_sha256 = int(row["size_bytes"]), str(row["sha256"])
     return PreparedUploadCompletion(
         asset_id=asset_id,
         project_id=str(row["project_id"]),
         storage_uri=storage_uri,
         storage_key=storage_key_from_uri(storage_uri),
         content_type=None if row["content_type"] is None else str(row["content_type"]),
+        expected_size=expected_size if isinstance(expected_size, int) else None,
+        expected_sha256=expected_sha256 if isinstance(expected_sha256, str) else None,
+        already_verified=(
+            "/verified-uploads/" in storage_uri
+            and int(row["size_bytes"]) > 0
+            and bool(row["sha256"])
+        ),
     )
 
 
@@ -385,13 +426,51 @@ def probe_upload_completion(
         content_type=content_type,
         size_bytes=stored.size,
     )
-    content = storage.get_object(storage_key)
+    if prepared.expected_size is not None and stored.size != prepared.expected_size:
+        raise media_error(
+            409, "UPLOAD_SIZE_MISMATCH", "Uploaded size differs from the upload intent."
+        )
+    # Read once with a hard byte budget, then probe/hash/persist exactly those bytes.
+    # HEAD metadata alone cannot protect against an overwrite between HEAD and GET.
+    chunks = storage.iter_object(storage_key)
+    content_buffer = bytearray()
+    try:
+        for chunk in chunks:
+            if len(content_buffer) + len(chunk) > MAX_UPLOAD_BYTES:
+                raise media_error(413, "MEDIA_TOO_LARGE", "Video upload must be 50MB or smaller.")
+            if len(content_buffer) + len(chunk) > stored.size:
+                raise media_error(
+                    409, "UPLOAD_SIZE_MISMATCH", "Object changed during verification."
+                )
+            content_buffer.extend(chunk)
+    finally:
+        close = getattr(chunks, "close", None)
+        if close is not None:
+            close()
+    if len(content_buffer) != stored.size:
+        raise media_error(409, "UPLOAD_SIZE_MISMATCH", "Object changed during verification.")
+    content = bytes(content_buffer)
+    content_sha256 = hashlib.sha256(content).hexdigest()
+    if prepared.expected_sha256 and content_sha256 != prepared.expected_sha256.lower():
+        raise media_error(409, "UPLOAD_HASH_MISMATCH", "Uploaded content differs from its digest.")
     metadata = probe_video(probe, content, filename=Path(storage_key).name)
     validate_duration(metadata.duration_seconds)
-    content_sha256 = hashlib.sha256(content).hexdigest()
+    # This key is never the subject of a client PUT grant. Concurrent completions
+    # with different bytes produce different keys; the database picks one below.
+    verified = (
+        stored
+        if prepared.already_verified
+        else store_verified_upload(
+            storage,
+            asset_id=prepared.asset_id,
+            source_key=storage_key,
+            content=content,
+            content_type=content_type,
+        )
+    )
     return ProbedUploadCompletion(
         prepared=prepared,
-        storage_uri=stored.uri,
+        storage_uri=verified.uri,
         sha256=content_sha256,
         size_bytes=stored.size,
         content_type=content_type,
@@ -419,6 +498,14 @@ def persist_upload_completion(
         asset_id=prepared.asset_id,
         action="asset.upload_complete",
     )
+    row = conn.execute(
+        "SELECT * FROM assets WHERE id = %s FOR UPDATE", (prepared.asset_id,)
+    ).fetchone()
+    if row is None:
+        raise media_error(409, "UPLOAD_STATE_CHANGED", "Upload was removed during verification.")
+    metadata = json.loads(str(row["metadata_json"]))
+    if metadata.get("upload_status") == "EXPIRED":
+        raise media_error(409, "UPLOAD_EXPIRED", "Upload expired during verification.")
     if (
         not is_reference_video_asset(row)
         or str(row["project_id"]) != prepared.project_id
@@ -436,6 +523,7 @@ def persist_upload_completion(
             """
             UPDATE assets
             SET
+                kind = 'reference_video',
                 storage_uri = %s,
                 sha256 = %s,
                 size_bytes = %s,
@@ -449,7 +537,11 @@ def persist_upload_completion(
                 probed.size_bytes,
                 probed.content_type,
                 json.dumps(
-                    {"duration_seconds": probed.metadata.duration_seconds},
+                    {
+                        **metadata,
+                        "duration_seconds": probed.metadata.duration_seconds,
+                        "upload_status": "COMPLETE",
+                    },
                     ensure_ascii=True,
                     sort_keys=True,
                 ),

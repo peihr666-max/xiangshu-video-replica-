@@ -65,6 +65,18 @@ function stubCustomerWorkspaceFetch() {
     if (url.endsWith("/health")) {
       return jsonResponse({ status: "ok", service: "video-replica-api" });
     }
+    if (url.endsWith("/api/customer/center-summary"))
+      return jsonResponse({
+        user_id: "user-1",
+        available_credits: 0,
+        reserved_credits: 0,
+        total_consumed_credits: 0,
+        active_tokens: 0,
+      });
+    if (url.endsWith("/api/customer/api-keys"))
+      return jsonResponse({ items: [], total: 0 });
+    if (url.endsWith("/api/customer/api-keys/default"))
+      return jsonResponse({ plaintext: null }, 201);
     return jsonResponse([]);
   });
 }
@@ -488,8 +500,7 @@ describe("RootApp", () => {
     render(<RootApp path="/customer" />);
     await loginThroughAccountForm();
     fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
-    await screen.findByRole("heading", { name: "用户档案" });
-    fireEvent.click(screen.getByRole("tab", { name: "设备管理" }));
+    await screen.findByRole("heading", { name: "用户中心" });
     fireEvent.click(await screen.findByRole("button", { name: "退出登录" }));
 
     expect(
@@ -552,8 +563,7 @@ describe("RootApp", () => {
     render(<RootApp path="/customer" />);
     await loginThroughAccountForm();
     fireEvent.click(await screen.findByRole("button", { name: /^用户档案$/ }));
-    await screen.findByRole("heading", { name: "用户档案" });
-    fireEvent.click(screen.getByRole("tab", { name: "设备管理" }));
+    await screen.findByRole("heading", { name: "用户中心" });
     fireEvent.click(await screen.findByRole("button", { name: "退出登录" }));
     await loginThroughAccountForm();
     await waitFor(() => {

@@ -1168,11 +1168,17 @@ Lore 提交 SHA：5e6373d（PR #65 feat/customer-wallet）
 
 
 
+## FIX-W20-20260912 / W20
+
+AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2858 passed、1 原有 TLS 场景跳过；前端 1344 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W20-20260912.md)。
+
 ## FIX-TESTBASE-20260912 / 独立前置：日期敏感测试夹具
 
 独立评审 PASS；完整本地静态门通过（前端 1344 passed、TypeScript、Biome、Tauri、ruff、format、mypy）；服务端四个独占 PG16 分片合计 2845 passed、1 原有 TLS 场景跳过，覆盖检查通过、退出码均为 0。此前中断的慢速分片保留日志，不记作通过。最终 PG 使用临时内存盘，fsync 和 synchronous_commit 保持默认开启；未执行生产或真实服务验收。 [任务证据](evidence/FIX-TESTBASE-20260912.md)。
 
+## FIX-W18-20260912 / W18
 
+AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2875 passed、1 原有 TLS 场景跳过；前端 1344 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W18-20260912.md)。
 
 ## FIX-WALLETSTATUS-20260912 / 钱包提示竞态前置修复
 
@@ -1185,3 +1191,7 @@ AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门
 ## FIX-W13-20260912 / W13
 
 AUTOMATED_VERIFIED（本地）；独立只读评审 PASS；完整本地质量门通过：服务端 2881 passed、1 原有 TLS 场景跳过；前端 1347 passed；secret、Biome、TypeScript、e2e lint、Tauri fmt/check、ruff、format、mypy 均通过。远程 CI、PR 与合并待完成；人工联合调试全部留第二部分。[任务证据](evidence/FIX-W13-20260912.md)。
+
+## UC-BATCH-02（UC-06—10）
+
+第一批前置 PR #79 已合并 @37a2633；第二批个人中心前后端联调及 38 项后端专项通过；最终集成 PG 2906 passed/1 原有跳过、真实浏览器 4 passed，静态门及评审恢复增量见证据。用户去重反馈已纳入五页签及无设备展示。[完整证据](evidence/UC-BATCH02-PERSONAL-CENTER.md)。后续积分计价/来源归属/管理员加分尚未验收。

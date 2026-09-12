@@ -2954,6 +2954,12 @@ describe("V1.4 内容与运营页面", () => {
       returnTo: "materials",
     });
 
+    // Upload completion selects the asset, then an effect initializes its
+    // controlled fields. Wait for the editable form, not just the API call,
+    // before entering a new name (CI may render the heading first).
+    await waitFor(() =>
+      expect(screen.getByLabelText("素材名称")).toHaveValue("庭院.png"),
+    );
     fireEvent.change(screen.getByLabelText("素材名称"), {
       target: { value: "新庭院首帧" },
     });

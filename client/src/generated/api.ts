@@ -2369,11 +2369,42 @@ export interface paths {
      */
     get: operations["list_customer_api_keys_api_customer_api_keys_get"];
     put?: never;
-    /**
-     * Create Customer Api Key
-     * @description Mint one API Key under the session fence; return its plaintext once.
-     */
+    /** Create Customer Api Key */
     post: operations["create_customer_api_key_api_customer_api_keys_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/api-keys/default": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Initialize Default Api Key */
+    post: operations["initialize_default_api_key_api_customer_api_keys_default_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/api-keys/{key_id}/rotate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Rotate Customer Api Key */
+    post: operations["rotate_customer_api_key_api_customer_api_keys__key_id__rotate_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2919,6 +2950,23 @@ export interface paths {
     };
     /** Read Recharge Order Status */
     get: operations["read_recharge_order_status_api_recharge_orders__order_no__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/center-summary": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Customer Center Summary */
+    get: operations["read_customer_center_summary_api_customer_center_summary_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -4718,7 +4766,7 @@ export interface components {
     };
     /**
      * ApiKeyRecordResponse
-     * @description Key metadata for the management view — never the plaintext or digest.
+     * @description Public metadata for one logical Token; never its digest.
      */
     ApiKeyRecordResponse: {
       /** Id */
@@ -4735,6 +4783,26 @@ export interface components {
       last_used_at: string | null;
       /** Revoked At */
       revoked_at: string | null;
+      /**
+       * Token Group Id
+       * @default
+       */
+      token_group_id: string;
+      /**
+       * Credential Version
+       * @default 1
+       */
+      credential_version: number;
+      /**
+       * Is Default
+       * @default false
+       */
+      is_default: boolean;
+      /**
+       * Total Consumed Credits
+       * @default 0
+       */
+      total_consumed_credits: number;
     };
     /** ApplySavedPromptRequest */
     ApplySavedPromptRequest: {
@@ -5806,11 +5874,9 @@ export interface components {
     };
     /**
      * CreatedApiKeyResponse
-     * @description The one and only response that carries the plaintext key (§2.5 B).
+     * @description Secret only for newly created credentials or short encrypted retry recovery.
      */
     CreatedApiKeyResponse: {
-      /** Plaintext */
-      plaintext: string;
       /** Id */
       id: string;
       /** Key Prefix */
@@ -5825,6 +5891,28 @@ export interface components {
       last_used_at: string | null;
       /** Revoked At */
       revoked_at: string | null;
+      /**
+       * Token Group Id
+       * @default
+       */
+      token_group_id: string;
+      /**
+       * Credential Version
+       * @default 1
+       */
+      credential_version: number;
+      /**
+       * Is Default
+       * @default false
+       */
+      is_default: boolean;
+      /**
+       * Total Consumed Credits
+       * @default 0
+       */
+      total_consumed_credits: number;
+      /** Plaintext */
+      plaintext: string | null;
     };
     /** CreatedIdentityUploadIntent */
     CreatedIdentityUploadIntent: {
@@ -5877,6 +5965,19 @@ export interface components {
       session_epoch: number;
       /** Session Lease Expires At */
       session_lease_expires_at: string;
+    };
+    /** CustomerCenterSummaryResponse */
+    CustomerCenterSummaryResponse: {
+      /** User Id */
+      user_id: string;
+      /** Available Credits */
+      available_credits: number;
+      /** Reserved Credits */
+      reserved_credits: number;
+      /** Total Consumed Credits */
+      total_consumed_credits: number;
+      /** Active Tokens */
+      active_tokens: number;
     };
     /** CustomerPasswordLoginRequest */
     CustomerPasswordLoginRequest: {
@@ -13732,6 +13833,57 @@ export interface operations {
       };
     };
   };
+  initialize_default_api_key_api_customer_api_keys_default_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CreatedApiKeyResponse"];
+        };
+      };
+    };
+  };
+  rotate_customer_api_key_api_customer_api_keys__key_id__rotate_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        key_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CreatedApiKeyResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   revoke_customer_api_key_api_customer_api_keys__key_id__delete: {
     parameters: {
       query?: never;
@@ -14708,6 +14860,26 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_customer_center_summary_api_customer_center_summary_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CustomerCenterSummaryResponse"];
         };
       };
     };

@@ -1981,12 +1981,7 @@ function publishPanelError(error: unknown) {
 }
 
 async function fetchPublishAccounts(): Promise<StudioPublishAccount[]> {
-  try {
-    const accounts = await loadPublishAccounts();
-    return accounts ?? [];
-  } catch {
-    return [];
-  }
+  return (await loadPublishAccounts()) ?? [];
 }
 
 function publishAccountStatusText(account: StudioPublishAccount) {
@@ -2007,12 +2002,17 @@ function publishAccountVerifiedText(account: StudioPublishAccount) {
 function PublishAccountsSummary() {
   const { review } = useStudio();
   const [accounts, setAccounts] = useState<StudioPublishAccount[]>([]);
+  const [loadError, setLoadError] = useState("");
   useEffect(() => {
     if (review) return;
     let active = true;
-    void fetchPublishAccounts().then((next) => {
-      if (active) setAccounts(next);
-    });
+    void fetchPublishAccounts()
+      .then((next) => {
+        if (active) setAccounts(next);
+      })
+      .catch((error) => {
+        if (active) setLoadError(publishPanelError(error));
+      });
     return () => {
       active = false;
     };
@@ -2033,6 +2033,7 @@ function PublishAccountsSummary() {
       </>
     );
   }
+  if (loadError) return <p role="alert">{loadError}</p>;
   if (!accounts.length) {
     return <p>尚未连接发布账号，可在下方“发布账号”页签连接。</p>;
   }
@@ -2057,12 +2058,14 @@ function PublishAccountsSummary() {
   );
 }
 
-function PublishAccountsPanel({
+export function PublishAccountsPanel({
   notify,
 }: {
   notify: (message: string) => void;
 }) {
   const [accounts, setAccounts] = useState<StudioPublishAccount[]>([]);
+  const [loadError, setLoadError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [platform, setPlatform] =
     useState<StudioPublishAccount["platform"]>("douyin");
   const [displayName, setDisplayName] = useState("");
@@ -2078,9 +2081,19 @@ function PublishAccountsPanel({
   useEffect(() => {
     mounted.current = true;
     const seq = ++requestSeq.current;
-    void fetchPublishAccounts().then((next) => {
-      if (mounted.current && seq === requestSeq.current) setAccounts(next);
-    });
+    setLoading(true);
+    setLoadError("");
+    void fetchPublishAccounts()
+      .then((next) => {
+        if (mounted.current && seq === requestSeq.current) setAccounts(next);
+      })
+      .catch((error) => {
+        if (mounted.current && seq === requestSeq.current)
+          setLoadError(publishPanelError(error));
+      })
+      .finally(() => {
+        if (mounted.current && seq === requestSeq.current) setLoading(false);
+      });
     return () => {
       mounted.current = false;
       if (reloadTimer.current !== null) {
@@ -2092,9 +2105,19 @@ function PublishAccountsPanel({
 
   const reload = () => {
     const seq = ++requestSeq.current;
-    void fetchPublishAccounts().then((next) => {
-      if (mounted.current && seq === requestSeq.current) setAccounts(next);
-    });
+    setLoading(true);
+    setLoadError("");
+    void fetchPublishAccounts()
+      .then((next) => {
+        if (mounted.current && seq === requestSeq.current) setAccounts(next);
+      })
+      .catch((error) => {
+        if (mounted.current && seq === requestSeq.current)
+          setLoadError(publishPanelError(error));
+      })
+      .finally(() => {
+        if (mounted.current && seq === requestSeq.current) setLoading(false);
+      });
   };
 
   const connect = async () => {
@@ -2173,6 +2196,15 @@ function PublishAccountsPanel({
   return (
     <Panel>
       <h2>发布账号管理</h2>
+      {loadError && (
+        <p role="alert">
+          {loadError}{" "}
+          <button type="button" onClick={reload}>
+            重新加载
+          </button>
+        </p>
+      )}
+      {loading && <p role="status">正在读取发布账号…</p>}
       <Hint>这里管理平台账号，人物 IP 与作品发布在各自模块中管理。</Hint>
       <Hint>
         在电脑浏览器登录平台创作者后台，把整段 Cookie
