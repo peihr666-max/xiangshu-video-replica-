@@ -19,3 +19,4 @@ server/tests/test_queue_load_10k.py
 server/tests/test_security_contracts.py
 server/tests/test_storage_cross_instance.py
 server/tests/test_wechat_native_client.py
+server/tests/test_viral_link_media.py

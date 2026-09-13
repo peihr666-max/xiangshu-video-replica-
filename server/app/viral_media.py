@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import ipaddress
+import json
 import logging
 import socket
 import ssl
@@ -27,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Protocol
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from app.storage import DownloadIntent, StoredObject
 from app.viral_decrypt import decrypt_head, is_encrypted_mp4
@@ -48,6 +49,10 @@ _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 # 单文件下载上限：短视频/封面远超此值的必然是异常响应，防止把响应体整读进
 # 内存时被恶意或异常源站打爆 API 进程。
 _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_PUBLIC_DNS_HOST = "cloudflare-dns.com"
+_PUBLIC_DNS_IPS = ("1.1.1.1", "1.0.0.1")
+_MAX_DNS_RESPONSE_BYTES = 16 * 1024
 
 logger = logging.getLogger(__name__)
 _MEDIA_LOCKS = tuple(threading.Lock() for _ in range(32))
@@ -55,6 +60,10 @@ _MEDIA_LOCKS = tuple(threading.Lock() for _ in range(32))
 
 class ViralMediaError(ViralSourceError):
     """爆款媒体获取失败（文案中性，不含供应商名称）。"""
+
+
+class ViralMediaDNSUnavailable(ViralMediaError):
+    """Network resolution failed before any media request was sent."""
 
 
 @dataclass(frozen=True)
@@ -232,6 +241,57 @@ def _pinned_connection(
     return _PinnedHTTPConnection(hostname, port, connect_ip, timeout)
 
 
+def _resolve_fake_ip_domain(hostname: str) -> list[str]:
+    """Resolve proxy synthetic DNS via authenticated DoH, without the media URL.
+
+    Only called for non-literal hosts whose system answers are all 198.18/15.
+    Resolver connections use fixed public IPs, original SNI and certificate checks.
+    No redirects or system DNS are used for the resolver itself.
+    """
+    query = urlencode({"name": hostname, "type": "A"})
+    for resolver_ip in _PUBLIC_DNS_IPS:
+        connection = _PinnedHTTPSConnection(_PUBLIC_DNS_HOST, 443, resolver_ip, 5.0)
+        try:
+            connection.request(
+                "GET",
+                f"/dns-query?{query}",
+                headers={"Host": _PUBLIC_DNS_HOST, "Accept": "application/dns-json"},
+            )
+            response = connection.getresponse()
+            if response.status != 200:
+                continue
+            body = response.read(_MAX_DNS_RESPONSE_BYTES + 1)
+            if len(body) > _MAX_DNS_RESPONSE_BYTES:
+                continue
+            payload = json.loads(body)
+            if not isinstance(payload, dict) or payload.get("Status") != 0 or payload.get("TC"):
+                continue
+            questions = payload.get("Question")
+            if not isinstance(questions, list) or not any(
+                isinstance(question, dict)
+                and question.get("type") == 1
+                and str(question.get("name", "")).lower().rstrip(".")
+                == hostname.lower().rstrip(".")
+                for question in questions
+            ):
+                continue
+            answers = payload.get("Answer")
+            if not isinstance(answers, list):
+                continue
+            ips = [
+                str(ipaddress.IPv4Address(answer["data"]))
+                for answer in answers
+                if isinstance(answer, dict) and answer.get("type") == 1 and "data" in answer
+            ]
+            if ips:
+                return ips
+        except (OSError, http.client.HTTPException, ValueError, TypeError):
+            continue
+        finally:
+            connection.close()
+    raise ViralMediaDNSUnavailable("媒体域名无法解析到公网地址，请检查代理或 DNS 设置。")
+
+
 def _resolve_public_http_url(url: str) -> tuple[str, str, int, str]:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"}:
@@ -254,12 +314,21 @@ def _resolve_public_http_url(url: str) -> tuple[str, str, int, str]:
         raise ViralMediaError("媒体地址无法解析") from exc
     if not addresses:
         raise ViralMediaError("媒体地址无法解析")
+    resolved_ips = [ipaddress.ip_address(str(address[4][0])) for address in addresses]
+    try:
+        ipaddress.ip_address(hostname)
+        literal_host = True
+    except ValueError:
+        literal_host = False
+    if not literal_host and all(ip in _FAKE_IP_NETWORK for ip in resolved_ips):
+        resolved_ips = [ipaddress.ip_address(value) for value in _resolve_fake_ip_domain(hostname)]
+    if not resolved_ips:
+        raise ViralMediaDNSUnavailable("媒体域名无法解析到公网地址，请检查代理或 DNS 设置。")
     public_ips: list[str] = []
-    for address in addresses:
-        ip_text = str(address[4][0])
-        ip = ipaddress.ip_address(ip_text)
+    for ip in resolved_ips:
         if not ip.is_global:
             raise ViralMediaError("媒体地址必须指向公网主机")
+        ip_text = str(ip)
         if ip_text not in public_ips:
             public_ips.append(ip_text)
     return parsed.scheme, hostname, port, public_ips[0]
@@ -360,6 +429,10 @@ class ViralMediaPipeline:
                     self._validator(self._storage.get_object(key), kind, existing.content_type)
                 return self._result(key, existing, kind, content_type, cache_hit=True)
             content = self._download_content(video, kind)
+            if kind == "audio" and len(content) >= 12 and content[4:8] == b"ftyp":
+                # Keep the established cache key, but retain the real container
+                # type so imports/transcription do not label M4A bytes as MP3.
+                content_type = "audio/mp4"
             if self._validator is not None:
                 self._validator(
                     content,

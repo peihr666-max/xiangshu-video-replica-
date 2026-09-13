@@ -468,9 +468,10 @@ export function WorkbenchPage() {
         if (
           requestError.code !== "VIRAL_LINK_IN_PROGRESS" &&
           requestError.code !== "VIRAL_LINK_SUBMISSION_UNCERTAIN" &&
-          requestError.status !== undefined &&
-          requestError.status >= 400 &&
-          requestError.status < 500
+          (requestError.code === "VIRAL_LINK_MEDIA_DNS_UNAVAILABLE" ||
+            (requestError.status !== undefined &&
+              requestError.status >= 400 &&
+              requestError.status < 500))
         ) {
           clearViralImportIdempotencyKey(
             requestAccount,

@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## FIX-VIDEO-LINK-20260913
+
+FIX-VIDEO-LINK-20260913：链接媒体预检修复、代码自检和本地质量检查已完成，进入 PR 三门禁。一次授权解析诊断已使用，后续复验复用缓存；不启动转写或视频生成。见[证据](evidence/FIX-VIDEO-LINK-20260913.md)。 本地前端1400通过；后端全量1969通过/1临时口令误报/1原有skip，受影响文件更换合成口令后84通过。
+
 ## ADMIN-R01-20260913 — 管理请求与会话契约
 
 [独立证据](evidence/ADMIN-R01-20260913.md)：撤销 CSRF、401 登录过期与字符串业务错误；RED 5 failed，迟到 401 自检再复现 2 failed；最终管理专项 186、完整前端 1399、后端 1952 passed / 1 原有 TLS 环境 skip。本地完整门禁通过，独立评审和 PR 三门禁待完成。
