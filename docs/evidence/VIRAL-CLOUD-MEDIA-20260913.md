@@ -12,7 +12,7 @@
 
 新增计量、自动扣分、COMMIT 回执丢失、改写/ASR 已知成本和钱包积分单位均有先红后绿回归。最终相关后端专项 104 项通过（test_usage_billing、test_cw043_viral_import_pg、test_cw030_worker_pg_matrix、test_asr_provider），管理及钱包页面 17 项通过。专项集合与早期测试重叠，不相加。使用真实独占 PostgreSQL 和替身 HTTP，没有真实客户扣款或供应商调用。
 
-Ruff/format 通过；空库 schema 实测并同步 manifest 与 CW056 常量：90 表、1064 列，digest `0a6489a4af081348915575cb7c3ef76a11e0199f3f5714137226ed2f6526d419`。两位独立代理终审无遗留 P1/P2。最终完整 Linux 门禁、PR 及合并尚待完成，日志归档在仓库外 outputs/viral-cloud-media-20260913。
+完整 check:static 已通过：96 个前端文件 / 1418 项测试、secret、e2e lint、Rust fmt/check、Ruff/format 和 mypy 146 个源文件；空库 schema 实测并同步 manifest 与 CW056 常量：90 表、1064 列，digest `0a6489a4af081348915575cb7c3ef76a11e0199f3f5714137226ed2f6526d419`。两位独立代理终审无遗留 P1/P2。唯一一轮服务端全量 PostgreSQL 验收运行中，PR 及合并尚待完成，日志归档在仓库外 outputs/viral-cloud-media-20260913。
 
 ## 最终业务流程
 
@@ -66,7 +66,7 @@ Ruff/format 通过；空库 schema 实测并同步 manifest 与 CW056 常量：9
 
 ## 验证记录
 
-早期下载/上传接口缺失的红测 12 项；完成瞬间重复认领另有确定性红测。共享/退款/采集扩展 196 项通过，进度提交失败回归 7 项通过。新增人工精选、删除和每日/每周需求后，真实 PG 专项 75 项通过，前端管理页/关键词/首页加载 55 项通过；上述集合重叠，不相加。mypy 145 文件、TypeScript 检查通过。完整质量门、CI 结果待回填。
+早期下载/上传接口缺失的红测 12 项；完成瞬间重复认领另有确定性红测。共享/退款/采集扩展 196 项通过，进度提交失败回归 7 项通过。新增人工精选、删除和每日/每周需求后，真实 PG 专项 75 项通过，前端管理页/关键词/首页加载 55 项通过；上述集合重叠，不相加。mypy 145 文件、TypeScript 检查通过。集成最新 main ce798f1 后，完整前端首次发现 3 个旧 fixture 断言不符：两条首页 source 缺少精选标记，一条钱包入口仍断言秒单位。只修正 fixture 与新积分口径，相关 91 项通过，后续完整静态门 1418 项全绿；未放宽首页生产过滤。服务端全量与 CI 结果待回填。
 
 ## §14 任务记录
 

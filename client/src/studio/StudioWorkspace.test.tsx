@@ -1895,6 +1895,7 @@ describe("V1.4 workspace integration", () => {
           ...createReviewData().videos[0],
           id: "fresh-viral",
           title: "新导入的爆款",
+          homepageFeatured: true,
           platformKey: "douyin" as const,
           nativeId: "fresh-native",
         };
