@@ -70,3 +70,7 @@
 未测试项：真实商户/付费供应商/生产部署、手机视口与桌面存量凭据迁移实测。
 提交和合并证据：本分支关联 PR 最终 head、三门禁记录和 squash SHA；本地验收日志与报告同步归档至项目上级第四批验收证据。
 两个 Token 竞争专项另按清单精确复验：100 积分、每个预扣 80，只有一个成功，钱包剩余 20/冻结 80（1 passed，1.69 秒）。仅调整测试价格输入，未改计费实现；此用例已包含在全量计数中，不额外累计。
+
+## PR #92 首轮 CI 修复
+
+PR https://github.com/peihr666-max/xiangshu-video-replica-/pull/92，首轮 head 7840be5、run 34729018205：静态检查通过，migration guard 发现新增迁移的 manifest SHA 记录了本地 CRLF 字节，而 Git blob/CI 检出为 LF。仅将该未合并新迁移的本地换行规范为 LF 后重新 --record；Git 迁移文件无差异，已发布 revision 及其指纹均不改。manifest 唯一变更为新增 revision 的 SHA 02cd722dae061e59cf0cbad938c32944d26632c8dd31ecb1a2014dcc8bb38649。修复后 --check 通过，最终 CI 以更新 head 的三门禁为准。

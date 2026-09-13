@@ -472,7 +472,7 @@
     },
     "20260913T0630_account_credit_operations": {
       "file": "versions/20260913T0630_account_credit_operations.py",
-      "sha256": "07ede05c1682eca67f6e9d52b60fa8d68ddbca6f59d0bce3958fe88fb2895da2"
+      "sha256": "02cd722dae061e59cf0cbad938c32944d26632c8dd31ecb1a2014dcc8bb38649"
     }
   },
   "task": "MIGRATION-GUARD-20260912"
