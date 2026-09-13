@@ -713,13 +713,13 @@ function CustomerDetailView({
       </section>
 
       <AccountCreditPanel
-        key={`${customer.user_id}:${customer.available_credits}`}
+        key={`account:${customer.user_id}:${customer.available_credits}`}
         onChanged={onChanged}
         userId={customer.user_id}
         readOnly={readOnly}
       />
       <Customer360Data
-        key={`${customer.user_id}:${customer.available_credits}`}
+        key={`ledger:${customer.user_id}:${customer.available_credits}`}
         userId={customer.user_id}
       />
       <div className="customer-detail-settings-grid">

@@ -859,8 +859,8 @@ def list_customers(
     bounded_offset = max(0, offset)
 
     clauses: list[str] = [
-        "u.role = 'customer' AND (aca.code_id IS NOT NULL OR "
-        "u.registration_source IN ('self_register', 'activation_code'))"
+        "(aca.code_id IS NOT NULL OR (u.role = 'customer' AND "
+        "u.registration_source IN ('self_register', 'activation_code')))"
     ]
     params: list[object] = []
     if username.strip():
@@ -1024,8 +1024,8 @@ def export_customers_csv(
                     "Too many ledger exports; retry after the cooldown.",
                 )
             clauses: list[str] = [
-                "u.role = 'customer' AND (aca.code_id IS NOT NULL OR "
-                "u.registration_source IN ('self_register', 'activation_code'))"
+                "(aca.code_id IS NOT NULL OR (u.role = 'customer' AND "
+                "u.registration_source IN ('self_register', 'activation_code')))"
             ]
             params: list[object] = []
             if username.strip():

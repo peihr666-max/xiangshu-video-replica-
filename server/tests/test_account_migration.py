@@ -165,6 +165,10 @@ def test_legacy_balance_policy_preview_and_once_only_conversion(
     )
     wallet = client.get("/api/customer/wallet", headers=customer)
     assert wallet.json()["available_credits"] == expected
+    admin_ledger = client.get(f"/api/control/customers/{uid}/wallet-transactions")
+    assert admin_ledger.status_code == 200, admin_ledger.text
+    if expected != 100:
+        assert any(row["type"] == "CONVERSION" for row in admin_ledger.json()["items"])
     with psycopg.connect(route_state) as conn:
         assert (
             conn.execute(

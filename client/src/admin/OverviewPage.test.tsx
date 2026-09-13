@@ -90,7 +90,7 @@ describe("OverviewPage", () => {
     expect(onNavigate).toHaveBeenCalledWith("issueCodes");
     fireEvent.click(screen.getByRole("button", { name: "后台加款" }));
     expect(onNavigate).toHaveBeenCalledWith("customerAdjustments");
-    fireEvent.click(screen.getByRole("button", { name: "发放免费秒数" }));
+    fireEvent.click(screen.getByRole("button", { name: "发放赠送积分" }));
     expect(onNavigate).toHaveBeenCalledWith("customerAdjustments");
     fireEvent.click(screen.getByRole("button", { name: "成本核对" }));
     expect(onNavigate).toHaveBeenCalledWith("costDetails");

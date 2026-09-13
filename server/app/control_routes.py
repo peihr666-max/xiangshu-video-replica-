@@ -55,7 +55,7 @@ CUSTOMER_PRODUCTION_ENV = "VIDEO_REPLICA_CUSTOMER_PRODUCTION"
 _TRUTHY = {"1", "true", "yes", "on"}
 
 OrderStatus = Literal["PENDING", "PAID", "FAILED", "CLOSED"]
-TransactionType = Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE"]
+TransactionType = Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE", "CONVERSION"]
 GenerationRecordType = Literal[
     "VIDEO",
     "ORAL_VIDEO",

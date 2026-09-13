@@ -310,7 +310,7 @@ export interface AdminWalletTransaction {
   id: string;
   user_id: string;
   username: string;
-  type: "CHARGE" | "RESERVE" | "SETTLE" | "RELEASE";
+  type: "CHARGE" | "RESERVE" | "SETTLE" | "RELEASE" | "CONVERSION";
   available_delta: number;
   reserved_delta: number;
   available_balance_after: number | null;
@@ -351,7 +351,9 @@ export async function listAdminRechargeOrders(
   if (options.createdFrom) params.set("created_from", options.createdFrom);
   if (options.createdTo) params.set("created_to", options.createdTo);
   return adminRead(
-    `/api/control/recharge-orders?${params}`,
+    options.userId
+      ? `/api/control/customers/${encodeURIComponent(options.userId)}/recharge-orders?${params}`
+      : `/api/control/recharge-orders?${params}`,
     "读取充值订单失败",
   );
 }
@@ -377,7 +379,9 @@ export async function listAdminWalletTransactions(
   if (options.createdFrom) params.set("created_from", options.createdFrom);
   if (options.createdTo) params.set("created_to", options.createdTo);
   return adminRead(
-    `/api/control/wallet-transactions?${params}`,
+    options.userId
+      ? `/api/control/customers/${encodeURIComponent(options.userId)}/wallet-transactions?${params}`
+      : `/api/control/wallet-transactions?${params}`,
     "读取额度流水失败",
   );
 }

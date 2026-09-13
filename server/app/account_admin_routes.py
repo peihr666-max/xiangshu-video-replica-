@@ -6,7 +6,7 @@ from typing import cast
 from uuid import uuid4
 
 import psycopg
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from app.admin_auth_routes import AdminReader, AdminWriter
@@ -21,10 +21,16 @@ from app.auth import CurrentUser, Role
 from app.control_routes import (
     BillingSettingsSnapshot,
     BillingSettingsUpdate,
+    ControlRechargeOrderPage,
+    ControlWalletTransactionPage,
     MaskedZPaySettings,
+    OrderStatus,
+    TransactionType,
     ZPaySettingsUpdate,
     _update_control_billing_settings_business,
     _update_control_zpay_settings_business,
+    list_recharge_orders,
+    list_wallet_transactions,
 )
 from app.db_pg import pg_transaction
 from app.db_portable import BusinessConnection
@@ -160,7 +166,8 @@ def account_summary(user_id: str, _actor: AdminReader, response: Response) -> Ac
     with pg_transaction() as conn:
         wallet = conn.execute(
             "SELECT w.available_credits, w.reserved_credits FROM wallets w JOIN users u "
-            "ON u.id = w.user_id WHERE u.id = %s AND u.role = 'customer'",
+            "ON u.id = w.user_id WHERE u.id = %s AND (u.role = 'customer' OR EXISTS "
+            "(SELECT 1 FROM activation_code_activations a WHERE a.user_id = u.id))",
             (user_id,),
         ).fetchone()
         if wallet is None:
@@ -252,3 +259,69 @@ def save_zpay(
         ),
         success_status=200,
     )
+
+
+@router.get("/customers/{user_id}/recharge-orders", response_model=ControlRechargeOrderPage)
+def account_recharge_orders(
+    user_id: str,
+    actor: AdminReader,
+    response: Response,
+    status: OrderStatus | None = None,
+    username: str | None = None,
+    channel: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> ControlRechargeOrderPage:
+    response.headers["Cache-Control"] = "no-store"
+    with pg_transaction() as raw:
+        return list_recharge_orders(
+            conn=BusinessConnection.postgres(raw),
+            _actor=CurrentUser(
+                id=actor.user_id,
+                username=actor.username,
+                display_name=actor.display_name,
+                role=cast(Role, actor.role),
+            ),
+            user_id=user_id,
+            status=status,
+            username=username,
+            channel=channel,
+            created_from=created_from,
+            created_to=created_to,
+            limit=limit,
+            offset=offset,
+        )
+
+
+@router.get("/customers/{user_id}/wallet-transactions", response_model=ControlWalletTransactionPage)
+def account_wallet_transactions(
+    user_id: str,
+    actor: AdminReader,
+    response: Response,
+    type: TransactionType | None = None,
+    username: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> ControlWalletTransactionPage:
+    response.headers["Cache-Control"] = "no-store"
+    with pg_transaction() as raw:
+        return list_wallet_transactions(
+            conn=BusinessConnection.postgres(raw),
+            _actor=CurrentUser(
+                id=actor.user_id,
+                username=actor.username,
+                display_name=actor.display_name,
+                role=cast(Role, actor.role),
+            ),
+            user_id=user_id,
+            type=type,
+            username=username,
+            created_from=created_from,
+            created_to=created_to,
+            limit=limit,
+            offset=offset,
+        )

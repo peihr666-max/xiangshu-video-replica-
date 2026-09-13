@@ -345,7 +345,7 @@ export function OverviewPage({
                 type="button"
                 onClick={() => onNavigate?.("customerAdjustments")}
               >
-                发放免费秒数
+                发放赠送积分
               </button>
               <button type="button" onClick={() => onNavigate?.("costDetails")}>
                 成本核对

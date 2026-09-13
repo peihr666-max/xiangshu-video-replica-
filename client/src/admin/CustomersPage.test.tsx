@@ -523,6 +523,21 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     fireEvent.change(screen.getByLabelText("操作原因"), {
       target: { value: "新客活动发放" },
     });
+    vi.mocked(adminApi.listCustomers).mockResolvedValue({
+      items: [
+        {
+          user_id: "user-1",
+          username: "customer-1",
+          created_at: "2026-08-24T10:00:00Z",
+          activation_code: "ABC-123",
+          status: "active",
+          available_credits: 60,
+        },
+      ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
     fireEvent.click(screen.getByLabelText("我已知晓该操作的影响"));
     fireEvent.click(screen.getByRole("button", { name: "确认发放" }));
 
@@ -539,6 +554,16 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       );
     });
     expect(await screen.findByText(/已发放 10 赠送积分/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "客户核心指标" })).getByText(
+          "60",
+        ),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getAllByRole("region", { name: "账号积分查账" }),
+    ).toHaveLength(1);
   });
 
   it("keeps customer pricing read-only for auditors", async () => {

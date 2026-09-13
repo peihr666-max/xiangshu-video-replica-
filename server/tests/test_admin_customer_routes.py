@@ -775,7 +775,9 @@ def test_free_grant_overflow_is_rejected_without_ledger_writes(
     )
 
 
-@pytest.mark.parametrize("unit_price_fen, credits", [(1000, 2_147_483), (1000, 2_147_484), (1, 2_147_483_647)])
+@pytest.mark.parametrize(
+    "unit_price_fen, credits", [(1000, 2_147_483), (1000, 2_147_484), (1, 2_147_483_647)]
+)
 def test_free_grant_at_ledger_calculation_limit_keeps_zero_amount(
     client: TestClient, unit_price_fen: int, credits: int
 ) -> None:

@@ -1688,9 +1688,9 @@ export interface paths {
     };
     /**
      * List Customers
-     * @description Every activated customer for operators and auditors (ADM-02 read path).
+     * @description Registered and activated customer accounts for operators and auditors (ADM-02 read path).
      *
-     *     A customer is the activation fact (one code, one user): the list carries
+     *     Users are the account identity; the latest activation is optional. The list carries
      *     display metadata only — masked code, username, activation time and the
      *     code status. The identity fields live on users / activation_codes; the
      *     data model has no customer email, so the T33 contract uses username.
@@ -2057,6 +2057,40 @@ export interface paths {
     head?: never;
     /** Save Zpay */
     patch: operations["save_zpay_api_control_settings_customer_payments_zpay_patch"];
+    trace?: never;
+  };
+  "/api/control/customers/{user_id}/recharge-orders": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Account Recharge Orders */
+    get: operations["account_recharge_orders_api_control_customers__user_id__recharge_orders_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/customers/{user_id}/wallet-transactions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Account Wallet Transactions */
+    get: operations["account_wallet_transactions_api_control_customers__user_id__wallet_transactions_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
     trace?: never;
   };
   "/api/customer/account/password": {
@@ -5935,7 +5969,7 @@ export interface components {
        * Type
        * @enum {string}
        */
-      type: "CHARGE" | "RESERVE" | "SETTLE" | "RELEASE";
+      type: "CHARGE" | "RESERVE" | "SETTLE" | "RELEASE" | "CONVERSION";
       /** Available Delta */
       available_delta: number;
       /** Reserved Delta */
@@ -12361,7 +12395,9 @@ export interface operations {
     parameters: {
       query?: {
         user_id?: string | null;
-        type?: ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE") | null;
+        type?:
+          | ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE" | "CONVERSION")
+          | null;
         username?: string | null;
         created_from?: string | null;
         created_to?: string | null;
@@ -12725,7 +12761,9 @@ export interface operations {
     parameters: {
       query?: {
         user_id?: string | null;
-        type?: ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE") | null;
+        type?:
+          | ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE" | "CONVERSION")
+          | null;
         username?: string | null;
         created_from?: string | null;
         created_to?: string | null;
@@ -13740,6 +13778,85 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MaskedZPaySettings"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  account_recharge_orders_api_control_customers__user_id__recharge_orders_get: {
+    parameters: {
+      query?: {
+        status?: ("PENDING" | "PAID" | "FAILED" | "CLOSED") | null;
+        username?: string | null;
+        channel?: string | null;
+        created_from?: string | null;
+        created_to?: string | null;
+        limit?: number;
+        offset?: number;
+      };
+      header?: never;
+      path: {
+        user_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ControlRechargeOrderPage"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  account_wallet_transactions_api_control_customers__user_id__wallet_transactions_get: {
+    parameters: {
+      query?: {
+        type?:
+          | ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE" | "CONVERSION")
+          | null;
+        username?: string | null;
+        created_from?: string | null;
+        created_to?: string | null;
+        limit?: number;
+        offset?: number;
+      };
+      header?: never;
+      path: {
+        user_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ControlWalletTransactionPage"];
         };
       };
       /** @description Validation Error */

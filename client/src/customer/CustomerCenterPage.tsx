@@ -259,6 +259,7 @@ export function CustomerCenterPage({
     };
   }, [credential, tab, offset, refresh, filters]);
   function selectTab(value: Tab) {
+    if (value !== tab) refreshData();
     setTab(value);
     setOffset(0);
     setRecordsError("");
@@ -533,6 +534,7 @@ export function CustomerCenterPage({
             <option value="RESERVE">任务预扣</option>
             <option value="RELEASE">积分退回</option>
             <option value="CHARGE">积分入账</option>
+            <option value="CONVERSION">历史积分转换</option>
           </select>
         </label>
         <label>
@@ -596,11 +598,13 @@ export function CustomerCenterPage({
                     }[item.type]
                   }
                   <small>
-                    {item.oral_task_id
-                      ? "数字人口播"
-                      : item.task_id
-                        ? "视频生成"
-                        : "充值 / 赠送"}
+                    {item.type === "CONVERSION"
+                      ? "历史余额"
+                      : item.oral_task_id
+                        ? "数字人口播"
+                        : item.task_id
+                          ? "视频生成"
+                          : "充值 / 赠送"}
                   </small>
                   {(item.generation_batch_id || item.oral_task_id) && (
                     <button

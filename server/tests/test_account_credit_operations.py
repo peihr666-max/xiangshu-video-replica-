@@ -249,3 +249,27 @@ def test_admin_credit_input_is_strict_positive_integer(operations_client, route_
         },
     )
     assert response.status_code in (400, 422), response.text
+
+
+@pytest.mark.parametrize("suffix", ["recharge-orders", "wallet-transactions"])
+def test_native_account_ledger_reads_without_control_proxy(operations_client, route_state, suffix):
+    client = operations_client
+    _, uid = account(client)
+    admin = admin_login(client, route_state)
+    grant = client.post(
+        f"/api/control/customers/{uid}/adjustments",
+        headers={**admin, "Idempotency-Key": str(uuid4())},
+        json={
+            "confirm": True,
+            "reason": "native account ledger",
+            "credits": 25,
+            "source_document_type": "FREE_GRANT",
+            "source_document_ref": "native-read",
+        },
+    )
+    assert grant.status_code == 201, grant.text
+    result = client.get(f"/api/control/customers/{uid}/{suffix}", params={"limit": 3, "offset": 0})
+    assert result.status_code == 200, result.text
+    assert result.json()["total"] == 1
+    assert result.json()["items"][0]["user_id"] == uid
+    assert "password_hash" not in result.text
