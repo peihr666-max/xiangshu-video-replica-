@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, StrictInt
 # Import to trigger provider registration
 import app.zpay_provider  # noqa: F401
 from app.auth import AuthenticatedUser, Database
+from app.billing_catalog import SERVICES
 from app.customer_fence import (
     BusinessDbDep,
     CustomerSessionSnapshot,
@@ -972,7 +973,7 @@ def list_customer_wallet_transactions(
                    (SELECT task.batch_id FROM generation_tasks task WHERE task.id = wt.task_id),
                    CASE WHEN wt.type = 'CHARGE' THEN
                      COALESCE(credit_adjustment.source_document_type, credit_order.provider)
-                   END
+                   END, wt.billing_operation_id, (SELECT o.service FROM billing_operations o WHERE o.id=wt.billing_operation_id)
             """
             + from_sql
             + """
@@ -1002,6 +1003,9 @@ def list_customer_wallet_transactions(
                     credit_price_version=json.loads(row[15])["version"] if row[15] else None,
                     generation_batch_id=row[16],
                     credit_source=row[17],
+                    billing_operation_id=row[18],
+                    service=row[19],
+                    service_name=SERVICES[row[19]].name if row[19] in SERVICES else None,
                 )
                 for row in rows
             ],

@@ -45,7 +45,6 @@ from app.viral_media import (
     viral_media_key,
 )
 from app.viral_refresh import enqueue_viral_refresh_task, viral_refresh_status
-from app.viral_statistics import refresh_viral_statistics
 from app.viral_store import (
     InvalidViralCursorError,
     ViralAvailability,
@@ -621,7 +620,9 @@ def fetch_viral_video_statistics(
     actor: AuthenticatedUser,
     client: ViralSourceClientDep,
 ) -> ViralStatisticsResponse:
-    videos = refresh_viral_statistics(conn, client, payload.videoIds)
+    from app.viral_statistics import _load_wechat_videos
+
+    videos = _load_wechat_videos(conn, payload.videoIds)
     return ViralStatisticsResponse(items=[_item(video) for video in videos])
 
 

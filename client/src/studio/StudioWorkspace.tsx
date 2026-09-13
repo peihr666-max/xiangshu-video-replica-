@@ -1,3 +1,4 @@
+import { BillingModulePrices } from "./BillingModulePrices";
 import {
   type ReactNode,
   useCallback,
@@ -322,6 +323,7 @@ export function StudioWorkspace({
     profile: customerAccount?.profile ?? null,
     profileLoadError: customerAccount?.profileLoadError ?? "",
   };
+  const [oralBudget, setOralBudget] = useState<{ seconds: number; credits: number }>();
   const [oralPriceFen, setOralPriceFen] = useState<number | null>(null);
   const [oralPriceCredits, setOralPriceCredits] = useState<number | null>(null);
   const [oralQuoteStatus, setOralQuoteStatus] = useState<QuoteStatus>("idle");
@@ -652,7 +654,7 @@ export function StudioWorkspace({
     }
     if (draftTouchedRef.current) scheduleDraftSave(state.draft);
   }, [state.draft, scheduleDraftSave]);
-  // 数字人口播提交前拉取单价（元/条）；失败保持 null 显示“待服务端报价”。
+  // 获取服务端按秒预算；按实际成功时长结算，最多扣受理时预留的积分。
   useEffect(() => {
     void oralQuoteRevision;
     if (review || generation !== "数字人口播") {
@@ -665,11 +667,12 @@ export function StudioWorkspace({
     setOralPriceFen(null);
     setOralQuoteStatus("loading");
     setOralQuoteError("");
-    void getOralPrice()
+    void getOralPrice(state.page === "oral-audio" ? { audio_asset_id: state.draft.audioId || undefined } : { script_text: state.draft.script.text })
       .then((price) => {
         if (active) {
           setOralPriceFen(price.unit_price_fen);
           setOralPriceCredits(price.unit_credits ?? null);
+          setOralBudget(price.budget_seconds !== undefined && price.estimated_credits !== undefined ? { seconds: price.budget_seconds, credits: price.estimated_credits } : undefined);
           setOralQuoteStatus("ready");
         }
       })
@@ -685,7 +688,7 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [review, generation, oralQuoteRevision]);
+  }, [review, generation, oralQuoteRevision, state.page, state.draft.audioId, state.draft.script.text]);
 
   const retryOralQuote = useCallback(
     () => setOralQuoteRevision((value) => value + 1),
@@ -1797,6 +1800,7 @@ export function StudioWorkspace({
             </button>
           </div>
           <div className="studio-stage">
+            {!review && <BillingModulePrices page={state.page} />}
             {data.errors.length > 0 && (
               <div className="studio-errors" role="alert">
                 {data.errors.join("；")}
@@ -1924,8 +1928,8 @@ export function StudioWorkspace({
                   oralQuoteStatus === "ready" &&
                   oralPriceFen !== null
                     ? oralPriceCredits !== null
-                      ? `${oralPriceCredits} 积分/次`
-                      : `${(oralPriceFen / 100).toFixed(2)} 元/条`
+                      ? `${oralPriceCredits} 积分/秒${oralBudget ? `，预计 ${oralBudget.seconds} 秒，预留 ${oralBudget.credits} 积分` : ""}（按成功时长结算，多余退回，最高不超过本次预留）`
+                      : `${(oralPriceFen / 100).toFixed(2)} 元/秒`
                     : generation === "视频生成" && videoQuoteReady
                       ? videoQuote.estimated_credits !== undefined
                         ? `${videoQuote.estimated_credits} 积分（${videoQuote.unit_credits} 积分/秒 × ${videoQuote.estimated_seconds} 秒）`

@@ -482,6 +482,20 @@ def enqueue_script_rewrite_task(
                     "该项目已有口播稿正在后台改写，请等待完成。",
                 ) from exc
             if retried is not None:
+                from app.usage_billing import accept_operation
+
+                latest_round = conn.execute(
+                    "SELECT COALESCE(max(billing_round),0) FROM billing_operations WHERE source_id=%s AND service='rewrite'",
+                    (replay["id"],),
+                ).fetchone()[0]
+                accept_operation(
+                    conn,
+                    user_id=actor.id,
+                    service="rewrite",
+                    source_id=str(replay["id"]),
+                    units=1,
+                    billing_round=int(latest_round) + 1,
+                )
                 conn.commit()
                 return cast(sqlite3.Row, retried)
             replay = conn.execute(
@@ -579,6 +593,9 @@ def enqueue_script_rewrite_task(
             "SCRIPT_REWRITE_ENQUEUE_CONFLICT",
             "改写任务状态已经变化，请重试。",
         )
+    from app.usage_billing import accept_operation
+
+    accept_operation(conn, user_id=actor.id, service="rewrite", source_id=str(row["id"]), units=1)
     write_audit(
         conn,
         actor=actor,
@@ -712,6 +729,9 @@ def mark_script_rewrite_submission_started(
     )
     if updated.rowcount != 1:
         raise RuntimeError("script rewrite task lease was lost")
+    from app.usage_billing import begin_source_attempt
+
+    begin_source_attempt(conn, lease.id)
     conn.commit()
 
 
@@ -755,6 +775,10 @@ def complete_script_rewrite_task(
     )
     if updated.rowcount != 1:
         raise RuntimeError("script rewrite task lease was lost")
+    from app.usage_billing import complete_source_attempt, finish_source
+
+    complete_source_attempt(conn, lease.id, usage=1)
+    finish_source(conn, lease.id, units=1, succeeded=True)
     conn.commit()
 
 
@@ -799,6 +823,11 @@ def fail_script_rewrite_task(
             lease.worker_id,
         ),
     )
+    from app.usage_billing import complete_source_attempt, finish_source
+
+    complete_source_attempt(conn, lease.id, usage=None)
+    if not uncertain:
+        finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 
 

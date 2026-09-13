@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { CostDetails } from "./CostDetails";
-import { ProfitOverview } from "./ProfitOverview";
+import { BillingEconomics } from "./BillingEconomics";
 import "./economics.css";
 import { TabBar } from "./ui/TabBar";
 
@@ -14,7 +13,7 @@ const tabs = [
  * 与成本明细（按日成本构成，随成本统计任务接入）。
  */
 export function AnalyticsPage({
-  readOnly = false,
+  readOnly: _readOnly = false,
   initialTab = "profit",
 }: {
   readOnly?: boolean;
@@ -29,8 +28,8 @@ export function AnalyticsPage({
         items={tabs}
         onChange={setTab}
       />
-      {tab === "profit" ? <ProfitOverview readOnly={readOnly} /> : null}
-      {tab === "cost" ? <CostDetails /> : null}
+      {tab === "profit" ? <BillingEconomics /> : null}
+      {tab === "cost" ? <BillingEconomics /> : null}
     </div>
   );
 }

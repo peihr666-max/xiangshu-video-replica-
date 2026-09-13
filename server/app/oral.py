@@ -25,7 +25,6 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.auth import CurrentUser
-from app.customer_pricing import read_pricing, task_credits
 from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
 from app.internal_billing import finalize_oral_billing, reserve_oral_billing
@@ -63,20 +62,22 @@ class OralTaskNotFoundError(OralDomainError):
 
 
 def oral_unit_price_fen(conn: BusinessConnection) -> int:
-    """Per-task list price for oral renders; admin-configurable via billing."""
-    try:
-        row = conn.execute(
-            "SELECT oral_unit_price_fen FROM runtime_settings WHERE id = 1"
-        ).fetchone()
-    except Exception:  # noqa: BLE001 - old databases keep the safe default
-        return ORAL_UNIT_PRICE_FEN_DEFAULT
-    if row is None:
-        return ORAL_UNIT_PRICE_FEN_DEFAULT
-    try:
-        price = int(row["oral_unit_price_fen"])
-    except (TypeError, ValueError):
-        return ORAL_UNIT_PRICE_FEN_DEFAULT
-    return price if price > 0 else ORAL_UNIT_PRICE_FEN_DEFAULT
+    """Retail equivalent per second. Missing tariffs are free, query errors propagate."""
+    from decimal import ROUND_CEILING, Decimal
+
+    from app.billing_catalog import retail_snapshot
+
+    quote = retail_snapshot(conn, "oral", 1)
+    ratio = quote["points_per_yuan"]
+    return (
+        int(
+            (Decimal(str(quote["credits"])) * 100 / Decimal(str(ratio))).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        if ratio
+        else 0
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +443,9 @@ def start_avatar_clone(
             request_hash,
         ),
     )
+    from app.usage_billing import accept_operation
+
+    accept_operation(conn, user_id=actor.id, service="avatar_clone", source_id=avatar_id, units=1)
     conn.commit()
     return CloneStartResult(
         task_id=avatar_id,
@@ -533,6 +537,9 @@ def start_voice_clone(
             request_hash,
         ),
     )
+    from app.usage_billing import accept_operation
+
+    accept_operation(conn, user_id=actor.id, service="voice_clone", source_id=voice_id, units=1)
     conn.commit()
     return CloneStartResult(
         task_id=voice_id,
@@ -752,6 +759,13 @@ def create_oral_task(
             ),
         )
         reserve_oral_billing(conn, user_id=actor.id, oral_task_id=task_id)
+        accepted = conn.execute(
+            "SELECT reserved_credits,pricing_snapshot_json FROM billing_operations WHERE source_id=%s AND service='oral'",
+            (task_id,),
+        ).fetchone()
+        ratio = json.loads(str(accepted[1])).get("points_per_yuan")
+        price = (int(accepted[0]) * 100 + int(ratio) - 1) // int(ratio) if ratio else 0
+        conn.execute("UPDATE oral_tasks SET estimated_cost_fen=%s WHERE id=%s", (price, task_id))
     row = _oral_task_row(conn, task_id)
     return OralTaskCreated(
         task_id=task_id,
@@ -1372,12 +1386,24 @@ def list_oral_tasks(
     return [dict(row) for row in rows], int(total_row["total"] if total_row else 0)
 
 
-def oral_price_quote(conn: BusinessConnection) -> dict[str, int]:
-    version, config = read_pricing(conn)
+def oral_price_quote(conn: BusinessConnection) -> dict[str, int | float]:
+    from decimal import Decimal
+
+    from app.billing_catalog import retail_snapshot
+
+    snapshot = retail_snapshot(conn, "oral", 1)
+    unit = (
+        Decimal(str(snapshot["unit_credits"]))
+        * Decimal(str(snapshot["discount_basis_points"]))
+        / 10000
+        if snapshot["enabled"]
+        else Decimal(0)
+    )
+    ratio = snapshot["points_per_yuan"]
     return {
-        "unit_price_fen": oral_unit_price_fen(conn),
-        "unit_credits": task_credits(config, "oral", 1) if config else 1,
-        "credit_price_version": version,
+        "unit_price_fen": int(unit * 100 / Decimal(str(ratio))) if ratio else 0,
+        "unit_credits": float(unit),
+        "credit_price_version": int(str(snapshot["version"])),
     }
 
 
@@ -1410,4 +1436,20 @@ def oral_terminal_billing_states(conn: BusinessConnection, *, owner_user_id: str
         """,
         (owner_user_id,),
     ).fetchall()
-    return {str(row["task_id"]): str(row["terminal_type"]) for row in rows}
+    result = {str(row["task_id"]): str(row["terminal_type"]) for row in rows}
+    for operation in conn.execute(
+        "SELECT o.source_id,o.state,o.reserved_credits FROM billing_operations o "
+        "JOIN oral_tasks t ON t.id=o.source_id AND t.billing_round=o.billing_round "
+        "WHERE o.user_id=%s AND o.service='oral'",
+        (owner_user_id,),
+    ).fetchall():
+        result[str(operation[0])] = (
+            "FREE"
+            if not operation[2]
+            else "SETTLE"
+            if operation[1] == "SUCCEEDED"
+            else "RELEASE"
+            if operation[1] in {"FAILED", "CANCELLED"}
+            else "RESERVED"
+        )
+    return result

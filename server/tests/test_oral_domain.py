@@ -82,7 +82,6 @@ from app.main import app
 from app.media_tools import resolve_media_binary
 from app.oral import (
     ORAL_CONSENT_TEXT_VERSION,
-    ORAL_UNIT_PRICE_FEN_DEFAULT,
     OralConflictError,
     OralDomainError,
     cancel_oral_task,
@@ -325,6 +324,15 @@ def _seed_oral(dsn: str) -> None:
         pg.execute("SET session_replication_role = replica")
         pg.execute(f"TRUNCATE {_ORAL_TABLES} CASCADE")
         pg.execute("SET session_replication_role = DEFAULT")
+        # Most lifecycle tests use an explicit low per-second tariff; absence is tested separately.
+        pg.execute("TRUNCATE billing_tariffs")
+        pg.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) VALUES ('oral',true,0.1,0.05)"
+        )
+        pg.execute(
+            "UPDATE customer_credit_pricing SET version=1,config_json=%s",
+            ('{"points_per_yuan":100}',),
+        )
         pg.execute(
             "INSERT INTO runtime_settings "
             "(id, max_generation_count_per_batch, max_concurrent_h3_tasks, "
@@ -1664,7 +1672,7 @@ def test_create_oral_task_tts_queues_reserves_and_replays_idempotently(
         vendor=vendor,
     )
     assert created.status == "QUEUED"
-    assert created.estimated_cost_fen == ORAL_UNIT_PRICE_FEN_DEFAULT
+    assert created.estimated_cost_fen == 1
     assert created.replayed is False
 
     replayed = _create_task(
@@ -1901,7 +1909,7 @@ def test_oral_billing_cancel_releases_once_and_success_settles_once(
         " 'final-hash', 9, 'video/mp4', 'employee_1')"
     )
     _exec(
-        "UPDATE oral_tasks SET status = 'SUCCEEDED', result_asset_id = %s WHERE id = %s",
+        "UPDATE oral_tasks SET status = 'SUCCEEDED', duration_sec=1, result_asset_id = %s WHERE id = %s",
         ("oral-final-result", succeeded.task_id),
     )
     settled = _finalize_billing(oral_task_id=succeeded.task_id)
@@ -2371,15 +2379,15 @@ def test_dangling_oral_reservation_reconciles_only_known_not_charged_failure(
 
 
 def test_oral_unit_price_defaults_and_reads_settings(scene: str) -> None:
-    assert _oral_unit_price() == ORAL_UNIT_PRICE_FEN_DEFAULT == 1000
+    _exec("DELETE FROM billing_tariffs WHERE service='oral'")
+    assert _oral_unit_price() == 0
     _exec("UPDATE runtime_settings SET oral_unit_price_fen = %s WHERE id = 1", (1800,))
-
-    assert _oral_unit_price() == 1800
+    assert _oral_unit_price() == 0  # The old runtime template cannot authorize a charge.
 
 
 def test_oral_task_snapshots_configured_unit_price(scene: str) -> None:
     _seed_ready_assets()
-    _exec("UPDATE runtime_settings SET oral_unit_price_fen = %s WHERE id = 1", (1800,))
+    _exec("UPDATE billing_tariffs SET unit_credits=2,version=2 WHERE service='oral'")
 
     created = _create_task(
         actor=actor(),
@@ -2394,8 +2402,8 @@ def test_oral_task_snapshots_configured_unit_price(scene: str) -> None:
         idempotency_key="oral-price-snapshot-key",
     )
 
-    assert created.estimated_cost_fen == 1800
-    assert _price_quote() == {"unit_price_fen": 1800, "unit_credits": 1, "credit_price_version": 0}
+    assert created.estimated_cost_fen == 8  # Four estimated seconds at two credits per second.
+    assert _price_quote() == {"unit_price_fen": 2, "unit_credits": 2, "credit_price_version": 2}
 
 
 def test_oral_credit_release_uses_reserved_price_after_repricing(scene: str) -> None:
@@ -2404,6 +2412,7 @@ def test_oral_credit_release_uses_reserved_price_after_repricing(scene: str) -> 
         "UPDATE customer_credit_pricing SET version = 1, config_json = %s",
         (json.dumps({"video_768p": 3, "video_2k": 7, "oral": 11, "points_per_yuan": 100}),),
     )
+    _exec("UPDATE billing_tariffs SET unit_credits=11 WHERE service='oral'")
     created = _create_task(
         actor=actor(),
         identity_id="ident-1",
@@ -2411,7 +2420,7 @@ def test_oral_credit_release_uses_reserved_price_after_repricing(scene: str) -> 
         voice_id="voice-ready",
         mode="TTS",
         title="积分冻结",
-        script_text="测试积分冻结与退款",
+        script_text="测试",
         audio_asset_id=None,
         subtitle=None,
         idempotency_key="oral-credit-snapshot",
@@ -2421,6 +2430,7 @@ def test_oral_credit_release_uses_reserved_price_after_repricing(scene: str) -> 
         "UPDATE customer_credit_pricing SET version = 2, config_json = %s",
         (json.dumps({"video_768p": 3, "video_2k": 7, "oral": 19, "points_per_yuan": 100}),),
     )
+    _exec("UPDATE billing_tariffs SET unit_credits=19 WHERE service='oral'")
     _exec(
         "UPDATE oral_tasks SET status = 'FAILED', provider_charge_state = 'NOT_CHARGED' "
         "WHERE id = %s",
@@ -2629,7 +2639,7 @@ def test_oral_manual_billing_reconciliation_is_admin_only_audited_and_idempotent
             json={
                 **request,
                 "provider_charge_state": "CHARGED",
-                "resolution": "SETTLE",
+                "resolution": "RELEASE",
                 "evidence_asset_id": "evidence-settle",
             },
         )
@@ -2668,7 +2678,7 @@ def test_oral_manual_billing_reconciliation_is_admin_only_audited_and_idempotent
                 "reconciliation_operation_id": "reconcile-settle-001",
                 "provider_outcome": "FAILED",
                 "provider_charge_state": "CHARGED",
-                "resolution": "SETTLE",
+                "resolution": "RELEASE",
                 "evidence_asset_id": "evidence-settle",
                 "reason": "供应商账单确认已产生扣费",
             },
@@ -2692,8 +2702,8 @@ def test_oral_manual_billing_reconciliation_is_admin_only_audited_and_idempotent
     assert different_operation.status_code == 409
     assert unowned_evidence.status_code == 409
     assert settled.status_code == 200
-    assert settled.json()["transaction_type"] == "SETTLE"
-    assert _wallet("employee_1") == (19, 0)
+    assert settled.json()["transaction_type"] == "RELEASE"
+    assert _wallet("employee_1") == (20, 0)
     audit = _fetch(
         "SELECT metadata_json FROM audit_logs "
         "WHERE action = 'oral.billing.reconcile' AND entity_id = %s "
@@ -3158,7 +3168,7 @@ def test_oral_task_serialization_reports_billing_status_and_available_actions(
             """
         )
         _exec(
-            "UPDATE oral_tasks SET status = 'SUCCEEDED', result_asset_id = 'oral-final-result' "
+            "UPDATE oral_tasks SET status = 'SUCCEEDED', duration_sec=1, result_asset_id = 'oral-final-result' "
             "WHERE id = %s",
             (uncertain.task_id,),
         )

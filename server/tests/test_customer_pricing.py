@@ -116,7 +116,7 @@ def test_discount_rounds_each_task_before_multiplying_quantity():
 @pytest.mark.parametrize(
     "changes",
     [
-        {"video_768p": 0},
+        {"video_768p": -1},
         {"oral": -1},
         {"points_per_yuan": 0},
         {"oral": 1.5},
@@ -164,6 +164,9 @@ def seed_tasks(dsn, user_id, names, balance=100):
             "UPDATE customer_credit_pricing SET version = 1, config_json = %s",
             (config().model_dump_json(),),
         )
+        conn.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES ('video_768p',true,3)"
+        )
 
 
 def reserve(dsn, uid, key_id, task, seconds):
@@ -189,7 +192,10 @@ def test_rotation_inflight_keeps_original_price_and_account(client, route_state)
             (config(video_768p=9).model_dump_json(),),
         )
         raw.execute(
-            "UPDATE generation_tasks SET status = 'SUCCEEDED', archive_status = "
+            "UPDATE billing_tariffs SET unit_credits=9,version=2 WHERE service='video_768p'"
+        )
+        raw.execute(
+            "UPDATE generation_tasks SET status = 'SUCCEEDED', actual_output_seconds=10, archive_status = "
             "'DIRECT', provider_result_url = 'https://example.com/test.mp4' WHERE id = "
             "'task_a'"
         )
@@ -257,6 +263,9 @@ def test_two_tokens_share_atomic_wallet_without_overdraft(client, route_state):
             "UPDATE customer_credit_pricing SET config_json = %s",
             (config(video_768p=4).model_dump_json(),),
         )
+
+    with psycopg.connect(route_state) as raw:
+        raw.execute("UPDATE billing_tariffs SET unit_credits=4 WHERE service='video_768p'")
 
     def attempt(args):
         key, task = args

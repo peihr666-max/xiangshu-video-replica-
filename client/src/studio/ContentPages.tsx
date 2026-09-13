@@ -17,6 +17,7 @@ import {
   fetchViralVideo,
   fetchViralVideoMedia,
   fetchViralVideoStatistics,
+  refreshViralVideoStatistics,
   getAssetDownloadUrl,
   getStudioDraft,
   getViralImportTask,
@@ -239,6 +240,31 @@ function useViralStatistics(videos: StudioVideo[], enabled: boolean) {
   }, [enabled, pendingKey, updateData]);
 
   return error;
+}
+
+function RefreshStatisticsButton({ videos }: { videos: StudioVideo[] }) {
+  const { updateData } = useStudio();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const key = useRef<{ fingerprint: string; value: string } | null>(null);
+  const saving = useRef(false);
+  const ids = videos.filter((video) => video.platformKey === "wechat_channels" && video.nativeId).map((video) => video.nativeId as string).slice(0,12);
+  if (!ids.length) return null;
+  async function refreshStatistics() {
+    if (saving.current) return;
+    const fingerprint = JSON.stringify([...ids].sort());
+    if (key.current?.fingerprint !== fingerprint) key.current = { fingerprint, value: crypto.randomUUID() };
+    saving.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await refreshViralVideoStatistics(ids,key.current.value);
+      updateViralStatistics(updateData,result.items);
+      key.current = null;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "数据刷新失败"); }
+    finally { saving.current = false; setBusy(false); }
+  }
+  return <div><button type="button" disabled={busy} onClick={() => void refreshStatistics()}>{busy ? "正在刷新…" : `刷新互动数据（最多 ${ids.length} 次请求，按上方单价扣分）`}</button>{error && <p role="alert">{error}</p>}</div>;
 }
 
 /** 点击播放：真实平台视频先走媒体管线，测试夹具可直接使用 playUrl。 */
@@ -1185,6 +1211,7 @@ export function ViralPage() {
           </Button>
         ))}
       </nav>
+      {!review && <RefreshStatisticsButton videos={current} />}
       {(listError || statisticsError) && (
         <p className="viral-media-status is-error" role="status">
           {listError ?? statisticsError}
@@ -1614,6 +1641,7 @@ export function ViralDetailPage() {
             <span className="viral-detail-published">发布 {published}</span>
             <span>时长 {video.duration}</span>
           </div>
+          {!review && video && <RefreshStatisticsButton videos={[video]} />}
           {statisticsError && (
             <p className="viral-media-status is-error" role="status">
               {statisticsError}

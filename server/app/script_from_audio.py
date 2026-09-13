@@ -273,7 +273,13 @@ def enqueue_script_from_audio_task(
             409, "SCRIPT_FROM_AUDIO_ENQUEUE_CONFLICT", "该项目已有不同来源的提取任务，请等待完成。"
         )
     from app.permissions import write_audit
+    from app.usage_billing import accept_operation
 
+    metadata = json.loads(str(asset["metadata_json"] or "{}"))
+    duration = metadata.get("duration_seconds") or metadata.get("duration_sec") or 0
+    accept_operation(
+        conn, user_id=actor.id, service="asr", source_id=str(row["id"]), units=duration  # type: ignore[attr-defined]
+    )
     write_audit(
         conn,
         actor=actor,  # type: ignore[arg-type]
@@ -476,6 +482,9 @@ def mark_script_from_audio_submission_started(
     )
     if updated.rowcount != 1:
         raise script_from_audio_error(409, "SCRIPT_FROM_AUDIO_LEASE_LOST", "任务租约已失效。")
+    from app.usage_billing import begin_source_attempt
+
+    begin_source_attempt(conn, lease.id)
     conn.commit()
 
 
@@ -614,6 +623,11 @@ def complete_script_from_audio_task(
     )
     if updated.rowcount != 1:
         raise script_from_audio_error(409, "SCRIPT_FROM_AUDIO_LEASE_LOST", "任务租约已失效。")
+    from app.usage_billing import complete_source_attempt, finish_source
+
+    complete_source_attempt(conn, lease.id, usage=result.duration_sec)
+    if result.duration_sec is not None:
+        finish_source(conn, lease.id, units=result.duration_sec, succeeded=True)
     conn.commit()
 
 
@@ -683,6 +697,11 @@ def fail_script_from_audio_task(
             now,
         ),
     )
+    if status == "FAILED":
+        from app.usage_billing import complete_source_attempt, finish_source
+
+        complete_source_attempt(conn, lease.id, usage=None)
+        finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 
 

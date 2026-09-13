@@ -32,7 +32,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.analysis import get_version, insert_version, next_version_number
 from app.auth import CurrentUser, Role
 from app.bootstrap import is_customer_production
-from app.customer_pricing import Subject, read_pricing, task_credits
 from app.db_portable import BusinessConnection
 from app.first_frames import (
     FirstFrameQualityInspector,
@@ -752,7 +751,7 @@ class GenerationPriceQuote(BaseModel):
     unit_price_fen_per_second: int
     estimated_seconds: int
     estimated_price_fen: int
-    unit_credits: int
+    unit_credits: float
     estimated_credits: int
     credit_price_version: int
 
@@ -4891,6 +4890,7 @@ def load_worker_task(conn: BusinessConnection, task_id: str) -> dict[str, Any]:
         """
         SELECT
             generation_tasks.id,
+            generation_tasks.attempt,
             generation_tasks.batch_id,
             generation_tasks.provider,
             generation_tasks.status,
@@ -6967,42 +6967,28 @@ def generation_price_quote(
     duration_seconds: int,
     quantity: int,
 ) -> GenerationPriceQuote:
-    # 按秒单价线性外推，任意 4–15 秒档位均可计价。
-    price_version, config = read_pricing(conn)
-    subject: Subject = "video_2k" if resolution == "2K" else "video_768p"
-    row = conn.execute(
-        """
-        SELECT unit_price_fen
-        FROM operation_cost_rates
-        WHERE subject = %s AND kind = 'external_price'
-        """,
-        (f"external_price_{resolution.lower()}",),
-    ).fetchone()
-    if row is None and config is None:
-        raise generation_error(
-            503,
-            "EXTERNAL_PRICE_UNAVAILABLE",
-            "The customer generation price is not configured.",
-        )
+    from decimal import ROUND_CEILING, Decimal
+
+    from app.billing_catalog import retail_snapshot
+
+    subject = "video_2k" if resolution == "2K" else "video_768p"
+    snapshot = retail_snapshot(conn, subject, duration_seconds)
+    estimated_seconds = duration_seconds * quantity
+    estimated_credits = int(str(snapshot["credits"])) * quantity
+    if estimated_credits > 2147483647:
+        raise generation_error(422, "CREDIT_AMOUNT_OUT_OF_RANGE", "积分金额超出允许范围")
+    unit_credits = float(str(snapshot["unit_credits"])) if snapshot["enabled"] else 0
+    ratio = snapshot["points_per_yuan"]
     unit_price = (
-        (int(getattr(config, subject)) * 100 + config.points_per_yuan - 1) // config.points_per_yuan
-        if config
-        else int(row["unit_price_fen"])
-        if row is not None
+        int(
+            (Decimal(str(unit_credits)) * 100 / Decimal(str(ratio))).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        if ratio
         else 0
     )
-    estimated_seconds = duration_seconds * quantity
-    try:
-        estimated_credits = (
-            task_credits(config, subject, duration_seconds, quantity)
-            if config
-            else estimated_seconds
-        )
-        if estimated_credits > 2_147_483_647:
-            raise ValueError("积分金额超出允许范围")
-    except ValueError as exc:
-        raise generation_error(422, "CREDIT_AMOUNT_OUT_OF_RANGE", str(exc)) from exc
-    unit_credits = int(getattr(config, subject)) if config else 1
+    price_version = int(str(snapshot["version"]))
     return GenerationPriceQuote(
         resolution=resolution,
         duration_seconds=duration_seconds,

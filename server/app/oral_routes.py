@@ -83,7 +83,7 @@ class OralTaskResponse(BaseModel):
     status_message: str | None = None
     error_message: str | None = None
     result_asset_id: str | None
-    duration_sec: int | None
+    duration_sec: float | None
     estimated_cost_fen: int
     billing_status: str | None = None
     available_actions: list[str] = Field(default_factory=list)
@@ -127,7 +127,7 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_TERMINAL_BILLING_LABELS = {"SETTLE": "SETTLED", "RELEASE": "RELEASED"}
+_TERMINAL_BILLING_LABELS = {"SETTLE": "SETTLED", "RELEASE": "RELEASED", "FREE": "FREE"}
 
 
 def _serialize_task(row: dict[str, Any], terminals: dict[str, str]) -> dict[str, Any]:
@@ -154,7 +154,7 @@ def _serialize_tasks_for_owner(conn: Database, rows: list[dict[str, Any]]) -> li
 
 
 @router.get("/price")
-def read_oral_price(conn: Database) -> dict[str, int]:
+def read_oral_price(conn: Database) -> dict[str, int | float]:
     return oral_price_quote(conn)
 
 
@@ -169,6 +169,37 @@ class OralConsentRequest(BaseModel):
     identity_id: str = Field(min_length=1, max_length=128)
     source_asset_id: str = Field(min_length=1, max_length=128)
     purpose: Literal["AVATAR", "VOICE", "AVATAR_CLONE", "VOICE_CLONE"]
+
+
+class OralBudgetRequest(BaseModel):
+    script_text: str | None = Field(default=None, max_length=10000)
+    audio_asset_id: str | None = Field(default=None, max_length=128)
+
+
+@router.post("/quote")
+def read_oral_budget(
+    payload: OralBudgetRequest, conn: Database, actor: AuthenticatedUser
+) -> dict[str, int | float]:
+    from app.billing_catalog import oral_budget_units, retail_snapshot
+
+    if payload.audio_asset_id:
+        asset = conn.execute(
+            "SELECT 1 FROM assets WHERE id=%s AND created_by_user_id=%s",
+            (payload.audio_asset_id, actor.id),
+        ).fetchone()
+        if asset is None:
+            raise OralError("ORAL_AUDIO_NOT_FOUND", "口播音频不存在", 404)
+    units = oral_budget_units(
+        conn, script_text=payload.script_text, audio_asset_id=payload.audio_asset_id
+    )
+    quote = retail_snapshot(conn, "oral", units)
+    if payload.audio_asset_id and units == 0 and quote["enabled"]:
+        raise OralError("BILLABLE_DURATION_REQUIRED", "缺少有效音频时长，请重新上传。")
+    return {
+        **oral_price_quote(conn),
+        "budget_seconds": float(units),
+        "estimated_credits": int(str(quote["credits"])),
+    }
 
 
 @router.post("/consents", status_code=status.HTTP_201_CREATED)

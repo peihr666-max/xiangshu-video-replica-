@@ -311,7 +311,10 @@ class ApilioGemini:
                 }
             ],
         }
-        text, raw = self._complete(payload)
+        from app.billing_meter import meter_call
+
+        with meter_call("analysis_repair"):
+            text, raw = self._complete(payload)
         return ProviderResponse(text=text, raw=raw)
 
     def _complete(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -774,6 +777,11 @@ def enqueue_analysis_task(
         (task_id,),
     ).fetchone()
     if inserted is not None:
+        from app.usage_billing import accept_operation
+
+        accept_operation(
+            conn, user_id=created_by_user_id, service="analysis", source_id=task_id, units=1
+        )
         return inserted, True
 
     concurrent = conn.execute(

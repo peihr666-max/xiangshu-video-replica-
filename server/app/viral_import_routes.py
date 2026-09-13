@@ -356,6 +356,15 @@ def resolve_viral_link(
             if created:
                 with conn:
                     resolver = douyidou_link_client_from_settings(conn)
+                    from app.usage_billing import accept_operation
+
+                    accept_operation(
+                        conn,
+                        user_id=actor.id,
+                        service="link_resolution",
+                        source_id=str(receipt["id"]),
+                        units=1,
+                    )
         if not created:
             return _receipt_replay(receipt)
         with db.write() as (conn, sending_actor):
@@ -367,7 +376,14 @@ def resolve_viral_link(
                     receipt_id=str(receipt["id"]),
                     lease_owner=str(receipt["lease_owner"]),
                 )
+                from app.usage_billing import begin_source_attempt
+
+                begin_source_attempt(conn, str(receipt["id"]))
         resolved = resolver.resolve(normalized_url, purpose=request.purpose)
+        with db.write() as (conn, _cost_actor):
+            from app.usage_billing import complete_source_attempt
+
+            complete_source_attempt(conn, str(receipt["id"]), usage=1)
         with db.write() as (conn, media_actor):
             if media_actor.id != actor.id:
                 raise HTTPException(status_code=401, detail={"code": "SESSION_REPLACED"})
@@ -378,6 +394,10 @@ def resolve_viral_link(
             with db.write() as (conn, _actor):
                 with conn:
                     _record_link_failure(conn, receipt_id=str(receipt["id"]), error=exc)
+                    from app.usage_billing import complete_source_attempt, finish_source
+
+                    complete_source_attempt(conn, str(receipt["id"]), usage=None)
+                    finish_source(conn, str(receipt["id"]), units=0, succeeded=False)
         raise HTTPException(
             status_code=exc.status_code,
             detail={"code": exc.code, "message": exc.message},
@@ -418,6 +438,9 @@ def resolve_viral_link(
                         "message": "视频链接解析结果未知，请上传 MP4/MOV 文件。",
                     },
                 )
+            from app.usage_billing import finish_source
+
+            finish_source(conn, str(receipt["id"]), units=1, succeeded=True)
             upsert_viral_videos(conn, [video], commit=False)
     return response
 

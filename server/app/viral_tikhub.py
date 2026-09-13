@@ -515,7 +515,10 @@ class ViralSourceClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        content = transport.request("POST", url, headers=headers, body=body)
+        from app.billing_meter import meter_call
+
+        with meter_call("viral_data"):
+            content = transport.request("POST", url, headers=headers, body=body)
         try:
             envelope = json.loads(content)
         except json.JSONDecodeError as exc:

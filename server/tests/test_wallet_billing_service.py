@@ -98,6 +98,10 @@ def seed_task(dsn: str, *, available_credits: int = 2) -> None:
         pg.execute("SET session_replication_role = replica")
         pg.execute(f"TRUNCATE {_WALLET_TABLES} CASCADE")
         pg.execute("SET session_replication_role = DEFAULT")
+        # Explicit retail configuration for these positive-reservation scenarios.
+        pg.execute("INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES "
+                   "('video_768p',true,1),('video_2k',true,1) ON CONFLICT(service) "
+                   "DO UPDATE SET enabled=true,unit_credits=1")
         pg.execute(
             "INSERT INTO runtime_settings "
             "(id, max_generation_count_per_batch, max_concurrent_h3_tasks, "

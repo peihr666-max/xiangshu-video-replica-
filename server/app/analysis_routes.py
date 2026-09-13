@@ -820,6 +820,9 @@ def complete_analysis_task(
             "version_id": str(row["id"]),
         },
     )
+    from app.usage_billing import finish_source
+
+    finish_source(conn, work.lease.id, units=1, succeeded=True)
     conn.commit()
 
 
@@ -878,6 +881,9 @@ def fail_analysis_task(
             "retryable": retryable,
         },
     )
+    from app.usage_billing import finish_source
+
+    finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 
 

@@ -366,6 +366,11 @@ def enqueue_first_frame_task(
         ).fetchone()
     if row is None:
         raise _task_error(409, "FIRST_FRAME_TASK_ENQUEUE_CONFLICT", "任务状态已变化，请重试。")
+    from app.usage_billing import accept_operation
+
+    accept_operation(
+        conn, user_id=actor.id, service="first_frame", source_id=str(row["id"]), units=quantity
+    )
     conn.commit()
     return cast(sqlite3.Row, row)
 
@@ -466,6 +471,9 @@ def enqueue_character_sheet_task(
         ).fetchone()
     if row is None:
         raise _task_error(409, "CHARACTER_SHEET_TASK_ENQUEUE_CONFLICT", "任务状态已变化，请重试。")
+    from app.usage_billing import accept_operation
+
+    accept_operation(conn, user_id=actor.id, service="character", source_id=str(row["id"]), units=1)
     conn.commit()
     return cast(sqlite3.Row, row)
 
@@ -859,6 +867,9 @@ def complete_first_frame_task(
         )
         if updated.rowcount != 1:
             raise RuntimeError("first-frame task lease was lost")
+        from app.usage_billing import finish_source
+
+        finish_source(conn, prepared.lease.id, units=len(stored.candidates), succeeded=True)
 
     complete_first_frame_generation(
         conn,
@@ -1004,6 +1015,9 @@ def complete_character_sheet_task(
         )
         if updated.rowcount != 1:
             raise RuntimeError("character-sheet task lease was lost")
+        from app.usage_billing import finish_source
+
+        finish_source(conn, prepared.lease.id, units=1, succeeded=True)
 
     if prepared.operation == "CREATE":
         publication = store_simple_character_publication(
@@ -1149,6 +1163,10 @@ def fail_image_task(
             lease.worker_id,
         ),
     )
+    from app.usage_billing import finish_source
+
+    if status == "FAILED":
+        finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 
 

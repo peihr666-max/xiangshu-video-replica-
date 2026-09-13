@@ -598,7 +598,7 @@ export function CustomerCenterPage({
                     }[item.type]
                   }
                   <small>
-                    {item.type === "CONVERSION"
+                    {item.service_name ? item.service_name : item.type === "CONVERSION"
                       ? "历史余额"
                       : item.oral_task_id
                         ? "数字人口播"

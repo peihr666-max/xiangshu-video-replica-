@@ -53,7 +53,7 @@ export function CustomerPricesPage({
           <p>
             {prices.configured
               ? `当前价格版本：V${prices.version}`
-              : "当前沿用原有扣费规则，管理员尚未发布新的积分价格。"}
+              : "未发布售价的功能不扣分，由平台承担费用。"}
           </p>
           <div className="uc-table-scroll">
             <table>
@@ -95,7 +95,7 @@ export function CustomerPricesPage({
             </p>
           )}
           <p>
-            任务按提交时的价格预扣，成功后结算，符合退款条件的失败任务退回预扣积分。价格调整不影响已受理任务和已创建充值订单。
+            任务按提交时的价格预扣，成功后结算，失败任务退回对应预扣积分，部分成功只结算成功交付数量。价格调整不影响已受理任务和已创建充值订单。
           </p>
         </>
       )}
