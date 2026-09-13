@@ -57,6 +57,7 @@ def pristine_dsn(cw057_pg_dsn: str) -> Iterator[str]:
     """
     with psycopg.connect(cw057_pg_dsn, autocommit=True) as conn:
         conn.execute("DELETE FROM runtime_settings")
+        conn.execute("DELETE FROM billing_credit_lots WHERE user_id LIKE 'gate1%'")
         conn.execute("DELETE FROM wallet_transactions WHERE user_id LIKE 'gate1%'")
         conn.execute("DELETE FROM recharge_orders WHERE user_id LIKE 'gate1%'")
         conn.execute("DELETE FROM wallets WHERE user_id LIKE 'gate1%'")

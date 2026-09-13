@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -191,6 +192,7 @@ class AnalysisTaskLease:
     created_by_user_id: str
     duration_seconds: float
     worker_id: str
+    attempt: int = 1
 
 
 @dataclass(frozen=True)
@@ -708,6 +710,7 @@ def acquire_analysis_task(
         created_by_user_id=str(row["created_by_user_id"]),
         duration_seconds=float(row["duration_seconds"]),
         worker_id=worker_id,
+        attempt=int(row["attempt"]),
     )
 
 
@@ -758,11 +761,14 @@ def prepare_analysis_task(
     )
 
 
-def perform_analysis_task(work: AnalysisTaskWork) -> AnalysisResult:
+def perform_analysis_task(
+    work: AnalysisTaskWork, *, on_provider_result: Callable[[], None] | None = None
+) -> AnalysisResult:
     return analyze_video(
         video_uri=work.video_uri,
         video_duration_seconds=work.lease.duration_seconds,
         provider=work.provider,
+        on_provider_result=on_provider_result,
     )
 
 
@@ -773,13 +779,14 @@ def complete_analysis_task(
     result: AnalysisResult,
 ) -> None:
     task = conn.execute(
-        "SELECT status, locked_by FROM analysis_tasks WHERE id = %s",
+        "SELECT status, locked_by, attempt FROM analysis_tasks WHERE id = %s FOR UPDATE",
         (work.lease.id,),
     ).fetchone()
     if (
         task is None
         or str(task["status"]) != "RUNNING"
         or str(task["locked_by"]) != work.lease.worker_id
+        or int(task["attempt"]) != work.lease.attempt
     ):
         conn.rollback()
         return
@@ -820,6 +827,9 @@ def complete_analysis_task(
             "version_id": str(row["id"]),
         },
     )
+    from app.usage_billing import finish_source
+
+    finish_source(conn, work.lease.id, units=1, succeeded=True)
     conn.commit()
 
 
@@ -845,14 +855,14 @@ def fail_analysis_task(
         message = str(cause.detail.get("message") or message)
         retryable = bool(cause.detail.get("retryable", True))
     now_text = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-    conn.execute(
+    updated = conn.execute(
         """
         UPDATE analysis_tasks
         SET status = 'FAILED', error_code = %s,
             error_message_redacted = %s, failure_phase = %s,
             retryable = %s, locked_by = NULL, locked_until = NULL,
             completed_at = %s, updated_at = %s
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
         (
             code,
@@ -863,8 +873,12 @@ def fail_analysis_task(
             now_text,
             lease.id,
             lease.worker_id,
+            lease.attempt,
         ),
     )
+    if updated.rowcount != 1:
+        conn.rollback()
+        return
     write_audit(
         conn,
         actor=load_task_actor(conn, lease.created_by_user_id),
@@ -878,6 +892,9 @@ def fail_analysis_task(
             "retryable": retryable,
         },
     )
+    from app.usage_billing import finish_source
+
+    finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 
 

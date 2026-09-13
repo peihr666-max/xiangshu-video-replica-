@@ -75,7 +75,6 @@ export function ProjectDetailFlow({
   onRecharge,
   project,
   readOnly,
-  walletProvider,
 }: ProjectDetailFlowProps) {
   const [analysisVersion, setAnalysisVersion] =
     useState<AnalysisVersion | null>(null);
@@ -111,8 +110,8 @@ export function ProjectDetailFlow({
   const [priceQuoteRevision, setPriceQuoteRevision] = useState(0);
   const [generationError, setGenerationError] = useState("");
   const [insufficientBalance, setInsufficientBalance] = useState<{
-    neededSeconds: number;
-    balanceSeconds: number | null;
+    neededCredits: number | null;
+    balanceCredits: number | null;
   } | null>(null);
   const [generationMessage, setGenerationMessage] = useState("");
   // 用户在第一段编辑并另存过的提示词文本。自定义文案未变时提交会复用；
@@ -546,29 +545,7 @@ export function ProjectDetailFlow({
       if (!isCurrent()) {
         throw new Error("生成参数已变化，请按最新报价重新提交。");
       }
-      // F-05 软预检：余额明显不足时直接给出充值引导，不打服务端。
-      if (walletProvider) {
-        const neededSeconds =
-          envelope.request.output_duration_seconds * envelope.request.quantity;
-        const balanceSeconds = await walletProvider().catch(() => null);
-        if (!isCurrent()) {
-          throw new Error("生成参数已变化，请按最新报价重新提交。");
-        }
-        if (balanceSeconds !== null && balanceSeconds < neededSeconds) {
-          if (idempotencyEnvelopeRef.current === envelope) {
-            idempotencyEnvelopeRef.current = null;
-          }
-          if (frozenDetailRequests.get(frozenRequestKey) === envelope) {
-            frozenDetailRequests.delete(frozenRequestKey);
-          }
-          throw Object.assign(
-            new Error(
-              `余额不足：本次预计消耗 ${neededSeconds} 秒，当前余额 ${balanceSeconds} 秒，请充值后重试。`,
-            ),
-            { code: "INSUFFICIENT_CREDITS", balanceSeconds },
-          );
-        }
-      }
+      // 扣分及免费资格由服务端按冻结报价校验，时长不能代表积分余额。
       const batch = await createGenerationBatch(project.id, envelope.request);
       if (idempotencyEnvelopeRef.current === envelope) {
         idempotencyEnvelopeRef.current = null;
@@ -586,12 +563,8 @@ export function ProjectDetailFlow({
         setInsufficientBalance(
           (error as { code?: string })?.code === "INSUFFICIENT_CREDITS"
             ? {
-                neededSeconds: generationDuration * generationQuantity,
-                balanceSeconds:
-                  typeof (error as { balanceSeconds?: number })
-                    .balanceSeconds === "number"
-                    ? (error as { balanceSeconds: number }).balanceSeconds
-                    : null,
+                neededCredits: priceQuote?.estimated_credits ?? null,
+                balanceCredits: null,
               }
             : null,
         );

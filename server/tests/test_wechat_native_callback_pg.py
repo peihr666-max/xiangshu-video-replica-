@@ -300,6 +300,35 @@ def test_settle_wechat_order_replay_is_idempotent(wechat_db: str) -> None:
     assert len(_charge_ledger(wechat_db, "order_1")) == 1
 
 
+def test_wechat_receipt_funds_consumed_revenue_once(wechat_db: str) -> None:
+    from app.usage_billing import accept_operation, finish_operation
+
+    # This scene has no untracked opening balance; every credit has a paid receipt.
+    with psycopg.connect(wechat_db) as raw:
+        raw.execute("UPDATE wallets SET available_credits=0 WHERE user_id='user_1'")
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES('analysis',true,2)"
+        )
+    _seed_order(wechat_db, order_id="order_1", merchant_order_no=OUT_TRADE_NO)
+    _settle()
+    _settle()
+    with psycopg.connect(wechat_db) as raw:
+        conn = BusinessConnection.postgres(raw)
+        op = accept_operation(
+            conn, user_id="user_1", service="analysis", source_id="wechat-consumption", units=1
+        )
+        finish_operation(conn, operation_id=op, units=1, succeeded=True)
+        assert tuple(
+            raw.execute("SELECT count(*),sum(amount_fen) FROM billing_credit_lots").fetchone()
+        ) == (1, _ORDER_AMOUNT_FEN)
+        assert (
+            raw.execute("SELECT revenue_fen FROM billing_operations WHERE id=%s", (op,)).fetchone()[
+                0
+            ]
+            == 2000
+        )
+
+
 # ---------------------------------------------------------------------------
 # S3 — a transaction_id already bound to another order is refused
 # ---------------------------------------------------------------------------

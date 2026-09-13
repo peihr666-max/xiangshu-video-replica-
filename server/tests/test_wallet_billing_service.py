@@ -98,6 +98,12 @@ def seed_task(dsn: str, *, available_credits: int = 2) -> None:
         pg.execute("SET session_replication_role = replica")
         pg.execute(f"TRUNCATE {_WALLET_TABLES} CASCADE")
         pg.execute("SET session_replication_role = DEFAULT")
+        # Explicit retail configuration for these positive-reservation scenarios.
+        pg.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES "
+            "('video_768p',true,1),('video_2k',true,1) ON CONFLICT(service) "
+            "DO UPDATE SET enabled=true,unit_credits=1"
+        )
         pg.execute(
             "INSERT INTO runtime_settings "
             "(id, max_generation_count_per_batch, max_concurrent_h3_tasks, "
@@ -178,7 +184,7 @@ def test_reserve_and_finalize_support_multiple_seconds_per_round(wallet_db: str)
         conn = BusinessConnection.postgres(raw)
         conn.execute(
             "UPDATE generation_tasks "
-            "SET status = 'SUCCEEDED', archive_status = 'DIRECT', "
+            "SET status = 'SUCCEEDED', actual_output_seconds = 15, archive_status = 'DIRECT', "
             "    provider_result_url = 'https://cdn.example/video.mp4' "
             "WHERE id = 'task_1'"
         )
@@ -219,6 +225,40 @@ def test_reserve_rejects_zero_or_negative_seconds(wallet_db: str) -> None:
                 billing_round=1,
                 seconds=0,
             )
+
+
+def test_missing_video_duration_stays_pending_until_verified_evidence(wallet_db: str) -> None:
+    from decimal import Decimal
+
+    from app.billing_evidence import record_evidence
+
+    seed_task(wallet_db, available_credits=20)
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        reserve_internal_billing(
+            conn, user_id="user_1", task_id="task_1", billing_round=1, seconds=15
+        )
+        conn.execute(
+            "UPDATE generation_tasks SET status='SUCCEEDED',archive_status='DIRECT',"
+            "provider_result_url='https://example.test/result.mp4' WHERE id='task_1'"
+        )
+        assert (
+            finalize_internal_billing(conn, task_id="task_1", outcome="success").transaction_type
+            is None
+        )
+        operation = str(
+            conn.execute("SELECT id FROM billing_operations WHERE source_id='task_1'").fetchone()[0]
+        )
+        record_evidence(
+            conn,
+            operation_id=operation,
+            actor_id="user_1",
+            reference="media-probe-1",
+            reason="verified output duration",
+            units=Decimal(12),
+        )
+    assert wallet_state() == (8, 0)
+    assert transaction_types() == [("RESERVE", 1), ("SETTLE", 1), ("RELEASE", 1)]
 
 
 def test_reserve_moves_one_credit_and_is_idempotent(wallet_db: str) -> None:
@@ -308,7 +348,8 @@ def test_finalize_success_settles_only_an_archived_result(wallet_db: str) -> Non
         )
         conn.execute(
             "UPDATE generation_tasks "
-            "SET status = 'SUCCEEDED', archive_status = 'ARCHIVED', result_asset_id = 'result_1' "
+            "SET status = 'SUCCEEDED', actual_output_seconds = 1, archive_status = "
+            "'ARCHIVED', result_asset_id = 'result_1' "
             "WHERE id = 'task_1'"
         )
         first = finalize_internal_billing(conn, task_id="task_1", outcome="success")
@@ -422,7 +463,8 @@ def test_dangling_reservation_sweep_settles_only_archived_success(wallet_db: str
         )
         conn.execute(
             "UPDATE generation_tasks "
-            "SET status = 'SUCCEEDED', archive_status = 'ARCHIVED', result_asset_id = 'result_1' "
+            "SET status = 'SUCCEEDED', actual_output_seconds = 1, archive_status = "
+            "'ARCHIVED', result_asset_id = 'result_1' "
             "WHERE id = 'task_1'"
         )
     with pg_transaction() as raw:

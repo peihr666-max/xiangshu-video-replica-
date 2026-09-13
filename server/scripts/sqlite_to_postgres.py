@@ -415,18 +415,20 @@ def _insert_table_rows(
     return total
 
 
-def _set_wallet_ledger_trigger(pg_conn: psycopg.Connection[Any], *, enabled: bool) -> None:
+def _set_wallet_ledger_trigger(
+    pg_conn: psycopg.Connection[Any], *, enabled: bool, trigger: str = WALLET_LEDGER_TRIGGER
+) -> None:
     action = sql.SQL("ENABLE") if enabled else sql.SQL("DISABLE")
     pg_conn.execute(
         sql.SQL("ALTER TABLE wallet_transactions {} TRIGGER {}").format(
             action,
-            sql.Identifier(WALLET_LEDGER_TRIGGER),
+            sql.Identifier(trigger),
         )
     )
     row = pg_conn.execute(
         "SELECT tgenabled FROM pg_trigger "
         "WHERE tgrelid = 'wallet_transactions'::regclass AND tgname = %s",
-        (WALLET_LEDGER_TRIGGER,),
+        (trigger,),
     ).fetchone()
     expected = "O" if enabled else "D"
     if row is None or str(row["tgenabled"] if isinstance(row, Mapping) else row[0]) != expected:
@@ -579,6 +581,12 @@ def migrate_snapshot(
                         # Cutover is the sole exception: copy exact historical NULL/new
                         # sequence values while every other table guard remains active.
                         _set_wallet_ledger_trigger(pg_conn, enabled=False)
+                    if table == "wallet_transactions":
+                        # Archived input is not a new recharge: never manufacture funding
+                        # lots or consumed revenue from historical CHARGE rows.
+                        _set_wallet_ledger_trigger(
+                            pg_conn, enabled=False, trigger="trg_billing_capture_charge"
+                        )
                     source_rows = _insert_table_rows(
                         sqlite_conn,
                         pg_conn,
@@ -588,6 +596,10 @@ def migrate_snapshot(
                         target_types,
                         batch_size=batch_size,
                     )
+                    if table == "wallet_transactions":
+                        _set_wallet_ledger_trigger(
+                            pg_conn, enabled=True, trigger="trg_billing_capture_charge"
+                        )
                     if preserve_ledger_sequence:
                         _set_wallet_ledger_trigger(pg_conn, enabled=True)
                         _reset_wallet_ledger_sequence(pg_conn)

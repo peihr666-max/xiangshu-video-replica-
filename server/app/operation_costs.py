@@ -5,14 +5,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from uuid import uuid4
 
-from app.customer_pricing import read_pricing
 from app.db_portable import BusinessConnection
 
 
 @dataclass(frozen=True)
 class GenerationRateSnapshot:
     cost_subject: str
-    cost_unit_price_fen: int | None
+    cost_unit_price_fen: Decimal | None
     external_unit_price_fen: int | None
     billed_seconds: int
 
@@ -24,14 +23,14 @@ def _resolution_suffix(resolution: str) -> str:
     return normalized
 
 
-def _rate(conn: BusinessConnection, subject: str) -> tuple[str, int]:
-    row = conn.execute(
-        "SELECT unit, unit_price_fen FROM operation_cost_rates WHERE subject = %s",
-        (subject,),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError(f"operation cost rate is not configured: {subject}")
-    return str(row["unit"]), int(row["unit_price_fen"])
+def _rate(conn: BusinessConnection, subject: str) -> tuple[str, Decimal | None]:
+    from app.billing_catalog import COST_SUBJECTS, SERVICES, read_tariff
+
+    service = COST_SUBJECTS.get(subject, subject)
+    if service not in SERVICES:
+        return "call", None
+    tariff = read_tariff(conn, service)
+    return SERVICES[service].unit, tariff.unit_cost_fen if tariff else None
 
 
 def snapshot_generation_rates(
@@ -48,13 +47,12 @@ def snapshot_generation_rates(
     cost_subject = f"video_generation_{suffix}"
     if not getattr(conn, "is_postgres", False):
         return GenerationRateSnapshot(cost_subject, None, None, billed_seconds)
+    from app.billing_catalog import retail_snapshot
+
+    quote = retail_snapshot(conn, "video_2k" if suffix == "2k" else "video_768p", 1)
     _, cost_price = _rate(conn, cost_subject)
-    _, config = read_pricing(conn)
-    if config:
-        points = config.video_2k if suffix == "2k" else config.video_768p
-        external_price = (points * 100 + config.points_per_yuan - 1) // config.points_per_yuan
-    else:
-        _, external_price = _rate(conn, f"external_price_{suffix}")
+    ratio = quote["points_per_yuan"]
+    external_price = int(Decimal(str(quote["credits"])) * 100 / Decimal(str(ratio))) if ratio else 0
     updated = conn.execute(
         """
         UPDATE generation_tasks
@@ -65,29 +63,16 @@ def snapshot_generation_rates(
             cost_status = 'PENDING'
         WHERE id = %s
         """,
-        (cost_subject, cost_price, external_price, billed_seconds, task_id),
+        (
+            cost_subject,
+            int(cost_price) if cost_price is not None else None,
+            external_price,
+            billed_seconds,
+            task_id,
+        ),
     )
     if updated.rowcount != 1:
         raise RuntimeError("generation task disappeared before rate snapshot")
-    begin_operation_cost(
-        conn,
-        source_type="generation_task",
-        source_id=task_id,
-        subject=cost_subject,
-        generation_task_id=task_id,
-        resolution=resolution.upper(),
-        unit_price_fen=cost_price,
-        metadata={"billed_seconds": billed_seconds},
-    )
-    begin_operation_cost(
-        conn,
-        source_type="generation_task",
-        source_id=task_id,
-        subject="context_ir",
-        generation_task_id=task_id,
-        resolution=resolution.upper(),
-        metadata={"usage_source": "provider_response"},
-    )
     return GenerationRateSnapshot(cost_subject, cost_price, external_price, billed_seconds)
 
 
@@ -100,7 +85,7 @@ def begin_operation_cost(
     user_id: str | None = None,
     generation_task_id: str | None = None,
     resolution: str | None = None,
-    unit_price_fen: int | None = None,
+    unit_price_fen: Decimal | int | None = None,
     metadata: dict[str, object] | None = None,
 ) -> str:
     """Create the idempotent rate snapshot immediately before a provider call."""
@@ -133,7 +118,45 @@ def begin_operation_cost(
         ),
     ).fetchone()
     assert row is not None
+    _link_billing_attempt(conn, str(row["id"]))
     return str(row["id"])
+
+
+def _link_billing_attempt(conn: BusinessConnection, record_id: str) -> None:
+    from app.billing_catalog import COST_SUBJECTS, SERVICES
+    from app.usage_billing import find_operation
+
+    row = conn.execute(
+        "SELECT * FROM operation_cost_records WHERE id=%s FOR UPDATE", (record_id,)
+    ).fetchone()
+    if row is None or row["billing_attempt_id"]:
+        return
+    service = COST_SUBJECTS.get(str(row["subject"]), str(row["subject"]))
+    if service not in SERVICES:
+        return
+    source = str(row["generation_task_id"] or row["source_id"]).split(":")[0]
+    operation = find_operation(conn, source)
+    if operation is None:
+        return
+    attempt = conn.execute(
+        "INSERT INTO billing_attempts(id,operation_id,attempt_key,service,provider,unit,"
+        "unit_cost_fen) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(operation_id,service,attempt_key) "
+        "DO UPDATE SET attempt_key=excluded.attempt_key RETURNING id",
+        (
+            str(uuid4()),
+            operation,
+            str(row["source_id"]),
+            service,
+            SERVICES[service].provider,
+            SERVICES[service].unit,
+            row["unit_price_fen"],
+        ),
+    ).fetchone()
+    conn.execute(
+        "UPDATE operation_cost_records SET billing_attempt_id=%s WHERE id=%s",
+        (attempt["id"], record_id),
+    )
 
 
 def complete_operation_cost(
@@ -147,25 +170,26 @@ def complete_operation_cost(
         return
     if usage_amount is not None and usage_amount < 0:
         raise ValueError("usage_amount must be non-negative")
-    usage = None if usage_amount is None else Decimal(str(usage_amount))
-    status = "UNKNOWN" if usage is None else "ACTUAL"
+    from app.billing_catalog import amount
+
+    usage = None if usage_amount is None else amount(usage_amount)
+    rate = conn.execute(
+        "SELECT unit_price_fen FROM operation_cost_records WHERE id=%s", (record_id,)
+    ).fetchone()
+    cost = (
+        Decimal(0)
+        if usage == 0
+        else usage * Decimal(str(rate[0]))
+        if usage is not None and rate is not None and rate[0] is not None
+        else None
+    )
+    status = "ACTUAL" if cost is not None else "UNKNOWN"
     updated = conn.execute(
-        """
-        UPDATE operation_cost_records
-        SET usage_amount = %s::numeric,
-            cost_fen = CASE
-                WHEN %s::numeric IS NULL THEN NULL
-                ELSE unit_price_fen * %s::numeric
-            END,
-            status = %s,
-            completed_at = now()
-        WHERE id = %s
-          AND (
-              status = 'PENDING'
-              OR (status = %s AND usage_amount IS NOT DISTINCT FROM %s::numeric)
-          )
-        """,
-        (usage, usage, usage, status, record_id, status, usage),
+        "UPDATE operation_cost_records SET usage_amount=%s,cost_fen=%s,status=%s,"
+        "completed_at=now() "
+        "WHERE id=%s AND (status='PENDING' OR (status=%s AND usage_amount IS NOT DISTINCT "
+        "FROM %s::numeric))",
+        (usage, cost, status, record_id, status, usage),
     )
     if updated.rowcount != 1:
         existing = conn.execute(
@@ -178,80 +202,48 @@ def complete_operation_cost(
             f"status={existing['status']}, usage_amount={existing['usage_amount']}"
         )
 
+    _link_billing_attempt(conn, record_id)
+    linked = conn.execute(
+        "SELECT billing_attempt_id FROM operation_cost_records WHERE id=%s", (record_id,)
+    ).fetchone()
+    if linked and linked[0]:
+        from app.usage_billing import complete_attempt
+
+        complete_attempt(conn, attempt_id=str(linked[0]), usage=usage)
+
 
 def record_video_generation_cost(
-    conn: BusinessConnection,
-    *,
-    task_id: str,
-    output_seconds: float | None,
+    conn: BusinessConnection, *, task_id: str, output_seconds: float | None
 ) -> None:
-    """Persist provider-reported output seconds using the frozen task rate."""
-    if not getattr(conn, "is_postgres", False):
-        return
     row = conn.execute(
-        """
-        SELECT cost_rate_subject_snapshot, cost_unit_price_fen_snapshot
-        FROM generation_tasks WHERE id = %s
-        """,
-        (task_id,),
+        "SELECT cost_rate_subject_snapshot FROM generation_tasks WHERE id=%s", (task_id,)
     ).fetchone()
     if row is None:
         raise RuntimeError("generation task does not exist")
-    subject = row["cost_rate_subject_snapshot"]
-    price = row["cost_unit_price_fen_snapshot"]
-    if subject is None or price is None:
-        # Tasks already in flight when 059 is deployed have no truthful
-        # submission-time rate. Preserve any reported usage, but do not price it
-        # with today's mutable rate.
+    record = conn.execute(
+        "SELECT id FROM operation_cost_records WHERE generation_task_id=%s "
+        "ORDER BY occurred_at DESC,id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if record is None:
         conn.execute(
-            """
-            UPDATE generation_tasks
-            SET actual_output_seconds = %s::numeric,
-                actual_cost = NULL,
-                cost_status = 'UNKNOWN'
-            WHERE id = %s
-            """,
+            "UPDATE generation_tasks SET actual_output_seconds=%s,cost_status='UNKNOWN' "
+            "WHERE id=%s",
             (output_seconds, task_id),
         )
         return
-    record_id = begin_operation_cost(
-        conn,
-        source_type="generation_task",
-        source_id=task_id,
-        subject=str(subject),
-        generation_task_id=task_id,
-        unit_price_fen=int(price),
-    )
+    record_id = str(record[0])
     complete_operation_cost(conn, record_id=record_id, usage_amount=output_seconds)
-    context_ir = conn.execute(
-        """
-        SELECT id FROM operation_cost_records
-        WHERE source_type = 'generation_task' AND source_id = %s
-          AND subject = 'context_ir'
-        """,
-        (task_id,),
+    cost = conn.execute(
+        "SELECT cost_fen,status FROM operation_cost_records WHERE id=%s", (record_id,)
     ).fetchone()
-    if context_ir is not None:
-        # The verified H3 response exposes output seconds but no Context IR
-        # usage flag/count. Keep it UNKNOWN instead of assuming the default.
-        complete_operation_cost(conn, record_id=str(context_ir["id"]), usage_amount=None)
     conn.execute(
-        """
-        UPDATE generation_tasks
-        SET actual_output_seconds = %s::numeric,
-            actual_cost = CASE
-                WHEN %s::numeric IS NULL THEN NULL
-                ELSE %s::numeric * %s / 100.0
-            END,
-            cost_status = %s
-        WHERE id = %s
-        """,
+        "UPDATE generation_tasks SET actual_output_seconds=%s,actual_cost=%s,"
+        "cost_status=%s WHERE id=%s",
         (
             output_seconds,
-            output_seconds,
-            output_seconds,
-            int(price),
-            "UNKNOWN" if output_seconds is None else "ACTUAL",
+            Decimal(str(cost[0])) / 100 if cost[0] is not None else None,
+            cost[1],
             task_id,
         ),
     )
@@ -268,7 +260,7 @@ def record_video_generation_not_called(
     records = conn.execute(
         """
         SELECT id FROM operation_cost_records
-        WHERE source_type = 'generation_task' AND source_id = %s
+        WHERE source_type = 'generation_task' AND generation_task_id = %s AND status = 'PENDING'
         """,
         (task_id,),
     ).fetchall()

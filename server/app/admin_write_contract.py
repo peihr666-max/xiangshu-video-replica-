@@ -108,7 +108,7 @@ def request_hash(route: str, path_params: Mapping[str, str], body: BaseModel) ->
         {
             "route": route,
             "path_params": {name: path_params[name] for name in sorted(path_params)},
-            "body": body.model_dump(),
+            "body": body.model_dump(mode="json"),
         },
         separators=(",", ":"),
         sort_keys=True,

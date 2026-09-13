@@ -916,15 +916,18 @@ class ApilioFirstFrameQualityInspector:
         last_error: Exception | None = None
         for attempt in range(self.max_attempts):
             try:
-                raw_body, _ = self.transport.post(
-                    f"{self.base_url}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    body=body,
-                )
+                from app.billing_meter import meter_call
+
+                with meter_call("quality_inspection"):
+                    raw_body, _ = self.transport.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                        },
+                        body=body,
+                    )
                 response = json.loads(raw_body.decode("utf-8"))
                 raw_content = response["choices"][0]["message"]["content"]
                 payload = json.loads(raw_content)

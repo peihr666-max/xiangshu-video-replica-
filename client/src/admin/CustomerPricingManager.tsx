@@ -7,9 +7,6 @@ import {
 } from "../api.admin";
 
 const fields = [
-  ["video_768p", "768P 视频（积分/秒）"],
-  ["video_2k", "2K 视频（积分/秒）"],
-  ["oral", "数字人口播（积分/次）"],
   ["points_per_yuan", "每 1 元充值获得积分"],
   ["discount_basis_points", "消费折扣（10000 为原价，8500 为 85%）"],
 ] as const;
@@ -22,9 +19,6 @@ export function CustomerPricingManager({
   const [values, setValues] = useState<
     Record<(typeof fields)[number][0], string>
   >({
-    video_768p: "",
-    video_2k: "",
-    oral: "",
     points_per_yuan: "",
     discount_basis_points: "10000",
   });
@@ -49,9 +43,6 @@ export function CustomerPricingManager({
         if (value.config) {
           setRounding(value.config.consumption_rounding ?? "ceil");
           setValues({
-            video_768p: String(value.config.video_768p),
-            video_2k: String(value.config.video_2k),
-            oral: String(value.config.oral),
             points_per_yuan: String(value.config.points_per_yuan),
             discount_basis_points: String(
               value.config.discount_basis_points ?? 10000,
@@ -71,9 +62,6 @@ export function CustomerPricingManager({
     event.preventDefault();
     if (!data || readOnly || saving.current) return;
     const config: CustomerCreditConfig = {
-      video_768p: Number(values.video_768p),
-      video_2k: Number(values.video_2k),
-      oral: Number(values.oral),
       points_per_yuan: Number(values.points_per_yuan),
       discount_basis_points: Number(values.discount_basis_points),
       consumption_rounding: rounding,
@@ -125,10 +113,10 @@ export function CustomerPricingManager({
     }
   }
   return (
-    <section className="admin-panel" aria-label="客户积分价格">
-      <h2>客户积分价格</h2>
+    <section className="admin-panel" aria-label="充值换算与消费折扣">
+      <h2>充值换算与消费折扣</h2>
       <p>
-        统一用于客户价格页、任务预扣和充值换算。已有余额保持原值；在途任务及历史订单保留原计价快照。
+        配置每元充值积分和消费折扣；每项功能的成本与售价在“成本与售价”页设置。已受理请求使用原价格。
       </p>
       {error && (
         <div role="alert">
@@ -150,7 +138,7 @@ export function CustomerPricingManager({
           <p>
             {data.configured
               ? `当前版本：V${data.version}`
-              : "尚未发布积分价格，请完整填写后保存。"}
+              : "尚未配置充值换算；未配置售价的功能仍可免费使用。"}
           </p>
           <fieldset disabled={readOnly || busy}>
             {fields.map(([key, label]) => (

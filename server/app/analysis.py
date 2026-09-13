@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -311,7 +311,10 @@ class ApilioGemini:
                 }
             ],
         }
-        text, raw = self._complete(payload)
+        from app.billing_meter import meter_call
+
+        with meter_call("analysis_repair"):
+            text, raw = self._complete(payload)
         return ProviderResponse(text=text, raw=raw)
 
     def _complete(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -388,8 +391,11 @@ def analyze_video(
     video_uri: str,
     video_duration_seconds: float,
     provider: VideoAnalysisProvider,
+    on_provider_result: Callable[[], None] | None = None,
 ) -> AnalysisResult:
     response = provider.analyze(video_uri=video_uri, duration_seconds=video_duration_seconds)
+    if on_provider_result is not None:
+        on_provider_result()
     try:
         analysis = parse_analysis_response(response.text, duration_seconds=video_duration_seconds)
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
@@ -774,6 +780,11 @@ def enqueue_analysis_task(
         (task_id,),
     ).fetchone()
     if inserted is not None:
+        from app.usage_billing import accept_operation
+
+        accept_operation(
+            conn, user_id=created_by_user_id, service="analysis", source_id=task_id, units=1
+        )
         return inserted, True
 
     concurrent = conn.execute(

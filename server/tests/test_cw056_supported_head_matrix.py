@@ -55,7 +55,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260913T0630_account_credit_operations"
+HEAD_REVISION = "20260913T1100_itemized_billing"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -99,18 +99,18 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # 例如 triggers 用 information_schema.triggers 的**行数**（BEFORE UPDATE 与
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
-    "tables": 82,
-    "columns": 965,
+    "tables": 87,
+    "columns": 1038,
     "identity_columns": 0,
     "sequences": 4,
     "jsonb_columns": 0,
-    "timestamptz_columns": 22,
-    "triggers": 20,
-    "partial_indexes": 26,
-    "unique_constraints": 29,
-    "check_constraints": 255,
-    "foreign_keys": 156,
-    "primary_keys": 82,
+    "timestamptz_columns": 31,
+    "triggers": 27,
+    "partial_indexes": 28,
+    "unique_constraints": 32,
+    "check_constraints": 286,
+    "foreign_keys": 167,
+    "primary_keys": 87,
 }
 
 # head 的表名全集。counts 只能证明「数量没漂」，证明不了「同一批表」：
@@ -146,6 +146,11 @@ HEAD_TABLE_NAMES = (
     "analysis_tasks",
     "assets",
     "audit_logs",
+    "billing_attempts",
+    "billing_credit_lots",
+    "billing_evidence",
+    "billing_operations",
+    "billing_tariffs",
     "character_asset_reviews",
     "character_assets",
     "character_generation_tasks",
@@ -221,7 +226,7 @@ HEAD_TABLE_NAMES = (
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
 # CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
-HEAD_SCHEMA_DIGEST = "072869b3947a0856e656b50833fc701135ad07d34b6216e008b15288b3a4fd3a"
+HEAD_SCHEMA_DIGEST = "4b24fa6cadd2585884b4ab1d25fc4871ee5db7a65d54d512f580fde238a6034a"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

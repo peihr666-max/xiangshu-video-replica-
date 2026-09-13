@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { CostDetails } from "./CostDetails";
-import { ProfitOverview } from "./ProfitOverview";
+import { BillingEconomics } from "./BillingEconomics";
 import "./economics.css";
 import { TabBar } from "./ui/TabBar";
 
@@ -29,8 +28,8 @@ export function AnalyticsPage({
         items={tabs}
         onChange={setTab}
       />
-      {tab === "profit" ? <ProfitOverview readOnly={readOnly} /> : null}
-      {tab === "cost" ? <CostDetails /> : null}
+      {tab === "profit" ? <BillingEconomics readOnly={readOnly} /> : null}
+      {tab === "cost" ? <BillingEconomics readOnly={readOnly} /> : null}
     </div>
   );
 }

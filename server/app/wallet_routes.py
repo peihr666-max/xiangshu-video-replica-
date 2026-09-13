@@ -44,6 +44,9 @@ class WalletTransactionResponse(BaseModel):
     credit_price_version: int | None = None
     generation_batch_id: str | None = None
     credit_source: str | None = None
+    billing_operation_id: str | None = None
+    service: str | None = None
+    service_name: str | None = None
 
 
 class WalletTransactionPage(BaseModel):

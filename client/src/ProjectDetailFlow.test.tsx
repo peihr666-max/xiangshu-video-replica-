@@ -662,167 +662,181 @@ describe("ProjectDetailFlow", () => {
     expect(screen.queryByText(/AI 二创/)).toBeNull();
   });
 
-  it("compiles custom copy into the video prompt without restoring an older manual prompt", async () => {
-    vi.mocked(api.getLatestProjectFirstFrames).mockResolvedValue({
-      version: firstFrameCandidatesVersion,
-      stale: false,
-    });
-    vi.mocked(api.getLatestProjectFirstFrameSelection).mockResolvedValue({
-      version: firstFrameSelectionVersion,
-      stale: false,
-    });
-    vi.mocked(api.getProjectFirstFrameHistory).mockResolvedValue([
-      firstFrameCandidatesVersion,
-    ]);
-    vi.mocked(api.getLatestProjectShotCards).mockResolvedValue({
-      ...analysisVersion,
-      id: "shot-card-1",
-      kind: "shot_card",
-      payload: { source_analysis_version_id: analysisVersion.id },
-    });
-    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
-      version: null,
-      stale: false,
-      stale_reasons: [],
-    });
-    vi.mocked(api.createScriptVersion).mockResolvedValue({
-      ...analysisVersion,
-      id: "script-custom-1",
-      kind: "script",
-      payload: { full_text: "这栋乡下别墅真让人心动。" },
-    });
-    vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
-      version: {
-        ...analysisVersion,
-        id: "prompt-old-1",
-        kind: "generation_prompt",
-        payload: { prompt_text: "旧的手工 Prompt" },
-      },
-      stale: false,
-      stale_reasons: [],
-    });
-    vi.mocked(api.reviseGenerationPrompt).mockResolvedValue({
-      ...analysisVersion,
-      id: "prompt-manual-1",
-      kind: "generation_prompt",
-      payload: { prompt_text: "保存过但已过时的手工 Prompt" },
-    });
-    vi.mocked(api.compileGenerationPrompt)
-      .mockResolvedValueOnce({
-        ...analysisVersion,
-        id: "prompt-compiled-custom-1",
-        kind: "generation_prompt",
-        payload: { prompt_text: "含新自定义文案的编译 Prompt" },
-      })
-      .mockResolvedValueOnce({
-        ...analysisVersion,
-        id: "prompt-compiled-custom-2",
-        kind: "generation_prompt",
-        payload: { prompt_text: "第二次编译出的不同版本" },
+  it.each([0, 2, 150])(
+    "submits custom copy with %s quoted credits and zero local balance",
+    async (credits) => {
+      vi.mocked(api.getGenerationPriceQuote).mockResolvedValue({
+        estimated_credits: credits,
+        unit_credits: credits / 15,
+        duration_seconds: 15,
+        resolution: "768P",
+        quantity: 1,
+        estimated_seconds: 15,
+        unit_price_fen_per_second: credits / 15,
+        estimated_price_fen: credits,
+      } as api.GenerationPriceQuote);
+      vi.mocked(api.getLatestProjectFirstFrames).mockResolvedValue({
+        version: firstFrameCandidatesVersion,
+        stale: false,
       });
-    vi.mocked(api.lockGenerationPrompt)
-      .mockResolvedValueOnce({
-        ...analysisVersion,
-        id: "prompt-locked-custom-1",
-        kind: "generation_prompt",
-        payload: { prompt_text: "含新自定义文案的编译 Prompt" },
-      })
-      .mockResolvedValueOnce({
-        ...analysisVersion,
-        id: "prompt-locked-custom-2",
-        kind: "generation_prompt",
-        payload: { prompt_text: "第二次锁定出的不同版本" },
+      vi.mocked(api.getLatestProjectFirstFrameSelection).mockResolvedValue({
+        version: firstFrameSelectionVersion,
+        stale: false,
       });
-    const batch = {
-      id: "batch-custom-1",
-      project_id: project.id,
-      prompt_version_id: "prompt-locked-custom-1",
-      status: "QUEUED",
-      quantity: 1,
-      stale: false,
-      creation_kind: "replica",
-      progress: {
-        total_count: 1,
-        terminal_count: 0,
-        progress_percent: 0,
-        counts: {},
-      },
-      tasks: [],
-    } as api.GenerationBatch;
-    vi.mocked(api.createGenerationBatch)
-      .mockRejectedValueOnce(new Error("提交结果未知，请安全重试。"))
-      .mockResolvedValue(batch);
-    const onBatchCreated = vi.fn();
+      vi.mocked(api.getProjectFirstFrameHistory).mockResolvedValue([
+        firstFrameCandidatesVersion,
+      ]);
+      vi.mocked(api.getLatestProjectShotCards).mockResolvedValue({
+        ...analysisVersion,
+        id: "shot-card-1",
+        kind: "shot_card",
+        payload: { source_analysis_version_id: analysisVersion.id },
+      });
+      vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
+        version: null,
+        stale: false,
+        stale_reasons: [],
+      });
+      vi.mocked(api.createScriptVersion).mockResolvedValue({
+        ...analysisVersion,
+        id: "script-custom-1",
+        kind: "script",
+        payload: { full_text: "这栋乡下别墅真让人心动。" },
+      });
+      vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
+        version: {
+          ...analysisVersion,
+          id: "prompt-old-1",
+          kind: "generation_prompt",
+          payload: { prompt_text: "旧的手工 Prompt" },
+        },
+        stale: false,
+        stale_reasons: [],
+      });
+      vi.mocked(api.reviseGenerationPrompt).mockResolvedValue({
+        ...analysisVersion,
+        id: "prompt-manual-1",
+        kind: "generation_prompt",
+        payload: { prompt_text: "保存过但已过时的手工 Prompt" },
+      });
+      vi.mocked(api.compileGenerationPrompt)
+        .mockResolvedValueOnce({
+          ...analysisVersion,
+          id: "prompt-compiled-custom-1",
+          kind: "generation_prompt",
+          payload: { prompt_text: "含新自定义文案的编译 Prompt" },
+        })
+        .mockResolvedValueOnce({
+          ...analysisVersion,
+          id: "prompt-compiled-custom-2",
+          kind: "generation_prompt",
+          payload: { prompt_text: "第二次编译出的不同版本" },
+        });
+      vi.mocked(api.lockGenerationPrompt)
+        .mockResolvedValueOnce({
+          ...analysisVersion,
+          id: "prompt-locked-custom-1",
+          kind: "generation_prompt",
+          payload: { prompt_text: "含新自定义文案的编译 Prompt" },
+        })
+        .mockResolvedValueOnce({
+          ...analysisVersion,
+          id: "prompt-locked-custom-2",
+          kind: "generation_prompt",
+          payload: { prompt_text: "第二次锁定出的不同版本" },
+        });
+      const batch = {
+        id: "batch-custom-1",
+        project_id: project.id,
+        prompt_version_id: "prompt-locked-custom-1",
+        status: "QUEUED",
+        quantity: 1,
+        stale: false,
+        creation_kind: "replica",
+        progress: {
+          total_count: 1,
+          terminal_count: 0,
+          progress_percent: 0,
+          counts: {},
+        },
+        tasks: [],
+      } as api.GenerationBatch;
+      vi.mocked(api.createGenerationBatch)
+        .mockRejectedValueOnce(new Error("提交结果未知，请安全重试。"))
+        .mockResolvedValue(batch);
+      const onBatchCreated = vi.fn();
 
-    render(
-      <ProjectDetailFlow
-        onBack={vi.fn()}
-        onBatchCreated={onBatchCreated}
-        project={project}
-        readOnly={false}
-      />,
-    );
+      render(
+        <ProjectDetailFlow
+          onBack={vi.fn()}
+          onBatchCreated={onBatchCreated}
+          project={project}
+          readOnly={false}
+          walletProvider={async () => 0}
+        />,
+      );
 
-    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
-    fireEvent.change(screen.getByLabelText("提示词源码"), {
-      target: { value: "保存过但已过时的手工 Prompt" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
-    await waitFor(() =>
-      expect(api.saveGenerationPrompt).toHaveBeenCalledOnce(),
-    );
+      fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+      fireEvent.change(screen.getByLabelText("提示词源码"), {
+        target: { value: "保存过但已过时的手工 Prompt" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
+      await waitFor(() =>
+        expect(api.saveGenerationPrompt).toHaveBeenCalledOnce(),
+      );
 
-    fireEvent.change(await screen.findByLabelText("自定义文案"), {
-      target: { value: "这栋乡下别墅真让人心动。" },
-    });
-    expect(screen.getByText(/不会覆盖本次文案/)).toBeInTheDocument();
+      fireEvent.change(await screen.findByLabelText("自定义文案"), {
+        target: { value: "这栋乡下别墅真让人心动。" },
+      });
+      expect(screen.getByText(/不会覆盖本次文案/)).toBeInTheDocument();
 
-    const startButton = screen.getByRole("button", {
-      name: "提交生成（1 条）",
-    });
-    await waitFor(() => expect(startButton).toBeEnabled());
-    fireEvent.click(startButton);
-    expect(screen.getByLabelText("自定义文案")).toBeDisabled();
-    expect(screen.getByLabelText("成片时长")).toBeDisabled();
-    expect(screen.getByLabelText("生成数量")).toBeDisabled();
+      const startButton = screen.getByRole("button", {
+        name: "提交生成（1 条）",
+      });
+      await waitFor(() => expect(startButton).toBeEnabled());
+      fireEvent.click(startButton);
+      expect(screen.getByLabelText("自定义文案")).toBeDisabled();
+      expect(screen.getByLabelText("成片时长")).toBeDisabled();
+      expect(screen.getByLabelText("生成数量")).toBeDisabled();
 
-    await waitFor(() =>
-      expect(api.createScriptVersion).toHaveBeenCalledWith(project.id, {
-        source: "custom",
-        text: "这栋乡下别墅真让人心动。",
+      await waitFor(() =>
+        expect(api.createScriptVersion).toHaveBeenCalledWith(project.id, {
+          source: "custom",
+          text: "这栋乡下别墅真让人心动。",
+          shot_card_version_id: "shot-card-1",
+        }),
+      );
+      expect(api.compileGenerationPrompt).toHaveBeenCalledWith(project.id, {
+        script_version_id: "script-custom-1",
         shot_card_version_id: "shot-card-1",
-      }),
-    );
-    expect(api.compileGenerationPrompt).toHaveBeenCalledWith(project.id, {
-      script_version_id: "script-custom-1",
-      shot_card_version_id: "shot-card-1",
-      first_frame_asset_id: "first-frame-1",
-      output_duration_seconds: 15,
-      resolution: "768P",
-      ratio: "adaptive",
-    });
-    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-      project.id,
-      "prompt-compiled-custom-1",
-    );
-    expect(
-      await screen.findByText("提交结果未知，请安全重试。"),
-    ).toBeInTheDocument();
-    const firstIdempotencyKey = vi.mocked(api.createGenerationBatch).mock
-      .calls[0]?.[1].idempotency_key;
-    fireEvent.click(screen.getByRole("button", { name: "提交生成（1 条）" }));
-    await waitFor(() => expect(onBatchCreated).toHaveBeenCalledWith(batch));
-    const secondIdempotencyKey = vi.mocked(api.createGenerationBatch).mock
-      .calls[1]?.[1].idempotency_key;
-    expect(firstIdempotencyKey).toBeTruthy();
-    expect(secondIdempotencyKey).toBe(firstIdempotencyKey);
-    expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledOnce();
-    expect(vi.mocked(api.createGenerationBatch).mock.calls[1]?.[1]).toEqual(
-      vi.mocked(api.createGenerationBatch).mock.calls[0]?.[1],
-    );
-  });
+        first_frame_asset_id: "first-frame-1",
+        output_duration_seconds: 15,
+        resolution: "768P",
+        ratio: "adaptive",
+      });
+      expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
+      expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
+        project.id,
+        "prompt-compiled-custom-1",
+      );
+      expect(
+        await screen.findByText("提交结果未知，请安全重试。"),
+      ).toBeInTheDocument();
+      const firstIdempotencyKey = vi.mocked(api.createGenerationBatch).mock
+        .calls[0]?.[1].idempotency_key;
+      fireEvent.click(screen.getByRole("button", { name: "提交生成（1 条）" }));
+      await waitFor(() => expect(onBatchCreated).toHaveBeenCalledWith(batch));
+      const secondIdempotencyKey = vi.mocked(api.createGenerationBatch).mock
+        .calls[1]?.[1].idempotency_key;
+      expect(firstIdempotencyKey).toBeTruthy();
+      expect(secondIdempotencyKey).toBe(firstIdempotencyKey);
+      expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
+      expect(api.lockGenerationPrompt).toHaveBeenCalledOnce();
+      expect(vi.mocked(api.createGenerationBatch).mock.calls[1]?.[1]).toEqual(
+        vi.mocked(api.createGenerationBatch).mock.calls[0]?.[1],
+      );
+    },
+  );
 
   it("replays the same frozen paid request after leaving and reopening the project", async () => {
     vi.mocked(api.getLatestProjectFirstFrames).mockResolvedValue({

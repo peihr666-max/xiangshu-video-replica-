@@ -955,14 +955,25 @@ export async function getLatestScriptFromAudioTask(
 }
 
 export type OralPrice = {
+  budget_seconds?: number;
+  estimated_credits?: number;
   unit_price_fen: number;
   unit_credits?: number;
   credit_price_version?: number;
 };
 
-/** 数字人口播单价（每条）。 */
-export async function getOralPrice(): Promise<OralPrice> {
-  return requestApiJson<OralPrice>("/api/oral/price", "读取口播报价失败");
+/** 按秒报价；预算与提交使用相同的服务端计算。 */
+export async function getOralPrice(input?: {
+  script_text?: string;
+  audio_asset_id?: string;
+}): Promise<OralPrice> {
+  return input
+    ? requestApiJson<OralPrice>("/api/oral/quote", "读取口播报价失败", {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "Content-Type": "application/json" },
+      })
+    : requestApiJson<OralPrice>("/api/oral/price", "读取口播报价失败");
 }
 
 export type OralAvatarRecord = {
@@ -5917,6 +5928,22 @@ export function fetchViralVideoMedia(
   );
 }
 
+export function refreshViralVideoStatistics(
+  videoIds: string[],
+  key: string,
+): Promise<ViralStatisticsResponse> {
+  return requestApiJson<ViralStatisticsResponse>(
+    "/api/viral/videos/statistics/refresh",
+    "刷新视频统计失败",
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({ videoIds }),
+    },
+    VIRAL_STATISTICS_TIMEOUT_MS,
+  );
+}
+
 /** 按需补齐视频号互动统计；服务端负责缓存与失败退避。 */
 export function fetchViralVideoStatistics(
   videoIds: string[],
@@ -6002,9 +6029,9 @@ export type CustomerApiKey = {
 };
 
 export type CustomerCreditConfig = {
-  video_768p: number;
-  video_2k: number;
-  oral: number;
+  video_768p?: number | null;
+  video_2k?: number | null;
+  oral?: number | null;
   points_per_yuan: number;
   discount_basis_points?: number;
   consumption_rounding?: "ceil" | "floor";
@@ -6023,6 +6050,13 @@ export type CustomerPricing = {
   }>;
   recharge_rounding: string;
 };
+
+export function getWorkspacePricing(): Promise<CustomerPricing> {
+  return requestApiJson<CustomerPricing>(
+    "/api/customer/pricing",
+    "读取功能价格失败",
+  );
+}
 
 export async function customerGetPricing(
   credential: CustomerSessionCredential,

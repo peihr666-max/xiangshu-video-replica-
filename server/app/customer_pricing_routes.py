@@ -22,7 +22,7 @@ class PriceEntry(BaseModel):
     name: str
     specification: str
     unit: str
-    unit_credits: int
+    unit_credits: float
     configurable: bool
 
 
@@ -41,39 +41,23 @@ class PricingUpdate(AdminWriteContract):
 
 def pricing_response(conn: BusinessConnection) -> PricingResponse:
     version, config = read_pricing(conn)
-    prices = [
-        PriceEntry(
-            subject=subject,
-            name=name,
-            specification=spec,
-            unit=unit,
-            unit_credits=int(getattr(config, subject)) if config else 1,
-            configurable=True,
+    from app.billing_catalog import SERVICES, retail_snapshot
+
+    prices = []
+    for subject, service in SERVICES.items():
+        snapshot = retail_snapshot(conn, subject, 1)
+        prices.append(
+            PriceEntry(
+                subject=subject,
+                name=service.name,
+                specification="按实际用量逐项扣分"
+                if snapshot["enabled"]
+                else "平台承担，用户不扣分",
+                unit={"second": "秒", "image": "张", "call": "次"}[service.unit],
+                unit_credits=float(str(snapshot["unit_credits"])) if snapshot["enabled"] else 0,
+                configurable=service.customer_charge_allowed,
+            )
         )
-        for subject, name, spec, unit in (
-            ("video_768p", "视频生成", "768P", "秒"),
-            ("video_2k", "视频生成", "2K", "秒"),
-            ("oral", "数字人口播", "每个生成任务", "次"),
-        )
-    ]
-    # These integrated functions have no wallet charge. Never advertise upstream costs
-    # as customer retail prices or imply a charge that the service does not perform.
-    prices.extend(
-        PriceEntry(
-            subject=subject,
-            name=name,
-            specification="当前不单独扣分",
-            unit="次",
-            unit_credits=0,
-            configurable=False,
-        )
-        for subject, name in (
-            ("analysis", "视频解析"),
-            ("first_frame", "首帧图片"),
-            ("character", "人物图片"),
-            ("context_ir", "提示词编译"),
-        )
-    )
     return PricingResponse(
         version=version, configured=config is not None, config=config, prices=prices
     )
@@ -98,6 +82,7 @@ def update_prices(
     payload: PricingUpdate, request: Request, response: Response, actor: AdminWriter
 ) -> dict[str, object]:
     def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("billing:tariffs",))
         old = conn.execute(
             "SELECT version, config_json FROM customer_credit_pricing WHERE id = 1 FOR UPDATE"
         ).fetchone()
@@ -114,6 +99,20 @@ def update_prices(
             "updated_at = now() WHERE id = 1",
             (payload.config.model_dump_json(),),
         )
+        # Legacy administrator callers can still explicitly configure the three original subjects.
+        # Exchange-only forms omit these fields and never publish a usage charge.
+        for subject in ("video_768p", "video_2k", "oral"):
+            value = getattr(payload.config, subject)
+            if value is not None:
+                conn.execute(
+                    "INSERT INTO billing_tariffs(service,enabled,unit_credits,updated_by_user_id) "
+                    "VALUES (%s,%s,%s,%s) ON CONFLICT(service) DO UPDATE SET "
+                    "enabled=excluded.enabled, "
+                    "unit_credits=excluded.unit_credits,version=billing_tariffs.version+1,"
+                    "updated_at=now(), "
+                    "updated_by_user_id=excluded.updated_by_user_id",
+                    (subject, value > 0, value, actor.user_id),
+                )
         conn.execute(
             "INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, "
             "metadata_json) VALUES (%s, %s, 'customer_pricing.update', "

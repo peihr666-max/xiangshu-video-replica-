@@ -34,7 +34,7 @@ DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # 取代旧的 SKIP_REASON 常量（已无引用，随 main 基线删除）。
 # HEAD_REVISION 取本分支链尾 20260912T1400：本分支 = main(→090) + 注册线，
 # 迁移后 alembic 版本头即 20260912T1400，9 处 assert version == HEAD_REVISION 依赖此值。
-HEAD_REVISION = "20260913T0630_account_credit_operations"
+HEAD_REVISION = "20260913T1100_itemized_billing"
 
 
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(
@@ -274,7 +274,7 @@ def test_wallet_ledger_sequence_migration_is_reversible_on_postgres() -> None:
                 "idempotency_key) VALUES ('ledger-tx-historical', 'ledger-user', 'CHARGE', 10, 0, "
                 "'ledger-order-historical', 'ledger-key-historical')"
             )
-        command.upgrade(config, "head")
+        command.upgrade(config, "063_wallet_ledger_sequence")
         with psycopg.connect(dsn) as conn:
             assert conn.execute(
                 "SELECT 1 FROM information_schema.columns "
@@ -358,7 +358,7 @@ def test_wallet_ledger_sequence_migration_is_reversible_on_postgres() -> None:
                 is None
             )
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "063_wallet_ledger_sequence")
         with psycopg.connect(dsn) as conn:
             assert conn.execute(
                 "SELECT 1 FROM information_schema.columns "
@@ -852,6 +852,8 @@ def test_pg_free_grant_downgrade_preserves_ledger(
     try:
         dsn = _t08_database(database_name)
         config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+        # Exercise the historic 054 guard before any new funding facts exist.
+        command.downgrade(config, "20260913T0630_account_credit_operations")
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(
                 "INSERT INTO users (id, username, display_name, role) "
@@ -893,7 +895,7 @@ def test_pg_free_grant_downgrade_preserves_ledger(
 
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                HEAD_REVISION,
+                "20260913T0630_account_credit_operations",
             )
             for table in tables:
                 assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]

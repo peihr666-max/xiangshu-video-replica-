@@ -8,7 +8,7 @@ vi.mock("../api.admin", () => ({
   updateCustomerPricing: vi.fn(),
 }));
 
-test("saves configured credit prices with version and reason", async () => {
+test("saves exchange and discount without implicitly publishing feature tariffs", async () => {
   const payload = {
     version: 2,
     configured: true,
@@ -23,9 +23,9 @@ test("saves configured credit prices with version and reason", async () => {
   });
   render(<CustomerPricingManager />);
   await waitFor(() =>
-    expect(screen.getByLabelText("768P 视频（积分/秒）")).toHaveValue(3),
+    expect(screen.getByLabelText("每 1 元充值获得积分")).toHaveValue(100),
   );
-  fireEvent.change(screen.getByLabelText("768P 视频（积分/秒）"), {
+  fireEvent.change(screen.getByLabelText("每 1 元充值获得积分"), {
     target: { value: "5" },
   });
   fireEvent.change(screen.getByLabelText("调整原因"), {
@@ -36,8 +36,7 @@ test("saves configured credit prices with version and reason", async () => {
   await waitFor(() =>
     expect(updateCustomerPricing).toHaveBeenCalledWith(
       {
-        ...payload.config,
-        video_768p: 5,
+        points_per_yuan: 5,
         discount_basis_points: 10000,
         consumption_rounding: "ceil",
       },

@@ -803,7 +803,7 @@ describe("AdminApp", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
     expect(screen.getByRole("tab", { name: "支付与价格" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "费率管理" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "成本与售价" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "服务配置" })).toBeInTheDocument();
   });
 

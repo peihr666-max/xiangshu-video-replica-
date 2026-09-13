@@ -164,6 +164,11 @@ def route_state(chain_dsn: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str
             "INSERT INTO users (id, username, display_name, role) "
             "VALUES ('admin_u', 'admin_u', 'Admin User', 'admin')"
         )
+        # The paid scenario explicitly publishes this feature tariff.
+        conn.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('video_768p',true,1,2)"
+        )
         # Production-like runtime: fair queue on, generous batch ceiling.
         conn.execute(
             "INSERT INTO runtime_settings "

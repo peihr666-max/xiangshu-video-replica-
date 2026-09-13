@@ -16,9 +16,9 @@ MAX_CREDITS = 2_147_483_647
 class PricingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    video_768p: int = Field(ge=1, le=1_000_000)
-    video_2k: int = Field(ge=1, le=1_000_000)
-    oral: int = Field(ge=1, le=1_000_000)
+    video_768p: int | None = Field(default=None, ge=0, le=1_000_000)
+    video_2k: int | None = Field(default=None, ge=0, le=1_000_000)
+    oral: int | None = Field(default=None, ge=0, le=1_000_000)
     points_per_yuan: int = Field(ge=1, le=1_000_000)
     discount_basis_points: int = Field(default=10_000, ge=1, le=10_000)
     consumption_rounding: Literal["ceil", "floor"] = "ceil"
@@ -27,7 +27,10 @@ class PricingConfig(BaseModel):
 def task_credits(config: PricingConfig, subject: Subject, units: int, quantity: int = 1) -> int:
     if units < 1 or quantity < 1:
         raise ValueError("计费数量必须大于零")
-    numerator = int(getattr(config, subject)) * units * config.discount_basis_points
+    unit_price = getattr(config, subject)
+    if not unit_price:
+        return 0
+    numerator = int(unit_price) * units * config.discount_basis_points
     per_task = max(1, (numerator + (9999 if config.consumption_rounding == "ceil" else 0)) // 10000)
     total = per_task * quantity
     if total > MAX_CREDITS:
@@ -57,18 +60,7 @@ def read_pricing(conn: BusinessConnection) -> tuple[int, PricingConfig | None]:
 
 
 def quote_snapshot(conn: BusinessConnection, subject: Subject, units: int) -> tuple[int, str]:
-    version, config = read_pricing(conn)
-    # Version zero preserves the actual pre-migration wallet charges.
-    points = task_credits(config, subject, units) if config else units
-    return points, json.dumps(
-        {
-            "version": version,
-            "subject": subject,
-            "units": units,
-            "unit_credits": int(getattr(config, subject)) if config else 1,
-            "credits": points,
-            "discount_basis_points": config.discount_basis_points if config else 10000,
-            "consumption_rounding": config.consumption_rounding if config else "ceil",
-        },
-        separators=(",", ":"),
-    )
+    from app.billing_catalog import retail_snapshot
+
+    snapshot = retail_snapshot(conn, subject, units)
+    return int(str(snapshot["credits"])), json.dumps(snapshot, separators=(",", ":"))

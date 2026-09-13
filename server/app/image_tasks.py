@@ -316,7 +316,7 @@ def enqueue_first_frame_task(
     checkpoint_json: str | None = None
     previous = conn.execute(
         """
-        SELECT result_json, error_code FROM first_frame_tasks
+        SELECT id, result_json, error_code FROM first_frame_tasks
         WHERE project_id = %s AND request_hash = %s
           AND status IN ('FAILED','SUBMISSION_UNCERTAIN')
           AND result_json IS NOT NULL
@@ -328,6 +328,10 @@ def enqueue_first_frame_task(
         "IMAGE_TASK_PROVIDER_CHANGED",
         "IMAGE_TASK_EXECUTION_UNKNOWN",
     }
+    if previous is not None:
+        from app.usage_billing import finish_source
+
+        finish_source(conn, str(previous["id"]), units=0, succeeded=False)
     if (
         previous is not None
         and not checkpoint_blocked
@@ -366,6 +370,11 @@ def enqueue_first_frame_task(
         ).fetchone()
     if row is None:
         raise _task_error(409, "FIRST_FRAME_TASK_ENQUEUE_CONFLICT", "任务状态已变化，请重试。")
+    from app.usage_billing import accept_operation
+
+    accept_operation(
+        conn, user_id=actor.id, service="first_frame", source_id=str(row["id"]), units=quantity
+    )
     conn.commit()
     return cast(sqlite3.Row, row)
 
@@ -466,6 +475,9 @@ def enqueue_character_sheet_task(
         ).fetchone()
     if row is None:
         raise _task_error(409, "CHARACTER_SHEET_TASK_ENQUEUE_CONFLICT", "任务状态已变化，请重试。")
+    from app.usage_billing import accept_operation
+
+    accept_operation(conn, user_id=actor.id, service="character", source_id=str(row["id"]), units=1)
     conn.commit()
     return cast(sqlite3.Row, row)
 
@@ -571,9 +583,9 @@ def renew_image_task_lease(
         UPDATE {table}
         SET locked_until = now() + interval '{IMAGE_TASK_LEASE_MINUTES} minutes',
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
-        (lease.id, lease.worker_id),
+        (lease.id, lease.worker_id, lease.attempt),
     )
     conn.commit()
     if updated.rowcount != 1:
@@ -591,8 +603,9 @@ def record_image_task_provider(
     """Persist the selected provider before any paid image call can begin."""
 
     current = conn.execute(
-        f"SELECT result_json FROM {table} WHERE id = %s AND status = 'RUNNING' AND locked_by = %s",
-        (lease.id, lease.worker_id),
+        f"SELECT result_json FROM {table} WHERE id = %s AND status = 'RUNNING' AND "
+        "locked_by = %s AND attempt = %s",
+        (lease.id, lease.worker_id, lease.attempt),
     ).fetchone()
     if current is None:
         raise RuntimeError("image task lease was lost")
@@ -645,9 +658,14 @@ def record_image_task_provider(
         f"""
         UPDATE {table}
         SET result_json = %s, updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
-        (json.dumps(payload, ensure_ascii=False, sort_keys=True), lease.id, lease.worker_id),
+        (
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            lease.id,
+            lease.worker_id,
+            lease.attempt,
+        ),
     )
     conn.commit()
     if updated.rowcount != 1:
@@ -720,9 +738,12 @@ def save_first_frame_task_checkpoint(
     candidates: list[GeneratedImage],
 ) -> None:
     current = conn.execute(
-        "SELECT result_json FROM first_frame_tasks WHERE id = %s",
-        (lease.id,),
+        "SELECT result_json FROM first_frame_tasks WHERE id = %s AND status='RUNNING' "
+        "AND locked_by=%s AND attempt=%s",
+        (lease.id, lease.worker_id, lease.attempt),
     ).fetchone()
+    if current is None:
+        raise RuntimeError("first-frame task lease was lost")
     execution: object = None
     if current is not None and current["result_json"] is not None:
         try:
@@ -743,9 +764,14 @@ def save_first_frame_task_checkpoint(
         """
         UPDATE first_frame_tasks
         SET result_json = %s, updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
-        (json.dumps(payload, ensure_ascii=False, sort_keys=True), lease.id, lease.worker_id),
+        (
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            lease.id,
+            lease.worker_id,
+            lease.attempt,
+        ),
     )
     conn.commit()
     if updated.rowcount != 1:
@@ -846,7 +872,7 @@ def complete_first_frame_task(
                 error_message_redacted = NULL, retryable = 0,
                 locked_by = NULL, locked_until = NULL,
                 completed_at = %s, updated_at = %s
-            WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+            WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
             """,
             (
                 str(version["id"]),
@@ -855,10 +881,14 @@ def complete_first_frame_task(
                 now,
                 prepared.lease.id,
                 prepared.lease.worker_id,
+                prepared.lease.attempt,
             ),
         )
         if updated.rowcount != 1:
             raise RuntimeError("first-frame task lease was lost")
+        from app.usage_billing import finish_source
+
+        finish_source(conn, prepared.lease.id, units=len(stored.candidates), succeeded=True)
 
     complete_first_frame_generation(
         conn,
@@ -990,7 +1020,7 @@ def complete_character_sheet_task(
                 error_code = NULL, error_message_redacted = NULL,
                 retryable = 0, locked_by = NULL, locked_until = NULL,
                 completed_at = %s, updated_at = %s
-            WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+            WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
             """,
             (
                 result.identity_id,
@@ -1000,10 +1030,14 @@ def complete_character_sheet_task(
                 now,
                 prepared.lease.id,
                 prepared.lease.worker_id,
+                prepared.lease.attempt,
             ),
         )
         if updated.rowcount != 1:
             raise RuntimeError("character-sheet task lease was lost")
+        from app.usage_billing import finish_source
+
+        finish_source(conn, prepared.lease.id, units=1, succeeded=True)
 
     if prepared.operation == "CREATE":
         publication = store_simple_character_publication(
@@ -1093,8 +1127,9 @@ def fail_image_task(
         message = "素材库暂不可用，请稍后重试。"
         known_failure = not submission_started
     current = conn.execute(
-        f"SELECT result_json FROM {table} WHERE id = %s AND status = 'RUNNING' AND locked_by = %s",
-        (lease.id, lease.worker_id),
+        f"SELECT result_json FROM {table} WHERE id = %s AND status = 'RUNNING' AND "
+        "locked_by = %s AND attempt = %s",
+        (lease.id, lease.worker_id, lease.attempt),
     ).fetchone()
     resumable_checkpoint = (
         table == "first_frame_tasks"
@@ -1108,7 +1143,7 @@ def fail_image_task(
             SET status = 'PENDING', error_code = %s, error_message_redacted = %s,
                 retryable = 1, locked_by = NULL, locked_until = NULL,
                 completed_at = NULL, updated_at = %s
-            WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+            WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
             """,
             (
                 code,
@@ -1116,6 +1151,7 @@ def fail_image_task(
                 _now_text(),
                 lease.id,
                 lease.worker_id,
+                lease.attempt,
             ),
         )
         conn.commit()
@@ -1130,13 +1166,13 @@ def fail_image_task(
         message = "任务执行结果需要核对，已停止自动重试，请联系管理员。"
         retryable = False
     now = _now_text()
-    conn.execute(
+    updated = conn.execute(
         f"""
         UPDATE {table}
         SET status = %s, error_code = %s, error_message_redacted = %s,
             retryable = %s, locked_by = NULL, locked_until = NULL,
             completed_at = %s, updated_at = %s
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
         (
             status,
@@ -1147,8 +1183,15 @@ def fail_image_task(
             now,
             lease.id,
             lease.worker_id,
+            lease.attempt,
         ),
     )
+    if updated.rowcount != 1:
+        conn.rollback()
+        return
+    from app.usage_billing import finish_source
+
+    finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 
 
@@ -1239,7 +1282,11 @@ def _require_owned_task(
     lease: ImageTaskLease,
 ) -> sqlite3.Row:
     row = load_image_task(conn, table=table, task_id=lease.id)
-    if str(row["status"]) != "RUNNING" or str(row["locked_by"]) != lease.worker_id:
+    if (
+        str(row["status"]) != "RUNNING"
+        or str(row["locked_by"]) != lease.worker_id
+        or int(row["attempt"]) != lease.attempt
+    ):
         raise RuntimeError("image task lease was lost")
     return row
 

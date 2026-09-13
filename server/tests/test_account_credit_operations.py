@@ -339,7 +339,8 @@ def test_concurrent_grant_payment_and_token_consumption_conserve_account_ledger(
             reserve(route_state, uid, key["id"], "concurrent-credit-task", 20)
             with psycopg.connect(route_state) as raw:
                 raw.execute(
-                    "UPDATE generation_tasks SET status = 'SUCCEEDED', archive_status = "
+                    "UPDATE generation_tasks SET status = 'SUCCEEDED', "
+                    "actual_output_seconds=20, archive_status = "
                     "'DIRECT', provider_result_url = 'https://example.com/test.mp4' "
                     "WHERE id = 'concurrent-credit-task'"
                 )

@@ -5,7 +5,7 @@
       "001_core"
     ],
     "heads": [
-      "20260913T0630_account_credit_operations"
+      "20260913T1100_itemized_billing"
     ],
     "parents": {
       "001_core": null,
@@ -97,9 +97,10 @@
       "20260912T1910_xiaohongshu_link_import": "20260912T1900_password_customer_sessions",
       "20260912T2200_customer_token_lifecycle": "20260912T1910_xiaohongshu_link_import",
       "20260912T2330_customer_credit_pricing": "20260912T2200_customer_token_lifecycle",
-      "20260913T0630_account_credit_operations": "20260912T2330_customer_credit_pricing"
+      "20260913T0630_account_credit_operations": "20260912T2330_customer_credit_pricing",
+      "20260913T1100_itemized_billing": "20260913T0630_account_credit_operations"
     },
-    "revision_count": 90
+    "revision_count": 91
   },
   "manifest_schema_version": 1,
   "naming_policy": {
@@ -473,6 +474,10 @@
     "20260913T0630_account_credit_operations": {
       "file": "versions/20260913T0630_account_credit_operations.py",
       "sha256": "02cd722dae061e59cf0cbad938c32944d26632c8dd31ecb1a2014dcc8bb38649"
+    },
+    "20260913T1100_itemized_billing": {
+      "file": "versions/20260913T1100_itemized_billing.py",
+      "sha256": "746dc4624ccdd74a92ba75bde5198892d4139ada8371bdce29b2c5495df61764"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

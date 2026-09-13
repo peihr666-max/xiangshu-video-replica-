@@ -7,18 +7,18 @@ import {
   updateControlRuntimeSettings,
 } from "../api";
 import { type SettingsBackend, SettingsPanel } from "../SettingsPanel";
+import { BillingRatesManager } from "./BillingRatesManager";
 import { CustomerPricingManager } from "./CustomerPricingManager";
 import { H3ExtendedModesSection } from "./H3ExtendedModesSection";
 import { LegacyCreditPolicyManager } from "./LegacyCreditPolicyManager";
 import { PaymentSettingsSection } from "./PaymentSettingsSection";
 import { QueueModeSection } from "./QueueModeSection";
-import { RatesManager } from "./RatesManager";
 import { TabBar } from "./ui/TabBar";
 import { ViralRuntimeSection } from "./ViralRuntimeSection";
 
 const tabs = [
   { id: "payment", label: "支付与价格" },
-  { id: "rates", label: "费率管理" },
+  { id: "rates", label: "成本与售价" },
   { id: "services", label: "服务配置" },
 ];
 
@@ -63,7 +63,7 @@ export function SystemSettingsPage({
           <LegacyCreditPolicyManager readOnly={readOnly} />
         </>
       ) : null}
-      {tab === "rates" ? <RatesManager readOnly={readOnly} /> : null}
+      {tab === "rates" ? <BillingRatesManager readOnly={readOnly} /> : null}
       {tab === "services" ? (
         <>
           <QueueModeSection readOnly={readOnly} />

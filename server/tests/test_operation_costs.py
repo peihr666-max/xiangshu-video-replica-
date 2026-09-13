@@ -133,7 +133,7 @@ def test_worker_keeps_known_cost_when_local_publication_fails(
         "_run_pg_source_frame_once",
     ):
         monkeypatch.setattr(worker, name, lambda *args, **kwargs: None)
-    lease = SimpleNamespace(id=task_id, created_by_user_id=user_id, duration_seconds=4)
+    lease = SimpleNamespace(id=task_id, created_by_user_id=user_id, duration_seconds=4, attempt=1)
     monkeypatch.setattr(worker, f"acquire_{kind}_task", lambda *args, **kwargs: lease)
     provider = SimpleNamespace(provider_name="fake")
     prepared = SimpleNamespace(provider=provider)
@@ -159,9 +159,9 @@ def test_worker_keeps_known_cost_when_local_publication_fails(
     with psycopg.connect(cost_dsn) as conn:
         row = conn.execute(
             "SELECT status, usage_amount, cost_fen FROM operation_cost_records WHERE source_id=%s",
-            (task_id,),
+            (f"{task_id}:1",),
         ).fetchone()
-    assert row == (("ACTUAL", 4, 36) if kind == "analysis" else ("ACTUAL", 1, 5))
+    assert row == (("ACTUAL", 1, 9) if kind == "analysis" else ("ACTUAL", 1, 5))
 
 
 def _database_dsn(name: str) -> str:
@@ -192,6 +192,15 @@ def cost_dsn() -> Iterator[str]:
         "sqlalchemy.url", target_dsn.replace("postgresql://", "postgresql+psycopg://")
     )
     command.upgrade(config, "head")
+    with psycopg.connect(target_dsn) as raw:
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) VALUES "
+            "('video_768p',true,12,9),('video_2k',true,20,15),('analysis',false,NULL,9),"
+            "('first_frame',false,NULL,5),('character',false,NULL,5)"
+        )
+        raw.execute(
+            "UPDATE customer_credit_pricing SET config_json=%s", ('{"points_per_yuan":100}',)
+        )
     try:
         yield target_dsn
     finally:
@@ -227,10 +236,14 @@ def test_generation_cost_uses_submission_rate_and_real_output_seconds(cost_dsn: 
         assert snapshot.cost_unit_price_fen == 9
         assert snapshot.external_unit_price_fen == 12
 
-        raw.execute(
-            "UPDATE operation_cost_rates SET unit_price_fen = 99 "
-            "WHERE subject = 'video_generation_768p'"
+        begin_operation_cost(
+            conn,
+            source_type="generation_task",
+            source_id="t1",
+            subject="video_generation_768p",
+            generation_task_id="t1",
         )
+        raw.execute("UPDATE billing_tariffs SET unit_cost_fen=99 WHERE service='video_768p'")
         record_video_generation_cost(conn, task_id="t1", output_seconds=12.5)
 
         task = raw.execute(
@@ -255,8 +268,7 @@ def test_generation_cost_uses_submission_rate_and_real_output_seconds(cost_dsn: 
             "WHERE source_type = 'generation_task' AND source_id = 't1' "
             "AND subject = 'context_ir'"
         ).fetchone()
-        assert context_ir["status"] == "UNKNOWN"
-        assert context_ir["usage_amount"] is None
+        assert context_ir is None  # No supplier request was made for this placeholder subject.
 
 
 def test_missing_provider_usage_is_recorded_as_unknown(cost_dsn: str) -> None:
@@ -303,10 +315,7 @@ def test_provider_not_called_closes_snapshots_as_known_zero(cost_dsn: str) -> No
             "actual_cost": 0,
             "cost_status": "ACTUAL",
         }
-        assert len(records) == 2
-        assert all(row["usage_amount"] == 0 for row in records)
-        assert all(row["cost_fen"] == 0 for row in records)
-        assert all(row["status"] == "ACTUAL" for row in records)
+        assert records == []  # Preflight without a provider request creates no cost attempt.
 
 
 def test_pre_migration_task_without_snapshot_is_not_priced_at_current_rate(
@@ -347,16 +356,16 @@ def test_generic_operation_cost_is_idempotent_and_uses_rate_snapshot(cost_dsn: s
             user_id="u1",
             resolution="768P",
         )
-        complete_operation_cost(conn, record_id=record_id, usage_amount=8.25)
-        complete_operation_cost(conn, record_id=record_id, usage_amount=8.25)
+        complete_operation_cost(conn, record_id=record_id, usage_amount=1)
+        complete_operation_cost(conn, record_id=record_id, usage_amount=1)
         row = raw.execute(
             "SELECT unit_price_fen, usage_amount, cost_fen, status "
             "FROM operation_cost_records WHERE id = %s",
             (record_id,),
         ).fetchone()
         assert row["unit_price_fen"] == 9
-        assert float(row["usage_amount"]) == 8.25
-        assert float(row["cost_fen"]) == pytest.approx(74.25)
+        assert float(row["usage_amount"]) == 1
+        assert float(row["cost_fen"]) == 9
         assert row["status"] == "ACTUAL"
 
 

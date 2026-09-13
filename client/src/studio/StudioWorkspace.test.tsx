@@ -2859,7 +2859,7 @@ describe("视频生成（C2 独立创作）", () => {
     expect(api.createOralTask).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "重新获取口播报价" }));
-    expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
+    expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     expect(submit).toBeEnabled();
   });
 
@@ -2874,7 +2874,7 @@ describe("视频生成（C2 独立创作）", () => {
     );
 
     fireEvent.click(await findEnabledButton("生成口播视频"));
-    expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
+    expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交"));
 
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
@@ -2895,7 +2895,7 @@ describe("视频生成（C2 独立创作）", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "添加" }));
     fireEvent.click(await findEnabledButton("生成口播视频"));
-    expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
+    expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交"));
 
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
@@ -2924,7 +2924,7 @@ describe("视频生成（C2 独立创作）", () => {
       screen.queryByRole("button", { name: "添加" }),
     ).not.toBeInTheDocument();
     fireEvent.click(await findEnabledButton("生成口播视频"));
-    expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
+    expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交"));
 
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
@@ -2963,7 +2963,7 @@ describe("视频生成（C2 独立创作）", () => {
     const firstDialog = await screen.findByRole("dialog", {
       name: "生成确认 · 数字人口播",
     });
-    expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
+    expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交", firstDialog));
     fireEvent.click(within(firstDialog).getByRole("button", { name: "关闭" }));
     fireEvent.click(screen.getByRole("tab", { name: "用已有音频生成" }));
@@ -3006,7 +3006,7 @@ describe("视频生成（C2 独立创作）", () => {
       />,
     );
     fireEvent.click(await findEnabledButton("生成口播视频"));
-    expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
+    expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     const submit = await findEnabledButton("确认费用并提交");
 
     fireEvent.click(submit);
@@ -3032,7 +3032,7 @@ describe("视频生成（C2 独立创作）", () => {
     );
     const open = await findEnabledButton("生成口播视频");
     fireEvent.click(open);
-    expect(await screen.findByText("5.00 元/条")).toBeInTheDocument();
+    expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交"));
     expect(
       await screen.findByText("提交结果未知，请安全重试。"),
@@ -3044,7 +3044,7 @@ describe("视频生成（C2 独立创作）", () => {
     );
 
     fireEvent.click(open);
-    expect(await screen.findByText("6.00 元/条")).toBeInTheDocument();
+    expect(await screen.findByText("6.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交"));
     expect(
       await screen.findByText("提交结果仍未知，请继续安全重试。"),

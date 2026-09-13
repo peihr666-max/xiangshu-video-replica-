@@ -329,6 +329,11 @@ def create_character_generation_tasks(
                         actor.id,
                     ),
                 )
+                from app.usage_billing import accept_operation
+
+                accept_operation(
+                    conn, user_id=actor.id, service="character", source_id=task_id, units=1
+                )
         conn.execute(
             "UPDATE character_versions SET status = 'GENERATING' WHERE id = %s",
             (version_id,),
@@ -764,6 +769,9 @@ def run_next_character_generation_task(
         )
         if updated.rowcount != 1:
             raise CharacterGenerationLeaseLost
+        from app.usage_billing import finish_source
+
+        finish_source(conn, str(task["id"]), units=1, succeeded=True)
         insert_character_call_log(
             conn,
             task=task,
@@ -995,6 +1003,10 @@ def finish_character_generation_failure(
                 },
             )
             return get_character_generation_task(conn, str(task["id"]))
+        if not should_retry:
+            from app.usage_billing import finish_source
+
+            finish_source(conn, str(task["id"]), units=0, succeeded=False)
         update_character_version_generation_status(
             conn,
             version_id=str(task["character_version_id"]),
