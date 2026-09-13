@@ -264,9 +264,7 @@ function RefreshStatisticsButton({ videos }: { videos: StudioVideo[] }) {
         disabled={busy}
         onClick={() => void refreshStatistics()}
       >
-        {busy
-          ? "正在刷新…"
-          : `刷新互动数据（最多 ${ids.length} 次请求，按上方单价扣分）`}
+        {busy ? "正在刷新…" : "读取最新已采集数据"}
       </button>
       {error && <p role="alert">{error}</p>}
     </div>

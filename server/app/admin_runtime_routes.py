@@ -21,16 +21,18 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 
 import psycopg
-from fastapi import APIRouter, Request, Response
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.admin_auth_routes import AdminReader, AdminWriter
 from app.admin_write_contract import AdminWriteContract, http_error, write_with_idempotency
 from app.db_pg import pg_transaction
+from app.db_portable import BusinessConnection
 from app.settings import DEFAULT_BILLING_SETTINGS, DEFAULT_RUNTIME_SETTINGS
+from app.viral_keywords import ViralKeywordConfig
 
 router = APIRouter(prefix="/api/control", tags=["admin-runtime"])
 
@@ -114,6 +116,10 @@ class ViralRuntimeResponse(BaseModel):
     failed_refreshes: int
     source_configured: bool
     platforms: list[ViralPlatformStatus]
+    keywords: list[ViralKeywordConfig] = Field(default_factory=list)
+    per_keyword_limit: int = 10
+    next_collection_at: str | None = None
+    collection_interval_days: int = 7
 
 
 class ViralRuntimeUpdateRequest(AdminWriteContract):
@@ -121,6 +127,17 @@ class ViralRuntimeUpdateRequest(AdminWriteContract):
 
     collection_enabled: bool
     import_enabled: bool
+    keywords: list[ViralKeywordConfig] | None = Field(default=None, max_length=20)
+    per_keyword_limit: int | None = Field(default=None, ge=1, le=50)
+    collection_interval_days: Literal[1, 7] | None = None
+
+    @model_validator(mode="after")
+    def unique_keywords(self) -> ViralRuntimeUpdateRequest:
+        if self.keywords is not None:
+            identities = [(item.platform, item.keyword) for item in self.keywords]
+            if len(identities) != len(set(identities)):
+                raise ValueError("同平台关键词不能重复")
+        return self
 
 
 class ViralAvailabilityUpdateRequest(AdminWriteContract):
@@ -139,7 +156,8 @@ class ViralAvailabilityResponse(BaseModel):
 
 def _viral_runtime_response(conn: psycopg.Connection) -> ViralRuntimeResponse:
     controls = conn.execute(
-        "SELECT collection_enabled, import_enabled FROM viral_runtime_controls WHERE id = 1"
+        "SELECT collection_enabled, import_enabled, keywords_json, per_keyword_limit, "
+        "next_collection_at, collection_interval_days FROM viral_runtime_controls WHERE id = 1"
     ).fetchone()
     counts = {
         str(row[0]): int(row[1])
@@ -209,6 +227,12 @@ def _viral_runtime_response(conn: psycopg.Connection) -> ViralRuntimeResponse:
         failed_refreshes=refresh_counts.get("FAILED", 0),
         source_configured=source_configured,
         platforms=platforms,
+        keywords=[ViralKeywordConfig.model_validate(item) for item in json.loads(controls[2])]
+        if controls
+        else [],
+        per_keyword_limit=int(controls[3]) if controls else 10,
+        next_collection_at=str(controls[4]) if controls and controls[4] else None,
+        collection_interval_days=int(controls[5]) if controls else 7,
     )
 
 
@@ -244,6 +268,26 @@ def update_viral_runtime(
                 """,
                 (int(payload.collection_enabled), int(payload.import_enabled), actor.user_id),
             )
+        if payload.keywords is not None:
+            conn.execute(
+                "UPDATE viral_runtime_controls SET keywords_json=%s WHERE id=1",
+                (json.dumps([item.model_dump() for item in payload.keywords], ensure_ascii=False),),
+            )
+        if payload.per_keyword_limit is not None:
+            conn.execute(
+                "UPDATE viral_runtime_controls SET per_keyword_limit=%s WHERE id=1",
+                (payload.per_keyword_limit,),
+            )
+        if payload.collection_interval_days is not None:
+            conn.execute(
+                """UPDATE viral_runtime_controls SET
+                    next_collection_at=CASE WHEN collection_interval_days!=%s
+                        AND next_collection_at IS NOT NULL
+                        THEN CURRENT_TIMESTAMP + (%s * interval '1 day')
+                        ELSE next_collection_at END,
+                    collection_interval_days=%s WHERE id=1""",
+                (payload.collection_interval_days,) * 3,
+            )
         conn.execute(
             """
             INSERT INTO audit_logs (
@@ -257,6 +301,11 @@ def update_viral_runtime(
                     {
                         "collection_enabled": payload.collection_enabled,
                         "import_enabled": payload.import_enabled,
+                        "keywords": [item.model_dump() for item in payload.keywords]
+                        if payload.keywords is not None
+                        else None,
+                        "per_keyword_limit": payload.per_keyword_limit,
+                        "collection_interval_days": payload.collection_interval_days,
                         "reason": payload.reason.strip(),
                         "request_id": request_id,
                     },
@@ -335,6 +384,161 @@ def update_viral_video_availability(
         return ViralAvailabilityResponse(
             platform=platform, video_id=video_id, status=payload.status
         ).model_dump()
+
+    return write_with_idempotency(
+        request,
+        response,
+        actor,
+        payload,
+        business,
+        success_status=200,
+        unavailable_code=RUNTIME_SETTINGS_SERVICE_UNAVAILABLE,
+        unavailable_message=RUNTIME_SETTINGS_SERVICE_UNAVAILABLE_MESSAGE,
+    )
+
+
+class ViralCurationRequest(AdminWriteContract):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["feature", "unfeature", "delete"]
+
+
+@router.get("/viral/videos")
+def read_collected_viral_videos(
+    _actor: AdminReader,
+    platform: Literal["douyin", "wechat_channels"] | None = None,
+    query: Annotated[str, Query(max_length=100)] = "",
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=50)] = 25,
+) -> dict[str, object]:
+    filters = "v.deleted_at IS NULL AND v.platform IN ('douyin','wechat_channels')"
+    params: list[object] = []
+    if platform:
+        filters += " AND v.platform=%s"
+        params.append(platform)
+    if query.strip():
+        filters += " AND (v.title ILIKE %s OR v.author ILIKE %s OR v.video_id ILIKE %s)"
+        params.extend([f"%{query.strip()}%"] * 3)
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        total = conn.execute(
+            f"SELECT count(*) FROM viral_videos v WHERE {filters}", tuple(params)
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT v.platform,v.video_id,v.category,v.title,v.author,v.duration_ms,
+                v.likes,v.comments,v.shares,v.collects,v.published_at,v.created_at,
+                v.homepage_featured,v.collection_published,v.cover_key,
+                COALESCE(m.status,'PENDING') AS media_status,m.storage_uri
+            FROM viral_videos v LEFT JOIN viral_media_preparations m
+                ON m.platform=v.platform AND m.video_id=v.video_id AND m.media_kind='video'
+            WHERE {filters} ORDER BY v.created_at DESC,v.platform,v.video_id LIMIT %s OFFSET %s""",
+            (*params, limit, offset),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["homepage_featured"] = bool(item["homepage_featured"])
+        item["collection_published"] = bool(item["collection_published"])
+        items.append(item)
+    return {"items": items, "total": int(total), "offset": offset, "limit": limit}
+
+
+@router.get("/viral/videos/{platform}/{video_id:path}/preview")
+def preview_collected_viral_video(
+    platform: Literal["douyin", "wechat_channels"], video_id: str, _actor: AdminReader
+) -> dict[str, str]:
+    from app.media_routes import get_media_storage
+    from app.viral_media import ViralMediaPipeline
+    from app.viral_routes import _browser_playable_url
+    from app.viral_store import get_viral_video
+    from app.viral_tikhub import ViralSourceError
+
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        video = get_viral_video(conn, platform=platform, video_id=video_id)
+        if video is None:
+            raise http_error(404, "VIRAL_VIDEO_NOT_FOUND", "视频不存在或已删除。")
+        storage = get_media_storage(conn)
+    try:
+        result = ViralMediaPipeline(
+            client=None, storage=storage, shared=True, cached_only=True
+        ).fetch(video, prefer="video")
+    except ViralSourceError as exc:
+        raise http_error(409, "VIRAL_MEDIA_NOT_READY", "云端素材尚未准备完成。") from exc
+    # Recheck after storage I/O so a concurrent deletion cannot return a fresh URL.
+    with pg_transaction() as raw:
+        if (
+            get_viral_video(BusinessConnection.postgres(raw), platform=platform, video_id=video_id)
+            is None
+        ):
+            raise http_error(404, "VIRAL_VIDEO_NOT_FOUND", "视频已删除。")
+    return {"url": _browser_playable_url(result.url, _actor.user_id)}
+
+
+@router.patch("/viral/videos/{platform}/{video_id:path}/curation")
+def curate_collected_viral_video(
+    platform: Literal["douyin", "wechat_channels"],
+    video_id: str,
+    payload: ViralCurationRequest,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        row = conn.execute(
+            "SELECT cover_url,cover_key FROM viral_videos WHERE platform=%s AND video_id=%s "
+            "AND deleted_at IS NULL FOR UPDATE",
+            (platform, video_id),
+        ).fetchone()
+        if row is None:
+            raise http_error(404, "VIRAL_VIDEO_NOT_FOUND", "视频不存在或已删除。")
+        if payload.action == "feature":
+            ready = conn.execute(
+                "SELECT 1 FROM viral_media_preparations WHERE platform=%s AND video_id=%s "
+                "AND media_kind='video' AND status='SUCCEEDED' AND storage_uri IS NOT NULL",
+                (platform, video_id),
+            ).fetchone()
+            if ready is None or (row[0] and not row[1]):
+                raise http_error(
+                    409, "VIRAL_MEDIA_NOT_READY", "视频和封面归档完成后才能展示到首页。"
+                )
+            hidden = conn.execute(
+                "SELECT 1 FROM viral_video_visibility WHERE platform=%s AND video_id=%s "
+                "AND status!='AVAILABLE'",
+                (platform, video_id),
+            ).fetchone()
+            if hidden:
+                raise http_error(
+                    409, "VIRAL_VIDEO_UNAVAILABLE", "该视频已下架或隐藏，请先恢复可用状态。"
+                )
+        conn.execute(
+            """UPDATE viral_videos SET homepage_featured=%s,
+                deleted_at=CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE deleted_at END
+            WHERE platform=%s AND video_id=%s""",
+            (int(payload.action == "feature"), payload.action == "delete", platform, video_id),
+        )
+        conn.execute(
+            """INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,metadata_json)
+            VALUES(%s,%s,'viral_video.curation','viral_video',%s,%s)""",
+            (
+                str(uuid.uuid4()),
+                actor.user_id,
+                f"{platform}:{video_id}",
+                json.dumps(
+                    {
+                        "action": payload.action,
+                        "reason": payload.reason.strip(),
+                        "request_id": request_id,
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        return {
+            "platform": platform,
+            "video_id": video_id,
+            "homepage_featured": payload.action == "feature",
+            "deleted": payload.action == "delete",
+        }
 
     return write_with_idempotency(
         request,

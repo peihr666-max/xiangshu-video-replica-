@@ -281,7 +281,8 @@ export function WorkbenchPage() {
   const active = data.tasks.filter((task) =>
     ["running", "queued", "uncertain"].includes(task.status),
   );
-  const featuredVideos = [...data.videos]
+  const featuredVideos = [...(data.homepageVideos ?? [])]
+    .filter((video) => video.homepageFeatured === true)
     .sort(
       (left, right) =>
         right.likes - left.likes ||

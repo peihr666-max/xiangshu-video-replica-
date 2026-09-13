@@ -135,7 +135,6 @@ from app.viral_import import (
     complete_viral_import_task,
     discard_viral_import_outcome,
     fail_viral_import_task,
-    fail_viral_media_preparation,
     perform_viral_import_task,
     prepare_viral_import_task,
 )
@@ -145,7 +144,6 @@ from app.viral_refresh import (
     complete_viral_refresh_task,
     fail_viral_refresh_task,
 )
-from app.viral_routes import _collect_videos, get_viral_source_client
 from app.worker_identity import new_worker_instance_id
 
 logger = logging.getLogger(__name__)
@@ -443,26 +441,6 @@ def _run_sqlite_oral_step(
     return True
 
 
-def _run_sqlite_viral_refresh_step(conn: BusinessConnection, *, worker_id: str) -> bool:
-    lease = acquire_viral_refresh_task(conn, worker_id=worker_id)
-    if lease is None:
-        return False
-    try:
-        _collect_videos(
-            conn,
-            get_viral_source_client(conn),
-            platform=lease.platform,
-            sort=lease.sort,
-            max_age=timedelta(0),
-            read_result=False,
-        )
-        complete_viral_refresh_task(conn, lease=lease)
-    except Exception as exc:
-        conn.rollback()
-        _fail_viral_refresh_if_current(conn, lease=lease, cause=exc)
-    return True
-
-
 def _fail_viral_refresh_if_current(
     conn: BusinessConnection, *, lease: ViralRefreshLease, cause: Exception
 ) -> None:
@@ -478,18 +456,11 @@ def _fail_viral_refresh_if_current(
         logger.warning("viral refresh failure ignored after lease loss: task=%s", lease.id)
 
 
-def _run_pg_viral_refresh(lease: ViralRefreshLease) -> None:
+def _run_pg_viral_refresh(lease: ViralRefreshLease, storage: StorageAdapter) -> None:
+    from app.viral_collection import run_viral_collection
+
     try:
-        with pg_transaction() as raw_conn:
-            client = get_viral_source_client(BusinessConnection.postgres(raw_conn))
-        _collect_videos(
-            None,
-            client,
-            platform=lease.platform,
-            sort=lease.sort,
-            max_age=timedelta(0),
-            read_result=False,
-        )
+        run_viral_collection(lease, storage)
         with pg_transaction() as raw_conn:
             complete_viral_refresh_task(BusinessConnection.postgres(raw_conn), lease=lease)
     except Exception as exc:
@@ -524,11 +495,6 @@ def run_worker_once(
     processed = 0
     while True:
         processed_round = False
-        if _run_sqlite_viral_refresh_step(conn, worker_id=worker_id):
-            processed += 1
-            processed_round = True
-            if max_tasks is not None and processed >= max_tasks:
-                return processed
         viral_import_lease = acquire_viral_import_task(conn, worker_id=worker_id)
         if viral_import_lease is not None:
             viral_import_work = None
@@ -549,14 +515,6 @@ def run_worker_once(
                         actor_id=viral_import_lease.owner_user_id,
                     )
                 conn.rollback()
-                fail_viral_media_preparation(
-                    conn,
-                    preparation=(
-                        viral_import_work.media_preparation
-                        if viral_import_work is not None
-                        else None
-                    ),
-                )
                 fail_viral_import_task(conn, lease=viral_import_lease, cause=exc)
             processed += 1
             processed_round = True
@@ -1134,16 +1092,6 @@ def run_pg_worker_once(
             reconcile_operations(BusinessConnection.postgres(raw_conn))
         processed_round = False
         with pg_transaction() as raw_conn:
-            viral_refresh_lease = acquire_viral_refresh_task(
-                BusinessConnection.postgres(raw_conn), worker_id=worker_id
-            )
-        if viral_refresh_lease is not None:
-            _run_pg_viral_refresh(viral_refresh_lease)
-            processed += 1
-            processed_round = True
-            if max_tasks is not None and processed >= max_tasks:
-                return processed
-        with pg_transaction() as raw_conn:
             viral_import_lease = acquire_viral_import_task(
                 BusinessConnection.postgres(raw_conn), worker_id=worker_id
             )
@@ -1173,14 +1121,6 @@ def run_pg_worker_once(
                     )
                 with pg_transaction() as raw_conn:
                     import_conn = BusinessConnection.postgres(raw_conn)
-                    fail_viral_media_preparation(
-                        import_conn,
-                        preparation=(
-                            viral_import_work.media_preparation
-                            if viral_import_work is not None
-                            else None
-                        ),
-                    )
                     fail_viral_import_task(
                         import_conn,
                         lease=viral_import_lease,
@@ -1653,13 +1593,27 @@ def run_pg_worker_once(
     return processed
 
 
-def run_pg_worker_round(*, worker_id: str, max_tasks: int | None = None) -> int:
+def run_pg_collection_once(*, worker_id: str, storage: StorageAdapter) -> int:
+    """Dedicated collector: never run in the customer generation worker pool."""
+    with pg_transaction() as raw:
+        lease = acquire_viral_refresh_task(BusinessConnection.postgres(raw), worker_id=worker_id)
+    if lease is None:
+        return 0
+    _run_pg_viral_refresh(lease, storage)
+    return 1
+
+
+def run_pg_worker_round(
+    *, worker_id: str, max_tasks: int | None = None, viral_collection: bool = False
+) -> int:
     try:
         # The media-storage configuration lives in the business database;
         # read it once per round inside a short fenced transaction.
         with pg_transaction() as raw_conn:
             conn = BusinessConnection.postgres(raw_conn)
             asset_storage = get_media_storage(conn)
+        if viral_collection:
+            return run_pg_collection_once(worker_id=worker_id, storage=asset_storage)
         return run_pg_worker_once(
             worker_id=worker_id,
             storage=asset_storage,
@@ -1684,10 +1638,10 @@ def run_pg_worker_round(*, worker_id: str, max_tasks: int | None = None) -> int:
         )
 
 
-def run_forever_pg(*, worker_id: str, idle_seconds: float) -> None:
+def run_forever_pg(*, worker_id: str, idle_seconds: float, viral_collection: bool = False) -> None:
     while True:
         try:
-            processed = run_pg_worker_round(worker_id=worker_id)
+            processed = run_pg_worker_round(worker_id=worker_id, viral_collection=viral_collection)
         except HTTPException as exc:
             code = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
             logger.error("generation worker configuration unavailable: %s", code)
@@ -1705,6 +1659,11 @@ def main() -> None:
         "--once", action="store_true", help="process current eligible tasks then exit"
     )
     parser.add_argument("--idle-seconds", type=float, default=1.0)
+    parser.add_argument(
+        "--viral-collection",
+        action="store_true",
+        help="run only weekly keyword collection and cloud archiving",
+    )
     parser.add_argument(
         "--worker-id", help="logical worker label; each startup adds a unique suffix"
     )
@@ -1759,6 +1718,7 @@ def main() -> None:
                 processed = run_pg_worker_round(
                     worker_id=worker_id,
                     max_tasks=args.max_tasks,
+                    viral_collection=args.viral_collection,
                 )
             finally:
                 close_pg_pool()
@@ -1766,7 +1726,11 @@ def main() -> None:
             logger.info("PostgreSQL worker processed %s task(s)", processed)
             return
         try:
-            run_forever_pg(worker_id=worker_id, idle_seconds=args.idle_seconds)
+            run_forever_pg(
+                worker_id=worker_id,
+                idle_seconds=args.idle_seconds,
+                viral_collection=args.viral_collection,
+            )
         finally:
             close_pg_pool()
             logger.info("generation worker stopped instance=%s", worker_id)

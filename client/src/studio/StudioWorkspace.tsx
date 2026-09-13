@@ -1050,10 +1050,7 @@ export function StudioWorkspace({
           if (!active) return;
           setData((previous) => ({
             ...previous,
-            videos:
-              viral.videos.length || viral.errors.length
-                ? viral.videos
-                : previous.videos,
+            homepageVideos: viral.videos,
             errors: [
               ...previous.errors.filter(
                 (message) => !message.includes("爆款失败"),

@@ -158,6 +158,7 @@ function data(
     people: [],
     assets: [],
     videos,
+    homepageVideos: videos.filter((video) => video.homepageFeatured === true),
     tasks,
     projects: [],
     errors: [],
@@ -677,6 +678,7 @@ describe("V1.4 工作台正在进行行", () => {
 
 describe("V1.4 工作台新版首页布局", () => {
   const videos: StudioVideo[] = Array.from({ length: 7 }, (_, index) => ({
+    homepageFeatured: true,
     id: `video-${index + 1}`,
     title: `灵感视频 ${index + 1}`,
     author: `作者 ${index + 1}`,
@@ -694,6 +696,37 @@ describe("V1.4 工作台新版首页布局", () => {
     window.sessionStorage.clear();
     createViralImportTask.mockReset();
     getViralImportTask.mockReset();
+  });
+
+  it("浏览普通周榜或解析链接后，回到首页仍只展示人工精选", () => {
+    const value = studio(undefined, {
+      state: createState("workbench"),
+      data: data([], [videos[0]]),
+    });
+    useStudio.mockReturnValue(value);
+    const view = render(<WorkbenchPage />);
+    expect(screen.getByText("灵感视频 1")).toBeInTheDocument();
+    value.data = {
+      ...value.data,
+      videos: [
+        {
+          ...videos[1],
+          homepageFeatured: false,
+          title: "周榜高点赞未精选",
+          likes: 99999999,
+        },
+        {
+          ...videos[2],
+          homepageFeatured: undefined,
+          title: "主动解析链接未精选",
+          likes: 99999998,
+        },
+      ],
+    };
+    view.rerender(<WorkbenchPage />);
+    expect(screen.getByText("灵感视频 1")).toBeInTheDocument();
+    expect(screen.queryByText("周榜高点赞未精选")).not.toBeInTheDocument();
+    expect(screen.queryByText("主动解析链接未精选")).not.toBeInTheDocument();
   });
 
   it("展示新版主标题、居中辅助文案、五个竖屏爆款与四个快捷入口", () => {

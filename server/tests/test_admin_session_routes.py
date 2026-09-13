@@ -532,6 +532,211 @@ def test_auditor_cannot_flip_queue_mode(client: TestClient):
 
 
 @pytest.mark.pg
+def test_admin_collected_video_requires_manual_homepage_selection_and_delete_is_durable(
+    client: TestClient,
+    route_state: str,
+) -> None:
+    from app.db_portable import BusinessConnection
+    from app.viral_store import get_viral_video, list_viral_video_page, upsert_viral_videos
+
+    assert client.get("/api/control/viral/videos").status_code == 401
+    headers = _admin_session(client)
+    path = "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/curation"
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "INSERT INTO viral_videos(platform,video_id,title) "
+            "VALUES('xiaohongshu','parsed-link','用户解析小红书')"
+        )
+    assert client.get("/api/control/viral/videos", headers=headers).json()["total"] == 1
+    page = client.get("/api/control/viral/videos?query=后台&limit=1", headers=headers)
+    assert page.status_code == 200, page.text
+    assert page.json()["total"] == 1
+    assert page.json()["items"][0]["homepage_featured"] is False
+    assert "native_json" not in page.json()["items"][0]
+    payload = {"action": "feature", "reason": "人工确认内容质量", "confirm": True}
+    unready = client.patch(
+        path, headers={**headers, "Idempotency-Key": "feature-unready"}, json=payload
+    )
+    assert unready.status_code == 409, unready.text
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "INSERT INTO viral_media_preparations"
+            "(id,platform,video_id,media_kind,status,storage_uri) VALUES"
+            "('admin-media','douyin','admin-video/opaque=id','video','SUCCEEDED','fake://test/video.mp4')"
+        )
+        bus = BusinessConnection.postgres(conn)
+        original = get_viral_video(bus, platform="douyin", video_id="admin-video/opaque=id")
+        assert (
+            list_viral_video_page(
+                bus, platform="douyin", sort="hot", limit=12, featured_only=True
+            ).total
+            == 0
+        )
+    selected = client.patch(
+        path, headers={**headers, "Idempotency-Key": "feature-selected"}, json=payload
+    )
+    assert selected.status_code == 200, selected.text
+    assert selected.json()["homepage_featured"] is True
+    assert (
+        client.patch(
+            path, headers={**headers, "Idempotency-Key": "feature-selected"}, json=payload
+        ).json()
+        == selected.json()
+    )
+    with psycopg.connect(route_state) as conn:
+        assert (
+            list_viral_video_page(
+                BusinessConnection.postgres(conn),
+                platform="douyin",
+                sort="hot",
+                limit=12,
+                featured_only=True,
+            ).total
+            == 1
+        )
+    unselected = client.patch(
+        path,
+        headers={**headers, "Idempotency-Key": "unfeature-selected"},
+        json={**payload, "action": "unfeature"},
+    )
+    assert unselected.status_code == 200
+    assert (
+        client.get("/api/control/viral/videos", headers=headers).json()["items"][0][
+            "homepage_featured"
+        ]
+        is False
+    )
+    deletion = {**payload, "action": "delete"}
+    deleted = client.patch(
+        path, headers={**headers, "Idempotency-Key": "delete-selected"}, json=deletion
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert (
+        client.patch(
+            path, headers={**headers, "Idempotency-Key": "delete-selected"}, json=deletion
+        ).json()
+        == deleted.json()
+    )
+    assert client.get("/api/control/viral/videos", headers=headers).json()["total"] == 0
+    with psycopg.connect(route_state) as conn:
+        bus = BusinessConnection.postgres(conn)
+        assert original is not None
+        upsert_viral_videos(bus, [original])
+        assert get_viral_video(bus, platform="douyin", video_id=original.video_id) is None
+        assert (
+            list_viral_video_page(
+                bus, platform="douyin", sort="hot", limit=12, featured_only=True
+            ).total
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM audit_logs WHERE action='viral_video.curation'"
+            ).fetchone()[0]
+            == 3
+        )
+        assert conn.execute("SELECT count(*) FROM viral_media_preparations").fetchone()[0] == 1
+
+
+def test_admin_preview_converts_local_storage_to_signed_http(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    _admin_session(client)
+    seen = []
+
+    class Pipeline:
+        def __init__(self, **kwargs):
+            seen.append(kwargs)
+
+        def fetch(self, video, *, prefer):
+            assert prefer == "video"
+            return SimpleNamespace(url="local://test/viral/prepared/scope/row/1.mp4")
+
+    monkeypatch.setattr("app.media_routes.get_media_storage", lambda conn: object())
+    monkeypatch.setattr(
+        "app.viral_routes.settings_encryption_key", lambda: "local-preview-test-key"
+    )
+    monkeypatch.setattr("app.viral_media.ViralMediaPipeline", Pipeline)
+    result = client.get("/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/preview")
+    assert result.status_code == 200, result.text
+    assert "/api/viral/videos/media/file?" in result.json()["url"]
+    assert "user_id=admin_u" in result.json()["url"]
+    assert "sig=" in result.json()["url"]
+    assert seen[0]["cached_only"] and seen[0]["shared"] and seen[0]["client"] is None
+
+
+def test_collected_video_curation_requires_writer_csrf_reason_and_contract(
+    client: TestClient,
+) -> None:
+    path = "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/curation"
+    payload = {"action": "delete", "reason": "内容下架", "confirm": True}
+    auditor = _admin_session(client, "auditor_u")
+    assert client.get("/api/control/viral/videos", headers=auditor).status_code == 200
+    assert (
+        client.patch(
+            path, headers={**auditor, "Idempotency-Key": "auditor-delete"}, json=payload
+        ).status_code
+        == 403
+    )
+    headers = _admin_session(client)
+    assert (
+        client.patch(path, headers={"Idempotency-Key": "no-csrf"}, json=payload).status_code == 403
+    )
+    assert client.patch(path, headers=headers, json=payload).status_code == 400
+    assert (
+        client.patch(
+            path,
+            headers={**headers, "Idempotency-Key": "no-reason"},
+            json={**payload, "reason": ""},
+        ).status_code
+        == 400
+    )
+
+
+def test_admin_daily_weekly_cycle_updates_next_run_and_preserves_on_toggle(
+    client: TestClient, route_state: str
+) -> None:
+    headers = _admin_session(client)
+    path = "/api/control/settings/viral"
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "UPDATE viral_runtime_controls SET "
+            "next_collection_at=CURRENT_TIMESTAMP + interval '7 days'"
+        )
+    payload = {
+        "collection_enabled": True,
+        "import_enabled": True,
+        "confirm": True,
+        "reason": "切换每日采集",
+        "collection_interval_days": 1,
+    }
+    changed = client.patch(
+        path, headers={**headers, "Idempotency-Key": "daily-cycle"}, json=payload
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["collection_interval_days"] == 1
+    with psycopg.connect(route_state) as conn:
+        assert conn.execute(
+            "SELECT next_collection_at BETWEEN now()+interval '23 hours' "
+            "AND now()+interval '25 hours' FROM viral_runtime_controls"
+        ).fetchone()[0]
+    payload.pop("collection_interval_days")
+    preserved = client.patch(
+        path, headers={**headers, "Idempotency-Key": "daily-toggle"}, json=payload
+    )
+    assert preserved.json()["collection_interval_days"] == 1
+    assert (
+        client.patch(
+            path,
+            headers={**headers, "Idempotency-Key": "invalid-cycle"},
+            json={**payload, "collection_interval_days": 2},
+        ).status_code
+        == 422
+    )
+
+
 def test_admin_controls_viral_runtime_and_video_availability(
     client: TestClient, route_state: str
 ) -> None:
@@ -543,6 +748,39 @@ def test_admin_controls_viral_runtime_and_video_availability(
     assert initial.json()["source_configured"] is False
     assert initial.json()["pending_refreshes"] == 0
     assert initial.json()["platforms"][0]["refresh_status"] == "not_configured"
+    configured = client.patch(
+        "/api/control/settings/viral",
+        headers={**headers, "Idempotency-Key": "weekly-keywords"},
+        json={
+            "collection_enabled": True,
+            "import_enabled": True,
+            "confirm": True,
+            "reason": "配置每周采集",
+            "per_keyword_limit": 12,
+            "keywords": [
+                {"platform": "wechat_channels", "category": "施工", "keyword": "农村建房"}
+            ],
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    assert configured.json()["collection_interval_days"] == 7
+    assert configured.json()["keywords"][0]["keyword"] == "农村建房"
+    assert configured.json()["per_keyword_limit"] == 12
+    replay = client.patch(
+        "/api/control/settings/viral",
+        headers={**headers, "Idempotency-Key": "weekly-keywords"},
+        json={
+            "collection_enabled": True,
+            "import_enabled": True,
+            "confirm": True,
+            "reason": "配置每周采集",
+            "per_keyword_limit": 12,
+            "keywords": [
+                {"platform": "wechat_channels", "category": "施工", "keyword": "农村建房"}
+            ],
+        },
+    )
+    assert replay.json() == configured.json()
 
     controls = client.patch(
         "/api/control/settings/viral",
@@ -557,6 +795,7 @@ def test_admin_controls_viral_runtime_and_video_availability(
     assert controls.status_code == 200, controls.text
     assert controls.json()["collection_enabled"] is False
     assert controls.json()["import_enabled"] is False
+    assert controls.json()["keywords"] == configured.json()["keywords"]
 
     hidden = client.patch(
         "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/availability",
@@ -584,7 +823,7 @@ def test_admin_controls_viral_runtime_and_video_availability(
         ).fetchone()
     assert tuple(stored) == (0, 0)
     assert tuple(visibility) == ("HIDDEN", "源视频已下架")
-    assert audits[0] == 2
+    assert audits[0] == 3
 
 
 @pytest.mark.pg

@@ -56,6 +56,12 @@ def test_dev_start_commands_upgrade_the_database_before_api_or_worker() -> None:
         "python -m app.generation_worker"
     )
     assert "--no-proxy-headers" in server_command
+    collector_command = package["scripts"]["dev:viral-collection"]
+    assert collector_command.index("python -m app.bootstrap") < collector_command.index(
+        "python -m app.generation_worker"
+    )
+    assert "--viral-collection" in collector_command
+    assert "--viral-collection" not in worker_command
 
 
 def test_pull_requests_run_linux_quality_and_windows_nsis_gates() -> None:

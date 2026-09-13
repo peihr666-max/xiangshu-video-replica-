@@ -922,6 +922,7 @@ export function studioVideoFromViral(item: ViralVideoItem): StudioVideo {
     publishedDisplay: item.publishedDisplay,
     likeDisplay: item.likeDisplay,
     tags: item.tags,
+    homepageFeatured: Boolean(item.homepageFeatured),
     hasPlayableAudio: item.hasPlayableAudio,
     playUrl: item.playUrl,
   };
@@ -934,8 +935,8 @@ export async function loadViralVideos(): Promise<{
   errors: string[];
 }> {
   const results = await Promise.allSettled([
-    listViralVideos("douyin"),
-    listViralVideos("wechat_channels"),
+    listViralVideos("douyin", "hot", { featuredOnly: true }),
+    listViralVideos("wechat_channels", "hot", { featuredOnly: true }),
   ]);
   const labels = ["抖音", "视频号"];
   const videos: StudioVideo[] = [];
@@ -1026,6 +1027,8 @@ export async function loadStudioData(
     assets: [...projectData.assets, ...peopleData.assets],
     materials,
     videos: viralResult.status === "fulfilled" ? viralResult.value.videos : [],
+    homepageVideos:
+      viralResult.status === "fulfilled" ? viralResult.value.videos : [],
     tasks,
     projects: projectData.projects,
     errors,

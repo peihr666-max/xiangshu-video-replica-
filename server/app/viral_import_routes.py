@@ -3,7 +3,8 @@
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -21,7 +22,7 @@ from app.media import (
 )
 from app.media_routes import get_media_storage
 from app.permissions import require_not_auditor
-from app.storage import StorageAdapter
+from app.storage import StorageAdapter, StorageBackendUnavailable
 from app.viral_import import (
     ViralImportRequest,
     ViralImportTaskResponse,
@@ -42,9 +43,10 @@ from app.viral_media import (
     ViralMediaError,
     ViralMediaPipeline,
 )
+from app.viral_media_preparation import ViralMediaBusy
 from app.viral_routes import ViralVideoItem
 from app.viral_store import upsert_viral_videos
-from app.viral_tikhub import ViralVideo
+from app.viral_tikhub import ViralSourceError, ViralVideo
 
 router = APIRouter(prefix="/api/viral", tags=["viral"])
 _LINK_RECEIPT_LEASE = timedelta(minutes=2)
@@ -248,7 +250,7 @@ def preflight_resolved_media(
 ) -> None:
     prefer = "audio" if purpose == "copy" and resolved.audio_url else "video"
 
-    def validate(content: bytes, kind: str, content_type: str | None) -> None:
+    def validate(content: Path, kind: str, content_type: str | None) -> None:
         validate_resolved_media_content(
             content,
             kind=kind,
@@ -262,9 +264,17 @@ def preflight_resolved_media(
             storage=storage,
             fetcher=UrlFetcher(timeout_seconds=25.0, max_bytes=MAX_UPLOAD_BYTES),
             validator=validate,
+            shared=True,
         ).fetch(_resolved_video(resolved), prefer=prefer)
     except ViralLinkError:
         raise
+    except ViralMediaBusy as exc:
+        raise ViralLinkError(
+            503,
+            "VIRAL_MEDIA_PREPARATION_BUSY",
+            "该视频素材正在准备中，请稍后重试。",
+            retryable=True,
+        ) from exc
     except ViralMediaDNSUnavailable as exc:
         raise ViralLinkError(
             503,
@@ -279,15 +289,27 @@ def preflight_resolved_media(
             "链接媒体不可用，请上传 MP4 或 MOV 文件。",
             retryable=False,
         ) from exc
+    except (ViralSourceError, StorageBackendUnavailable) as exc:
+        raise ViralLinkError(
+            503,
+            "VIRAL_MEDIA_PREPARATION_FAILED",
+            "云端素材准备暂未完成，请稍后重试。",
+            retryable=True,
+        ) from exc
 
 
 def validate_resolved_media_content(
-    content: bytes,
+    content: bytes | Path,
     *,
     kind: str,
     content_type: str | None,
     probe: VideoProbe,
 ) -> None:
+    source_path = content if isinstance(content, Path) else None
+    if source_path is not None:
+        with source_path.open("rb") as source:
+            content = source.read(12)
+    content = cast(bytes, content)
     normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
     expected_prefix = "audio/" if kind == "audio" else "video/"
     mp4_container = len(content) >= 12 and content[4:8] == b"ftyp"
@@ -308,7 +330,11 @@ def validate_resolved_media_content(
         )
     try:
         filename = "source.m4a" if mp4_container else "source.mp3"
-        metadata = probe.probe(content, filename=filename if kind == "audio" else "source.mp4")
+        metadata = (
+            cast(FFprobeVideoProbe, probe).probe_file(source_path)
+            if source_path is not None
+            else probe.probe(content, filename=filename if kind == "audio" else "source.mp4")
+        )
     except VideoProbeUnavailable as exc:
         raise ViralLinkError(
             503,

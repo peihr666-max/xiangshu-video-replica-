@@ -11,7 +11,12 @@ import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { PageBanner } from "./ui/PageBanner";
 import { StatusBadge } from "./ui/StatusBadge";
 
-type PendingAction = "collection" | "import" | "availability" | null;
+type PendingAction =
+  | "collection"
+  | "import"
+  | "availability"
+  | "keywords"
+  | null;
 
 export function ViralRuntimeSection({
   readOnly = false,
@@ -19,6 +24,15 @@ export function ViralRuntimeSection({
   readOnly?: boolean;
 }) {
   const [controls, setControls] = useState<ViralRuntimeControls>();
+  const [keywords, setKeywords] = useState<
+    Array<
+      NonNullable<ViralRuntimeControls["keywords"]>[number] & {
+        draftId: string;
+      }
+    >
+  >([]);
+  const [perKeywordLimit, setPerKeywordLimit] = useState(10);
+  const [intervalDays, setIntervalDays] = useState(7);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [saving, setSaving] = useState(false);
@@ -34,7 +48,16 @@ export function ViralRuntimeSection({
   const load = useCallback(async () => {
     setError("");
     try {
-      setControls(await fetchViralRuntimeControls());
+      const value = await fetchViralRuntimeControls();
+      setControls(value);
+      setKeywords(
+        (value.keywords ?? []).map((item) => ({
+          ...item,
+          draftId: crypto.randomUUID(),
+        })),
+      );
+      setPerKeywordLimit(value.per_keyword_limit ?? 10);
+      setIntervalDays(value.collection_interval_days ?? 7);
     } catch (cause) {
       setError(adminActivationErrorMessage(cause, "读取爆款视频运行状态失败"));
     }
@@ -70,11 +93,26 @@ export function ViralRuntimeSection({
               pending === "import"
                 ? !controls.import_enabled
                 : controls.import_enabled,
+            ...(pending === "keywords"
+              ? {
+                  keywords: keywords.map(({ platform, category, keyword }) => ({
+                    platform,
+                    category,
+                    keyword,
+                  })),
+                  per_keyword_limit: perKeywordLimit,
+                  collection_interval_days: intervalDays,
+                }
+              : {}),
           },
           reason,
         );
         setControls(next);
-        setNotice("爆款视频运行开关已更新。");
+        setNotice(
+          pending === "keywords"
+            ? "定时采集设置已更新。"
+            : "爆款视频运行开关已更新。",
+        );
       }
       setPending(null);
     } catch (cause) {
@@ -115,6 +153,160 @@ export function ViralRuntimeSection({
             ；刷新任务： 排队 {controls.pending_refreshes} / 执行{" "}
             {controls.running_refreshes} / 失败 {controls.failed_refreshes}
           </p>
+          <p className="admin-hint">
+            {controls.collection_interval_days === 1 ? "每天" : "每周"}
+            采集一次。首次配置后由后台启动首轮采集，关键词修改在下一轮生效。
+            下一次：
+            {controls.next_collection_at
+              ? new Date(controls.next_collection_at).toLocaleString("zh-CN")
+              : "等待首次配置或后台调度"}
+            。 列表和播放读取已入库的云端素材；未配置关键词时不会采集。
+          </p>
+          <div className="admin-form-grid">
+            <label>
+              刷新周期
+              <select
+                disabled={readOnly || saving}
+                value={intervalDays}
+                onChange={(event) =>
+                  setIntervalDays(Number(event.target.value))
+                }
+              >
+                <option value={1}>每天</option>
+                <option value={7}>每周</option>
+              </select>
+            </label>
+            {keywords.map((item, index) => (
+              <fieldset key={item.draftId}>
+                <legend>采集关键词 {index + 1}</legend>
+                <label>
+                  平台 {index + 1}
+                  <select
+                    disabled={readOnly || saving}
+                    value={item.platform}
+                    onChange={(event) =>
+                      setKeywords(
+                        keywords.map((row, i) =>
+                          i === index
+                            ? {
+                                ...row,
+                                platform: event.target.value as
+                                  | "douyin"
+                                  | "wechat_channels",
+                              }
+                            : row,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="douyin">抖音</option>
+                    <option value="wechat_channels">视频号</option>
+                  </select>
+                </label>
+                <label>
+                  分类 {index + 1}
+                  <input
+                    disabled={readOnly || saving}
+                    maxLength={32}
+                    value={item.category}
+                    onChange={(event) =>
+                      setKeywords(
+                        keywords.map((row, i) =>
+                          i === index
+                            ? { ...row, category: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  关键词 {index + 1}
+                  <input
+                    disabled={readOnly || saving}
+                    maxLength={80}
+                    value={item.keyword}
+                    onChange={(event) =>
+                      setKeywords(
+                        keywords.map((row, i) =>
+                          i === index
+                            ? { ...row, keyword: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
+                  />
+                </label>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() =>
+                      setKeywords(keywords.filter((_, i) => i !== index))
+                    }
+                  >
+                    删除关键词 {index + 1}
+                  </button>
+                )}
+              </fieldset>
+            ))}
+            <label>
+              每个关键词最多采集
+              <input
+                type="number"
+                min={1}
+                max={50}
+                disabled={readOnly || saving}
+                value={perKeywordLimit}
+                onChange={(event) =>
+                  setPerKeywordLimit(Number(event.target.value))
+                }
+              />
+            </label>
+            {!readOnly && (
+              <div className="admin-actions">
+                <button
+                  type="button"
+                  disabled={saving || keywords.length >= 20}
+                  onClick={() =>
+                    setKeywords([
+                      ...keywords,
+                      {
+                        platform: "douyin",
+                        category: "",
+                        keyword: "",
+                        draftId: crypto.randomUUID(),
+                      },
+                    ])
+                  }
+                >
+                  添加关键词
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => {
+                    if (
+                      keywords.some(
+                        (row) => !row.keyword.trim() || !row.category.trim(),
+                      ) ||
+                      !Number.isInteger(perKeywordLimit) ||
+                      perKeywordLimit < 1 ||
+                      perKeywordLimit > 50
+                    ) {
+                      setError(
+                        "请填写分类和关键词，采集数量须为 1 至 50 的整数。",
+                      );
+                      return;
+                    }
+                    setPending("keywords");
+                  }}
+                >
+                  保存采集设置
+                </button>
+              </div>
+            )}
+          </div>
           {controls.platforms.map((item) => (
             <p className="admin-hint" key={item.platform}>
               {item.platform === "douyin" ? "抖音" : "视频号"}：已缓存{" "}

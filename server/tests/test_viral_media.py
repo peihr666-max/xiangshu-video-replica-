@@ -24,10 +24,26 @@ from app.viral_media import (
 )
 from app.viral_tikhub import ViralSourceClient, ViralVideo
 
+
+@pytest.mark.parametrize("chunk_size", [1, 7, 65535, 131072, 1048576])
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_decryption_stream_handles_boundaries(chunk_size: int, encrypted: bool) -> None:
+    from app.viral_decrypt import decrypt_chunks
+
+    plain = b"\x00\x00\x00\x18ftypisom" + b"body" * 40000
+    key = keystream("1789473271")
+    content = (bytes(a ^ b for a, b in zip(plain, key)) + plain[len(key) :]) if encrypted else plain
+    chunks = (content[i : i + chunk_size] for i in range(0, len(content), chunk_size))
+    assert b"".join(decrypt_chunks(chunks, "1789473271")) == plain
+
+
 _DECODE_KEY = "1789473271"  # 公开样本 key，用作测试向量
 
 
 class FakeViralStorage:
+    def put_file(self, key: str, path: Path, *, content_type: str) -> Any:
+        return self.put_object(key, path.read_bytes(), content_type=content_type)
+
     def __init__(self) -> None:
         self.objects: dict[str, tuple[bytes, str]] = {}
 
@@ -65,6 +81,13 @@ class _Intent:
 
 
 class FakeFetcher:
+    last_content_type = None
+
+    def iter_fetch(self, url: str):
+        content = self.fetch(url)
+        for offset in range(0, len(content), 65536):
+            yield content[offset : offset + 65536]
+
     def __init__(self, payloads: dict[str, bytes]) -> None:
         self.payloads = payloads
         self.calls: list[str] = []
@@ -74,6 +97,65 @@ class FakeFetcher:
         if url not in self.payloads:
             raise AssertionError(f"unexpected fetch: {url}")
         return self.payloads[url]
+
+
+def test_pipeline_never_materializes_whole_video_and_closes_on_failure(tmp_path, monkeypatch):
+    class StreamingFetcher:
+        last_content_type = "video/mp4"
+        closed = False
+
+        def fetch(self, url):
+            pytest.fail("whole-file download used")
+
+        def iter_fetch(self, url):
+            try:
+                yield b"\x00\x00\x00\x18ftypisom"
+                for _ in range(8):
+                    yield b"x" * 1024 * 1024
+            finally:
+                self.closed = True
+
+    fetcher = StreamingFetcher()
+    storage = LocalStorageAdapter(root=tmp_path / "objects")
+    monkeypatch.setattr(viral_media.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(Path, "read_bytes", lambda self: pytest.fail("whole file read"))
+    result = ViralMediaPipeline(client=None, storage=storage, fetcher=fetcher).fetch(
+        _video("douyin"), prefer="video"
+    )
+    assert result.size == 12 + 8 * 1024 * 1024
+    assert fetcher.closed
+    assert not list(tmp_path.glob("viral-media-*"))
+
+    def reject(path, kind, content_type):
+        assert path.stat().st_size == result.size
+        raise ViralMediaError("invalid")
+
+    with pytest.raises(ViralMediaError):
+        ViralMediaPipeline(client=None, storage=storage, fetcher=fetcher, validator=reject).fetch(
+            _video("douyin", "rejected"), prefer="video"
+        )
+    assert storage.head_object(viral_media_key("douyin", "rejected", "video")) is None
+    assert not list(tmp_path.glob("viral-media-*"))
+
+
+@pytest.mark.parametrize("declared,body", [("6", b"short"), ("0", b""), ("-1", b"a"), ("x", b"a")])
+def test_stream_rejects_truncated_empty_and_invalid_length(declared, body):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    response = SimpleNamespace(headers={"Content-Length": declared}, read=BytesIO(body).read)
+    with pytest.raises(ViralMediaError):
+        list(UrlFetcher()._iter_response(response))
+
+
+def test_local_m4a_cache_and_project_copy_keep_container_type(tmp_path):
+    source = tmp_path / "source"
+    source.write_bytes(b"\x00\x00\x00\x18ftypM4A ")
+    storage = LocalStorageAdapter(root=tmp_path / "objects")
+    storage.put_file("viral/prepared/audio.mp3", source, content_type="audio/mp4")
+    assert storage.head_object("viral/prepared/audio.mp3").content_type == "audio/mp4"
+    copied = storage.copy_object("viral/prepared/audio.mp3", "projects/p/source.m4a")
+    assert copied.content_type == "audio/mp4"
 
 
 class FakeDetailTransport:

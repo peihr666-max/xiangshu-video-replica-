@@ -1,0 +1,101 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { setAdminCsrfToken } from "../api";
+import { ViralVideosPage } from "./ViralVideosPage";
+
+const video = {
+  platform: "wechat_channels",
+  video_id: "opaque/video=id",
+  title: "庭院施工案例",
+  author: "作者甲",
+  category: "施工",
+  duration_ms: 37000,
+  likes: 500,
+  comments: 4,
+  shares: 2,
+  collects: 1,
+  published_at: 1788700000,
+  created_at: "2026-09-13T08:00:00Z",
+  homepage_featured: false,
+  collection_published: true,
+  media_status: "SUCCEEDED",
+  storage_uri: "cos://archive/video.mp4",
+};
+
+function setup() {
+  let deleted = false;
+  let featured = false;
+  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === "PATCH") {
+      const payload = JSON.parse(String(init.body));
+      featured = payload.action === "feature";
+      deleted = payload.action === "delete";
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        items: deleted ? [] : [{ ...video, homepage_featured: featured }],
+        total: deleted ? 0 : 1,
+      }),
+    };
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  setAdminCsrfToken("csrf-curation-test");
+  return fetchMock;
+}
+
+describe("ViralVideosPage", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setAdminCsrfToken("");
+  });
+  it("先显示采集数据，人工确认后才展示首页，并能删除", async () => {
+    const fetchMock = setup();
+    render(<ViralVideosPage />);
+    expect(await screen.findByText("庭院施工案例")).toBeInTheDocument();
+    expect(screen.getByText("未展示")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"),
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "展示到首页" }));
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "人工筛选通过" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认操作" }));
+    await screen.findByText("首页展示设置已更新。");
+    await screen.findByRole("button", { name: "取消首页展示" });
+    const patch = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "PATCH",
+    );
+    expect(patch?.[0]).toContain("opaque%2Fvideo%3Did/curation");
+    expect(JSON.parse(String(patch?.[1]?.body))).toMatchObject({
+      action: "feature",
+      confirm: true,
+      reason: "人工筛选通过",
+    });
+    expect(patch?.[1]?.headers).toMatchObject({
+      "X-Admin-CSRF": "csrf-curation-test",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "不适合当前选题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认操作" }));
+    await screen.findByText("视频已删除，前台不再展示。");
+    await waitFor(() =>
+      expect(screen.queryByText("庭院施工案例")).not.toBeInTheDocument(),
+    );
+  });
+  it("只读账号可以查看数据，不能设置首页或删除", async () => {
+    setup();
+    render(<ViralVideosPage readOnly />);
+    await screen.findByText("庭院施工案例");
+    expect(
+      screen.queryByRole("button", { name: "展示到首页" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "删除" }),
+    ).not.toBeInTheDocument();
+  });
+});

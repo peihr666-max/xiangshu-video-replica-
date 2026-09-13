@@ -3,8 +3,8 @@ import { type CustomerPricing, getWorkspacePricing } from "../api";
 
 const subjects: Record<string, string[]> = {
   workbench: ["link_resolution", "asr"],
-  viral: ["viral_data", "link_resolution", "asr"],
-  "viral-detail": ["viral_data", "asr"],
+  viral: ["link_resolution", "asr"],
+  "viral-detail": ["asr"],
   copy: ["rewrite", "asr"],
   replica: ["analysis", "rewrite", "first_frame", "video_768p", "video_2k"],
   replacement: [

@@ -25,6 +25,40 @@ from app.storage import (
 )
 
 
+@pytest.mark.parametrize("cloud", [False, True])
+def test_file_upload_streams_and_preserves_digest(tmp_path: Path, cloud: bool) -> None:
+    source = tmp_path / "source.mp4"
+    content = b"\x00\x00\x00\x18ftyp" + b"video" * 400_000
+    source.write_bytes(content)
+
+    class FileClient(FakeCosClient):
+        def put_object(self, **kwargs: object) -> None:
+            body = kwargs["Body"]
+            assert not isinstance(body, bytes)
+            chunks = []
+            while chunk := body.read(65536):
+                chunks.append(chunk)
+            assert b"".join(chunks) == content
+            assert kwargs["Metadata"] == {"x-cos-meta-sha256": hashlib.sha256(content).hexdigest()}
+
+    storage = (
+        CloudStorageAdapter(
+            CloudStorageConfig(
+                provider="cos", bucket="test", access_key_id="test", secret_access_key="test"
+            ),
+            client=FileClient(),
+        )
+        if cloud
+        else LocalStorageAdapter(root=tmp_path / "objects")
+    )
+    stored = storage.put_file("viral/prepared/a.mp4", source, content_type="video/mp4")
+    assert stored.size == len(content)
+    assert stored.sha256 == hashlib.sha256(content).hexdigest()
+    if not cloud:
+        assert storage.get_object(stored.key) == content
+        assert list((tmp_path / "objects").rglob("*.part")) == []
+
+
 class FakeCosClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []

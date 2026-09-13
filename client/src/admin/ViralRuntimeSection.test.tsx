@@ -42,6 +42,43 @@ const controls = {
 };
 
 describe("ViralRuntimeSection", () => {
+  it("保存每周采集关键词及数量上限", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      response(controls),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setAdminCsrfToken("csrf-viral");
+    render(<ViralRuntimeSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加关键词" }));
+    fireEvent.change(screen.getByLabelText("分类 1"), {
+      target: { value: "庭院案例" },
+    });
+    fireEvent.change(screen.getByLabelText("关键词 1"), {
+      target: { value: "农村庭院" },
+    });
+    fireEvent.change(screen.getByLabelText("每个关键词最多采集"), {
+      target: { value: "12" },
+    });
+    fireEvent.change(screen.getByLabelText("刷新周期"), {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存采集设置" }));
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "调整本周选题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认更新" }));
+    await screen.findByText("定时采集设置已更新。");
+    const patch = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "PATCH",
+    );
+    expect(JSON.parse(String(patch?.[1]?.body))).toMatchObject({
+      keywords: [
+        { platform: "douyin", category: "庭院案例", keyword: "农村庭院" },
+      ],
+      per_keyword_limit: 12,
+      collection_interval_days: 1,
+    });
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     setAdminCsrfToken("");

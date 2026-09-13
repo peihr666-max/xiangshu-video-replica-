@@ -23,7 +23,7 @@ from app.storage import (
     require_storage_match,
     storage_object_ref_from_uri,
 )
-from app.viral_media import ViralMediaPipeline, ViralMediaResult, viral_media_key
+from app.viral_media import ViralMediaPipeline, ViralMediaResult
 from app.viral_store import get_viral_video, viral_video_availability
 from app.viral_tikhub import ViralSourceUnavailable, ViralVideo, viral_source_client_from_settings
 
@@ -256,24 +256,12 @@ class ViralImportLease:
 
 
 @dataclass(frozen=True)
-class ViralMediaPreparationLease:
-    id: str
-    worker_id: str
-    owner_task_id: str
-    platform: str
-    video_id: str
-    media_kind: Literal["audio", "video"]
-    attempt: int
-
-
-@dataclass(frozen=True)
 class ViralImportWork:
     lease: ViralImportLease
     video: ViralVideo
     client: Any
     storage: StorageAdapter
     prefer: Literal["audio", "video"]
-    media_preparation: ViralMediaPreparationLease | None
 
 
 @dataclass(frozen=True)
@@ -281,7 +269,6 @@ class ViralImportOutcome:
     stored: StoredObject
     media_kind: Literal["audio", "video"]
     duration_seconds: float | None
-    media_preparation: ViralMediaPreparationLease | None = None
 
 
 def discard_viral_import_outcome(
@@ -300,129 +287,6 @@ def discard_viral_import_outcome(
 
 def _time_text(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _claim_viral_media_preparation(
-    conn: BusinessConnection,
-    *,
-    lease: ViralImportLease,
-    storage: StorageAdapter,
-    media_kind: Literal["audio", "video"],
-) -> ViralMediaPreparationLease | None:
-    cache_key = viral_media_key(lease.platform, lease.video_id, media_kind)
-    if storage.head_object(cache_key) is not None:
-        conn.execute(
-            """
-            UPDATE viral_media_preparations SET status = 'SUCCEEDED', locked_by = NULL,
-                locked_until = NULL, owner_task_id = %s, error_code = NULL,
-                completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE platform = %s AND video_id = %s AND media_kind = %s
-            """,
-            (lease.id, lease.platform, lease.video_id, media_kind),
-        )
-        conn.commit()
-        return None
-
-    preparation_id = str(uuid4())
-    conn.execute(
-        """
-        INSERT INTO viral_media_preparations (
-            id, platform, video_id, media_kind, status, owner_task_id
-        ) VALUES (%s, %s, %s, %s, 'PENDING', %s)
-        ON CONFLICT (platform, video_id, media_kind) DO NOTHING
-        """,
-        (preparation_id, lease.platform, lease.video_id, media_kind, lease.id),
-    )
-    now = _time_text(datetime.now(UTC))
-    locked_until = _time_text(datetime.now(UTC) + timedelta(minutes=VIRAL_IMPORT_LEASE_MINUTES))
-    row = conn.execute(
-        """
-        UPDATE viral_media_preparations SET status = 'RUNNING', attempt = attempt + 1,
-            locked_by = %s, locked_until = %s, owner_task_id = %s,
-            error_code = NULL, completed_at = NULL, updated_at = %s
-        WHERE platform = %s AND video_id = %s AND media_kind = %s
-            AND (status IN ('PENDING', 'FAILED', 'SUCCEEDED')
-                OR (status = 'RUNNING' AND locked_until IS NOT NULL AND locked_until <= %s))
-        RETURNING *
-        """,
-        (
-            lease.worker_id,
-            locked_until,
-            lease.id,
-            now,
-            lease.platform,
-            lease.video_id,
-            media_kind,
-            now,
-        ),
-    ).fetchone()
-    conn.commit()
-    if row is None:
-        raise _error(409, "VIRAL_MEDIA_PREPARATION_BUSY", "该视频素材正在准备中，请稍后重试。")
-    return ViralMediaPreparationLease(
-        id=str(row["id"]),
-        worker_id=lease.worker_id,
-        owner_task_id=lease.id,
-        platform=lease.platform,
-        video_id=lease.video_id,
-        media_kind=media_kind,
-        attempt=int(row["attempt"]),
-    )
-
-
-def _complete_viral_media_preparation(
-    conn: BusinessConnection, preparation: ViralMediaPreparationLease | None
-) -> None:
-    if preparation is None:
-        return
-    now = _time_text(datetime.now(UTC))
-    updated = conn.execute(
-        """
-        UPDATE viral_media_preparations SET status = 'SUCCEEDED', locked_by = NULL,
-            locked_until = NULL, error_code = NULL, completed_at = %s, updated_at = %s
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
-            AND owner_task_id = %s AND attempt = %s
-            AND locked_until IS NOT NULL AND locked_until > %s
-        """,
-        (
-            now,
-            now,
-            preparation.id,
-            preparation.worker_id,
-            preparation.owner_task_id,
-            preparation.attempt,
-            now,
-        ),
-    )
-    if updated.rowcount != 1:
-        raise _error(409, "VIRAL_MEDIA_PREPARATION_LEASE_LOST", "素材准备任务租约已失效。")
-
-
-def fail_viral_media_preparation(
-    conn: BusinessConnection,
-    *,
-    preparation: ViralMediaPreparationLease | None,
-) -> None:
-    if preparation is None:
-        return
-    now = _time_text(datetime.now(UTC))
-    conn.execute(
-        """
-        UPDATE viral_media_preparations SET status = 'FAILED', locked_by = NULL,
-            locked_until = NULL, error_code = 'VIRAL_MEDIA_PREPARATION_FAILED',
-            completed_at = %s, updated_at = %s
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
-            AND owner_task_id = %s AND attempt = %s
-        """,
-        (
-            now,
-            now,
-            preparation.id,
-            preparation.worker_id,
-            preparation.owner_task_id,
-            preparation.attempt,
-        ),
-    )
 
 
 def acquire_viral_import_task(
@@ -518,16 +382,13 @@ def prepare_viral_import_task(
             "该爆款视频当前不可用于创作。",
             retryable=False,
         )
-    verified_audio = bool(video.audio_url and video.native.get("source_audio_verified") is True)
+    verified_audio = bool(
+        video.audio_url
+        and video.native.get("link_resolved") is True
+        and video.native.get("source_audio_verified") is True
+    )
     prefer: Literal["audio", "video"] = (
         "audio" if lease.purpose == "copy" and verified_audio else "video"
-    )
-    media_kind: Literal["audio", "video"] = "audio" if prefer == "audio" else "video"
-    media_preparation = _claim_viral_media_preparation(
-        conn,
-        lease=lease,
-        storage=storage,
-        media_kind=media_kind,
     )
     try:
         client = viral_source_client_from_settings(conn)
@@ -540,14 +401,16 @@ def prepare_viral_import_task(
         client=client,
         storage=storage,
         prefer=prefer,
-        media_preparation=media_preparation,
     )
 
 
 def perform_viral_import_task(work: ViralImportWork) -> ViralImportOutcome:
-    media: ViralMediaResult = ViralMediaPipeline(client=work.client, storage=work.storage).fetch(
-        work.video, prefer=work.prefer
-    )
+    media: ViralMediaResult = ViralMediaPipeline(
+        client=None,
+        storage=work.storage,
+        shared=True,
+        cached_only=True,
+    ).fetch(work.video, prefer=work.prefer)
     if media.kind not in {"audio", "video"}:
         raise RuntimeError("viral import returned an unsupported media kind")
     if work.lease.purpose == "replica" and media.kind != "video":
@@ -561,7 +424,8 @@ def perform_viral_import_task(work: ViralImportWork) -> ViralImportOutcome:
     }:
         extension = "m4a"
     destination = (
-        f"projects/{work.lease.project_id}/viral-imports/{work.lease.id}/source.{extension}"
+        f"projects/{work.lease.project_id}/viral-imports/{work.lease.id}/"
+        f"attempt-{work.lease.attempt}/source.{extension}"
     )
     stored = work.storage.copy_object(source.key, destination)
     if (
@@ -575,7 +439,6 @@ def perform_viral_import_task(work: ViralImportWork) -> ViralImportOutcome:
         stored=stored,
         media_kind=cast(Literal["audio", "video"], media.kind),
         duration_seconds=(work.video.duration_ms / 1000 if work.video.duration_ms > 0 else None),
-        media_preparation=work.media_preparation,
     )
 
 
@@ -584,7 +447,6 @@ def complete_viral_import_task(
 ) -> None:
     _require_lease(conn, lease)
     _require_project_owner(conn, lease)
-    _complete_viral_media_preparation(conn, outcome.media_preparation)
     asset_id = str(uuid4())
     conn.execute(
         """

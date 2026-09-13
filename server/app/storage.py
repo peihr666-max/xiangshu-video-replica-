@@ -8,6 +8,7 @@ import hmac
 import logging
 import os
 import shutil
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -115,6 +116,9 @@ class StorageAdapter(Protocol):
     bucket: str
 
     @property
+    def cache_namespace(self) -> str: ...
+
+    @property
     def audit_events(self) -> list[StorageAuditEvent]: ...
 
     def create_upload_intent(
@@ -135,6 +139,8 @@ class StorageAdapter(Protocol):
     ) -> DownloadIntent: ...
 
     def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject: ...
+
+    def put_file(self, key: str, path: Path, *, content_type: str) -> StoredObject: ...
 
     def get_object(self, key: str) -> bytes: ...
 
@@ -274,6 +280,10 @@ class _BaseStorageAdapter:
         self._audit_events: list[StorageAuditEvent] = []
 
     @property
+    def cache_namespace(self) -> str:
+        return f"{self.provider}://{self.bucket}/{self._key_prefix}"
+
+    @property
     def audit_events(self) -> list[StorageAuditEvent]:
         return self._audit_events
 
@@ -356,6 +366,9 @@ class _BaseStorageAdapter:
     def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject:
         raise NotImplementedError
 
+    def put_file(self, key: str, path: Path, *, content_type: str) -> StoredObject:
+        raise NotImplementedError
+
     def get_object(self, key: str) -> bytes:
         raise NotImplementedError
 
@@ -407,6 +420,9 @@ class _BaseStorageAdapter:
 
 
 class FakeStorageAdapter(_BaseStorageAdapter):
+    def put_file(self, key: str, path: Path, *, content_type: str) -> StoredObject:
+        return self.put_object(key, path.read_bytes(), content_type=content_type)
+
     def list_upload_keys(self, asset_id: str, *, after: str = "", limit: int = 100) -> list[str]:
         prefix = self._upload_prefix(asset_id, after, limit)
         return heapq.nsmallest(
@@ -485,6 +501,37 @@ class FakeStorageAdapter(_BaseStorageAdapter):
 
 
 class LocalStorageAdapter(_BaseStorageAdapter):
+    @property
+    def cache_namespace(self) -> str:
+        return f"{super().cache_namespace}:{self.root}"
+
+    def put_file(self, key: str, path: Path, *, content_type: str) -> StoredObject:
+        object_key = self._object_key(key)
+        destination = self._path_for(object_key)
+        temporary: Path | None = None
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=destination.parent, suffix=".part", delete=False
+            ) as output:
+                temporary = Path(output.name)
+                with path.open("rb") as source:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+            stored = _stored_object_from_path(
+                provider=self.provider,
+                bucket=self.bucket,
+                key=object_key,
+                path=temporary,
+                content_type=content_type,
+            )
+            temporary.replace(destination)
+            return stored
+        except OSError as exc:
+            raise StorageBackendUnavailable("local object upload failed") from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
     def list_upload_keys(self, asset_id: str, *, after: str = "", limit: int = 100) -> list[str]:
         prefix = self._upload_prefix(asset_id, after, limit)
         base = self._path_for(prefix)
@@ -614,6 +661,33 @@ class LocalStorageAdapter(_BaseStorageAdapter):
 
 
 class CloudStorageAdapter(_BaseStorageAdapter):
+    def put_file(self, key: str, path: Path, *, content_type: str) -> StoredObject:
+        """Upload a seekable file with bounded memory and verified hash metadata.
+
+        The caller owns this temporary file until the synchronous SDK finishes,
+        including retries. A single COS PUT is atomic; no partial object is published.
+        """
+        object_key = self._object_key(key)
+        stored = _stored_object_from_path(
+            provider=self.provider,
+            bucket=self.bucket,
+            key=object_key,
+            path=path,
+            content_type=content_type,
+        )
+        try:
+            with path.open("rb") as source:
+                self._client.put_object(
+                    Bucket=self.bucket,
+                    Key=object_key,
+                    Body=source,
+                    ContentType=content_type,
+                    Metadata={"x-cos-meta-sha256": stored.sha256},
+                )
+        except Exception as exc:
+            raise StorageBackendUnavailable("cloud object upload failed") from exc
+        return stored
+
     def list_upload_keys(self, asset_id: str, *, after: str = "", limit: int = 100) -> list[str]:
         prefix = self._upload_prefix(asset_id, after, limit)
         try:
@@ -1015,6 +1089,9 @@ def _stored_object_from_path(
 ) -> StoredObject:
     digest = hashlib.sha256()
     with path.open("rb") as source:
+        if content_type == "audio/mpeg" and source.read(12)[4:8] == b"ftyp":
+            content_type = "audio/mp4"
+        source.seek(0)
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return StoredObject(

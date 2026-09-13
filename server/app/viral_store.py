@@ -2,8 +2,8 @@
 
 搜索结果按 ``(platform, video_id)`` 唯一 upsert 到 ``viral_videos``：
 跨分类/跨排序去重，互动数据随每次回源刷新，未再出现的条目保留在库中
-作为长期参考。列表读取走库，回源判据由 ``viral_fetch_state`` 提供
-（TTL 内只读库不请求上游，作为计费护栏）。
+作为长期参考。列表仅读取已完成云归档并发布的每周批次，
+``viral_fetch_state`` 固定批次的时间窗口；浏览不请求上游。
 
 SQL 一律走 ``BusinessConnection.execute``（PostgreSQL ``%s`` 占位符，
 SQLite 由 ``translate_to_sqlite`` 翻译）。
@@ -73,6 +73,19 @@ _ORDER_BY = {
 
 _AVAILABILITY_VALUES = {"available", "hidden", "unavailable"}
 
+# Metadata is staged by the collector; only a completed batch is published.
+# Keep this predicate common to page rows and totals.
+_PUBLISHED_SQL = """
+    AND deleted_at IS NULL
+    AND (cover_url IS NULL OR cover_key IS NOT NULL)
+    AND EXISTS (
+        SELECT 1 FROM viral_media_preparations media
+        WHERE media.platform = viral_videos.platform AND media.video_id = viral_videos.video_id
+            AND media.media_kind = 'video' AND media.status = 'SUCCEEDED'
+            AND media.storage_uri IS NOT NULL
+    )
+"""
+
 
 class InvalidViralCursorError(ValueError):
     """Raised when a list cursor is malformed or belongs to another query."""
@@ -100,6 +113,7 @@ def _row_to_video(row: Any) -> ViralVideo:
         verified=bool(mapping.get("verified")),
         cover_url=mapping.get("cover_url"),
         cover_key=mapping.get("cover_key"),
+        homepage_featured=bool(mapping.get("homepage_featured")),
         duration_ms=int(mapping.get("duration_ms") or 0),
         likes=int(mapping.get("likes") or 0),
         comments=mapping.get("comments"),
@@ -205,13 +219,27 @@ def upsert_viral_videos(
             conn.commit()
 
 
+def _collection_window_end(conn: BusinessConnection, platform: str) -> int:
+    # Keep this week's saved snapshot readable until the next collection, even
+    # if the worker is temporarily offline. The seven-day source window is fixed.
+    row = conn.execute(
+        "SELECT fetched_at FROM viral_fetch_state WHERE platform=%s AND sort='weekly_window'",
+        (platform,),
+    ).fetchone()
+    if row is not None:
+        return int(datetime.fromisoformat(str(row[0])).timestamp())
+    return int(datetime.now(UTC).timestamp())
+
+
 def list_viral_videos(conn: BusinessConnection, *, platform: str, sort: str) -> list[ViralVideo]:
     order = _ORDER_BY.get(sort, _ORDER_BY["hot"])
-    now = int(datetime.now(UTC).timestamp())
+    now = _collection_window_end(conn, platform)
     rows = conn.execute(
         f"""
         SELECT * FROM viral_videos
         WHERE platform = %s AND published_at BETWEEN %s AND %s
+        AND collection_published=1
+        {_PUBLISHED_SQL}
         ORDER BY {order}
         """,
         (platform, now - int(timedelta(days=7).total_seconds()), now),
@@ -302,12 +330,14 @@ def _page_boundary_sql(sort: str, values: tuple[int, int, str]) -> tuple[str, tu
 
 
 def _recent_relevant_total(
-    conn: BusinessConnection, *, platform: str, cutoff: int, now: int
+    conn: BusinessConnection, *, platform: str, cutoff: int, now: int, featured_only: bool = False
 ) -> int:
     rows = conn.execute(
-        """
+        f"""
         SELECT title FROM viral_videos
-        WHERE platform = %s AND published_at BETWEEN %s AND %s
+        WHERE platform = %s AND (%s OR (published_at BETWEEN %s AND %s AND collection_published=1))
+          AND (NOT %s OR homepage_featured=1)
+          {_PUBLISHED_SQL}
           AND NOT EXISTS (
               SELECT 1 FROM viral_video_visibility visibility
               WHERE visibility.platform = viral_videos.platform
@@ -315,7 +345,7 @@ def _recent_relevant_total(
                 AND visibility.status != 'AVAILABLE'
           )
         """,
-        (platform, cutoff, now),
+        (platform, featured_only, cutoff, now, featured_only),
     ).fetchall()
     return sum(not is_irrelevant_viral_video(str(row["title"])) for row in rows)
 
@@ -327,12 +357,15 @@ def list_viral_video_page(
     sort: str,
     limit: int,
     cursor: str | None = None,
+    featured_only: bool = False,
 ) -> ViralVideoPage:
     """Read one stable keyset page without loading all video rows into memory."""
     order = _ORDER_BY.get(sort, _ORDER_BY["hot"])
-    cutoff = int((datetime.now(UTC) - timedelta(days=7)).timestamp())
-    now = int(datetime.now(UTC).timestamp())
+    now = _collection_window_end(conn, platform)
+    cutoff = now - int(timedelta(days=7).total_seconds())
     data_version = viral_fetched_at(conn, platform=platform, sort=sort)
+    if featured_only:
+        data_version = f"home:{data_version}"
     boundary = None
     if cursor:
         boundary, cursor_version = _decode_cursor(cursor, platform=platform, sort=sort)
@@ -349,7 +382,10 @@ def list_viral_video_page(
         rows = conn.execute(
             f"""
             SELECT * FROM viral_videos
-            WHERE platform = %s AND published_at BETWEEN %s AND %s
+            WHERE platform = %s
+              AND (%s OR (published_at BETWEEN %s AND %s AND collection_published=1))
+              AND (NOT %s OR homepage_featured=1)
+              {_PUBLISHED_SQL}
               AND NOT EXISTS (
                   SELECT 1 FROM viral_video_visibility visibility
                   WHERE visibility.platform = viral_videos.platform
@@ -360,7 +396,7 @@ def list_viral_video_page(
             ORDER BY {order}
             LIMIT %s
             """,
-            (platform, cutoff, now, *boundary_params, chunk_size),
+            (platform, featured_only, cutoff, now, featured_only, *boundary_params, chunk_size),
         ).fetchall()
         exhausted = len(rows) < chunk_size
         if not rows:
@@ -377,7 +413,9 @@ def list_viral_video_page(
     has_more = len(collected) > limit
     return ViralVideoPage(
         items=items,
-        total=_recent_relevant_total(conn, platform=platform, cutoff=cutoff, now=now),
+        total=_recent_relevant_total(
+            conn, platform=platform, cutoff=cutoff, now=now, featured_only=featured_only
+        ),
         has_more=has_more,
         next_cursor=(
             _encode_cursor(
@@ -396,7 +434,7 @@ def get_viral_video(conn: BusinessConnection, *, platform: str, video_id: str) -
     row = conn.execute(
         """
         SELECT * FROM viral_videos
-        WHERE platform = %s AND video_id = %s
+        WHERE platform = %s AND video_id = %s AND deleted_at IS NULL
         """,
         (platform, video_id),
     ).fetchone()
@@ -595,7 +633,7 @@ def list_favorite_viral_video_page(
         SELECT v.*, f.created_at AS favorite_created_at
         FROM viral_video_favorites f
         JOIN viral_videos v ON v.platform = f.platform AND v.video_id = f.video_id
-        WHERE f.user_id = %s {platform_sql} {boundary_sql}
+        WHERE f.user_id = %s AND v.deleted_at IS NULL {platform_sql} {boundary_sql}
         ORDER BY f.created_at DESC, f.platform, f.video_id
         LIMIT %s
         """,
@@ -606,7 +644,7 @@ def list_favorite_viral_video_page(
         SELECT COUNT(*) AS count
         FROM viral_video_favorites f
         JOIN viral_videos v ON v.platform = f.platform AND v.video_id = f.video_id
-        WHERE f.user_id = %s {platform_sql}
+        WHERE f.user_id = %s AND v.deleted_at IS NULL {platform_sql}
         """,
         (user_id, *platform_params),
     ).fetchone()

@@ -50,7 +50,7 @@ STAGE_ADMIN_SITE="$ROOT/admin-site-git-$SHORT_SHA-$STAMP"
 LOG="$ROOT/deploy-git-$SHORT_SHA-$STAMP.log"
 STATUS="$ROOT/deploy-git-$SHORT_SHA-$STAMP.status"
 NEW_IMAGE="video-replica-rehearsal-app:$SHORT_SHA-git"
-SERVICES=(api-1 api-2 worker-1 worker-2 worker-3 worker-4)
+SERVICES=(api-1 api-2 worker-1 worker-2 worker-3 worker-4 worker-viral)
 ROLLOUT_STARTED=0
 
 exec > >(tee -a "$LOG") 2>&1
@@ -82,6 +82,11 @@ rollback() {
   trap - ERR
   printf 'DEPLOY_FAILED exit=%s line=%s command=%q\n' "$code" "$failed_line" "$failed_command"
   mark ROLLING_BACK
+  # Earlier images do not understand --viral-collection. Keep the new collector
+  # stopped during rollback; a subsequent successful rollout restarts it.
+  if [[ "$ROLLOUT_STARTED" == "1" ]]; then
+    docker compose -f "$COMPOSE" stop worker-viral || true
+  fi
   if [[ -f "$BACKUP/compose-before.yaml" ]]; then
     cp -a "$BACKUP/compose-before.yaml" "$COMPOSE"
   fi
@@ -97,7 +102,7 @@ rollback() {
     tar -xzf "$BACKUP/admin-site-before.tar.gz" -C "$ADMIN_SITE"
   fi
   if [[ "$ROLLOUT_STARTED" == "1" ]]; then
-    docker compose -f "$COMPOSE" up -d --no-deps "${SERVICES[@]}" || true
+    docker compose -f "$COMPOSE" up -d --no-deps api-1 api-2 worker-1 worker-2 worker-3 worker-4 || true
   fi
   mark FAILED_ROLLED_BACK
   printf 'ROLLBACK_IMAGE=%s\nDATABASE_BACKUP=%s\nDATABASE_HEAD_LEFT_FORWARD_COMPATIBLE=%s\n' \
@@ -316,7 +321,7 @@ for service in api-1 api-2; do
 done
 
 mark ROLL_WORKERS
-for service in worker-1 worker-2 worker-3 worker-4; do
+for service in worker-1 worker-2 worker-3 worker-4 worker-viral; do
   mark "ROLLING_$service"
   docker compose -f "$COMPOSE" up -d --no-deps "$service"
   wait_ready "$service"

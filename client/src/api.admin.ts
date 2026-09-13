@@ -1590,6 +1590,14 @@ export type ViralRuntimeControls = {
   running_refreshes: number;
   failed_refreshes: number;
   source_configured: boolean;
+  keywords?: Array<{
+    platform: "douyin" | "wechat_channels";
+    category: string;
+    keyword: string;
+  }>;
+  per_keyword_limit?: number;
+  next_collection_at?: string | null;
+  collection_interval_days?: number;
   platforms: Array<{
     platform: "douyin" | "wechat_channels";
     cached_videos: number;
@@ -1615,7 +1623,14 @@ export async function fetchViralRuntimeControls(): Promise<ViralRuntimeControls>
 }
 
 export async function updateViralRuntimeControls(
-  controls: Pick<ViralRuntimeControls, "collection_enabled" | "import_enabled">,
+  controls: Pick<
+    ViralRuntimeControls,
+    | "collection_enabled"
+    | "import_enabled"
+    | "keywords"
+    | "per_keyword_limit"
+    | "collection_interval_days"
+  >,
   reason: string,
   idempotencyKey?: string,
 ): Promise<ViralRuntimeControls> {
@@ -1649,6 +1664,73 @@ export async function updateViralVideoAvailability(
 // ---------------------------------------------------------------------------
 // Operation rates (W10 — 费率管理：上游成本费率与对外售价)
 // ---------------------------------------------------------------------------
+
+export type CollectedViralVideo = {
+  platform: "douyin" | "wechat_channels";
+  video_id: string;
+  category: string;
+  title: string;
+  author: string;
+  duration_ms: number;
+  likes: number;
+  comments: number | null;
+  shares: number | null;
+  collects: number | null;
+  published_at: number | null;
+  created_at: string;
+  homepage_featured: boolean;
+  collection_published: boolean;
+  media_status: string;
+  storage_uri: string | null;
+};
+
+export async function listCollectedViralVideos(options: {
+  platform?: string;
+  query?: string;
+  offset?: number;
+}): Promise<{ items: CollectedViralVideo[]; total: number }> {
+  const query = new URLSearchParams({
+    limit: "25",
+    offset: String(options.offset ?? 0),
+  });
+  if (options.platform) query.set("platform", options.platform);
+  if (options.query) query.set("query", options.query);
+  const response = await requestControl(
+    `/api/control/viral/videos?${query}`,
+    {},
+  );
+  if (!response.ok)
+    throw await parseActivationError(response, "读取采集视频失败");
+  return response.json();
+}
+
+export function curateViralVideo(
+  video: CollectedViralVideo,
+  action: "feature" | "unfeature" | "delete",
+  reason: string,
+  idempotencyKey: string,
+) {
+  return adminWrite(
+    `/api/control/viral/videos/${encodeURIComponent(video.platform)}/${encodeURIComponent(video.video_id)}/curation`,
+    { action },
+    reason,
+    "更新爆款视频失败",
+    idempotencyKey,
+    "PATCH",
+  );
+}
+
+export async function previewCollectedViralVideo(
+  video: CollectedViralVideo,
+): Promise<{ url: string }> {
+  const response = await requestControl(
+    `/api/control/viral/videos/${encodeURIComponent(video.platform)}/${encodeURIComponent(video.video_id)}/preview`,
+    {},
+  );
+  if (!response.ok)
+    throw await parseActivationError(response, "读取视频预览失败");
+  return response.json();
+}
 
 export type OperationRate = {
   subject: string;

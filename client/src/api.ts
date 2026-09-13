@@ -5733,6 +5733,7 @@ export type ViralPlatform = "douyin" | "wechat_channels" | "xiaohongshu";
 export type ViralSort = "hot" | "latest";
 
 export type ViralVideoItem = {
+  homepageFeatured?: boolean;
   platform: ViralPlatform;
   videoId: string;
   category: string;
@@ -5788,6 +5789,7 @@ export type ViralFavoriteResponse = {
 export type ViralDetailResponse = { item: ViralVideoItem } | ViralVideoItem;
 
 export type ViralListOptions = {
+  featuredOnly?: boolean;
   limit?: number;
   cursor?: string;
 };
@@ -5833,7 +5835,8 @@ export function listViralVideos(
   const query = new URLSearchParams({ platform, sort });
   if (options.limit !== undefined) query.set("limit", String(options.limit));
   if (options.cursor) query.set("cursor", options.cursor);
-  // 视频号冷库需聚合 12 次上游调用（3 页 × 4 分类），实测最长约 80s。
+  if (options.featuredOnly) query.set("featured_only", "true");
+  // 页面仅读取数据库中的已归档媒体，不触发上游采集。
   return requestApiJson<ViralListResponse>(
     `/api/viral/videos?${query}`,
     "爆款视频列表暂不可用",
