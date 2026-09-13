@@ -10,6 +10,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Offline archive tools may traverse the chain; collection runtime is PG-only.
+    if op.get_bind().dialect.name != "postgresql":
+        return
     op.execute("""
         CREATE TABLE viral_collection_batches (
           id text PRIMARY KEY,
@@ -80,6 +83,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name != "postgresql":
+        return
     op.drop_table("viral_collection_charges")
     op.drop_column("billing_operations", "collection_batch_id")
     op.drop_table("viral_collection_members")
