@@ -477,7 +477,7 @@
     },
     "20260913T1100_itemized_billing": {
       "file": "versions/20260913T1100_itemized_billing.py",
-      "sha256": "f8aa6b77e9f14dae536edf9573758da2804b9c4181ab6a140ecf256c8ccc2025"
+      "sha256": "746dc4624ccdd74a92ba75bde5198892d4139ada8371bdce29b2c5495df61764"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

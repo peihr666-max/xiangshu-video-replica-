@@ -59,6 +59,8 @@
 - 空库实测：87 表，1038 列，schema digest 4b24fa6cadd2585884b4ab1d25fc4871ee5db7a65d54d512f580fde238a6034a；只测专属 PG，未接生产。
 - 首轮服务端全量发现 16 失败 / 1 fixture error，已按实际时长、fixture 外键清理及离线归档新表契约修复并专项复验；最终全量已通过：1952 passed、1 skipped、1 warning，1051.60 秒（billing-full-final.log）。跳过原因是 test_bootstrap_all_env_pg_gate.py:120 的生产 TLS 要求已由 test_db_pg.py 配置测试覆盖；不是缺 PostgreSQL 的跳过。PR 三门禁和合并仍待完成。
 
+PR 首轮 CI 的静态门通过，migration guard 因新增未合并 revision 在 Windows 工作区的 CRLF 与 Git 提交的 LF 指纹不同而失败。已将该新增文件规范为 LF，按 Git 实际提交字节重新记录 manifest；Linux/Windows 静态指纹检查通过，不改动迁移语义和已发布 revision。业务源码与此前全量验证一致，后续 CI 对最新提交重新完整验证。
+
 ## 独立评审
 
 用户在本会话明确授权只读评审代理 `/root/billing_review`。初审 6 项 P1、2 项 P2，复核追加 2 项 P1；全部实质修复后终审未发现遗留 P1/P2，允许继续全量门禁和正常 PR 合并。代理只读代码，未冒充运行测试或人工签认。
