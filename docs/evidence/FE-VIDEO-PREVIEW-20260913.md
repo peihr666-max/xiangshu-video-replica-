@@ -54,3 +54,7 @@ Lore 提交 SHA：不适用；Git 提交与合并另记
 自检覆盖全部视频入口、横竖屏比例、装饰层焦点/读屏、单播放器与回调释放、签名链接刷新、封面失败恢复、响应式优先级和生成比例保留。浏览器复验修正口播预览宽度被通用 studio-media 覆盖的问题，并补齐首尾帧选择按钮内预览。真实成片舞台实测 223.2×396.8、播放/暂停/拖到 4 秒结尾正常；控制条始终处于背景之上。临时 MP4 及验证页面已归档后移出工作树，不进入正式产物。
 
 窄窗口补验：独立 Chromium 标签页设置为 390×844，发布页文档宽度 375px（含滚动条差值）、9 个预览均约 9:16 且 contain，无横向溢出；恢复窗口尺寸后关闭临时验证标签。记录 narrow-publishing.json。
+
+正式 [PR #95](https://github.com/peihr666-max/xiangshu-video-replica-/pull/95) 已创建。初始 head f9300c0 三门禁全部通过；合并前 BILLING PR #94 进入 main，随后 rebase 到 3f77c61。只手工合并任务账本的两处新增记录，保留双方独立状态；ContentPages 自动合并经差异核对，计费刷新与预览展示均保留。本任务仍仅有自己的两个提交。
+
+集成后 `npm run check --workspace client` 再验通过：94 文件 / 1389 passed，含 Biome 和 TypeScript。先前本地后端 1914 passed / 1 原有 skip 属于初始基线，不能替代新增计费功能的验收；最终合并基线的完整三门禁以 PR 当前 head Checks 为准。
