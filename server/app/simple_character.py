@@ -696,6 +696,7 @@ def list_simple_library_page(
     limit: int,
     cursor: str | None,
     query: str,
+    offset: int = 0,
 ) -> SimpleLibraryPage:
     """Page identities first, then aggregate their complete published assets."""
     normalized_query = query.strip().casefold()
@@ -742,14 +743,14 @@ def list_simple_library_page(
         )
         parameters.extend([created_at, created_at, identity_id])
     where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    parameters.append(limit + 1)
+    parameters.extend([limit + 1, max(0, offset)])
     identity_rows = conn.execute(
         f"""
         SELECT identity.id, identity.created_at
         FROM person_identities AS identity
         {where_clause}
         ORDER BY identity.created_at DESC, identity.id DESC
-        LIMIT %s
+        LIMIT %s OFFSET %s
         """,
         tuple(parameters),
     ).fetchall()

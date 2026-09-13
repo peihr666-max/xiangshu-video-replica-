@@ -2180,6 +2180,7 @@ function ParameterControls() {
           {["768P", "2K"].map((resolution) => (
             <button
               className={draft.resolution === resolution ? "active" : ""}
+              aria-pressed={draft.resolution === resolution}
               disabled={readOnly}
               key={resolution}
               onClick={() => patchDraft({ resolution })}
@@ -2208,6 +2209,7 @@ function ParameterControls() {
           {ratios.map((ratio) => (
             <button
               className={draft.ratio === ratio ? "active" : ""}
+              aria-pressed={draft.ratio === ratio}
               disabled={readOnly}
               key={ratio}
               onClick={() => patchDraft({ ratio })}
@@ -2223,6 +2225,7 @@ function ParameterControls() {
           {[1, 2, 4].map((count) => (
             <button
               className={draft.count === count ? "active" : ""}
+              aria-pressed={draft.count === count}
               disabled={readOnly}
               key={count}
               onClick={() => patchDraft({ count })}

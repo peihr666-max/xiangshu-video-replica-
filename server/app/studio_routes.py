@@ -13,14 +13,31 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
 
 from app.auth import AuthenticatedUser, CurrentUser, Database
+from app.customer_fence import BusinessDbDep
 from app.db_portable import BusinessConnection
+from app.permissions import require_not_auditor
+from app.studio_search import SearchKind, StudioSearchResponse, search_studio
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/studio/search", response_model=StudioSearchResponse)
+def read_studio_search(
+    conn: Database,
+    actor: AuthenticatedUser,
+    q: Annotated[str, Query(min_length=1, max_length=100)],
+    kind: SearchKind = "video",
+    page: Annotated[int, Query(ge=1, le=1_000_000)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 12,
+) -> StudioSearchResponse:
+    return search_studio(conn, actor=actor, query=q, kind=kind, page=page, page_size=page_size)
+
 
 _BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -479,12 +496,137 @@ def update_studio_notification_preferences(
         INSERT INTO studio_notification_preferences (user_id, prefs_json)
         VALUES (%s, %s)
         ON CONFLICT (user_id) DO UPDATE
-        SET prefs_json = excluded.prefs_json, updated_at = CURRENT_TIMESTAMP
+        SET prefs_json = (studio_notification_preferences.prefs_json::jsonb
+            || excluded.prefs_json::jsonb)::text, updated_at = CURRENT_TIMESTAMP
         """,
         (actor.id, payload.model_dump_json()),
     )
     conn.commit()
     return payload
+
+
+class StudioNotificationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    task_id: str
+    task_kind: str
+    title: str
+    status: str
+    occurred_at: str
+    unread: bool
+
+
+class StudioNotificationsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[StudioNotificationItem]
+    unread_count: int
+    enabled: bool
+
+
+def studio_notifications(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+) -> StudioNotificationsResponse:
+    preferences = _read_notification_preferences(conn, actor.id)
+    if not preferences.enabled:
+        return StudioNotificationsResponse(items=[], unread_count=0, enabled=False)
+    row = conn.execute(
+        "SELECT prefs_json FROM studio_notification_preferences WHERE user_id = %s",
+        (actor.id,),
+    ).fetchone()
+    read_before = "1970-01-01T00:00:00+00:00"
+    if row:
+        try:
+            payload = json.loads(str(row["prefs_json"]))
+            timestamp = payload.get("read_before") if isinstance(payload, dict) else None
+            if isinstance(timestamp, str) and datetime.fromisoformat(timestamp).tzinfo:
+                read_before = timestamp
+        except (ValueError, TypeError):
+            pass
+    # Events derive from durable task states; no polling request writes fake events.
+    # Archive changes get a new event time, while hidden/superseded results stay absent.
+    rows = conn.execute(
+        """
+        WITH events AS (
+          SELECT 'generation:' || task.id AS id, batch.id AS task_id,
+            'generation_batch' AS task_kind,
+            COALESCE(NULLIF(batch.display_name, ''), project.name, '视频生成') AS title,
+            CASE WHEN task.archive_status = 'ARCHIVE_FAILED' THEN 'ARCHIVE_FAILED'
+              ELSE task.status END AS status, task.updated_at::timestamptz AS occurred_at
+          FROM generation_tasks AS task
+          JOIN generation_batches AS batch ON batch.id = task.batch_id
+          LEFT JOIN projects AS project ON project.id = batch.project_id
+          WHERE (project.owner_user_id = %s OR
+              (batch.project_id IS NULL AND batch.created_by_user_id = %s))
+            AND task.superseded_by_task_id IS NULL
+            AND task.status IN ('SUCCEEDED', 'FAILED', 'SUBMISSION_UNCERTAIN')
+            AND NOT EXISTS (SELECT 1 FROM customer_batch_visibility AS visibility
+              WHERE visibility.user_id = %s AND visibility.batch_id = batch.id)
+          UNION ALL
+          SELECT 'oral:' || oral.id, oral.id, 'oral_task', '数字人口播',
+            oral.status, oral.updated_at::timestamptz
+          FROM oral_tasks AS oral
+          WHERE oral.owner_user_id = %s
+            AND oral.status IN ('SUCCEEDED', 'FAILED', 'SUBMISSION_UNCERTAIN', 'ARCHIVE_FAILED')
+        )
+        SELECT *, occurred_at > %s::timestamptz AS unread,
+          COUNT(*) FILTER (WHERE occurred_at > %s::timestamptz) OVER () AS unread_count
+        FROM events ORDER BY occurred_at DESC, id DESC LIMIT 50
+        """,
+        (actor.id, actor.id, actor.id, actor.id, read_before, read_before),
+    ).fetchall()
+    return StudioNotificationsResponse(
+        items=[
+            StudioNotificationItem(
+                id=str(row["id"]),
+                task_id=str(row["task_id"]),
+                task_kind=str(row["task_kind"]),
+                title=str(row["title"]),
+                status=str(row["status"]),
+                occurred_at=row["occurred_at"].isoformat(),
+                unread=bool(row["unread"]),
+            )
+            for row in rows
+        ],
+        unread_count=int(rows[0]["unread_count"]) if rows else 0,
+        enabled=True,
+    )
+
+
+@router.get("/studio/notifications", response_model=StudioNotificationsResponse)
+def read_studio_notifications(
+    conn: Database, actor: AuthenticatedUser
+) -> StudioNotificationsResponse:
+    return studio_notifications(conn, actor=actor)
+
+
+class StudioNotificationReadResponse(BaseModel):
+    read_before: str
+
+
+@router.post("/studio/notifications/read", response_model=StudioNotificationReadResponse)
+def mark_studio_notifications_read(db: BusinessDbDep) -> StudioNotificationReadResponse:
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="studio.notifications_read",
+            entity_type="studio_notification_preferences",
+            entity_id=actor.id,
+        )
+        row = conn.execute("SELECT clock_timestamp() AS cutoff").fetchone()
+        cutoff = row["cutoff"].isoformat()
+        conn.execute(
+            """INSERT INTO studio_notification_preferences (user_id, prefs_json)
+            VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE
+            SET prefs_json = (studio_notification_preferences.prefs_json::jsonb
+                || excluded.prefs_json::jsonb)::text, updated_at = CURRENT_TIMESTAMP""",
+            (actor.id, json.dumps({"read_before": cutoff})),
+        )
+    return StudioNotificationReadResponse(read_before=cutoff)
 
 
 # ---------------------------------------------------------------------------

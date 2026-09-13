@@ -101,6 +101,8 @@ import type {
   StudioTask,
 } from "./types";
 import { Button, Empty, Hint, Icon, Media } from "./ui";
+import { WorkspaceNotifications } from "./WorkspaceNotifications";
+import { WorkspaceSearch } from "./WorkspaceSearch";
 import "./studio.css";
 
 type Props = WorkspaceShellProps & {
@@ -1627,6 +1629,10 @@ export function StudioWorkspace({
         );
       });
   };
+  const patchState = useCallback<StudioContextValue["patchState"]>(
+    (patch) => setState((previous) => ({ ...previous, ...patch })),
+    [],
+  );
   const context: StudioContextValue = {
     state,
     data,
@@ -1640,7 +1646,7 @@ export function StudioWorkspace({
     retryReferenceAssets,
     navigate,
     patchDraft,
-    patchState: (patch) => setState((previous) => ({ ...previous, ...patch })),
+    patchState,
     updateData: setData,
     notify,
     openPicker: setPicker,
@@ -1673,9 +1679,6 @@ export function StudioWorkspace({
     setLivePanel(undefined);
     refresh();
   };
-  const searchPages = Object.entries(pageTitles).filter(([, title]) =>
-    title.includes(search.trim()),
-  );
   const visibleNavGroups =
     currentUser.role === "admin"
       ? [
@@ -1783,15 +1786,7 @@ export function StudioWorkspace({
                 <Icon name="search" />
               </button>
             </form>
-            <button
-              type="button"
-              className="studio-notifications"
-              aria-label="查看任务动态"
-              onClick={() => navigate("tasks")}
-            >
-              <Icon name="bell" size={28} />
-              {activeCount > 0 && <small>{activeCount}</small>}
-            </button>
+            <WorkspaceNotifications />
             <button
               type="button"
               aria-label="用户档案"
@@ -2005,36 +2000,10 @@ export function StudioWorkspace({
         )}
         {showSearch && (
           <StudioDialog title="搜索工作区" onClose={() => setShowSearch(false)}>
-            <p>
-              {search.trim() ? `与“${search}”相关的页面与人物` : "快速前往"}
-            </p>
-            <div className="studio-search-results">
-              {searchPages.map(([id, title]) => (
-                <Button key={id} onClick={() => navigate(id as StudioPage)}>
-                  {title}
-                  <Icon name="arrow" />
-                </Button>
-              ))}
-              {data.people
-                .filter((person) => person.name.includes(search))
-                .map((person) => (
-                  <Button
-                    key={person.id}
-                    onClick={() =>
-                      navigate("person-ip", { selectedPersonId: person.id })
-                    }
-                  >
-                    {person.name} · {person.role}
-                  </Button>
-                ))}
-            </div>
-            {searchPages.length === 0 &&
-              !data.people.some((person) => person.name.includes(search)) && (
-                <Empty
-                  title="没有匹配结果"
-                  description="目前支持页面名称与已加载人物搜索"
-                />
-              )}
+            <WorkspaceSearch
+              query={search}
+              onClose={() => setShowSearch(false)}
+            />
           </StudioDialog>
         )}
       </div>

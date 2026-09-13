@@ -8,7 +8,12 @@ import {
 import { useCallback, useLayoutEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MaterialItem, ViralVideoItem } from "../api";
-import type { StudioContextValue, StudioData, StudioState } from "./types";
+import type {
+  StudioContextValue,
+  StudioData,
+  StudioPublishDraft,
+  StudioState,
+} from "./types";
 
 const {
   useStudio,
@@ -29,6 +34,9 @@ const {
   hideMaterial,
   downloadMaterialAsset,
   getAssetDownloadUrl,
+  getStudioDraft,
+  saveStudioDraft,
+  resolveMaterials,
   createGenerationTaskPreviewUrl,
 } = vi.hoisted(() => ({
   useStudio: vi.fn(),
@@ -49,6 +57,16 @@ const {
   hideMaterial: vi.fn(),
   downloadMaterialAsset: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
+  getStudioDraft: vi.fn(
+    async (): Promise<{
+      revision: number;
+      payload: { drafts: StudioPublishDraft[] };
+    }> => ({ revision: 1, payload: { drafts: [] } }),
+  ),
+  saveStudioDraft: vi.fn(),
+  resolveMaterials: vi.fn(
+    async (): Promise<{ items: MaterialItem[] }> => ({ items: [] }),
+  ),
   createGenerationTaskPreviewUrl: vi.fn(),
 }));
 vi.mock("./context", () => ({ useStudio }));
@@ -70,6 +88,9 @@ vi.mock("../api", () => ({
   hideMaterial,
   downloadMaterialAsset,
   getAssetDownloadUrl,
+  getStudioDraft,
+  saveStudioDraft,
+  resolveMaterials,
   createGenerationTaskPreviewUrl,
 }));
 
@@ -3356,7 +3377,7 @@ describe("V1.4 内容与运营页面", () => {
     );
   });
 
-  it("发布草稿独立保存于当前会话，不覆盖口播脚本", () => {
+  it("审核示例发布草稿独立保存，不覆盖口播脚本", () => {
     const base = studio();
     const value = studio({
       state: {
@@ -3417,7 +3438,9 @@ describe("V1.4 内容与运营页面", () => {
       target: { value: " 建房避坑 " },
     });
     fireEvent.keyDown(screen.getByLabelText("添加标签"), { key: "Enter" });
-    expect(screen.getByText("# 建房避坑")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "移除标签 建房避坑" }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText("添加标签")).toHaveAttribute(
       "placeholder",
       "输入标签后按 Enter",
@@ -3426,12 +3449,14 @@ describe("V1.4 内容与运营页面", () => {
       target: { value: "建房避坑" },
     });
     fireEvent.keyDown(screen.getByLabelText("添加标签"), { key: "Enter" });
-    expect(screen.getAllByText("# 建房避坑")).toHaveLength(1);
+    expect(
+      screen.getAllByRole("button", { name: "移除标签 建房避坑" }),
+    ).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
     expect(value.saveDraft).not.toHaveBeenCalled();
     expect(value.state.draft.script.text).toBe("口播终稿不得被发布表单覆盖");
     expect(
-      screen.getByText("已保存到当前会话，未同步到云端。"),
+      screen.getByText("已保存审核示例草稿，未同步到云端。"),
     ).toBeInTheDocument();
     expect(value.patchState).toHaveBeenCalledWith({
       publishDrafts: [
@@ -3464,13 +3489,152 @@ describe("V1.4 内容与运营页面", () => {
     expect(screen.getByLabelText("发布描述")).toHaveValue(
       "主体之外，门窗、水电、防水和庭院，也要提前规划。",
     );
-    expect(screen.getByText("# 农村自建房")).toBeInTheDocument();
-    expect(screen.getByText("# 建房避坑")).toBeInTheDocument();
-    expect(value.state.draft.script.text).toBe("口播终稿不得被发布表单覆盖");
     expect(
-      screen.getByRole("button", { name: "正式发布（接口未接通）" }),
-    ).toBeDisabled();
+      screen.getByRole("button", { name: "移除标签 农村自建房" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "移除标签 建房避坑" }),
+    ).toBeInTheDocument();
+    expect(value.state.draft.script.text).toBe("口播终稿不得被发布表单覆盖");
+    expect(screen.getByRole("button", { name: "前往官方发布" })).toBeDisabled();
   });
+
+  it("发布草稿使用云端版本保存，失败保留表单且不提示成功", async () => {
+    const base = studio();
+    const value = studio({
+      review: false,
+      state: { ...base.state, selectedAssetId: "ready-video" },
+      data: {
+        ...base.data,
+        tasks: [],
+        assets: [
+          {
+            id: "ready-video",
+            assetId: "ready-video",
+            name: "成片",
+            kind: "video",
+            group: "成片",
+            source: "任务中心",
+            saved: true,
+          },
+        ],
+      },
+    });
+    getStudioDraft.mockResolvedValueOnce({
+      revision: 7,
+      payload: { drafts: [] },
+    });
+    saveStudioDraft.mockRejectedValueOnce(
+      new Error("云端草稿已在其他窗口更新"),
+    );
+    useStudio.mockReturnValue(value);
+    render(<PublishPage />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "保存草稿" })).toBeEnabled(),
+    );
+    fireEvent.change(screen.getByLabelText("发布标题"), {
+      target: { value: "新标题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await screen.findByText("云端草稿已在其他窗口更新");
+    expect(saveStudioDraft).toHaveBeenCalledWith(
+      "publishing",
+      {
+        drafts: [
+          expect.objectContaining({ title: "新标题", assetId: "ready-video" }),
+        ],
+      },
+      false,
+      7,
+    );
+    expect(screen.getByLabelText("发布标题")).toHaveValue("新标题");
+    expect(screen.queryByText("已保存到云端，可在刷新后继续编辑。")).toBeNull();
+    saveStudioDraft.mockResolvedValueOnce({ revision: 8 });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await screen.findByText("已保存到云端，可在刷新后继续编辑。");
+    expect(value.patchState).toHaveBeenLastCalledWith({
+      publishDrafts: [expect.objectContaining({ title: "新标题" })],
+    });
+  });
+
+  it.each([
+    [true, true],
+    [false, true],
+    [true, false],
+    [false, false],
+  ])(
+    "历史发布成片按素材接口确认权限（可访问：%s，已有任务：%s）",
+    async (available, hasRecentTask) => {
+      const base = studio();
+      const value = studio({
+        review: false,
+        state: { ...base.state, selectedAssetId: "historical-video" },
+        data: {
+          ...base.data,
+          tasks: hasRecentTask
+            ? [
+                {
+                  id: "new-task",
+                  title: "近期成片",
+                  type: "数字人口播",
+                  status: "completed",
+                  submitted: "今天",
+                  resultId: "new-video",
+                },
+              ]
+            : [],
+          assets: [
+            {
+              id: "historical-video",
+              name: "历史成片",
+              kind: "video",
+              group: "成片",
+              source: "任务中心",
+              saved: true,
+              allowedActions: ["download"],
+            },
+          ],
+        },
+      });
+      getStudioDraft.mockResolvedValueOnce({
+        revision: 3,
+        payload: {
+          drafts: [
+            {
+              id: "old-draft",
+              assetId: "historical-video",
+              title: "旧发布草稿",
+              description: "正文",
+              account: "",
+              platform: "抖音",
+              tags: [],
+            },
+          ],
+        },
+      });
+      resolveMaterials.mockResolvedValueOnce({
+        items: available
+          ? [
+              material("historical-video", {
+                media_type: "video",
+                content_type: "video/mp4",
+              }),
+            ]
+          : [],
+      });
+      useStudio.mockReturnValue(value);
+      render(<PublishPage />);
+      await waitFor(() =>
+        expect(value.patchState).toHaveBeenCalledWith({
+          publishDrafts: [expect.objectContaining({ id: "old-draft" })],
+        }),
+      );
+      expect(resolveMaterials).toHaveBeenCalledWith(["historical-video"]);
+      const save = screen.getByRole("button", { name: "保存草稿" });
+      if (available) expect(save).toBeEnabled();
+      else expect(save).toBeDisabled();
+    },
+  );
 
   it("正式模式不伪造已发布数量或已连接账号", () => {
     const base = studio();
@@ -3507,13 +3671,16 @@ describe("V1.4 内容与运营页面", () => {
     render(<PublishPage />);
 
     expect(
-      screen.getByText("可整理当前会话草稿；平台授权与正式发布暂缓未启用"),
+      screen.getByText("云端保存发布草稿，在官方平台确认并完成发布"),
     ).toBeInTheDocument();
-    expect(screen.getByText("已发布")).toBeInTheDocument();
-    expect(screen.getAllByText("暂缓")).toHaveLength(2);
+    expect(
+      screen.getByText("正式发布结果请在官方平台查看"),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/待发布\s*0/)).not.toBeInTheDocument();
     expect(screen.queryByText(/已发布\s*0/)).not.toBeInTheDocument();
-    expect(screen.getByText("尚未连接发布账号")).toBeInTheDocument();
+    expect(
+      screen.getByText("请在 Windows 桌面客户端扫码连接账号"),
+    ).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "前往用户档案管理账号" }),
     );

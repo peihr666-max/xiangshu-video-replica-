@@ -248,7 +248,7 @@ export type StudioPublishDraft = {
   id: string;
   assetId: string;
   coverId?: string;
-  platform: "抖音" | "视频号";
+  platform: "抖音" | "视频号" | "小红书";
   account: string;
   title: string;
   description: string;

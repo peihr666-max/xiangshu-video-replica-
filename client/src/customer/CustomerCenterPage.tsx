@@ -980,14 +980,14 @@ export function CustomerCenterPage({
                 <div className="uc-preference">
                   <Icon name="bell" />
                   <div>
-                    <strong>任务与公告通知</strong>
+                    <strong>任务通知</strong>
                     <p>接收平台公告和任务完成提醒</p>
                   </div>
                   <button
                     type="button"
                     className="uc-switch"
                     role="switch"
-                    aria-label="任务与公告通知"
+                    aria-label="任务通知"
                     aria-checked={notifications === true}
                     disabled={notifications === null || busy}
                     onClick={() => void toggleNotifications()}

@@ -84,6 +84,168 @@ from app.viral_tikhub import ViralSourceClient, ViralVideo
 
 CW058_TEST_DB = "cw058_content_asset_test"
 
+
+def test_prelaunch_publishing_draft_revision_rejects_stale_writer(bus: BusinessConnection) -> None:
+    user = actor("employee_1", "employee")
+    first = save_studio_draft(
+        bus,
+        actor=user,
+        kind="publishing",
+        request=StudioDraftUpsertRequest(payload={"drafts": []}, expected_revision=0),
+    )
+    assert first.revision == 1
+    with pytest.raises(HTTPException) as stale:
+        save_studio_draft(
+            bus,
+            actor=user,
+            kind="publishing",
+            request=StudioDraftUpsertRequest(
+                payload={"drafts": [{"id": "stale"}]}, expected_revision=0
+            ),
+        )
+    assert stale.value.status_code == 409
+    assert load_studio_draft(bus, actor_id=user.id, kind="publishing").payload == {"drafts": []}
+    with pytest.raises(HTTPException) as missing_revision:
+        save_studio_draft(
+            bus,
+            actor=user,
+            kind="publishing",
+            request=StudioDraftUpsertRequest(payload={"drafts": []}),
+        )
+    assert missing_revision.value.status_code == 422
+    with pytest.raises(HTTPException) as other:
+        load_studio_draft(bus, actor_id="employee_2", kind="publishing")
+    assert other.value.status_code == 404
+
+
+def test_prelaunch_search_is_scoped_paginated_and_literal(bus: BusinessConnection) -> None:
+    from app.studio_search import search_studio
+
+    for user_id in ("employee_1", "employee_2"):
+        for index in range(3):
+            save_saved_script(
+                bus,
+                actor=actor(user_id, "employee"),
+                request=SavedScriptRequest(
+                    script_id=f"{user_id}-{index}", title="预算100%", text="测试文案"
+                ),
+            )
+    first = search_studio(
+        bus, actor=actor("employee_1", "employee"), query="%", kind="script", page=1, page_size=2
+    )
+    second = search_studio(
+        bus, actor=actor("employee_1", "employee"), query="%", kind="script", page=2, page_size=2
+    )
+    assert first.total == second.total == 3
+    assert len(first.items) == 2 and len(second.items) == 1
+    assert len({item.id for item in first.items + second.items}) == 3
+    assert all(item.id.startswith("employee_1-") for item in first.items + second.items)
+    assert (
+        search_studio(
+            bus,
+            actor=actor("employee_1", "employee"),
+            query="_",
+            kind="script",
+            page=1,
+            page_size=12,
+        ).total
+        == 0
+    )
+
+
+def test_prelaunch_saved_script_detail_can_open_beyond_latest_fifty(
+    lane_env: str, pg: psycopg.Connection, bus: BusinessConnection
+) -> None:
+    from app.auth import get_current_user
+    from app.main import app
+
+    for index in range(55):
+        save_saved_script(
+            bus,
+            actor=actor("employee_1", "employee"),
+            request=SavedScriptRequest(
+                script_id=f"old-{index}",
+                title=f"预算 {index}",
+                text="仍可打开的历史文案",
+            ),
+        )
+    pg.execute(
+        "UPDATE studio_saved_scripts SET updated_at = '2000-01-01' WHERE script_id = 'old-0'"
+    )
+    assert "old-0" not in {
+        item.script_id for item in list_saved_scripts(bus, actor_id="employee_1").items
+    }
+    app.dependency_overrides[get_current_user] = lambda: actor("employee_1", "employee")
+    try:
+        client = TestClient(app)
+        response = client.get("/api/studio/saved-scripts/old-0")
+        assert response.status_code == 200
+        assert response.json()["text"] == "仍可打开的历史文案"
+        app.dependency_overrides[get_current_user] = lambda: actor("employee_2", "employee")
+        assert client.get("/api/studio/saved-scripts/old-0").status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_prelaunch_notifications_hide_other_users_and_preserve_read_cutoff(
+    lane_env: str, pg: psycopg.Connection
+) -> None:
+    from contextlib import contextmanager
+
+    from app.auth import get_current_user
+    from app.customer_fence import get_business_db
+    from app.main import app
+
+    class ScopedTestDb:
+        @contextmanager
+        def write(self):
+            with pg_transaction() as raw:
+                yield BusinessConnection.postgres(raw), actor("employee_1", "employee")
+
+    _seed_stats_scene(pg)
+    app.dependency_overrides[get_current_user] = lambda: actor("employee_1", "employee")
+    try:
+        client = TestClient(app)
+        response = client.get("/api/studio/notifications")
+        assert response.status_code == 200
+        feed = response.json()
+        assert feed["unread_count"] == 4
+        assert {item["id"] for item in feed["items"]} == {
+            "generation:t-today",
+            "generation:t-failed",
+            "generation:t-uncertain",
+            "generation:t-archive",
+        }
+        assert (
+            next(item for item in feed["items"] if item["id"] == "generation:t-archive")["status"]
+            == "ARCHIVE_FAILED"
+        )
+        assert client.post("/api/studio/notifications/read").status_code == 401
+        app.dependency_overrides[get_business_db] = ScopedTestDb
+        assert client.post("/api/studio/notifications/read").status_code == 200
+        assert client.get("/api/studio/notifications").json()["unread_count"] == 0
+        assert (
+            client.put("/api/studio/notification-preferences", json={"enabled": False}).status_code
+            == 200
+        )
+        assert client.get("/api/studio/notifications").json() == {
+            "items": [],
+            "unread_count": 0,
+            "enabled": False,
+        }
+        assert (
+            client.put("/api/studio/notification-preferences", json={"enabled": True}).status_code
+            == 200
+        )
+        assert client.get("/api/studio/notifications").json()["unread_count"] == 0
+        pg.execute(
+            "UPDATE generation_tasks SET updated_at = clock_timestamp()::text WHERE id = 't-failed'"
+        )
+        assert client.get("/api/studio/notifications").json()["unread_count"] == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
 UNIQUE_VIOLATION = "23505"
 
 _NOW = "2026-09-06 03:00:00"

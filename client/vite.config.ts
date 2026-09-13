@@ -1,3 +1,4 @@
+import { copyFileSync, cpSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,7 +33,27 @@ const adminDevRewritePlugin: Plugin = {
 };
 
 export default defineConfig({
-  plugins: [react(), adminDevRewritePlugin],
+  plugins: [
+    react(),
+    adminDevRewritePlugin,
+    {
+      name: "customer-public-assets",
+      apply: "build",
+      writeBundle() {
+        const output = resolve(scriptDir, "dist");
+        mkdirSync(output, { recursive: true });
+        copyFileSync(
+          resolve(scriptDir, "public/favicon.svg"),
+          resolve(output, "favicon.svg"),
+        );
+        cpSync(
+          resolve(scriptDir, "public/platforms"),
+          resolve(output, "platforms"),
+          { recursive: true },
+        );
+      },
+    },
+  ],
   clearScreen: false,
   server: {
     host: "127.0.0.1",
@@ -68,6 +89,8 @@ export default defineConfig({
     // （tauri.conf.json / tauri.customer.conf.json）的 frontendDist: "../dist"
     // 依赖此路径；改名会同时断掉内部 NSIS 与客户云 NSIS 两条 CI 门禁。
     outDir: "dist",
+    // The /studio review images are only served by the development server.
+    copyPublicDir: false,
     emptyOutDir: true,
     target:
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
