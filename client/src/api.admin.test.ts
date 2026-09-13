@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  getAdminCsrfToken,
   getControlAccounts,
   SESSION_EXPIRED_EVENT,
+  setAdminCsrfToken,
   updateControlBillingSettings,
 } from "./api";
 import {
@@ -16,11 +18,13 @@ import {
   fetchAdminSession,
   fetchCustomerUnitPrice,
   generateActivationCodes,
+  getCustomerPricing,
   listActivationCodes,
   loginAdminWithPassword,
   recoverAdminPassword,
   resumeActivationCode,
   revokeActivationCode,
+  revokeCustomerSession,
   revokeDeviceCredential,
   suspendActivationCode,
   unbindDevice,
@@ -63,6 +67,184 @@ async function signIn(fetchMock: ReturnType<typeof vi.fn>) {
   fetchMock.mockImplementationOnce(() => jsonResponse(exchangePayload));
   await exchangeAdminSession("ASX1.body.signature");
 }
+
+describe("admin request contract regressions", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    clearAdminActivationSession();
+  });
+
+  it("revokes the selected session with CSRF, its epoch and the same retry key", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await signIn(fetchMock);
+    fetchMock.mockImplementation(() =>
+      jsonResponse({ request_id: "req-revoke" }),
+    );
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(
+        revokeCustomerSession("session/one", 7, "客服核验", "revoke-key"),
+      ).resolves.toEqual({ request_id: "req-revoke" });
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        "http://127.0.0.1:8000/api/control/customer-sessions/session%2Fone/revoke",
+        expect.objectContaining({
+          method: "POST",
+          credentials: "include",
+          headers: expect.objectContaining({
+            "X-Admin-CSRF": CSRF_TOKEN_TEXT,
+            "Idempotency-Key": "revoke-key",
+          }),
+          body: JSON.stringify({
+            session_epoch: 7,
+            confirm: true,
+            reason: "客服核验",
+          }),
+        }),
+      );
+    }
+  });
+
+  it("refuses session revocation locally when the administrator has no CSRF token", async () => {
+    const fetchMock = vi.fn(() => jsonResponse({ request_id: "unexpected" }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      revokeCustomerSession("session-one", 7, "客服核验", "revoke-key"),
+    ).rejects.toMatchObject({ code: "ADMIN_CSRF_UNAVAILABLE" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["read", "write"])(
+    "clears the admin token and notifies expiry on a protected %s 401",
+    async (kind) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      await signIn(fetchMock);
+      const dispatch = vi.spyOn(window, "dispatchEvent");
+      fetchMock.mockImplementation(() =>
+        jsonResponse(
+          { detail: { code: "ADMIN_SESSION_EXPIRED", message: "会话过期" } },
+          401,
+        ),
+      );
+      await expect(
+        kind === "read"
+          ? getCustomerPricing()
+          : revokeCustomerSession("session-one", 7, "客服核验", "revoke-key"),
+      ).rejects.toMatchObject({ status: 401, code: "ADMIN_SESSION_EXPIRED" });
+      expect(
+        dispatch.mock.calls.filter(
+          ([event]) => event.type === SESSION_EXPIRED_EVENT,
+        ),
+      ).toHaveLength(1);
+      expect(getAdminCsrfToken()).toBeNull();
+    },
+  );
+
+  it("shows a string detail from pricing validation and preserves a valid session on 422", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await signIn(fetchMock);
+    const dispatch = vi.spyOn(window, "dispatchEvent");
+    fetchMock.mockImplementation(() =>
+      jsonResponse({ detail: "请先配置供应商和模型" }, 422),
+    );
+    await expect(getCustomerPricing()).rejects.toThrow(
+      "读取积分价格失败：请先配置供应商和模型（422）",
+    );
+    expect(getAdminCsrfToken()).toBe(CSRF_TOKEN_TEXT);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("does not report a session expiry for rejected login, recovery exchange or an anonymous restore", async () => {
+    const dispatch = vi.spyOn(window, "dispatchEvent");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        jsonResponse(
+          { detail: { code: "UNAUTHORIZED", message: "凭据无效" } },
+          401,
+        ),
+      ),
+    );
+    await expect(
+      loginAdminWithPassword("admin", "invalid-test-input"),
+    ).rejects.toMatchObject({ status: 401 });
+    await expect(
+      exchangeAdminSession("invalid-test-input"),
+    ).rejects.toMatchObject({ status: 401 });
+    await expect(fetchAdminSession()).rejects.toMatchObject({ status: 401 });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("preserves the administrator session when a protected write is forbidden", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await signIn(fetchMock);
+    const dispatch = vi.spyOn(window, "dispatchEvent");
+    fetchMock.mockImplementation(() =>
+      jsonResponse(
+        { detail: { code: "ADMIN_WRITE_FORBIDDEN", message: "当前账号只读" } },
+        403,
+      ),
+    );
+    await expect(
+      revokeCustomerSession("session-one", 7, "客服核验", "revoke-key"),
+    ).rejects.toMatchObject({
+      status: 403,
+      code: "ADMIN_WRITE_FORBIDDEN",
+      message: "结束会话失败：当前账号只读（403）",
+    });
+    expect(getAdminCsrfToken()).toBe(CSRF_TOKEN_TEXT);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the HTTP status when an upstream proxy returns a non-JSON failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response("<html>unavailable</html>", { status: 502 }),
+      ),
+    );
+    await expect(getCustomerPricing()).rejects.toMatchObject({
+      status: 502,
+      message: "读取积分价格失败（502）",
+    });
+  });
+
+  it.each([
+    { name: "admin adapter", request: getCustomerPricing },
+    { name: "settings adapter", request: getControlAccounts },
+  ])(
+    "ignores a late 401 from an older session in the $name",
+    async ({ request }) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      await signIn(fetchMock);
+      const dispatch = vi.spyOn(window, "dispatchEvent");
+      let finish:
+        | ((value: Awaited<ReturnType<typeof jsonResponse>>) => void)
+        | undefined;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const pending = request();
+      setAdminCsrfToken("replacement-session-csrf");
+      finish?.(
+        await jsonResponse(
+          { detail: { code: "ADMIN_SESSION_EXPIRED", message: "expired" } },
+          401,
+        ),
+      );
+      await expect(pending).rejects.toThrow();
+      expect(getAdminCsrfToken()).toBe("replacement-session-csrf");
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("admin activation API adapter", () => {
   afterEach(() => {

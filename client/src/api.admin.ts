@@ -17,6 +17,7 @@ import {
   type CustomerPricing,
   clearAdminCsrfToken,
   getAdminCsrfToken,
+  notifyAdminSessionExpired,
   resolveApiBaseUrl,
   setAdminCsrfToken,
 } from "./api";
@@ -222,6 +223,8 @@ async function parseActivationError(
         typeof payload.detail.message === "string"
           ? payload.detail.message
           : undefined;
+    } else if (isRecord(payload) && typeof payload.detail === "string") {
+      message = payload.detail;
     }
   } catch {
     // A non-JSON body must not hide the HTTP status.
@@ -237,6 +240,7 @@ async function requestControl(
   init: RequestInit & { headers?: Record<string, string> },
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<Response> {
+  const csrfAtStart = getAdminCsrfToken();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const headers: Record<string, string> = { ...(init.headers ?? {}) };
@@ -244,12 +248,23 @@ async function requestControl(
     headers["Content-Type"] = "application/json";
   }
   try {
-    return await fetch(`${apiBaseUrl()}${path}`, {
+    const response = await fetch(`${apiBaseUrl()}${path}`, {
       ...init,
       headers,
       credentials: "include",
       signal: controller.signal,
     });
+    // Authentication failures are handled by the login/restore form itself.
+    // Protected reads and writes must also close the active management UI.
+    if (
+      response.status === 401 &&
+      path !== "/api/control/admin/session/password" &&
+      path !== "/api/control/admin/session/exchange" &&
+      !(path === "/api/control/admin/session" && init.method === "GET")
+    ) {
+      notifyAdminSessionExpired(csrfAtStart);
+    }
+    return response;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new AdminActivationError("请求超时，请重试");
@@ -1320,20 +1335,13 @@ export async function revokeCustomerSession(
   reason: string,
   idempotencyKey: string,
 ): Promise<{ request_id: string }> {
-  const response = await requestControl(
+  return adminWrite<{ request_id: string }>(
     `/api/control/customer-sessions/${encodeURIComponent(sessionId)}/revoke`,
-    {
-      method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({
-        confirm: true,
-        reason,
-        session_epoch: sessionEpoch,
-      }),
-    },
+    { session_epoch: sessionEpoch },
+    reason,
+    "结束会话失败",
+    idempotencyKey,
   );
-  if (!response.ok) throw await parseActivationError(response, "结束会话失败");
-  return response.json() as Promise<{ request_id: string }>;
 }
 
 // ---------------------------------------------------------------------------

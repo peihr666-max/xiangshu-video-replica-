@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AdminApp, adminRouteFromHash } from "./AdminApp";
 import { getAdminCsrfToken, SESSION_EXPIRED_EVENT } from "./api";
+import { getCustomerPricing } from "./api.admin";
 
 const SERVICE_KEY_TEXT = ["service", "key"].join("-");
 const MASKED_SERVICE_KEY = ["********", "cret"].join("");
@@ -817,8 +818,12 @@ describe("AdminApp", () => {
     ).toBeInTheDocument();
     expect(getAdminCsrfToken()).toBe(CSRF_TOKEN_TEXT);
 
-    act(() => {
-      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => jsonResponse({ detail: "会话过期" }, 401)),
+    );
+    await act(async () => {
+      await expect(getCustomerPricing()).rejects.toMatchObject({ status: 401 });
     });
 
     expect(await screen.findByLabelText("管理员账号")).toBeInTheDocument();
