@@ -280,7 +280,7 @@
 .content-detail-actions {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 24px 0;
 }
 .content-detail-action {
@@ -810,6 +810,7 @@
 }
 
 .viral-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid #292a27;
@@ -1162,8 +1163,24 @@
   order: 1;
 }
 
-.viral-card-body > .content-card-actions > :last-child {
-  grid-column: 1 / -1;
+.viral-card > .viral-card-favorite {
+  position: absolute;
+  top: 44px;
+  right: 8px;
+  z-index: 3;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  background: #080909cc;
+  color: #fff;
+}
+.viral-card > .viral-card-favorite[aria-pressed="true"] {
+  color: #f0c65b;
+  border-color: #dca735;
+}
+.viral-card-favorite[aria-pressed="true"] svg {
+  fill: currentColor;
 }
 
 .character-material-views {

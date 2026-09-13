@@ -39,7 +39,10 @@ const live = vi.hoisted(() => ({
     saved: item.saved,
     allowedUses: item.allowed_uses,
   })),
-  loadViralVideos: vi.fn(async () => ({ videos: [], errors: [] })),
+  loadViralVideos: vi.fn(async () => ({
+    videos: [] as ReturnType<typeof createReviewData>["videos"],
+    errors: [],
+  })),
   loadPersonAssets: vi.fn(),
   loadProjectDraft: vi.fn(),
   reloadTasks: vi.fn(async (): Promise<unknown[]> => []),
@@ -76,6 +79,7 @@ vi.mock("./live", async (importOriginal) => ({
 // 视频生成（C2）：只覆盖新引入的四个 api 出口，其余保持原模块行为，
 // 避免既有用例（不触发这些函数）受 mock 影响。
 const api = vi.hoisted(() => ({
+  createViralImportTask: vi.fn(),
   completeMaterialUpload: vi.fn(),
   createMaterialUploadIntent: vi.fn(),
   customerGetWallet: vi.fn(),
@@ -531,6 +535,8 @@ describe("V1.4 workspace integration", () => {
     // F-06 本地草稿会跨用例残留（防抖写入 localStorage），逐用例隔离
     window.localStorage.clear();
     vi.clearAllMocks();
+    api.createViralImportTask.mockReset();
+    live.loadViralVideos.mockResolvedValue({ videos: [], errors: [] });
     api.customerGetWallet.mockReset();
     api.getWallet.mockReset();
     api.getWallet.mockRejectedValue(new Error("internal wallet unavailable"));
@@ -1881,6 +1887,65 @@ describe("V1.4 workspace integration", () => {
       await waitFor(() => expect(live.persistCloudDraft).toHaveBeenCalled());
       expect(live.publishScriptVersion).not.toHaveBeenCalled();
     });
+
+    it.each([false, true])(
+      "首页爆款提取使用刚导入的项目素材（已有旧来源：%s）",
+      async (hasOldSource) => {
+        const source = {
+          ...createReviewData().videos[0],
+          id: "fresh-viral",
+          title: "新导入的爆款",
+          platformKey: "douyin" as const,
+          nativeId: "fresh-native",
+        };
+        live.loadStudioData.mockResolvedValue({
+          ...emptyStudioData,
+          videos: [source],
+        });
+        live.loadViralVideos.mockResolvedValue({
+          videos: [source],
+          errors: [],
+        });
+        live.loadCloudDraft.mockResolvedValue(undefined);
+        api.createViralImportTask.mockResolvedValue({
+          taskId: "fresh-import",
+          status: "SUCCEEDED",
+          projectId: "fresh-project",
+          sourceAssetId: "fresh-asset",
+          canTranscribe: true,
+        });
+        live.extractScriptFromUpload.mockResolvedValue({
+          text: "新来源的提取结果",
+        });
+        const state = createState("workbench");
+        if (hasOldSource) {
+          state.draft.projectId = "old-project";
+          state.draft.sourceAssetId = "old-asset";
+        }
+        render(
+          <StudioWorkspace currentUser={reviewUser} initialState={state} />,
+        );
+        fireEvent.click(
+          await screen.findByRole("button", { name: "提取文案：新导入的爆款" }),
+        );
+        await waitFor(() =>
+          expect(live.extractScriptFromUpload).toHaveBeenCalledWith(
+            "fresh-project",
+            "fresh-asset",
+          ),
+        );
+        expect(api.createViralImportTask).toHaveBeenCalledWith(
+          "douyin",
+          "fresh-native",
+          "copy",
+          expect.any(String),
+        );
+        expect(await screen.findByLabelText("二创文案")).toHaveValue(
+          "新来源的提取结果",
+        );
+        expect(live.extractScriptFromUpload).toHaveBeenCalledTimes(1);
+      },
+    );
 
     it("提取文案成功后回填草稿并跳转文案工坊", async () => {
       live.loadStudioData.mockResolvedValue(emptyStudioData);

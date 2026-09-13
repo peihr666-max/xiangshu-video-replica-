@@ -718,7 +718,15 @@ describe("V1.4 工作台新版首页布局", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("灵感视频 5")).toBeInTheDocument();
     expect(screen.queryByText("灵感视频 6")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /用它复刻/ })).toHaveLength(5);
+    expect(screen.getAllByRole("button", { name: /提取文案：/ })).toHaveLength(
+      5,
+    );
+    expect(screen.getAllByRole("button", { name: /查看详情：/ })).toHaveLength(
+      5,
+    );
+    expect(
+      screen.queryByRole("button", { name: /用它复刻/ }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "查看全部爆款" }),
     ).toBeInTheDocument();
@@ -729,7 +737,7 @@ describe("V1.4 工作台新版首页布局", () => {
     }
   });
 
-  it("审核首页从爆款卡片开始复刻时复用既有草稿与导航流程", () => {
+  it("审核首页从爆款卡片提取文案时复用既有草稿与导航流程", () => {
     const value = studio(undefined, {
       review: true,
       state: createState("workbench"),
@@ -739,11 +747,11 @@ describe("V1.4 工作台新版首页布局", () => {
 
     render(<WorkbenchPage />);
     fireEvent.click(
-      screen.getByRole("button", { name: "用它复刻：灵感视频 1" }),
+      screen.getByRole("button", { name: "提取文案：灵感视频 1" }),
     );
 
     expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "video-1" });
-    expect(value.navigate).toHaveBeenCalledWith("replica", {
+    expect(value.navigate).toHaveBeenCalledWith("copy", {
       selectedVideoId: "video-1",
       returnTo: "workbench",
     });
@@ -763,13 +771,13 @@ describe("V1.4 工作台新版首页布局", () => {
     expect(screen.queryByText("灵感视频 6")).not.toBeInTheDocument();
   });
 
-  it("真实爆款从首页复刻时先导入项目素材", async () => {
+  it("真实爆款从首页提取文案时先导入项目素材", async () => {
     createViralImportTask.mockResolvedValue({
       taskId: "import-home",
       status: "SUCCEEDED",
       projectId: "project-home",
       sourceAssetId: "asset-home",
-      canAnalyze: true,
+      canTranscribe: true,
     });
     const source = {
       ...videos[0],
@@ -784,7 +792,7 @@ describe("V1.4 工作台新版首页布局", () => {
     render(<WorkbenchPage />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "用它复刻：灵感视频 1" }),
+      screen.getByRole("button", { name: "提取文案：灵感视频 1" }),
     );
 
     await waitFor(() =>
@@ -797,8 +805,12 @@ describe("V1.4 工作台新版首页布局", () => {
     expect(createViralImportTask).toHaveBeenCalledWith(
       "douyin",
       "native-home",
-      "replica",
+      "copy",
       expect.any(String),
+    );
+    expect(value.extractScriptFromUpload).toHaveBeenCalledWith(
+      "project-home",
+      "asset-home",
     );
   });
 
@@ -815,7 +827,7 @@ describe("V1.4 工作台新版首页布局", () => {
         status: "SUCCEEDED",
         projectId: "home-project-new",
         sourceAssetId: "home-asset-new",
-        canAnalyze: true,
+        canTranscribe: true,
       });
     const source = {
       ...videos[0],
@@ -836,14 +848,14 @@ describe("V1.4 工作台新版首页布局", () => {
     render(<WorkbenchPage />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "用它复刻：灵感视频 1" }),
+      screen.getByRole("button", { name: "提取文案：灵感视频 1" }),
     );
     await waitFor(() =>
       expect(value.notify).toHaveBeenCalledWith("首页来源已失效"),
     );
     const failedKey = createViralImportTask.mock.calls[0][3];
     fireEvent.click(
-      screen.getByRole("button", { name: "用它复刻：灵感视频 1" }),
+      screen.getByRole("button", { name: "提取文案：灵感视频 1" }),
     );
     await waitFor(() => expect(createViralImportTask).toHaveBeenCalledTimes(2));
 
@@ -856,7 +868,7 @@ describe("V1.4 工作台新版首页布局", () => {
       status: "SUCCEEDED",
       projectId: "home-project",
       sourceAssetId: "home-audio",
-      canAnalyze: false,
+      canTranscribe: false,
     });
     const source = {
       ...videos[0],
@@ -877,14 +889,14 @@ describe("V1.4 工作台新版首页布局", () => {
     render(<WorkbenchPage />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "用它复刻：灵感视频 1" }),
+      screen.getByRole("button", { name: "提取文案：灵感视频 1" }),
     );
     await waitFor(() =>
-      expect(value.notify).toHaveBeenCalledWith("该来源暂不支持视频复刻"),
+      expect(value.notify).toHaveBeenCalledWith("该来源暂不支持提取文案"),
     );
     const malformedKey = createViralImportTask.mock.calls[0][3];
     fireEvent.click(
-      screen.getByRole("button", { name: "用它复刻：灵感视频 1" }),
+      screen.getByRole("button", { name: "提取文案：灵感视频 1" }),
     );
     await waitFor(() => expect(createViralImportTask).toHaveBeenCalledTimes(2));
 
@@ -893,7 +905,7 @@ describe("V1.4 工作台新版首页布局", () => {
     expect(value.navigate).not.toHaveBeenCalled();
   });
 
-  it("正式首页爆款缺少平台原生 ID 时不创建伪复刻项目", () => {
+  it("正式首页爆款缺少平台原生 ID 时不创建伪文案项目", () => {
     const source = {
       ...videos[0],
       platformKey: undefined,
@@ -908,7 +920,7 @@ describe("V1.4 工作台新版首页布局", () => {
     render(<WorkbenchPage />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "用它复刻：灵感视频 1" }),
+      screen.getByRole("button", { name: "提取文案：灵感视频 1" }),
     );
 
     expect(value.notify).toHaveBeenCalledWith("该视频缺少可导入的平台标识");

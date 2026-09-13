@@ -1111,7 +1111,14 @@ html:has(.studio-shell) {
 .studio-home-viral-meta > span svg {
   color: #e2aa2d;
 }
-.studio-home-viral-meta .studio-button {
+.studio-home-viral-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 6px 5px;
+}
+.studio-home-viral-actions .studio-button {
+  min-width: 0;
   min-height: 25px;
   border: 1px solid #5c461d;
   border-radius: 5px;
@@ -1655,7 +1662,7 @@ html:has(.studio-shell) {
   .studio-home-viral-meta > span {
     font-size: 9px;
   }
-  .studio-home-viral-meta .studio-button {
+  .studio-home-viral-actions .studio-button {
     padding-inline: 4px;
   }
   .studio-result-grid {

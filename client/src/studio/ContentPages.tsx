@@ -465,10 +465,12 @@ export function ViralFavoriteButton({
   video,
   savedFromServer,
   onSavedChange,
+  compact = false,
 }: {
   video: StudioVideo;
   savedFromServer?: boolean;
   onSavedChange?: (saved: boolean) => void;
+  compact?: boolean;
 }) {
   const { state, review, notify, patchState, user } = useStudio();
   const [saved, setSaved] = useState(
@@ -542,11 +544,14 @@ export function ViralFavoriteButton({
   return (
     <Button
       variant="outline"
+      className={compact ? "viral-card-favorite" : undefined}
       aria-label={`收藏 ${video.title}`}
+      aria-pressed={saved}
+      title={saved ? "取消收藏" : "收藏视频"}
       disabled={saving}
       onClick={() => void toggle()}
     >
-      {saved ? "已收藏" : "收藏"}
+      {compact ? <Icon name="star" size={18} /> : saved ? "已收藏" : "收藏"}
     </Button>
   );
 }
@@ -566,7 +571,14 @@ function ViralCard({
   onFavoriteChange: (saved: boolean) => void;
   availability?: ViralVideoItem["availability"];
 }) {
-  const { review, navigate, notify, patchDraft, user } = useStudio();
+  const {
+    review,
+    navigate,
+    notify,
+    patchDraft,
+    extractScriptFromUpload,
+    user,
+  } = useStudio();
   const playerRef = useRef<HTMLVideoElement | null>(null);
   const { importState, start } = useViralImport(video.id, user.id);
   const { playback, play, retry, markFailed, activate } = useViralPlayback(
@@ -584,14 +596,14 @@ function ViralCard({
     });
     persistViralDetailUrl(video);
   };
-  const beginReplica = () => {
+  const beginExtract = () => {
     if (availability !== "available") {
-      notify("该视频已不可用，无法导入复刻");
+      notify("该视频已不可用，无法提取文案");
       return;
     }
     if (review) {
       patchDraft({ sourceId: video.id });
-      navigate("replica", {
+      navigate("copy", {
         selectedVideoId: video.id,
         returnTo: "viral",
       });
@@ -601,9 +613,9 @@ function ViralCard({
       notify("该视频缺少可导入的平台标识");
       return;
     }
-    void start(video, "replica", (task) => {
-      if (!task.canAnalyze || !task.projectId || !task.sourceAssetId) {
-        notify("该来源暂不支持视频复刻");
+    void start(video, "copy", (task) => {
+      if (!task.canTranscribe || !task.projectId || !task.sourceAssetId) {
+        notify("该来源暂不支持提取文案");
         return;
       }
       patchDraft({
@@ -611,7 +623,8 @@ function ViralCard({
         sourceId: task.sourceAssetId,
         sourceAssetId: task.sourceAssetId,
       });
-      navigate("replica", {
+      extractScriptFromUpload(task.projectId, task.sourceAssetId);
+      navigate("copy", {
         selectedVideoId: video.id,
         returnTo: "viral",
       });
@@ -631,6 +644,12 @@ function ViralCard({
         playerRef={playerRef}
         error={playback.status === "error" ? playback.message : undefined}
       />
+      <ViralFavoriteButton
+        compact
+        video={video}
+        savedFromServer={savedFromServer}
+        onSavedChange={onFavoriteChange}
+      />
       <div className="viral-card-body">
         <h3>{video.title}</h3>
         <div className="viral-card-tags">
@@ -644,18 +663,13 @@ function ViralCard({
           <Button variant="quiet" onClick={openDetail}>
             查看详情
           </Button>
-          <ViralFavoriteButton
-            video={video}
-            savedFromServer={savedFromServer}
-            onSavedChange={onFavoriteChange}
-          />
           <Button
             variant="outline"
-            aria-label={`复刻 ${video.title}`}
+            aria-label={`提取文案 ${video.title}`}
             disabled={importState.status === "loading"}
-            onClick={beginReplica}
+            onClick={beginExtract}
           >
-            复刻
+            提取文案
           </Button>
         </div>
         {importState.status !== "idle" && (
@@ -1547,21 +1561,6 @@ export function ViralDetailPage() {
       returnTo: "viral-detail",
     });
   };
-  const goReplica = (task: ViralImportTask) => {
-    if (!task.canAnalyze || !task.projectId || !task.sourceAssetId) {
-      notify("该来源暂不支持视频复刻");
-      return;
-    }
-    patchDraft({
-      projectId: task.projectId,
-      sourceId: task.sourceAssetId,
-      sourceAssetId: task.sourceAssetId,
-    });
-    navigate("replica", {
-      selectedVideoId: video.id,
-      returnTo: "viral-detail",
-    });
-  };
   return (
     <section className="content-page content-detail">
       <header className="content-detail-heading">
@@ -1680,18 +1679,6 @@ export function ViralDetailPage() {
                 onClick={() => void start(video, "copy", goExtract)}
               >
                 提取文案
-              </Button>
-            </div>
-            <div className="content-detail-action">
-              <Button
-                disabled={
-                  importState.status === "loading" ||
-                  detailAvailability !== "available"
-                }
-                variant="outline"
-                onClick={() => void start(video, "replica", goReplica)}
-              >
-                视频复刻
               </Button>
             </div>
             <div className="content-detail-action">

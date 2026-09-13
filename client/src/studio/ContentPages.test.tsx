@@ -386,10 +386,10 @@ describe("V1.4 内容与运营页面", () => {
     ).toEqual({ material: { status: "error" } });
   });
 
-  it("爆款视频按平台过滤、收藏并把来源带入复刻", () => {
+  it("爆款卡片主操作统一为详情和提取文案并保留收藏", () => {
     const value = studio();
     useStudio.mockReturnValue(value);
-    render(<ViralPage />);
+    const view = render(<ViralPage />);
     fireEvent.click(screen.getByRole("tab", { name: "视频号 30" }));
     expect(screen.getByText("新中式庭院的三个细节")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "抖音 20" }));
@@ -398,16 +398,30 @@ describe("V1.4 内容与运营页面", () => {
     );
     expect(value.patchState).toHaveBeenCalledWith({ favorites: ["dy-1"] });
     fireEvent.click(
-      screen.getByRole("button", { name: "复刻 农村建房预算，别只盯着主体" }),
+      screen.getByRole("button", {
+        name: "提取文案 农村建房预算，别只盯着主体",
+      }),
     );
     expect(value.patchDraft).toHaveBeenCalledWith({ sourceId: "dy-1" });
-    expect(value.navigate).toHaveBeenCalledWith("replica", {
+    expect(value.navigate).toHaveBeenCalledWith("copy", {
       selectedVideoId: "dy-1",
       returnTo: "viral",
     });
+    expect(
+      screen.queryByRole("button", { name: /复刻/ }),
+    ).not.toBeInTheDocument();
+    for (const actions of view.container.querySelectorAll(
+      ".content-card-actions",
+    )) {
+      expect(
+        [...actions.querySelectorAll("button")].map(
+          (button) => button.textContent,
+        ),
+      ).toEqual(["查看详情", "提取文案"]);
+    }
   });
 
-  it("我的收藏使用持久化分页接口读取当前平台", async () => {
+  it("我的收藏读取当前平台并通过真实素材导入提取文案", async () => {
     const base = studio();
     const value = studio({
       review: false,
@@ -444,7 +458,7 @@ describe("V1.4 内容与运营页面", () => {
       nextCursor: null,
     });
     useStudio.mockReturnValue(value);
-    render(<ViralPage />);
+    const view = render(<ViralPage />);
 
     fireEvent.click(screen.getByRole("tab", { name: "我的收藏" }));
 
@@ -461,6 +475,36 @@ describe("V1.4 内容与运营页面", () => {
         title: "已收藏的庭院视频",
       }),
     ]);
+    useStudio.mockReturnValue({
+      ...value,
+      data: update?.(value.data) ?? value.data,
+    });
+    view.rerender(<ViralPage />);
+    expect(
+      screen.queryByRole("button", { name: /复刻/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "收藏 已收藏的庭院视频" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(
+      screen.getByRole("button", { name: "提取文案 已收藏的庭院视频" }),
+    );
+    await waitFor(() =>
+      expect(value.extractScriptFromUpload).toHaveBeenCalledWith(
+        "project-1",
+        "asset-1",
+      ),
+    );
+    expect(createViralImportTask).toHaveBeenCalledWith(
+      "douyin",
+      "favorite-native-1",
+      "copy",
+      expect.any(String),
+    );
+    expect(value.navigate).toHaveBeenCalledWith(
+      "copy",
+      expect.objectContaining({ returnTo: "viral" }),
+    );
   });
 
   it("爆款详情导入来源项目后把真实资产交给文案工坊", async () => {
@@ -668,7 +712,7 @@ describe("V1.4 内容与运营页面", () => {
     );
   });
 
-  it("仅音频来源不会伪装成视频项目且再次点击使用新键", async () => {
+  it("爆款详情移除复刻且仅音频来源可交给文案提取", async () => {
     createViralImportTask.mockResolvedValue({
       taskId: "audio-import",
       status: "SUCCEEDED",
@@ -688,17 +732,26 @@ describe("V1.4 内容与运营页面", () => {
     useStudio.mockReturnValue(value);
     render(<ViralDetailPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
-
     expect(
-      await screen.findByText("该来源暂不支持视频复刻"),
-    ).toBeInTheDocument();
-    const malformedKey = createViralImportTask.mock.calls[0][3];
-    fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
-    await waitFor(() => expect(createViralImportTask).toHaveBeenCalledTimes(2));
-    expect(createViralImportTask.mock.calls[1][3]).not.toBe(malformedKey);
-    expect(value.patchDraft).not.toHaveBeenCalled();
-    expect(value.navigate).not.toHaveBeenCalled();
+      screen.queryByRole("button", { name: /复刻/ }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    await waitFor(() =>
+      expect(value.extractScriptFromUpload).toHaveBeenCalledWith(
+        "audio-project",
+        "audio-asset",
+      ),
+    );
+    expect(createViralImportTask).toHaveBeenCalledWith(
+      "douyin",
+      "native-dy-1",
+      "copy",
+      expect.any(String),
+    );
+    expect(value.navigate).toHaveBeenCalledWith(
+      "copy",
+      expect.objectContaining({ returnTo: "viral-detail" }),
+    );
   });
 
   it("不可转写的畸形成功不会写入文案草稿且再次点击使用新键", async () => {
@@ -749,7 +802,7 @@ describe("V1.4 内容与运营页面", () => {
     render(<ViralPage />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: `复刻 ${malformed.title}` }),
+      screen.getByRole("button", { name: `提取文案 ${malformed.title}` }),
     );
 
     expect(value.notify).toHaveBeenCalledWith("该视频缺少可导入的平台标识");
@@ -899,7 +952,7 @@ describe("V1.4 内容与运营页面", () => {
       useStudio.mockReturnValue(value);
       render(<ViralDetailPage />);
 
-      fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
+      fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
       const firstKey = createViralImportTask.mock.calls[0][3];
       await act(async () => {
         await vi.advanceTimersByTimeAsync(120_000);
@@ -908,7 +961,7 @@ describe("V1.4 内容与运营页面", () => {
       expect(getViralImportTask).toHaveBeenCalledTimes(120);
       expect(screen.getByText("来源归属已变化")).toBeInTheDocument();
       expect(value.patchDraft).not.toHaveBeenCalled();
-      fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
+      fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
       expect(createViralImportTask.mock.calls[1][3]).not.toBe(firstKey);
     } finally {
       vi.useRealTimers();
@@ -1041,12 +1094,12 @@ describe("V1.4 内容与运营页面", () => {
       "content-detail-grid-viral",
     );
     expect(screen.getByText("▶ 播放")).toHaveClass("content-player-viral-play");
-    fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
     await waitFor(() => {
       expect(screen.getByText(/素材暂时无法获取/)).toBeInTheDocument();
     });
     const firstKey = createViralImportTask.mock.calls[0][3];
-    fireEvent.click(screen.getByRole("button", { name: "视频复刻" }));
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
     await waitFor(() => expect(createViralImportTask).toHaveBeenCalledTimes(2));
     expect(createViralImportTask.mock.calls[1][3]).toBe(firstKey);
     expect(value.navigate).not.toHaveBeenCalled();
@@ -2349,7 +2402,7 @@ describe("V1.4 内容与运营页面", () => {
       screen.getByRole("button", {
         name: "收藏 农村建房预算，别只盯着主体",
       }),
-    ).toHaveTextContent("收藏");
+    ).toHaveAttribute("aria-pressed", "false");
   });
 
   it.each([
@@ -2477,8 +2530,10 @@ describe("V1.4 内容与运营页面", () => {
       name: "收藏 农村建房预算，别只盯着主体",
     });
     fireEvent.click(button);
-    expect(button).toHaveTextContent("已收藏");
-    await waitFor(() => expect(button).toHaveTextContent("收藏"));
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() =>
+      expect(button).toHaveAttribute("aria-pressed", "false"),
+    );
     expect(saveViralFavorite).toHaveBeenCalledWith("douyin", "native-dy-1");
     expect(value.notify).toHaveBeenCalledWith("收藏失败，已恢复原状态");
   });
@@ -2507,14 +2562,14 @@ describe("V1.4 内容与运营页面", () => {
     const button = screen.getByRole("button", {
       name: "收藏 农村建房预算，别只盯着主体",
     });
-    await waitFor(() => expect(button).toHaveTextContent("已收藏"));
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"));
     fireEvent.click(button);
     fireEvent.click(button);
     expect(removeViralFavorite).toHaveBeenCalledTimes(1);
-    expect(button).toHaveTextContent("收藏");
+    expect(button).toHaveAttribute("aria-pressed", "false");
 
     rejectRemoval(new Error("取消失败"));
-    await waitFor(() => expect(button).toHaveTextContent("已收藏"));
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"));
     expect(value.notify).toHaveBeenCalledWith("收藏失败，已恢复原状态");
   });
 
@@ -2552,7 +2607,7 @@ describe("V1.4 内容与运营页面", () => {
       screen.getByRole("button", {
         name: "收藏 农村建房预算，别只盯着主体",
       }),
-    ).toHaveTextContent("收藏");
+    ).toHaveAttribute("aria-pressed", "false");
     expect(current.notify).toHaveBeenCalledWith("收藏失败，已恢复原状态");
   });
 
@@ -2710,7 +2765,7 @@ describe("V1.4 内容与运营页面", () => {
     const button = screen.getByRole("button", {
       name: "收藏 农村建房预算，别只盯着主体",
     });
-    await waitFor(() => expect(button).toHaveTextContent("已收藏"));
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"));
     current = {
       ...current,
       user: { id: "user-b" } as StudioContextValue["user"],
@@ -2718,7 +2773,9 @@ describe("V1.4 内容与运营页面", () => {
     view.rerender(<ViralDetailPage />);
 
     await waitFor(() => expect(fetchViralVideo).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(button).toHaveTextContent("收藏"));
+    await waitFor(() =>
+      expect(button).toHaveAttribute("aria-pressed", "false"),
+    );
   });
 
   it("详情页账号已渲染时同步拒绝旧账号迟到成功", async () => {
