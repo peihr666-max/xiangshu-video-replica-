@@ -2899,9 +2899,11 @@ describe("视频复刻（模块①）", () => {
       status: "QUEUED",
     });
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "确认费用并送生成" }),
-    );
+    const submit = await screen.findByRole("button", {
+      name: "确认费用并送生成",
+    });
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
 
     await waitFor(() =>
       expect(replicaLive.runReplicaGeneration).toHaveBeenCalledWith(

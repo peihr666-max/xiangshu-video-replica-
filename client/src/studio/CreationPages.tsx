@@ -2894,7 +2894,7 @@ export function VideoPage() {
                     onClick={() => openPicker("first-frame")}
                     type="button"
                   >
-                    <Media asset={firstFrame} alt="首帧" />
+                    <Media asset={firstFrame} alt="首帧" presentation="video" />
                     <span>首帧（选填）</span>
                   </button>
                   <VideoMaterialUpload
@@ -2913,7 +2913,7 @@ export function VideoPage() {
                     onClick={() => openPicker("tail-frame")}
                     type="button"
                   >
-                    <Media asset={tailFrame} alt="尾帧" />
+                    <Media asset={tailFrame} alt="尾帧" presentation="video" />
                     <span>尾帧（可选）</span>
                   </button>
                   <VideoMaterialUpload
@@ -2985,6 +2985,7 @@ export function VideoPage() {
                 asset={references[0]}
                 alt="参考画布"
                 className="creation-preview-media"
+                presentation="video"
               />
             ) : (
               <Empty
@@ -2997,6 +2998,7 @@ export function VideoPage() {
               asset={firstFrame}
               alt="首帧预览"
               className="creation-preview-media"
+              presentation="video"
             />
           ) : (
             <Empty
@@ -3308,6 +3310,7 @@ export function OralPage() {
                 asset={avatarImage}
                 alt={avatar.name}
                 className="creation-avatar-preview"
+                presentation="video"
               />
               <div className="creation-avatar-meta">
                 <strong>{avatarDisplayName(person, avatar.name)}</strong>

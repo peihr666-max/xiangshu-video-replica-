@@ -924,3 +924,24 @@
   color: var(--text-muted, #777);
   font-size: 12.5px;
 }
+
+/* Video references, opening frames and oral avatars share the playback framing. */
+.creation-reference-row > .video-preview {
+  flex: 0 0 72px;
+  width: 72px;
+  aspect-ratio: 9 / 16;
+}
+.video-preview.creation-preview-media,
+.video-preview.creation-avatar-preview {
+  width: min(100%, 320px, 38vh);
+  aspect-ratio: 9 / 16;
+  margin-inline: auto;
+}
+
+.creation-frame-row button > .video-preview {
+  width: min(100%, 96px);
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 9 / 16;
+  margin-inline: auto;
+}

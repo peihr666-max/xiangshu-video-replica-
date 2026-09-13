@@ -1164,11 +1164,17 @@ describe("V1.4 内容与运营页面", () => {
     useStudio.mockReturnValue(value);
     const view = render(<ViralPage />);
 
-    const brokenPoster = view.container.querySelector(".viral-card-cover-img");
+    const brokenPoster = view.container.querySelector(
+      ".viral-card-cover .video-preview__foreground",
+    );
     expect(brokenPoster).not.toBeNull();
     if (!brokenPoster) return;
     fireEvent.error(brokenPoster);
-    expect(view.container.querySelector(".viral-card-cover-img")).toBeNull();
+    expect(
+      view.container.querySelector(
+        ".viral-card-cover .video-preview__foreground",
+      ),
+    ).toBeNull();
 
     const refreshed = {
       ...value,
@@ -1181,7 +1187,9 @@ describe("V1.4 内容与运营页面", () => {
     view.rerender(<ViralPage />);
 
     expect(
-      view.container.querySelector(".viral-card-cover-img"),
+      view.container.querySelector(
+        ".viral-card-cover .video-preview__foreground",
+      ),
     ).toHaveAttribute("src", "/studio/fresh.jpg");
   });
 

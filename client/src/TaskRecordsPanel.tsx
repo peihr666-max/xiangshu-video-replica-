@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
 } from "react";
-
 import {
   confirmGenerationTaskNotCharged,
   createGenerationResultPreviewUrl,
@@ -31,6 +30,7 @@ import {
   VideoDownloadUnconfirmedError,
   waitForGenerationReconcileOperation,
 } from "./api";
+import { VideoPreview } from "./VideoPreview";
 import {
   generationBatchDisplayStatus,
   hasGenerationResultSource,
@@ -1484,8 +1484,7 @@ function TaskItem({
               className="task-result-preview"
             >
               {previewUrl ? (
-                // biome-ignore lint/a11y/useMediaCaption: Generated Provider videos do not include a separate caption asset.
-                <video
+                <VideoPreview
                   aria-label={`结果预览 ${task.id}`}
                   className="task-result-video"
                   controls

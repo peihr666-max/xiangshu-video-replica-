@@ -1853,3 +1853,28 @@
   gap: 12px;
   flex-wrap: wrap;
 }
+
+/* Keep task and recommended-video posters complete inside portrait surfaces. */
+.studio-running-row > .video-preview {
+  flex: 0 0 72px;
+  width: 72px;
+}
+.studio-task-name > .video-preview {
+  flex: 0 0 54px;
+  width: 54px;
+}
+.studio-media.studio-result-preview {
+  width: min(100%, 340px, 40vh);
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 9 / 16;
+  margin: 0 auto;
+  align-self: start;
+}
+.studio-picker-grid .video-preview {
+  height: auto;
+}
+.studio-media-duration {
+  z-index: 2;
+  pointer-events: none;
+}
