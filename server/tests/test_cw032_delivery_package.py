@@ -61,9 +61,13 @@ FAIL_FAST_MATRIX = {
         "server/tests/test_customer_ha_smoke.py",
         "customer_runtime_dependency_gate_requires_ffprobe",
     ),
+    # CW-042-b: test_script_from_audio.py retired with the SQLite lane;
+    # the media-tools resolution surface (which raises MediaToolUnavailable on
+    # a missing ffmpeg) stays pinned via test_oral_domain's resolve_media_binary
+    # usage on the VIDEO_REPLICA_FFMPEG_DIR-marked CI lane.
     "ffmpeg-unavailable-media-tools": (
-        "server/tests/test_script_from_audio.py",
-        "MediaToolUnavailable",
+        "server/tests/test_oral_domain.py",
+        "resolve_media_binary",
     ),
 }
 

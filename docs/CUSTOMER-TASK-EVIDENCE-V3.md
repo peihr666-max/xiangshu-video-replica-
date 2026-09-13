@@ -21,6 +21,10 @@ JT2-20260913：用户新授权下已完成28项不同范围隔离检查（管理
 > 实施与验收以[唯一数据库规范](PostgreSQL唯一数据库实施与验收规范.md)及 CW-001—060 为准。此前仅客户生产 PG、默认开发 SQLite、SQLite 业务测试可作为当前验收的口径不再适用。
 > 本次更新只确认规范和任务定义；原代码仍有 SQLite 分支，历史任务/测试记录保留原文，不据此声明实际迁移或生产切换已完成。
 
+## COORD-W6-PHYS-EXIT-20260912 — W6 物理退出批次（039 手册定版 + 040/041/042-b 物理删除，2026-09-12，owner 签认 D5）
+
+决策正本 [COORD-W6-PHYS-EXIT-20260912.md](evidence/COORD-W6-PHYS-EXIT-20260912.md)：前置已满足（039 手册本批次定版 + 040/041 入口关闭证据已随 #77 合入），物理删除提前至 pre-GA 执行；GA 触发义务（039 演练/CW-051 停写）不变。**范围实测修正**：internal_billing=活账务核心不删；db.py/backup.py=CW-060 operator 闭包保留。交付：`docs/切换回滚手册.md`（039 定版）；040-b 发行面五类制品删除+CI filter 收缩；041-b internal_accounts 删除+防复活钉；042-b SQLite 运行时全面摘除（db_portable/6 消费者/settings keystore/lifespan/三把锁/cw060 注册表/35 套件退休）。证据 [CW039-EVIDENCE.md](evidence/CW039-EVIDENCE.md)、[CW042B-EVIDENCE.md](evidence/CW042B-EVIDENCE.md)。
+
 ## COORD-W6-UNBLOCK-20260912 — W6 清理组解锁决策 + 批次实施（2026-09-12，owner 签认）
 
 owner 决策正本 [COORD-W6-UNBLOCK-20260912.md](evidence/COORD-W6-UNBLOCK-20260912.md)：D1=CW-042 拆 042-a/b（照 CW042-SCOPE-INVENTORY §2.4 申请签认）；D2=CW-040/041 pre-GA 范围沿 CW-001 P1 落地为「入口 fail-closed」；D3=CW-039 拆「手册定版（纯文档可先做）/真实演练（维持 GA 冻结）」不记 N/A；D4=单 worktree 统一批次开发授权。CW001 §6 增 P3 行、§7 增签认行；排班清单 §2.4 四行备注、账本 §18 五行同步。背景：039 前置全为 GA 触发/环境阻塞，pre-GA 结构性无法闭环（盘点 §2.2），是 W6 清理组唯一死闸门。

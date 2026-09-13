@@ -1516,7 +1516,7 @@ def _guard_ledger_export(
     """
     if conn.is_postgres:
         decision = consume_rate_limit(
-            cast(psycopg.Connection, conn.raw),
+            conn.raw,
             dimension=DIMENSION_CONTROL_EXPORT_ACCOUNT,
             identifier=hashlib.sha256(actor.id.encode("utf-8")).hexdigest(),
             limit=control_export_account_limit(),

@@ -33,7 +33,6 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Annotated
 
 import psycopg
@@ -47,17 +46,15 @@ from app.api_key_service import (
     parse_api_key_prefix,
     touch_last_used,
 )
-from app.auth import CurrentUser, authenticate_request
+from app.auth import CurrentUser
 from app.customer_auth import (
     CustomerSessionContext,
     SessionFencingError,
     verify_session_context,
 )
 from app.customer_device_service import _token_digests
-from app.db import connect_database
 from app.db_pg import (
     DATABASE_URL_ENV,
-    DB_PATH_ENV,
     SQLITE_URL_SCHEMES,
     IsolationLevel,
     get_pg_pool,
@@ -687,11 +684,9 @@ class BusinessDb:
             with self.write_for_api_key(isolation=isolation) as (bc, actor):
                 yield bc, actor
             return
-        # CW-025: internal lane 直接从 DB_PATH_ENV 读取，不经过 resolve_database_config()。
-        # resolve_database_config() 全环境 fail-closed 后不再支持 SQLite/DB_PATH；
-        # 内部 P0 遗留逻辑（internal/desktop lane）保留 DB_PATH 通道，
-        # 归 CW-030/CW-040 后续处理。
-        # 但 customer lane（DATABASE_URL_ENV=postgresql://）+ snapshot=None 时，
+        # CW-042-b: internal lane 直接读取 DB_PATH_ENV 的通道已随 SQLite lane
+        # 退役（下方 raise）；customer lane（DATABASE_URL_ENV=postgresql://）
+        # + snapshot=None 时，
         # 不能回退到 SQLite，必须抛 503（SES-04 红线：PG writer 必须有 customer session）。
         url = os.environ.get(DATABASE_URL_ENV, "").strip()
         if url and not url.startswith(SQLITE_URL_SCHEMES):
@@ -702,26 +697,14 @@ class BusinessDb:
                     "message": "A PostgreSQL writer requires a customer session snapshot.",
                 },
             )
-        db_path = os.environ.get(DB_PATH_ENV, "").strip()
-        if not db_path:
-            raise HTTPException(
-                503,
-                detail={
-                    "code": "DATABASE_NOT_CONFIGURED",
-                    "message": "Internal API requests require valid SQLite configuration.",
-                },
-            )
-        raw = connect_database(Path(db_path))
-        bc = BusinessConnection.sqlite(raw)
-        try:
-            actor = authenticate_request(
-                bc,
-                authorization=self.authorization,
-                dev_user_id=self.dev_user_id,
-            )
-            yield bc, actor
-        finally:
-            raw.close()
+        raise HTTPException(
+            503,
+            detail={
+                "code": "DATABASE_NOT_CONFIGURED",
+                "message": "The internal SQLite lane is retired (CW-042-b); "
+                "configure VIDEO_REPLICA_DATABASE_URL.",
+            },
+        )
 
     @contextmanager
     def write_for_api_key(
@@ -792,21 +775,14 @@ def get_business_read_conn() -> Iterator[BusinessConnection]:
         # resolve_database_config() 全环境 fail-closed 后不再支持 SQLite/DB_PATH；
         # 内部 P0 遗留逻辑（internal/desktop lane）保留 DB_PATH 通道，
         # 归 CW-030/CW-040 后续处理。
-        db_path = os.environ.get(DB_PATH_ENV, "").strip()
-        if not db_path:
-            raise HTTPException(
-                503,
-                detail={
-                    "code": "DATABASE_NOT_CONFIGURED",
-                    "message": "Internal API requests require valid SQLite configuration.",
-                },
-            )
-        raw = connect_database(Path(db_path))
-        try:
-            yield BusinessConnection.sqlite(raw)
-        finally:
-            raw.close()
-        return
+        raise HTTPException(
+            503,
+            detail={
+                "code": "DATABASE_NOT_CONFIGURED",
+                "message": "The internal SQLite lane is retired (CW-042-b); "
+                "configure VIDEO_REPLICA_DATABASE_URL.",
+            },
+        )
     with pg_transaction() as conn:
         yield BusinessConnection.postgres(conn)
 

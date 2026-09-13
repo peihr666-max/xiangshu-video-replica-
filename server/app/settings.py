@@ -5,7 +5,6 @@ import logging
 import os
 import uuid
 from collections.abc import Callable, Mapping
-from functools import lru_cache
 from typing import Any, Literal, Protocol
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -13,7 +12,6 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from app.db_portable import BusinessConnection
-from app.local_settings_key import LocalSettingsKeyStoreError, load_or_create_local_settings_key
 from app.storage import (
     CloudStorageAdapter,
     CloudStorageConfig,
@@ -29,7 +27,6 @@ ProviderName = Literal[
 ]
 
 SETTINGS_KEY_ENV = "VIDEO_REPLICA_SETTINGS_KEY"
-LOCAL_KEYSTORE_DISABLED_ENV = "VIDEO_REPLICA_DISABLE_LOCAL_KEYSTORE"
 ACCEPTANCE_PAYMENT_USER_ID_ENV = "VIDEO_REPLICA_ACCEPTANCE_PAYMENT_USER_ID"
 ACCEPTANCE_PAYMENT_AMOUNT_FEN_ENV = "VIDEO_REPLICA_ACCEPTANCE_PAYMENT_AMOUNT_FEN"
 MAX_ACCEPTANCE_PAYMENT_FEN = 500
@@ -381,28 +378,14 @@ def fernet_from_environment() -> Fernet:
 def settings_encryption_key() -> str:
     key = os.environ.get(SETTINGS_KEY_ENV)
     if not key:
-        if os.environ.get(LOCAL_KEYSTORE_DISABLED_ENV) == "1":
-            raise SettingsKeyMissing(f"{SETTINGS_KEY_ENV} is required")
-        try:
-            key = _local_settings_key()
-        except LocalSettingsKeyStoreError as exc:
-            raise SettingsKeyMissing(
-                f"{SETTINGS_KEY_ENV} or an operating-system key store is required"
-            ) from exc
+        # CW-042-b: the desktop OS-keystore fallback is retired with the
+        # SQLite lane — the customer server requires the provisioned key.
+        raise SettingsKeyMissing(f"{SETTINGS_KEY_ENV} is required")
     try:
         Fernet(key.encode("ascii"))
     except (UnicodeEncodeError, ValueError) as exc:
         raise SettingsKeyInvalid("settings encryption key is invalid") from exc
     return key
-
-
-@lru_cache(maxsize=1)
-def _local_settings_key() -> str:
-    return load_or_create_local_settings_key()
-
-
-def clear_local_settings_key_cache() -> None:
-    _local_settings_key.cache_clear()
 
 
 def normalize_provider(provider: str) -> ProviderName:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -154,6 +155,12 @@ def test_cors_preflight_is_observed_like_every_other_http_request(
     from app.main import app as main_app
 
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_DATABASE_URL",
+        os.environ.get(
+            "TEST_POSTGRESQL_URL", "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
+        ),
+    )
     with caplog.at_level(logging.INFO, logger="app.ops_metrics"):
         with TestClient(main_app) as client:
             response = client.options(
@@ -440,6 +447,12 @@ def test_main_metrics_auth_precedes_readiness_probe(
     token_file.write_text("metrics-secret\n", encoding="utf-8")
     monkeypatch.setenv(METRICS_TOKEN_FILE_ENV, str(token_file))
     monkeypatch.delenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", raising=False)
+    monkeypatch.setenv(
+        "VIDEO_REPLICA_DATABASE_URL",
+        os.environ.get(
+            "TEST_POSTGRESQL_URL", "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
+        ),
+    )
 
     from app import main
 

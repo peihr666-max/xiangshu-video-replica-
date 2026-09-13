@@ -4,12 +4,10 @@ import hashlib
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import Depends, Header, HTTPException, Request
 
-from app.db import connect_database
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
 
@@ -51,21 +49,15 @@ def get_database() -> Iterator[BusinessConnection]:
             raise
         return
 
-    db_path = os.environ.get("VIDEO_REPLICA_DB_PATH")
-    if not db_path:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "DATABASE_NOT_CONFIGURED",
-                "message": "VIDEO_REPLICA_DB_PATH is required for API requests.",
-            },
-        )
-
-    conn = BusinessConnection.sqlite(connect_database(Path(db_path)))
-    try:
-        yield conn
-    finally:
-        conn.close()
+    # CW-042-b: the SQLite/desktop lane is physically retired — customer
+    # production is PostgreSQL-only and the legacy local backend is gone.
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "DATABASE_NOT_CONFIGURED",
+            "message": "VIDEO_REPLICA_DATABASE_URL is required for API requests.",
+        },
+    )
 
 
 Database = Annotated[BusinessConnection, Depends(get_database)]

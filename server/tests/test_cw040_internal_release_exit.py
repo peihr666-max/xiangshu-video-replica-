@@ -1,12 +1,13 @@
-"""CW-040 (pre-GA scope, CW-001 §6 P1): internal release/ops entries fail closed.
+"""CW-040: internal release/ops surface physically retired.
 
-CW-040's full scope is "退出内部发行与专属运维入口"; the owner-signed P1
-decision scopes the pre-GA slice to ENTRY fail-closed — the internal release
-toolchain and ops units must be unreachable from every customer build/deploy
-surface, while the physical deletion (``packaging_tools/``,
-``deploy/internal-p0.*``, ``deploy/systemd/video-replica-backup.*``,
-``scripts/p0_acceptance_evidence.py``) stays in the deferred post-GA cleanup
-batch (retirement condition: 内部停写 CW-051 后归档).
+PR #77 pinned the pre-GA entry fail-closed contracts; this batch phase
+(owner decision D5, COORD-W6-PHYS-EXIT-20260912) executes the physical
+deletion ahead of the original post-GA slot: ``packaging_tools/``,
+``deploy/internal-p0.*``, ``deploy/systemd/video-replica-backup.*`` and
+``scripts/p0_acceptance_evidence.py`` are gone. The contracts below pin the
+ABSENCE of the retired artifacts plus the customer-surface cleanliness that
+predates the deletion. (The historical backup CLI itself stays: it is part of
+the CW-060 operator artifact closure, not the customer surface.)
 
 Pinned contracts here:
 
@@ -61,16 +62,11 @@ def test_nsis_payload_scan_keeps_all_forbidden_markers() -> None:
     assert "contains local backend marker" in ci
 
 
-def test_packaging_tools_is_never_executed_by_ci() -> None:
-    """packaging_tools may appear ONLY as a path-filter trigger line; any
-    other occurrence would mean a CI step runs the internal release
-    toolchain."""
-    offenders = [
-        line.strip()
-        for line in _CI_YML.read_text(encoding="utf-8").splitlines()
-        if "packaging_tools" in line and "- 'packaging_tools/**'" not in line
-    ]
-    assert offenders == []
+def test_packaging_tools_is_physically_gone_and_unreferenced_by_ci() -> None:
+    """The internal release toolchain directory is deleted (D5); CI must not
+    reference it at all — not even as a path-filter trigger."""
+    assert not (_REPO_ROOT / "packaging_tools").exists()
+    assert "packaging_tools" not in _CI_YML.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +86,17 @@ def test_signed_release_channel_has_no_internal_toolchain_references() -> None:
     text = channel.read_text(encoding="utf-8")
     for marker in ("packaging_tools", "p0_acceptance", "internal-p0", "video-replica-backup"):
         assert marker not in text, f"signed release channel references {marker}"
+
+
+def test_internal_deploy_artifacts_are_physically_gone() -> None:
+    for rel in (
+        "deploy/internal-p0.env.example",
+        "deploy/nginx/internal-p0.conf.example",
+        "deploy/systemd/video-replica-backup.service",
+        "deploy/systemd/video-replica-backup.timer",
+        "scripts/p0_acceptance_evidence.py",
+    ):
+        assert not (_REPO_ROOT / rel).exists(), f"{rel} must stay deleted (CW-040)"
 
 
 def test_customer_deploy_templates_have_no_internal_toolchain_references() -> None:

@@ -1,7 +1,7 @@
 [project]
 name = "video-replica-api"
 version = "0.1.16"
-description = "Internal API service for the video replica desktop app"
+description = "Customer cloud API service for the 众墅之家 video replica platform"
 requires-python = ">=3.12"
 dependencies = [
     "alembic==1.17.2",

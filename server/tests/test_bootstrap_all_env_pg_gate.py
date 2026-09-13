@@ -249,12 +249,15 @@ def test_bootstrap_pg_branch_does_not_call_alembic_upgrade(
     def mock_upgrade(*args, **kwargs) -> None:
         upgrade_calls.append("upgrade called")
 
-    # patch initialize_database（SQLite 分支才会用到）
-    with patch("app.bootstrap.initialize_database", side_effect=mock_upgrade):
-        bootstrap_module._run_runtime_bootstrap()
-
-    # 断言：initialize_database 未被调用（PG 分支不走 SQLite 路径）
-    assert upgrade_calls == [], "PG 分支不得调用 initialize_database/alembic upgrade"
+    # CW-042-b: the SQLite branch no longer exists in bootstrap (no
+    # initialize_database import), so the assertion becomes structural: the
+    # module must not even reference the retired entry point.
+    assert not hasattr(bootstrap_module, "initialize_database"), (
+        "bootstrap must not reference the retired SQLite initialize_database"
+    )
+    assert "initialize_database" not in __import__("inspect").getsource(bootstrap_module), (
+        "bootstrap must not call the retired SQLite entry point"
+    )
 
 
 # ---------------------------------------------------------------------------

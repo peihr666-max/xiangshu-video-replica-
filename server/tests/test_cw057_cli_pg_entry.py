@@ -179,10 +179,10 @@ HISTORICAL_CLI_ROWS: tuple[CommandRow, ...] = tuple(
     )
 )
 
-HISTORICAL_INTERNAL_P0_UNITS = (
-    "video-replica-backup.service",
-    "video-replica-backup.timer",
-)
+# CW-040-b: the internal SQLite backup units are physically retired — the
+# historical registry rows are kept as comments for provenance.
+# ("video-replica-backup.service", "video-replica-backup.timer")
+HISTORICAL_INTERNAL_P0_UNITS: tuple[str, ...] = ()
 
 CURRENT_PG_UNITS = (
     "video-replica-api.service",
@@ -207,7 +207,6 @@ CURRENT_PG_SHELL_TOOLS = (
 )
 
 CURRENT_OFFLINE_TOOLS = (
-    "scripts/p0_acceptance_evidence.py",
     "scripts/customer_release_preflight.py",
     "scripts/verify_no_secrets.sh",
     "scripts/require_customer_api_base.mjs",
@@ -270,13 +269,6 @@ def test_current_pg_cli_modules_resolve_through_the_unified_entry() -> None:
             f"{row.entry} must resolve its DSN through the CW-057 unified PG entry"
         )
         assert "import sqlite3" not in source, f"{row.entry} must not import the SQLite driver"
-
-
-def test_internal_sqlite_backup_unit_keeps_its_isolation_banner() -> None:
-    unit = (REPO_ROOT / "deploy/systemd/video-replica-backup.service").read_text(encoding="utf-8")
-    assert unit.count("Internal P0 SQLite only") >= 1
-    assert "app.backup daily" in unit
-    assert "customer" in unit.lower() and "pitr" in unit.lower()
 
 
 def test_customer_deployment_chain_has_no_sqlite_backup_entry() -> None:

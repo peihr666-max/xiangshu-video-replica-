@@ -16,7 +16,6 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet
 
-from app.db import initialize_database
 from app.db_pg import (
     CUSTOMER_PRODUCTION_ENV,
     DatabaseMode,
@@ -28,15 +27,12 @@ from app.db_pg import (
     validate_customer_production,
 )
 from app.db_portable import BusinessConnection
-from app.local_settings_key import persist_local_settings_key
 from app.settings import (
     DEFAULT_BILLING_SETTINGS,
     DEFAULT_RUNTIME_SETTINGS,
-    LOCAL_KEYSTORE_DISABLED_ENV,
     SETTINGS_KEY_ENV,
     SettingsRepository,
     normalize_config,
-    settings_encryption_key,
     validate_provider_config,
 )
 from app.storage import (
@@ -524,20 +520,6 @@ def _load_cos_bootstrap_config(path: Path) -> dict[str, object]:
     if not isinstance(decoded, dict):
         raise RuntimeError("COS bootstrap config file must contain one JSON object")
     return {str(key): value for key, value in decoded.items()}
-
-
-def bootstrap_runtime(db_path: str | Path) -> None:
-    key = settings_encryption_key()
-    with BusinessConnection.sqlite(initialize_database(Path(db_path))) as conn:
-        # Decrypt every retained provider before starting either process. A
-        # wrong key therefore fails closed without overwriting stored data.
-        SettingsRepository(conn, fernet=Fernet(key.encode("ascii"))).read_all_provider_configs()
-
-    # Import an explicitly provisioned desktop key only after it has decrypted
-    # the current database. Future restarts can then use the OS key store even
-    # when the one-time deployment environment is no longer present.
-    if os.environ.get(SETTINGS_KEY_ENV) and os.environ.get(LOCAL_KEYSTORE_DISABLED_ENV) != "1":
-        persist_local_settings_key(key)
 
 
 def _probe_formal_service_write_path(storage: StorageAdapter) -> None:
