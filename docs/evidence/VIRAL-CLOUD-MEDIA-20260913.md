@@ -1,6 +1,6 @@
 # 定时采集、人工精选与共享云媒体
 
-状态：AUTOMATED_VERIFIED；本地完整静态门及全量失败修复复验完成，两位独立终审通过；PR 三门禁与合并待核验。
+状态：AUTOMATED_VERIFIED；本地完整静态门及全量失败修复复验完成，两位独立终审通过；[PR #100](https://github.com/peihr666-max/xiangshu-video-replica-/pull/100) 已提交；三门禁与合并待核验。
 
 ## 追加采集计费需求
 
@@ -84,5 +84,5 @@ Owner / Reviewer：Codex 01a0983e-6373-7200-9655-dcb2d6298a06 / 独立只读代�
 迁移与回滚：仅追加 20260913T1600_shared_viral_media；已发布 revision 不改；无存量数据迁移或实际环境切换。回滚停止新采集进程，共享云对象与用户项目副本保留
 外部授权记录：用户已授权独立 worktree、编写代码、独立评审、提交 PR 及合并；按最终每周采集要求修改。本任务未调用真实付费源、COS 或发布生产
 未测试项：真实数据源响应、真实 COS 权限/吞吐、生产周期调度；自动化使用替身供应商与真实独立 PG
-Lore 提交 SHA：最终见 PR head 与 squash SHA
+Lore 提交 SHA：1252b3b、3e85f5c、659d23f、b4f3fca 及后续证据提交；PR #100 https://github.com/peihr666-max/xiangshu-video-replica-/pull/100，squash 待核验
 ```
