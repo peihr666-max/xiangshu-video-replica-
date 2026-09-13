@@ -24,6 +24,11 @@ const api = vi.hoisted(() => ({
   refreshOralVoice: vi.fn(),
   updateSimpleCharacterProfile: vi.fn(),
   uploadMaterial: vi.fn(),
+  getLatestSceneLookTask: vi.fn(async () => null),
+  listCharacterSceneLooks: vi.fn(async () => []),
+  createCharacterSceneLook: vi.fn(),
+  waitForCharacterSheetTask: vi.fn(),
+  getCachedCharacterAssetUrl: vi.fn(async () => ({ url: "/scene.png" })),
 }));
 const live = vi.hoisted(() => ({
   loadMorePeople: vi.fn(),
@@ -273,6 +278,26 @@ describe("PeoplePages", () => {
     expect(screen.queryByText("✓ 形象照片 0 张")).toBeNull();
   });
 
+  it("人物定位长内容支持多行编辑且保留换行提交", async () => {
+    currentPage = "person-ip";
+    review = false;
+    render(<PersonPage />);
+    const scope = screen.getByLabelText("服务范围");
+    expect(scope.tagName).toBe("TEXTAREA");
+    fireEvent.change(scope, {
+      target: { value: "方案设计\n施工管理\n交付验收" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存 IP 定位" }));
+    await waitFor(() =>
+      expect(api.updateSimpleCharacterProfile).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({
+          service_scope: "方案设计\n施工管理\n交付验收",
+        }),
+      ),
+    );
+  });
+
   it("renders the people library and its primary empty-safe actions", () => {
     render(<PeoplePage />);
     expect(screen.getByRole("heading", { name: "人物库" })).toBeInTheDocument();
@@ -284,6 +309,25 @@ describe("PeoplePages", () => {
       "src",
       "/people/test-person.png",
     );
+  });
+
+  it("形象照入口定位当前人物，AI 按钮直接展开场景参数而不返回列表", async () => {
+    currentPage = "person-photos";
+    review = false;
+    render(<PersonPage />);
+    fireEvent.click(screen.getByRole("button", { name: "管理形象照" }));
+    expect(openLive).toHaveBeenCalledWith("characters", {
+      identityId: "p1",
+      tab: "base",
+    });
+    openLive.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "AI 生成场景照" }));
+    expect(await screen.findByLabelText("场景名称")).toBeInTheDocument();
+    expect(screen.getByLabelText("场景描述")).toBeInTheDocument();
+    expect(screen.getByLabelText("服装描述")).toBeInTheDocument();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(openLive).not.toHaveBeenCalled();
+    expect(api.createCharacterSceneLook).not.toHaveBeenCalled();
   });
 
   it("未知提交态明确警示且不提供普通刷新动作", () => {

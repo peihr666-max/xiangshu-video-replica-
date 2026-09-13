@@ -1688,8 +1688,16 @@ describe("character reference and first-frame binding", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
     vi.stubGlobal("fetch", fetchMock);
 
-    const first = waitForCharacterSheetTask("character-task-shared");
-    const recovered = waitForCharacterSheetTask("character-task-shared");
+    const firstUpdates: string[] = [];
+    const recoveredUpdates: string[] = [];
+    const first = waitForCharacterSheetTask("character-task-shared", (task) =>
+      firstUpdates.push(task.status),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const recovered = waitForCharacterSheetTask(
+      "character-task-shared",
+      (task) => recoveredUpdates.push(task.status),
+    );
     await vi.advanceTimersByTimeAsync(1_500);
 
     await expect(Promise.all([first, recovered])).resolves.toEqual([
@@ -1697,6 +1705,8 @@ describe("character reference and first-frame binding", () => {
       succeeded,
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(firstUpdates).toEqual(["RUNNING", "SUCCEEDED"]);
+    expect(recoveredUpdates).toEqual(["RUNNING", "SUCCEEDED"]);
   });
 
   it("shares one first-frame task poller and broadcasts progress to recovery callers", async () => {

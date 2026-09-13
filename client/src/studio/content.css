@@ -969,6 +969,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .viral-card-stats svg {
@@ -1055,6 +1056,8 @@
 .viral-card-body {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   gap: 8px;
   padding: 10px 12px 12px;
 }
@@ -1139,6 +1142,65 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 96px;
+}
+
+.viral-card-body > .viral-card-tags {
+  height: 74px;
+  flex: none;
+  align-content: flex-start;
+  overflow: hidden;
+}
+
+.viral-card-body > .viral-card-tags span {
+  line-height: 16px;
+}
+
+.viral-card-body > .content-card-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: auto;
+  order: 1;
+}
+
+.viral-card-body > .content-card-actions > :last-child {
+  grid-column: 1 / -1;
+}
+
+.character-material-views {
+  display: grid;
+  gap: 12px;
+}
+
+.character-material-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.character-material-choices button {
+  padding: 6px 10px;
+  border: 1px solid #363730;
+  border-radius: 6px;
+  background: #101111;
+  color: #b9bab4;
+  cursor: pointer;
+}
+
+.character-material-choices button[aria-pressed="true"] {
+  border-color: #e5aa36;
+  background: #292519;
+  color: #f0bd52;
+}
+
+.content-inspector .character-material-preview {
+  height: 320px;
+  background: #090a0a;
+}
+
+.content-inspector .character-material-preview img {
+  height: 100%;
+  width: 100%;
+  object-fit: contain;
 }
 
 .viral-reveal-sentinel {

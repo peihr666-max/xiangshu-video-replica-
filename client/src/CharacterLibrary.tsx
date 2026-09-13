@@ -1,29 +1,20 @@
-import {
-  type FormEvent,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type CharacterViewType,
-  createCharacterSceneLook,
   deleteSimpleCharacterIdentity,
   downloadCharacterAsset,
   getCachedCharacterAssetUrl,
   getLatestCharacterSheetTask,
-  getLatestSceneLookTask,
-  listCharacterSceneLooks,
   listSimpleCharacterLibraryPage,
   regenerateContactSheet,
   renamePersonIdentity,
   type SimpleCharacterView,
   type SimpleLibraryEntry,
-  type SimpleSceneLook,
   type UserRole,
   waitForCharacterSheetTask,
 } from "./api";
+import { CharacterScenePanel } from "./CharacterScenePanel";
 import { SimpleCharacterUpload } from "./SimpleCharacterUpload";
 
 const VIEW_LABELS: Record<CharacterViewType, string> = {
@@ -46,12 +37,6 @@ function entryAssetIds(entry: SimpleLibraryEntry): string[] {
     ...(entry.contact_sheet_asset_id ? [entry.contact_sheet_asset_id] : []),
     ...entry.views.map((view) => view.asset_id),
   ];
-}
-
-function sceneLookAssetIds(look: SimpleSceneLook): string[] {
-  const preview =
-    look.views.find((view) => view.view_type === "FRONT_FACE") ?? look.views[0];
-  return [look.contact_sheet_asset_id, ...(preview ? [preview.asset_id] : [])];
 }
 
 type PreviewStatus = "loading" | "ready" | "error";
@@ -120,6 +105,7 @@ export function CharacterLibrary({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const libraryRequestIdRef = useRef(0);
+  const openedInitialIdentityRef = useRef<string | undefined>(undefined);
   const normalizedQuery = searchQuery.trim();
   const shownAssetKey = entries.flatMap(entryAssetIds).join("\n");
 
@@ -183,6 +169,36 @@ export function CharacterLibrary({
         userRole === "admin" || userRole === "auditor"
           ? result.items
           : result.items.filter((entry) => entry.owner_user_id === userId);
+      // A detail-page handoff may target an older person outside the first page.
+      // Read pages only until that target is found; do not load previews for every person.
+      if (
+        initialIdentityId &&
+        openedInitialIdentityRef.current !== initialIdentityId &&
+        !ownedEntries.some((entry) => entry.identity_id === initialIdentityId)
+      ) {
+        let cursor = result.next_cursor;
+        const visited = new Set<string>();
+        while (cursor && !visited.has(cursor)) {
+          visited.add(cursor);
+          const page = await listSimpleCharacterLibraryPage({
+            limit: CHARACTER_PAGE_SIZE,
+            cursor,
+          });
+          if (requestId !== libraryRequestIdRef.current) return;
+          const target = page.items.find(
+            (entry) =>
+              entry.identity_id === initialIdentityId &&
+              (userRole === "admin" ||
+                userRole === "auditor" ||
+                entry.owner_user_id === userId),
+          );
+          if (target) {
+            ownedEntries.unshift(target);
+            break;
+          }
+          cursor = page.next_cursor;
+        }
+      }
       setEntries(ownedEntries);
       setNextCursor(result.next_cursor);
       setError("");
@@ -195,7 +211,7 @@ export function CharacterLibrary({
         setIsLoading(false);
       }
     }
-  }, [normalizedQuery, userId, userRole]);
+  }, [normalizedQuery, userId, userRole, initialIdentityId]);
 
   async function loadMoreCharacters() {
     if (!nextCursor || isLoadingMore) {
@@ -273,8 +289,10 @@ export function CharacterLibrary({
   useEffect(() => {
     if (
       initialIdentityId &&
+      openedInitialIdentityRef.current !== initialIdentityId &&
       entries.some((entry) => entry.identity_id === initialIdentityId)
     ) {
+      openedInitialIdentityRef.current = initialIdentityId;
       setLightboxId(initialIdentityId);
     }
   }, [entries, initialIdentityId]);
@@ -799,7 +817,6 @@ export function CharacterLibrary({
           onDownloadSheet={handleDownloadSheet}
           onDownloadView={handleDownloadView}
           onDownloadAll={handleDownloadAll}
-          onLoadPreviewUrls={loadPreviewUrls}
           onSceneCreated={onChanged}
           previewUrls={previewUrls}
         />
@@ -879,7 +896,6 @@ function CharacterLightbox({
   onDownloadSheet,
   onDownloadView,
   onDownloadAll,
-  onLoadPreviewUrls,
   onSceneCreated,
   previewUrls,
 }: {
@@ -894,22 +910,10 @@ function CharacterLightbox({
     view: SimpleCharacterView,
   ) => Promise<void>;
   onDownloadAll: (entry: SimpleLibraryEntry) => Promise<void>;
-  onLoadPreviewUrls: (assetIds: string[]) => Promise<void>;
   onSceneCreated?: () => void;
   previewUrls: Record<string, string>;
 }) {
   const [activeTab, setActiveTab] = useState<"base" | "scenes">(initialTab);
-  const [sceneLooks, setSceneLooks] = useState<SimpleSceneLook[]>([]);
-  const [sceneError, setSceneError] = useState("");
-  const [sceneLoading, setSceneLoading] = useState(true);
-  const [sceneFormOpen, setSceneFormOpen] = useState(false);
-  const [sceneName, setSceneName] = useState("");
-  const [sceneDescription, setSceneDescription] = useState("");
-  const [costumeDescription, setCostumeDescription] = useState("");
-  const [sceneGenerating, setSceneGenerating] = useState(false);
-  const [sceneTaskMessage, setSceneTaskMessage] = useState("");
-  const [expandedSceneId, setExpandedSceneId] = useState("");
-
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -919,104 +923,6 @@ function CharacterLightbox({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
-
-  useEffect(() => {
-    let active = true;
-
-    async function loadLooks(): Promise<void> {
-      const looks = await listCharacterSceneLooks(entry.identity_id);
-      if (!active) {
-        return;
-      }
-      setSceneLooks(looks);
-      setSceneError("");
-      await onLoadPreviewUrls(looks.flatMap(sceneLookAssetIds));
-    }
-
-    void (async () => {
-      setSceneLoading(true);
-      try {
-        await loadLooks();
-        if (active) {
-          setSceneLoading(false);
-        }
-        const task = await getLatestSceneLookTask(entry.identity_id);
-        if (!active || !task) {
-          return;
-        }
-        setActiveTab("scenes");
-        if (
-          task.status === "FAILED" ||
-          task.status === "SUBMISSION_UNCERTAIN"
-        ) {
-          setSceneError(task.error_message ?? "场景造型生成失败，请重新提交。");
-          return;
-        }
-        if (task.status === "PENDING" || task.status === "RUNNING") {
-          setSceneGenerating(true);
-          setSceneTaskMessage("正在恢复场景造型生成任务…");
-          await waitForCharacterSheetTask(task.id);
-        }
-        if (active) {
-          await loadLooks();
-        }
-      } catch (loadError) {
-        if (active) {
-          setSceneError(
-            errorMessage(loadError, "场景造型暂不可用，请稍后重试。"),
-          );
-        }
-      } finally {
-        if (active) {
-          setSceneLoading(false);
-          setSceneGenerating(false);
-          setSceneTaskMessage("");
-        }
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [entry.identity_id, onLoadPreviewUrls]);
-
-  async function submitSceneLook(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (sceneGenerating) {
-      return;
-    }
-    const input = {
-      scene_name: sceneName.trim(),
-      scene_description: sceneDescription.trim(),
-      costume_description: costumeDescription.trim(),
-    };
-    if (
-      !input.scene_name ||
-      !input.scene_description ||
-      !input.costume_description
-    ) {
-      setSceneError("请完整填写场景名称、场景描述和服装描述。");
-      return;
-    }
-    setSceneGenerating(true);
-    setSceneError("");
-    try {
-      const created = await createCharacterSceneLook(entry.identity_id, input);
-      setSceneLooks((current) => [
-        created,
-        ...current.filter((look) => look.persona_id !== created.persona_id),
-      ]);
-      await onLoadPreviewUrls(sceneLookAssetIds(created));
-      setSceneName("");
-      setSceneDescription("");
-      setCostumeDescription("");
-      setSceneFormOpen(false);
-      onSceneCreated?.();
-    } catch (createError) {
-      setSceneError(errorMessage(createError, "场景造型生成失败，请重试。"));
-    } finally {
-      setSceneGenerating(false);
-    }
-  }
 
   const sheetUrl = entry.contact_sheet_asset_id
     ? previewUrls[entry.contact_sheet_asset_id]
@@ -1079,167 +985,17 @@ function CharacterLightbox({
             场景造型
           </button>
         </div>
-        {activeTab === "scenes" ? (
-          <section className="character-scene-panel" role="tabpanel">
-            <div className="character-scene-panel__head">
-              <div>
-                <h4>场景造型</h4>
-                <p>基于人物基准生成特定场景下的服装与五视图形象。</p>
-              </div>
-              {canManage ? (
-                <button
-                  className="primary-button"
-                  onClick={() => setSceneFormOpen((open) => !open)}
-                  type="button"
-                >
-                  {sceneFormOpen ? "收起" : "新增场景造型"}
-                </button>
-              ) : null}
-            </div>
-            {sceneTaskMessage ? (
-              <p className="status-note">{sceneTaskMessage}</p>
-            ) : null}
-            {sceneFormOpen ? (
-              <form className="character-scene-form" onSubmit={submitSceneLook}>
-                <label>
-                  场景名称
-                  <input
-                    maxLength={80}
-                    placeholder="例如：工地巡检"
-                    value={sceneName}
-                    onChange={(event) => setSceneName(event.target.value)}
-                  />
-                </label>
-                <label>
-                  场景描述
-                  <textarea
-                    maxLength={600}
-                    placeholder="例如：乡村别墅施工现场，白天自然光"
-                    value={sceneDescription}
-                    onChange={(event) =>
-                      setSceneDescription(event.target.value)
-                    }
-                  />
-                </label>
-                <label>
-                  服装描述
-                  <textarea
-                    maxLength={600}
-                    placeholder="例如：黄色安全帽、深蓝色工装和反光背心"
-                    value={costumeDescription}
-                    onChange={(event) =>
-                      setCostumeDescription(event.target.value)
-                    }
-                  />
-                </label>
-                <p>提交后直接生成并发布五视图，无需管理员审核。</p>
-                <button
-                  className="primary-button"
-                  disabled={sceneGenerating}
-                  type="submit"
-                >
-                  {sceneGenerating
-                    ? "正在生成，预计 1–3 分钟…"
-                    : "生成场景五视图"}
-                </button>
-              </form>
-            ) : null}
-            {sceneError ? (
-              <p className="settings-error" role="alert">
-                {sceneError}
-              </p>
-            ) : null}
-            {sceneLoading ? (
-              <p className="status-note">正在读取场景造型…</p>
-            ) : sceneLooks.length ? (
-              <div className="character-scene-grid">
-                {sceneLooks.map((look) => {
-                  const preview =
-                    look.views.find(
-                      (view) => view.view_type === "FRONT_FACE",
-                    ) ?? look.views[0];
-                  return (
-                    <article
-                      className="character-scene-card"
-                      key={look.persona_id}
-                    >
-                      <div className="character-scene-card__image">
-                        {preview && previewUrls[preview.asset_id] ? (
-                          <img
-                            alt={`${entry.display_name} ${look.scene_name}`}
-                            src={previewUrls[preview.asset_id]}
-                          />
-                        ) : (
-                          <span className="source-frame-placeholder">
-                            场景预览加载中…
-                          </span>
-                        )}
-                      </div>
-                      <div className="character-scene-card__body">
-                        <strong>{look.scene_name}</strong>
-                        <span>{look.scene_description}</span>
-                        <small>{look.costume_description}</small>
-                        <em>五视图已发布</em>
-                        <button
-                          aria-label={`查看${look.scene_name}五视图`}
-                          className="secondary-button"
-                          onClick={() =>
-                            setExpandedSceneId((current) =>
-                              current === look.persona_id
-                                ? ""
-                                : look.persona_id,
-                            )
-                          }
-                          type="button"
-                        >
-                          {expandedSceneId === look.persona_id
-                            ? "收起五视图"
-                            : "查看五视图"}
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="character-scene-empty">
-                还没有场景造型，可从人物基准创建第一套。
-              </p>
-            )}
-            {sceneLooks
-              .filter((look) => look.persona_id === expandedSceneId)
-              .map((look) => (
-                <section
-                  aria-label={`${look.scene_name}五视图`}
-                  className="character-scene-views"
-                  key={look.persona_id}
-                >
-                  <div className="character-scene-views__head">
-                    <strong>{look.scene_name} · 场景五视图</strong>
-                    <button
-                      className="secondary-button"
-                      onClick={() => setExpandedSceneId("")}
-                      type="button"
-                    >
-                      收起
-                    </button>
-                  </div>
-                  <div className="character-contact-sheet">
-                    {previewUrls[look.contact_sheet_asset_id] ? (
-                      <img
-                        alt={`${entry.display_name} ${look.scene_name} 场景五视图`}
-                        src={previewUrls[look.contact_sheet_asset_id]}
-                      />
-                    ) : (
-                      <span className="source-frame-placeholder">
-                        五视图加载中…
-                      </span>
-                    )}
-                  </div>
-                </section>
-              ))}
-          </section>
-        ) : entry.contact_sheet_asset_id ? (
+        <div hidden={activeTab !== "scenes"}>
+          <CharacterScenePanel
+            key={entry.identity_id}
+            identityId={entry.identity_id}
+            displayName={entry.display_name}
+            canManage={canManage}
+            onChanged={onSceneCreated}
+            onActiveTask={() => setActiveTab("scenes")}
+          />
+        </div>
+        {activeTab !== "base" ? null : entry.contact_sheet_asset_id ? (
           <div className="character-contact-sheet">
             {sheetUrl ? (
               <img alt={`${entry.display_name} 五视图拼合图`} src={sheetUrl} />

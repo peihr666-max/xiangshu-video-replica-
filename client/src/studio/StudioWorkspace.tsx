@@ -1,5 +1,4 @@
 import {
-  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -101,7 +100,7 @@ import type {
   StudioState,
   StudioTask,
 } from "./types";
-import { Button, Empty, Hint, Icon, Media } from "./ui";
+import { Button, Empty, Hint, Icon, Media, StudioDialog } from "./ui";
 import { WorkspaceNotifications } from "./WorkspaceNotifications";
 import { WorkspaceSearch } from "./WorkspaceSearch";
 import "./studio.css";
@@ -282,6 +281,10 @@ export function StudioWorkspace({
   const [notice, setNotice] = useState("");
   const [picker, setPicker] = useState<PickerKind>();
   const [livePanel, setLivePanel] = useState<LivePanel>();
+  const [characterTarget, setCharacterTarget] = useState<{
+    identityId: string;
+    tab: "base" | "scenes";
+  }>();
   const [liveProject, setLiveProject] = useState<Project>();
   const [handoffBatch, setHandoffBatch] = useState<GenerationBatch | null>(
     null,
@@ -1108,7 +1111,8 @@ export function StudioWorkspace({
       review ||
       data.loading ||
       !personToLoad ||
-      loadedPeopleRef.current.has(personToLoad)
+      (loadedPeopleRef.current.has(personToLoad) &&
+        state.page !== "person-photos")
     )
       return;
     let active = true;
@@ -1163,7 +1167,7 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [review, data.loading, personToLoad, notify]);
+  }, [review, data.loading, personToLoad, notify, state.page]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -1326,7 +1330,7 @@ export function StudioWorkspace({
     extractionAssetId,
     notify,
   ]);
-  const openLive = (panel: LivePanel) => {
+  const openLive: StudioContextValue["openLive"] = (panel, character) => {
     if (review) {
       notify(
         "当前为示例审核。此入口在正式登录后打开已实现的上传、分析、人物或账户功能，不调用真实业务接口。",
@@ -1357,6 +1361,7 @@ export function StudioWorkspace({
       setLiveProject(
         data.projects.find((project) => project.id === state.draft.projectId),
       );
+    setCharacterTarget(character);
     setLivePanel(panel);
   };
   const importProject = async (project: Project) => {
@@ -1835,7 +1840,10 @@ export function StudioWorkspace({
               <LiveWorkspacePanel
                 panel={livePanel}
                 currentUser={currentUser}
-                characterIdentityId={state.draft.ipId}
+                characterIdentityId={
+                  characterTarget?.identityId ?? state.draft.ipId
+                }
+                characterInitialTab={characterTarget?.tab}
                 customerAccount={customerAccount}
                 customerWallet={customerWallet}
                 project={liveProject}
@@ -2115,41 +2123,7 @@ function StudioSettingsPage() {
   );
 }
 
-export function StudioDialog({
-  title,
-  children,
-  onClose,
-}: {
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-}) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (typeof dialog?.showModal === "function") dialog.showModal();
-    else dialog?.setAttribute("open", "");
-    return () => {
-      if (typeof dialog?.close === "function") dialog.close();
-    };
-  }, []);
-  return (
-    <dialog
-      ref={dialogRef}
-      className="studio-dialog"
-      aria-label={title}
-      onCancel={onClose}
-    >
-      <header>
-        <h2>{title}</h2>
-        <button type="button" aria-label="关闭" onClick={onClose}>
-          <Icon name="close" />
-        </button>
-      </header>
-      {children}
-    </dialog>
-  );
-}
+export { StudioDialog } from "./ui";
 
 function AudioMaterialPicker({
   onClose,

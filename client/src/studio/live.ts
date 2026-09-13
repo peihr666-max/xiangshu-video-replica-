@@ -148,6 +148,12 @@ export function studioAssetFromMaterial(item: MaterialItem): StudioAsset {
     personId: item.person_id ?? undefined,
     source: materialSourceLabels[item.source],
     saved: item.saved,
+    composite: item.composite ?? false,
+    previewAssetId: item.preview_asset_id ?? undefined,
+    characterViews: item.character_views?.map((view) => ({
+      assetId: view.asset_id,
+      viewType: view.view_type,
+    })),
     delivery: item.delivery,
     allowedUses: item.allowed_uses,
     allowedActions: item.allowed_actions,
@@ -1311,14 +1317,30 @@ export async function loadPersonAssets(
           scene.views.find((view) => view.view_type === "FRONT_FACE") ??
           scene.views[0],
       }))
-      .filter((item) => Boolean(item.view));
+      .filter((item) =>
+        Boolean(item.view || item.scene.contact_sheet_asset_id),
+      );
     const previews = await Promise.allSettled(
       selected.map(({ view }) =>
-        signedUrl(view?.asset_id as string, getCachedCharacterAssetUrl),
+        view
+          ? signedUrl(view.asset_id, getCachedCharacterAssetUrl)
+          : Promise.resolve(undefined),
       ),
     );
     const errors: string[] = [];
+    const sheets = await Promise.allSettled(
+      selected.map(({ scene }) =>
+        scene.contact_sheet_asset_id
+          ? signedUrl(scene.contact_sheet_asset_id, getCachedCharacterAssetUrl)
+          : Promise.resolve(undefined),
+      ),
+    );
     const assets = selected.map(({ scene, view }, index): StudioAsset => {
+      const sheet = sheets[index];
+      if (sheet?.status === "rejected")
+        errors.push(
+          `读取场景合成图“${scene.scene_name}”失败：${errorText(sheet.reason)}`,
+        );
       const preview = previews[index];
       let url: string | undefined;
       if (preview?.status === "fulfilled") {
@@ -1329,14 +1351,20 @@ export async function loadPersonAssets(
         );
       }
       return {
-        id: view?.asset_id as string,
+        id: view?.asset_id ?? scene.contact_sheet_asset_id,
         name: scene.scene_name,
         kind: "image",
         url,
         group: "场景形象照",
         personId: identityId,
         composite: false,
+        contactSheetId: scene.contact_sheet_asset_id || undefined,
+        contactSheetUrl:
+          sheets[index]?.status === "fulfilled"
+            ? sheets[index].value
+            : undefined,
         source: "人物库场景造型",
+        allowedUses: view ? ["reference", "first_frame"] : ["reference"],
         saved: Boolean(scene.published_at),
       };
     });

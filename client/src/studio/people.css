@@ -161,6 +161,8 @@
   font-size: 17px;
   line-height: 2;
   color: #e2e1dc;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .person-footer {
   grid-column: 1 / -1;
@@ -174,15 +176,16 @@
 .people-sheet {
   display: block;
   width: 100%;
-  max-height: 180px;
+  aspect-ratio: 16 / 9;
+  max-width: 900px;
+  margin: 16px auto 0;
   object-fit: contain;
-  background: #d5d4d2;
+  background: #161713;
   border-radius: 8px;
 }
 .person-page .people-sheet.studio-media img {
   width: 100%;
-  height: auto;
-  max-height: 180px;
+  height: 100%;
   object-fit: contain;
 }
 .scene-grid {
@@ -192,9 +195,100 @@
 }
 .scene-image {
   width: 100%;
-  height: 120px;
-  object-fit: cover;
+  aspect-ratio: 4 / 5;
+  height: auto;
+  object-fit: contain;
   border-radius: 8px;
+}
+.scene-image--sheet {
+  aspect-ratio: 16 / 9;
+}
+.person-page .scene-image.studio-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.scene-preview-button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: #161713;
+}
+.scene-preview-button .studio-media {
+  margin: 0;
+}
+.scene-expanded-image {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+.studio-dialog .scene-expanded-image.studio-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.scene-set-label {
+  margin: 6px 0 14px;
+  color: #999b95;
+  font-size: 13px;
+}
+.photos-panel {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.4fr);
+  align-items: start;
+  gap: 20px;
+}
+.photos-panel > .panel-heading {
+  grid-column: 1 / -1;
+}
+.photos-panel > .studio-panel {
+  grid-column: 1;
+  grid-row: 2 / span 3;
+  margin: 0;
+}
+.photos-panel > .character-scene-panel,
+.photos-panel > .studio-empty,
+.photos-panel > h3,
+.photos-panel > .scene-grid,
+.photos-panel > .people-pagination {
+  grid-column: 2;
+  margin: 0;
+}
+.photos-panel .scene-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
+}
+.photos-panel .panel-heading {
+  align-items: flex-start;
+}
+.photos-panel .panel-heading p {
+  color: #999b95;
+  font-size: 14px;
+  margin-bottom: 0;
+}
+.photos-panel .panel-heading > div:last-child {
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.photos-panel .scene-grid .studio-panel {
+  padding: 16px;
+}
+.photos-panel .scene-grid .studio-panel > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ip-layout {
+  align-items: start;
+}
+.ip-layout textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.6;
+}
+.ip-layout .studio-field:has(textarea)::after {
+  content: "可换行输入，拖动右下角可展开";
+  font-size: 12px;
+  color: #999b95;
 }
 .scene-grid strong {
   display: block;
@@ -272,6 +366,18 @@
   margin-top: 20px;
 }
 @media (max-width: 1100px) {
+  .photos-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .photos-panel > .studio-panel,
+  .photos-panel > .character-scene-panel,
+  .photos-panel > .studio-empty,
+  .photos-panel > h3,
+  .photos-panel > .scene-grid,
+  .photos-panel > .people-pagination {
+    grid-column: 1;
+    grid-row: auto;
+  }
   .people-grid,
   .scene-grid {
     grid-template-columns: 1fr 1fr;

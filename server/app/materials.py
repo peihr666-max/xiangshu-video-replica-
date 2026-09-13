@@ -57,6 +57,13 @@ ASSET_KIND_FOR_MEDIA: dict[MaterialMediaType, str] = {
 }
 
 
+class MaterialCharacterView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    view_type: str
+
+
 class MaterialItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -78,6 +85,9 @@ class MaterialItem(BaseModel):
     created_at: str
     hidden: bool
     saved: bool
+    composite: bool = False
+    preview_asset_id: str | None = None
+    character_views: list[MaterialCharacterView] = Field(default_factory=list)
     allowed_uses: list[str]
     allowed_actions: list[str]
 
@@ -236,7 +246,19 @@ def probe_audio_duration(content: bytes) -> float | None:
 
 def _candidate_cte() -> str:
     return """
-    WITH material_candidates AS (
+    WITH character_sheets AS (
+        SELECT version.id AS version_id, asset.id AS asset_id,
+               identity.id AS person_id, identity.owner_user_id,
+               identity.display_name, persona.name,
+               persona.appearance_constraints_json::jsonb ->> 'appearance_type' AS appearance_type
+        FROM character_versions AS version
+        JOIN character_personas AS persona ON persona.id = version.persona_id
+        JOIN person_identities AS identity ON identity.id = persona.identity_id
+        JOIN assets AS asset
+          ON asset.id = version.publication_snapshot_json::jsonb ->> 'contact_sheet_asset_id'
+         AND asset.kind = 'character_contact_sheet'
+        WHERE version.status = 'PUBLISHED' AND identity.owner_user_id IS NOT NULL
+    ), material_candidates AS (
         SELECT
             'asset' AS source_type,
             asset.id AS source_id,
@@ -297,6 +319,19 @@ def _candidate_cte() -> str:
         UNION ALL
 
         SELECT DISTINCT
+            'asset', asset.id, sheet.owner_user_id, asset.id, NULL,
+            NULL, sheet.person_id,
+            sheet.display_name || ' · ' || CASE WHEN sheet.appearance_type = 'scene'
+                THEN sheet.name ELSE '基础五视图' END,
+            CASE WHEN sheet.appearance_type = 'scene' THEN '场景形象照' ELSE '基础五视图' END,
+            'character', asset.content_type, asset.size_bytes, asset.metadata_json,
+            asset.created_at, 'image', 'ready', 'stored'
+        FROM character_sheets AS sheet
+        JOIN assets AS asset ON asset.id = sheet.asset_id
+
+        UNION ALL
+
+        SELECT DISTINCT
             'asset', asset.id, identity.owner_user_id, asset.id, NULL,
             NULL, identity.id,
             identity.display_name || ' · 人物素材', '人物素材', 'character',
@@ -344,6 +379,16 @@ def _scope_clause(actor: CurrentUser) -> tuple[str, list[object]]:
     return "1 = 1", []
 
 
+def _grouped_character_clause() -> str:
+    # Keep derived IDs resolvable for saved drafts, but list/count one sheet per set.
+    # A hidden sheet must not make its seven derived images reappear.
+    return """NOT (candidate.source = 'character' AND EXISTS (
+        SELECT 1 FROM character_assets AS view
+        JOIN character_sheets AS sheet ON sheet.version_id = view.character_version_id
+        WHERE view.asset_id = candidate.asset_id AND sheet.asset_id != candidate.asset_id
+    ))"""
+
+
 def _read_rows(
     conn: BusinessConnection,
     *,
@@ -358,6 +403,8 @@ def _read_rows(
 ) -> list[Any]:
     scope, scope_params = _scope_clause(actor)
     clauses = [scope]
+    if material_ids is None:
+        clauses.append(_grouped_character_clause())
     parameters: list[object] = [actor.id, actor.id, *scope_params]
     if not include_hidden:
         clauses.append("COALESCE(preference.hidden, 0) = 0")
@@ -389,6 +436,15 @@ def _read_rows(
         + f"""
         SELECT
             candidate.*,
+            (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'asset_id', reference.asset_id, 'view_type', reference.view_type
+            ) ORDER BY reference.view_type), '[]'::jsonb)::text FROM (
+                SELECT DISTINCT view.asset_id, view.view_type
+                FROM character_assets AS view
+                JOIN character_sheets AS sheet ON sheet.version_id = view.character_version_id
+                WHERE sheet.asset_id = candidate.asset_id AND candidate.source = 'character'
+                  AND view.review_status = 'APPROVED' AND view.is_published_selection = 1
+            ) AS reference) AS character_views_json,
             preference.title_override,
             preference.group_override,
             COALESCE(preference.hidden, 0) AS hidden
@@ -415,7 +471,7 @@ def _count_rows(
     query: str | None,
 ) -> int:
     scope, scope_params = _scope_clause(actor)
-    clauses = [scope, "COALESCE(preference.hidden, 0) = 0"]
+    clauses = [scope, "COALESCE(preference.hidden, 0) = 0", _grouped_character_clause()]
     parameters: list[object] = [actor.id, actor.id, *scope_params]
     if media_type:
         clauses.append("candidate.media_type = %s")
@@ -470,10 +526,30 @@ def material_item(row: Any) -> MaterialItem:
     ready = str(row["status"]) == "ready"
     direct = str(row["delivery"]) == "direct"
     media_type = str(row["media_type"])
+    composite = (
+        row["source"] == "character" and metadata.get("purpose") == "five_view_contact_sheet"
+    )
+    views = [
+        MaterialCharacterView.model_validate(value)
+        for value in json.loads(row["character_views_json"])
+    ]
+    preferred = next(
+        (
+            view
+            for kind in ("FRONT_FULL", "FRONT_HALF", "FRONT_FACE")
+            for view in views
+            if view.view_type == kind
+        ),
+        views[0] if views else None,
+    )
     uses: list[str] = []
     if ready and not direct:
         if media_type == "image":
-            uses = ["original_frame", "first_frame", "tail_frame", "reference"]
+            uses = (
+                ["reference"]
+                if composite
+                else ["original_frame", "first_frame", "tail_frame", "reference"]
+            )
         elif media_type == "audio":
             purpose = metadata.get("audio_purpose")
             duration = _duration(metadata)
@@ -523,6 +599,9 @@ def material_item(row: Any) -> MaterialItem:
         created_at=str(row["created_at"]),
         hidden=bool(row["hidden"]),
         saved=ready and not direct,
+        composite=composite,
+        preview_asset_id=preferred.asset_id if composite and preferred else None,
+        character_views=views if composite else [],
         allowed_uses=uses,
         allowed_actions=actions,
     )

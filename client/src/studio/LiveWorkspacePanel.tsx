@@ -161,6 +161,7 @@ export function LiveWorkspacePanel({
           initialTab={characterInitialTab}
           userId={currentUser.id}
           userRole={currentUser.role}
+          onChanged={onRefresh}
         />
       ) : null}
       {panel === "tasks" ? (

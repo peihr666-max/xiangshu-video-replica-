@@ -2808,6 +2808,66 @@ describe("V1.4 内容与运营页面", () => {
     });
   });
 
+  it("五视图按套展示正面封面，切换视角后首帧使用对应单图", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        {
+          ...material("sheet"),
+          composite: true,
+          person_id: "person-1",
+          preview_asset_id: "front",
+          character_views: [
+            { asset_id: "front", view_type: "FRONT_FULL" },
+            { asset_id: "left", view_type: "LEFT_SIDE" },
+          ],
+          allowed_uses: ["reference"],
+        },
+      ],
+      page: 1,
+      page_size: 6,
+      total: 1,
+    });
+    getAssetDownloadUrl.mockImplementation(async (id: string) => ({
+      url: `https://storage.test/${id}`,
+    }));
+    const value = studio({ review: false });
+    useStudio.mockReturnValue(value);
+    render(<MaterialsPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "选择素材 sheet.png" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "正面全身" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(getAssetDownloadUrl).toHaveBeenCalledWith("front");
+    fireEvent.click(screen.getByRole("button", { name: "左侧面" }));
+    await waitFor(() =>
+      expect(getAssetDownloadUrl).toHaveBeenCalledWith("left"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "用作首帧" }));
+    expect(value.patchDraft).toHaveBeenCalledWith({ firstFrameId: "left" });
+    expect(value.updateData).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "下载素材" }));
+    await waitFor(() =>
+      expect(downloadMaterialAsset).toHaveBeenCalledWith(
+        "left",
+        "sheet.png · 左侧面",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "合成图" }));
+    await waitFor(() =>
+      expect(getAssetDownloadUrl).toHaveBeenCalledWith("sheet"),
+    );
+    expect(screen.queryByRole("button", { name: "用作首帧" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "下载素材" }));
+    await waitFor(() =>
+      expect(downloadMaterialAsset).toHaveBeenCalledWith("sheet", "sheet.png"),
+    );
+    expect(screen.getAllByRole("button", { name: /选择素材 / })).toHaveLength(
+      1,
+    );
+  });
+
   it("素材库六条分页，初始定位已选素材且筛选后保留右侧选择", () => {
     const base = studio();
     const assets = Array.from({ length: 7 }, (_, index) => ({
