@@ -56,8 +56,11 @@ def operation_rows(
           o.created_at)<%s
           AND (%s::text IS NULL OR o.user_id=%s) AND (%s::text IS NULL OR o.service=%s)
           AND (%s::text IS NULL OR o.module=%s) AND (%s::text IS NULL OR o.id=%s)
-          AND (%s::text IS NULL OR EXISTS(SELECT 1 FROM billing_attempts a WHERE
-            a.operation_id=o.id AND a.provider=%s))
+          AND (%s::text IS NULL OR EXISTS(SELECT 1 FROM billing_attempts a
+            JOIN billing_operations parent ON parent.id=a.operation_id
+            WHERE (parent.id=o.id OR (o.collection_batch_id IS NOT NULL
+              AND parent.id=o.source_id AND parent.collection_batch_id=o.collection_batch_id))
+            AND a.provider=%s))
         ORDER BY COALESCE(o.completed_at,o.created_at) DESC,o.id DESC LIMIT %s OFFSET %s
     """,
         (
@@ -86,6 +89,9 @@ def operation_rows(
             and item["state"] != "PENDING"
         )
         item["profit_fen"] = item["revenue_fen"] - item["cost_fen"] if known else None
+        item["shared_cost_unallocated"] = bool(item["collection_batch_id"] and item["user_id"])
+        if item["shared_cost_unallocated"]:
+            item["profit_fen"] = None
         result.append(item)
     return result
 
@@ -118,8 +124,11 @@ def statistics(
             o.created_at)<%s
             AND (%s::text IS NULL OR o.user_id=%s) AND (%s::text IS NULL OR o.service=%s)
             AND (%s::text IS NULL OR o.module=%s)
-            AND (%s::text IS NULL OR EXISTS(SELECT 1 FROM billing_attempts a WHERE
-              a.operation_id=o.id AND a.provider=%s))
+            AND (%s::text IS NULL OR EXISTS(SELECT 1 FROM billing_attempts a
+              JOIN billing_operations parent ON parent.id=a.operation_id
+              WHERE (parent.id=o.id OR (o.collection_batch_id IS NOT NULL
+                AND parent.id=o.source_id AND parent.collection_batch_id=o.collection_batch_id))
+              AND a.provider=%s))
         )
         SELECT date_trunc(%s,COALESCE(completed_at,created_at) AT TIME ZONE 'Asia/Shanghai')
           AS period,
@@ -132,11 +141,13 @@ def statistics(
           sum(known_cost) AS known_cost_fen,sum(revenue_fen) AS known_revenue_fen,
           count(*) FILTER(WHERE unknown_cost>0) AS unknown_cost_count,
           count(*) FILTER(WHERE revenue_fen IS NULL) AS unknown_revenue_count,
+          count(*) FILTER(WHERE collection_batch_id IS NOT NULL AND user_id IS NOT NULL) AS
+            shared_collection_charge_count,
           sum(CASE WHEN reserved_credits=0 OR (state<>'PENDING' AND charged_credits=0) THEN
             known_cost ELSE 0 END) AS platform_cost_fen,
           sum(CASE WHEN unit='second' THEN actual_units ELSE 0 END) AS seconds,
           sum(CASE WHEN unit='image' THEN actual_units ELSE 0 END) AS images,
-          sum(CASE WHEN unit='call' THEN actual_units ELSE 0 END) AS calls
+          sum(CASE WHEN unit='call' AND user_id IS NOT NULL THEN actual_units ELSE 0 END) AS calls
         FROM facts GROUP BY GROUPING SETS ((period),()) ORDER BY period NULLS LAST
     """,
         (
@@ -158,7 +169,10 @@ def statistics(
     for row in rows:
         item = dict(row)
         complete = not (
-            item["unknown_cost_count"] or item["unknown_revenue_count"] or item["pending_count"]
+            item["unknown_cost_count"]
+            or item["unknown_revenue_count"]
+            or item["pending_count"]
+            or (user_id is not None and item["shared_collection_charge_count"])
         )
         revenue = item["known_revenue_fen"] or 0
         cost = item["known_cost_fen"] or 0
@@ -176,5 +190,6 @@ def statistics(
         "end": end,
         "totals": totals,
         "periods": items,
-        "basis": "请求结算归属周期；未结算请求按受理时间列示。成本或收入证据未齐时利润待核对。",
+        "basis": "请求结算归属周期；未结算请求按受理时间列示。成本或收入证据未齐时利润待核对。"
+        "共享采集成本只记在平台请求，筛选单个客户时公共成本未分摊，请以采集批次核算利润。",
     }

@@ -10,7 +10,30 @@
 
 from __future__ import annotations
 
+import json
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.db_portable import BusinessConnection
 from app.viral_tikhub import PLATFORM_DOUYIN, PLATFORM_WECHAT
+
+
+class ViralKeywordConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    platform: Literal["douyin", "wechat_channels"]
+    category: str = Field(min_length=1, max_length=32)
+    keyword: str = Field(min_length=1, max_length=80)
+
+
+def configured_viral_keywords(conn: BusinessConnection) -> list[ViralKeywordConfig]:
+    row = conn.execute("SELECT keywords_json FROM viral_runtime_controls WHERE id=1").fetchone()
+    return [ViralKeywordConfig.model_validate(item) for item in json.loads(row[0])] if row else []
+
+
+def configured_viral_categories(conn: BusinessConnection) -> list[str]:
+    return list(dict.fromkeys(item.category for item in configured_viral_keywords(conn)))
+
 
 VIRAL_CATEGORIES: dict[str, dict[str, str]] = {
     "建房预算": {"douyin": "自建房预算", "wechat_channels": "建房预算"},

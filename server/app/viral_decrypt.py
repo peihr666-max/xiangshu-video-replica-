@@ -13,6 +13,7 @@ golden 常量 mix 4 次后做两轮 randinit，词按索引逆序消费、每词
 from __future__ import annotations
 
 import struct
+from collections.abc import Iterable, Iterator
 
 KEYSTREAM_SIZE = 131_072
 _ISAAC64_MASK = (1 << 64) - 1
@@ -153,3 +154,23 @@ def decrypt_head(head: bytes, decode_key: str | int) -> bytes:
     for index, byte in enumerate(stream):
         decrypted[index] ^= byte
     return bytes(decrypted)
+
+
+def decrypt_chunks(chunks: Iterable[bytes], decode_key: str | int) -> Iterator[bytes]:
+    """Buffer only the encrypted prefix; the remainder passes through unchanged."""
+    head = bytearray()
+    complete = False
+    for chunk in chunks:
+        if complete:
+            yield chunk
+            continue
+        take = min(KEYSTREAM_SIZE - len(head), len(chunk))
+        head.extend(chunk[:take])
+        if len(head) == KEYSTREAM_SIZE:
+            yield decrypt_head(bytes(head), decode_key)
+            head.clear()
+            complete = True
+            if take < len(chunk):
+                yield chunk[take:]
+    if head:
+        yield decrypt_head(bytes(head), decode_key)

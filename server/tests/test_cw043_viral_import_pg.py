@@ -62,6 +62,349 @@ from app.viral_import import (
 
 CW043_VIRAL_IMPORT_TEST_DB = "cw043_viral_import_test"
 
+
+def test_shared_media_preparation_cross_connection_cache(pg_state: str, tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from app.storage import FakeStorageAdapter
+    from app.viral_media_preparation import ViralMediaPreparation
+
+    _exec(pg_state, "DELETE FROM viral_media_preparations")
+    storage = FakeStorageAdapter(provider="cos", bucket="shared")
+    started, release = Event(), Event()
+    calls = []
+
+    def prepare(key, check):
+        calls.append(key)
+        started.set()
+        assert release.wait(5)
+        check()
+        return storage.put_object(key, b"video", content_type="video/mp4")
+
+    def fetch():
+        return ViralMediaPreparation(storage=storage, poll_seconds=0.01).fetch(
+            platform="wechat_channels", video_id="same-video", kind="video", prepare=prepare
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(fetch)
+        assert started.wait(5)
+        second = pool.submit(fetch)
+        release.set()
+        a, b = first.result(), second.result()
+    assert len(calls) == 1
+    assert a[0].uri == b[0].uri
+    assert sorted([a[1], b[1]]) == [False, True]
+    row = _rows(pg_state, "SELECT * FROM viral_media_preparations")[0]
+    assert row["status"] == "SUCCEEDED"
+    assert row["storage_uri"] == a[0].uri
+
+
+@pytest.mark.parametrize("stage", ["upload", "publish"])
+def test_expired_shared_attempt_cannot_publish_or_delete_successor(pg_state, stage):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from app.storage import FakeStorageAdapter
+    from app.viral_media_preparation import ViralMediaLeaseLost, ViralMediaPreparation
+
+    _exec(pg_state, "DELETE FROM viral_media_preparations")
+    storage = FakeStorageAdapter(provider="cos", bucket="shared")
+    old = ViralMediaPreparation(storage=storage)
+    paused, release = Event(), Event()
+    old_keys = []
+
+    def prepare_old(key, check):
+        old_keys.append(key)
+        stored = storage.put_object(key, b"old-video", content_type="video/mp4")
+        if stage == "upload":
+            paused.set()
+            assert release.wait(5)
+        return stored
+
+    publish = old._publish
+
+    def pause_publish(lease, stored):
+        paused.set()
+        assert release.wait(5)
+        publish(lease, stored)
+
+    if stage == "publish":
+        old._publish = pause_publish
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(
+            old.fetch,
+            platform="wechat_channels",
+            video_id="lease-video",
+            kind="video",
+            prepare=prepare_old,
+        )
+        assert paused.wait(5)
+        _exec(pg_state, "UPDATE viral_media_preparations SET locked_until='2020-01-01 00:00:00'")
+        newer, hit = ViralMediaPreparation(storage=storage).fetch(
+            platform="wechat_channels",
+            video_id="lease-video",
+            kind="video",
+            prepare=lambda key, check: storage.put_object(
+                key, b"new-video", content_type="video/mp4"
+            ),
+        )
+        release.set()
+        with pytest.raises(ViralMediaLeaseLost):
+            future.result()
+    assert not hit
+    assert newer.key != old_keys[0]
+    assert storage.get_object(newer.key) == b"new-video"
+    row = _rows(pg_state, "SELECT * FROM viral_media_preparations")[0]
+    assert row["status"] == "SUCCEEDED" and row["storage_uri"] == newer.uri
+    assert row["attempt"] == 2
+
+
+def test_preview_and_import_share_media_but_keep_private_attempt_copies(pg_state, monkeypatch):
+    from test_viral_media import _video
+
+    from app import viral_media
+    from app.storage import FakeStorageAdapter
+    from app.viral_import import (
+        ViralImportWork,
+        discard_viral_import_outcome,
+        perform_viral_import_task,
+    )
+
+    _exec(pg_state, "DELETE FROM viral_media_preparations")
+    storage = FakeStorageAdapter(provider="cos", bucket="shared")
+    video = _video("douyin", _playback_version=1)
+    calls = []
+
+    def stream(self, url):
+        calls.append(url)
+        yield b"\x00\x00\x00\x18ftypisom" + b"video"
+
+    monkeypatch.setattr(viral_media.UrlFetcher, "iter_fetch", stream)
+    preview = viral_media.ViralMediaPipeline(client=None, storage=storage, shared=True).fetch(
+        video, prefer="video"
+    )
+
+    def work(owner, attempt):
+        return ViralImportWork(
+            lease=ViralImportLease(
+                id=f"task-{owner}",
+                worker_id=f"worker-{attempt}",
+                owner_user_id=owner,
+                project_id=f"project-{owner}",
+                platform=video.platform,
+                video_id=video.video_id,
+                purpose="replica",
+                attempt=attempt,
+            ),
+            video=video,
+            client=None,
+            storage=storage,
+            prefer="video",
+        )
+
+    old = perform_viral_import_task(work("u1", 1))
+    new = perform_viral_import_task(work("u1", 2))
+    other = perform_viral_import_task(work("u2", 1))
+    discard_viral_import_outcome(storage, outcome=old, actor_id="u1")
+    assert len(calls) == 1
+    assert new.stored.key != old.stored.key != other.stored.key
+    assert storage.head_object(new.stored.key) and storage.head_object(other.stored.key)
+    assert (
+        _rows(pg_state, "SELECT storage_uri FROM viral_media_preparations")[0]["storage_uri"]
+        == preview.storage_uri
+    )
+
+
+def test_failed_project_copy_does_not_invalidate_shared_media(pg_state, monkeypatch):
+    from test_viral_media import _video
+
+    from app import viral_media
+    from app.storage import FakeStorageAdapter
+    from app.viral_import import ViralImportWork, perform_viral_import_task
+
+    _exec(pg_state, "DELETE FROM viral_media_preparations")
+
+    class BrokenCopy(FakeStorageAdapter):
+        def copy_object(self, source_key, destination_key):
+            raise RuntimeError("project storage copy failed")
+
+    storage = BrokenCopy(provider="cos", bucket="shared")
+    video = _video("douyin", _playback_version=1)
+    calls = []
+
+    def stream(self, url):
+        calls.append(url)
+        yield b"\x00\x00\x00\x18ftypisom"
+
+    monkeypatch.setattr(viral_media.UrlFetcher, "iter_fetch", stream)
+    work = ViralImportWork(
+        lease=ViralImportLease(
+            id="copy-fails",
+            worker_id="worker",
+            owner_user_id="u1",
+            project_id="project",
+            platform=video.platform,
+            video_id=video.video_id,
+            purpose="replica",
+            attempt=1,
+        ),
+        video=video,
+        client=None,
+        storage=storage,
+        prefer="video",
+    )
+    viral_media.ViralMediaPipeline(client=None, storage=storage, shared=True).fetch(
+        video, prefer="video"
+    )
+    with pytest.raises(RuntimeError, match="copy failed"):
+        perform_viral_import_task(work)
+    cached = viral_media.ViralMediaPipeline(client=None, storage=storage, shared=True).fetch(
+        video, prefer="video"
+    )
+    assert cached.cache_hit and len(calls) == 1
+
+
+def test_changed_storage_namespace_and_missing_object_prepare_again(pg_state):
+    from app.storage import FakeStorageAdapter
+    from app.viral_media_preparation import ViralMediaPreparation
+
+    _exec(pg_state, "DELETE FROM viral_media_preparations")
+    storages = [
+        FakeStorageAdapter(provider="cos", bucket="shared", key_prefix=prefix)
+        for prefix in ("first", "second")
+    ]
+    results = []
+    for storage in storages:
+        coordinator = ViralMediaPreparation(storage=storage)
+
+        def prepare(key, check):
+            return storage.put_object(key, b"video", content_type="video/mp4")
+
+        first, hit = coordinator.fetch(
+            platform="wechat_channels", video_id="scope", kind="video", prepare=prepare
+        )
+        assert not hit
+        storage.delete_object(first.key)
+        recovered, hit = coordinator.fetch(
+            platform="wechat_channels", video_id="scope", kind="video", prepare=prepare
+        )
+        assert not hit and recovered.key != first.key
+        results.append(recovered)
+    assert results[0].uri != results[1].uri
+
+
+def test_waiter_does_not_reclaim_when_running_snapshot_becomes_succeeded(pg_state, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from app.storage import FakeStorageAdapter
+    from app.viral_media_preparation import ViralMediaPreparation
+
+    _exec(pg_state, "DELETE FROM viral_media_preparations")
+    storage = FakeStorageAdapter(provider="cos", bucket="shared")
+    started, release = Event(), Event()
+    owner, waiter = ViralMediaPreparation(storage=storage), ViralMediaPreparation(storage=storage)
+
+    def prepare(key, check):
+        started.set()
+        assert release.wait(5)
+        return storage.put_object(key, b"video", content_type="video/mp4")
+
+    cached = waiter._cached
+
+    def interleave(row, kind):
+        if row["status"] == "RUNNING":
+            release.set()
+            future.result(timeout=5)
+            return None
+        return cached(row, kind)
+
+    monkeypatch.setattr(waiter, "_cached", interleave)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(
+            owner.fetch, platform="wechat_channels", video_id="race", kind="video", prepare=prepare
+        )
+        assert started.wait(5)
+        result, hit = waiter.fetch(
+            platform="wechat_channels",
+            video_id="race",
+            kind="video",
+            prepare=lambda key, check: pytest.fail("completed media downloaded again"),
+        )
+    assert hit and result.uri == future.result()[0].uri
+    assert _rows(pg_state, "SELECT attempt FROM viral_media_preparations")[0]["attempt"] == 1
+
+
+@pytest.mark.parametrize("interval_days", [1, 7])
+def test_schedule_is_unique_and_does_not_repeat_until_due(pg_state, interval_days):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.viral_collection import enqueue_due_viral_collections
+
+    _exec(pg_state, "DELETE FROM viral_refresh_tasks")
+    _exec(pg_state, "DELETE FROM viral_runtime_controls")
+    keywords = [{"platform": "wechat_channels", "category": "预算", "keyword": "建房预算"}]
+    _exec(
+        pg_state,
+        "INSERT INTO viral_runtime_controls"
+        "(id,collection_enabled,import_enabled,keywords_json,collection_interval_days) "
+        "VALUES(1,1,1,%s,%s)",
+        (json.dumps(keywords), interval_days),
+    )
+
+    def tick():
+        with pg_transaction() as raw:
+            enqueue_due_viral_collections(BusinessConnection.postgres(raw))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _: tick(), range(2)))
+    assert len(_rows(pg_state, "SELECT * FROM viral_refresh_tasks")) == 1
+    assert _rows(
+        pg_state,
+        f"SELECT next_collection_at BETWEEN now()+interval '{interval_days * 24 - 1} hours' "
+        f"AND now()+interval '{interval_days * 24 + 1} hours' AS future "
+        "FROM viral_runtime_controls",
+    )[0]["future"]
+    _exec(pg_state, "UPDATE viral_refresh_tasks SET status='SUCCEEDED'")
+    tick()
+    assert _rows(pg_state, "SELECT status FROM viral_refresh_tasks")[0]["status"] == "SUCCEEDED"
+    _exec(
+        pg_state, "UPDATE viral_runtime_controls SET next_collection_at=now()-interval '1 minute'"
+    )
+    tick()
+    assert _rows(pg_state, "SELECT status FROM viral_refresh_tasks")[0]["status"] == "PENDING"
+    _exec(
+        pg_state,
+        "UPDATE viral_refresh_tasks SET status='FAILED',retryable=1,retry_count=2,"
+        "updated_at='2020-01-01 00:00:00'",
+    )
+    tick()
+    assert _rows(pg_state, "SELECT status FROM viral_refresh_tasks")[0]["status"] == "FAILED"
+    _exec(pg_state, "DELETE FROM viral_runtime_controls")
+
+
+def test_customer_cached_only_path_never_starts_preparation(pg_state, monkeypatch):
+    from test_viral_media import _video
+
+    from app.storage import FakeStorageAdapter
+    from app.viral_media import UrlFetcher, ViralMediaPipeline
+    from app.viral_media_preparation import ViralMediaBusy
+
+    _exec(pg_state, "DELETE FROM viral_media_preparations")
+    storage = FakeStorageAdapter(provider="cos", bucket="shared")
+    monkeypatch.setattr(
+        UrlFetcher, "iter_fetch", lambda *args: pytest.fail("customer click fetched source")
+    )
+    with pytest.raises(ViralMediaBusy):
+        ViralMediaPipeline(client=None, storage=storage, shared=True, cached_only=True).fetch(
+            _video("douyin"), prefer="video"
+        )
+    assert _rows(pg_state, "SELECT * FROM viral_media_preparations") == []
+
+
 # 固定“已过期”时刻：acquire 用 TEXT 词法比较 locked_until <= now_text，
 # 该值恒小于任何真实 now（2026+），确定性触发回收且与会话 TimeZone 无关。
 _EXPIRED = "2020-01-01 00:00:00"
@@ -206,6 +549,46 @@ def _acquire(worker_id: str) -> ViralImportLease | None:
 def _fail(lease: ViralImportLease, cause: Exception) -> None:
     with pg_transaction() as raw:
         fail_viral_import_task(BusinessConnection.postgres(raw), lease=lease, cause=cause)
+
+
+def test_import_commit_acknowledgement_loss_preserves_published_project_copy(pg_state, monkeypatch):
+    from contextlib import contextmanager
+
+    from app import generation_worker as worker
+    from app.storage import FakeStorageAdapter
+    from app.viral_import import ViralImportOutcome
+
+    _seed_base(pg_state)
+    _seed_import_task(pg_state, task_id="commit-receipt")
+    storage = FakeStorageAdapter(provider="cos", bucket="project")
+    stored = storage.put_object("project/attempt-1.mp4", b"project-video", content_type="video/mp4")
+    outcome = ViralImportOutcome(stored=stored, media_kind="video", duration_seconds=5)
+    monkeypatch.setattr(worker, "prepare_viral_import_task", lambda *args, **kwargs: object())
+    monkeypatch.setattr(worker, "perform_viral_import_task", lambda *_: outcome)
+    original = worker.pg_transaction
+    lost = False
+
+    @contextmanager
+    def commit_then_disconnect():
+        nonlocal lost
+        with original() as raw:
+            yield raw
+            published = (
+                raw.execute(
+                    "SELECT status FROM viral_import_tasks WHERE id='commit-receipt'"
+                ).fetchone()[0]
+                == "SUCCEEDED"
+            )
+        if published and not lost:
+            lost = True
+            raise OSError("committed transaction acknowledgement lost")
+
+    monkeypatch.setattr(worker, "pg_transaction", commit_then_disconnect)
+    assert worker.run_pg_worker_once(worker_id="commit-worker", storage=storage, max_tasks=1) == 1
+    assert lost
+    assert _import_row(pg_state, "commit-receipt")["status"] == "SUCCEEDED"
+    assert storage.get_object(stored.key) == b"project-video"
+    assert _one(pg_state, "SELECT count(*) FROM assets WHERE storage_uri=%s", (stored.uri,)) == 1
 
 
 # ===========================================================================

@@ -1271,11 +1271,10 @@ def test_pg_lane_has_no_mid_transaction_commit_call_sites() -> None:
 def test_pool_borrow_autocommit_escape_hatch_stays_confined() -> None:
     """CW-055：唯一绕开 pg_transaction() 的池借用点必须可枚举。
 
-    viral_routes 的刷新 lane 直接 pool.connection() 并置 autocommit=True
-    （只读刷新，无事务可中途提交），是有意的例外。但例外必须有限：
-    新增任何 .raw.autocommit = True 都会让本用例失败，逼出显式评审。
+    定时采集已将旧 viral_routes 刷新 lane 改为独立短事务；不再保留
+    autocommit 例外。新增任何 .raw.autocommit = True 都会让本用例失败。
     """
     files = {site.split(":", 1)[0] for site in _scan_app_sources(_AUTOCOMMIT_PATTERN)}
-    assert files == {"viral_routes.py"}, (
+    assert files == set(), (
         f"autocommit 逃生口集合发生变化: {sorted(files)}（需 CW-055 重新评审提交边界）"
     )

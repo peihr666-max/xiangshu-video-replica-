@@ -29,6 +29,11 @@ from app.settings import SettingsRepository, SettingsUnavailableError
 
 logger = logging.getLogger(__name__)
 
+
+class ConfirmedRewriteResponseError(HTTPException):
+    """A received supplier response is billable even when its text cannot be delivered."""
+
+
 # DeepSeek 官方 OpenAI 兼容端点；config.base_url 可覆盖（例如代理/私有网关）。
 DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
@@ -831,7 +836,9 @@ def fail_script_rewrite_task(
         return
     from app.usage_billing import complete_source_attempt, finish_source
 
-    complete_source_attempt(conn, lease.id, usage=None)
+    complete_source_attempt(
+        conn, lease.id, usage=1 if isinstance(cause, ConfirmedRewriteResponseError) else None
+    )
     finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 
@@ -993,7 +1000,7 @@ def _request_deepseek(
             raise TypeError("rewrite content must be text")
         if choice.get("finish_reason") == "length":
             logger.warning("DeepSeek rewrite reached the output limit")
-            raise HTTPException(
+            raise ConfirmedRewriteResponseError(
                 status_code=502,
                 detail={
                     "code": "DEEPSEEK_RESPONSE_TRUNCATED",
@@ -1002,7 +1009,7 @@ def _request_deepseek(
             )
         content = content.strip()
     except (KeyError, IndexError, TypeError) as exc:
-        raise HTTPException(
+        raise ConfirmedRewriteResponseError(
             status_code=502,
             detail={
                 "code": "DEEPSEEK_RESPONSE_INVALID",
@@ -1010,7 +1017,7 @@ def _request_deepseek(
             },
         ) from exc
     if not content:
-        raise HTTPException(
+        raise ConfirmedRewriteResponseError(
             status_code=502,
             detail={
                 "code": "DEEPSEEK_RESPONSE_EMPTY",

@@ -145,11 +145,13 @@ class ViralVideo:
     native: dict[str, Any] = field(default_factory=dict)
     # 封面落主存储后的对象 key；存在时客户端下发自有稳定地址。
     cover_key: str | None = None
+    homepage_featured: bool = False
 
     def to_client_dict(self) -> dict[str, Any]:
         return {
             "platform": self.platform,
             "videoId": self.video_id,
+            "homepageFeatured": self.homepage_featured,
             "category": self.category,
             "title": self.title,
             "sourceDescription": str(self.native.get("source_description") or "") or None,

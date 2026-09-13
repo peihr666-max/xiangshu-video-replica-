@@ -41,7 +41,15 @@ NGINX = REPO_ROOT / "deploy" / "nginx" / "customer.conf.example"
 # The closed inventory of the formal delivery package.
 PACKAGE_FILES = ("compose.yaml", "README.md", "bootstrap-base-image.sh")
 
-ROLLOUT_SERVICES = ("api-1", "api-2", "worker-1", "worker-2", "worker-3", "worker-4")
+ROLLOUT_SERVICES = (
+    "api-1",
+    "api-2",
+    "worker-1",
+    "worker-2",
+    "worker-3",
+    "worker-4",
+    "worker-viral",
+)
 
 # Fail-fast matrix: dependency -> (executable acceptance target, marker).
 FAIL_FAST_MATRIX = {
@@ -112,7 +120,7 @@ def test_connection_pool_budget_fits_the_database_limit() -> None:
     default_max = int(re.search(r"DEFAULT_POOL_MAX = (\d+)", text).group(1))
     assert default_max == 8
     processes = sum(1 for service in ROLLOUT_SERVICES if service.startswith(("api", "worker")))
-    assert processes == 6
+    assert processes == 7
     budget = processes * default_max
     compose = _compose_text()
     max_connections = int(re.search(r"max_connections=(\d+)", compose).group(1))

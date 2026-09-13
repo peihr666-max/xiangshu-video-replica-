@@ -1,17 +1,9 @@
-"""爆款视频媒体管线（C4 重启）.
+"""爆款视频共享媒体管线。
 
-把爆款视频的媒体文件取回并落到主存储（COS / 本地盘），供提取文案、
-视频复刻与详情页播放复用：
-
-- 抖音：音频优先（``music.play_url`` 原声 mp3），无音频直链时取最低
-  分辨率 MP4（bit_rate 最低档，客户端层已选好）。
-- 视频号：无音频直链 → 详情接口取 ``full_url`` + ``decode_key`` →
-  内存解密（仅前 128 KiB 变换，其余透传，不落盘）。
-
-对象 key 确定性命名（``viral/{platform}/{video_id}.{mp3|mp4}``）：
-同平台同视频只拉取/解密一次，重复请求命中已存对象后直接签名返回。
-调用方须传入**新鲜**的 ``ViralVideo``（视频号 exportId 会过期，路由层
-负责在缓存过期时重新搜索刷新）。
+每周采集或用户主动解析链接时，通过服务端临时文件分块下载，视频号仅解密
+前 128 KiB，然后归档到主存储。PG 租约协调跨进程的不可变对象发布。
+列表播放和项目导入使用 cached_only，只读取已归档对象并生成新签名。
+项目持有独立副本；临时文件退出即清理，共享云对象不自动删除。
 """
 
 from __future__ import annotations
@@ -23,15 +15,19 @@ import json
 import logging
 import socket
 import ssl
+import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import timedelta
-from typing import Protocol
+from pathlib import Path
+from typing import Protocol, cast
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 
-from app.storage import DownloadIntent, StoredObject
-from app.viral_decrypt import decrypt_head, is_encrypted_mp4
+from app.storage import DownloadIntent, StorageAdapter, StoredObject
+from app.viral_decrypt import decrypt_chunks, is_encrypted_mp4
+from app.viral_media_preparation import ViralMediaPreparation
 from app.viral_tikhub import (
     PLATFORM_DOUYIN,
     PLATFORM_WECHAT,
@@ -56,6 +52,16 @@ _MAX_DNS_RESPONSE_BYTES = 16 * 1024
 
 logger = logging.getLogger(__name__)
 _MEDIA_LOCKS = tuple(threading.Lock() for _ in range(32))
+
+
+@contextmanager
+def _closing_chunks(chunks: Iterator[bytes]) -> Iterator[Iterator[bytes]]:
+    try:
+        yield chunks
+    finally:
+        close = getattr(chunks, "close", None)
+        if callable(close):
+            close()
 
 
 class ViralMediaError(ViralSourceError):
@@ -108,7 +114,13 @@ class ViralStorage(Protocol):
 
     def put_object(self, key: str, content: bytes, *, content_type: str) -> StoredObject: ...
 
+    def put_file(self, key: str, path: Path, *, content_type: str) -> StoredObject: ...
+
     def get_object(self, key: str) -> bytes: ...
+
+    def iter_object(
+        self, key: str, *, start: int = 0, end: int | None = None, chunk_size: int = 1024 * 1024
+    ) -> Iterator[bytes]: ...
 
     def create_download_intent(
         self, key: str, *, expires_in: timedelta, can_read: bool
@@ -139,6 +151,10 @@ class UrlFetcher:
         self._connection_factory = connection_factory or _pinned_connection
 
     def fetch(self, url: str) -> bytes:
+        return b"".join(self.iter_fetch(url))
+
+    def iter_fetch(self, url: str) -> Iterator[bytes]:
+        self.last_content_type = None
         current_url = url
         for _redirect in range(6):
             scheme, hostname, port, connect_ip = _resolve_public_http_url(current_url)
@@ -170,20 +186,24 @@ class UrlFetcher:
                     continue
                 if response.status < 200 or response.status >= 300:
                     raise ViralMediaError("媒体地址返回异常状态")
-                return self._read_response(response)
+                yield from self._iter_response(response)
+                return
             finally:
                 connection.close()
         raise ViralMediaError("媒体地址重定向次数过多")
 
     def _read_response(self, response: http.client.HTTPResponse) -> bytes:
+        return b"".join(self._iter_response(response))
+
+    def _iter_response(self, response: http.client.HTTPResponse) -> Iterator[bytes]:
         self.last_content_type = response.headers.get("Content-Type")
         declared = response.headers.get("Content-Length")
         try:
-            if declared and int(declared) > self.max_bytes:
+            declared_size = int(declared) if declared is not None else None
+            if declared_size is not None and (declared_size < 0 or declared_size > self.max_bytes):
                 raise ViralMediaError("媒体文件超出可下载大小上限")
         except ValueError as exc:
             raise ViralMediaError("媒体地址返回无效文件长度") from exc
-        chunks: list[bytes] = []
         total = 0
         while True:
             chunk = response.read(1024 * 1024)
@@ -192,8 +212,11 @@ class UrlFetcher:
             total += len(chunk)
             if total > self.max_bytes:
                 raise ViralMediaError("媒体文件超出可下载大小上限")
-            chunks.append(chunk)
-        return b"".join(chunks)
+            yield chunk
+        if declared_size is not None and total != declared_size:
+            raise ViralMediaError("媒体地址返回不完整文件")
+        if total == 0:
+            raise ViralMediaError("媒体地址返回空文件")
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -409,45 +432,128 @@ class ViralMediaPipeline:
         client: ViralSourceClient | None,
         storage: ViralStorage,
         fetcher: UrlFetcher | None = None,
-        validator: Callable[[bytes, str, str | None], None] | None = None,
+        validator: Callable[[Path, str, str | None], None] | None = None,
+        shared: bool = False,
+        cached_only: bool = False,
+        refresh_video: Callable[[ViralVideo], ViralVideo] | None = None,
+        cancellation_check: Callable[[], None] | None = None,
     ) -> None:
         self._client = client
         self._storage = storage
         self._fetcher = fetcher or UrlFetcher()
         self._validator = validator
+        self._shared = shared
+        self._cached_only = cached_only
+        self._refresh_video = refresh_video
+        self._cancellation_check = cancellation_check or (lambda: None)
         self.detail: WechatVideoDetail | None = None
 
     def fetch(self, video: ViralVideo, *, prefer: str | None = None) -> ViralMediaResult:
         kind, content_type = self._resolve_kind(video, prefer)
         key = viral_media_key(video.platform, video.video_id, kind)
-        # 有界锁槽：同一文件的并发播放等待首份副本，不重复付费、下载或覆盖。
+        self.detail = None
+
+        def prepare(destination: str, check: Callable[[], None]) -> StoredObject:
+            def combined_check() -> None:
+                check()
+                self._cancellation_check()
+
+            combined_check()
+            current = self._refresh_video(video) if self._refresh_video is not None else video
+            combined_check()
+            return self._download_to_storage(
+                current, kind, destination, content_type, combined_check
+            )
+
+        if self._shared:
+            coordinator = ViralMediaPreparation(storage=cast(StorageAdapter, self._storage))
+            if self._cached_only:
+                stored = coordinator.cached(
+                    platform=video.platform, video_id=video.video_id, kind=kind
+                )
+                if stored is None:
+                    from app.viral_media_preparation import ViralMediaBusy
+
+                    raise ViralMediaBusy("该视频的云端素材尚未准备完成，请稍后重试。")
+                cache_hit = True
+            else:
+                stored, cache_hit = coordinator.fetch(
+                    platform=video.platform, video_id=video.video_id, kind=kind, prepare=prepare
+                )
+            if cache_hit:
+                self._validate_cached(stored.key, kind, stored.content_type)
+            return self._result(stored.key, stored, kind, stored.content_type, cache_hit=cache_hit)
+        # Isolated pipeline callers retain bounded local locking; every customer
+        # entry point explicitly uses shared PostgreSQL preparation above.
         with _MEDIA_LOCKS[hash(key) % len(_MEDIA_LOCKS)]:
-            self.detail = None
             existing = self._storage.head_object(key)
             if existing is not None:
-                if self._validator is not None:
-                    self._validator(self._storage.get_object(key), kind, existing.content_type)
+                self._validate_cached(key, kind, existing.content_type)
                 return self._result(key, existing, kind, content_type, cache_hit=True)
-            content = self._download_content(video, kind)
-            if kind == "audio" and len(content) >= 12 and content[4:8] == b"ftyp":
-                # Keep the established cache key, but retain the real container
-                # type so imports/transcription do not label M4A bytes as MP3.
+            stored = prepare(key, lambda: None)
+            return self._result(key, stored, kind, content_type, cache_hit=False)
+
+    def _validate_cached(self, key: str, kind: str, content_type: str) -> None:
+        if self._validator is None:
+            return
+        with tempfile.TemporaryDirectory(prefix="viral-media-") as directory:
+            path = Path(directory) / "source"
+            with (
+                _closing_chunks(self._storage.iter_object(key)) as chunks,
+                path.open("wb") as output,
+            ):
+                for chunk in chunks:
+                    output.write(chunk)
+            self._validator(path, kind, content_type)
+
+    def _download_to_storage(
+        self, video: ViralVideo, kind: str, key: str, content_type: str, check: Callable[[], None]
+    ) -> StoredObject:
+        decode_key: str | None = None
+        if video.platform == PLATFORM_WECHAT:
+            detail = self._wechat_detail(video)
+            self.detail = detail
+            url, decode_key = detail.full_url, detail.decode_key
+            if not url or not decode_key:
+                raise ViralMediaError("该视频素材暂时无法获取，请稍后重试")
+        else:
+            url = video.audio_url if kind == "audio" else video.play_url
+        if not url:
+            raise ViralMediaError("该视频暂无可用的媒体地址")
+        with tempfile.TemporaryDirectory(prefix="viral-media-") as directory:
+            path = Path(directory) / "source"
+            head = bytearray()
+            try:
+                with (
+                    _closing_chunks(self._fetcher.iter_fetch(url)) as source,
+                    path.open("wb") as output,
+                ):
+                    chunks = decrypt_chunks(source, decode_key) if decode_key else source
+                    for chunk in chunks:
+                        check()
+                        if len(head) < 12:
+                            head.extend(chunk[: 12 - len(head)])
+                        output.write(chunk)
+            except ViralSourceError:
+                raise
+            except Exception as exc:
+                logger.warning("Viral media download failed: %s", type(exc).__name__)
+                raise ViralMediaError("该视频素材暂时无法获取，请稍后重试") from exc
+            if not head or (kind == "video" and is_encrypted_mp4(bytes(head))):
+                raise ViralMediaError("该视频素材暂时无法获取，请稍后重试")
+            if kind == "audio" and head[4:8] == b"ftyp":
                 content_type = "audio/mp4"
             if self._validator is not None:
-                self._validator(
-                    content,
-                    kind,
-                    getattr(self._fetcher, "last_content_type", None),
-                )
-            stored = self._storage.put_object(key, content, content_type=content_type)
-            return self._result(key, stored, kind, content_type, cache_hit=False)
+                self._validator(path, kind, self._fetcher.last_content_type)
+            check()
+            return self._storage.put_file(key, path, content_type=content_type)
 
     # -- 内部 -----------------------------------------------------------------
 
     def _resolve_kind(self, video: ViralVideo, prefer: str | None = None) -> tuple[str, str]:
         if video.platform in (PLATFORM_DOUYIN, PLATFORM_XIAOHONGSHU):
             if prefer == "video":
-                if video.play_url:
+                if video.play_url or self._cached_only:
                     return "video", "video/mp4"
                 raise ViralMediaError("该视频暂无可用的媒体地址")
             if video.audio_url:
@@ -459,19 +565,6 @@ class ViralMediaPipeline:
             return "video", "video/mp4"
         raise ViralMediaError("暂不支持的视频平台")
 
-    def _download_content(self, video: ViralVideo, kind: str) -> bytes:
-        if video.platform in (PLATFORM_DOUYIN, PLATFORM_XIAOHONGSHU):
-            url = video.audio_url if kind == "audio" else video.play_url
-            if not url:
-                raise ViralMediaError("该视频暂无可用的媒体地址")
-            content = _fetch_or_raise(self._fetcher, url)
-            if kind == "video" and is_encrypted_mp4(content[:8]):
-                raise ViralMediaError("该视频素材暂时无法获取，请稍后重试")
-            return content
-        if video.platform == PLATFORM_WECHAT:
-            return self._download_wechat_video(video)
-        raise ViralMediaError("暂不支持的视频平台")
-
     def _wechat_detail(self, video: ViralVideo) -> WechatVideoDetail:
         export_id = str(video.native.get("export_id") or "")
         if not export_id or self._client is None:
@@ -481,19 +574,6 @@ class ViralMediaPipeline:
             return self._client.wechat_video_detail(export_id=export_id, object_nonce_id=nonce)
         except ViralSourceError as exc:
             raise ViralMediaError("该视频素材暂时无法获取，请稍后重试") from exc
-
-    def _download_wechat_video(self, video: ViralVideo) -> bytes:
-        detail = self._wechat_detail(video)
-        self.detail = detail
-        if not detail.full_url or not detail.decode_key:
-            raise ViralMediaError("该视频素材暂时无法获取，请稍后重试")
-        content = _fetch_or_raise(self._fetcher, detail.full_url)
-        if is_encrypted_mp4(content[:8]):
-            content = decrypt_head(content, detail.decode_key)
-        if is_encrypted_mp4(content[:8]):
-            # 解密后仍不是标准 MP4：decode_key 不匹配或文件异常。
-            raise ViralMediaError("该视频素材暂时无法获取，请稍后重试")
-        return content
 
     def _result(
         self,

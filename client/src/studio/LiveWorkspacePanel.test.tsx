@@ -86,7 +86,7 @@ it("分析面板会把 Studio 已选 IP 传给真实分析工作区", () => {
 // openLive("wallet") 汇入本组件的 panel="wallet" 分支。历史缺陷是 CustomerWorkspace
 // 只传 customerAccount，而钱包分支旧代码仅判断 customerWallet，导致客户落到内部
 // WalletPanel（「内部价 / 条」泄漏）。以下用真实挂载 + 生产响应形状锁定修复：
-// 客户会话下必须挂 CustomerWalletPanel（「秒 / 额度」计价、客户 lane），无会话时
+// 客户会话下必须挂 CustomerWalletPanel（积分余额、客户 lane），无会话时
 // 才回落内部 WalletPanel，且充值只走 POST /api/customer/recharge-orders。
 // ---------------------------------------------------------------------------
 
@@ -97,6 +97,7 @@ const sessionTokenText = "live-workspace-customer-session-token";
 const customerWalletSnapshot = {
   available_credits: 12,
   reserved_credits: 2,
+  points_per_yuan: 100,
   internal_unit_price_fen: 1000,
   min_recharge_fen: 10000,
   recharge_step_fen: 1000,
@@ -285,15 +286,15 @@ function renderWalletEntry(
 }
 
 describe("LiveWorkspacePanel 客户钱包入口 (CW-016)", () => {
-  it("客户会话下挂载 CustomerWalletPanel（秒/额度计价），不泄漏内部定价", async () => {
+  it("客户会话下挂载 CustomerWalletPanel（积分计价），不泄漏内部定价", async () => {
     const fetchMock = installWalletFetch();
     renderWalletEntry(fakeCustomerAccount(fakeStore(), vi.fn()));
 
-    // 生产响应形状渲染：余额/计价/流水均以「秒/额度」计。
+    // 积分与视频时长分开显示，充值只按管理员配置的积分换算。
     expect(await screen.findByText("可用额度")).toBeInTheDocument();
-    expect(screen.getByText("12 秒")).toBeInTheDocument();
-    expect(screen.getByText("冻结中 2 秒")).toBeInTheDocument();
-    expect(screen.getByText(/充值换算价.*10元/)).toBeInTheDocument();
+    expect(screen.getByText("12 积分")).toBeInTheDocument();
+    expect(screen.getByText("冻结中 2 积分")).toBeInTheDocument();
+    expect(screen.getByText(/1元 = 100 积分/)).toBeInTheDocument();
     expect(screen.getByText("额度流水")).toBeInTheDocument();
     // 客户专属档位（50 元）：内部 WalletPanel 档位从 100 起、无 50。
     expect(

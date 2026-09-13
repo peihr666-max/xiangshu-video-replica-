@@ -13,6 +13,7 @@ import { GenerationRecordsPage } from "./admin/GenerationRecordsPage";
 import { OverviewPage } from "./admin/OverviewPage";
 import { SystemSettingsPage } from "./admin/SystemSettingsPage";
 import { shanghaiDate } from "./admin/ui/vocabulary";
+import { ViralVideosPage } from "./admin/ViralVideosPage";
 import "./admin/admin-login.css";
 import { PageBanner } from "./admin/ui/PageBanner";
 import { TabBar } from "./admin/ui/TabBar";
@@ -64,6 +65,7 @@ export type AdminTab =
   | "funds"
   | "customersMgmt"
   | "generationRecords"
+  | "viralVideos"
   | "auditCenter"
   | "systemSettings";
 
@@ -95,6 +97,11 @@ const tabGroups: Array<{
         label: "生成记录",
         helper: "视频、图片与 AI 评分费用追溯",
       },
+      {
+        id: "viralVideos",
+        label: "爆款视频库",
+        helper: "采集数据、首页展示与删除管理",
+      },
     ],
   },
   {
@@ -116,6 +123,7 @@ const tabPageTitles: Record<AdminTab, string> = {
   funds: "资金流水",
   customersMgmt: "客户管理",
   generationRecords: "用户生成记录",
+  viralVideos: "爆款视频库",
   auditCenter: "审计中心",
   systemSettings: "系统设置",
 };
@@ -127,6 +135,7 @@ const navigationIcons: Record<AdminTab, string> = {
   funds: walletIcon,
   customersMgmt: usersIcon,
   generationRecords: clapperboardIcon,
+  viralVideos: clapperboardIcon,
   auditCenter: shieldIcon,
   systemSettings: settingsIcon,
 };
@@ -798,6 +807,9 @@ export function AdminApp() {
             />
           ) : null}
           {activeTab === "auditCenter" ? <AuditCenterPage /> : null}
+          {activeTab === "viralVideos" ? (
+            <ViralVideosPage readOnly={readOnly} />
+          ) : null}
           {activeTab === "systemSettings" ? (
             <SystemSettingsPage
               readOnly={readOnly}

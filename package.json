@@ -19,6 +19,7 @@
     "dev:publish-worker": "bash scripts/dev-with-pg.sh uv --cache-dir .uv-cache run --project server --locked python -m app.bootstrap && bash scripts/dev-with-pg.sh uv --cache-dir .uv-cache run --project server --locked python -m app.publish_worker",
     "dev:server": "bash scripts/dev-with-pg.sh uv --cache-dir .uv-cache run --project server --locked python -m app.bootstrap && bash scripts/dev-with-pg.sh uv --cache-dir .uv-cache run --project server --locked python -m uvicorn app.main:app --app-dir server --reload --host 127.0.0.1 --port 8000 --no-proxy-headers",
     "dev:worker": "bash scripts/dev-with-pg.sh uv --cache-dir .uv-cache run --project server --locked python -m app.bootstrap && bash scripts/dev-with-pg.sh uv --cache-dir .uv-cache run --project server --locked python -m app.generation_worker",
+    "dev:viral-collection": "bash scripts/dev-with-pg.sh uv --cache-dir .uv-cache run --project server --locked python -m app.bootstrap && bash scripts/dev-with-pg.sh uv --cache-dir .uv-cache run --project server --locked python -m app.generation_worker --viral-collection --idle-seconds 30",
     "format": "npm run format --workspace client && uv --cache-dir .uv-cache run --project server --locked ruff format server",
     "generate:api": "npm run generate:api --workspace client",
     "release:customer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/build-customer-signed-release.ps1",

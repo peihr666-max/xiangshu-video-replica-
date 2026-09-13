@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from collections.abc import Callable
@@ -37,6 +38,18 @@ ASR_PROVIDER_OVERRIDE_ENV = "VIDEO_REPLICA_ASR_PROVIDER"
 
 class AsrProviderError(RuntimeError):
     """Provider-side failure surfaced to the task as a redacted message."""
+
+    def __init__(self, message: str, *, usage_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.usage_seconds = usage_seconds
+
+
+def _confirmed_duration(value: object, *, divisor: float = 1) -> float | None:
+    try:
+        duration = float(str(value)) / divisor
+        return duration if math.isfinite(duration) and duration > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 class AsrSubmissionUncertain(AsrProviderError):
@@ -192,13 +205,13 @@ class DashScopeFunAsr:
             timeout_seconds=DASHSCOPE_TIMEOUT_SECONDS,
         )
         data = self._decode(status, body)
-        text = str(data.get("output", {}).get("text", ""))
-        if not text:
-            raise AsrProviderError("语音转写服务返回空文本")
-        duration = data.get("usage", {}).get("duration")
+        duration = _confirmed_duration(data.get("usage", {}).get("duration"))
+        text = (data.get("output") or {}).get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise AsrProviderError("语音转写服务返回空文本", usage_seconds=duration)
         return TranscriptResult(
-            text=text,
-            duration_sec=float(duration) if duration else None,
+            text=text.strip(),
+            duration_sec=duration,
             language="zh",
         )
 
@@ -302,16 +315,18 @@ class DashScopeFunAsr:
             timeout_seconds=30.0,
         )
         data = self._decode(status, body)
+        duration = _confirmed_duration(
+            (data.get("properties") or {}).get("original_duration_in_milliseconds"), divisor=1000
+        )
         transcripts = data.get("transcripts") or []
         if not transcripts:
-            raise AsrProviderError("语音转写结果缺少转写内容")
-        full_text = str(transcripts[0].get("text", ""))
-        if not full_text:
-            raise AsrProviderError("语音转写返回空文本")
-        duration_ms = (data.get("properties") or {}).get("original_duration_in_milliseconds", 0)
+            raise AsrProviderError("语音转写结果缺少转写内容", usage_seconds=duration)
+        full_text = transcripts[0].get("text") if isinstance(transcripts[0], dict) else None
+        if not isinstance(full_text, str) or not full_text.strip():
+            raise AsrProviderError("语音转写返回空文本", usage_seconds=duration)
         return TranscriptResult(
-            text=full_text,
-            duration_sec=float(duration_ms) / 1000.0 if duration_ms else None,
+            text=full_text.strip(),
+            duration_sec=duration,
             language="zh",
         )
 

@@ -102,6 +102,7 @@ export type StudioPerson = {
   voices: StudioVoice[];
 };
 export type StudioVideo = {
+  homepageFeatured?: boolean;
   id: string;
   title: string;
   author: string;
@@ -173,6 +174,8 @@ export type StudioData = {
   /** 素材库图片（视频生成页首帧/尾帧/参考素材的素材库选择来源）。 */
   materials: StudioAsset[];
   videos: StudioVideo[];
+  /** 独立的人工精选集合，普通榜单/解析结果不能替换它。 */
+  homepageVideos?: StudioVideo[];
   tasks: StudioTask[];
   projects: Project[];
   errors: string[];

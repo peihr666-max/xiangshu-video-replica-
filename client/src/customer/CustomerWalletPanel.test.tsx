@@ -14,6 +14,7 @@ import type { CustomerCredentialStore } from "./useCustomerSession";
 const wallet = {
   available_credits: 12,
   reserved_credits: 2,
+  points_per_yuan: 100,
   internal_unit_price_fen: 1000,
   min_recharge_fen: 10000,
   recharge_step_fen: 1000,
@@ -68,9 +69,9 @@ describe("CustomerWalletPanel", () => {
       "生成单价暂不可用",
     );
     expect(screen.queryByText(/768P 10元/)).not.toBeInTheDocument();
-    expect(screen.getByText(/充值换算价.*10元/)).toBeInTheDocument();
+    expect(screen.getByText("充值换算：1元 = 100 积分")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "充值100元" })).toHaveTextContent(
-      "10 秒",
+      "10000 积分",
     );
   });
 
@@ -149,9 +150,9 @@ describe("CustomerWalletPanel", () => {
       <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
     );
 
-    expect(await screen.findByText(/10元.*\/ 秒/)).toBeInTheDocument();
-    expect(screen.getByText("12 秒")).toBeInTheDocument();
-    expect(screen.getByText("冻结中 2 秒")).toBeInTheDocument();
+    expect(await screen.findByText("12 积分")).toBeInTheDocument();
+    expect(screen.getByText("12 积分")).toBeInTheDocument();
+    expect(screen.getByText("冻结中 2 积分")).toBeInTheDocument();
     expect(screen.getAllByText("充值到账")).toHaveLength(2);
 
     fireEvent.click(screen.getByRole("button", { name: "充值200元" }));
@@ -236,7 +237,7 @@ describe("CustomerWalletPanel", () => {
     render(
       <CustomerWalletPanel store={fakeStore()} onSessionExpired={vi.fn()} />,
     );
-    await screen.findByText(/10元.*\/ 秒/);
+    await screen.findByText("12 积分");
     fireEvent.change(screen.getByLabelText("自定义充值金额（元）"), {
       target: { value: "101" },
     });
@@ -747,7 +748,7 @@ describe("CustomerWalletPanel", () => {
           }),
         );
       });
-      expect(await screen.findByText("+37 秒")).toBeInTheDocument();
+      expect(await screen.findByText("+37 积分")).toBeInTheDocument();
       expect(screen.getByText("关闭订单失败")).toBeInTheDocument();
 
       // Deliver the real polling result after the user operation and ledger.

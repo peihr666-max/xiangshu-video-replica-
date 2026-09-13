@@ -67,6 +67,9 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "billing_attempts",
         "billing_credit_lots",
         "billing_evidence",
+        "viral_collection_batches",
+        "viral_collection_members",
+        "viral_collection_charges",
         "customer_devices",
         "device_pairing_requests",
         "customer_session_state",
@@ -110,6 +113,12 @@ _OPERATION_COST_RATE_SEEDS = (
 # The column-set contract below must exempt these, or the T07 import would
 # fail closed on its own published migrations.
 PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
+    "viral_videos": frozenset({"homepage_featured", "deleted_at", "collection_published"}),
+    "viral_media_preparations": frozenset({"cache_scope", "storage_uri"}),
+    "viral_runtime_controls": frozenset(
+        {"collection_interval_days", "keywords_json", "per_keyword_limit", "next_collection_at"}
+    ),
+    "viral_refresh_tasks": frozenset({"collection_config_json", "checkpoint_json", "retry_count"}),
     "runtime_settings": frozenset({"fair_queue_enabled"}),
     "audit_logs": frozenset({"occurred_at"}),
     "generation_tasks": frozenset({"created_at_utc", "discount_rate_snapshot"}),

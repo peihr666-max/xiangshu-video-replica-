@@ -1,6 +1,7 @@
 """Itemized prices and settlement: real PostgreSQL, no paid provider calls."""
 
 # ruff: noqa: F811
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -22,6 +23,239 @@ from app.db_portable import BusinessConnection
 from app.usage_billing import accept_operation, finish_operation, record_attempt
 
 
+def test_collection_meter_counts_actual_calls_and_preserves_batch(client, route_state):
+    from app.billing_meter import collection_billing_context, meter_call
+    from app.viral_collection_billing import create_collection_batch
+
+    with psycopg.connect(route_state) as raw:
+        conn = BusinessConnection.postgres(raw)
+        raw.execute("INSERT INTO billing_tariffs(service,unit_cost_fen) VALUES ('viral_data',2)")
+        batch = create_collection_batch(
+            conn, platform="douyin", config={"keywords": ["别墅"]}, user_ids=[]
+        )
+    with collection_billing_context(batch):
+        with meter_call("viral_data"):
+            pass
+        with pytest.raises(RuntimeError), meter_call("viral_data"):
+            raise RuntimeError("transport uncertain")
+        with meter_call("viral_data"):
+            pass
+    with psycopg.connect(route_state) as raw:
+        rows = raw.execute(
+            "SELECT o.actual_units,a.usage,a.cost_fen FROM billing_operations o "
+            "JOIN billing_attempts a ON a.operation_id=o.id WHERE o.collection_batch_id=%s",
+            (batch,),
+        ).fetchall()
+        assert len(rows) == 3
+        assert sum(row[0] for row in rows) == 2
+        assert sum(row[2] or 0 for row in rows) == 4
+        assert sum(row[1] is None for row in rows) == 1
+
+
+def test_expired_collection_call_becomes_unknown_and_late_response_cannot_charge(
+    client, route_state, monkeypatch
+):
+    import app.viral_collection_billing as collection
+    from app.billing_meter import collection_billing_context, meter_call
+    from app.db_pg import pg_transaction
+
+    user = account(client, "expired_collection")[1]
+    with psycopg.connect(route_state) as raw:
+        batch = collection.create_collection_batch(
+            BusinessConnection.postgres(raw), platform="douyin", config={}, user_ids=[user]
+        )
+    with collection_billing_context(batch), pytest.raises(RuntimeError, match="计量已超时"):
+        with meter_call("viral_data"):
+            monkeypatch.setattr(collection, "COLLECTION_REQUEST_DEADLINE_SECONDS", 0)
+            with pg_transaction() as raw:
+                assert (
+                    collection.reconcile_collection_requests(BusinessConnection.postgres(raw)) == 1
+                )
+    assert collection.settle_collection_charges() == 0
+    with psycopg.connect(route_state) as raw:
+        assert raw.execute(
+            "SELECT state,actual_units FROM billing_operations WHERE collection_batch_id=%s",
+            (batch,),
+        ).fetchone() == ("FAILED", 0)
+        assert raw.execute(
+            "SELECT a.state,a.usage,a.cost_fen FROM billing_attempts a JOIN billing_operations "
+            "o ON o.id=a.operation_id WHERE o.collection_batch_id=%s",
+            (batch,),
+        ).fetchone() == ("UNKNOWN", None, None)
+
+
+def test_activation_suspension_is_serialized_with_collection_charge(
+    client, route_state, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import app.viral_collection_billing as collection
+    from app.billing_meter import collection_billing_context, meter_call
+
+    user = account(client, "activation_collection")[1]
+    with psycopg.connect(route_state) as raw:
+        credit_lot(
+            raw,
+            user,
+            key="activation-collection-funds",
+            credits=100,
+            amount_fen=100,
+            provider="admin_adjustment",
+        )
+        raw.execute(
+            "INSERT INTO "
+            "activation_code_batches(id,name,face_value_fen,unit_price_fen_snapshot,credits_snapshot,quantity,activation_expires_at,status,created_by_user_id)"
+            " VALUES('collection-code-batch','test',1000,10,100,1,'2099-01-01','OPEN',%s)",
+            (user,),
+        )
+        raw.execute(
+            "INSERT INTO "
+            "activation_codes(id,batch_id,code_digest,digest_key_version,masked_code,status,issued_at,bound_user_id,activated_at)"
+            " "
+            "VALUES('collection-code','collection-code-batch','collection-digest',1,'TEST-****','ACTIVE','2026-01-01',%s,'2026-01-01')",
+            (user,),
+        )
+        raw.execute(
+            "INSERT INTO "
+            "activation_code_activations(id,code_id,user_id,first_device_id,recharge_order_id) "
+            "VALUES('collection-binding','collection-code',%s,NULL,'activation-collection-funds')",
+            (user,),
+        )
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES('viral_data',true,3)"
+        )
+        batch = collection.create_collection_batch(
+            BusinessConnection.postgres(raw), platform="douyin", config={}, user_ids=[user]
+        )
+    with collection_billing_context(batch), meter_call("viral_data"):
+        pass
+    checked = Event()
+    eligible = collection.eligible_collection_users
+
+    def check(*args, **kwargs):
+        result = eligible(*args, **kwargs)
+        checked.set()
+        return result
+
+    monkeypatch.setattr(collection, "eligible_collection_users", check)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with psycopg.connect(route_state) as wallet_lock:
+            wallet_lock.execute("SELECT user_id FROM wallets WHERE user_id=%s FOR UPDATE", (user,))
+            pending = pool.submit(collection.settle_collection_charges)
+            assert checked.wait(5)
+            with (
+                pytest.raises(psycopg.errors.LockNotAvailable),
+                psycopg.connect(route_state) as admin,
+            ):
+                admin.execute("SET LOCAL lock_timeout='200ms'")
+                admin.execute(
+                    "UPDATE activation_codes SET "
+                    "status='SUSPENDED',suspended_at=CURRENT_TIMESTAMP WHERE "
+                    "id='collection-code'"
+                )
+        assert pending.result(timeout=5) == 1
+    with psycopg.connect(route_state) as raw:
+        raw.execute(
+            "UPDATE activation_codes SET status='SUSPENDED',suspended_at=CURRENT_TIMESTAMP "
+            "WHERE id='collection-code'"
+        )
+    with collection_billing_context(batch), meter_call("viral_data"):
+        pass
+    assert collection.settle_collection_charges() == 1
+    with psycopg.connect(route_state) as raw:
+        assert (
+            raw.execute(
+                "SELECT available_credits FROM wallets WHERE user_id=%s", (user,)
+            ).fetchone()[0]
+            == 97
+        )
+        assert (
+            raw.execute(
+                "SELECT count(*) FROM viral_collection_charges WHERE user_id=%s AND "
+                "state='SKIPPED_INACTIVE'",
+                (user,),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_shared_collection_reports_count_cost_once_and_freeze_per_request_price(
+    client, route_state
+):
+    from app.billing_meter import collection_billing_context, meter_call
+    from app.billing_reports import operation_rows
+    from app.viral_collection_billing import collection_batch_rows, create_collection_batch
+
+    users = [account(client, "collection_one")[1], account(client, "collection_two")[1]]
+    with psycopg.connect(route_state) as raw:
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES ('viral_data',true,0.25,2)"
+        )
+        for index, user in enumerate(users):
+            credit_lot(raw, user, key=f"collection-credit-{index}", credits=100, amount_fen=100)
+        conn = BusinessConnection.postgres(raw)
+        batch = create_collection_batch(conn, platform="douyin", config={}, user_ids=users)
+        snapshot = json.loads(
+            raw.execute(
+                "SELECT pricing_snapshot_json FROM viral_collection_batches WHERE id=%s", (batch,)
+            ).fetchone()[0]
+        )
+        raw.execute("UPDATE billing_tariffs SET unit_credits=99 WHERE service='viral_data'")
+    with collection_billing_context(batch):
+        for _ in range(2):
+            with meter_call("viral_data"):
+                pass
+    with psycopg.connect(route_state) as raw:
+        conn = BusinessConnection.postgres(raw)
+        requests = raw.execute(
+            "SELECT id FROM billing_operations WHERE collection_batch_id=%s AND user_id IS NULL",
+            (batch,),
+        ).fetchall()
+        for request in requests:
+            for user in users:
+                operation = accept_operation(
+                    conn,
+                    user_id=user,
+                    service="viral_data",
+                    source_id=request[0],
+                    units=1,
+                    collection_batch_id=batch,
+                    pricing_snapshot=snapshot,
+                )
+                assert finish_operation(conn, operation_id=operation, units=1, succeeded=True) == 1
+                raw.execute(
+                    "INSERT INTO viral_collection_charges(request_id,user_id,operation_id,"
+                    "state,due_credits) VALUES(%s,%s,%s,'SUCCEEDED',1)",
+                    (request[0], user, operation),
+                )
+        filters = dict(
+            start=date(2000, 1, 1), end=date(2099, 1, 1), module="viral", provider="tikhub"
+        )
+        totals = statistics(conn, **filters)["totals"]
+        assert totals["provider_call_count"] == 2
+        assert totals["charged_credits"] == 4
+        assert totals["known_cost_fen"] == 4
+        assert totals["known_revenue_fen"] == 4
+        assert totals["profit_fen"] == 0
+        assert statistics(conn, **filters, user_id=users[0])["totals"]["profit_fen"] is None
+        customer_rows = operation_rows(conn, **filters, user_id=users[0])
+        assert len(customer_rows) == 2
+        assert all(
+            row["profit_fen"] is None and row["shared_cost_unallocated"] for row in customer_rows
+        )
+        batch_report = next(
+            row
+            for row in collection_batch_rows(conn, start=date(2000, 1, 1), end=date(2099, 1, 1))
+            if row["id"] == batch
+        )
+        assert batch_report["confirmed_count"] == 2
+        assert batch_report["customer_count"] == 2
+        assert batch_report["pending_charges"] == 0
+        assert batch_report["profit_fen"] == 0
+
+
 def test_catalog_matches_business_units_and_separates_video_tiers():
     expected = {
         "video_768p": "second",
@@ -38,6 +272,124 @@ def test_catalog_matches_business_units_and_separates_video_tiers():
     assert {key: SERVICES[key].unit for key in expected} == expected
     assert SERVICES["cos"].customer_charge_allowed is False
     assert SERVICES["zpay"].customer_charge_allowed is False
+
+
+def test_collection_settlement_recovers_once_and_never_retries_insufficient_balance(
+    client, route_state
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.billing_meter import collection_billing_context, meter_call
+    from app.viral_collection_billing import (
+        create_collection_batch,
+        eligible_collection_users,
+        settle_collection_charges,
+    )
+
+    rich = account(client, "rich_collection")[1]
+    poor = account(client, "poor_collection")[1]
+    inactive = account(client, "inactive_collection")[1]
+    with psycopg.connect(route_state) as raw:
+        raw.execute("UPDATE users SET is_active=0 WHERE id=%s", (inactive,))
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES ('viral_data',true,3)"
+        )
+        credit_lot(raw, rich, key="collection-resume-funds", credits=100, amount_fen=100)
+        conn = BusinessConnection.postgres(raw)
+        eligible = eligible_collection_users(conn)
+        assert set(eligible) == {rich, poor}
+        batch = create_collection_batch(conn, platform="douyin", config={}, user_ids=eligible)
+    late = account(client, "late_collection")[1]
+    with collection_billing_context(batch):
+        for _ in range(2):
+            with meter_call("viral_data"):
+                pass
+    # Recovery reads persisted supplier requests; no dependency on the caller surviving.
+    assert settle_collection_charges(limit=1) == 1
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sum(pool.map(lambda _: settle_collection_charges(), range(2))) == 3
+    with psycopg.connect(route_state) as raw:
+        assert raw.execute(
+            "SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s", (rich,)
+        ).fetchone() == (94, 0)
+        assert (
+            raw.execute(
+                "SELECT count(*) FROM viral_collection_charges WHERE user_id=%s AND "
+                "state='INSUFFICIENT_CREDITS'",
+                (poor,),
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            raw.execute(
+                "SELECT count(*) FROM billing_operations WHERE user_id IN (%s,%s)", (inactive, late)
+            ).fetchone()[0]
+            == 0
+        )
+        credit_lot(raw, poor, key="later-poor-funds", credits=100, amount_fen=100)
+    assert settle_collection_charges() == 0
+    with psycopg.connect(route_state) as raw:
+        assert (
+            raw.execute(
+                "SELECT available_credits FROM wallets WHERE user_id=%s", (poor,)
+            ).fetchone()[0]
+            == 100
+        )
+
+
+def test_scheduled_collector_wires_batch_meter_and_settlement(client, route_state, monkeypatch):
+    from app.billing_meter import meter_call
+    from app.generation_worker import run_pg_collection_once
+    from app.storage import FakeStorageAdapter
+
+    user = account(client, "scheduled_collection")[1]
+    with psycopg.connect(route_state) as raw:
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) VALUES "
+            "('viral_data',true,2,0.5)"
+        )
+        credit_lot(raw, user, key="scheduled-funds", credits=100, amount_fen=100)
+        raw.execute(
+            "INSERT INTO viral_runtime_controls(id,collection_enabled,keywords_json) "
+            "VALUES(1,1,%s) ON CONFLICT(id) DO UPDATE SET "
+            "collection_enabled=1,keywords_json=excluded.keywords_json,next_collection_at=NULL",
+            (json.dumps([{"platform": "douyin", "category": "其他", "keyword": "别墅"}]),),
+        )
+        raw.execute("DELETE FROM viral_refresh_tasks")
+
+    class Source:
+        def douyin_search(self, **_kwargs):
+            with meter_call("viral_data"):
+                return []
+
+    monkeypatch.setattr(
+        "app.viral_collection.viral_source_client_from_settings", lambda _: Source()
+    )
+    assert (
+        run_pg_collection_once(
+            worker_id="billing-integration",
+            storage=FakeStorageAdapter(provider="cos", bucket="test"),
+        )
+        > 0
+    )
+    with psycopg.connect(route_state) as raw:
+        assert raw.execute("SELECT status FROM viral_refresh_tasks").fetchone()[0] == "SUCCEEDED"
+        assert (
+            raw.execute(
+                "SELECT available_credits FROM wallets WHERE user_id=%s", (user,)
+            ).fetchone()[0]
+            == 98
+        )
+        config = json.loads(
+            raw.execute("SELECT collection_config_json FROM viral_refresh_tasks").fetchone()[0]
+        )
+        assert (
+            raw.execute(
+                "SELECT count(*) FROM billing_operations WHERE collection_batch_id=%s",
+                (config["billing_batch_id"],),
+            ).fetchone()[0]
+            == 2
+        )
 
 
 def test_absent_disabled_zero_and_fractional_tariffs():

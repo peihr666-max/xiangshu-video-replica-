@@ -56,7 +56,7 @@ CW076_DB_NAME = "cw076_registration_test"
 CW076_MIGRATION_DB_NAME = "cw076_migration_test"
 
 REGISTER_PATH = "/api/customer/register"
-HEAD_REVISION = "20260913T1100_itemized_billing"
+HEAD_REVISION = "20260913T1600_shared_viral_media"
 PRIOR_REVISION = "20260912T1353_customer_discounts"
 
 # A policy-valid password (>= MIN_PASSWORD_LENGTH, not blank). Never a secret.
@@ -778,7 +778,7 @@ def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
     storage = FakeStorageAdapter(provider="fake", bucket="private")
 
     class Pipeline:
-        def __init__(self, *, client: Any, storage: Any) -> None:
+        def __init__(self, *, client: Any, storage: Any, **kwargs: Any) -> None:
             self.storage = storage
 
         def fetch(self, video: ViralVideo, *, prefer: str | None = None) -> ViralMediaResult:
@@ -856,6 +856,88 @@ def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
                 "SELECT project_id FROM assets WHERE id = %s", (completed.json()["sourceAssetId"],)
             ).fetchone()[0]
             == completed.json()["projectId"]
+        )
+
+
+@pytest.mark.parametrize("failure", ["lease", "verification", "storage"])
+def test_link_media_failure_finishes_receipt_and_refunds(client, route_state, monkeypatch, failure):
+    import app.viral_import_routes as routes
+    from app.storage import FakeStorageAdapter, StorageBackendUnavailable
+    from app.viral_link import ResolvedViralLink
+    from app.viral_media_preparation import ViralMediaLeaseLost
+    from app.viral_tikhub import ViralSourceError
+
+    user = client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD}).json()
+    session = _password_login(client).json()
+    with psycopg.connect(route_state) as conn:
+        conn.execute("DELETE FROM billing_tariffs WHERE service='link_resolution'")
+        conn.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('link_resolution',true,5,2)"
+        )
+        conn.execute("UPDATE wallets SET available_credits=20 WHERE user_id=%s", (user["user_id"],))
+
+    class Resolver:
+        calls = 0
+
+        def resolve(self, url, *, purpose):
+            self.calls += 1
+            return ResolvedViralLink(
+                platform="douyin",
+                video_id="failed-media",
+                title="video",
+                author="",
+                cover_url=None,
+                video_url="https://cdn.example/video.mp4",
+                audio_url=None,
+                duration_ms=10000,
+                source_description="",
+            )
+
+    class Pipeline:
+        def __init__(self, **kwargs):
+            pass
+
+        def fetch(self, *args, **kwargs):
+            raise {
+                "lease": ViralMediaLeaseLost,
+                "verification": ViralSourceError,
+                "storage": StorageBackendUnavailable,
+            }[failure]("private-token-must-not-leak")
+
+    resolver = Resolver()
+    monkeypatch.setattr(routes, "douyidou_link_client_from_settings", lambda conn: resolver)
+    monkeypatch.setattr(
+        routes, "get_media_storage", lambda conn: FakeStorageAdapter(provider="cos", bucket="test")
+    )
+    monkeypatch.setattr(routes, "ViralMediaPipeline", Pipeline)
+    headers = {
+        "Authorization": "Bearer " + session["session_token"],
+        "Idempotency-Key": f"media-{failure}",
+    }
+    body = {"url": "https://v.douyin.com/test-media", "purpose": "replica"}
+    result = client.post("/api/viral/link-resolutions", headers=headers, json=body)
+    assert result.status_code == 503, result.text
+    assert "private-token" not in result.text
+    replay = client.post("/api/viral/link-resolutions", headers=headers, json=body)
+    assert replay.json() == result.json() and resolver.calls == 1
+    with psycopg.connect(route_state) as conn:
+        assert (
+            conn.execute(
+                "SELECT status FROM viral_link_resolution_receipts WHERE owner_user_id=%s",
+                (user["user_id"],),
+            ).fetchone()[0]
+            == "FAILED_SAFE"
+        )
+        assert conn.execute(
+            "SELECT state,charged_credits FROM billing_operations WHERE user_id=%s",
+            (user["user_id"],),
+        ).fetchone() == ("FAILED", 0)
+        assert (
+            conn.execute(
+                "SELECT available_credits FROM wallets WHERE user_id=%s", (user["user_id"],)
+            ).fetchone()[0]
+            == 20
         )
 
 

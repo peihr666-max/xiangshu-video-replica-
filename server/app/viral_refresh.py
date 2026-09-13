@@ -115,6 +115,14 @@ def viral_refresh_status(
 def acquire_viral_refresh_task(
     conn: BusinessConnection, *, worker_id: str
 ) -> ViralRefreshLease | None:
+    from app.viral_collection import enqueue_due_viral_collections
+
+    enqueue_due_viral_collections(conn)
+    enabled = conn.execute(
+        "SELECT collection_enabled FROM viral_runtime_controls WHERE id=1"
+    ).fetchone()
+    if enabled is None or not enabled[0]:
+        return None
     now = _time_text(datetime.now(UTC))
     locked_until = _time_text(datetime.now(UTC) + timedelta(minutes=VIRAL_REFRESH_LEASE_MINUTES))
     conn.execute(
@@ -157,6 +165,7 @@ def _require_lease(conn: BusinessConnection, lease: ViralRefreshLease) -> None:
         SELECT 1 FROM viral_refresh_tasks
         WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
             AND attempt = %s AND locked_until IS NOT NULL AND locked_until > %s
+        FOR UPDATE
         """,
         (lease.id, lease.worker_id, lease.attempt, now),
     ).fetchone()

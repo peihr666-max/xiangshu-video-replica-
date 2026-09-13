@@ -10,9 +10,9 @@
 # backup = deploy/postgres/pitr-backup.sh on the host (rotation delegated to
 # the archive platform's immutability policy — no local prune, by design).
 #
-# Connection-pool budget (全进程连接池预算): 2 API + 4 worker processes, each
+# Connection-pool budget (全进程连接池预算): 2 API + 4 generation + 1 collection worker, each
 # defaulting to VIDEO_REPLICA_PG_POOL_MAX=8 (ceiling 64, server/app/db_pg.py)
-# => 6 x 8 = 48 + 1 transient migrate + 3 superuser_reserved = 52 <=
+# => 7 x 8 = 56 + 1 transient migrate + 3 superuser_reserved = 60 <=
 # max_connections=120 below. The machine-checked contract lives in
 # server/tests/test_cw032_delivery_package.py.
 #
@@ -159,6 +159,21 @@ services:
       - sh
       - -lc
       - cd /opt/video-replica/server && exec python -m app.generation_worker
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker-viral:
+    image: ${APP_IMAGE:?deploy/customer/.env must define APP_IMAGE}
+    restart: unless-stopped
+    env_file:
+      - customer.env
+    command:
+      - sh
+      - -lc
+      - cd /opt/video-replica/server && exec python -m app.generation_worker --viral-collection --idle-seconds 30
     depends_on:
       db:
         condition: service_healthy

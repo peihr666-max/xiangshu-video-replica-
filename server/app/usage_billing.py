@@ -29,6 +29,8 @@ def accept_operation(
     billing_round: int = 1,
     submission_id: str | None = None,
     request_fingerprint: str = "",
+    pricing_snapshot: dict[str, Any] | None = None,
+    collection_batch_id: str | None = None,
 ) -> str:
     """Called in the task-creation transaction, before any paid upstream submission."""
     # A user-scoped lock also serializes free requests without a wallet row.
@@ -49,7 +51,14 @@ def accept_operation(
                 detail={"code": "BILLING_REQUEST_CONFLICT", "message": "计费用量与原请求不一致。"},
             )
         return str(old["id"])
-    snapshot = retail_snapshot(conn, service, units)
+    snapshot = (
+        dict(pricing_snapshot)
+        if pricing_snapshot is not None
+        else retail_snapshot(conn, service, units)
+    )
+    if snapshot["service"] != service or snapshot["unit"] != SERVICES[service].unit:
+        raise ValueError("计价快照科目不匹配")
+    snapshot.update(units=str(amount(units)), credits=credits_from_snapshot(snapshot, units))
     if SERVICES[service].unit == "second" and amount(units) == 0 and snapshot["enabled"]:
         raise HTTPException(
             422,
@@ -129,8 +138,8 @@ def accept_operation(
         "INSERT INTO billing_operations(id,user_id,service,module,source_id,billing_round,"
         "submission_id,api_key_id,"
         "auth_source,pricing_snapshot_json,unit,budget_units,reserved_credits,funding_json,"
-        "request_fingerprint) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "request_fingerprint,collection_batch_id) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (
             operation_id,
             user_id,
@@ -147,6 +156,7 @@ def accept_operation(
             credits,
             json.dumps(funding),
             request_fingerprint,
+            collection_batch_id,
         ),
     )
     if credits:
@@ -154,22 +164,29 @@ def accept_operation(
     return operation_id
 
 
-def accept_platform_operation(conn: BusinessConnection, *, service: str, source_id: str) -> str:
+def accept_platform_operation(
+    conn: BusinessConnection,
+    *,
+    service: str,
+    source_id: str,
+    collection_batch_id: str | None = None,
+) -> str:
     """Capture shared background expenditure without assigning it to a customer."""
     snapshot = retail_snapshot(conn, service, 1)
     snapshot.update(enabled=False, credits=0, free_reason="platform_service")
     operation_id = str(uuid4())
     conn.execute(
         "INSERT INTO billing_operations(id,service,module,source_id,unit,budget_units,"
-        "pricing_snapshot_json) "
-        "VALUES (%s,%s,%s,%s,%s,1,%s)",
+        "pricing_snapshot_json,collection_batch_id) "
+        "VALUES (%s,%s,%s,%s,%s,1,%s,%s)",
         (
             operation_id,
             service,
-            "platform",
+            "viral" if collection_batch_id else "platform",
             source_id,
             SERVICES[service].unit,
             json.dumps(snapshot),
+            collection_batch_id,
         ),
     )
     return operation_id

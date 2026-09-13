@@ -4,7 +4,7 @@ import { type CustomerPricing, getWorkspacePricing } from "../api";
 const subjects: Record<string, string[]> = {
   workbench: ["link_resolution", "asr"],
   viral: ["viral_data", "link_resolution", "asr"],
-  "viral-detail": ["viral_data", "asr"],
+  "viral-detail": ["asr"],
   copy: ["rewrite", "asr"],
   replica: ["analysis", "rewrite", "first_frame", "video_768p", "video_2k"],
   replacement: [
@@ -62,6 +62,11 @@ export function BillingModulePrices({ page }: { page: string }) {
       <small>
         各功能逐项扣分，提交时预留预算，成功后按实际用量结算。失败项目退回积分，未配置售价的项目由平台承担。
       </small>
+      {page === "viral" && (
+        <p>
+          爆款数据费用按后台采集的已确认接口请求次数扣分，使用该批次开始时的单价。浏览已采集的视频、数据库刷新和云存储不另收费。
+        </p>
+      )}
     </aside>
   );
 }

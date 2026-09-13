@@ -111,37 +111,35 @@ class VideoProbeFailed(RuntimeError):
 
 class FFprobeVideoProbe:
     def probe(self, content: bytes, *, filename: str) -> VideoMetadata:
+        with tempfile.TemporaryDirectory(prefix="media-probe-") as directory:
+            source = Path(directory) / f"source{Path(filename).suffix.lower()}"
+            source.write_bytes(content)
+            return self.probe_file(source)
+
+    def probe_file(self, source: Path) -> VideoMetadata:
         ffprobe = shutil.which("ffprobe")
         if ffprobe is None:
             raise VideoProbeUnavailable("ffprobe is required for video precheck")
-
-        suffix = Path(filename).suffix.lower()
-        with tempfile.TemporaryDirectory(prefix="media-probe-") as directory:
-            # Windows prevents an external decoder from opening a live
-            # NamedTemporaryFile. Close the file before starting ffprobe.
-            source = Path(directory) / f"source{suffix}"
-            source.write_bytes(content)
-            command = [
-                ffprobe,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "json",
-                str(source),
-            ]
-            try:
-                result = subprocess.run(
-                    command,
-                    capture_output=True,
-                    check=False,
-                    text=True,
-                    timeout=FFPROBE_TIMEOUT_SECONDS,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise VideoProbeFailed("ffprobe timed out") from exc
-
+        command = [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=FFPROBE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise VideoProbeFailed("ffprobe timed out") from exc
         if result.returncode != 0:
             raise VideoProbeFailed("ffprobe could not read video metadata")
 

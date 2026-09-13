@@ -25,6 +25,39 @@ from app.db_portable import BusinessConnection
 router = APIRouter(tags=["itemized-billing"])
 
 
+@router.get("/api/control/billing/viral-collections")
+def collection_batches(
+    _actor: AdminReader,
+    start: date,
+    end: date,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    from app.viral_collection_billing import collection_batch_rows
+
+    with pg_transaction() as raw:
+        rows = collection_batch_rows(
+            BusinessConnection.postgres(raw), start=start, end=end, limit=limit, offset=offset
+        )
+        return {"items": rows, "total": rows[0]["total_count"] if rows else 0}
+
+
+@router.get("/api/control/billing/viral-collections/{batch_id}/charges")
+def collection_charges(
+    batch_id: str,
+    _actor: AdminReader,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    from app.viral_collection_billing import collection_charge_rows
+
+    with pg_transaction() as raw:
+        rows = collection_charge_rows(
+            BusinessConnection.postgres(raw), batch_id=batch_id, limit=limit, offset=offset
+        )
+        return {"items": rows, "total": rows[0]["total_count"] if rows else 0}
+
+
 def catalog(conn: BusinessConnection, *, admin: bool) -> list[dict[str, Any]]:
     result = []
     for key, service in SERVICES.items():
