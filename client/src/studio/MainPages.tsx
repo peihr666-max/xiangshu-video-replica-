@@ -872,7 +872,7 @@ export function WorkbenchPage() {
                     <button
                       type="button"
                       className="studio-home-viral-cover"
-                      aria-label={`查看详情：${video.title}`}
+                      aria-label={`打开视频详情：${video.title}`}
                       onClick={() => {
                         navigate("viral-detail", {
                           selectedVideoId: video.id,
@@ -896,13 +896,28 @@ export function WorkbenchPage() {
                         <Icon name="fire" size={14} />
                         热度 {formatWorkbenchLikes(video)}
                       </span>
+                    </div>
+                    <div className="studio-home-viral-actions">
                       <Button
                         variant="quiet"
-                        aria-label={`用它复刻：${video.title}`}
-                        disabled={viralImportingId === video.id}
-                        onClick={() => void beginViralCreation(video)}
+                        aria-label={`查看详情：${video.title}`}
+                        onClick={() => {
+                          navigate("viral-detail", {
+                            selectedVideoId: video.id,
+                            returnTo: "workbench",
+                          });
+                          persistWorkbenchViralDetailUrl(video);
+                        }}
                       >
-                        {viralImportingId === video.id ? "导入中…" : "用它复刻"}
+                        查看详情
+                      </Button>
+                      <Button
+                        variant="quiet"
+                        aria-label={`提取文案：${video.title}`}
+                        disabled={viralImportingId === video.id}
+                        onClick={() => void beginViralCreation(video, "copy")}
+                      >
+                        {viralImportingId === video.id ? "导入中…" : "提取文案"}
                       </Button>
                     </div>
                   </article>

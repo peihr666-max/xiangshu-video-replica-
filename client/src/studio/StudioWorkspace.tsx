@@ -1601,7 +1601,10 @@ export function StudioWorkspace({
     );
   };
   const extractingRef = useRef(false);
-  const extractScriptFromUpload = () => {
+  const extractScriptFromUpload = (
+    importedProjectId?: string,
+    importedAssetId?: string,
+  ) => {
     if (review) {
       notify("审核示例不调用真实接口。");
       return;
@@ -1611,12 +1614,17 @@ export function StudioWorkspace({
       return;
     }
     if (extractingRef.current) return;
-    const projectId = state.draft.projectId ?? state.draft.sourceId;
-    const assetId =
-      state.draft.sourceAssetId ??
-      data.projects.find((project) => project.id === projectId)
-        ?.reference_asset_id ??
-      undefined;
+    const explicitSource =
+      importedProjectId !== undefined || importedAssetId !== undefined;
+    const projectId = explicitSource
+      ? importedProjectId
+      : (state.draft.projectId ?? state.draft.sourceId);
+    const assetId = explicitSource
+      ? importedAssetId
+      : (state.draft.sourceAssetId ??
+        data.projects.find((project) => project.id === projectId)
+          ?.reference_asset_id ??
+        undefined);
     if (!projectId || !assetId) {
       notify("请先上传视频来源，再提取文案。");
       openLive("projects");
@@ -1635,7 +1643,8 @@ export function StudioWorkspace({
           return;
         const currentScript = latestDraftRef.current.script;
         patchDraft({
-          sourceId: projectId,
+          projectId,
+          sourceId: assetId,
           sourceAssetId: assetId,
           script: {
             ...currentScript,
