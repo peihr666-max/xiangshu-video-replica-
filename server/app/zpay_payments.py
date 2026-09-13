@@ -244,12 +244,14 @@ def confirm_recharge_payment(
                 "Recharge order changed while payment was being confirmed.",
             )
 
+        source_column = ", auth_source" if conn.is_postgres else ""
+        source_value = ", 'internal'" if conn.is_postgres else ""
         conn.execute(
-            """
+            f"""
             INSERT INTO wallet_transactions (
                 id, user_id, type, available_delta, reserved_delta,
-                recharge_order_id, task_id, billing_round, idempotency_key
-            ) VALUES (%s, %s, 'CHARGE', %s, 0, %s, NULL, NULL, %s)
+                recharge_order_id, task_id, billing_round, idempotency_key{source_column}
+            ) VALUES (%s, %s, 'CHARGE', %s, 0, %s, NULL, NULL, %s{source_value})
             """,
             (
                 str(uuid4()),

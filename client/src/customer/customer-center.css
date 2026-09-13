@@ -547,3 +547,22 @@
   width: 100%;
   min-width: 0;
 }
+.uc-center .recharge-dialog__presets button {
+  display: grid;
+  gap: 5px;
+  padding: 16px 10px;
+  border: 1px solid #4a3b24;
+  border-radius: 11px;
+  color: #1c160d;
+  background: #dfaa43;
+}
+.uc-center .recharge-dialog__presets button strong,
+.uc-center .recharge-dialog__presets button span {
+  white-space: nowrap;
+}
+.uc-center .recharge-dialog__chooser form > button {
+  min-height: 44px;
+  border: 1px solid #4a3b24;
+  color: #1c160d;
+  background: #dfaa43;
+}

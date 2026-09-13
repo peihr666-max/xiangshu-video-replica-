@@ -108,6 +108,22 @@ test("renders real account points and six focused tabs without reissuing an exis
   expect(mocks.navigate).toHaveBeenCalledWith("workbench");
 });
 
+test("opening account records refreshes a balance changed by an administrator", async () => {
+  const account = setup();
+  render(<CustomerCenterPage account={account} />);
+  expect(await screen.findByText("125")).toBeVisible();
+  mocks.summary.mockResolvedValue({
+    user_id: "alice-id",
+    available_credits: 175,
+    reserved_credits: 10,
+    total_consumed_credits: 22,
+    active_tokens: 1,
+  });
+  fireEvent.click(screen.getByRole("tab", { name: "消费记录" }));
+  expect(await screen.findByText("175")).toBeVisible();
+  expect(screen.queryByText("125")).toBeNull();
+});
+
 test.each([
   ["oral-1", null, "oral-oral-1", "oral_task", "oral-1"],
   [null, "batch-1", "batch-1", "generation_batch", "batch-1"],

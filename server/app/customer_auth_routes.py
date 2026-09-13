@@ -389,7 +389,7 @@ def password_login(
         or not password_matches
         or not row[4]
         or row[5] != "customer"
-        or row[6] != "self_register"
+        or row[6] not in {"self_register", "activation_code"}
     ):
         with pg_transaction() as conn:
             record_auth_failure(
@@ -413,7 +413,7 @@ def password_login(
             or current[0] != encoded
             or not current[1]
             or current[2] != "customer"
-            or current[3] != "self_register"
+            or current[3] not in {"self_register", "activation_code"}
         ):
             raise _http(401, "INVALID_CREDENTIALS", "用户名或密码错误，或账号暂不可用。")
         now_row = conn.execute("SELECT clock_timestamp()").fetchone()

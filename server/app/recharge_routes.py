@@ -405,6 +405,10 @@ def create_customer_recharge_order(
         merchant_order_no = generate_merchant_order_no()
         try:
             with db.write() as (conn, user):
+                # Serialize new orders against legacy wallet conversion; no network call here.
+                conn.execute(
+                    "SELECT user_id FROM wallets WHERE user_id = %s FOR UPDATE", (user.id,)
+                ).fetchone()
                 scope = f"recharge:{user.id}"
                 matched = next(
                     (
@@ -906,7 +910,7 @@ def list_customer_wallet_transactions(
     offset: int = Query(default=0, ge=0),
     token_group_id: str | None = Query(default=None, max_length=128),
     auth_source: Literal["session", "api_key", "internal", "historical"] | None = None,
-    transaction_type: Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE"] | None = None,
+    transaction_type: Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE", "CONVERSION"] | None = None,
     business: Literal["video", "oral", "recharge"] | None = None,
     started_at: datetime | None = None,
     ended_at: datetime | None = None,
@@ -945,7 +949,12 @@ def list_customer_wallet_transactions(
             params.append(ended_at)
         from_sql = (
             " FROM wallet_transactions wt LEFT JOIN customer_api_keys k ON k.id = "
-            "wt.api_key_id AND k.user_id = wt.user_id WHERE " + " AND ".join(clauses)
+            "wt.api_key_id AND k.user_id = wt.user_id "
+            "LEFT JOIN recharge_orders credit_order ON credit_order.id = wt.recharge_order_id "
+            "AND credit_order.user_id = wt.user_id "
+            "LEFT JOIN admin_adjustments credit_adjustment ON "
+            "credit_adjustment.recharge_order_id = credit_order.id "
+            "AND credit_adjustment.target_user_id = wt.user_id WHERE " + " AND ".join(clauses)
         )
         total_row = conn.execute(
             "SELECT COUNT(*)" + from_sql,
@@ -960,7 +969,10 @@ def list_customer_wallet_transactions(
                    wt.billing_round, wt.created_at,
                    wt.api_key_id, k.token_group_id, k.label, k.credential_version, wt.auth_source,
                    wt.pricing_snapshot_json,
-                   (SELECT task.batch_id FROM generation_tasks task WHERE task.id = wt.task_id)
+                   (SELECT task.batch_id FROM generation_tasks task WHERE task.id = wt.task_id),
+                   CASE WHEN wt.type = 'CHARGE' THEN
+                     COALESCE(credit_adjustment.source_document_type, credit_order.provider)
+                   END
             """
             + from_sql
             + """
@@ -989,6 +1001,7 @@ def list_customer_wallet_transactions(
                     auth_source=row[14],
                     credit_price_version=json.loads(row[15])["version"] if row[15] else None,
                     generation_batch_id=row[16],
+                    credit_source=row[17],
                 )
                 for row in rows
             ],

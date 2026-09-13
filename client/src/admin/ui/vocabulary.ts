@@ -2,7 +2,7 @@
 //
 // 规则（2026-09-02 管理端评估 §交互规范）：
 // 1. 页面不得再写字面量状态映射表；新状态先在这里登记。
-// 2. credits 统一按秒数额度展示，任务计数仍用条。
+// 2. credits 统一按积分展示，任务计数仍用条。
 // 3. 金额一律 `¥xx.xx`（分位保留）——此前的 `Math.floor` 会把 100.50 元
 //    显示成 100 元，属数据失真，已修复。
 // 4. REVOKED 按域区分动词：激活码"已撤销"、设备"已强制退出"（沿用操作
@@ -48,6 +48,7 @@ export const ROLE_LABELS: LabelMap = {
 };
 
 export const TRANSACTION_TYPE_LABELS: LabelMap = {
+  CONVERSION: "历史积分转换",
   CHARGE: "充值到账",
   RESERVE: "冻结",
   SETTLE: "结算",
@@ -59,7 +60,8 @@ export const ADJUSTMENT_SOURCE_LABELS: LabelMap = {
   REFUND_APPROVAL: "退款审批",
   COMPENSATION_APPROVAL: "补偿审批",
   LEDGER_CORRECTION: "账本更正",
-  FREE_GRANT: "免费秒数发放",
+  FREE_GRANT: "积分赠送",
+  CREDIT_COMPENSATION: "积分补偿",
 };
 
 export const PLATFORM_LABELS: LabelMap = {
@@ -164,7 +166,7 @@ export function formatDateTime(value: string | null | undefined): string {
 
 /** 钱包额度展示统一后缀。 */
 export function formatCredits(count: number | null | undefined): string {
-  return `${count ?? 0} 秒`;
+  return `${count ?? 0} 积分`;
 }
 
 /** Shanghai calendar date, including day offsets independent of the host timezone. */

@@ -121,6 +121,7 @@ SOURCE_DOCUMENT_TYPES = (
     "LEDGER_CORRECTION",
     # 运营发放免费生成条数（054）：不产生支付金额，amount_fen 记 0。
     "FREE_GRANT",
+    "CREDIT_COMPENSATION",
 )
 
 
@@ -132,7 +133,7 @@ SOURCE_DOCUMENT_TYPES = (
 class AdjustmentRequest(AdminWriteRequest):
     """Shared request shape for every admin adjustment write."""
 
-    credits: int = 0
+    credits: StrictInt = 0
     source_document_type: str = ""
     source_document_ref: str = ""
 
@@ -159,7 +160,14 @@ def _infer_pricing_scope(conn: psycopg.Connection, user_id: str) -> str:
         """,
         (user_id,),
     ).fetchone()
-    return "CUSTOMER_STANDARD" if row is not None else "INTERNAL"
+    if row is not None:
+        return "CUSTOMER_STANDARD"
+    registered = conn.execute(
+        "SELECT 1 FROM users WHERE id = %s AND role = 'customer' "
+        "AND registration_source IN ('self_register', 'activation_code')",
+        (user_id,),
+    ).fetchone()
+    return "CUSTOMER_STANDARD" if registered else "INTERNAL"
 
 
 def _deny_admin_self_service(
@@ -482,9 +490,12 @@ def create_admin_adjustment(
         recharge_step_fen = billing["recharge_step_fen"]
 
         credits = body.credits
-        amount_fen = credits * unit_price_fen
-        # The published 054 CHECK still multiplies two int4 columns, even for
-        # zero-amount grants. Validate that expression before any ledger write.
+        amount_fen = (
+            0
+            if source_document_type in {"FREE_GRANT", "CREDIT_COMPENSATION"}
+            else credits * unit_price_fen
+        )
+        # Paid adjustments must fit the money column; no-money credits have no price product.
         if amount_fen > 2147483647:
             raise _http(
                 400,
@@ -493,7 +504,7 @@ def create_admin_adjustment(
             )
 
         # FREE_GRANT records no payment; the price snapshot remains auditable.
-        if source_document_type == "FREE_GRANT":
+        if source_document_type in {"FREE_GRANT", "CREDIT_COMPENSATION"}:
             amount_fen = 0
 
         # Note: the min/step recharge ladder only governs zpay orders
@@ -540,8 +551,8 @@ def create_admin_adjustment(
             """
             INSERT INTO wallet_transactions
             (id, user_id, type, available_delta, reserved_delta, recharge_order_id,
-             task_id, billing_round, idempotency_key)
-            VALUES (%s, %s, 'CHARGE', %s, 0, %s, NULL, NULL, %s)
+             task_id, billing_round, idempotency_key, auth_source)
+            VALUES (%s, %s, 'CHARGE', %s, 0, %s, NULL, NULL, %s, 'internal')
             """,
             (charge_id, user_id, credits, order_id, charge_id),
         )
@@ -805,6 +816,22 @@ DEFAULT_CUSTOMER_PAGE_SIZE = 20
 MAX_CUSTOMER_PAGE_SIZE = 100
 
 
+CUSTOMER_ACCOUNT_FROM = (
+    "FROM users u LEFT JOIN LATERAL ("
+    "SELECT u.id AS user_id, COALESCE(a.id, u.id) AS id, "
+    "COALESCE(a.activated_at, u.created_at) AS activated_at, a.code_id "
+    "FROM (SELECT 1) anchor LEFT JOIN LATERAL ("
+    "SELECT binding.id, binding.activated_at, binding.code_id "
+    "FROM activation_code_activations binding JOIN activation_codes code "
+    "ON code.id = binding.code_id WHERE binding.user_id = u.id "
+    "ORDER BY (code.status IN ('ACTIVE', 'SUSPENDED')) DESC, "
+    "binding.activated_at DESC, binding.id DESC LIMIT 1"
+    ") a ON TRUE) aca ON TRUE "
+    "LEFT JOIN activation_codes ac ON ac.id = aca.code_id "
+    "LEFT JOIN wallets w ON w.user_id = u.id "
+)
+
+
 @router.get("/customers")
 def list_customers(
     actor: AdminReader,
@@ -817,9 +844,9 @@ def list_customers(
     balance_min: int | None = None,
     balance_max: int | None = None,
 ) -> dict[str, object]:
-    """Every activated customer for operators and auditors (ADM-02 read path).
+    """Registered and activated customer accounts for operators and auditors (ADM-02 read path).
 
-    A customer is the activation fact (one code, one user): the list carries
+    Users are the account identity; the latest activation is optional. The list carries
     display metadata only — masked code, username, activation time and the
     code status. The identity fields live on users / activation_codes; the
     data model has no customer email, so the T33 contract uses username.
@@ -831,7 +858,10 @@ def list_customers(
     bounded_limit = max(1, min(limit, MAX_CUSTOMER_PAGE_SIZE))
     bounded_offset = max(0, offset)
 
-    clauses: list[str] = []
+    clauses: list[str] = [
+        "(aca.code_id IS NOT NULL OR (u.role = 'customer' AND "
+        "u.registration_source IN ('self_register', 'activation_code')))"
+    ]
     params: list[object] = []
     if username.strip():
         clauses.append("u.username ILIKE %s")
@@ -840,7 +870,9 @@ def list_customers(
         literal = username.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         params.append(f"%{literal}%")
     if status.strip():
-        clauses.append("ac.status = %s")
+        clauses.append(
+            "COALESCE(ac.status, CASE WHEN u.is_active = 1 THEN 'ACTIVE' ELSE 'SUSPENDED' END) = %s"
+        )
         params.append(status.strip().upper())
     append_admin_date_filters(
         clauses, params, column="aca.activated_at", created_from=created_from, created_to=created_to
@@ -857,7 +889,9 @@ def list_customers(
         with pg_transaction() as conn:
             rows = conn.execute(
                 "SELECT aca.user_id, u.username, u.display_name, aca.activated_at, "
-                "ac.id, ac.masked_code, ac.status, "
+                "COALESCE(ac.id, ''), COALESCE(ac.masked_code, '账号注册'), "
+                "COALESCE(ac.status, CASE WHEN u.is_active = 1 "
+                "THEN 'ACTIVE' ELSE 'SUSPENDED' END), "
                 "COALESCE(w.available_credits, 0), COALESCE(w.reserved_credits, 0), "
                 "COALESCE(devices.slots_used, 0), "
                 "u.max_devices, "
@@ -867,11 +901,8 @@ def list_customers(
                 "COALESCE(usage.generation_in_progress, 0), "
                 "COALESCE(usage.generation_attention, 0), "
                 "COALESCE(spend.credits_spent, 0) "
-                "FROM activation_code_activations aca "
-                "JOIN users u ON u.id = aca.user_id "
-                "JOIN activation_codes ac ON ac.id = aca.code_id "
-                "LEFT JOIN wallets w ON w.user_id = aca.user_id "
-                "LEFT JOIN (SELECT user_id, COUNT(*) AS slots_used FROM customer_devices "
+                + CUSTOMER_ACCOUNT_FROM
+                + "LEFT JOIN (SELECT user_id, COUNT(*) AS slots_used FROM customer_devices "
                 "  WHERE status = 'BOUND' GROUP BY user_id) devices "
                 "  ON devices.user_id = aca.user_id "
                 "LEFT JOIN ("
@@ -908,11 +939,7 @@ def list_customers(
                 (*params, bounded_limit, bounded_offset),
             ).fetchall()
             total_row = conn.execute(
-                "SELECT COUNT(*) FROM activation_code_activations aca "
-                "JOIN users u ON u.id = aca.user_id "
-                "JOIN activation_codes ac ON ac.id = aca.code_id "
-                "LEFT JOIN wallets w ON w.user_id = aca.user_id "
-                f"{where}",
+                "SELECT COUNT(*) " + CUSTOMER_ACCOUNT_FROM + f"{where}",
                 params,
             ).fetchone()
     except (RuntimeError, MissingDatabaseConfigError) as exc:
@@ -996,7 +1023,10 @@ def export_customers_csv(
                     "CONTROL_EXPORT_RATE_LIMITED",
                     "Too many ledger exports; retry after the cooldown.",
                 )
-            clauses: list[str] = []
+            clauses: list[str] = [
+                "(aca.code_id IS NOT NULL OR (u.role = 'customer' AND "
+                "u.registration_source IN ('self_register', 'activation_code')))"
+            ]
             params: list[object] = []
             if username.strip():
                 literal = (
@@ -1010,7 +1040,10 @@ def export_customers_csv(
             # of exporting a header-only CSV.
             normalized_status = status.strip().upper() if status else ""
             if normalized_status:
-                clauses.append("ac.status = %s")
+                clauses.append(
+                    "COALESCE(ac.status, CASE WHEN u.is_active = 1 "
+                    "THEN 'ACTIVE' ELSE 'SUSPENDED' END) = %s"
+                )
                 params.append(normalized_status)
             append_admin_date_filters(
                 clauses,
@@ -1027,12 +1060,10 @@ def export_customers_csv(
                 params.append(max(0, balance_max))
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             rows = conn.execute(
-                "SELECT u.username, ac.masked_code, aca.activated_at, ac.status "
-                "FROM activation_code_activations aca "
-                "JOIN users u ON u.id = aca.user_id "
-                "JOIN activation_codes ac ON ac.id = aca.code_id "
-                "LEFT JOIN wallets w ON w.user_id = aca.user_id "
-                f"{where} ORDER BY aca.activated_at, aca.id LIMIT %s",
+                "SELECT u.username, COALESCE(ac.masked_code, '账号注册'), aca.activated_at, "
+                "COALESCE(ac.status, CASE WHEN u.is_active = 1 THEN 'ACTIVE' ELSE 'SUSPENDED' END) "
+                + CUSTOMER_ACCOUNT_FROM
+                + f"{where} ORDER BY aca.activated_at, aca.id LIMIT %s",
                 (*params, max(1, min(limit, 5000))),
             ).fetchall()
             write_audit(

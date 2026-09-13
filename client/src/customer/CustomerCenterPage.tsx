@@ -14,6 +14,7 @@ import {
   customerCloseRechargeOrder,
   customerCreateApiKey,
   customerGetCenterSummary,
+  customerGetProfile,
   customerInitializeDefaultApiKey,
   customerListApiKeys,
   customerListRechargeOrders,
@@ -29,6 +30,7 @@ import { useStudio } from "../studio/context";
 import { PublishAccountsPanel } from "../studio/MainPages";
 import { Icon } from "../studio/ui";
 import type { WorkspaceShellProps } from "../workspace-shell";
+import { AccountPasswordSetup } from "./AccountPasswordSetup";
 import { CustomerPricesPage } from "./CustomerPricesPage";
 import { CustomerRechargeDialog } from "./CustomerRechargeDialog";
 import "./customer-center.css";
@@ -257,6 +259,7 @@ export function CustomerCenterPage({
     };
   }, [credential, tab, offset, refresh, filters]);
   function selectTab(value: Tab) {
+    if (value !== tab) refreshData();
     setTab(value);
     setOffset(0);
     setRecordsError("");
@@ -531,6 +534,7 @@ export function CustomerCenterPage({
             <option value="RESERVE">任务预扣</option>
             <option value="RELEASE">积分退回</option>
             <option value="CHARGE">积分入账</option>
+            <option value="CONVERSION">历史积分转换</option>
           </select>
         </label>
         <label>
@@ -587,17 +591,20 @@ export function CustomerCenterPage({
                   {
                     {
                       CHARGE: "积分入账",
+                      CONVERSION: "历史积分转换",
                       RESERVE: "任务预扣",
                       SETTLE: "任务消费",
                       RELEASE: "积分退回",
                     }[item.type]
                   }
                   <small>
-                    {item.oral_task_id
-                      ? "数字人口播"
-                      : item.task_id
-                        ? "视频生成"
-                        : "充值 / 赠送"}
+                    {item.type === "CONVERSION"
+                      ? "历史余额"
+                      : item.oral_task_id
+                        ? "数字人口播"
+                        : item.task_id
+                          ? "视频生成"
+                          : "充值 / 赠送"}
                   </small>
                   {(item.generation_batch_id || item.oral_task_id) && (
                     <button
@@ -623,13 +630,25 @@ export function CustomerCenterPage({
                   )}
                 </td>
                 <td>
-                  {item.api_key_id
-                    ? `${item.token_label || "Token"} · V${item.credential_version ?? 1}`
-                    : item.auth_source === "session"
-                      ? "软件操作"
-                      : item.auth_source === "internal"
-                        ? "内部操作"
-                        : "历史来源未记录"}
+                  {item.credit_source
+                    ? ((
+                        {
+                          FREE_GRANT: "积分赠送",
+                          CREDIT_COMPENSATION: "积分补偿",
+                          zpay: "在线充值",
+                          wechat_native: "微信充值",
+                          activation_code: "账号激活",
+                          FINANCE_RECEIPT: "后台入账",
+                          COMPENSATION_APPROVAL: "后台调整",
+                        } as Record<string, string>
+                      )[item.credit_source] ?? "后台入账")
+                    : item.api_key_id
+                      ? `${item.token_label || "Token"} · V${item.credential_version ?? 1}`
+                      : item.auth_source === "session"
+                        ? "软件操作"
+                        : item.auth_source === "internal"
+                          ? "内部操作"
+                          : "历史来源未记录"}
                   {item.credit_price_version != null && (
                     <small>价格 V{item.credit_price_version}</small>
                   )}
@@ -922,6 +941,16 @@ export function CustomerCenterPage({
           )}
           {tab === "settings" && (
             <div className="uc-settings">
+              <AccountPasswordSetup
+                credential={credential}
+                onComplete={() => {
+                  setRefresh((value) => value + 1);
+                  void credential()
+                    .then(customerGetProfile)
+                    .then(account.onProfileUpdated)
+                    .catch((cause) => setError(message(cause)));
+                }}
+              />
               <section className="uc-card">
                 <h2>账号资料</h2>
                 <form onSubmit={saveProfile}>

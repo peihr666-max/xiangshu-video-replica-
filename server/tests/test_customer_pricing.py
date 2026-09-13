@@ -252,6 +252,11 @@ def test_two_tokens_share_atomic_wallet_without_overdraft(client, route_state):
     headers, uid = account(client)
     keys = [mutation(client, "", headers, {"label": n}).json()["id"] for n in ("A", "B")]
     seed_tasks(route_state, uid, ["race_a", "race_b"], balance=100)
+    with psycopg.connect(route_state) as raw:
+        raw.execute(
+            "UPDATE customer_credit_pricing SET config_json = %s",
+            (config(video_768p=4).model_dump_json(),),
+        )
 
     def attempt(args):
         key, task = args
@@ -269,7 +274,7 @@ def test_two_tokens_share_atomic_wallet_without_overdraft(client, route_state):
             raw.execute(
                 "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s", (uid,)
             ).fetchone()
-        ) == (40, 60)
+        ) == (20, 80)
 
 
 def test_admin_price_publication_drives_authenticated_api_billing(pricing_client, route_state):

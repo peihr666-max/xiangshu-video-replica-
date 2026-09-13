@@ -1247,3 +1247,8 @@ AUTOMATED_VERIFIED（本地）；独立只读 review_w13 PASS；完整本地质�
 W19主干整合最终复验：PR87正常合并为main e8445c4，本任务整合提交fbbcbfe。独立只读review_w12 PASS：W19三个生产文件及两个测试与main完全一致，W15业务和测试未改变；四共享文档保留双方事实与真实合并状态。新专项test_customer_ha_smoke/test_publish_accounts/test_admin_customer_routes共121 passed，服务端ruff/format/mypy通过（W15-w19-integration-backend.log、W15-w19-integration-static.log）。未因仅后端主干增量重复全量前端；此前117前端及完整本地门保留实际基线。PR85当前更新提交的CI需另行通过。
 
 第二部分补验：W15实际浏览器/HTTP/CSV三个场景在UTC、Asia/Tokyo、America/Los_Angeles数据库连接会话时区均通过，五条日界记录命中三条、导出5001/5000提示一致；timezone-results.json按时区归档，不重复累加为新场景。本地代理认证车道不冒充生产Cookie入口。最终联调统计和人工输入见JT2独立证据。
+
+
+## UC-BATCH-04 / UC-16—20
+
+前置第三批 PR #90 head d9c328d 三门禁成功，squash 40e261c 已在 origin/main。本批主干 worktree 实现及本地验收完成，并整合 #91；完整静态门含前端 1362 passed，真实 PG 全量 1910 passed/1 原有 TLS skip，三路并发与正式前后台积分链路通过，进入 PR 收尾。[证据](evidence/UC-BATCH04-ACCOUNT-CREDIT-OPERATIONS.md)与[上线前评估](evidence/UC-ACCOUNT-PRELAUNCH-REPORT.md)登记 Docker 授权恢复、真实页面缺陷修复和完整日志；外部付费/生产验收仍单列。企业成员 Token 延期，无真实支付/付费 Provider/生产变更。

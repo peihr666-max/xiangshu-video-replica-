@@ -276,13 +276,20 @@ function installFetch(options?: {
     if (url.endsWith("/api/control/billing-reconciliation")) {
       return jsonResponse(reconciliation);
     }
-    if (url.endsWith("/api/control/settings") && !requestInit?.method) {
+    if (
+      (url.endsWith("/api/control/settings") ||
+        url.endsWith("/api/control/settings/customer-payments")) &&
+      !requestInit?.method
+    ) {
       return jsonResponse(settings);
     }
-    if (url.endsWith("/api/control/settings/zpay")) {
+    if (url.endsWith("/api/control/settings/customer-payments/zpay")) {
       return jsonResponse(settings.zpay);
     }
-    if (url.endsWith("/api/control/settings/billing")) {
+    if (
+      url.endsWith("/api/control/settings/billing") ||
+      url.endsWith("/api/control/settings/customer-payments/billing")
+    ) {
       return jsonResponse(settings.billing);
     }
     if (url.endsWith("/api/control/settings/providers/metaso")) {
@@ -590,14 +597,15 @@ describe("AdminApp", () => {
       expect(
         fetchMock.mock.calls.some(
           ([url, options]) =>
-            String(url).endsWith("/api/control/settings/zpay") &&
-            options?.method === "PATCH",
+            String(url).endsWith(
+              "/api/control/settings/customer-payments/zpay",
+            ) && options?.method === "PATCH",
         ),
       ).toBe(true);
     });
     const zpayCall = fetchMock.mock.calls.find(
       ([url, options]) =>
-        String(url).endsWith("/api/control/settings/zpay") &&
+        String(url).endsWith("/api/control/settings/customer-payments/zpay") &&
         options?.method === "PATCH",
     );
     const zpayRequest = zpayCall?.[1] as RequestInit | undefined;

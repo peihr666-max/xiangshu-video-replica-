@@ -782,6 +782,7 @@ function orderStatusLabel(status: RechargeOrder["status"]): string {
 
 function transactionTypeLabel(type: WalletTransaction["type"]): string {
   return {
+    CONVERSION: "历史积分转换",
     CHARGE: "充值到账",
     RESERVE: "任务冻结",
     SETTLE: "成功结算",

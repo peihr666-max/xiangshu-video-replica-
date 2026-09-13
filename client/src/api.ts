@@ -5436,6 +5436,34 @@ function requireWalletPricing(wallet: OpenApiWalletSnapshot): WalletSnapshot {
 
 export type CustomerProfile = components["schemas"]["CustomerProfileResponse"];
 
+export type CustomerPasswordState = {
+  user_id: string;
+  username: string;
+  has_password: boolean;
+};
+export async function customerPasswordState(
+  credential: CustomerSessionCredential,
+): Promise<CustomerPasswordState> {
+  return (
+    await customerJson<CustomerPasswordState>(
+      "/api/customer/account/password",
+      { credential },
+    )
+  ).body;
+}
+export async function customerSetInitialPassword(
+  credential: CustomerSessionCredential,
+  input: { username: string; password: string },
+  idempotencyKey: string,
+): Promise<CustomerPasswordState> {
+  return (
+    await customerJson<CustomerPasswordState>(
+      "/api/customer/account/password",
+      { credential, method: "POST", body: input, idempotencyKey },
+    )
+  ).body;
+}
+
 export async function customerGetProfile(
   credential: CustomerSessionCredential,
   options?: { shouldDispatchLifecycle?: () => boolean },

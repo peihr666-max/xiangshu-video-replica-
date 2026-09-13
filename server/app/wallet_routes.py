@@ -28,7 +28,7 @@ class WalletTransactionResponse(BaseModel):
 
     id: str
     user_id: str
-    type: Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE"]
+    type: Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE", "CONVERSION"]
     available_delta: int
     reserved_delta: int
     recharge_order_id: str | None
@@ -43,6 +43,7 @@ class WalletTransactionResponse(BaseModel):
     auth_source: str | None = None
     credit_price_version: int | None = None
     generation_batch_id: str | None = None
+    credit_source: str | None = None
 
 
 class WalletTransactionPage(BaseModel):

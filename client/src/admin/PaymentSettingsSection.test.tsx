@@ -1,20 +1,20 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ControlSettings } from "../api";
 
 import { PaymentSettingsSection } from "./PaymentSettingsSection";
 
-vi.mock("../api", () => ({
-  getControlSettings: vi.fn(),
-  updateControlZPaySettings: vi.fn(),
-  updateControlBillingSettings: vi.fn(),
+vi.mock("../api.admin", () => ({
+  getCustomerPaymentSettings: vi.fn(),
+  updateCustomerPaymentZPay: vi.fn(),
+  updateCustomerPaymentBilling: vi.fn(),
 }));
 
 import {
-  type ControlSettings,
-  getControlSettings,
-  updateControlBillingSettings,
-  updateControlZPaySettings,
-} from "../api";
+  getCustomerPaymentSettings,
+  updateCustomerPaymentBilling,
+  updateCustomerPaymentZPay,
+} from "../api.admin";
 
 const controlSettings: ControlSettings = {
   providers: {} as ControlSettings["providers"],
@@ -45,13 +45,13 @@ const controlSettings: ControlSettings = {
 describe("PaymentSettingsSection (A-01/A-03)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getControlSettings).mockResolvedValue(controlSettings);
+    vi.mocked(getCustomerPaymentSettings).mockResolvedValue(controlSettings);
   });
 
   it("加载完成后渲染两个表单且提交按钮可用", async () => {
     render(<PaymentSettingsSection />);
     await waitFor(() =>
-      expect(vi.mocked(getControlSettings)).toHaveBeenCalled(),
+      expect(vi.mocked(getCustomerPaymentSettings)).toHaveBeenCalled(),
     );
     expect(
       screen.getByRole("button", { name: "保存 ZPay 设置" }),
@@ -60,7 +60,7 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
   });
 
   it("计费配置加载完成前禁止提交内部价格（A-03：占位 0 不得写进生产）", async () => {
-    vi.mocked(getControlSettings).mockReturnValue(
+    vi.mocked(getCustomerPaymentSettings).mockReturnValue(
       new Promise(() => {
         /* 挂起，模拟加载中 */
       }),
@@ -70,7 +70,7 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
   });
 
   it("保存 ZPay 走 reasonAndAck 确认且原因透传审计", async () => {
-    vi.mocked(updateControlZPaySettings).mockResolvedValue(
+    vi.mocked(updateCustomerPaymentZPay).mockResolvedValue(
       controlSettings.zpay,
     );
     render(<PaymentSettingsSection />);
@@ -87,7 +87,7 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
     // 原因必填
     fireEvent.click(screen.getByRole("button", { name: "确认保存 ZPay 设置" }));
     expect(screen.getByText("请填写操作原因")).toBeInTheDocument();
-    expect(vi.mocked(updateControlZPaySettings)).not.toHaveBeenCalled();
+    expect(vi.mocked(updateCustomerPaymentZPay)).not.toHaveBeenCalled();
 
     // 勾选"我已知晓"（reasonAndAck）
     fireEvent.click(screen.getByLabelText("我已知晓该操作的影响"));
@@ -97,11 +97,12 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认保存 ZPay 设置" }));
 
     await waitFor(() =>
-      expect(vi.mocked(updateControlZPaySettings)).toHaveBeenCalledTimes(1),
+      expect(vi.mocked(updateCustomerPaymentZPay)).toHaveBeenCalledTimes(1),
     );
-    expect(vi.mocked(updateControlZPaySettings)).toHaveBeenCalledWith(
+    expect(vi.mocked(updateCustomerPaymentZPay)).toHaveBeenCalledWith(
       { pid: "pid-1", key: "", enabled_channels: ["alipay", "wxpay"] },
       "商户换绑，工单 IT-42",
+      expect.any(String),
     );
     await waitFor(() =>
       expect(
@@ -112,7 +113,7 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
   });
 
   it("保存内部价格走 reason 确认且原因透传审计", async () => {
-    vi.mocked(updateControlBillingSettings).mockResolvedValue(
+    vi.mocked(updateCustomerPaymentBilling).mockResolvedValue(
       controlSettings.billing,
     );
     render(<PaymentSettingsSection />);
@@ -132,9 +133,9 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认保存内部价格" }));
 
     await waitFor(() =>
-      expect(vi.mocked(updateControlBillingSettings)).toHaveBeenCalledTimes(1),
+      expect(vi.mocked(updateCustomerPaymentBilling)).toHaveBeenCalledTimes(1),
     );
-    expect(vi.mocked(updateControlBillingSettings)).toHaveBeenCalledWith(
+    expect(vi.mocked(updateCustomerPaymentBilling)).toHaveBeenCalledWith(
       {
         internal_base_unit_price_fen: 10,
         oral_unit_price_fen: 20,
@@ -142,6 +143,7 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
         recharge_step_fen: 1000,
       },
       "季度价格复核",
+      expect.any(String),
     );
     await waitFor(() =>
       expect(
@@ -152,7 +154,7 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
   });
 
   it("确认框内失败时错误留在对话框内且不关闭", async () => {
-    vi.mocked(updateControlZPaySettings).mockRejectedValue(
+    vi.mocked(updateCustomerPaymentZPay).mockRejectedValue(
       new Error("网关校验失败"),
     );
     render(<PaymentSettingsSection />);
@@ -177,7 +179,7 @@ describe("PaymentSettingsSection (A-01/A-03)", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认保存 ZPay 设置" }));
     await waitFor(() =>
-      expect(vi.mocked(updateControlZPaySettings)).toHaveBeenCalledTimes(2),
+      expect(vi.mocked(updateCustomerPaymentZPay)).toHaveBeenCalledTimes(2),
     );
   });
 });

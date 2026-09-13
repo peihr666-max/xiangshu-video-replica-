@@ -1,12 +1,12 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
+import type { BillingSettings } from "../api";
 
 import {
-  type BillingSettings,
-  type ControlSettings,
-  getControlSettings,
-  updateControlBillingSettings,
-  updateControlZPaySettings,
-} from "../api";
+  type CustomerPaymentSettings,
+  getCustomerPaymentSettings,
+  updateCustomerPaymentBilling,
+  updateCustomerPaymentZPay,
+} from "../api.admin";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { PageBanner } from "./ui/PageBanner";
 import { formatFen } from "./ui/vocabulary";
@@ -27,7 +27,9 @@ export function PaymentSettingsSection({
 }: {
   readOnly?: boolean;
 }) {
-  const [settings, setSettings] = useState<ControlSettings | null>(null);
+  const [settings, setSettings] = useState<CustomerPaymentSettings | null>(
+    null,
+  );
   const [zpayPid, setZpayPid] = useState("");
   const [zpayKey, setZpayKey] = useState("");
   const [channels, setChannels] = useState<Array<"alipay" | "wxpay">>([
@@ -40,13 +42,14 @@ export function PaymentSettingsSection({
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState("");
+  const retry = useRef<{ fingerprint: string; key: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       setError("");
       try {
-        const nextSettings = await getControlSettings();
+        const nextSettings = await getCustomerPaymentSettings();
         if (cancelled) {
           return;
         }
@@ -99,21 +102,32 @@ export function PaymentSettingsSection({
     if (pendingConfirm === null || confirmBusy) {
       return;
     }
+    const fingerprint = JSON.stringify({
+      pendingConfirm,
+      zpayPid,
+      zpayKey,
+      channels,
+      billing,
+      reason,
+    });
+    if (retry.current?.fingerprint !== fingerprint)
+      retry.current = { fingerprint, key: crypto.randomUUID() };
     setConfirmBusy(true);
     setConfirmError("");
     try {
       if (pendingConfirm === "zpay") {
-        await updateControlZPaySettings(
+        await updateCustomerPaymentZPay(
           {
             pid: zpayPid,
             key: zpayKey,
             enabled_channels: channels,
           },
           reason,
+          retry.current.key,
         );
         setNotice("ZPay 设置已保存。");
       } else if (pendingConfirm === "billing" && billing) {
-        const nextBilling = await updateControlBillingSettings(
+        const nextBilling = await updateCustomerPaymentBilling(
           {
             internal_base_unit_price_fen: billing.internal_base_unit_price_fen,
             oral_unit_price_fen: billing.oral_unit_price_fen,
@@ -121,6 +135,7 @@ export function PaymentSettingsSection({
             recharge_step_fen: billing.recharge_step_fen,
           },
           reason,
+          retry.current.key,
         );
         setBilling(nextBilling);
         setNotice("内部价格已保存。");
@@ -130,6 +145,7 @@ export function PaymentSettingsSection({
         setConfirmError("内部状态异常，请关闭对话框后重试。");
         return;
       }
+      retry.current = null;
       setPendingConfirm(null);
     } catch (cause) {
       setConfirmError(
@@ -269,6 +285,7 @@ export function PaymentSettingsSection({
         }
         onClose={() => {
           if (!confirmBusy) {
+            retry.current = null;
             setPendingConfirm(null);
             setConfirmError("");
           }

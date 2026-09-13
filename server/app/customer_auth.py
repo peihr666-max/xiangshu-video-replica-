@@ -177,7 +177,7 @@ def verify_session_context(
             or not account[0]
             or account[1] != "customer"
             or not account[2]
-            or account[3] != "self_register"
+            or account[3] not in {"self_register", "activation_code"}
         ):
             raise _replaced("The customer account is unavailable.")
     else:

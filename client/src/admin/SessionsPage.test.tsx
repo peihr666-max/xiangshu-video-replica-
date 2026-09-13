@@ -274,7 +274,7 @@ describe("SessionsPage", () => {
     ]);
   });
 
-  it("keeps the adjustment form secondary and uses seconds", async () => {
+  it("keeps the adjustment form secondary and uses integral credits", async () => {
     const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
       jsonResponse(sessionList()),
     );
@@ -282,9 +282,9 @@ describe("SessionsPage", () => {
     render(<SessionsPage userId={CUSTOMER_ID} />);
 
     await screen.findByText("customer_one");
-    expect(screen.queryByLabelText("加款秒数")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "展开后台加秒" }));
-    expect(screen.getByLabelText("加款秒数")).toBeInTheDocument();
+    expect(screen.queryByLabelText("积分整数")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "展开后台增加积分" }));
+    expect(screen.getByLabelText("积分整数")).toBeInTheDocument();
     expect(screen.queryByText(/加款条数/)).not.toBeInTheDocument();
   });
 
@@ -300,7 +300,7 @@ describe("SessionsPage", () => {
       screen.queryByRole("button", { name: /强制下线/ }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /后台加秒/ }),
+      screen.queryByRole("button", { name: /后台增加积分/ }),
     ).not.toBeInTheDocument();
   });
 });
