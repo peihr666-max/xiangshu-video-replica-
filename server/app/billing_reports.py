@@ -12,6 +12,8 @@ from app.db_portable import BusinessConnection
 
 
 def date_bounds(start: date, end: date) -> tuple[datetime, datetime]:
+    if end.year > 9998:
+        raise HTTPException(422, detail="统计结束年份最多为 9998")
     if end < start:
         raise HTTPException(422, detail="结束日期不能早于开始日期")
     zone = ZoneInfo("Asia/Shanghai")
@@ -37,7 +39,8 @@ def operation_rows(
     # Aggregate provider attempts before joining the single revenue fact.
     rows = conn.execute(
         """
-        SELECT o.*, COALESCE(u.username,'平台后台') AS username, COALESCE(c.attempt_count,0) AS attempt_count,
+        SELECT o.*, COALESCE(u.username,'平台后台') AS username, COALESCE(c.attempt_count,0) AS
+          attempt_count,
           COALESCE(c.known_cost_fen,0) AS known_cost_fen,
           COALESCE(c.unknown_cost_count,0) AS unknown_cost_count,
           CASE WHEN COALESCE(c.unknown_cost_count,0)=0 AND o.state<>'PENDING'
@@ -45,14 +48,16 @@ def operation_rows(
           count(*) OVER() AS total_count
         FROM billing_operations o LEFT JOIN users u ON u.id=o.user_id
         LEFT JOIN (
-          SELECT operation_id,count(*) AS attempt_count,sum(cost_fen) AS known_cost_fen,
-            count(*) FILTER(WHERE cost_fen IS NULL) AS unknown_cost_count
-          FROM billing_attempts GROUP BY operation_id
+          SELECT operation_id,count(*) AS attempt_count,sum(effective_cost_fen) AS known_cost_fen,
+            count(*) FILTER(WHERE effective_cost_fen IS NULL) AS unknown_cost_count
+          FROM billing_effective_attempts GROUP BY operation_id
         ) c ON c.operation_id=o.id
-        WHERE COALESCE(o.completed_at,o.created_at)>=%s AND COALESCE(o.completed_at,o.created_at)<%s
+        WHERE COALESCE(o.completed_at,o.created_at)>=%s AND COALESCE(o.completed_at,
+          o.created_at)<%s
           AND (%s::text IS NULL OR o.user_id=%s) AND (%s::text IS NULL OR o.service=%s)
           AND (%s::text IS NULL OR o.module=%s) AND (%s::text IS NULL OR o.id=%s)
-          AND (%s::text IS NULL OR EXISTS(SELECT 1 FROM billing_attempts a WHERE a.operation_id=o.id AND a.provider=%s))
+          AND (%s::text IS NULL OR EXISTS(SELECT 1 FROM billing_attempts a WHERE
+            a.operation_id=o.id AND a.provider=%s))
         ORDER BY COALESCE(o.completed_at,o.created_at) DESC,o.id DESC LIMIT %s OFFSET %s
     """,
         (
@@ -102,28 +107,33 @@ def statistics(
     rows = conn.execute(
         """
         WITH costs AS (
-          SELECT operation_id,count(*) AS calls,sum(cost_fen) AS known_cost,
-            count(*) FILTER(WHERE cost_fen IS NULL) AS unknown_cost
-          FROM billing_attempts GROUP BY operation_id
+          SELECT operation_id,count(*) AS calls,sum(effective_cost_fen) AS known_cost,
+            count(*) FILTER(WHERE effective_cost_fen IS NULL) AS unknown_cost
+          FROM billing_effective_attempts GROUP BY operation_id
         ), facts AS (
           SELECT o.*,COALESCE(c.calls,0) AS calls,COALESCE(c.known_cost,0) AS known_cost,
             COALESCE(c.unknown_cost,0) AS unknown_cost
           FROM billing_operations o LEFT JOIN costs c ON c.operation_id=o.id
-          WHERE COALESCE(o.completed_at,o.created_at)>=%s AND COALESCE(o.completed_at,o.created_at)<%s
+          WHERE COALESCE(o.completed_at,o.created_at)>=%s AND COALESCE(o.completed_at,
+            o.created_at)<%s
             AND (%s::text IS NULL OR o.user_id=%s) AND (%s::text IS NULL OR o.service=%s)
             AND (%s::text IS NULL OR o.module=%s)
-            AND (%s::text IS NULL OR EXISTS(SELECT 1 FROM billing_attempts a WHERE a.operation_id=o.id AND a.provider=%s))
+            AND (%s::text IS NULL OR EXISTS(SELECT 1 FROM billing_attempts a WHERE
+              a.operation_id=o.id AND a.provider=%s))
         )
-        SELECT date_trunc(%s,COALESCE(completed_at,created_at) AT TIME ZONE 'Asia/Shanghai') AS period,
+        SELECT date_trunc(%s,COALESCE(completed_at,created_at) AT TIME ZONE 'Asia/Shanghai')
+          AS period,
           count(*) AS operation_count, count(*) FILTER(WHERE charged_credits>0) AS charged_count,
           count(*) FILTER(WHERE reserved_credits=0) AS free_count,
           count(*) FILTER(WHERE state='PENDING') AS pending_count,
           sum(calls) AS provider_call_count, sum(charged_credits) AS charged_credits,
-          sum(CASE WHEN state<>'PENDING' THEN reserved_credits-charged_credits ELSE 0 END) AS refunded_credits,
+          sum(CASE WHEN state<>'PENDING' THEN reserved_credits-charged_credits ELSE 0 END) AS
+            refunded_credits,
           sum(known_cost) AS known_cost_fen,sum(revenue_fen) AS known_revenue_fen,
           count(*) FILTER(WHERE unknown_cost>0) AS unknown_cost_count,
           count(*) FILTER(WHERE revenue_fen IS NULL) AS unknown_revenue_count,
-          sum(CASE WHEN reserved_credits=0 OR (state<>'PENDING' AND charged_credits=0) THEN known_cost ELSE 0 END) AS platform_cost_fen,
+          sum(CASE WHEN reserved_credits=0 OR (state<>'PENDING' AND charged_credits=0) THEN
+            known_cost ELSE 0 END) AS platform_cost_fen,
           sum(CASE WHEN unit='second' THEN actual_units ELSE 0 END) AS seconds,
           sum(CASE WHEN unit='image' THEN actual_units ELSE 0 END) AS images,
           sum(CASE WHEN unit='call' THEN actual_units ELSE 0 END) AS calls

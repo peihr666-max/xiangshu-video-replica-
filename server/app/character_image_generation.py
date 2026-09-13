@@ -1005,7 +1005,8 @@ def finish_character_generation_failure(
             return get_character_generation_task(conn, str(task["id"]))
         if not should_retry:
             from app.usage_billing import finish_source
-            finish_source(conn,str(task["id"]),units=0,succeeded=False)
+
+            finish_source(conn, str(task["id"]), units=0, succeeded=False)
         update_character_version_generation_status(
             conn,
             version_id=str(task["character_version_id"]),

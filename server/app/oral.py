@@ -760,7 +760,8 @@ def create_oral_task(
         )
         reserve_oral_billing(conn, user_id=actor.id, oral_task_id=task_id)
         accepted = conn.execute(
-            "SELECT reserved_credits,pricing_snapshot_json FROM billing_operations WHERE source_id=%s AND service='oral'",
+            "SELECT reserved_credits,pricing_snapshot_json FROM billing_operations WHERE "
+            "source_id=%s AND service='oral'",
             (task_id,),
         ).fetchone()
         ratio = json.loads(str(accepted[1])).get("points_per_yuan")

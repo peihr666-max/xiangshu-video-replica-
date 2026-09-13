@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -35,7 +35,6 @@ SERVICES: dict[str, Service] = {
     "link_resolution": Service("抖一抖链接解析", "call", "douyidou", "workbench"),
     "avatar_clone": Service("口播分身创建", "call", "hifly", "people"),
     "voice_clone": Service("声音克隆", "call", "hifly", "people"),
-    "voice_demo": Service("声音试听合成", "call", "hifly", "people"),
     "quality_inspection": Service("图片及视频质量检查", "call", "apilio", "internal", False),
     "analysis_repair": Service("分析结果修复", "call", "apilio", "internal", False),
     "cos": Service("云存储", "call", "cos", "infrastructure", False),
@@ -64,7 +63,10 @@ class Tariff(BaseModel):
 
 
 def amount(value: Decimal | str | int | float) -> Decimal:
-    result = Decimal(str(value))
+    try:
+        result = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError("计费用量格式不正确") from exc
     if not result.is_finite() or result < 0 or result > Decimal("2147483647"):
         raise ValueError("计费用量必须是有限非负数且不超出允许范围")
     return result.quantize(Decimal("0.000001"))

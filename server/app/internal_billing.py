@@ -175,7 +175,8 @@ def reserve_internal_billing(
 
     task = conn.execute(
         "SELECT task.prompt_snapshot_json,batch.created_by_user_id FROM generation_tasks task "
-        "JOIN generation_batches batch ON batch.id=task.batch_id WHERE task.id=%s FOR UPDATE OF task",
+        "JOIN generation_batches batch ON batch.id=task.batch_id WHERE task.id=%s FOR "
+        "UPDATE OF task",
         (task_id,),
     ).fetchone()
     if task is None or str(task["created_by_user_id"]) != user_id:
@@ -519,13 +520,15 @@ def reconcile_oral_billing_by_evidence(
         # Supplier expenditure never authorizes charging a customer for an undelivered video.
         if resolution != "RELEASE" or provider_outcome == "SUCCEEDED":
             raise BillingInvariantError(
-                "undelivered oral requests must be released; successful results require verified archive and duration"
+                "undelivered oral requests must be released; successful results require "
+                "verified archive and duration"
             )
         complete_source_attempt(
             conn, oral_task_id, usage=0 if provider_charge_state == "NOT_CHARGED" else None
         )
         conn.execute(
-            "UPDATE oral_tasks SET status='FAILED',submission_state='FAILED',provider_charge_state=%s,updated_at=now() WHERE id=%s",
+            "UPDATE oral_tasks SET status='FAILED',submission_state='FAILED',"
+            "provider_charge_state=%s,updated_at=now() WHERE id=%s",
             (provider_charge_state, oral_task_id),
         )
         finish_operation(conn, operation_id=usage_operation_id, units=0, succeeded=False)
@@ -689,6 +692,17 @@ def finalize_internal_billing(
 
     operation_id = find_operation(conn, task_id)
     if operation_id:
+        recorded = conn.execute(
+            "SELECT state,billing_round,reserved_credits FROM billing_operations WHERE id=%s",
+            (operation_id,),
+        ).fetchone()
+        if recorded["state"] != "PENDING":
+            return BillingFinalization(
+                task_id,
+                int(recorded["billing_round"]),
+                "SETTLE" if recorded["state"] == "SUCCEEDED" else "RELEASE",
+                int(recorded["reserved_credits"]),
+            )
         if outcome == "success":
             deliverable = (
                 task["archive_status"] == "ARCHIVED"
@@ -702,14 +716,16 @@ def finalize_internal_billing(
             if task["status"] != "SUCCEEDED" or not deliverable:
                 raise BillingInvariantError("successful billing requires a deliverable result")
             usage = conn.execute(
-                "SELECT COALESCE(actual_output_seconds,billed_seconds) FROM generation_tasks WHERE id=%s",
+                "SELECT actual_output_seconds FROM generation_tasks WHERE id=%s",
                 (task_id,),
             ).fetchone()[0]
+            if usage is None:
+                return BillingFinalization(task_id, None, None)
         else:
             if task["status"] not in {"FAILED", "CANCELLED"}:
                 raise BillingInvariantError("released billing requires a failed or cancelled task")
             usage = 0
-        credits = finish_operation(
+        finish_operation(
             conn,
             operation_id=operation_id,
             units=usage,
@@ -717,10 +733,11 @@ def finalize_internal_billing(
             cancelled=outcome == "cancelled",
         )
         row = conn.execute(
-            "SELECT billing_round FROM billing_operations WHERE id=%s", (operation_id,)
+            "SELECT billing_round,reserved_credits FROM billing_operations WHERE id=%s",
+            (operation_id,),
         ).fetchone()
         return BillingFinalization(
-            task_id, int(row[0]), "SETTLE" if outcome == "success" else "RELEASE", credits
+            task_id, int(row[0]), "SETTLE" if outcome == "success" else "RELEASE", int(row[1])
         )
 
     reservation = conn.execute(

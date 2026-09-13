@@ -485,7 +485,8 @@ def enqueue_script_rewrite_task(
                 from app.usage_billing import accept_operation
 
                 latest_round = conn.execute(
-                    "SELECT COALESCE(max(billing_round),0) FROM billing_operations WHERE source_id=%s AND service='rewrite'",
+                    "SELECT COALESCE(max(billing_round),0) FROM billing_operations WHERE "
+                    "source_id=%s AND service='rewrite'",
                     (replay["id"],),
                 ).fetchone()[0]
                 accept_operation(
@@ -723,9 +724,9 @@ def mark_script_rewrite_submission_started(
         """
         UPDATE script_rewrite_tasks
         SET provider_started_at = COALESCE(provider_started_at, %s), updated_at = %s
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
-        (now, now, lease.id, lease.worker_id),
+        (now, now, lease.id, lease.worker_id, lease.attempt),
     )
     if updated.rowcount != 1:
         raise RuntimeError("script rewrite task lease was lost")
@@ -763,7 +764,7 @@ def complete_script_rewrite_task(
         SET status = 'SUCCEEDED', result_json = %s,
             locked_by = NULL, locked_until = NULL,
             completed_at = %s, updated_at = %s, retryable = 0
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
         (
             json.dumps(result.model_dump(), ensure_ascii=False, sort_keys=True),
@@ -771,6 +772,7 @@ def complete_script_rewrite_task(
             now,
             lease.id,
             lease.worker_id,
+            lease.attempt,
         ),
     )
     if updated.rowcount != 1:
@@ -803,14 +805,14 @@ def fail_script_rewrite_task(
         code = "SCRIPT_REWRITE_SUBMISSION_UNCERTAIN"
         message = "AI 改写请求可能已经送达服务商，请人工确认后再决定是否重试。"
     now = _time_text(datetime.now(UTC))
-    conn.execute(
+    updated = conn.execute(
         """
         UPDATE script_rewrite_tasks
         SET status = %s, error_code = %s,
             error_message_redacted = %s, retryable = %s,
             locked_by = NULL, locked_until = NULL,
             completed_at = %s, updated_at = %s
-        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s
+        WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
         (
             "SUBMISSION_UNCERTAIN" if uncertain else "FAILED",
@@ -821,13 +823,16 @@ def fail_script_rewrite_task(
             now,
             lease.id,
             lease.worker_id,
+            lease.attempt,
         ),
     )
+    if updated.rowcount != 1:
+        conn.rollback()
+        return
     from app.usage_billing import complete_source_attempt, finish_source
 
     complete_source_attempt(conn, lease.id, usage=None)
-    if not uncertain:
-        finish_source(conn, lease.id, units=0, succeeded=False)
+    finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 
 

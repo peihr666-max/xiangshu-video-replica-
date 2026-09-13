@@ -113,16 +113,21 @@ def _claim_row(
 
 def _quarantine_expired_submissions(conn: BusinessConnection, now: str) -> None:
     for table in ("oral_avatars", "oral_voices"):
-        conn.execute(
+        stopped = conn.execute(
             f"""
             UPDATE {table}
-            SET submission_state = 'SUBMISSION_UNKNOWN', lease_owner = NULL,
+            SET status = 'FAILED', submission_state = 'SUBMISSION_UNKNOWN', lease_owner = NULL,
                 lease_expires_at = NULL, error_message = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE submission_state = 'SUBMITTING' AND lease_expires_at <= %s
+            RETURNING id
             """,  # noqa: S608 - fixed table names
             ("供应商提交结果未知，已停止自动重试", now),
-        )
+        ).fetchall()
+        from app.usage_billing import finish_source
+
+        for clone in stopped:
+            finish_source(conn, str(clone["id"]), units=0, succeeded=False)
     uncertain_tasks = conn.execute(
         """
         UPDATE oral_tasks
@@ -706,7 +711,7 @@ def finalize_oral_work(
                     )
                 else:
                     submission = "SUBMISSION_UNKNOWN" if uncertain else "FAILED"
-                    status = "PENDING" if uncertain else "FAILED"
+                    status = "FAILED"
                     cursor = conn.execute(
                         f"""
                         UPDATE {table} SET status = %s, submission_state = %s,
@@ -732,6 +737,10 @@ def finalize_oral_work(
                         finalize_oral_billing(conn, oral_task_id=lease.record_id)
             if cursor.rowcount != 1:
                 raise OralLeaseLostError("oral submission lease was lost")
+            if table != "oral_tasks" and result.outcome != "submitted":
+                from app.usage_billing import finish_source
+
+                finish_source(conn, lease.record_id, units=0, succeeded=False)
             return
 
         if lease.kind in {"avatar_poll", "voice_poll"}:

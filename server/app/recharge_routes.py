@@ -973,7 +973,8 @@ def list_customer_wallet_transactions(
                    (SELECT task.batch_id FROM generation_tasks task WHERE task.id = wt.task_id),
                    CASE WHEN wt.type = 'CHARGE' THEN
                      COALESCE(credit_adjustment.source_document_type, credit_order.provider)
-                   END, wt.billing_operation_id, (SELECT o.service FROM billing_operations o WHERE o.id=wt.billing_operation_id)
+                   END, wt.billing_operation_id,
+                   (SELECT o.service FROM billing_operations o WHERE o.id=wt.billing_operation_id)
             """
             + from_sql
             + """

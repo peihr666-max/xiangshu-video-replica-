@@ -95,9 +95,7 @@ CW030_DB_NAME = "cw030_worker_matrix_test"
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 
 _MATRIX_CLEANUP_ORDER = (
-    # Leaf-first DELETEs: the fixture DB installs a TRUNCATE guard on
-    # append-only audit tables and CASCADE would reach them, so the scene
-    # reset walks explicit reverse-dependency DELETEs instead.
+    # Reset only this isolated fixture, including new immutable billing descendants.
     "wallet_transactions",
     "generation_task_operations",
     "external_call_logs",
@@ -187,8 +185,10 @@ def _one(dsn: str, sql: str, params: tuple[Any, ...] = ()) -> Any:
 
 
 def _truncate(dsn: str) -> None:
-    for table in _MATRIX_CLEANUP_ORDER:
-        _exec(dsn, f"DELETE FROM {table}")
+    with psycopg.connect(dsn, autocommit=True) as pg:
+        pg.execute("SET session_replication_role = replica")
+        pg.execute("TRUNCATE " + ",".join(_MATRIX_CLEANUP_ORDER) + " CASCADE")
+        pg.execute("SET session_replication_role = DEFAULT")
 
 
 def _seed_base(dsn: str, *, fair_queue: bool = True) -> None:
@@ -586,6 +586,36 @@ def test_first_frame_stale_lease_failure_is_a_noop(pg_state: str) -> None:
     assert row["error_code"] == "IMAGE_TASK_LEASE_EXPIRED"
 
 
+@pytest.mark.parametrize("action", ["renew", "provider", "checkpoint", "prepare"])
+def test_first_frame_stale_attempt_cannot_change_checkpoint_or_lease(pg_state: str, action: str):
+    from app.image_tasks import (
+        _require_owned_task,
+        record_image_task_provider,
+        renew_image_task_lease,
+        save_first_frame_task_checkpoint,
+    )
+
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="late-image")
+    with pg_transaction() as raw:
+        lease = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="reused-id")
+    assert lease is not None
+    _exec(pg_state, "UPDATE first_frame_tasks SET attempt=attempt+1 WHERE id='late-image'")
+    with pytest.raises(RuntimeError, match="lease was lost"):
+        with pg_transaction() as raw:
+            conn = BusinessConnection.postgres(raw)
+            if action == "renew":
+                renew_image_task_lease(conn, table="first_frame_tasks", lease=lease)
+            elif action == "provider":
+                record_image_task_provider(
+                    conn, table="first_frame_tasks", lease=lease, provider="old", model="old"
+                )
+            elif action == "checkpoint":
+                save_first_frame_task_checkpoint(conn, lease=lease, candidates=[])
+            else:
+                _require_owned_task(conn, "first_frame_tasks", lease)
+
+
 def test_first_frame_submission_fence_splits_uncertain_and_retryable(pg_state: str) -> None:
     _seed_base(pg_state)
     _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-1")
@@ -941,6 +971,191 @@ def _configure_deepseek(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.script_rewrite as script_rewrite
 
     monkeypatch.setattr(script_rewrite, "SettingsRepository", _StubSettingsRepository)
+
+
+@pytest.mark.parametrize("service", ["first_frame", "rewrite"])
+def test_stale_failure_cannot_release_current_attempt_budget(pg_state: str, service: str) -> None:
+    from app.usage_billing import accept_operation
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES(%s,true,7)",
+        (service,),
+    )
+    if service == "first_frame":
+        _seed_image_task(pg_state, table="first_frame_tasks", task_id="late")
+        table = "first_frame_tasks"
+        with pg_transaction() as raw:
+            lease = acquire_first_frame_task(
+                BusinessConnection.postgres(raw), worker_id="same-worker"
+            )
+    else:
+        _seed_script_rewrite_task(pg_state, task_id="late")
+        table = "script_rewrite_tasks"
+        lease = _rewrite_lease(pg_state, "same-worker")
+    assert lease is not None
+    with pg_transaction() as raw:
+        accept_operation(
+            BusinessConnection.postgres(raw),
+            user_id="u1",
+            service=service,
+            source_id="late",
+            units=1,
+        )
+    # A restarted worker may reuse its name: attempt is the fencing token.
+    _exec(pg_state, f"UPDATE {table} SET attempt=attempt+1 WHERE id='late'")
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        if service == "first_frame":
+            fail_image_task(
+                conn,
+                table="first_frame_tasks",
+                lease=lease,
+                cause=ValueError("late"),
+                submission_started=False,
+            )
+        else:
+            fail_script_rewrite_task(
+                conn, lease=lease, cause=ValueError("late"), submission_started=False
+            )
+    assert _one(pg_state, "SELECT reserved_credits FROM wallets WHERE user_id='u1'") == 7
+    assert _task_status(pg_state, table, "late") == "RUNNING"
+
+
+def test_uncertain_checkpoint_recovery_releases_old_budget(pg_state: str) -> None:
+    from app.usage_billing import accept_operation, finish_source, reconcile_operations
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES('first_frame',true,7)",
+    )
+    _seed_image_task(
+        pg_state,
+        table="first_frame_tasks",
+        task_id="old",
+        status="SUBMISSION_UNCERTAIN",
+        result_json=_FIRST_FRAME_CHECKPOINT_JSON,
+    )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        accept_operation(conn, user_id="u1", service="first_frame", source_id="old", units=1)
+        assert reconcile_operations(conn) == 1
+        accept_operation(conn, user_id="u1", service="first_frame", source_id="new", units=1)
+        finish_source(conn, "new", units=1, succeeded=True)
+    assert _one(pg_state, "SELECT reserved_credits FROM wallets WHERE user_id='u1'") == 0
+    assert _one(pg_state, "SELECT sum(charged_credits) FROM billing_operations") == 7
+
+
+def test_pg_first_frame_quality_transport_records_parent_cost(pg_state: str, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.first_frames import ApilioFirstFrameQualityInspector
+    from app.usage_billing import accept_operation
+
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="quality-cost")
+    _exec(
+        pg_state,
+        "INSERT INTO billing_tariffs(service,unit_cost_fen) VALUES('quality_inspection',0.125)",
+    )
+    with pg_transaction() as raw:
+        accept_operation(
+            BusinessConnection.postgres(raw),
+            user_id="u1",
+            service="first_frame",
+            source_id="quality-cost",
+            units=1,
+        )
+
+    class Transport:
+        def post(self, *args, **kwargs):
+            return b'{"choices":[{"message":{"content":"{}"}}]}', {}
+
+    inspector = ApilioFirstFrameQualityInspector(api_key="test-key", transport=Transport())
+    monkeypatch.setattr(
+        "app.generation_worker.prepare_first_frame_task",
+        lambda *args, **kwargs: SimpleNamespace(
+            provider=SimpleNamespace(provider_name="fake"), plan=SimpleNamespace(model="fake")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.generation_worker.record_image_task_provider", lambda *args, **kwargs: None
+    )
+
+    def execute(*args, **kwargs):
+        inspector._chat_json([])
+        raise ValueError("publication unavailable")
+
+    monkeypatch.setattr("app.generation_worker.run_first_frame_task_outside_transaction", execute)
+    assert _run_worker("quality-worker") == 1
+    assert (
+        _one(pg_state, "SELECT cost_fen FROM billing_attempts WHERE service='quality_inspection'")
+        == 0.125
+    )
+    assert (
+        _one(
+            pg_state,
+            "SELECT source_id FROM billing_operations WHERE id=(SELECT operation_id "
+            "FROM billing_attempts WHERE service='quality_inspection')",
+        )
+        == "quality-cost"
+    )
+
+
+def test_pg_analysis_keeps_known_call_cost_when_repair_fails(pg_state: str) -> None:
+    from app.analysis import ProviderResponse
+    from app.usage_billing import accept_operation
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO "
+        "assets(id,project_id,kind,storage_uri,sha256,size_bytes,content_type,created_by_user_id) VALUES('analysis-input','proj-1','reference_video','fake://bucket/ref.mp4',%s,8,'video/mp4','u1')",
+        ("a" * 64,),
+    )
+    _exec(
+        pg_state,
+        "INSERT INTO "
+        "analysis_tasks(id,project_id,asset_id,created_by_user_id,duration_seconds) "
+        "VALUES('analysis-failed','proj-1','analysis-input','u1',5)",
+    )
+    _exec(
+        pg_state,
+        "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+        "VALUES('analysis',true,7,2.5)",
+    )
+    with pg_transaction() as raw:
+        accept_operation(
+            BusinessConnection.postgres(raw),
+            user_id="u1",
+            service="analysis",
+            source_id="analysis-failed",
+            units=1,
+        )
+
+    class Provider:
+        requires_https_video_url = False
+
+        def analyze(self, **kwargs):
+            return ProviderResponse(text="invalid", raw={})
+
+        def repair_json(self, **kwargs):
+            raise ValueError("repair failed")
+
+    assert (
+        run_pg_worker_once(
+            worker_id="analysis-worker",
+            storage=FakeStorageAdapter(provider="fake", bucket="bucket"),
+            analysis_provider=Provider(),
+            max_tasks=1,
+        )
+        == 1
+    )
+    assert _one(pg_state, "SELECT cost_fen FROM billing_attempts WHERE service='analysis'") == 2.5
+    assert _one(pg_state, "SELECT charged_credits FROM billing_operations") == 0
+    assert _one(pg_state, "SELECT reserved_credits FROM wallets WHERE user_id='u1'") == 0
 
 
 def test_script_rewrite_claim_is_exclusive(pg_state: str) -> None:

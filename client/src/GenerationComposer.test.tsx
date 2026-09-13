@@ -1576,9 +1576,7 @@ describe("GenerationComposer", () => {
     storageWrite.mockRestore();
   });
 
-  // F-05（前端分析报告 2026-09-12）：余额软预检不足时拦截建批，
-  // 并提供「去充值」引导（客户 lane 打开充值弹窗）。
-  it("F-05：余额软预检不足时拦截建批并给出去充值入口", async () => {
+  it("零余额仍提交服务端按配置计价，不以视频秒数误拦免费功能", async () => {
     window.localStorage.clear();
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: {
@@ -1600,6 +1598,12 @@ describe("GenerationComposer", () => {
       stale_reasons: [],
     });
     const onRecharge = vi.fn();
+    const freeBatch = {
+      id: "free-batch",
+      project_id: "project-1",
+      prompt_version_id: "prompt-1",
+    } as api.GenerationBatch;
+    vi.mocked(api.createGenerationBatch).mockResolvedValue(freeBatch);
 
     render(
       <WorkspaceHost onRecharge={onRecharge} walletProvider={async () => 0} />,
@@ -1610,17 +1614,12 @@ describe("GenerationComposer", () => {
     fireEvent.click(submit);
 
     await waitFor(() => {
-      expect(api.createGenerationBatch).not.toHaveBeenCalled();
-      expect(
-        screen.getByRole("button", { name: "余额不足，去充值" }),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(/余额不足：本次预计消耗 15 秒，当前余额 0 秒/),
-      ).toBeInTheDocument();
+      expect(api.createGenerationBatch).toHaveBeenCalledTimes(1);
     });
-
-    fireEvent.click(screen.getByRole("button", { name: "余额不足，去充值" }));
-    expect(onRecharge).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(props.onBatchCreated).toHaveBeenCalledWith(freeBatch),
+    );
+    expect(onRecharge).not.toHaveBeenCalled();
   });
 
   // F-05 服务端权威 402 契约：insufficientBalance 置位且幂等记录保留

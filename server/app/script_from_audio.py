@@ -278,7 +278,11 @@ def enqueue_script_from_audio_task(
     metadata = json.loads(str(asset["metadata_json"] or "{}"))
     duration = metadata.get("duration_seconds") or metadata.get("duration_sec") or 0
     accept_operation(
-        conn, user_id=actor.id, service="asr", source_id=str(row["id"]), units=duration  # type: ignore[attr-defined]
+        conn,
+        user_id=actor.id,  # type: ignore[attr-defined]
+        service="asr",
+        source_id=str(row["id"]),
+        units=duration,
     )
     write_audit(
         conn,
@@ -672,7 +676,7 @@ def fail_script_from_audio_task(
     else:
         status = "FAILED"
         code = "SCRIPT_FROM_AUDIO_PIPELINE_FAILED"
-    conn.execute(
+    updated = conn.execute(
         """
         UPDATE script_from_audio_tasks
         SET status = %s, error_code = %s,
@@ -697,7 +701,10 @@ def fail_script_from_audio_task(
             now,
         ),
     )
-    if status == "FAILED":
+    if updated.rowcount != 1:
+        conn.rollback()
+        return
+    if status in {"FAILED", "SUBMISSION_UNCERTAIN"}:
         from app.usage_billing import complete_source_attempt, finish_source
 
         complete_source_attempt(conn, lease.id, usage=None)

@@ -688,6 +688,7 @@ class FakeH3Provider(H3Provider):
             status="SUCCEEDED",
             result_url=f"fake://h3-results/{provider_task_id}.mp4",
             result_content=result_content,
+            output_seconds=int(request["duration"]),
             audio_quality_status="AUDIO_OK" if audio_ok else "AUDIO_QUALITY_FAILED",
             quality_issue_codes=[] if audio_ok else ["AUDIO_QUALITY_FAILED"],
         )

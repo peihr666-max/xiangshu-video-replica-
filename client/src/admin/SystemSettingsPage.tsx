@@ -7,12 +7,12 @@ import {
   updateControlRuntimeSettings,
 } from "../api";
 import { type SettingsBackend, SettingsPanel } from "../SettingsPanel";
+import { BillingRatesManager } from "./BillingRatesManager";
 import { CustomerPricingManager } from "./CustomerPricingManager";
 import { H3ExtendedModesSection } from "./H3ExtendedModesSection";
 import { LegacyCreditPolicyManager } from "./LegacyCreditPolicyManager";
 import { PaymentSettingsSection } from "./PaymentSettingsSection";
 import { QueueModeSection } from "./QueueModeSection";
-import { BillingRatesManager } from "./BillingRatesManager";
 import { TabBar } from "./ui/TabBar";
 import { ViralRuntimeSection } from "./ViralRuntimeSection";
 

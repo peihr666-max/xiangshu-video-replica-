@@ -13,10 +13,11 @@ server/tests/test_cw041_internal_identity_exit.py
 server/tests/test_cw056_supported_head_matrix.py
 server/tests/test_cw059_rbac_pg_matrix.py
 server/tests/test_cw075_discount_model.py
+server/tests/test_gate1_bootstrap.py
 server/tests/test_independent_creation.py
 server/tests/test_migration_guard_manifest.py
 server/tests/test_operation_costs.py
+server/tests/test_ops_metrics.py
 server/tests/test_postgres_migrations.py
-server/tests/test_security_contracts.py
-server/tests/test_viral_keywords.py
-server/tests/test_zpay.py
+server/tests/test_usage_billing.py
+server/tests/test_wechat_native_provider.py

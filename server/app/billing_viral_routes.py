@@ -65,7 +65,7 @@ def refresh_statistics(
             user_id=actor.id,
             service="viral_data",
             source_id=source,
-            units=len(ids),
+            units=len(pending),
             request_fingerprint=fingerprint,
         )
     succeeded = 0

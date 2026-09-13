@@ -963,8 +963,17 @@ export type OralPrice = {
 };
 
 /** 按秒报价；预算与提交使用相同的服务端计算。 */
-export async function getOralPrice(input?: { script_text?: string; audio_asset_id?: string }): Promise<OralPrice> {
-  return input ? requestApiJson<OralPrice>("/api/oral/quote", "读取口播报价失败", { method: "POST", body: JSON.stringify(input), headers: { "Content-Type": "application/json" } }) : requestApiJson<OralPrice>("/api/oral/price", "读取口播报价失败");
+export async function getOralPrice(input?: {
+  script_text?: string;
+  audio_asset_id?: string;
+}): Promise<OralPrice> {
+  return input
+    ? requestApiJson<OralPrice>("/api/oral/quote", "读取口播报价失败", {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "Content-Type": "application/json" },
+      })
+    : requestApiJson<OralPrice>("/api/oral/price", "读取口播报价失败");
 }
 
 export type OralAvatarRecord = {
@@ -5919,9 +5928,20 @@ export function fetchViralVideoMedia(
   );
 }
 
-export function refreshViralVideoStatistics(videoIds: string[], key: string): Promise<ViralStatisticsResponse> {
-  return requestApiJson<ViralStatisticsResponse>("/api/viral/videos/statistics/refresh", "刷新视频统计失败",
-    {method:"POST", headers:{"Idempotency-Key":key}, body:JSON.stringify({videoIds})}, VIRAL_STATISTICS_TIMEOUT_MS);
+export function refreshViralVideoStatistics(
+  videoIds: string[],
+  key: string,
+): Promise<ViralStatisticsResponse> {
+  return requestApiJson<ViralStatisticsResponse>(
+    "/api/viral/videos/statistics/refresh",
+    "刷新视频统计失败",
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({ videoIds }),
+    },
+    VIRAL_STATISTICS_TIMEOUT_MS,
+  );
 }
 
 /** 按需补齐视频号互动统计；服务端负责缓存与失败退避。 */
@@ -6032,7 +6052,10 @@ export type CustomerPricing = {
 };
 
 export function getWorkspacePricing(): Promise<CustomerPricing> {
-  return requestApiJson<CustomerPricing>("/api/customer/pricing", "读取功能价格失败");
+  return requestApiJson<CustomerPricing>(
+    "/api/customer/pricing",
+    "读取功能价格失败",
+  );
 }
 
 export async function customerGetPricing(

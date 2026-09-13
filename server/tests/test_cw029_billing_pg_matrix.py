@@ -384,6 +384,10 @@ def test_order_price_snapshot_survives_runtime_price_change(
 
 def _seed_task(dsn: str, task_id: str, user_id: str = "user_1") -> None:
     with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits) "
+            "VALUES('video_768p',true,1) ON CONFLICT(service) DO NOTHING"
+        )
         _seed_task_chain(conn, task_id=task_id, user_id=user_id)
 
 
@@ -430,7 +434,7 @@ def test_task_result_duplicate_and_out_of_order_finalization_is_idempotent(
         )
         conn.execute(
             "UPDATE generation_tasks "
-            "SET status = 'SUCCEEDED', archive_status = 'ARCHIVED', "
+            "SET status = 'SUCCEEDED', actual_output_seconds=2, archive_status = 'ARCHIVED', "
             "    result_asset_id = 'result_dup' WHERE id = 'task_dup'"
         )
     # Duplicate result arrival: the second finalize returns the recorded

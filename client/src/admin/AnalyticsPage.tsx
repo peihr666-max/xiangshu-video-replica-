@@ -13,7 +13,7 @@ const tabs = [
  * 与成本明细（按日成本构成，随成本统计任务接入）。
  */
 export function AnalyticsPage({
-  readOnly: _readOnly = false,
+  readOnly = false,
   initialTab = "profit",
 }: {
   readOnly?: boolean;
@@ -28,8 +28,8 @@ export function AnalyticsPage({
         items={tabs}
         onChange={setTab}
       />
-      {tab === "profit" ? <BillingEconomics /> : null}
-      {tab === "cost" ? <BillingEconomics /> : null}
+      {tab === "profit" ? <BillingEconomics readOnly={readOnly} /> : null}
+      {tab === "cost" ? <BillingEconomics readOnly={readOnly} /> : null}
     </div>
   );
 }

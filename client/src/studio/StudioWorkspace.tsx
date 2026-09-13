@@ -1,4 +1,3 @@
-import { BillingModulePrices } from "./BillingModulePrices";
 import {
   type ReactNode,
   useCallback,
@@ -31,6 +30,7 @@ import { CustomerCenterPage } from "../customer/CustomerCenterPage";
 import { SettingsPanel } from "../SettingsPanel";
 import type { WorkspaceShellProps } from "../workspace-shell";
 import { AnalyticsPage } from "./AnalyticsPage";
+import { BillingModulePrices } from "./BillingModulePrices";
 import {
   MaterialsPage,
   PublishPage,
@@ -323,7 +323,10 @@ export function StudioWorkspace({
     profile: customerAccount?.profile ?? null,
     profileLoadError: customerAccount?.profileLoadError ?? "",
   };
-  const [oralBudget, setOralBudget] = useState<{ seconds: number; credits: number }>();
+  const [oralBudget, setOralBudget] = useState<{
+    seconds: number;
+    credits: number;
+  }>();
   const [oralPriceFen, setOralPriceFen] = useState<number | null>(null);
   const [oralPriceCredits, setOralPriceCredits] = useState<number | null>(null);
   const [oralQuoteStatus, setOralQuoteStatus] = useState<QuoteStatus>("idle");
@@ -667,12 +670,24 @@ export function StudioWorkspace({
     setOralPriceFen(null);
     setOralQuoteStatus("loading");
     setOralQuoteError("");
-    void getOralPrice(state.page === "oral-audio" ? { audio_asset_id: state.draft.audioId || undefined } : { script_text: state.draft.script.text })
+    void getOralPrice(
+      state.page === "oral-audio"
+        ? { audio_asset_id: state.draft.audioId || undefined }
+        : { script_text: state.draft.script.text },
+    )
       .then((price) => {
         if (active) {
           setOralPriceFen(price.unit_price_fen);
           setOralPriceCredits(price.unit_credits ?? null);
-          setOralBudget(price.budget_seconds !== undefined && price.estimated_credits !== undefined ? { seconds: price.budget_seconds, credits: price.estimated_credits } : undefined);
+          setOralBudget(
+            price.budget_seconds !== undefined &&
+              price.estimated_credits !== undefined
+              ? {
+                  seconds: price.budget_seconds,
+                  credits: price.estimated_credits,
+                }
+              : undefined,
+          );
           setOralQuoteStatus("ready");
         }
       })
@@ -688,7 +703,14 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [review, generation, oralQuoteRevision, state.page, state.draft.audioId, state.draft.script.text]);
+  }, [
+    review,
+    generation,
+    oralQuoteRevision,
+    state.page,
+    state.draft.audioId,
+    state.draft.script.text,
+  ]);
 
   const retryOralQuote = useCallback(
     () => setOralQuoteRevision((value) => value + 1),

@@ -6,12 +6,13 @@ import csv
 import io
 import json
 from datetime import date
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.admin_auth_routes import AdminReader, AdminWriter
 from app.admin_write_contract import AdminWriteContract, write_with_idempotency
@@ -27,6 +28,8 @@ router = APIRouter(tags=["itemized-billing"])
 def catalog(conn: BusinessConnection, *, admin: bool) -> list[dict[str, Any]]:
     result = []
     for key, service in SERVICES.items():
+        # Global pricing always precedes the tariff lock, matching admin writes.
+        quote = retail_snapshot(conn, key, 1) if not admin else None
         tariff = read_tariff(conn, key)
         item: dict[str, Any] = {
             "service": key,
@@ -40,7 +43,7 @@ def catalog(conn: BusinessConnection, *, admin: bool) -> list[dict[str, Any]]:
             item["provider"] = service.provider
             item["tariff"] = (tariff or Tariff()).model_dump(mode="json")
         else:
-            item["quote"] = retail_snapshot(conn, key, 1)
+            item["quote"] = quote
         result.append(item)
     return result
 
@@ -87,7 +90,8 @@ def update_tariff(
         tariff = payload.tariff
         conn.execute(
             """
-            INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen,unit_rounding,updated_by_user_id)
+            INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen,
+              unit_rounding,updated_by_user_id)
             VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT(service) DO UPDATE SET
               enabled=excluded.enabled,unit_credits=excluded.unit_credits,unit_cost_fen=excluded.unit_cost_fen,
               unit_rounding=excluded.unit_rounding,updated_by_user_id=excluded.updated_by_user_id,
@@ -112,7 +116,10 @@ def update_tariff(
                 json.dumps(
                     {
                         "old": old.model_dump(mode="json") if old else None,
-                        "new": tariff.model_dump(mode="json"),
+                        "new": {
+                            **tariff.model_dump(mode="json"),
+                            "version": (old.version if old else 0) + 1,
+                        },
                         "reason": payload.reason,
                         "request_id": request_id,
                     }
@@ -215,7 +222,15 @@ def operation_detail(operation_id: str, _actor: AdminReader) -> dict[str, Any]:
         rows[0]["attempts"] = [
             dict(row)
             for row in conn.execute(
-                "SELECT * FROM billing_attempts WHERE operation_id=%s ORDER BY created_at,id",
+                "SELECT * FROM billing_effective_attempts WHERE operation_id=%s ORDER BY "
+                "created_at,id",
+                (operation_id,),
+            ).fetchall()
+        ]
+        rows[0]["evidence"] = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM billing_evidence WHERE operation_id=%s ORDER BY created_at,id",
                 (operation_id,),
             ).fetchall()
         ]
@@ -275,4 +290,58 @@ def export(
             "Content-Disposition": "attachment; filename=billing-operations.csv",
             "X-Export-Truncated": str(bool(rows and rows[0]["total_count"] > 5000)).lower(),
         },
+    )
+
+
+class EvidenceUpdate(AdminWriteContract):
+    operation_id: str
+    attempt_id: str | None = None
+    units: Decimal | None = Field(default=None, gt=0, le=2147483647, decimal_places=6)
+    cost_fen: Decimal | None = Field(default=None, ge=0, le=1000000000000, decimal_places=8)
+    reference: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> EvidenceUpdate:
+        if not self.reference.strip() or not (
+            (self.attempt_id is None and self.units is not None and self.cost_fen is None)
+            or (self.attempt_id is not None and self.units is None and self.cost_fen is not None)
+        ):
+            raise ValueError("请提供时长或单次调用成本，并填写核对凭据")
+        return self
+
+
+@router.post("/api/control/billing/evidence")
+def append_evidence(
+    payload: EvidenceUpdate, request: Request, response: Response, actor: AdminWriter
+) -> dict[str, Any]:
+    from app.billing_evidence import record_evidence
+
+    def business(raw: psycopg.Connection, _request_id: str) -> dict[str, Any]:
+        conn = BusinessConnection.postgres(raw)
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            ("billing:evidence:" + payload.operation_id,),
+        )
+        return {
+            "evidence_id": record_evidence(
+                conn,
+                operation_id=payload.operation_id,
+                actor_id=actor.user_id,
+                reference=payload.reference.strip(),
+                reason=payload.reason.strip(),
+                attempt_id=payload.attempt_id,
+                units=payload.units,
+                cost_fen=payload.cost_fen,
+            )
+        }
+
+    return write_with_idempotency(
+        request,
+        response,
+        actor,
+        payload,
+        business,
+        success_status=200,
+        unavailable_code="BILLING_EVIDENCE_UNAVAILABLE",
+        unavailable_message="核对记录暂不可用。",
     )

@@ -61,6 +61,12 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "customer_credit_pricing",
         "legacy_credit_policy",
         "wallet_credit_conversions",
+        # New-only economics tables: historical archive input must never populate them.
+        "billing_tariffs",
+        "billing_operations",
+        "billing_attempts",
+        "billing_credit_lots",
+        "billing_evidence",
         "customer_devices",
         "device_pairing_requests",
         "customer_session_state",
@@ -121,7 +127,13 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
     # （本迁移非 postgresql 方言 return，SQLite lane 不建此列）。
     # 20260912T2200: legacy records have no API key attribution; import as NULL.
     "wallet_transactions": frozenset(
-        {"discount_rate", "api_key_id", "auth_source", "pricing_snapshot_json"}
+        {
+            "discount_rate",
+            "api_key_id",
+            "auth_source",
+            "pricing_snapshot_json",
+            "billing_operation_id",
+        }
     ),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000

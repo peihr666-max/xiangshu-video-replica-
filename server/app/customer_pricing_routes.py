@@ -106,8 +106,10 @@ def update_prices(
             if value is not None:
                 conn.execute(
                     "INSERT INTO billing_tariffs(service,enabled,unit_credits,updated_by_user_id) "
-                    "VALUES (%s,%s,%s,%s) ON CONFLICT(service) DO UPDATE SET enabled=excluded.enabled, "
-                    "unit_credits=excluded.unit_credits,version=billing_tariffs.version+1,updated_at=now(), "
+                    "VALUES (%s,%s,%s,%s) ON CONFLICT(service) DO UPDATE SET "
+                    "enabled=excluded.enabled, "
+                    "unit_credits=excluded.unit_credits,version=billing_tariffs.version+1,"
+                    "updated_at=now(), "
                     "updated_by_user_id=excluded.updated_by_user_id",
                     (subject, value > 0, value, actor.user_id),
                 )

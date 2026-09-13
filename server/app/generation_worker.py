@@ -1218,12 +1218,21 @@ def run_pg_worker_once(
                 )
             if oral_attempt_id:
                 from app.usage_billing import complete_attempt
+
                 if prepared_oral.kind != "task_submit" and oral_result.outcome == "submitted":
                     with pg_transaction() as raw_conn:
-                        complete_attempt(BusinessConnection.postgres(raw_conn),attempt_id=oral_attempt_id,usage=1)
-                elif oral_result.outcome in {"failed","uncertain"}:
+                        complete_attempt(
+                            BusinessConnection.postgres(raw_conn),
+                            attempt_id=oral_attempt_id,
+                            usage=1,
+                        )
+                elif oral_result.outcome in {"failed", "uncertain"}:
                     with pg_transaction() as raw_conn:
-                        complete_attempt(BusinessConnection.postgres(raw_conn),attempt_id=oral_attempt_id,usage=None)
+                        complete_attempt(
+                            BusinessConnection.postgres(raw_conn),
+                            attempt_id=oral_attempt_id,
+                            usage=None,
+                        )
             try:
                 with pg_transaction() as raw_conn:
                     finalize_oral_work(
@@ -1299,6 +1308,17 @@ def run_pg_worker_once(
         if analysis_lease is not None:
             analysis_cost_id = ""
             analysis_cost_usage: float | None = None
+
+            def record_analysis_response() -> None:
+                nonlocal analysis_cost_usage
+                analysis_cost_usage = 1
+                with pg_transaction() as raw_conn:
+                    complete_operation_cost(
+                        BusinessConnection.postgres(raw_conn),
+                        record_id=analysis_cost_id,
+                        usage_amount=1,
+                    )
+
             try:
                 # Preparation only reads settings/asset state and creates the
                 # short-lived signed URL.  The paid provider call below runs
@@ -1321,7 +1341,9 @@ def run_pg_worker_once(
                         metadata={"resolution_basis": "default_generation_tier"},
                     )
                 with billing_context(analysis_lease.id):
-                    analysis_result = perform_analysis_task(analysis_work)
+                    analysis_result = perform_analysis_task(
+                        analysis_work, on_provider_result=record_analysis_response
+                    )
                 analysis_cost_usage = 1
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
@@ -1524,14 +1546,15 @@ def run_pg_worker_once(
                         provider=prepared.provider.provider_name,
                         model=prepared.plan.model,
                     )
-                work, stored = run_first_frame_task_outside_transaction(
-                    prepared,
-                    storage=first_frame_storage or storage,
-                    before_provider_call=mark_pg_submission_started,
-                    on_generated_images=record_pg_generated_images,
-                    heartbeat=renew_pg_first_frame_lease,
-                    checkpoint_candidates=persist_pg_first_frame_checkpoint,
-                )
+                with billing_context(first_frame_lease.id):
+                    work, stored = run_first_frame_task_outside_transaction(
+                        prepared,
+                        storage=first_frame_storage or storage,
+                        before_provider_call=mark_pg_submission_started,
+                        on_generated_images=record_pg_generated_images,
+                        heartbeat=renew_pg_first_frame_lease,
+                        checkpoint_candidates=persist_pg_first_frame_checkpoint,
+                    )
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
                     complete_first_frame_task(

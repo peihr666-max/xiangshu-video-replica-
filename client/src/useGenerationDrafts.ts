@@ -94,7 +94,6 @@ export function useGenerationDrafts({
   referenceSelectionId,
   shotCardVersionId,
   sourceAssetId,
-  walletProvider,
 }: UseGenerationDraftsInput) {
   const [scriptVersion, setScriptVersion] = useState<GenerationVersion | null>(
     null,
@@ -133,8 +132,8 @@ export function useGenerationDrafts({
   // F-06：本地草稿体系。hydrated 之前禁止防抖写入（加载失败不得销毁草稿）；
   // draftAppliedRef 记录草稿已套用，AI 改写恢复必须让位于更新的用户草稿。
   const [insufficientBalance, setInsufficientBalance] = useState<{
-    neededSeconds: number;
-    balanceSeconds: number | null;
+    neededCredits: number | null;
+    balanceCredits: number | null;
   } | null>(null);
   const [draftHydrated, setDraftHydrated] = useState(false);
   const draftAppliedRef = useRef(false);
@@ -1134,7 +1133,7 @@ export function useGenerationDrafts({
     // 恢复重放（recoverBatch）：上次提交结果不确定，批次可能已在服务端
     // 创建并扣减余额——本地余额读数偏低恰是常见组合，软预检绝不能在此
     // 清掉指向可能已存在付费批次的唯一恢复记录；同键幂等重放本身安全。
-    isRecovery = false,
+    _isRecovery = false,
   ) {
     const actionGeneration = actionGenerationRef.current + 1;
     actionGenerationRef.current = actionGeneration;
@@ -1145,28 +1144,7 @@ export function useGenerationDrafts({
     setInsufficientBalance(null);
     const storageKey = idempotencyStorageKey(currentUserId, projectId);
     try {
-      // F-05 软预检：余额明显不足时直接给出充值引导，不打服务端
-      // （服务端 402 硬校验仍在，预检只是更早、更友好的反馈）。
-      // 恢复重放跳过预检（P1-2：不得销毁可能已建批次的恢复记录）。
-      if (walletProvider && !isRecovery) {
-        const neededSeconds =
-          idempotencyRecord.request.output_duration_seconds *
-          idempotencyRecord.request.quantity;
-        const balanceSeconds = await walletProvider().catch(() => null);
-        if (actionGeneration !== actionGenerationRef.current) {
-          return;
-        }
-        if (balanceSeconds !== null && balanceSeconds < neededSeconds) {
-          clearIdempotencyRecord(storageKey, idempotencyRecord);
-          idempotencyRecordRef.current = null;
-          setRecoveryRecord(null);
-          setInsufficientBalance({ neededSeconds, balanceSeconds });
-          setError(
-            `余额不足：本次预计消耗 ${neededSeconds} 秒，当前余额 ${balanceSeconds} 秒，请充值后重试。`,
-          );
-          return;
-        }
-      }
+      // 服务端按当前科目、分辨率和折扣冻结积分；零价功能不要求钱包余额。
       const batch = await createGenerationBatch(
         projectId,
         idempotencyRecord.request,
@@ -1202,10 +1180,8 @@ export function useGenerationDrafts({
         }
         if (insufficient && actionGeneration === actionGenerationRef.current) {
           setInsufficientBalance({
-            neededSeconds:
-              idempotencyRecord.request.output_duration_seconds *
-              idempotencyRecord.request.quantity,
-            balanceSeconds: null,
+            neededCredits: null,
+            balanceCredits: null,
           });
         }
         setError(

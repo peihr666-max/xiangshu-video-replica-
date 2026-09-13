@@ -1865,13 +1865,19 @@ export function applyLegacyCreditConversion(
 }
 
 export async function downloadBillingCsv(query: string): Promise<string> {
-  const response = await requestControl(`/api/control/billing/export?${query}`, {});
-  if (!response.ok) throw await parseActivationError(response, "导出经营明细失败");
+  const response = await requestControl(
+    `/api/control/billing/export?${query}`,
+    {},
+  );
+  if (!response.ok)
+    throw await parseActivationError(response, "导出经营明细失败");
   const url = URL.createObjectURL(await response.blob());
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = "逐项经营明细.csv";
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  return response.headers.get("X-Export-Truncated") === "true" ? "已导出前 5000 条；请缩小日期范围后分批导出。" : "明细已导出。";
+  return response.headers.get("X-Export-Truncated") === "true"
+    ? "已导出前 5000 条；请缩小日期范围后分批导出。"
+    : "明细已导出。";
 }

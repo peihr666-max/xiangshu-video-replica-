@@ -139,7 +139,8 @@ def _link_billing_attempt(conn: BusinessConnection, record_id: str) -> None:
     if operation is None:
         return
     attempt = conn.execute(
-        "INSERT INTO billing_attempts(id,operation_id,attempt_key,service,provider,unit,unit_cost_fen) "
+        "INSERT INTO billing_attempts(id,operation_id,attempt_key,service,provider,unit,"
+        "unit_cost_fen) "
         "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(operation_id,service,attempt_key) "
         "DO UPDATE SET attempt_key=excluded.attempt_key RETURNING id",
         (
@@ -184,8 +185,10 @@ def complete_operation_cost(
     )
     status = "ACTUAL" if cost is not None else "UNKNOWN"
     updated = conn.execute(
-        "UPDATE operation_cost_records SET usage_amount=%s,cost_fen=%s,status=%s,completed_at=now() "
-        "WHERE id=%s AND (status='PENDING' OR (status=%s AND usage_amount IS NOT DISTINCT FROM %s::numeric))",
+        "UPDATE operation_cost_records SET usage_amount=%s,cost_fen=%s,status=%s,"
+        "completed_at=now() "
+        "WHERE id=%s AND (status='PENDING' OR (status=%s AND usage_amount IS NOT DISTINCT "
+        "FROM %s::numeric))",
         (usage, cost, status, record_id, status, usage),
     )
     if updated.rowcount != 1:
@@ -224,7 +227,8 @@ def record_video_generation_cost(
     ).fetchone()
     if record is None:
         conn.execute(
-            "UPDATE generation_tasks SET actual_output_seconds=%s,cost_status='UNKNOWN' WHERE id=%s",
+            "UPDATE generation_tasks SET actual_output_seconds=%s,cost_status='UNKNOWN' "
+            "WHERE id=%s",
             (output_seconds, task_id),
         )
         return
@@ -234,7 +238,8 @@ def record_video_generation_cost(
         "SELECT cost_fen,status FROM operation_cost_records WHERE id=%s", (record_id,)
     ).fetchone()
     conn.execute(
-        "UPDATE generation_tasks SET actual_output_seconds=%s,actual_cost=%s,cost_status=%s WHERE id=%s",
+        "UPDATE generation_tasks SET actual_output_seconds=%s,actual_cost=%s,"
+        "cost_status=%s WHERE id=%s",
         (
             output_seconds,
             Decimal(str(cost[0])) / 100 if cost[0] is not None else None,

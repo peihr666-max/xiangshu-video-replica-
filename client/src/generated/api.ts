@@ -869,6 +869,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/oral/quote": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Read Oral Budget */
+    post: operations["read_oral_budget_api_oral_quote_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/oral/consents": {
     parameters: {
       query?: never;
@@ -2020,6 +2037,176 @@ export interface paths {
     /** Update Prices */
     put: operations["update_prices_api_control_settings_customer_pricing_put"];
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/billing/catalog": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Admin Catalog */
+    get: operations["admin_catalog_api_control_billing_catalog_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/billing/tariff": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Update Tariff */
+    put: operations["update_tariff_api_control_billing_tariff_put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/billing/catalog": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Customer Catalog */
+    get: operations["customer_catalog_api_customer_billing_catalog_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/customer/billing/quote": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Customer Quote */
+    get: operations["customer_quote_api_customer_billing_quote_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/billing/operations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Operations */
+    get: operations["operations_api_control_billing_operations_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/billing/statistics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Report */
+    get: operations["report_api_control_billing_statistics_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/billing/operations/{operation_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Operation Detail */
+    get: operations["operation_detail_api_control_billing_operations__operation_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/billing/export": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Export */
+    get: operations["export_api_control_billing_export_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/billing/evidence": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Append Evidence */
+    post: operations["append_evidence_api_control_billing_evidence_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/viral/videos/statistics/refresh": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Refresh Statistics */
+    post: operations["refresh_statistics_api_viral_videos_statistics_refresh_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -6642,6 +6829,29 @@ export interface components {
       /** Idempotency Key */
       idempotency_key: string;
     };
+    /** EvidenceUpdate */
+    EvidenceUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Operation Id */
+      operation_id: string;
+      /** Attempt Id */
+      attempt_id?: string | null;
+      /** Units */
+      units?: number | string | null;
+      /** Cost Fen */
+      cost_fen?: number | string | null;
+      /** Reference */
+      reference: string;
+    };
     /** ExchangeRequest */
     ExchangeRequest: {
       /** Credential */
@@ -7290,6 +7500,13 @@ export interface components {
       /** Reason */
       reason: string;
     };
+    /** OralBudgetRequest */
+    OralBudgetRequest: {
+      /** Script Text */
+      script_text?: string | null;
+      /** Audio Asset Id */
+      audio_asset_id?: string | null;
+    };
     /** OralConsentRequest */
     OralConsentRequest: {
       /** Identity Id */
@@ -7558,11 +7775,11 @@ export interface components {
     /** PricingConfig */
     PricingConfig: {
       /** Video 768P */
-      video_768p: number;
+      video_768p?: number | null;
       /** Video 2K */
-      video_2k: number;
+      video_2k?: number | null;
       /** Oral */
-      oral: number;
+      oral?: number | null;
       /** Points Per Yuan */
       points_per_yuan: number;
       /**
@@ -8047,6 +8264,11 @@ export interface components {
       charge_without_paid_order_count: number;
       /** Pending Order Count */
       pending_order_count: number;
+    };
+    /** RefreshRequest */
+    RefreshRequest: {
+      /** Videoids */
+      videoIds: string[];
     };
     /** RenameProjectRequest */
     RenameProjectRequest: {
@@ -8806,6 +9028,47 @@ export interface components {
       /** Total Completed */
       total_completed: number;
     };
+    /** Tariff */
+    Tariff: {
+      /**
+       * Enabled
+       * @default false
+       */
+      enabled: boolean;
+      /** Unit Credits */
+      unit_credits?: number | string | null;
+      /** Unit Cost Fen */
+      unit_cost_fen?: number | string | null;
+      /**
+       * Unit Rounding
+       * @default ceil
+       * @enum {string}
+       */
+      unit_rounding: "ceil" | "exact";
+      /**
+       * Version
+       * @default 0
+       */
+      version: number;
+    };
+    /** TariffUpdate */
+    TariffUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Service */
+      service: string;
+      /** Expected Version */
+      expected_version: number;
+      tariff: components["schemas"]["Tariff"];
+    };
     /** TaskResult */
     TaskResult: {
       /** Id */
@@ -9448,6 +9711,12 @@ export interface components {
       generation_batch_id?: string | null;
       /** Credit Source */
       credit_source?: string | null;
+      /** Billing Operation Id */
+      billing_operation_id?: string | null;
+      /** Service */
+      service?: string | null;
+      /** Service Name */
+      service_name?: string | null;
     };
     /** ZPaySettingsUpdate */
     ZPaySettingsUpdate: {
@@ -11477,6 +11746,44 @@ export interface operations {
           "application/json": {
             [key: string]: number;
           };
+        };
+      };
+    };
+  };
+  read_oral_budget_api_oral_quote_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OralBudgetRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: number;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
     };
@@ -13865,6 +14172,337 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["PricingResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  admin_catalog_api_control_billing_catalog_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+    };
+  };
+  update_tariff_api_control_billing_tariff_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TariffUpdate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  customer_catalog_api_customer_billing_catalog_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+    };
+  };
+  customer_quote_api_customer_billing_quote_get: {
+    parameters: {
+      query: {
+        service: string;
+        units?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  operations_api_control_billing_operations_get: {
+    parameters: {
+      query: {
+        start: string;
+        end: string;
+        user_id?: string | null;
+        service?: string | null;
+        module?: string | null;
+        provider?: string | null;
+        limit?: number;
+        offset?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  report_api_control_billing_statistics_get: {
+    parameters: {
+      query: {
+        start: string;
+        end: string;
+        grain?: string;
+        user_id?: string | null;
+        service?: string | null;
+        module?: string | null;
+        provider?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  operation_detail_api_control_billing_operations__operation_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        operation_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  export_api_control_billing_export_get: {
+    parameters: {
+      query: {
+        start: string;
+        end: string;
+        user_id?: string | null;
+        service?: string | null;
+        module?: string | null;
+        provider?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  append_evidence_api_control_billing_evidence_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EvidenceUpdate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  refresh_statistics_api_viral_videos_statistics_refresh_post: {
+    parameters: {
+      query?: never;
+      header: {
+        "Idempotency-Key": string;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RefreshRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ViralStatisticsResponse"];
         };
       };
       /** @description Validation Error */

@@ -274,7 +274,7 @@ def test_wallet_ledger_sequence_migration_is_reversible_on_postgres() -> None:
                 "idempotency_key) VALUES ('ledger-tx-historical', 'ledger-user', 'CHARGE', 10, 0, "
                 "'ledger-order-historical', 'ledger-key-historical')"
             )
-        command.upgrade(config, "head")
+        command.upgrade(config, "063_wallet_ledger_sequence")
         with psycopg.connect(dsn) as conn:
             assert conn.execute(
                 "SELECT 1 FROM information_schema.columns "
@@ -358,7 +358,7 @@ def test_wallet_ledger_sequence_migration_is_reversible_on_postgres() -> None:
                 is None
             )
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "063_wallet_ledger_sequence")
         with psycopg.connect(dsn) as conn:
             assert conn.execute(
                 "SELECT 1 FROM information_schema.columns "
@@ -852,6 +852,8 @@ def test_pg_free_grant_downgrade_preserves_ledger(
     try:
         dsn = _t08_database(database_name)
         config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+        # Exercise the historic 054 guard before any new funding facts exist.
+        command.downgrade(config, "20260913T0630_account_credit_operations")
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(
                 "INSERT INTO users (id, username, display_name, role) "
@@ -893,7 +895,7 @@ def test_pg_free_grant_downgrade_preserves_ledger(
 
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                HEAD_REVISION,
+                "20260913T0630_account_credit_operations",
             )
             for table in tables:
                 assert conn.execute(f"SELECT * FROM {table}").fetchall() == before[table]

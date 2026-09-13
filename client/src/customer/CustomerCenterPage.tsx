@@ -598,13 +598,15 @@ export function CustomerCenterPage({
                     }[item.type]
                   }
                   <small>
-                    {item.service_name ? item.service_name : item.type === "CONVERSION"
-                      ? "历史余额"
-                      : item.oral_task_id
-                        ? "数字人口播"
-                        : item.task_id
-                          ? "视频生成"
-                          : "充值 / 赠送"}
+                    {item.service_name
+                      ? item.service_name
+                      : item.type === "CONVERSION"
+                        ? "历史余额"
+                        : item.oral_task_id
+                          ? "数字人口播"
+                          : item.task_id
+                            ? "视频生成"
+                            : "充值 / 赠送"}
                   </small>
                   {(item.generation_batch_id || item.oral_task_id) && (
                     <button

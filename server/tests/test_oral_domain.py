@@ -327,7 +327,8 @@ def _seed_oral(dsn: str) -> None:
         # Most lifecycle tests use an explicit low per-second tariff; absence is tested separately.
         pg.execute("TRUNCATE billing_tariffs")
         pg.execute(
-            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) VALUES ('oral',true,0.1,0.05)"
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES ('oral',true,0.1,0.05)"
         )
         pg.execute(
             "UPDATE customer_credit_pricing SET version=1,config_json=%s",
@@ -1613,7 +1614,7 @@ def test_clone_submission_uncertain_is_persisted_and_not_retried(
         "SELECT id, status, submission_state FROM oral_avatars WHERE idempotency_key = %s",
         ("avatar-uncertain-key",),
     )
-    assert persisted["status"] == "PENDING"
+    assert persisted["status"] == "FAILED"
     assert persisted["submission_state"] == "SUBMISSION_UNKNOWN"
     assert started.task_id == persisted["id"]
     assert _claim("second-worker") is None
@@ -1909,7 +1910,8 @@ def test_oral_billing_cancel_releases_once_and_success_settles_once(
         " 'final-hash', 9, 'video/mp4', 'employee_1')"
     )
     _exec(
-        "UPDATE oral_tasks SET status = 'SUCCEEDED', duration_sec=1, result_asset_id = %s WHERE id = %s",
+        "UPDATE oral_tasks SET status = 'SUCCEEDED', duration_sec=1, result_asset_id = %s "
+        "WHERE id = %s",
         ("oral-final-result", succeeded.task_id),
     )
     settled = _finalize_billing(oral_task_id=succeeded.task_id)
@@ -2477,6 +2479,62 @@ def test_oral_clone_claim_is_exclusive_and_expired_submit_is_quarantined(
         "SUBMISSION_UNKNOWN",
         1,
     )
+
+
+@pytest.mark.parametrize("kind", ["avatar", "voice"])
+@pytest.mark.parametrize("expired", [False, True])
+def test_stopped_clone_refunds_budget_and_rejects_late_receipt(
+    scene: str, kind: str, expired: bool
+):
+    from app.oral_worker import OralLeaseLostError, OralWorkResult, finalize_oral_work
+
+    _exec(
+        "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES(%s,true,7)",
+        (f"{kind}_clone",),
+    )
+    if kind == "avatar":
+        started = _start_avatar(
+            actor=actor(),
+            identity_id="ident-1",
+            title="clone",
+            source_asset_id="asset-src",
+            source_kind="VIDEO",
+            consent_id=_consent_for(purpose="AVATAR", source_asset_id="asset-src"),
+            idempotency_key="paid-clone",
+        )
+    else:
+        started = _start_voice(
+            actor=actor(),
+            identity_id="ident-1",
+            title="clone",
+            source_asset_id="asset-audio",
+            consent_id=_consent_for(purpose="VOICE", source_asset_id="asset-audio"),
+            idempotency_key="paid-clone",
+        )
+    assert _wallet("employee_1") == (13, 7)
+    lease = _claim("clone-worker")
+    assert lease is not None
+    if expired:
+        _exec(
+            f"UPDATE oral_{'avatars' if kind == 'avatar' else 'voices'} SET "
+            "lease_expires_at='2000-01-01T00:00:00Z' WHERE id=%s",
+            (started.task_id,),
+        )
+        assert _claim("recovery-worker") is None
+    else:
+        with pg_transaction() as raw:
+            finalize_oral_work(
+                BusinessConnection.postgres(raw), lease=lease, result=OralWorkResult("uncertain")
+            )
+    assert _wallet("employee_1") == (20, 0)
+    with pytest.raises(OralLeaseLostError):
+        with pg_transaction() as raw:
+            finalize_oral_work(
+                BusinessConnection.postgres(raw),
+                lease=lease,
+                result=OralWorkResult("submitted", provider_task_id="late-receipt"),
+            )
+    assert _wallet("employee_1") == (20, 0)
 
 
 def test_expired_voice_poll_lease_cannot_delete_winner_demo(
@@ -3168,7 +3226,8 @@ def test_oral_task_serialization_reports_billing_status_and_available_actions(
             """
         )
         _exec(
-            "UPDATE oral_tasks SET status = 'SUCCEEDED', duration_sec=1, result_asset_id = 'oral-final-result' "
+            "UPDATE oral_tasks SET status = 'SUCCEEDED', duration_sec=1, result_asset_id = "
+            "'oral-final-result' "
             "WHERE id = %s",
             (uncertain.task_id,),
         )

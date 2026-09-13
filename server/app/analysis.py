@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -391,8 +391,11 @@ def analyze_video(
     video_uri: str,
     video_duration_seconds: float,
     provider: VideoAnalysisProvider,
+    on_provider_result: Callable[[], None] | None = None,
 ) -> AnalysisResult:
     response = provider.analyze(video_uri=video_uri, duration_seconds=video_duration_seconds)
+    if on_provider_result is not None:
+        on_provider_result()
     try:
         analysis = parse_analysis_response(response.text, duration_seconds=video_duration_seconds)
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:

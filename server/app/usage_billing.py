@@ -34,7 +34,8 @@ def accept_operation(
     # A user-scoped lock also serializes free requests without a wallet row.
     conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("billing:user:" + user_id,))
     old = conn.execute(
-        "SELECT id, budget_units, request_fingerprint FROM billing_operations WHERE user_id=%s AND service=%s "
+        "SELECT id, budget_units, request_fingerprint FROM billing_operations WHERE "
+        "user_id=%s AND service=%s "
         "AND source_id=%s AND billing_round=%s",
         (user_id, service, source_id, billing_round),
     ).fetchone()
@@ -64,7 +65,8 @@ def accept_operation(
             "SELECT available_credits FROM wallets WHERE user_id=%s FOR UPDATE", (user_id,)
         ).fetchone()
         updated = conn.execute(
-            "UPDATE wallets SET available_credits=available_credits-%s, reserved_credits=reserved_credits+%s, "
+            "UPDATE wallets SET available_credits=available_credits-%s, "
+            "reserved_credits=reserved_credits+%s, "
             "updated_at=now() WHERE user_id=%s AND available_credits >= %s",
             (credits, credits, user_id, credits),
         )
@@ -124,8 +126,10 @@ def accept_operation(
             )
     operation_id = str(uuid4())
     conn.execute(
-        "INSERT INTO billing_operations(id,user_id,service,module,source_id,billing_round,submission_id,api_key_id,"
-        "auth_source,pricing_snapshot_json,unit,budget_units,reserved_credits,funding_json,request_fingerprint) "
+        "INSERT INTO billing_operations(id,user_id,service,module,source_id,billing_round,"
+        "submission_id,api_key_id,"
+        "auth_source,pricing_snapshot_json,unit,budget_units,reserved_credits,funding_json,"
+        "request_fingerprint) "
         "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (
             operation_id,
@@ -156,7 +160,8 @@ def accept_platform_operation(conn: BusinessConnection, *, service: str, source_
     snapshot.update(enabled=False, credits=0, free_reason="platform_service")
     operation_id = str(uuid4())
     conn.execute(
-        "INSERT INTO billing_operations(id,service,module,source_id,unit,budget_units,pricing_snapshot_json) "
+        "INSERT INTO billing_operations(id,service,module,source_id,unit,budget_units,"
+        "pricing_snapshot_json) "
         "VALUES (%s,%s,%s,%s,%s,1,%s)",
         (
             operation_id,
@@ -181,8 +186,10 @@ def _ledger(
     snapshot: dict[str, Any],
 ) -> None:
     conn.execute(
-        "INSERT INTO wallet_transactions(id,user_id,type,available_delta,reserved_delta,billing_operation_id,"
-        "billing_round,idempotency_key,pricing_snapshot_json,api_key_id,auth_source,task_id,oral_task_id) "
+        "INSERT INTO wallet_transactions(id,user_id,type,available_delta,reserved_delta,"
+        "billing_operation_id,"
+        "billing_round,idempotency_key,pricing_snapshot_json,api_key_id,auth_source,task_id,"
+        "oral_task_id) "
         "SELECT %s,%s,%s,%s,%s,id,%s,%s,%s,api_key_id,auth_source, "
         "CASE WHEN service IN ('video_768p','video_2k') THEN source_id END, "
         "CASE WHEN service='oral' THEN source_id END FROM billing_operations WHERE id=%s",
@@ -258,7 +265,8 @@ def finish_operation(
         remaining -= consumed
     if reserved:
         updated = conn.execute(
-            "UPDATE wallets SET available_credits=available_credits+%s,reserved_credits=reserved_credits-%s,"
+            "UPDATE wallets SET available_credits=available_credits+%s,"
+            "reserved_credits=reserved_credits-%s,"
             "updated_at=now() WHERE user_id=%s AND reserved_credits>=%s",
             (refund, reserved, operation["user_id"], reserved),
         )
@@ -328,7 +336,8 @@ def begin_attempt(
     tariff = read_tariff(conn, subject)
     price = Decimal(0) if subject in {"cos", "zpay"} else tariff.unit_cost_fen if tariff else None
     row = conn.execute(
-        "INSERT INTO billing_attempts(id,operation_id,attempt_key,service,provider,unit,unit_cost_fen) "
+        "INSERT INTO billing_attempts(id,operation_id,attempt_key,service,provider,unit,"
+        "unit_cost_fen) "
         "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(operation_id,service,attempt_key) "
         "DO UPDATE SET attempt_key=excluded.attempt_key RETURNING id",
         (
@@ -412,34 +421,65 @@ def complete_source_attempt(
 def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
     """Recover finalization after terminal task writes, including worker crashes.
 
-    In-flight or uncertain provider requests stay pending. No HTTP polling is billed.
+    Stopped, undelivered operations release credits independently of supplier costs.
+    Recoverable in-flight requests stay pending. No HTTP polling is billed.
     """
     # A bounded synchronous refresh cannot still be running after thirty minutes.
     # Preserve each delivered cache update and release any unperformed remainder.
     stale = conn.execute(
         "SELECT id,COALESCE(actual_units,0) FROM billing_operations WHERE state='PENDING' "
-        "AND service='viral_data' AND user_id IS NOT NULL AND created_at<now()-interval '30 minutes' "
+        "AND service='viral_data' AND user_id IS NOT NULL AND created_at<now()-interval '30 "
+        "minutes' "
         "ORDER BY created_at LIMIT %s",
         (limit,),
     ).fetchall()
     for row in stale:
         finish_operation(conn, operation_id=str(row[0]), units=row[1], succeeded=True)
+    # Expired link calls cannot safely be repeated. End the receipt without resubmitting;
+    # a late response cannot publish after this status CAS, so refund its user budget.
+    conn.execute(
+        "UPDATE viral_link_resolution_receipts SET status='UNCERTAIN', "
+        "completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP "
+        "WHERE status='REQUEST_SENT' AND lease_expires_at::timestamptz<now()"
+    )
+    conn.execute(
+        "UPDATE viral_link_resolution_receipts t SET status='FAILED_SAFE', "
+        "completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP "
+        "WHERE status='PREPARED' AND lease_expires_at::timestamptz<now() "
+        "AND EXISTS(SELECT 1 FROM billing_operations o WHERE o.source_id=t.id "
+        "AND o.service='link_resolution' AND o.state='PENDING')"
+    )
     # Select terminal candidates in SQL; old active tasks must not starve newer completions.
     operations = conn.execute(
         """SELECT o.id,o.service,o.source_id FROM billing_operations o WHERE o.state='PENDING'
         AND (
-          EXISTS(SELECT 1 FROM generation_tasks t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED','CANCELLED'))
-          OR EXISTS(SELECT 1 FROM oral_tasks t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED','CANCELLED'))
-          OR EXISTS(SELECT 1 FROM analysis_tasks t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED','CANCELLED'))
-          OR EXISTS(SELECT 1 FROM script_rewrite_tasks t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED','CANCELLED'))
-          OR EXISTS(SELECT 1 FROM script_from_audio_tasks t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED','CANCELLED'))
-          OR EXISTS(SELECT 1 FROM character_sheet_tasks t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED','CANCELLED'))
-          OR EXISTS(SELECT 1 FROM character_generation_tasks t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED','CANCELLED'))
-          OR EXISTS(SELECT 1 FROM first_frame_tasks t WHERE t.id=o.source_id AND t.status IN ('FAILED','CANCELLED'))
-          OR EXISTS(SELECT 1 FROM oral_avatars t WHERE t.id=o.source_id AND t.status IN ('READY','FAILED'))
-          OR EXISTS(SELECT 1 FROM oral_voices t WHERE t.id=o.source_id AND t.status IN ('READY','FAILED'))
-          OR EXISTS(SELECT 1 FROM source_frame_tasks t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED'))
-          OR EXISTS(SELECT 1 FROM viral_link_resolution_receipts t WHERE t.id=o.source_id AND t.status IN ('SUCCEEDED','FAILED'))
+          EXISTS(SELECT 1 FROM generation_tasks t WHERE t.id=o.source_id AND (t.status IN
+            ('FAILED','CANCELLED') OR (t.status='SUCCEEDED' AND t.actual_output_seconds IS
+            NOT NULL)))
+          OR EXISTS(SELECT 1 FROM oral_tasks t WHERE t.id=o.source_id AND (t.status IN
+            ('FAILED','CANCELLED') OR (t.status='SUCCEEDED' AND t.duration_sec IS NOT NULL
+            AND t.result_asset_id IS NOT NULL)))
+          OR EXISTS(SELECT 1 FROM analysis_tasks t WHERE t.id=o.source_id AND t.status IN
+            ('SUCCEEDED','FAILED','CANCELLED'))
+          OR EXISTS(SELECT 1 FROM script_rewrite_tasks t WHERE t.id=o.source_id AND t.status
+            IN ('SUCCEEDED','FAILED','CANCELLED','SUBMISSION_UNCERTAIN'))
+          OR EXISTS(SELECT 1 FROM script_from_audio_tasks t WHERE t.id=o.source_id AND
+            (t.status IN ('FAILED','CANCELLED','SUBMISSION_UNCERTAIN') OR (t.status='SUCCEEDED' AND
+            t.result_json::jsonb->>'duration_sec' IS NOT NULL)))
+          OR EXISTS(SELECT 1 FROM character_sheet_tasks t WHERE t.id=o.source_id AND t.status
+            IN ('SUCCEEDED','FAILED','CANCELLED','SUBMISSION_UNCERTAIN'))
+          OR EXISTS(SELECT 1 FROM character_generation_tasks t WHERE t.id=o.source_id AND
+            t.status IN ('SUCCEEDED','FAILED','CANCELLED'))
+          OR EXISTS(SELECT 1 FROM first_frame_tasks t WHERE t.id=o.source_id AND t.status IN
+            ('FAILED','CANCELLED','SUBMISSION_UNCERTAIN'))
+          OR EXISTS(SELECT 1 FROM oral_avatars t WHERE t.id=o.source_id AND t.status IN
+            ('READY','FAILED') OR t.id=o.source_id AND t.submission_state='SUBMISSION_UNKNOWN')
+          OR EXISTS(SELECT 1 FROM oral_voices t WHERE t.id=o.source_id AND t.status IN
+            ('READY','FAILED') OR t.id=o.source_id AND t.submission_state='SUBMISSION_UNKNOWN')
+          OR EXISTS(SELECT 1 FROM source_frame_tasks t WHERE t.id=o.source_id AND t.status IN
+            ('SUCCEEDED','FAILED'))
+          OR EXISTS(SELECT 1 FROM viral_link_resolution_receipts t WHERE t.id=o.source_id AND
+            t.status IN ('SUCCEEDED','FAILED_SAFE','UNCERTAIN'))
         ) ORDER BY o.created_at,o.id LIMIT %s""",
         (limit,),
     ).fetchall()
@@ -487,15 +527,25 @@ def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
         table = tables.get(service)
         if table is None:
             continue
-        task = conn.execute(f"SELECT * FROM {table} WHERE id=%s", (source,)).fetchone()  # noqa: S608 - fixed table map
+        task = conn.execute(f"SELECT * FROM {table} WHERE id=%s FOR UPDATE", (source,)).fetchone()  # noqa: S608 - fixed table map
         if task is None and service == "character":
             task = conn.execute(
-                "SELECT * FROM character_generation_tasks WHERE id=%s", (source,)
+                "SELECT * FROM character_generation_tasks WHERE id=%s FOR UPDATE", (source,)
             ).fetchone()
         if task is None:
             continue
         status = str(task["status"])
-        if status in {"FAILED", "CANCELLED"}:
+        if (
+            service in {"avatar_clone", "voice_clone"}
+            and task["submission_state"] == "SUBMISSION_UNKNOWN"
+        ):
+            conn.execute(
+                f"UPDATE {table} SET status='FAILED',lease_owner=NULL,lease_expires_at=NULL, "
+                "next_attempt_at=NULL WHERE id=%s",
+                (source,),
+            )  # noqa: S608 - fixed clone table map
+            status = "FAILED"
+        if status in {"FAILED", "CANCELLED", "SUBMISSION_UNCERTAIN", "FAILED_SAFE", "UNCERTAIN"}:
             finish_operation(
                 conn,
                 operation_id=str(operation["id"]),

@@ -162,9 +162,11 @@ def _seed_scene(dsn: str) -> None:
         pg.execute(f"TRUNCATE {_INDEPENDENT_TABLES} CASCADE")
         pg.execute("SET session_replication_role = DEFAULT")
         # Explicit retail configuration for these positive-reservation scenarios.
-        pg.execute("INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES "
-                   "('video_768p',true,1),('video_2k',true,1) ON CONFLICT(service) "
-                   "DO UPDATE SET enabled=true,unit_credits=1")
+        pg.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits) VALUES "
+            "('video_768p',true,1),('video_2k',true,1) ON CONFLICT(service) "
+            "DO UPDATE SET enabled=true,unit_credits=1"
+        )
         with pg.cursor() as cursor:
             cursor.executemany(
                 "INSERT INTO operation_cost_rates "

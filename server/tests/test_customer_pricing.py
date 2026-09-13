@@ -195,7 +195,8 @@ def test_rotation_inflight_keeps_original_price_and_account(client, route_state)
             "UPDATE billing_tariffs SET unit_credits=9,version=2 WHERE service='video_768p'"
         )
         raw.execute(
-            "UPDATE generation_tasks SET status = 'SUCCEEDED', actual_output_seconds=10, archive_status = "
+            "UPDATE generation_tasks SET status = 'SUCCEEDED', actual_output_seconds=10, "
+            "archive_status = "
             "'DIRECT', provider_result_url = 'https://example.com/test.mp4' WHERE id = "
             "'task_a'"
         )
