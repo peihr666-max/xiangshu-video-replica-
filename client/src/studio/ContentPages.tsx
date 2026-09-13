@@ -32,6 +32,7 @@ import {
   updateMaterial,
   uploadMaterial,
 } from "../api";
+import { VideoPreview } from "../VideoPreview";
 import { useStudio } from "./context";
 import { studioAssetFromMaterial, studioVideoFromViral } from "./live";
 import {
@@ -147,30 +148,11 @@ function ViralPoster({
   video: StudioVideo;
   className?: string;
 }) {
-  const [brokenPoster, setBrokenPoster] = useState<string>();
-  if (!video.poster || brokenPoster === video.poster) {
-    return (
-      <span
-        className={
-          className
-            ? `viral-card-cover-empty ${className}`
-            : "viral-card-cover-empty"
-        }
-      >
-        <Icon name="video" />
-      </span>
-    );
-  }
   return (
-    <img
-      alt=""
-      className={
-        className ? `viral-card-cover-img ${className}` : "viral-card-cover-img"
-      }
-      loading="lazy"
-      referrerPolicy="no-referrer"
-      onError={() => setBrokenPoster(video.poster)}
-      src={video.poster}
+    <VideoPreview
+      poster={video.poster}
+      className={className}
+      fallback={<Icon name="video" />}
     />
   );
 }
@@ -400,13 +382,13 @@ function ViralCover({
       title={playing ? undefined : "播放"}
     >
       {playing ? (
-        // biome-ignore lint/a11y/useMediaCaption: 源平台视频无字幕轨可挂载
-        <video
+        <VideoPreview
           ref={playerRef}
           autoPlay
           controls
           playsInline
           src={src}
+          poster={video.poster}
           title={video.title}
           onError={onPlaybackError}
           onPlay={onNativePlay}
@@ -1593,12 +1575,12 @@ export function ViralDetailPage() {
       <section className="content-detail-grid content-detail-grid-viral">
         <div className="content-player content-player-viral">
           {playback.status === "playing" ? (
-            // biome-ignore lint/a11y/useMediaCaption: 源平台视频无字幕轨可挂载
-            <video
+            <VideoPreview
               autoPlay
               controls
               playsInline
               src={playback.src}
+              poster={video.poster}
               title={video.title}
               onError={markFailed}
             />
@@ -1741,7 +1723,7 @@ function AssetCard({
   return (
     <button
       type="button"
-      className={`content-asset ${selected ? "is-selected" : ""} ${asset.composite ? "content-asset--composite" : ""}`}
+      className={`content-asset ${asset.kind === "video" ? "content-asset--video" : ""} ${selected ? "is-selected" : ""} ${asset.composite ? "content-asset--composite" : ""}`}
       onClick={onSelect}
       aria-label={`选择素材 ${asset.name}`}
     >
@@ -2820,7 +2802,11 @@ export function PublishPage() {
                   type="button"
                 >
                   {draftAsset ? (
-                    <Media asset={draftAsset} alt={`${draft.title} 草稿封面`} />
+                    <Media
+                      asset={draftAsset}
+                      alt={`${draft.title} 草稿封面`}
+                      presentation="video"
+                    />
                   ) : (
                     <div className="content-publish-draft-card-empty">
                       <Icon name="video" />
@@ -2881,7 +2867,11 @@ export function PublishPage() {
                       onClick={() => updateForm({ coverId: asset.id })}
                       type="button"
                     >
-                      <Media asset={asset} alt={`封面 ${index + 1}`} />
+                      <Media
+                        asset={asset}
+                        alt={`封面 ${index + 1}`}
+                        presentation="video"
+                      />
                     </button>
                   ))}
                 </div>

@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { VideoPreview } from "../VideoPreview";
 import type { StudioAsset } from "./types";
 
 export function Icon({ name, size = 22 }: { name: string; size?: number }) {
@@ -277,7 +278,9 @@ export function Media({
   alt,
   className = "",
   onError,
+  presentation,
 }: {
+  presentation?: "video";
   asset?: StudioAsset;
   alt: string;
   className?: string;
@@ -309,21 +312,30 @@ export function Media({
         )}
       </div>
     );
-  if (asset.kind === "video" && asset.url)
+  if (asset.kind === "video" || presentation === "video")
     return (
-      <video
+      <VideoPreview
         className={`studio-media ${className}`}
         controls
-        preload="metadata"
-        src={asset.url}
-        poster={asset.poster}
+        src={asset.kind === "video" ? asset.url : undefined}
+        poster={asset.kind === "image" ? asset.url : asset.poster}
         aria-label={alt}
+        alt={alt}
         onError={() => onError?.(asset.url)}
-      >
-        <track kind="captions" />
-      </video>
+        onPosterError={() =>
+          onError?.(asset.kind === "image" ? asset.url : asset.poster)
+        }
+        overlay={
+          asset.kind === "video" && !asset.url ? (
+            <span className="studio-media-duration">
+              <Icon name="play" size={14} />
+              {asset.duration || "视频预览图"}
+            </span>
+          ) : undefined
+        }
+      />
     );
-  const src = asset.kind === "image" ? asset.url : asset.poster;
+  const src = asset.url;
   const failed = Boolean(src && failedSource === src);
   return (
     <figure className={`studio-media ${className}`}>
@@ -342,12 +354,6 @@ export function Media({
           <Icon name="image" size={36} />
           <span>{failed ? "图片暂不可用" : alt}</span>
         </div>
-      )}
-      {asset.kind === "video" && (
-        <span className="studio-media-duration">
-          <Icon name="play" size={14} />
-          {asset.duration || "视频预览图"}
-        </span>
       )}
     </figure>
   );

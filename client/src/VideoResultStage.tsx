@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-
 import {
   customerVisibleErrorMessage,
   type GenerationBatch,
@@ -7,6 +6,7 @@ import {
   type GenerationTaskSummary,
   type VideoDownloadResult,
 } from "./api";
+import { VideoPreview } from "./VideoPreview";
 
 // 生成结果舞台 = 客户视角的结果消费视图：大预览框 + 真实进度叙事 +
 // 等待安抚内容 + 视频信息栏 + 轻量付费再次生成。运维操作（对账、安全
@@ -548,10 +548,10 @@ function StageVideoPlayer({
 
   return (
     <div className="stage-video-player" ref={containerRef}>
-      {/* biome-ignore lint/a11y/useMediaCaption: Generated Provider videos do not include a separate caption asset. */}
-      <video
+      <VideoPreview
         aria-label={taskLabel}
-        className="video-stage-video"
+        className="video-stage-surface"
+        videoClassName="video-stage-video"
         onClick={togglePlay}
         onError={onSourceError}
         onEnded={() => setIsPlaying(false)}

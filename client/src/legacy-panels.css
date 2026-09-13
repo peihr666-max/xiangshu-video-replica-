@@ -2946,3 +2946,37 @@
     gap: 4px;
   }
 }
+
+/* Preview size is derived from height; max-height alone would break 9:16. */
+.video-stage-player {
+  width: min(100%, 332px, 31vh);
+  height: auto;
+  max-height: none;
+  aspect-ratio: 9 / 16;
+}
+.stage-video-player > .video-stage-surface {
+  height: 100%;
+}
+.stage-video-player__controls,
+.stage-video-player__bigplay {
+  z-index: 2;
+}
+.task-result-preview {
+  width: min(100%, 348px, 38vh);
+  height: auto;
+  max-height: none;
+  aspect-ratio: auto;
+  padding: 0;
+}
+.task-result-preview > .muted {
+  display: grid;
+  align-content: center;
+  aspect-ratio: 9 / 16;
+  padding: 18px;
+}
+.source-frame-option > .video-preview,
+.source-frame-option > .source-frame-placeholder {
+  width: min(100%, 240px);
+  aspect-ratio: 9 / 16;
+  margin-inline: auto;
+}

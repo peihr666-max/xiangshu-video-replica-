@@ -1371,3 +1371,48 @@ span.viral-card-cover-empty.content-player-viral-poster {
     width: min(100%, 340px);
   }
 }
+
+/* Video preview surfaces retain a portrait frame at every breakpoint. */
+.content-asset--video {
+  grid-template-rows: auto 22px 18px 18px;
+}
+.content-asset--video .studio-media.video-preview {
+  height: auto;
+  aspect-ratio: 9 / 16;
+}
+.content-publish-draft-card {
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+}
+.content-publish-draft-card .studio-media,
+.content-publish-draft-card-empty {
+  width: 72px;
+  height: 128px;
+}
+.content-publish-preview > .studio-media,
+.content-publish-preview > .studio-empty {
+  width: min(100%, 300px, 36vh);
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 9 / 16;
+  margin-inline: auto;
+}
+.content-cover-options .studio-media,
+.content-cover-empty {
+  height: auto;
+  aspect-ratio: 9 / 16;
+}
+.content-inspector > .video-preview {
+  width: min(100%, 300px, 36vh);
+  min-height: 0;
+  margin-inline: auto;
+}
+.content-detail-grid-viral .content-player-viral {
+  width: min(100%, 340px, 40vh);
+  margin-inline: auto;
+}
+.viral-card-cover > .video-preview,
+.content-player-viral > .video-preview,
+.content-player-viral-trigger > .video-preview {
+  height: 100%;
+}

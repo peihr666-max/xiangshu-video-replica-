@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-
 import {
   type AnalysisVersion,
   type CharacterReferenceSelection,
@@ -17,6 +16,7 @@ import {
   readFirstFrameSelectionPayload,
   resumeFirstFrameGeneration,
 } from "./api";
+import { VideoPreview } from "./VideoPreview";
 
 const DEFAULT_PROMPT =
   "保留原图的镜头位置、人物姿态、动作、场景、构图、道具、光线与色调，只将原人物身份替换为角色库人物；保持自然皮肤、正确肢体和真实透视；不得增加或删除主体。";
@@ -722,10 +722,10 @@ function FirstFrameOption({
         value={candidate.asset_id}
       />
       {previewUrl ? (
-        <img
+        <VideoPreview
           alt={`首帧候选 ${index + 1}`}
-          onError={onPreviewError}
-          src={previewUrl}
+          onPosterError={onPreviewError}
+          poster={previewUrl}
         />
       ) : (
         <span className="source-frame-placeholder">

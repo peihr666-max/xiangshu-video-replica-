@@ -9,6 +9,7 @@ import {
   updateStudioNotificationPreferences,
   type ViralImportTask,
 } from "../api";
+import { VideoPreview } from "../VideoPreview";
 import { useStudio } from "./context";
 import { LocalPublishAccountsPanel as PublishAccountsPanel } from "./LocalPublishAccountsPanel";
 import {
@@ -767,7 +768,7 @@ export function WorkbenchPage() {
               active.slice(0, 2).map((task) => (
                 <div className="studio-running-row" key={task.id}>
                   {task.poster ? (
-                    <img src={task.poster} alt={task.title} />
+                    <VideoPreview poster={task.poster} alt={task.title} />
                   ) : (
                     <Icon name="video" size={46} />
                   )}
@@ -879,7 +880,7 @@ export function WorkbenchPage() {
                         persistWorkbenchViralDetailUrl(video);
                       }}
                     >
-                      <img src={video.poster} alt="" loading="lazy" />
+                      <VideoPreview poster={video.poster} />
                       <span className="studio-home-viral-platform">
                         <PlatformLogo platform={video.platform} size={18} />{" "}
                         {video.platform}
@@ -1150,7 +1151,7 @@ export function TasksPage() {
                 <td>
                   <div className="studio-task-name">
                     {task.poster ? (
-                      <img src={task.poster} alt="" />
+                      <VideoPreview poster={task.poster} />
                     ) : (
                       <Icon name="video" size={30} />
                     )}

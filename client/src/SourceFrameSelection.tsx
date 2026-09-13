@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-
 import {
   type AnalysisVersion,
   cancelSourceFrameTask,
@@ -16,6 +15,7 @@ import {
   SourceFrameTaskFailedError,
   waitForSourceFrameTask,
 } from "./api";
+import { VideoPreview } from "./VideoPreview";
 
 export function SourceFrameSelection({
   featureSuggestion = null,
@@ -580,9 +580,9 @@ export function SourceFrameSelection({
                     value={candidate.asset_id}
                   />
                   {previewUrls[candidate.asset_id] ? (
-                    <img
+                    <VideoPreview
                       alt={`候选源画面 ${index + 1}`}
-                      src={previewUrls[candidate.asset_id]}
+                      poster={previewUrls[candidate.asset_id]}
                     />
                   ) : (
                     <span className="source-frame-placeholder">
