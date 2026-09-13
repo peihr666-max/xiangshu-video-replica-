@@ -1251,4 +1251,4 @@ W19主干整合最终复验：PR87正常合并为main e8445c4，本任务整合�
 
 ## UC-BATCH-04 / UC-16—20
 
-前置第三批 PR #90 head d9c328d 三门禁成功，squash 40e261c 已在 origin/main。本批主干 worktree 开发完成主要代码，78 项 PG 专项/迁移矩阵通过；最终完整质量门、真实页面与 PR 合并尚未完成。[证据](evidence/UC-BATCH04-ACCOUNT-CREDIT-OPERATIONS.md)与[上线前评估](evidence/UC-ACCOUNT-PRELAUNCH-REPORT.md)如实登记本机 Docker 故障及待验收项。企业成员 Token 延期，无真实支付/付费 Provider/生产变更。
+前置第三批 PR #90 head d9c328d 三门禁成功，squash 40e261c 已在 origin/main。本批主干 worktree 实现及本地验收完成，并整合 #91；完整静态门含前端 1362 passed，真实 PG 全量 1910 passed/1 原有 TLS skip，三路并发与正式前后台积分链路通过，进入 PR 收尾。[证据](evidence/UC-BATCH04-ACCOUNT-CREDIT-OPERATIONS.md)与[上线前评估](evidence/UC-ACCOUNT-PRELAUNCH-REPORT.md)登记 Docker 授权恢复、真实页面缺陷修复和完整日志；外部付费/生产验收仍单列。企业成员 Token 延期，无真实支付/付费 Provider/生产变更。

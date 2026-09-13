@@ -273,3 +273,99 @@ def test_native_account_ledger_reads_without_control_proxy(operations_client, ro
     assert result.json()["total"] == 1
     assert result.json()["items"][0]["user_id"] == uid
     assert "password_hash" not in result.text
+
+
+def test_concurrent_grant_payment_and_token_consumption_conserve_account_ledger(
+    operations_client, route_state
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from test_customer_pricing import reserve, seed_tasks
+
+    from app.db_portable import BusinessConnection
+    from app.internal_billing import finalize_internal_billing
+    from app.zpay_payments import confirm_recharge_payment
+
+    client = operations_client
+    customer, uid = account(client)
+    key = mutation(client, "", customer, {"label": "concurrent worker"}).json()
+    admin = admin_login(client, route_state)
+    seed_tasks(route_state, uid, ["concurrent-credit-task"], balance=0)
+
+    def grant(credits, reference):
+        result = client.post(
+            f"/api/control/customers/{uid}/adjustments",
+            headers={**admin, "Idempotency-Key": str(uuid4())},
+            json={
+                "confirm": True,
+                "reason": "concurrent account accounting",
+                "credits": credits,
+                "source_document_type": "FREE_GRANT",
+                "source_document_ref": reference,
+            },
+        )
+        assert result.status_code == 201, result.text
+
+    grant(100, "opening-balance")
+    with psycopg.connect(route_state) as raw:
+        raw.execute(
+            "INSERT INTO recharge_orders (id, user_id, merchant_order_no, provider, status, "
+            "pricing_scope, base_unit_price_fen_snapshot, charged_unit_price_fen_snapshot, "
+            "min_recharge_fen_snapshot, recharge_step_fen_snapshot, amount_fen, credits) "
+            "VALUES ('concurrent-order', %s, 'CONCURRENT-ORDER', 'zpay', 'PENDING', "
+            "'CUSTOMER_STANDARD', 1000, 1000, 10000, 1000, 20000, 20)",
+            (uid,),
+        )
+
+    barrier = Barrier(3, timeout=15)
+
+    def change(kind):
+        barrier.wait()
+        if kind == "gift":
+            grant(25, "concurrent-gift")
+        elif kind == "payment":
+            with psycopg.connect(route_state) as raw:
+                confirm_recharge_payment(
+                    BusinessConnection.postgres(raw),
+                    merchant_order_no="CONCURRENT-ORDER",
+                    provider_trade_no="CONCURRENT-TRADE",
+                    amount_fen=20000,
+                    channel="alipay",
+                    source_digest="local-verified-callback",
+                    allowed_channels=("alipay",),
+                )
+        else:
+            reserve(route_state, uid, key["id"], "concurrent-credit-task", 20)
+            with psycopg.connect(route_state) as raw:
+                raw.execute(
+                    "UPDATE generation_tasks SET status = 'SUCCEEDED', archive_status = "
+                    "'DIRECT', provider_result_url = 'https://example.com/test.mp4' "
+                    "WHERE id = 'concurrent-credit-task'"
+                )
+                finalize_internal_billing(
+                    BusinessConnection.postgres(raw),
+                    task_id="concurrent-credit-task",
+                    outcome="success",
+                )
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(change, ("gift", "payment", "token")))
+    with psycopg.connect(route_state) as raw:
+        assert raw.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id = %s", (uid,)
+        ).fetchone() == (85, 0)
+        assert raw.execute(
+            "SELECT SUM(available_delta), SUM(reserved_delta) FROM wallet_transactions "
+            "WHERE user_id = %s",
+            (uid,),
+        ).fetchone() == (85, 0)
+        assert (
+            raw.execute(
+                "SELECT COUNT(*) FROM wallet_transactions WHERE user_id = %s AND type = 'CHARGE'",
+                (uid,),
+            ).fetchone()[0]
+            == 3
+        )
+    listed = client.get("/api/customer/api-keys", headers=customer).json()["items"]
+    assert next(item for item in listed if item["id"] == key["id"])["total_consumed_credits"] == 60
