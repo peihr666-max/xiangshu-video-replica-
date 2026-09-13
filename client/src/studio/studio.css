@@ -1,5 +1,8 @@
 /* 全局 reset 已随 customer/customer-access.css（RootApp 引入）提供，
    客户制品不含 styles.css，此处不再重复。 */
+html:has(.studio-shell) {
+  scrollbar-gutter: stable;
+}
 .studio-shell {
   --studio-bg: #080909;
   --studio-panel: #101111;

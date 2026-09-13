@@ -44,6 +44,10 @@ export type StudioAsset = {
   group: string;
   personId?: string;
   composite?: boolean;
+  previewAssetId?: string;
+  characterViews?: { assetId: string; viewType: string }[];
+  contactSheetId?: string;
+  contactSheetUrl?: string;
   source: string;
   saved: boolean;
   delivery?: "stored" | "direct";
@@ -309,7 +313,10 @@ export type StudioContextValue = {
   updateData: (update: (data: StudioData) => StudioData) => void;
   notify: (message: string) => void;
   openPicker: (kind: PickerKind) => void;
-  openLive: (panel: LivePanel) => void;
+  openLive: (
+    panel: LivePanel,
+    character?: { identityId: string; tab: "base" | "scenes" },
+  ) => void;
   requestGeneration: (kind: StudioTask["type"]) => void;
   saveDraft: () => void;
   /** 确认终稿：云端保存成功后置 confirmed；项目已有分镜时再同步项目脚本。 */

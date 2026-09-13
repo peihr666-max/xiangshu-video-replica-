@@ -382,3 +382,39 @@ export function formatTaskTime(value: string, now: Date = new Date()): string {
     return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
 }
+
+export function StudioDialog({
+  title,
+  children,
+  onClose,
+}: {
+  title: string;
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (typeof dialog?.showModal === "function") dialog.showModal();
+    else dialog?.setAttribute("open", "");
+    return () => {
+      if (typeof dialog?.close === "function") dialog.close();
+    };
+  }, []);
+  return (
+    <dialog
+      ref={dialogRef}
+      className="studio-dialog"
+      aria-label={title}
+      onCancel={onClose}
+    >
+      <header>
+        <h2>{title}</h2>
+        <button type="button" aria-label="关闭" onClick={onClose}>
+          <Icon name="close" />
+        </button>
+      </header>
+      {children}
+    </dialog>
+  );
+}

@@ -3144,7 +3144,11 @@ function waitForPoll(delayMs = 1_500): Promise<void> {
 
 const characterSheetTaskWaiters = new Map<
   string,
-  Promise<CharacterSheetTask>
+  {
+    promise: Promise<CharacterSheetTask>;
+    observers: Set<(task: CharacterSheetTask) => void>;
+    last?: CharacterSheetTask;
+  }
 >();
 type FirstFrameTaskObserver = (task: FirstFrameTask) => void;
 
@@ -3299,29 +3303,52 @@ export async function getLatestSceneLookTask(
 
 export async function waitForCharacterSheetTask(
   taskId: string,
+  onTask?: (task: CharacterSheetTask) => void,
 ): Promise<CharacterSheetTask> {
   const existing = characterSheetTaskWaiters.get(taskId);
   if (existing) {
-    return existing;
+    if (onTask) {
+      existing.observers.add(onTask);
+      if (existing.last) onTask(existing.last);
+    }
+    try {
+      return await existing.promise;
+    } finally {
+      if (onTask) existing.observers.delete(onTask);
+    }
   }
-  const waiter = pollCharacterSheetTask(taskId);
+  const observers = new Set<(task: CharacterSheetTask) => void>();
+  if (onTask) observers.add(onTask);
+  const waiter: {
+    promise: Promise<CharacterSheetTask>;
+    observers: typeof observers;
+    last?: CharacterSheetTask;
+  } = {
+    observers,
+    promise: pollCharacterSheetTask(taskId, (task) => {
+      waiter.last = task;
+      for (const observer of observers) observer(task);
+    }),
+  };
   characterSheetTaskWaiters.set(taskId, waiter);
   const clear = () => {
     if (characterSheetTaskWaiters.get(taskId) === waiter) {
       characterSheetTaskWaiters.delete(taskId);
     }
   };
-  void waiter.then(clear, clear);
-  return waiter;
+  void waiter.promise.then(clear, clear);
+  return waiter.promise;
 }
 
 async function pollCharacterSheetTask(
   taskId: string,
+  onTask: (task: CharacterSheetTask) => void,
 ): Promise<CharacterSheetTask> {
   // 场景造型最坏要两轮生成加质检（约 16 分钟），轮询死线留足余量。
   const deadline = Date.now() + 30 * 60_000;
   while (Date.now() < deadline) {
     const task = await getCharacterSheetTask(taskId);
+    onTask(task);
     if (task.status === "SUCCEEDED") {
       return task;
     }
@@ -3408,6 +3435,7 @@ export async function createCharacterSceneLook(
     scene_description: string;
     costume_description: string;
   },
+  onTask?: (task: CharacterSheetTask) => void,
 ): Promise<SimpleSceneLook> {
   const task = await requestApiJson<CharacterSheetTask>(
     `/api/simple-characters/identities/${encodeURIComponent(identityId)}/scene-looks/tasks/generate`,
@@ -3420,7 +3448,8 @@ export async function createCharacterSceneLook(
       }),
     },
   );
-  const completed = await waitForCharacterSheetTask(task.id);
+  onTask?.(task);
+  const completed = await waitForCharacterSheetTask(task.id, onTask);
   if (!completed.result || !("scene_name" in completed.result)) {
     throw new Error("场景造型任务完成但结果不可用，请重新读取人物库。");
   }

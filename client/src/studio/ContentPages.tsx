@@ -33,6 +33,7 @@ import {
   uploadMaterial,
 } from "../api";
 import { VideoPreview } from "../VideoPreview";
+import { CharacterMaterialViews } from "./CharacterMaterialViews";
 import { useStudio } from "./context";
 import { studioAssetFromMaterial, studioVideoFromViral } from "./live";
 import {
@@ -632,13 +633,13 @@ function ViralCard({
       />
       <div className="viral-card-body">
         <h3>{video.title}</h3>
-        {video.tags && video.tags.length > 0 && (
-          <div className="viral-card-tags">
-            {video.tags.slice(0, 6).map((tag) => (
-              <span key={tag}>#{tag}</span>
-            ))}
-          </div>
-        )}
+        <div className="viral-card-tags">
+          {video.tags?.slice(0, 6).map((tag) => (
+            <span key={tag} title={`#${tag}`}>
+              #{tag}
+            </span>
+          ))}
+        </div>
         <div className="content-card-actions">
           <Button variant="quiet" onClick={openDetail}>
             查看详情
@@ -1730,7 +1731,8 @@ function AssetCard({
       <Media asset={asset} alt={asset.name} onError={onPreviewError} />
       <strong>{asset.name}</strong>
       <span>
-        {asset.group} · {assetKindLabel(asset.kind)}
+        {asset.group} ·{" "}
+        {asset.composite ? "1 套五视图" : assetKindLabel(asset.kind)}
       </span>
       <i>
         {previewStatus === "loading"
@@ -1766,6 +1768,7 @@ export function MaterialsPage() {
   const [remoteError, setRemoteError] = useState<string>();
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<StudioAsset>();
+  const [characterView, setCharacterView] = useState<StudioAsset>();
   const [uploadProgress, setUploadProgress] = useState<number>();
   const [busyAction, setBusyAction] = useState<string>();
   const [renameValue, setRenameValue] = useState("");
@@ -1798,6 +1801,10 @@ export function MaterialsPage() {
   const selectedIndex = reviewAssets.findIndex(
     (asset) => asset.id === state.selectedAssetId,
   );
+  const selectedInput =
+    selected?.composite && characterView?.contactSheetId === selected.id
+      ? characterView
+      : selected;
   const [page, setPage] = useState(() =>
     selectedIndex >= 0 ? Math.floor(selectedIndex / pageSize) + 1 : 1,
   );
@@ -1821,7 +1828,7 @@ export function MaterialsPage() {
     }));
     try {
       const url = asset.assetId
-        ? (await getAssetDownloadUrl(asset.assetId)).url
+        ? (await getAssetDownloadUrl(asset.previewAssetId ?? asset.assetId)).url
         : asset.generationTaskId
           ? await createGenerationTaskPreviewUrl(asset.generationTaskId)
           : undefined;
@@ -2057,10 +2064,10 @@ export function MaterialsPage() {
   };
 
   const downloadSelected = async () => {
-    if (!selected?.assetId) return;
+    if (!selectedInput?.assetId) return;
     setBusyAction("download");
     try {
-      await downloadMaterialAsset(selected.assetId, selected.name);
+      await downloadMaterialAsset(selectedInput.assetId, selectedInput.name);
       notify("素材下载已开始");
     } catch (error) {
       notify(error instanceof Error ? error.message : "下载素材失败");
@@ -2230,21 +2237,33 @@ export function MaterialsPage() {
           {selected ? (
             <>
               <h2>{selected.name}</h2>
-              <Media
-                asset={{
-                  ...selected,
-                  url: selected.url ?? previewStates[selected.id]?.url,
-                }}
-                alt={selected.name}
-                onError={(failedUrl) => {
-                  setPreviewStates((current) =>
-                    failMaterialPreview(current, selected.id, failedUrl),
-                  );
-                }}
-              />
+              {selected.composite && selected.characterViews?.length ? (
+                <CharacterMaterialViews
+                  key={selected.id}
+                  asset={selected}
+                  onSelected={setCharacterView}
+                />
+              ) : (
+                <Media
+                  asset={{
+                    ...selected,
+                    url: selected.url ?? previewStates[selected.id]?.url,
+                  }}
+                  alt={selected.name}
+                  onError={(failedUrl) => {
+                    setPreviewStates((current) =>
+                      failMaterialPreview(current, selected.id, failedUrl),
+                    );
+                  }}
+                />
+              )}
               <dl>
                 <dt>类型</dt>
-                <dd>{assetKindLabel(selected.kind)}</dd>
+                <dd>
+                  {selected.composite
+                    ? "五视图合成图 · 1 套"
+                    : assetKindLabel(selected.kind)}
+                </dd>
                 <dt>来源</dt>
                 <dd>{selected.source}</dd>
                 <dt>归属</dt>
@@ -2258,6 +2277,18 @@ export function MaterialsPage() {
                       : "处理中"}
                 </dd>
               </dl>
+              {selected.composite && selected.personId ? (
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    navigate("person-photos", {
+                      selectedPersonId: selected.personId,
+                    })
+                  }
+                >
+                  查看人物与单独视角
+                </Button>
+              ) : null}
               {selected.kind === "audio" &&
               (review || selected.allowedUses?.includes("oral_audio")) ? (
                 <Button
@@ -2276,13 +2307,13 @@ export function MaterialsPage() {
                 </Button>
               ) : null}
               {selected.kind === "image" &&
-              selected.allowedUses?.includes("original_frame") ? (
+              selectedInput?.allowedUses?.includes("original_frame") ? (
                 <Button
                   variant="outline"
                   onClick={() => {
-                    retainForDraft(selected);
+                    retainForDraft(selectedInput);
                     patchDraft({
-                      originalImageId: selected.id,
+                      originalImageId: selectedInput.id,
                       frameConfirmed: false,
                     });
                     navigate("replica", { returnTo: "materials" });
@@ -2292,12 +2323,12 @@ export function MaterialsPage() {
                 </Button>
               ) : null}
               {selected.kind === "image" &&
-              selected.allowedUses?.includes("first_frame") ? (
+              selectedInput?.allowedUses?.includes("first_frame") ? (
                 <Button
                   variant="outline"
                   onClick={() => {
-                    retainForDraft(selected);
-                    patchDraft({ firstFrameId: selected.id });
+                    retainForDraft(selectedInput);
+                    patchDraft({ firstFrameId: selectedInput.id });
                     navigate("video", { returnTo: "materials" });
                   }}
                 >
@@ -2305,22 +2336,22 @@ export function MaterialsPage() {
                 </Button>
               ) : null}
               {selected.kind === "image" &&
-              selected.allowedUses?.includes("tail_frame") ? (
+              selectedInput?.allowedUses?.includes("tail_frame") ? (
                 <Button
                   variant="outline"
                   onClick={() => {
-                    retainForDraft(selected);
-                    patchDraft({ tailFrameId: selected.id });
+                    retainForDraft(selectedInput);
+                    patchDraft({ tailFrameId: selectedInput.id });
                     navigate("video", { returnTo: "materials" });
                   }}
                 >
                   用作尾帧
                 </Button>
               ) : null}
-              {selected.allowedUses?.includes("reference") ? (
+              {selectedInput?.allowedUses?.includes("reference") ? (
                 <Button
                   variant="outline"
-                  onClick={() => applyAsReference(selected)}
+                  onClick={() => applyAsReference(selectedInput)}
                 >
                   用于参考生视频
                 </Button>

@@ -587,6 +587,44 @@ describe("V1.4 workspace integration", () => {
       screen.getByRole("button", { name: "开始制作照片分身" }),
     ).toBeDisabled();
   });
+  it("重新进入形象照片页读取新场景，不能永久复用首次空列表", async () => {
+    const data = createReviewData();
+    live.loadStudioData.mockResolvedValue({
+      ...data,
+      assets: data.assets.filter((asset) => asset.composite),
+    });
+    live.loadPersonAssets
+      .mockResolvedValueOnce({ assets: [], errors: [], loaded: 0, total: 0 })
+      .mockResolvedValue({
+        assets: [
+          {
+            id: "new-scene",
+            personId: "zhang",
+            name: "新完成办公室场景",
+            kind: "image",
+            source: "人物库场景造型",
+            group: "场景形象照",
+            saved: true,
+          },
+        ],
+        errors: [],
+        loaded: 1,
+        total: 1,
+      });
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        initialState={createReviewState("person-photos")}
+      />,
+    );
+    await waitFor(() => expect(live.loadPersonAssets).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole("tab", { name: "IP 定位" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "形象照片" }));
+    expect(
+      await screen.findByText("新完成办公室场景", { selector: "strong" }),
+    ).toBeInTheDocument();
+    expect(live.loadPersonAssets).toHaveBeenCalledTimes(2);
+  });
   it("renders the approved navigation order and keeps review data isolated", () => {
     render(
       <StudioWorkspace

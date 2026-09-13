@@ -1143,7 +1143,7 @@ describe("真实 Studio 只读适配器", () => {
     expect(api.getAssetDownloadUrl).toHaveBeenCalledWith("source-video-1");
   });
 
-  it("场景形象照每个场景只取一张正面预览，不展开成五张", async () => {
+  it("每套场景显示合成图，创作入口保留独立人像参考", async () => {
     const scene: SimpleSceneLook = {
       identity_id: "person-1",
       persona_id: "persona-scene-1",
@@ -1166,13 +1166,15 @@ describe("真实 Studio 只读适配器", () => {
 
     const result = await loadPersonAssets("person-1");
 
-    expect(api.getCachedCharacterAssetUrl).toHaveBeenCalledTimes(1);
+    expect(api.getCachedCharacterAssetUrl).toHaveBeenCalledTimes(2);
     expect(api.getCachedCharacterAssetUrl).toHaveBeenCalledWith("scene-front");
     expect(result.assets).toEqual([
       expect.objectContaining({
         id: "scene-front",
         name: "设计室讲解",
         composite: false,
+        contactSheetId: "scene-sheet-1",
+        contactSheetUrl: "https://signed/scene-front",
         personId: "person-1",
         url: "https://signed/scene-front",
       }),
@@ -1221,7 +1223,10 @@ describe("真实 Studio 只读适配器", () => {
     expect(result.assets).toEqual([
       expect.objectContaining({ id: "scene-front", url: undefined }),
     ]);
-    expect(result.errors).toEqual(["读取场景图片“庭院讲解”失败：sign failed"]);
+    expect(result.errors).toEqual([
+      "读取场景合成图“庭院讲解”失败：sign failed",
+      "读取场景图片“庭院讲解”失败：sign failed",
+    ]);
   });
 });
 

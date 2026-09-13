@@ -12,6 +12,7 @@ import {
   updateSimpleCharacterProfile,
   uploadMaterial,
 } from "../api";
+import { CharacterScenePanel } from "../CharacterScenePanel";
 import { useStudio } from "./context";
 import {
   loadMorePeople,
@@ -21,7 +22,16 @@ import {
   validateOralAudioFile,
 } from "./live";
 import type { StudioPage, StudioPerson } from "./types";
-import { Button, Empty, Field, Hint, Media, Panel, Tabs } from "./ui";
+import {
+  Button,
+  Empty,
+  Field,
+  Hint,
+  Media,
+  Panel,
+  StudioDialog,
+  Tabs,
+} from "./ui";
 import "./people.css";
 
 const personTabs: Array<{ id: StudioPage; label: string }> = [
@@ -352,8 +362,12 @@ export function PersonPage() {
         }
       />
       <div className="person-content">
-        {tab === "person-ip" ? <IpPanel person={person} /> : null}
-        {tab === "person-photos" ? <PhotosPanel person={person} /> : null}
+        {tab === "person-ip" ? (
+          <IpPanel key={person.id} person={person} />
+        ) : null}
+        {tab === "person-photos" ? (
+          <PhotosPanel key={person.id} person={person} />
+        ) : null}
         {tab === "person-avatars" ? <AvatarPanel person={person} /> : null}
         {tab === "person-voices" ? <VoicePanel person={person} /> : null}
       </div>
@@ -453,28 +467,32 @@ function IpPanel({ person }: { person: StudioPerson }) {
           />
         </Field>
         <Field label="身份">
-          <input
+          <textarea
+            rows={3}
             disabled={readOnly}
             value={draft.role}
             onChange={(event) => update("role", event.target.value)}
           />
         </Field>
         <Field label="服务范围">
-          <input
+          <textarea
+            rows={3}
             disabled={readOnly}
             value={draft.scope}
             onChange={(event) => update("scope", event.target.value)}
           />
         </Field>
         <Field label="目标人群">
-          <input
+          <textarea
+            rows={3}
             disabled={readOnly}
             value={draft.audience}
             onChange={(event) => update("audience", event.target.value)}
           />
         </Field>
         <Field label="表达特点">
-          <input
+          <textarea
+            rows={3}
             disabled={readOnly}
             value={draft.expression}
             onChange={(event) => update("expression", event.target.value)}
@@ -530,6 +548,66 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
     (asset) => asset.personId === person.id && asset.kind === "image",
   );
   const scenePage = data.pagination?.scenes?.[person.id];
+  const [sceneRequest, setSceneRequest] = useState(0);
+  const [expandedPhoto, setExpandedPhoto] = useState<string>();
+  const baseAsset =
+    (person.sheetId
+      ? assets.find((asset) => asset.id === person.sheetId)
+      : assets.find((asset) => asset.composite)) ??
+    (person.sheetId
+      ? {
+          id: person.sheetId,
+          name: "基础五视图",
+          kind: "image" as const,
+          group: "人物",
+          source: "人物库",
+          saved: true,
+          composite: true,
+        }
+      : undefined);
+  const refreshScenes = async () => {
+    try {
+      const result = await loadPersonAssets(person.id);
+      updateData((current) => ({
+        ...current,
+        assets: [
+          ...current.assets.filter(
+            (asset) =>
+              !(
+                asset.personId === person.id &&
+                asset.source === "人物库场景造型"
+              ),
+          ),
+          ...result.assets,
+        ],
+        people: current.people.map((entry) =>
+          entry.id === person.id
+            ? {
+                ...entry,
+                photoIds: result.assets.map((asset) => asset.id),
+                photoCount: result.total,
+                sceneLookCount: result.total,
+              }
+            : entry,
+        ),
+        pagination: {
+          ...current.pagination,
+          scenes: {
+            ...current.pagination?.scenes,
+            [person.id]: { loaded: result.loaded, total: result.total },
+          },
+        },
+        errors: [...current.errors, ...result.errors],
+      }));
+    } catch (cause) {
+      notify(
+        customerVisibleErrorMessage(
+          cause,
+          "场景已生成，读取照片失败，请刷新场景重试。",
+        ),
+      );
+    }
+  };
   const loadNextScenes = async () => {
     if (review || loadingMore || !scenePage) return;
     setLoadingMore(true);
@@ -584,8 +662,7 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
             variant="outline"
             onClick={() => {
               if (readOnly) return;
-              notify(`正在打开${person.name}的五视图与场景造型。`);
-              navigate("people", { selectedPersonId: person.id });
+              openLive("characters", { identityId: person.id, tab: "base" });
             }}
           >
             管理形象照
@@ -595,8 +672,13 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
             variant="primary"
             onClick={() => {
               if (readOnly) return;
-              notify(`将在人物管理中为${person.name}选择并生成场景形象照。`);
-              navigate("people", { selectedPersonId: person.id });
+              if (review) {
+                notify(
+                  "示例模式不提交生成任务，请登录后为当前人物创建场景照。",
+                );
+                return;
+              }
+              setSceneRequest((value) => value + 1);
             }}
           >
             AI 生成场景照
@@ -605,22 +687,19 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
       </div>
       <Panel>
         <h3>基础五视图 · 1 张合成图</h3>
-        {person.sheetId || assets.find((asset) => asset.composite) ? (
-          <Media
-            asset={
-              assets.find((asset) => asset.composite) ?? {
-                id: person.sheetId ?? "sheet",
-                name: "五视图合成图",
-                kind: "image",
-                group: "人物",
-                source: "人物库",
-                saved: true,
-                composite: true,
-              }
-            }
-            alt="五视图合成图"
-            className="people-sheet"
-          />
+        {baseAsset ? (
+          <button
+            type="button"
+            className="scene-preview-button"
+            aria-label="放大查看基础五视图"
+            onClick={() => setExpandedPhoto(baseAsset.id)}
+          >
+            <Media
+              asset={baseAsset}
+              alt="五视图合成图"
+              className="people-sheet"
+            />
+          </button>
         ) : (
           <Empty
             title="暂无五视图合成图"
@@ -631,7 +710,10 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
                 variant="outline"
                 onClick={() => {
                   if (readOnly) return;
-                  openLive("characters");
+                  openLive("characters", {
+                    identityId: person.id,
+                    tab: "base",
+                  });
                 }}
               >
                 打开人物管理
@@ -640,17 +722,71 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
           />
         )}
       </Panel>
-      <h3>场景形象照</h3>
+      {!review ? (
+        <CharacterScenePanel
+          key={person.id}
+          identityId={person.id}
+          displayName={person.name}
+          canManage={!readOnly}
+          createRequest={sceneRequest}
+          hideCreateButton
+          showResults={false}
+          resultCount={
+            scenePage
+              ? assets.filter((asset) => !asset.composite).length
+              : undefined
+          }
+          onChanged={() => void refreshScenes()}
+          onRefresh={() => void refreshScenes()}
+        />
+      ) : (
+        <h3>场景形象照</h3>
+      )}
+      {review && assets.filter((asset) => !asset.composite).length === 0 ? (
+        <Empty
+          title={data.loading ? "正在读取场景形象照…" : "还没有场景形象照"}
+          description="生成完成的场景会保存在当前人物下。可点击右上角 AI 生成场景照创建第一套。"
+        />
+      ) : null}
       <div className="scene-grid">
         {assets
           .filter((asset) => !asset.composite)
           .map((asset) => (
             <Panel key={asset.id}>
-              <Media asset={asset} alt={asset.name} className="scene-image" />
+              <button
+                type="button"
+                className="scene-preview-button"
+                aria-label={`放大查看${asset.name}`}
+                onClick={() => setExpandedPhoto(asset.id)}
+              >
+                <Media
+                  asset={
+                    asset.contactSheetId
+                      ? {
+                          ...asset,
+                          url: asset.contactSheetUrl,
+                          composite: true,
+                        }
+                      : asset
+                  }
+                  alt={asset.name}
+                  className={
+                    asset.contactSheetId
+                      ? "scene-image scene-image--sheet"
+                      : "scene-image"
+                  }
+                />
+              </button>
               <strong>{asset.name}</strong>
+              {asset.contactSheetId ? (
+                <p className="scene-set-label">1 套 · 五视图合成图</p>
+              ) : null}
               <div>
                 <Button
-                  disabled={readOnly}
+                  disabled={
+                    readOnly ||
+                    asset.allowedUses?.includes("first_frame") === false
+                  }
                   variant="outline"
                   onClick={() => {
                     if (readOnly) return;
@@ -664,7 +800,10 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
                   制作口播分身
                 </Button>
                 <Button
-                  disabled={readOnly}
+                  disabled={
+                    readOnly ||
+                    asset.allowedUses?.includes("first_frame") === false
+                  }
                   variant="primary"
                   onClick={() => {
                     if (readOnly) return;
@@ -681,6 +820,44 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
             </Panel>
           ))}
       </div>
+      {expandedPhoto ? (
+        <StudioDialog
+          title={
+            assets.find((asset) => asset.id === expandedPhoto)?.name ??
+            "场景形象照"
+          }
+          onClose={() => setExpandedPhoto(undefined)}
+        >
+          <Media
+            asset={(() => {
+              const asset =
+                assets.find((item) => item.id === expandedPhoto) ??
+                (expandedPhoto === baseAsset?.id ? baseAsset : undefined);
+              return asset?.contactSheetId
+                ? { ...asset, url: asset.contactSheetUrl, composite: true }
+                : asset;
+            })()}
+            alt={
+              expandedPhoto === baseAsset?.id
+                ? "基础五视图大图"
+                : "场景形象大图"
+            }
+            className="scene-expanded-image"
+          />
+          <Button
+            variant="outline"
+            onClick={() => {
+              setExpandedPhoto(undefined);
+              openLive("characters", {
+                identityId: person.id,
+                tab: expandedPhoto === baseAsset?.id ? "base" : "scenes",
+              });
+            }}
+          >
+            查看单独视角
+          </Button>
+        </StudioDialog>
+      ) : null}
       {scenePage && scenePage.loaded < scenePage.total ? (
         <div className="people-pagination">
           <span>

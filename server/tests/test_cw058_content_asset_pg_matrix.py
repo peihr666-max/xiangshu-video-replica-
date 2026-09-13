@@ -1653,6 +1653,80 @@ def test_materials_pagination_hide_rename_and_audit_on_pg(
     assert "asset:missing" in resolved.unavailable_ids
 
 
+def test_character_materials_group_contact_sheets_without_losing_reference_access(
+    bus: BusinessConnection, pg: psycopg.Connection
+) -> None:
+    from app.materials import hide_material, list_materials, resolve_materials
+
+    for key, owner in [
+        ("sheet-a", "employee_1"),
+        ("sheet-b", "employee_1"),
+        ("foreign-sheet", "employee_2"),
+    ]:
+        version_id = _seed_published_character_graph(pg, key, owner=owner)
+        sheet_id = f"contact-{key}"
+        pg.execute(
+            "INSERT INTO assets (id,kind,storage_uri,sha256,size_bytes,content_type,"
+            "created_by_user_id,metadata_json) "
+            "VALUES (%s,'character_contact_sheet',%s,'sheet-sha',128,'image/png',%s,%s)",
+            (
+                sheet_id,
+                f"local://characters/{key}/sheet.png",
+                owner,
+                json.dumps({"purpose": "five_view_contact_sheet"}),
+            ),
+        )
+        pg.execute(
+            "UPDATE character_versions SET publication_snapshot_json = "
+            "(publication_snapshot_json::jsonb || "
+            "jsonb_build_object('contact_sheet_asset_id', %s::text))::text "
+            "WHERE id=%s",
+            (sheet_id, version_id),
+        )
+    user = actor("employee_1", "employee")
+    pages = [
+        list_materials(
+            bus,
+            actor=user,
+            media_type="image",
+            source="character",
+            query=None,
+            page=page,
+            page_size=1,
+        )
+        for page in (1, 2)
+    ]
+    assert all(page.total == 2 for page in pages)
+    assert {item.asset_id for page in pages for item in page.items} == {
+        "contact-sheet-a",
+        "contact-sheet-b",
+    }
+    assert all(item.composite for page in pages for item in page.items)
+    for page in pages:
+        item = page.items[0]
+        key = str(item.asset_id).removeprefix("contact-")
+        assert item.preview_asset_id == f"asset-{key}-front_full"
+        assert len(item.character_views) == 7
+        assert {view.asset_id for view in item.character_views} == {
+            f"asset-{key}-{view_type.lower()}" for view_type in REQUIRED_CHARACTER_VIEW_TYPES
+        }
+    assert all("first_frame" not in item.allowed_uses for page in pages for item in page.items)
+    references = resolve_materials(
+        bus,
+        actor=user,
+        material_ids=["asset:asset-sheet-a-front_face", "asset:contact-foreign-sheet"],
+    )
+    assert [item.asset_id for item in references.items] == ["asset-sheet-a-front_face"]
+    assert "first_frame" in references.items[0].allowed_uses
+    assert references.unavailable_ids == ["asset:contact-foreign-sheet"]
+    hide_material(bus, actor=user, material_id="asset:contact-sheet-a")
+    remaining = list_materials(
+        bus, actor=user, media_type="image", source="character", query=None, page=1, page_size=50
+    )
+    assert remaining.total == 1
+    assert remaining.items[0].asset_id == "contact-sheet-b"
+
+
 def test_asset_access_owner_scoping_on_pg(bus: BusinessConnection, pg: psycopg.Connection) -> None:
     """旧断言（test_material_permissions.py）：口播结果资产仅任务属主可读，
     他者一律 404 掩蔽（含无任务挂靠的游离资产）。"""

@@ -2743,7 +2743,8 @@
 .character-scene-panel {
   display: grid;
   gap: 16px;
-  min-width: min(920px, 78vw);
+  min-width: 0;
+  width: 100%;
 }
 .character-scene-panel__head {
   display: flex;
@@ -2812,8 +2813,8 @@
 .character-scene-card__image .source-frame-placeholder {
   display: grid;
   width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
   place-items: center;
   background: #0b0b0d;
 }
@@ -2858,6 +2859,82 @@
   padding: 28px;
   color: #807970;
   text-align: center;
+}
+.character-scene-panel__head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+.character-scene-panel__head p {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.character-scene-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.character-scene-card__image {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: #0b0b0d;
+}
+.character-scene-card:has(.character-scene-views) {
+  grid-column: 1 / -1;
+}
+.character-scene-card:has(.character-scene-views)
+  > .character-scene-card__image {
+  display: none;
+}
+.character-scene-views {
+  padding: 16px;
+}
+.character-scene-views .character-preview-grid figure {
+  margin: 0;
+}
+.character-scene-views .character-preview-grid img {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: contain;
+}
+.character-scene-views > p {
+  color: #999b95;
+  font-size: 13px;
+}
+.character-scene-progress {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid #65552b;
+  border-radius: 10px;
+  background: #242215;
+}
+.character-scene-progress p {
+  margin: 6px 0;
+}
+.character-scene-progress small {
+  color: #b5b19f;
+}
+.character-scene-progress__indicator {
+  flex: 0 0 18px;
+  height: 18px;
+  margin-top: 4px;
+  border: 3px solid #756436;
+  border-top-color: #e5aa36;
+  border-radius: 50%;
+}
+.character-scene-form input,
+.character-scene-form textarea {
+  width: 100%;
+  border: 1px solid #383a32;
+  border-radius: 8px;
+  background: #080909;
+  color: #ecece8;
+  padding: 12px;
+  font: inherit;
+  line-height: 1.6;
 }
 .character-lightbox__views {
   display: grid;

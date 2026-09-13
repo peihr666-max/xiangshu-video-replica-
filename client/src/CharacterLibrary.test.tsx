@@ -116,6 +116,64 @@ function characterTask(
 }
 
 describe("CharacterLibrary", () => {
+  it("管理入口能定位不在第一页的人物", async () => {
+    vi.mocked(api.listSimpleCharacterLibraryPage)
+      .mockResolvedValueOnce({ items: [], next_cursor: "page2", total: 1 })
+      .mockResolvedValue({ items: [entry], next_cursor: null, total: 1 });
+    render(
+      <CharacterLibrary
+        userId="employee_1"
+        userRole="employee"
+        initialIdentityId={entry.identity_id}
+      />,
+    );
+    expect(
+      await screen.findByRole("dialog", { name: /林夏/ }),
+    ).toBeInTheDocument();
+    expect(api.listSimpleCharacterLibraryPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cursor: "page2" }),
+    );
+  });
+  it("收起场景表单后仍显示生成任务，完成后展示同一套结果", async () => {
+    vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([entry]);
+    let complete!: (look: api.SimpleSceneLook) => void;
+    vi.mocked(api.createCharacterSceneLook).mockReturnValueOnce(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    render(<CharacterLibrary userRole="employee" userId="employee_1" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看人物 林夏 大图" }),
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "场景造型" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "新增场景造型" }),
+    );
+    await waitFor(() => expect(api.getLatestSceneLookTask).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("场景名称"), {
+      target: { value: "工地巡检" },
+    });
+    fireEvent.change(screen.getByLabelText("场景描述"), {
+      target: { value: "施工现场" },
+    });
+    fireEvent.change(screen.getByLabelText("服装描述"), {
+      target: { value: "安全帽工装" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成场景五视图" }));
+    fireEvent.click(screen.getByRole("button", { name: "收起" }));
+    expect(
+      screen.getByRole("status", { name: "场景造型生成进度" }),
+    ).toHaveTextContent("工地巡检");
+    complete(sceneLook);
+    expect(
+      await screen.findByRole("button", { name: "查看工地巡检五视图" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "场景造型生成进度" }),
+    ).toBeNull();
+  });
+
   beforeEach(() => {
     // resetAllMocks (not clearAllMocks) also drops leftover mockResolvedValueOnce
     // queues from earlier tests, which would otherwise leak into this one.
@@ -352,11 +410,15 @@ describe("CharacterLibrary", () => {
     fireEvent.click(screen.getByRole("button", { name: "生成场景五视图" }));
 
     await waitFor(() =>
-      expect(api.createCharacterSceneLook).toHaveBeenCalledWith("identity-1", {
-        scene_name: "商务讲解",
-        scene_description: "现代会议室，落地窗自然光",
-        costume_description: "深灰色西装和浅色衬衫",
-      }),
+      expect(api.createCharacterSceneLook).toHaveBeenCalledWith(
+        "identity-1",
+        {
+          scene_name: "商务讲解",
+          scene_description: "现代会议室，落地窗自然光",
+          costume_description: "深灰色西装和浅色衬衫",
+        },
+        expect.any(Function),
+      ),
     );
     expect(await screen.findByText("商务讲解")).toBeInTheDocument();
     expect(screen.queryByText("等待管理员审核")).toBeNull();
@@ -394,8 +456,11 @@ describe("CharacterLibrary", () => {
       await screen.findByRole("tab", { name: "场景造型" }),
     ).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByText("工地巡检")).toBeInTheDocument();
-    expect(api.waitForCharacterSheetTask).toHaveBeenCalledWith("scene-task-1");
-    expect(api.listCharacterSceneLooks).toHaveBeenCalledTimes(2);
+    expect(api.waitForCharacterSheetTask).toHaveBeenCalledWith(
+      "scene-task-1",
+      expect.any(Function),
+    );
+    expect(api.listCharacterSceneLooks).toHaveBeenCalledTimes(1);
   });
 
   it("does not render a scene task as a base-character generation card", async () => {

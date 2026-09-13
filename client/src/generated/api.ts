@@ -7351,8 +7351,23 @@ export interface components {
         [key: string]: string;
       };
     };
+    /** MaterialCharacterView */
+    MaterialCharacterView: {
+      /** Asset Id */
+      asset_id: string;
+      /** View Type */
+      view_type: string;
+    };
     /** MaterialItem */
     MaterialItem: {
+      /** Preview Asset Id */
+      preview_asset_id?: string | null;
+      /** Character Views */
+      character_views?: components["schemas"]["MaterialCharacterView"][];
+      /** Composite
+       * @default false
+       */
+      composite?: boolean;
       /** Id */
       id: string;
       /** Owner User Id */
