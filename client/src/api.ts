@@ -789,7 +789,7 @@ export async function updateStudioNotificationPreferences(
   );
 }
 
-export type StudioDraftKind = "copy" | "oral" | "replica";
+export type StudioDraftKind = "copy" | "oral" | "replica" | "publishing";
 
 export type StudioDraftCloudRecord = {
   draft_kind: StudioDraftKind;
@@ -838,13 +838,18 @@ export async function saveStudioDraft(
   kind: StudioDraftKind,
   payload: Record<string, unknown>,
   scriptConfirmed: boolean,
+  expectedRevision?: number,
 ): Promise<StudioDraftCloudRecord> {
   return requestApiJson<StudioDraftCloudRecord>(
     `/api/studio/drafts/${encodeURIComponent(kind)}`,
     "保存云端草稿失败",
     {
       method: "PUT",
-      body: JSON.stringify({ payload, script_confirmed: scriptConfirmed }),
+      body: JSON.stringify({
+        payload,
+        script_confirmed: scriptConfirmed,
+        expected_revision: expectedRevision,
+      }),
     },
   );
 }
@@ -867,6 +872,15 @@ export async function listStudioSavedScripts(): Promise<
     "读取我的文案失败",
   );
   return page.items;
+}
+
+export async function getStudioSavedScript(
+  scriptId: string,
+): Promise<StudioSavedScriptRecord> {
+  return requestApiJson<StudioSavedScriptRecord>(
+    `/api/studio/saved-scripts/${encodeURIComponent(scriptId)}`,
+    "读取保存文案失败",
+  );
 }
 
 /** 保存/覆盖一条我的文案（按 script_id 幂等）。 */
@@ -4240,6 +4254,65 @@ async function requestControlJson<T>(
     throw error;
   }
   return (await response.json()) as T;
+}
+
+export type WorkspaceSearchKind = "video" | "script" | "person" | "material";
+export type WorkspaceNotifications = {
+  enabled: boolean;
+  unread_count: number;
+  items: Array<{
+    id: string;
+    task_id: string;
+    task_kind: "generation_batch" | "oral_task";
+    title: string;
+    status: string;
+    occurred_at: string;
+    unread: boolean;
+  }>;
+};
+export function getWorkspaceNotifications() {
+  return requestApiJson<WorkspaceNotifications>(
+    "/api/studio/notifications",
+    "读取任务通知失败",
+  );
+}
+export function markWorkspaceNotificationsRead() {
+  return requestApiJson<{ read_before: string }>(
+    "/api/studio/notifications/read",
+    "标记已读失败",
+    { method: "POST" },
+  );
+}
+export type WorkspaceSearchItem = {
+  id: string;
+  kind: WorkspaceSearchKind;
+  title: string;
+  description: string;
+  platform: ViralPlatform | null;
+  person: SimpleLibraryEntry | null;
+};
+export type WorkspaceSearchPage = {
+  items: WorkspaceSearchItem[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export function searchWorkspace(
+  query: string,
+  kind: WorkspaceSearchKind,
+  page = 1,
+) {
+  const params = new URLSearchParams({
+    q: query,
+    kind,
+    page: String(page),
+    page_size: "12",
+  });
+  return requestApiJson<WorkspaceSearchPage>(
+    `/api/studio/search?${params}`,
+    "搜索暂不可用，请重试",
+  );
 }
 
 async function requestApiJson<T>(

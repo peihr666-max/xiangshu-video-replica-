@@ -172,7 +172,7 @@ impl CustomerCredentialVault {
     }
 }
 
-fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), VaultError> {
+pub(crate) fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), VaultError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| vault_err(e.to_string()))?;
     }
@@ -229,6 +229,7 @@ pub fn customer_load_credentials(app: AppHandle) -> Result<Option<CustomerCreden
 
 #[tauri::command]
 pub fn customer_clear_session_token(app: AppHandle) -> Result<(), String> {
+    super::publish_accounts::close_all_windows(&app);
     vault_for(&app)
         .and_then(|vault| vault.clear_session())
         .map_err(|e| e.0)
@@ -236,6 +237,7 @@ pub fn customer_clear_session_token(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn customer_clear_all_credentials(app: AppHandle) -> Result<(), String> {
+    super::publish_accounts::close_all_windows(&app);
     vault_for(&app)
         .and_then(|vault| vault.clear_all())
         .map_err(|e| e.0)

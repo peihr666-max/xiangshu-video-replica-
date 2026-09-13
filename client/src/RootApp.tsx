@@ -5,7 +5,7 @@ import "./customer/customer-access.css";
 import { AccountAccessPage } from "./customer/AccountAccessPage";
 import { CustomerPairingFlow } from "./customer/CustomerPairingFlow";
 import { CustomerWelcomePage } from "./customer/CustomerWelcomePage";
-import { CustomerWorkspace } from "./customer/CustomerWorkspace";
+
 import { LoginPage } from "./customer/LoginPage";
 import { SessionConflictDialog } from "./customer/SessionConflictDialog";
 import {
@@ -13,6 +13,12 @@ import {
   customerCredentialStore,
   useCustomerSession,
 } from "./customer/useCustomerSession";
+
+const CustomerWorkspace = lazy(() =>
+  import("./customer/CustomerWorkspace").then((module) => ({
+    default: module.CustomerWorkspace,
+  })),
+);
 
 const ReviewWorkspace = import.meta.env.DEV
   ? lazy(() => import("./studio/ReviewWorkspace"))
@@ -136,21 +142,30 @@ function CustomerSessionShell({
       );
     case "activation":
     case "login":
-      return accessOpen ? (
-        <AccountAccessPage
-          initialMode={accessMode}
-          onModeChange={openAccess}
-          onSubmit={async (input) => {
-            await session.loginWithPassword(input);
-            setAccessOpen(false);
-          }}
-          onHome={() => {
-            setAccessOpen(false);
-            window.history.replaceState(null, "", "/#studio/workbench");
-          }}
-        />
-      ) : (
-        <CustomerWelcomePage onLogin={() => openAccess("login")} />
+      return (
+        <>
+          {session.error && (
+            <div className="customer-session-notice" role="alert">
+              {session.error.message}
+            </div>
+          )}
+          {accessOpen ? (
+            <AccountAccessPage
+              initialMode={accessMode}
+              onModeChange={openAccess}
+              onSubmit={async (input) => {
+                await session.loginWithPassword(input);
+                setAccessOpen(false);
+              }}
+              onHome={() => {
+                setAccessOpen(false);
+                window.history.replaceState(null, "", "/#studio/workbench");
+              }}
+            />
+          ) : (
+            <CustomerWelcomePage onLogin={() => openAccess("login")} />
+          )}
+        </>
       );
     case "binding-conflict":
       // The conflict screen only exists with conflict metadata; the reducer
@@ -181,19 +196,21 @@ function CustomerSessionShell({
       // The workspace screen is only reachable after activate/login set the
       // identity; the checking fallback below is unreachable in practice.
       return session.user === null ? null : (
-        <CustomerWorkspace
-          user={session.user}
-          sessionRuntime={session.sessionRuntime}
-          onManualHeartbeat={() => void session.sendHeartbeatNow()}
-          onLogout={session.logout}
-          store={store}
-          // F-01 review (P0-3): the workspace calls this when it lost the
-          // session locally (missing token / 401 without a lifecycle event).
-          // restartAfterExpiry is a guarded no-op from the workspace screen —
-          // the dedicated local expiry lands on the expired terminal instead.
-          onSessionExpired={session.expireSessionLocally}
-          onPairDevice={onPairDevice}
-        />
+        <Suspense fallback={<p role="status">正在加载工作台…</p>}>
+          <CustomerWorkspace
+            user={session.user}
+            sessionRuntime={session.sessionRuntime}
+            onManualHeartbeat={() => void session.sendHeartbeatNow()}
+            onLogout={session.logout}
+            store={store}
+            // F-01 review (P0-3): the workspace calls this when it lost the
+            // session locally (missing token / 401 without a lifecycle event).
+            // restartAfterExpiry is a guarded no-op from the workspace screen —
+            // the dedicated local expiry lands on the expired terminal instead.
+            onSessionExpired={session.expireSessionLocally}
+            onPairDevice={onPairDevice}
+          />
+        </Suspense>
       );
     case "session-expired":
       return (

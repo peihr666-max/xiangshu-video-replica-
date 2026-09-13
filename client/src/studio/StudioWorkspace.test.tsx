@@ -2079,9 +2079,7 @@ describe("数字人口播提交", () => {
       ).toBeEnabled(),
     );
     fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
-    const submit = await screen.findByRole("button", {
-      name: "确认费用并提交",
-    });
+    const submit = await findEnabledButton("确认费用并提交");
     fireEvent.click(submit);
     fireEvent.click(submit);
 
@@ -2104,6 +2102,7 @@ describe("数字人口播提交", () => {
     expect(api.createOralTask.mock.calls[1][0].idempotencyKey).toBe(
       firstRequest.idempotencyKey,
     );
+    await screen.findByText("口播任务提交未成功，请核对素材后重试。");
 
     api.createOralTask.mockResolvedValueOnce({
       id: "oral-task-2",
@@ -2112,9 +2111,7 @@ describe("数字人口播提交", () => {
       replayed: false,
     });
     fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "确认费用并提交" }),
-    );
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
 
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(3));
     expect(api.createOralTask.mock.calls[2][0].idempotencyKey).not.toBe(

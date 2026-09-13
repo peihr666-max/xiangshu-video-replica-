@@ -559,7 +559,7 @@ async function loadPeople(): Promise<{
   return loadPeopleEntries(page.items, page.next_cursor, page.total);
 }
 
-async function loadPeopleEntries(
+export async function loadPeopleEntries(
   entries: SimpleLibraryEntry[],
   nextCursor: string | null,
   total: number,
@@ -1208,7 +1208,7 @@ export async function persistCloudDraft(draft: StudioDraft): Promise<void> {
 }
 
 /** 我的文案列表：云端记录 → StudioScript（confirmed 不持久化，回填后需重新确认终稿）。 */
-function savedScriptFromRecord(record: {
+export function savedScriptFromRecord(record: {
   script_id: string;
   title: string;
   text: string;

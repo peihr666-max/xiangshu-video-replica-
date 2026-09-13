@@ -479,6 +479,7 @@ export function useCustomerSession(
       if (passwordPendingRef.current) return;
       passwordPendingRef.current = true;
       setIsBusy(true);
+      setError(null);
       try {
         if (
           input.mode === "register" &&

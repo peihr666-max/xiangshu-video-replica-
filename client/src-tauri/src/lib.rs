@@ -1,11 +1,19 @@
 mod customer_credentials;
+mod publish_accounts;
 mod video_downloads;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(video_downloads::VideoDownloads::default())
+        .manage(publish_accounts::PublishAccounts::default())
         .invoke_handler(tauri::generate_handler![
+            publish_accounts::list_local_publish_accounts,
+            publish_accounts::start_local_publish_login,
+            publish_accounts::check_local_publish_login,
+            publish_accounts::cancel_local_publish_login,
+            publish_accounts::open_local_publish_account,
+            publish_accounts::remove_local_publish_account,
             customer_credentials::customer_device_instance_id,
             customer_credentials::customer_save_credentials,
             customer_credentials::customer_load_credentials,
@@ -32,5 +40,16 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("failed to build desktop application")
-        .run(|_app_handle, _event| {});
+        .run(|app, event| {
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = event
+            {
+                if label == "main" {
+                    publish_accounts::close_all_windows(app);
+                }
+            }
+        });
 }

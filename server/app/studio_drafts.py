@@ -23,8 +23,8 @@ from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
 from app.permissions import require_not_auditor
 
-DraftKind = Literal["copy", "oral", "replica"]
-DRAFT_KINDS: tuple[str, ...] = ("copy", "oral", "replica")
+DraftKind = Literal["copy", "oral", "replica", "publishing"]
+DRAFT_KINDS: tuple[str, ...] = ("copy", "oral", "replica", "publishing")
 
 MAX_DRAFT_PAYLOAD_BYTES = 512_000
 MAX_SAVED_SCRIPT_TEXT_CHARS = 100_000
@@ -42,6 +42,7 @@ class StudioDraftUpsertRequest(BaseModel):
 
     payload: dict[str, object]
     script_confirmed: bool = False
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class StudioDraftResponse(BaseModel):
@@ -149,6 +150,40 @@ def save_studio_draft(
             },
         )
     confirmed_flag = 1 if request.script_confirmed else 0
+    if kind == "publishing" and request.expected_revision is None:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "STUDIO_DRAFT_REVISION_REQUIRED",
+                "message": "请先加载发布草稿后再保存。",
+            },
+        )
+    if request.expected_revision is not None:
+        if request.expected_revision == 0:
+            row = conn.execute(
+                """INSERT INTO studio_drafts
+                (id, user_id, draft_kind, payload, script_confirmed, revision)
+                VALUES (%s, %s, %s, %s, %s, 1)
+                ON CONFLICT (user_id, draft_kind) DO NOTHING RETURNING *""",
+                (str(uuid4()), actor.id, kind, payload_text, confirmed_flag),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """UPDATE studio_drafts SET payload = %s, script_confirmed = %s,
+                revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = %s AND draft_kind = %s AND revision = %s RETURNING *""",
+                (payload_text, confirmed_flag, actor.id, kind, request.expected_revision),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "STUDIO_DRAFT_CONFLICT",
+                    "message": "云端草稿已在其他窗口更新，请重新加载后再保存。",
+                },
+            )
+        conn.commit()
+        return _draft_response(row)
     conn.execute(
         """
         INSERT INTO studio_drafts (
@@ -210,6 +245,27 @@ def list_saved_scripts(
         (actor_id, MAX_SAVED_SCRIPTS_PER_USER),
     ).fetchall()
     return SavedScriptListResponse(items=[_saved_script_response(row) for row in rows])
+
+
+def load_saved_script(
+    conn: BusinessConnection,
+    *,
+    actor_id: str,
+    script_id: str,
+) -> SavedScriptResponse:
+    row = conn.execute(
+        "SELECT * FROM studio_saved_scripts WHERE user_id = %s AND script_id = %s",
+        (actor_id, script_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(
+            404,
+            detail={
+                "code": "STUDIO_SAVED_SCRIPT_NOT_FOUND",
+                "message": "该保存文案不存在或已被删除。",
+            },
+        )
+    return _saved_script_response(row)
 
 
 def save_saved_script(

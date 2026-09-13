@@ -17,6 +17,7 @@ from app.studio_drafts import (
     delete_saved_script,
     delete_studio_draft,
     list_saved_scripts,
+    load_saved_script,
     load_studio_draft,
     save_saved_script,
     save_studio_draft,
@@ -72,6 +73,13 @@ def read_saved_scripts(
     actor: AuthenticatedUser,
 ) -> SavedScriptListResponse:
     return list_saved_scripts(conn, actor_id=actor.id)
+
+
+@router.get("/saved-scripts/{script_id}", response_model=SavedScriptResponse)
+def read_user_saved_script(
+    script_id: str, conn: Database, actor: AuthenticatedUser
+) -> SavedScriptResponse:
+    return load_saved_script(conn, actor_id=actor.id, script_id=script_id)
 
 
 @router.post("/saved-scripts", response_model=SavedScriptResponse)

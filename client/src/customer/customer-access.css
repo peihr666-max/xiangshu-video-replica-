@@ -190,7 +190,7 @@ button.nav-button {
   overflow: hidden auto;
   padding: 48px 24px;
   background:
-    #08090b url("./assets/brand/activation-background.png") center / cover
+    #08090b url("../assets/brand/activation-background.png") center / cover
     no-repeat;
 }
 .customer-access-card {
@@ -1206,4 +1206,20 @@ button.table-action-button--danger {
   margin-top: 4px;
   padding: 7px 14px;
   font-size: 13px;
+}
+
+.customer-session-notice {
+  position: fixed;
+  z-index: 1000;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 14px 18px;
+  border: 1px solid #e8af50;
+  border-radius: 10px;
+  background: #302719;
+  color: #ffe1a6;
+  box-shadow: 0 6px 24px #0006;
 }

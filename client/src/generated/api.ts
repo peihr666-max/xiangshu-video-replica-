@@ -465,6 +465,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/studio/search": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Studio Search */
+    get: operations["read_studio_search_api_studio_search_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/studio/stats": {
     parameters: {
       query?: never;
@@ -511,6 +528,40 @@ export interface paths {
     /** Update Studio Notification Preferences */
     put: operations["update_studio_notification_preferences_api_studio_notification_preferences_put"];
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/notifications": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Studio Notifications */
+    get: operations["read_studio_notifications_api_studio_notifications_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/notifications/read": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Mark Studio Notifications Read */
+    post: operations["mark_studio_notifications_read_api_studio_notifications_read_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -584,7 +635,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    /** Read User Saved Script */
+    get: operations["read_user_saved_script_api_studio_saved_scripts__script_id__get"];
     put?: never;
     post?: never;
     /** Remove Saved Script */
@@ -8665,6 +8717,25 @@ export interface components {
        * @default false
        */
       script_confirmed: boolean;
+      /** Expected Revision */
+      expected_revision?: number | null;
+    };
+    /** StudioNotificationItem */
+    StudioNotificationItem: {
+      /** Id */
+      id: string;
+      /** Task Id */
+      task_id: string;
+      /** Task Kind */
+      task_kind: string;
+      /** Title */
+      title: string;
+      /** Status */
+      status: string;
+      /** Occurred At */
+      occurred_at: string;
+      /** Unread */
+      unread: boolean;
     };
     /** StudioNotificationPreferences */
     StudioNotificationPreferences: {
@@ -8673,6 +8744,54 @@ export interface components {
        * @default true
        */
       enabled: boolean;
+    };
+    /** StudioNotificationReadResponse */
+    StudioNotificationReadResponse: {
+      /** Read Before */
+      read_before: string;
+    };
+    /** StudioNotificationsResponse */
+    StudioNotificationsResponse: {
+      /** Items */
+      items: components["schemas"]["StudioNotificationItem"][];
+      /** Unread Count */
+      unread_count: number;
+      /** Enabled */
+      enabled: boolean;
+    };
+    /** StudioSearchItem */
+    StudioSearchItem: {
+      /** Id */
+      id: string;
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: "video" | "script" | "person" | "material";
+      /** Title */
+      title: string;
+      /**
+       * Description
+       * @default
+       */
+      description: string;
+      /** Platform */
+      platform?: string | null;
+      /** Person */
+      person?: {
+        [key: string]: unknown;
+      } | null;
+    };
+    /** StudioSearchResponse */
+    StudioSearchResponse: {
+      /** Items */
+      items: components["schemas"]["StudioSearchItem"][];
+      /** Total */
+      total: number;
+      /** Page */
+      page: number;
+      /** Page Size */
+      page_size: number;
     };
     /** StudioStatsResponse */
     StudioStatsResponse: {
@@ -10385,6 +10504,43 @@ export interface operations {
       };
     };
   };
+  read_studio_search_api_studio_search_get: {
+    parameters: {
+      query: {
+        q: string;
+        kind?: "video" | "script" | "person" | "material";
+        page?: number;
+        page_size?: number;
+      };
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioSearchResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_studio_stats_api_studio_stats_get: {
     parameters: {
       query?: never;
@@ -10519,6 +10675,58 @@ export interface operations {
       };
     };
   };
+  read_studio_notifications_api_studio_notifications_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioNotificationsResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  mark_studio_notifications_read_api_studio_notifications_read_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioNotificationReadResponse"];
+        };
+      };
+    };
+  };
   read_user_saved_prompts_api_studio_saved_prompts_get: {
     parameters: {
       query?: {
@@ -10561,7 +10769,7 @@ export interface operations {
         Authorization?: string | null;
       };
       path: {
-        draft_kind: "copy" | "oral" | "replica";
+        draft_kind: "copy" | "oral" | "replica" | "publishing";
       };
       cookie?: never;
     };
@@ -10592,7 +10800,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        draft_kind: "copy" | "oral" | "replica";
+        draft_kind: "copy" | "oral" | "replica" | "publishing";
       };
       cookie?: never;
     };
@@ -10627,7 +10835,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        draft_kind: "copy" | "oral" | "replica";
+        draft_kind: "copy" | "oral" | "replica" | "publishing";
       };
       cookie?: never;
     };
@@ -10697,6 +10905,40 @@ export interface operations {
         "application/json": components["schemas"]["SavedScriptRequest"];
       };
     };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SavedScriptResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_user_saved_script_api_studio_saved_scripts__script_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        script_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
     responses: {
       /** @description Successful Response */
       200: {

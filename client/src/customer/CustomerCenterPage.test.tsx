@@ -230,7 +230,7 @@ test("each function has one destination and account settings contain no device s
   expect(screen.queryByRole("button", { name: "新建 Token" })).toBeNull();
   expect(screen.queryByText("登录设备")).toBeNull();
   expect(screen.queryByRole("button", { name: /设备/ })).toBeNull();
-  expect(screen.getByRole("switch", { name: "任务与公告通知" })).toBeVisible();
+  expect(screen.getByRole("switch", { name: "任务通知" })).toBeVisible();
 });
 
 test("expired default recovery reloads existing credentials instead of looping on the expired key", async () => {
