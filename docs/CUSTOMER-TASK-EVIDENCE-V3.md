@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## ADMIN-R01-20260913 — 管理请求与会话契约
+
+[独立证据](evidence/ADMIN-R01-20260913.md)：撤销 CSRF、401 登录过期与字符串业务错误；RED 5 failed，迟到 401 自检再复现 2 failed；最终管理专项 186、完整前端 1399、后端 1952 passed / 1 原有 TLS 环境 skip。本地完整门禁通过，独立评审和 PR 三门禁待完成。
+
 ## BILLING-20260913 — 逐项计费与经营核算
 
 用户确认取消套餐、按功能逐项扣分；未配置费用由平台承担。实现、独立终审与本地完整自动验证已完成（1383 前端 / 1952 后端，1 原有 TLS skip），[PR #94](https://github.com/peihr666-max/xiangshu-video-replica-/pull/94) 三门禁与合并待核验；未做历史迁移或生产切换。见[BILLING-20260913-EVIDENCE.md](evidence/BILLING-20260913-EVIDENCE.md)。

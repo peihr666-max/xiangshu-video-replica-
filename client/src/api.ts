@@ -4578,6 +4578,7 @@ async function requestControl(
   init: RequestInit,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
+  const csrfAtStart = getAdminCsrfToken();
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = new Headers(init.headers);
@@ -4602,7 +4603,7 @@ async function requestControl(
       signal: controller.signal,
     });
     if (response.status === 401) {
-      emitSessionExpired();
+      notifyAdminSessionExpired(csrfAtStart);
     }
     return response;
   } catch (error) {
@@ -4665,6 +4666,14 @@ async function requestApi(
 
 function emitSessionExpired() {
   window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+}
+
+/** End only the administrator session; customer credentials have their own lifecycle. */
+export function notifyAdminSessionExpired(csrfAtStart: string | null): void {
+  // A delayed response must not invalidate a later login or repeat its expiry.
+  if (getAdminCsrfToken() !== csrfAtStart) return;
+  clearAdminCsrfToken();
+  emitSessionExpired();
 }
 
 async function emitWorkspaceSessionEnded(
