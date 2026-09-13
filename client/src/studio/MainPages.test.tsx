@@ -1546,6 +1546,31 @@ describe("V1.4 工作台上传与创作入口", () => {
     expect(createViralImportTask).not.toHaveBeenCalled();
   });
 
+  it("网络解析明确失败后由用户重试使用新请求，避免永久重放失败回执", async () => {
+    useStudio.mockReturnValue(workbench());
+    resolveViralLink.mockRejectedValue(
+      Object.assign(new Error("请检查代理或 DNS 设置后重试"), {
+        status: 503,
+        code: "VIRAL_LINK_MEDIA_DNS_UNAVAILABLE",
+      }),
+    );
+    render(<WorkbenchPage />);
+    fireEvent.change(screen.getByLabelText("视频链接"), {
+      target: {
+        value: "https://www.douyin.com/jingxuan?modal_id=7672703482771972081",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    await screen.findByRole("alert");
+    expect(resolveViralLink).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+    await waitFor(() => expect(resolveViralLink).toHaveBeenCalledTimes(2));
+    expect(resolveViralLink.mock.calls[1]?.[2]).not.toBe(
+      resolveViralLink.mock.calls[0]?.[2],
+    );
+    expect(createViralImportTask).not.toHaveBeenCalled();
+  });
+
   it("工作台明确说明支持抖音、小红书与上传格式，不展示解析耗时", () => {
     useStudio.mockReturnValue(workbench());
     render(<WorkbenchPage />);

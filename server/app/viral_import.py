@@ -555,6 +555,11 @@ def perform_viral_import_task(work: ViralImportWork) -> ViralImportOutcome:
     source = storage_object_ref_from_uri(media.storage_uri)
     require_storage_match(work.storage, source)
     extension = "mp3" if media.kind == "audio" else "mp4"
+    if media.kind == "audio" and media.content_type.split(";", 1)[0] in {
+        "audio/mp4",
+        "audio/x-m4a",
+    }:
+        extension = "m4a"
     destination = (
         f"projects/{work.lease.project_id}/viral-imports/{work.lease.id}/source.{extension}"
     )

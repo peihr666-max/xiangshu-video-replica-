@@ -36,7 +36,12 @@ from app.viral_link import (
     normalize_supported_link,
     supported_link_platform,
 )
-from app.viral_media import UrlFetcher, ViralMediaError, ViralMediaPipeline
+from app.viral_media import (
+    UrlFetcher,
+    ViralMediaDNSUnavailable,
+    ViralMediaError,
+    ViralMediaPipeline,
+)
 from app.viral_routes import ViralVideoItem
 from app.viral_store import upsert_viral_videos
 from app.viral_tikhub import ViralVideo
@@ -260,6 +265,13 @@ def preflight_resolved_media(
         ).fetch(_resolved_video(resolved), prefer=prefer)
     except ViralLinkError:
         raise
+    except ViralMediaDNSUnavailable as exc:
+        raise ViralLinkError(
+            503,
+            "VIRAL_LINK_MEDIA_DNS_UNAVAILABLE",
+            "当前网络无法获取视频媒体地址，请检查代理或 DNS 设置后重试。",
+            retryable=False,
+        ) from exc
     except ViralMediaError as exc:
         raise ViralLinkError(
             422,
@@ -278,12 +290,15 @@ def validate_resolved_media_content(
 ) -> None:
     normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
     expected_prefix = "audio/" if kind == "audio" else "video/"
+    mp4_container = len(content) >= 12 and content[4:8] == b"ftyp"
     if kind == "audio":
-        magic_valid = content.startswith(b"ID3") or (
-            len(content) >= 2 and content[0] == 0xFF and content[1] & 0xE0 == 0xE0
+        magic_valid = (
+            mp4_container
+            or content.startswith(b"ID3")
+            or (len(content) >= 2 and content[0] == 0xFF and content[1] & 0xE0 == 0xE0)
         )
     else:
-        magic_valid = len(content) >= 12 and content[4:8] == b"ftyp"
+        magic_valid = mp4_container
     if not normalized_type.startswith(expected_prefix) or not magic_valid:
         raise ViralLinkError(
             422,
@@ -292,7 +307,8 @@ def validate_resolved_media_content(
             retryable=False,
         )
     try:
-        metadata = probe.probe(content, filename="source.mp3" if kind == "audio" else "source.mp4")
+        filename = "source.m4a" if mp4_container else "source.mp3"
+        metadata = probe.probe(content, filename=filename if kind == "audio" else "source.mp4")
     except VideoProbeUnavailable as exc:
         raise ViralLinkError(
             503,

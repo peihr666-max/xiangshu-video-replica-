@@ -116,9 +116,11 @@ class FFprobeVideoProbe:
             raise VideoProbeUnavailable("ffprobe is required for video precheck")
 
         suffix = Path(filename).suffix.lower()
-        with tempfile.NamedTemporaryFile(suffix=suffix) as temp:
-            temp.write(content)
-            temp.flush()
+        with tempfile.TemporaryDirectory(prefix="media-probe-") as directory:
+            # Windows prevents an external decoder from opening a live
+            # NamedTemporaryFile. Close the file before starting ffprobe.
+            source = Path(directory) / f"source{suffix}"
+            source.write_bytes(content)
             command = [
                 ffprobe,
                 "-v",
@@ -127,7 +129,7 @@ class FFprobeVideoProbe:
                 "format=duration",
                 "-of",
                 "json",
-                temp.name,
+                str(source),
             ]
             try:
                 result = subprocess.run(

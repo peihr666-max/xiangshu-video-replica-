@@ -429,6 +429,139 @@ def test_url_fetcher_rejects_non_public_targets() -> None:
             fetcher.fetch(url)
 
 
+def test_fake_ip_dns_uses_public_resolution_before_pinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        viral_media.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("198.18.2.49", 443))],
+    )
+    resolved: list[str] = []
+
+    def public_dns(host: str) -> list[str]:
+        resolved.append(host)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(viral_media, "_resolve_fake_ip_domain", public_dns, raising=False)
+    connections: list[tuple[str, str, str]] = []
+
+    def connect(scheme: str, host: str, port: int, ip: str, timeout: float):
+        connections.append((scheme, host, ip))
+        return _PinnedConnection(_PinnedResponse(200, body=b"public-media"))
+
+    assert (
+        UrlFetcher(connection_factory=connect).fetch("https://cdn.example/video.mp4?token=secret")
+        == b"public-media"
+    )
+    assert resolved == ["cdn.example"]
+    assert connections == [("https", "cdn.example", "93.184.216.34")]
+
+
+@pytest.mark.parametrize(
+    ("url", "answers"),
+    [
+        ("https://198.18.2.49/video.mp4", ["198.18.2.49"]),
+        ("https://cdn.example/video.mp4", ["198.18.2.49", "127.0.0.1"]),
+        ("https://cdn.example/video.mp4", ["127.0.0.1"]),
+        ("https://cdn.example/video.mp4", ["10.0.0.5"]),
+    ],
+)
+def test_fake_ip_fallback_does_not_allow_private_or_literal_targets(
+    url: str, answers: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        viral_media.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", (ip, 443)) for ip in answers],
+    )
+
+    def forbidden(*args: object):
+        raise AssertionError("private targets must not trigger fallback or a connection")
+
+    monkeypatch.setattr(viral_media, "_resolve_fake_ip_domain", forbidden, raising=False)
+    with pytest.raises(ViralMediaError):
+        UrlFetcher(connection_factory=forbidden).fetch(url)
+
+
+@pytest.mark.parametrize("ips", [["127.0.0.1"], ["93.184.216.34", "10.0.0.5"], ["198.18.2.1"]])
+def test_public_dns_response_still_requires_every_address_to_be_public(
+    ips: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        viral_media.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("198.18.2.49", 443))],
+    )
+    monkeypatch.setattr(viral_media, "_resolve_fake_ip_domain", lambda host: ips)
+    with pytest.raises(ViralMediaError, match="公网"):
+        UrlFetcher(
+            connection_factory=lambda *args: pytest.fail("unsafe address reached connection")
+        ).fetch("https://cdn.example/video.mp4")
+
+
+def test_doh_uses_fixed_public_endpoint_and_only_sends_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    requests: list[Any] = []
+    payload = {
+        "Status": 0,
+        "Question": [{"name": "cdn.example.", "type": 1}],
+        "Answer": [{"type": 1, "data": "93.184.216.34"}],
+    }
+
+    def connect(host: str, port: int, ip: str, timeout: float):
+        requests.append((host, port, ip, timeout))
+        connection = _PinnedConnection(_PinnedResponse(200, body=json.dumps(payload).encode()))
+        requests.append(connection)
+        return connection
+
+    monkeypatch.setattr(viral_media, "_PinnedHTTPSConnection", connect)
+    assert viral_media._resolve_fake_ip_domain("cdn.example") == ["93.184.216.34"]
+    assert requests[0] == ("cloudflare-dns.com", 443, "1.1.1.1", 5.0)
+    assert requests[1].requests == [
+        (
+            "GET",
+            "/dns-query?name=cdn.example&type=A",
+            {"Host": "cloudflare-dns.com", "Accept": "application/dns-json"},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "status,body", [(302, b""), (500, b""), (200, b"not-json"), (200, b"{}"), (200, b"x" * 16385)]
+)
+def test_doh_failure_is_bounded_and_never_uses_synthetic_ip(
+    status: int, body: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    endpoints: list[str] = []
+
+    def connect(host: str, port: int, ip: str, timeout: float):
+        endpoints.append(ip)
+        return _PinnedConnection(
+            _PinnedResponse(status, body=body, location="http://127.0.0.1/secret")
+        )
+
+    monkeypatch.setattr(viral_media, "_PinnedHTTPSConnection", connect)
+    with pytest.raises(viral_media.ViralMediaDNSUnavailable):
+        viral_media._resolve_fake_ip_domain("cdn.example")
+    assert endpoints == ["1.1.1.1", "1.0.0.1"]
+
+
+def test_m4a_audio_keeps_correct_content_type_in_media_cache() -> None:
+    video = _video("douyin", "m4a")
+    storage = FakeViralStorage()
+    fetcher = FakeFetcher({video.audio_url: b"\x00\x00\x00\x18ftypM4A "})
+    pipeline = ViralMediaPipeline(client=None, storage=storage, fetcher=fetcher)
+    first = pipeline.fetch(video)
+    assert first.kind == "audio"
+    assert first.content_type == "audio/mp4"
+    assert pipeline.fetch(video).content_type == "audio/mp4"
+    assert len(fetcher.calls) == 1
+
+
 def test_url_fetcher_rejects_redirect_to_private_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
