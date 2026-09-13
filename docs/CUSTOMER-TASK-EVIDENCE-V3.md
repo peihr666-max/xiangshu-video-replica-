@@ -2,7 +2,7 @@
 
 ## BILLING-20260913 — 逐项计费与经营核算
 
-用户确认取消套餐、按功能逐项扣分；未配置费用由平台承担。实现、独立终审与本地完整自动验证已完成（1383 前端 / 1952 后端，1 原有 TLS skip），PR 证据待回填；未做历史迁移或生产切换。见[BILLING-20260913-EVIDENCE.md](evidence/BILLING-20260913-EVIDENCE.md)。
+用户确认取消套餐、按功能逐项扣分；未配置费用由平台承担。实现、独立终审与本地完整自动验证已完成（1383 前端 / 1952 后端，1 原有 TLS skip），[PR #94](https://github.com/peihr666-max/xiangshu-video-replica-/pull/94) 三门禁与合并待核验；未做历史迁移或生产切换。见[BILLING-20260913-EVIDENCE.md](evidence/BILLING-20260913-EVIDENCE.md)。
 
 
 

@@ -10,7 +10,7 @@
 | 初始 main 基线 | abc96b7b093f92f54acdbfc4d5cd167eac5fa3e5；实现期间 rebase 到 main c28fb7c（PR #93） |
 | worktree | E:/众墅之家爆款短视频创作/.worktrees/BILLING-20260913 |
 | 测试资源 | billing-quality-20260913；billing-pg-20260913，127.0.0.1:15764；billing-net-20260913 |
-| 状态 | 独立终审及完整本地门通过（前端 1383、后端 1952 passed / 1 原有 skip）；PR 三门禁与合并待核验 |
+| 状态 | 独立终审及完整本地门通过（前端 1383、后端 1952 passed / 1 原有 skip）；[PR #94](https://github.com/peihr666-max/xiangshu-video-replica-/pull/94) 三门禁与合并待核验 |
 
 ## 已确认的业务规则与实施顺序
 
@@ -89,5 +89,5 @@ Owner / Reviewer：本任务 Codex / /root/billing_review 独立只读终审通�
 迁移与回滚：仅新增 schema；无历史业务迁移、余额转换或切换；含财务事实禁止丢弃式降级
 外部授权记录：用户已授权 worktree、编码、评审、PR 与合并；未调用真实付费供应商、ZPay 或生产 COS
 未测试项：真实供应商账单核销、staging/生产链路、生产发布
-提交 SHA / PR：1001661 功能底座，后续本任务 hardening 提交包含终审修复；PR 链接待建立后回填
+提交 SHA / PR：1001661 功能底座，后续本任务 hardening 提交包含终审修复；b689985 终审与本地验证提交；PR #94 https://github.com/peihr666-max/xiangshu-video-replica-/pull/94，后续仅证据回填提交
 ```
