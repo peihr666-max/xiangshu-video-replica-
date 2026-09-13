@@ -51,6 +51,12 @@ export default defineConfig({
           resolve(output, "platforms"),
           { recursive: true },
         );
+        // Production login, welcome and account pages share this brand image.
+        mkdirSync(resolve(output, "studio"), { recursive: true });
+        copyFileSync(
+          resolve(scriptDir, "public/studio/brand.png"),
+          resolve(output, "studio/brand.png"),
+        );
       },
     },
   ],

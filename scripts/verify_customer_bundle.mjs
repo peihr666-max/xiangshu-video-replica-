@@ -523,6 +523,31 @@ function runAdminBaseStylesheetControl() {
 // ─────────────────────────────────────────────────────────────────────────────
 // 主流程
 // ─────────────────────────────────────────────────────────────────────────────
+function assertProductionPublicAssets(manifest) {
+  const required = [
+    "favicon.svg",
+    "studio/brand.png",
+    "platforms/douyin.ico",
+    "platforms/wechat_channels.ico",
+    "platforms/xiaohongshu.ico",
+  ];
+  for (const rel of required) {
+    const source = readFileSync(resolve(repoRoot, "client/public", rel));
+    const expected = createHash("sha256").update(source).digest("hex");
+    const built = manifest.find((entry) => entry.rel === rel);
+    if (!built || built.bytes === 0 || built.sha256 !== expected) {
+      throw new Error(`Production public asset missing or changed: ${rel}`);
+    }
+  }
+  const reviewImages = manifest.filter(
+    (entry) => entry.rel.startsWith("studio/") && entry.rel !== "studio/brand.png",
+  );
+  if (reviewImages.length > 0) {
+    throw new Error(`Review-only assets in customer bundle: ${reviewImages.map((entry) => entry.rel).join(", ")}`);
+  }
+  console.log("# PUBLIC-ASSETS: production brand and official logos verified; review images excluded");
+}
+
 function main() {
   assertArtifactDir(
     customerDistDir,
@@ -545,6 +570,7 @@ function main() {
   const manifest = buildManifest(absPaths, customerDistDir);
   printManifest(manifest, "client/dist");
   assertCustomerArtifactShape(manifest);
+  assertProductionPublicAssets(manifest);
 
   // 阳性对照先跑：特征串一旦腐烂，后面的「0 命中」就毫无证据价值，
   // 让它先失败可以最早暴露问题，而不是在一份无效报告末尾附注。
