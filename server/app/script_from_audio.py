@@ -707,7 +707,11 @@ def fail_script_from_audio_task(
     if status in {"FAILED", "SUBMISSION_UNCERTAIN"}:
         from app.usage_billing import complete_source_attempt, finish_source
 
-        complete_source_attempt(conn, lease.id, usage=None)
+        complete_source_attempt(
+            conn,
+            lease.id,
+            usage=cause.usage_seconds if isinstance(cause, AsrProviderError) else None,
+        )
         finish_source(conn, lease.id, units=0, succeeded=False)
     conn.commit()
 

@@ -34,6 +34,41 @@ def make_config(**overrides: object) -> AsrConfiguration:
     return AsrConfiguration(**values)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("duration", [12.5, None, "NaN", -1])
+@pytest.mark.parametrize("mode", ["flash", "async"])
+def test_empty_transcript_retains_only_valid_supplier_duration(duration, mode):
+    payload = (
+        {"output": {"text": ""}, "usage": {"duration": duration}}
+        if mode == "flash"
+        else {
+            "transcripts": [],
+            "properties": {
+                "original_duration_in_milliseconds": duration * 1000
+                if isinstance(duration, (float, int))
+                else duration
+            },
+        }
+    )
+    provider = DashScopeFunAsr(
+        make_config(), transport=StubTransport([(200, json.dumps(payload).encode())])
+    )
+    with pytest.raises(AsrProviderError) as error:
+        if mode == "flash":
+            provider.transcribe("https://media.example/audio", duration_sec=20)
+        else:
+            provider._download_transcription(
+                {
+                    "results": [
+                        {
+                            "subtask_status": "SUCCEEDED",
+                            "transcription_url": "https://media.example/transcript",
+                        }
+                    ]
+                }
+            )
+    assert error.value.usage_seconds == (12.5 if duration == 12.5 else None)
+
+
 class StubTransport:
     def __init__(self, responses: list[tuple[int, bytes]]) -> None:
         self.responses = list(responses)

@@ -25,7 +25,7 @@ FIX-VIDEO-LINK-20260913：链接媒体预检修复、代码自检和本地质量
 
 ## BILLING-20260913 — 逐项计费与经营核算
 
-用户确认取消套餐、按功能逐项扣分；未配置费用由平台承担。实现、独立终审与本地完整自动验证已完成（1383 前端 / 1952 后端，1 原有 TLS skip），[PR #94](https://github.com/peihr666-max/xiangshu-video-replica-/pull/94) 三门禁与合并待核验；未做历史迁移或生产切换。见[BILLING-20260913-EVIDENCE.md](evidence/BILLING-20260913-EVIDENCE.md)。
+用户确认取消套餐、按功能逐项扣分；未配置费用由平台承担。实现、独立终审与本地完整自动验证已完成（1383 前端 / 1952 后端，1 原有 TLS skip），[PR #94](https://github.com/peihr666-max/xiangshu-video-replica-/pull/94) 三门禁已通过并正常 squash 合并（3f77c61c0b6d5e39fb4ef71965619353655ce81e）；未做历史迁移或生产切换。见[BILLING-20260913-EVIDENCE.md](evidence/BILLING-20260913-EVIDENCE.md)。
 
 
 
@@ -1284,7 +1284,7 @@ W19主干整合最终复验：PR87正常合并为main e8445c4，本任务整合�
 
 ## FE-PRELAUNCH-20260913
 
-[任务证据](evidence/FE-PRELAUNCH-20260913.md)：本机官方扫码与账号目录隔离、原生平台 Logo、云端发布草稿、搜索、任务通知及退出错误修复。本地最终静态门通过（前端 1378），后端全量 1914 passed / 1 原有 TLS skip；PR 三门禁及合并结果以对应 PR 记录为准，真实扫码及发布未验收。
+[任务证据](evidence/FE-PRELAUNCH-20260913.md)：本机官方扫码与账号目录隔离、原生平台 Logo、云端发布草稿、搜索、任务通知及退出错误修复。本地最终静态门通过（前端 1378），后端全量 1914 passed / 1 原有 TLS skip；已核验 PR #94 三门禁通过并合并结果以对应 PR 记录为准，真实扫码及发布未验收。
 
 ## FE-VIDEO-PREVIEW-20260913
 

@@ -10,7 +10,9 @@
 | 初始 main 基线 | abc96b7b093f92f54acdbfc4d5cd167eac5fa3e5；实现期间 rebase 到 main c28fb7c（PR #93） |
 | worktree | E:/众墅之家爆款短视频创作/.worktrees/BILLING-20260913 |
 | 测试资源 | billing-quality-20260913；billing-pg-20260913，127.0.0.1:15764；billing-net-20260913 |
-| 状态 | 独立终审及完整本地门通过（前端 1383、后端 1952 passed / 1 原有 skip）；[PR #94](https://github.com/peihr666-max/xiangshu-video-replica-/pull/94) 三门禁与合并待核验 |
+| 状态 | 独立终审及完整本地门通过（前端 1383、后端 1952 passed / 1 原有 skip）；[PR #94](https://github.com/peihr666-max/xiangshu-video-replica-/pull/94) 三门禁已通过并正常 squash 合并（3f77c61c0b6d5e39fb4ef71965619353655ce81e） |
+
+2026-09-14 交付复核：PR #94 的 Secret scan、Linux quality gate、Windows Tauri and NSIS 全部 success，merged=true，squash 3f77c61。后续爆款采集收费需求覆盖本文件历史“后台采集由平台承担”口径，以 [定时采集及计费证据](VIRAL-CLOUD-MEDIA-20260913.md) 的已确认方案为准。
 
 ## 已确认的业务规则与实施顺序
 
@@ -57,7 +59,7 @@
 - 独立评审回归：64 passed；后续图片租约、克隆退款与 schema 矩阵 116 passed；离线归档兼容 38 passed，两个实际前端入口 46 passed。各集合有重叠，不相加当作总数。
 - 完整 `npm run check:static`：secret、93 个前端测试文件 / 1383 用例、e2e lint、Rust fmt/check、ruff/format、mypy 143 个服务端源文件均通过（billing-static-final3.log）。
 - 空库实测：87 表，1038 列，schema digest 4b24fa6cadd2585884b4ab1d25fc4871ee5db7a65d54d512f580fde238a6034a；只测专属 PG，未接生产。
-- 首轮服务端全量发现 16 失败 / 1 fixture error，已按实际时长、fixture 外键清理及离线归档新表契约修复并专项复验；最终全量已通过：1952 passed、1 skipped、1 warning，1051.60 秒（billing-full-final.log）。跳过原因是 test_bootstrap_all_env_pg_gate.py:120 的生产 TLS 要求已由 test_db_pg.py 配置测试覆盖；不是缺 PostgreSQL 的跳过。PR 三门禁和合并仍待完成。
+- 首轮服务端全量发现 16 失败 / 1 fixture error，已按实际时长、fixture 外键清理及离线归档新表契约修复并专项复验；最终全量已通过：1952 passed、1 skipped、1 warning，1051.60 秒（billing-full-final.log）。跳过原因是 test_bootstrap_all_env_pg_gate.py:120 的生产 TLS 要求已由 test_db_pg.py 配置测试覆盖；不是缺 PostgreSQL 的跳过。PR #94 三门禁通过并合并（3f77c61），2026-09-14 API 复核。
 
 PR 首轮 CI 的静态门通过，migration guard 因新增未合并 revision 在 Windows 工作区的 CRLF 与 Git 提交的 LF 指纹不同而失败。已将该新增文件规范为 LF，按 Git 实际提交字节重新记录 manifest；Linux/Windows 静态指纹检查通过，不改动迁移语义和已发布 revision。业务源码与此前全量验证一致，后续 CI 对最新提交重新完整验证。
 

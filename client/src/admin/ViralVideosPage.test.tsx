@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setAdminCsrfToken } from "../api";
+import { ViralCollectionBilling } from "./ViralCollectionBilling";
 import { ViralVideosPage } from "./ViralVideosPage";
 
 const video = {
@@ -49,6 +50,66 @@ describe("ViralVideosPage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     setAdminCsrfToken("");
+  });
+  it("采集账单区分接口次数、客户扣费笔数和余额不足记录", async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.includes("/charges?")
+          ? {
+              items: [
+                {
+                  request_id: "request-1",
+                  user_id: "customer-1",
+                  username: "客户甲",
+                  state: "INSUFFICIENT_CREDITS",
+                  due_credits: 3,
+                  charged_credits: 0,
+                },
+              ],
+              total: 1,
+            }
+          : {
+              items: [
+                {
+                  id: "batch-1",
+                  platform: "douyin",
+                  created_at: "2026-09-13T08:00:00Z",
+                  config: { keywords: [{ keyword: "庭院" }] },
+                  pricing: { credits: 3, version: 1 },
+                  request_count: 4,
+                  confirmed_count: 3,
+                  uncertain_count: 1,
+                  pending_requests: 0,
+                  customer_count: 2,
+                  pending_charges: 0,
+                  failed_count: 1,
+                  charged_credits: 15,
+                  known_cost_fen: "0.000125",
+                  known_revenue_fen: "15",
+                  profit_fen: null,
+                  unknown_cost_count: 1,
+                  unknown_revenue_count: 0,
+                },
+              ],
+              total: 1,
+            },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <ViralCollectionBilling query="start=2026-09-01&end=2026-09-30&user_id=other" />,
+    );
+    expect(
+      await screen.findByText(/登记 4 次；已确认 3 次/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/失败 1 笔；待扣 0 笔/)).toBeInTheDocument();
+    expect(screen.getByText(/已知成本 ¥0.00000125/)).toBeInTheDocument();
+    expect(fetchMock.mock.calls[0][0]).not.toContain("user_id=other");
+    fireEvent.click(screen.getByRole("button", { name: "客户扣费明细" }));
+    expect(await screen.findByText("客户甲")).toBeInTheDocument();
+    expect(screen.getByText("余额不足，扣费失败")).toBeInTheDocument();
+    expect(screen.getByText("3 / 0 积分")).toBeInTheDocument();
   });
   it("先显示采集数据，人工确认后才展示首页，并能删除", async () => {
     const fetchMock = setup();

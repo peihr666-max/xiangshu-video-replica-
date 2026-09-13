@@ -99,18 +99,18 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # 例如 triggers 用 information_schema.triggers 的**行数**（BEFORE UPDATE 与
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
-    "tables": 87,
-    "columns": 1050,
+    "tables": 90,
+    "columns": 1064,
     "identity_columns": 0,
     "sequences": 4,
     "jsonb_columns": 0,
-    "timestamptz_columns": 33,
+    "timestamptz_columns": 35,
     "triggers": 27,
-    "partial_indexes": 28,
-    "unique_constraints": 32,
-    "check_constraints": 286,
-    "foreign_keys": 167,
-    "primary_keys": 87,
+    "partial_indexes": 29,
+    "unique_constraints": 33,
+    "check_constraints": 290,
+    "foreign_keys": 173,
+    "primary_keys": 90,
 }
 
 # head 的表名全集。counts 只能证明「数量没漂」，证明不了「同一批表」：
@@ -226,7 +226,7 @@ HEAD_TABLE_NAMES = (
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
 # CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
-HEAD_SCHEMA_DIGEST = "ffb8cc59235a481cd1c90990cd42130a5d8a8cbe0047f27a8da06f9b8bb63053"
+HEAD_SCHEMA_DIGEST = "0a6489a4af081348915575cb7c3ef76a11e0199f3f5714137226ed2f6526d419"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

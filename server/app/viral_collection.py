@@ -10,9 +10,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from app.billing_meter import collection_billing_context
 from app.db_pg import pg_transaction
 from app.db_portable import BusinessConnection
 from app.storage import StorageAdapter
+from app.viral_collection_billing import create_collection_batch, eligible_collection_users
 from app.viral_keywords import ViralKeywordConfig
 from app.viral_media import CoverEnricher, UrlFetcher, ViralMediaPipeline
 from app.viral_refresh import ViralRefreshLease, _require_lease
@@ -52,16 +54,17 @@ def enqueue_due_viral_collections(conn: BusinessConnection) -> None:
         window_end = conn.execute(
             "SELECT extract(epoch FROM CURRENT_TIMESTAMP)::bigint"
         ).fetchone()[0]
+        recipients = eligible_collection_users(conn)
         for platform in dict.fromkeys(item.platform for item in keywords):
-            config = json.dumps(
-                {
-                    "keywords": [
-                        item.model_dump() for item in keywords if item.platform == platform
-                    ],
-                    "limit": int(row["per_keyword_limit"]),
-                    "window_end": int(window_end),
-                }
+            batch_config = {
+                "keywords": [item.model_dump() for item in keywords if item.platform == platform],
+                "limit": int(row["per_keyword_limit"]),
+                "window_end": int(window_end),
+            }
+            batch_id = create_collection_batch(
+                conn, platform=platform, config=batch_config, user_ids=recipients
             )
+            config = json.dumps({**batch_config, "billing_batch_id": batch_id})
             conn.execute(
                 """INSERT INTO viral_refresh_tasks(id,platform,sort,collection_config_json)
                 VALUES(%s,%s,'hot',%s) ON CONFLICT(platform,sort) DO UPDATE SET status='PENDING',
@@ -153,6 +156,19 @@ def run_viral_collection(lease: ViralRefreshLease, storage: StorageAdapter) -> N
             (lease.id,),
         ).fetchone()
         config, progress = json.loads(row[0]), json.loads(row[1])
+        # Compatibility for already-queued development tasks: establish the batch
+        # once under the task lease, never use the reused refresh-task ID as a bill.
+        if "billing_batch_id" not in config:
+            config["billing_batch_id"] = create_collection_batch(
+                conn,
+                platform=lease.platform,
+                config=config,
+                user_ids=eligible_collection_users(conn),
+            )
+            conn.execute(
+                "UPDATE viral_refresh_tasks SET collection_config_json=%s WHERE id=%s",
+                (json.dumps(config), lease.id),
+            )
         client = viral_source_client_from_settings(conn)
     entries = [ViralKeywordConfig.model_validate(item) for item in config.get("keywords", [])]
     if not entries:
@@ -161,7 +177,7 @@ def run_viral_collection(lease: ViralRefreshLease, storage: StorageAdapter) -> N
     prepared = set(progress.setdefault("prepared", []))
     detailed = set(progress.setdefault("detailed", []))
     failures = 0
-    with _keep_lease(lease) as check:
+    with _keep_lease(lease) as check, collection_billing_context(config["billing_batch_id"]):
         for index, entry in enumerate(entries):
             check()
             step = str(index)

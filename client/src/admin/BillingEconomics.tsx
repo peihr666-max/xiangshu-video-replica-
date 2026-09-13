@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { adminRead, downloadBillingCsv } from "../api.admin";
 import { BillingEvidenceForm } from "./BillingEvidenceForm";
 import { type BillingService, billingUnit } from "./BillingRatesManager";
+import { ViralCollectionBilling } from "./ViralCollectionBilling";
 
 type Metric = {
   period: string | null;
   operation_count: number;
+  provider_call_count: number;
+  shared_collection_charge_count: number;
   charged_credits: number;
   known_revenue_fen: number | string | null;
   known_cost_fen: number | string | null;
@@ -22,6 +25,8 @@ type Metric = {
 type Report = { totals: Metric; periods: Metric[]; basis: string };
 type Operation = {
   id: string;
+  user_id: string | null;
+  collection_batch_id: string | null;
   username: string;
   service: string;
   unit: keyof typeof billingUnit;
@@ -121,6 +126,7 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showCollections, setShowCollections] = useState(false);
   const name = (key: string) =>
     catalog.find((item) => item.service === key)?.name ?? key;
   useEffect(() => {
@@ -212,6 +218,13 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
       <p>
         每次请求分别核算积分、消费收入、供应商成本与利润。赠送积分不计收入；来源或成本未确认时显示待核对。充值到账单独查看，不重复计入消费收入。
       </p>
+      <button
+        type="button"
+        onClick={() => setShowCollections((value) => !value)}
+      >
+        {showCollections ? "收起采集账单" : "查看爆款采集账单"}
+      </button>
+      {showCollections && <ViralCollectionBilling key={query} query={query} />}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -331,7 +344,7 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
         <>
           <p>{report.basis} 时区：北京时间。</p>
           <p>
-            请求 {report.totals.operation_count} 次 · 净扣{" "}
+            账务记录 {report.totals.operation_count} 笔 · 净扣{" "}
             {report.totals.charged_credits ?? 0} 积分 · 退回{" "}
             {report.totals.refunded_credits ?? 0} 积分 · 已确认收入{" "}
             {money(report.totals.known_revenue_fen ?? 0)} · 已确认成本{" "}
@@ -339,7 +352,9 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
             {money(report.totals.profit_fen)}
           </p>
           <p>
-            累计用量：{report.totals.seconds ?? 0} 秒 /{" "}
+            供应商调用记录 {report.totals.provider_call_count ?? 0}{" "}
+            次；客户采集计费 {report.totals.shared_collection_charge_count ?? 0}{" "}
+            笔。 客户累计用量（含免费）：{report.totals.seconds ?? 0} 秒 /{" "}
             {report.totals.images ?? 0} 张 / {report.totals.calls ?? 0}{" "}
             次。平台承担的已确认成本：
             {money(report.totals.platform_cost_fen ?? 0)}。
@@ -354,7 +369,7 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
               <thead>
                 <tr>
                   <th>周期起始</th>
-                  <th>请求数</th>
+                  <th>账务记录数</th>
                   <th>净扣积分</th>
                   <th>已确认收入</th>
                   <th>已确认成本</th>
@@ -379,7 +394,7 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
       )}
       {operations && (
         <>
-          <h3>每次请求（共 {operations.total} 条）</h3>
+          <h3>请求账务明细（共 {operations.total} 条）</h3>
           <div className="admin-table-scroll">
             <table>
               <thead>
@@ -406,8 +421,16 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
                     </td>
                     <td>{row.charged_credits}</td>
                     <td>{money(row.revenue_fen)}</td>
-                    <td>{money(row.cost_fen)}</td>
-                    <td>{money(row.profit_fen)}</td>
+                    <td>
+                      {row.collection_batch_id && row.user_id
+                        ? "成本见采集批次"
+                        : money(row.cost_fen)}
+                    </td>
+                    <td>
+                      {row.collection_batch_id && row.user_id
+                        ? "未分摊公共成本"
+                        : money(row.profit_fen)}
+                    </td>
                     <td>
                       <button
                         type="button"
@@ -456,6 +479,12 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
           <p>
             请求编号：{detail.id} · {states[detail.state]}
           </p>
+          {detail.collection_batch_id && (
+            <p>
+              采集批次：{detail.collection_batch_id}
+              。公共成本记录在平台请求，客户明细仅记录其扣分收入；批次账单汇总成本与利润。
+            </p>
+          )}
           <p>
             受理时售价：{snapshot.enabled ? snapshot.unit_credits : "0"} 积分 /{" "}
             {billingUnit[detail.unit]}；折扣{" "}

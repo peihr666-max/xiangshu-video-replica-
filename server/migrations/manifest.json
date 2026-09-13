@@ -482,7 +482,7 @@
     },
     "20260913T1600_shared_viral_media": {
       "file": "versions/20260913T1600_shared_viral_media.py",
-      "sha256": "c6cce2b33ca300f58676225c1d1a6a88555a294ec5cdda547ea9768c010fee8d"
+      "sha256": "92a5259556339ff6ae01fc1346dc9dd9390fcb43994fd6ffb36e4da1b03d9dac"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

@@ -551,6 +551,46 @@ def _fail(lease: ViralImportLease, cause: Exception) -> None:
         fail_viral_import_task(BusinessConnection.postgres(raw), lease=lease, cause=cause)
 
 
+def test_import_commit_acknowledgement_loss_preserves_published_project_copy(pg_state, monkeypatch):
+    from contextlib import contextmanager
+
+    from app import generation_worker as worker
+    from app.storage import FakeStorageAdapter
+    from app.viral_import import ViralImportOutcome
+
+    _seed_base(pg_state)
+    _seed_import_task(pg_state, task_id="commit-receipt")
+    storage = FakeStorageAdapter(provider="cos", bucket="project")
+    stored = storage.put_object("project/attempt-1.mp4", b"project-video", content_type="video/mp4")
+    outcome = ViralImportOutcome(stored=stored, media_kind="video", duration_seconds=5)
+    monkeypatch.setattr(worker, "prepare_viral_import_task", lambda *args, **kwargs: object())
+    monkeypatch.setattr(worker, "perform_viral_import_task", lambda *_: outcome)
+    original = worker.pg_transaction
+    lost = False
+
+    @contextmanager
+    def commit_then_disconnect():
+        nonlocal lost
+        with original() as raw:
+            yield raw
+            published = (
+                raw.execute(
+                    "SELECT status FROM viral_import_tasks WHERE id='commit-receipt'"
+                ).fetchone()[0]
+                == "SUCCEEDED"
+            )
+        if published and not lost:
+            lost = True
+            raise OSError("committed transaction acknowledgement lost")
+
+    monkeypatch.setattr(worker, "pg_transaction", commit_then_disconnect)
+    assert worker.run_pg_worker_once(worker_id="commit-worker", storage=storage, max_tasks=1) == 1
+    assert lost
+    assert _import_row(pg_state, "commit-receipt")["status"] == "SUCCEEDED"
+    assert storage.get_object(stored.key) == b"project-video"
+    assert _one(pg_state, "SELECT count(*) FROM assets WHERE storage_uri=%s", (stored.uri,)) == 1
+
+
 # ===========================================================================
 # A. 独占认领（FOR UPDATE SKIP LOCKED + 状态机）
 # ===========================================================================

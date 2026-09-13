@@ -1275,6 +1275,86 @@ def test_script_rewrite_worker_settles_on_pg(
     assert "这是改写后的口播稿。" in str(row["result_json"])
 
 
+def test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost(pg_state, monkeypatch):
+    import io
+
+    from app.usage_billing import accept_operation
+
+    _seed_base(pg_state)
+    _configure_deepseek(monkeypatch)
+    _seed_script_rewrite_task(pg_state, task_id="sr-truncated")
+    _exec(
+        pg_state,
+        "INSERT INTO wallets(user_id,available_credits) VALUES('u1',100) ON CONFLICT(user_id) "
+        "DO UPDATE SET available_credits=100",
+    )
+    _exec(
+        pg_state,
+        "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+        "VALUES('rewrite',true,5,2)",
+    )
+    with pg_transaction() as raw:
+        accept_operation(
+            BusinessConnection.postgres(raw),
+            user_id="u1",
+            service="rewrite",
+            source_id="sr-truncated",
+            units=1,
+        )
+    monkeypatch.setattr(
+        "app.script_rewrite.urlopen",
+        lambda *args, **kwargs: io.BytesIO(
+            b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}'
+        ),
+    )
+    assert _run_worker("truncated-cost") == 1
+    assert _task_status(pg_state, "script_rewrite_tasks", "sr-truncated") == "FAILED"
+    assert _one(pg_state, "SELECT available_credits FROM wallets WHERE user_id='u1'") == 100
+    assert _one(pg_state, "SELECT cost_fen FROM billing_attempts WHERE service='rewrite'") == 2
+
+
+def test_empty_asr_text_refunds_customer_and_preserves_actual_duration_cost(pg_state):
+    from test_asr_provider import StubTransport, make_config
+
+    from app.asr import AsrProviderError, DashScopeFunAsr
+    from app.usage_billing import accept_operation, begin_source_attempt
+
+    _seed_base(pg_state)
+    _seed_source_frame_task(pg_state, task_id="asr-cost-asset")
+    _seed_audio_task(pg_state, task_id="asr-cost")
+    lease = _audio_lease(pg_state, "asr-cost-worker")
+    _exec(
+        pg_state,
+        "INSERT INTO wallets(user_id,available_credits) VALUES('u1',100) ON CONFLICT(user_id) "
+        "DO UPDATE SET available_credits=100",
+    )
+    _exec(
+        pg_state,
+        "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+        "VALUES('asr',true,2,0.25)",
+    )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        accept_operation(conn, user_id="u1", service="asr", source_id="asr-cost", units=20)
+        begin_source_attempt(conn, "asr-cost")
+    provider = DashScopeFunAsr(
+        make_config(),
+        transport=StubTransport([(200, b'{"output":{"text":""},"usage":{"duration":12.5}}')]),
+    )
+    with pytest.raises(AsrProviderError) as failure:
+        provider.transcribe("https://media.example/asr", duration_sec=20)
+    with pg_transaction() as raw:
+        fail_script_from_audio_task(
+            BusinessConnection.postgres(raw),
+            lease=lease,
+            cause=failure.value,
+            submission_started=True,
+        )
+    assert _one(pg_state, "SELECT available_credits FROM wallets WHERE user_id='u1'") == 100
+    assert _one(pg_state, "SELECT cost_fen FROM billing_attempts WHERE service='asr'") == 3.125
+    assert _task_status(pg_state, "script_from_audio_tasks", "asr-cost") == "FAILED"
+
+
 # ---------------------------------------------------------------------------
 # G. ASR — script_from_audio_tasks on the PG lane
 # ---------------------------------------------------------------------------

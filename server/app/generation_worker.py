@@ -1098,6 +1098,7 @@ def run_pg_worker_once(
         if viral_import_lease is not None:
             viral_import_work = None
             viral_import_outcome = None
+            viral_import_ready_to_commit = False
             try:
                 with pg_transaction() as raw_conn:
                     viral_import_work = prepare_viral_import_task(
@@ -1112,8 +1113,11 @@ def run_pg_worker_once(
                         lease=viral_import_lease,
                         outcome=viral_import_outcome,
                     )
+                    # A lost COMMIT acknowledgement can still mean this asset exists.
+                    # Keep its immutable project copy when the transaction outcome is unknown.
+                    viral_import_ready_to_commit = True
             except Exception as exc:
-                if viral_import_outcome is not None:
+                if viral_import_outcome is not None and not viral_import_ready_to_commit:
                     discard_viral_import_outcome(
                         storage,
                         outcome=viral_import_outcome,
@@ -1595,12 +1599,15 @@ def run_pg_worker_once(
 
 def run_pg_collection_once(*, worker_id: str, storage: StorageAdapter) -> int:
     """Dedicated collector: never run in the customer generation worker pool."""
+    from app.viral_collection_billing import settle_collection_charges
+
+    settled = settle_collection_charges()
     with pg_transaction() as raw:
         lease = acquire_viral_refresh_task(BusinessConnection.postgres(raw), worker_id=worker_id)
     if lease is None:
-        return 0
+        return settled
     _run_pg_viral_refresh(lease, storage)
-    return 1
+    return 1 + settled + settle_collection_charges()
 
 
 def run_pg_worker_round(

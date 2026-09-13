@@ -297,7 +297,7 @@ export function CustomerWalletPanel({
         }
         if (order.status === "FAILED" || order.status === "CLOSED") {
           setPendingOrderNo(null);
-          setNotice("该充值订单已结束，未增加秒数额度。");
+          setNotice("该充值订单已结束，未增加积分。");
           await refresh();
           return;
         }
@@ -449,8 +449,8 @@ export function CustomerWalletPanel({
       <div className="wallet-summary-grid">
         <article className="wallet-summary-card">
           <span>可用额度</span>
-          <strong>{wallet.available_credits} 秒</strong>
-          <small>冻结中 {wallet.reserved_credits} 秒</small>
+          <strong>{wallet.available_credits} 积分</strong>
+          <small>冻结中 {wallet.reserved_credits} 积分</small>
         </article>
         <article className="wallet-summary-card">
           <span>价目</span>
@@ -469,7 +469,9 @@ export function CustomerWalletPanel({
             <span>正在获取生成单价…</span>
           )}
           <small>
-            充值换算价 {formatFen(wallet.internal_unit_price_fen)} / 秒
+            {wallet.points_per_yuan
+              ? `充值换算：1元 = ${wallet.points_per_yuan} 积分`
+              : "充值积分价格待配置"}
           </small>
           <small>按提交档位计费，生成失败全额退回</small>
         </article>
@@ -478,7 +480,7 @@ export function CustomerWalletPanel({
       <section className="wallet-section" aria-labelledby="recharge-title">
         <div className="wallet-section__heading">
           <div>
-            <h2 id="recharge-title">充值秒数额度</h2>
+            <h2 id="recharge-title">充值积分</h2>
             <p>
               {formatFen(wallet.min_recharge_fen)}起充，按
               {formatFen(wallet.recharge_step_fen)}递增。
@@ -496,8 +498,9 @@ export function CustomerWalletPanel({
             >
               <strong>{amount} 元</strong>
               <span>
-                约 {Math.floor((amount * 100) / wallet.internal_unit_price_fen)}{" "}
-                秒
+                {wallet.points_per_yuan
+                  ? `${Math.floor(amount * wallet.points_per_yuan)} 积分`
+                  : "到账积分以订单为准"}
               </span>
             </button>
           ))}
@@ -573,7 +576,7 @@ export function CustomerWalletPanel({
               <tr>
                 <th>订单号</th>
                 <th>金额</th>
-                <th>到账秒数</th>
+                <th>到账积分</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
@@ -626,7 +629,7 @@ export function CustomerWalletPanel({
                 <tr>
                   <th>订单号</th>
                   <th>金额</th>
-                  <th>到账秒数</th>
+                  <th>到账积分</th>
                   <th>状态</th>
                 </tr>
               </thead>
@@ -760,15 +763,16 @@ function formatFen(amountFen: number): string {
 }
 
 function signedNumber(value: number): string {
-  return `${value > 0 ? "+" : ""}${value} 秒`;
+  return `${value > 0 ? "+" : ""}${value} 积分`;
 }
 
 function transactionDetail(transaction: WalletTransaction): string {
+  if (transaction.service_name) return transaction.service_name;
   if (transaction.task_id) {
-    return `视频生成 · ${Math.abs(transaction.available_delta || transaction.reserved_delta)} 秒`;
+    return "视频生成";
   }
   if (transaction.recharge_order_id) return "充值到账";
-  return transaction.type === "RELEASE" ? "生成失败退回" : "额度变动";
+  return transaction.type === "RELEASE" ? "未消费积分退回" : "积分变动";
 }
 
 function orderStatusLabel(status: RechargeOrder["status"]): string {

@@ -10,6 +10,35 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("""
+        CREATE TABLE viral_collection_batches (
+          id text PRIMARY KEY,
+          platform text NOT NULL CHECK(platform IN ('douyin','wechat_channels')),
+          config_json text NOT NULL,
+          pricing_snapshot_json text NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE viral_collection_members (
+          batch_id text NOT NULL REFERENCES viral_collection_batches(id),
+          user_id text NOT NULL REFERENCES users(id),
+          PRIMARY KEY(batch_id,user_id)
+        );
+        ALTER TABLE billing_operations ADD COLUMN collection_batch_id text
+          REFERENCES viral_collection_batches(id);
+        CREATE INDEX idx_billing_collection ON billing_operations(collection_batch_id,created_at)
+          WHERE collection_batch_id IS NOT NULL;
+        CREATE TABLE viral_collection_charges (
+          request_id text NOT NULL REFERENCES billing_operations(id),
+          user_id text NOT NULL REFERENCES users(id),
+          operation_id text UNIQUE REFERENCES billing_operations(id),
+          state text NOT NULL
+            CHECK(state IN ('SUCCEEDED','INSUFFICIENT_CREDITS','SKIPPED_INACTIVE')),
+          due_credits integer NOT NULL CHECK(due_credits >= 0),
+          created_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY(request_id,user_id),
+          CHECK((state='SUCCEEDED') = (operation_id IS NOT NULL))
+        );
+    """)
     op.add_column(
         "viral_runtime_controls",
         sa.Column("collection_interval_days", sa.Integer(), nullable=False, server_default="7"),
@@ -51,6 +80,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_table("viral_collection_charges")
+    op.drop_column("billing_operations", "collection_batch_id")
+    op.drop_table("viral_collection_members")
+    op.drop_table("viral_collection_batches")
     op.drop_column("viral_runtime_controls", "collection_interval_days")
     op.drop_column("viral_videos", "deleted_at")
     op.drop_column("viral_videos", "homepage_featured")
