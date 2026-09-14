@@ -28,11 +28,9 @@ test("saves exchange and discount without implicitly publishing feature tariffs"
   fireEvent.change(screen.getByLabelText("每 1 元充值获得积分"), {
     target: { value: "5" },
   });
-  fireEvent.change(screen.getByLabelText("调整原因"), {
-    target: { value: "更新客户价格" },
-  });
-  fireEvent.click(screen.getByLabelText("确认对后续新任务和新充值订单生效"));
-  fireEvent.click(screen.getByRole("button", { name: "保存积分价格" }));
+  expect(screen.queryByLabelText("调整原因")).not.toBeInTheDocument();
+  expect(screen.getAllByRole("spinbutton")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "保存充值换算" }));
   await waitFor(() =>
     expect(updateCustomerPricing).toHaveBeenCalledWith(
       {
@@ -41,7 +39,7 @@ test("saves exchange and discount without implicitly publishing feature tariffs"
         consumption_rounding: "ceil",
       },
       2,
-      "更新客户价格",
+      "更新充值积分兑换比例",
       expect.any(String),
     ),
   );

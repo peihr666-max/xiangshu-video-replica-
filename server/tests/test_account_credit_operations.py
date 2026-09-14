@@ -34,6 +34,51 @@ def operations_client(pricing_client):
     return pricing_client
 
 
+def test_h3_account_admin_contract_and_masking(operations_client, route_state):
+    client = operations_client
+    path = "/api/control/settings/h3-accounts"
+    assert client.get(path).status_code == 401
+    admin = admin_login(client, route_state)
+    payload = {
+        "name": "Synthetic account",
+        "api_key": "synthetic-pool-secret",
+        "concurrency_limit": 17,
+        "enabled": True,
+        "expected_version": 0,
+        "confirm": True,
+        "reason": "Configure test account",
+    }
+    headers = {**admin, "Idempotency-Key": str(uuid4())}
+    oversized = client.put(
+        path + "/test-a", headers=headers, json={**payload, "api_key": "x" * 8193}
+    )
+    assert oversized.status_code == 422 and "xxxx" not in oversized.text
+    assert client.put(path + "/test-a", json=payload).status_code == 403
+    saved = client.put(path + "/test-a", headers=headers, json=payload)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["total_concurrency"] == 17
+    assert payload["api_key"] not in saved.text
+    replay = client.put(path + "/test-a", headers=headers, json=payload)
+    assert replay.status_code == 200 and replay.json() == saved.json()
+    payload.update(api_key="", expected_version=1, concurrency_limit=9)
+    assert (
+        client.put(
+            path + "/test-a", headers={**admin, "Idempotency-Key": str(uuid4())}, json=payload
+        ).json()["total_concurrency"]
+        == 9
+    )
+    with psycopg.connect(route_state) as raw:
+        audit = " ".join(row[0] for row in raw.execute("SELECT metadata_json FROM audit_logs"))
+        assert "synthetic-pool-secret" not in audit
+        raw.execute("UPDATE users SET role='observer' WHERE username='price_admin'")
+    assert (
+        client.put(
+            path + "/test-a", headers={**admin, "Idempotency-Key": str(uuid4())}, json=payload
+        ).status_code
+        == 401
+    )
+
+
 def test_registered_account_is_listed_and_exported(operations_client, route_state):
     client = operations_client
     _, uid = account(client)
@@ -92,7 +137,13 @@ def test_native_payment_settings_work_with_admin_cookie(operations_client, route
     path = "/api/control/settings/customer-payments"
     loaded = client.get(path)
     assert loaded.status_code == 200, loaded.text
-    assert set(loaded.json()) == {"billing", "zpay"}
+    assert set(loaded.json()) == {
+        "billing",
+        "zpay",
+        "wechat_native",
+        "active_provider",
+        "deployment",
+    }
     payload = {
         "confirm": True,
         "reason": "local billing setup",
@@ -230,6 +281,16 @@ def test_non_writers_cannot_mutate_account_credits(operations_client, route_stat
     )
     assert response.status_code in (401, 403), response.text
     assert client.get("/api/customer/wallet", headers=customer).json()["available_credits"] == 0
+    for suffix, payload in (
+        ("provider", {"active_provider": "wechat_native"}),
+        ("wechat-native", {"config": {"appid": "denied"}}),
+    ):
+        denied = client.patch(
+            "/api/control/settings/customer-payments/" + suffix,
+            headers={**admin, "Idempotency-Key": str(uuid4())},
+            json={"confirm": True, "reason": "must deny", **payload},
+        )
+        assert denied.status_code in (401, 403), denied.text
 
 
 @pytest.mark.parametrize("credits", [1.5, True, 0, -1])
@@ -370,3 +431,242 @@ def test_concurrent_grant_payment_and_token_consumption_conserve_account_ledger(
         )
     listed = client.get("/api/customer/api-keys", headers=customer).json()["items"]
     assert next(item for item in listed if item["id"] == key["id"])["total_consumed_credits"] == 60
+
+
+def test_default_payment_saves_merchant_atomically_before_callback_is_ready(
+    operations_client, route_state, monkeypatch
+):
+    from app.db_portable import BusinessConnection
+    from app.settings import SettingsRepository
+
+    client = operations_client
+    admin = admin_login(client, route_state)
+    path = "/api/control/settings/customer-payments"
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    payload = {
+        "confirm": True,
+        "reason": "保存默认通道",
+        "active_provider": "zpay",
+        "zpay": {"pid": "local-test-pid", "key": "local-test-key", "enabled_channels": ["wxpay"]},
+    }
+    headers = {**admin, "Idempotency-Key": str(uuid4())}
+    saved = client.patch(path + "/provider", json=payload, headers=headers)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["active_provider"] == "zpay"
+    assert saved.json()["deployment"]["ready"] is False
+    assert "local-test-key" not in saved.text
+    assert client.patch(path + "/provider", json=payload, headers=headers).json() == saved.json()
+    assert client.get(path).json()["deployment"]["ready"] is False
+
+    with psycopg.connect(route_state) as raw:
+        repo = SettingsRepository(BusinessConnection.postgres(raw))
+        assert repo.load_zpay_config()["pid"] == "local-test-pid"
+        assert repo.load_zpay_config()["key"] == "local-test-key"
+        before = raw.execute("SELECT count(*) FROM audit_logs").fetchone()[0]
+    # A malformed merchant change does not partly update settings or the default.
+    invalid = {**payload, "zpay": {**payload["zpay"], "pid": "   "}}
+    failed = client.patch(
+        path + "/provider", json=invalid, headers={**admin, "Idempotency-Key": str(uuid4())}
+    )
+    assert failed.status_code == 422
+    with psycopg.connect(route_state) as raw:
+        repo = SettingsRepository(BusinessConnection.postgres(raw))
+        assert repo.load_zpay_config()["pid"] == "local-test-pid"
+        assert raw.execute("SELECT count(*) FROM audit_logs").fetchone()[0] == before
+
+    # Empty secret input retains the saved key; missing callback still blocks checkout.
+    kept = client.patch(
+        path + "/provider",
+        json={**payload, "zpay": {**payload["zpay"], "key": ""}},
+        headers={**admin, "Idempotency-Key": str(uuid4())},
+    )
+    assert kept.status_code == 200
+    customer, _uid = account(client)
+    checkout = client.post(
+        "/api/customer/recharge-orders",
+        headers={**customer, "Idempotency-Key": str(uuid4())},
+        json={"amount_fen": 10000},
+    )
+    assert checkout.status_code == 503
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://payments.example.test")
+    assert client.get(path).json()["deployment"]["ready"] is True
+
+
+def test_payment_channel_setup_preserves_secrets_and_order_provider(
+    operations_client, route_state, monkeypatch
+):
+    import base64
+    import secrets
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from app import recharge_routes
+    from app.db_portable import BusinessConnection
+    from app.payment_provider import (
+        DeploymentConfig,
+        MerchantConfig,
+        PaymentCodeResult,
+        PaymentFormResult,
+    )
+    from app.settings import SettingsRepository
+
+    client = operations_client
+    customer, uid = account(client)
+    admin = admin_login(client, route_state)
+    path = "/api/control/settings/customer-payments"
+    assert client.get(path).json()["active_provider"] == "zpay"
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://payments.example.test")
+
+    def patch(suffix, payload, key=None):
+        return client.patch(
+            path + suffix,
+            headers={**admin, "Idempotency-Key": key or str(uuid4())},
+            json={"confirm": True, "reason": "local payment verification", **payload},
+        )
+
+    assert patch("/provider", {"active_provider": "wechat_native"}).status_code == 422
+    private_key = (
+        rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        .private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        .decode()
+    )
+    api_key = secrets.token_hex(16)
+    config = {
+        "appid": "test-app",
+        "mchid": "test-merchant",
+        "serial_no": "0123ABCD",
+        "api_v3_key": api_key,
+        "private_key": private_key,
+    }
+    saved = patch("/wechat-native", {"config": config})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["configured"] is True
+    assert api_key not in saved.text and "BEGIN PRIVATE KEY" not in saved.text
+    kept = patch(
+        "/wechat-native", {"config": {"appid": "updated-app", "api_v3_key": "", "private_key": ""}}
+    )
+    assert kept.status_code == 200, kept.text
+    with psycopg.connect(route_state) as raw:
+        repo = SettingsRepository(BusinessConnection.postgres(raw))
+        retained = repo.load_wechat_native_config()
+        assert retained["private_key"] == private_key.strip() and retained["api_v3_key"] == api_key
+        assert retained["appid"] == "updated-app"
+        encrypted = raw.execute(
+            "SELECT encrypted_config FROM provider_settings WHERE provider='wechat_native'"
+        ).fetchone()[0]
+        assert api_key not in encrypted and private_key not in encrypted
+
+    calls = []
+
+    class FakeGateway:
+        def __init__(self, name):
+            self.name = name
+
+        def load_merchant_config(self, conn):
+            return MerchantConfig(provider=self.name, raw={}, allowed_channels=("wxpay",))
+
+        def load_deployment_config(self):
+            return DeploymentConfig(
+                notify_url="https://payments.example.test/notify", return_url=""
+            )
+
+        def create_payment_form(self, **kwargs):
+            assert self.name == "zpay"
+            return PaymentFormResult(
+                gateway_url="https://payments.example.test/pay", method="POST", form_fields={}
+            )
+
+        def create_payment_code(self, **kwargs):
+            calls.append((self.name, kwargs["merchant_order_no"]))
+            url = (
+                "weixin://wxpay/bizpayurl?pr=local-test"
+                if self.name == "wechat_native"
+                else "https://payments.example.test/qr.png"
+            )
+            return PaymentCodeResult(qr_image_url=url, payment_url=url, provider_order_no=None)
+
+    monkeypatch.setattr(recharge_routes, "get_payment_provider", FakeGateway)
+    order_path = "/api/customer/recharge-orders"
+
+    def order(key):
+        response = client.post(
+            order_path, headers={**customer, "Idempotency-Key": key}, json={"amount_fen": 10000}
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    old_key = str(uuid4())
+    old = order(old_key)
+    switch_key = str(uuid4())
+    switched = patch("/provider", {"active_provider": "wechat_native"}, switch_key)
+    assert switched.status_code == 200, switched.text
+    assert (
+        patch("/provider", {"active_provider": "wechat_native"}, switch_key).json()
+        == switched.json()
+    )
+    assert order(old_key) == old
+    new = order(str(uuid4()))
+    assert new["gateway_url"] == "" and new["form_fields"] == {}
+    blocked = patch("/wechat-native", {"config": {"mchid": "different-merchant"}})
+    assert blocked.status_code == 422
+    with psycopg.connect(route_state) as raw:
+        assert (
+            SettingsRepository(BusinessConnection.postgres(raw)).load_wechat_native_config()[
+                "mchid"
+            ]
+            == "test-merchant"
+        )
+
+    assert (
+        client.post(
+            order_path + "/" + old["order_no"] + "/payment-code", headers=customer
+        ).status_code
+        == 200
+    )
+    qr = client.post(order_path + "/" + new["order_no"] + "/payment-code", headers=customer)
+    assert qr.status_code == 200, qr.text
+    assert qr.json()["payment_url"].startswith("weixin://")
+    assert base64.b64decode(qr.json()["qr_image_url"].split(",", 1)[1]).startswith(
+        b"\x89PNG\r\n\x1a\n"
+    )
+    replay = client.post(order_path + "/" + new["order_no"] + "/payment-code", headers=customer)
+    assert replay.json() == qr.json()
+    assert calls == [("zpay", old["order_no"]), ("wechat_native", new["order_no"])]
+    # Closing in the customer UI does not close the gateway payment. A late
+    # callback can still settle this order and must retain its merchant keys.
+    closed = client.delete(order_path + "/" + new["order_no"], headers=customer)
+    assert closed.status_code == 204, closed.text
+    blocked_after_close = patch(
+        "/wechat-native",
+        {"config": {"appid": "replacement-app", "mchid": "different-merchant"}},
+    )
+    assert blocked_after_close.status_code == 422, blocked_after_close.text
+    with psycopg.connect(route_state) as raw:
+        assert (
+            raw.execute(
+                "SELECT status FROM recharge_orders WHERE merchant_order_no=%s",
+                (new["order_no"],),
+            ).fetchone()[0]
+            == "CLOSED"
+        )
+        assert (
+            SettingsRepository(BusinessConnection.postgres(raw)).load_wechat_native_config()
+            == retained
+        )
+        rows = raw.execute(
+            "SELECT merchant_order_no, provider FROM recharge_orders WHERE user_id=%s", (uid,)
+        ).fetchall()
+        assert dict(rows) == {old["order_no"]: "zpay", new["order_no"]: "wechat_native"}
+        assert (
+            raw.execute(
+                "SELECT count(*) FROM audit_logs WHERE action='payment.provider.update'"
+            ).fetchone()[0]
+            == 1
+        )
+        audit = " ".join(row[0] for row in raw.execute("SELECT metadata_json FROM audit_logs"))
+        assert api_key not in audit and "BEGIN PRIVATE KEY" not in audit

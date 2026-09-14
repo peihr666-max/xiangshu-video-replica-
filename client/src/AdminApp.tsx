@@ -30,7 +30,6 @@ import {
   loginAdminWithPassword,
   recoverAdminPassword,
 } from "./api.admin";
-import zhongshuLogoMark from "./assets/brand/zhongshu-logo-mark.svg";
 import chartIcon from "./assets/icons/chart-no-axes-combined.svg";
 import clapperboardIcon from "./assets/icons/clapperboard.svg";
 import gaugeIcon from "./assets/icons/gauge.svg";
@@ -38,6 +37,8 @@ import settingsIcon from "./assets/icons/settings.svg";
 import shieldIcon from "./assets/icons/shield-check.svg";
 import usersIcon from "./assets/icons/users-round.svg";
 import walletIcon from "./assets/icons/wallet.svg";
+
+const zhongshuBrandLogo = `${import.meta.env.BASE_URL}studio/brand.png`;
 
 type AuthPhase =
   | "checking"
@@ -90,7 +91,7 @@ const tabGroups: Array<{
       {
         id: "customersMgmt",
         label: "客户管理",
-        helper: "客户、激活码、设备与会话",
+        helper: "客户账户与积分管理",
       },
       {
         id: "generationRecords",
@@ -432,11 +433,9 @@ export function AdminApp() {
         <div className="admin-login">
           <section className="admin-login__brand">
             <div className="admin-login__brand-mark">
-              <img alt="" aria-hidden="true" src={zhongshuLogoMark} />
-              <span>众墅之家</span>
+              <img alt="众墅之家" src={zhongshuBrandLogo} />
             </div>
             <h1>运营管理后台</h1>
-            <p>统一管理客户、激活码、设备、资金与系统配置的运营控制台。</p>
             <ul className="admin-login__points">
               <li>会话绑定当前浏览器环境，更换浏览器后需重新登录</li>
               <li>登录与敏感操作全部记入审计日志</li>
@@ -638,10 +637,6 @@ export function AdminApp() {
         </div>
         <div className="admin-session">
           <time dateTime={shanghaiDate()}>{shanghaiDate()}</time>
-          <div className="admin-session__identity">
-            <span>{actor.display_name}</span>
-            <span>{roleLabel(actor.role)}</span>
-          </div>
           <button type="button" onClick={() => void signOut()}>
             退出登录
           </button>
@@ -667,18 +662,8 @@ export function AdminApp() {
         >
           <div className="admin-sidebar__top">
             <div className="admin-brand">
-              <img alt="" aria-hidden="true" src={zhongshuLogoMark} />
-              <div>
-                <strong>众墅之家</strong>
-                <span>AI 即创 · AI 视频创作平台</span>
-              </div>
-            </div>
-            <div className="admin-sidebar__context">
-              <p className="admin-sidebar__label">当前模块</p>
-              <h2>{activePageTitle}</h2>
-              <p className="admin-sidebar__helper">
-                {activeTabMeta?.helper ?? "运营核心视图"}
-              </p>
+              <img alt="众墅之家" src={zhongshuBrandLogo} />
+              <span>AI 即创 · 运营管理后台</span>
             </div>
           </div>
 
@@ -731,8 +716,13 @@ export function AdminApp() {
             </nav>
           ) : null}
           <div className="admin-sidebar__footer">
-            <span>{actor.display_name}</span>
-            <small>{roleLabel(actor.role)} · 安全会话</small>
+            <span className="admin-sidebar__avatar" aria-hidden="true">
+              {actor.display_name.slice(0, 1)}
+            </span>
+            <div>
+              <span>{actor.display_name}</span>
+              <small>{roleLabel(actor.role)}</small>
+            </div>
           </div>
         </aside>
 
@@ -783,18 +773,7 @@ export function AdminApp() {
           ) : null}
           {activeTab === "funds" ? <FundsPage readOnly={readOnly} /> : null}
           {activeTab === "customersMgmt" ? (
-            <CustomersManagementPage
-              actor={actor}
-              readOnly={readOnly}
-              onSessionExpired={handleSessionExpired}
-              initialTab={
-                navigationIntent === "issueCodes" ||
-                navigationIntent === "codes"
-                  ? "codes"
-                  : "customers"
-              }
-              initiallyShowGenerator={navigationIntent === "issueCodes"}
-            />
+            <CustomersManagementPage readOnly={readOnly} />
           ) : null}
           {activeTab === "generationRecords" ? (
             <GenerationRecordsPage

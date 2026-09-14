@@ -29,7 +29,6 @@ import { CustomerCenterPage } from "../customer/CustomerCenterPage";
 import { SettingsPanel } from "../SettingsPanel";
 import type { WorkspaceShellProps } from "../workspace-shell";
 import { AnalyticsPage } from "./AnalyticsPage";
-import { BillingModulePrices } from "./BillingModulePrices";
 import {
   MaterialsPage,
   PublishPage,
@@ -908,8 +907,7 @@ export function StudioWorkspace({
     if (videoCapabilitiesStatus === "error")
       return "视频生成能力读取失败，请先重试。";
     if (!videoCapabilities) return "视频生成能力尚未读取完成，请稍后重试。";
-    if (!videoCapabilities.r2v_enabled)
-      return "该模式需要完成供应商核对后开放，敬请期待。";
+    if (!videoCapabilities.r2v_enabled) return "该模式暂未开放，敬请期待。";
     const validation = validateReferences(
       draft.referenceIds,
       [...data.assets, ...data.materials],
@@ -1430,7 +1428,7 @@ export function StudioWorkspace({
             state.draft.tailFrameId &&
             !videoCapabilities.last_frame_enabled
           ) {
-            throw new Error("尾帧需要完成供应商核对后开放，敬请期待。");
+            throw new Error("尾帧功能暂未开放，敬请期待。");
           }
         }
         if (mode === "r2v" && state.draft.referenceIds.length === 0) {
@@ -1445,7 +1443,7 @@ export function StudioWorkspace({
             (mode === "t2v" && !videoCapabilities.t2v_enabled) ||
             (mode === "r2v" && !videoCapabilities.r2v_enabled);
           if (gated) {
-            throw new Error("该模式需要完成供应商核对后开放，敬请期待。");
+            throw new Error("该模式暂未开放，敬请期待。");
           }
           if (state.draft.count > videoCapabilities.max_quantity) {
             throw new Error(
@@ -1833,7 +1831,6 @@ export function StudioWorkspace({
             </button>
           </div>
           <div className="studio-stage">
-            {!review && <BillingModulePrices page={state.page} />}
             {data.errors.length > 0 && (
               <div className="studio-errors" role="alert">
                 {data.errors.join("；")}

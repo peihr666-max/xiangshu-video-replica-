@@ -67,8 +67,16 @@ export function ViralRuntimeSection({
     void load();
   }, [load]);
 
-  async function confirm(reason: string) {
+  async function confirm() {
     if (!controls || !pending) return;
+    const reason =
+      pending === "availability"
+        ? "更新视频可用状态"
+        : pending === "collection"
+          ? "更新爆款视频采集开关"
+          : pending === "keywords"
+            ? "更新爆款视频采集设置"
+            : "更新爆款视频导入开关";
     setSaving(true);
     setError("");
     setNotice("");
@@ -377,12 +385,13 @@ export function ViralRuntimeSection({
       <ConfirmDialog
         busy={saving}
         confirmLabel="确认更新"
-        description="操作立即生效并记录操作人、原因和请求编号。"
-        level="reason"
+        description="确认后立即生效。"
+        error={error}
+        level="standard"
         open={pending !== null}
         title="更新爆款视频运行状态"
         onClose={() => setPending(null)}
-        onConfirm={(reason) => void confirm(reason)}
+        onConfirm={() => void confirm()}
       />
     </section>
   );

@@ -534,6 +534,20 @@ def test_customer_catalog_never_exposes_supplier_costs(client, route_state):
     assert response.status_code == 200, response.text
     assert "unit_cost_fen" not in response.text
     assert "3.251" not in response.text
+    assert '"provider"' not in response.text
+    assert "抖一抖" not in response.text
+    assert {item["service"] for item in response.json()["services"]}.isdisjoint(
+        {"cos", "zpay", "quality_inspection", "analysis_repair"}
+    )
+    from app.customer_pricing_routes import router as pricing_router
+
+    client.app.include_router(pricing_router)
+    pricing = client.get("/api/customer/pricing", headers=headers)
+    assert pricing.status_code == 200
+    assert "抖一抖" not in pricing.text
+    assert {item["subject"] for item in pricing.json()["prices"]}.isdisjoint(
+        {"cos", "zpay", "quality_inspection", "analysis_repair"}
+    )
     response = client.get("/api/customer/billing/quote?service=analysis&units=2", headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["credits"] == 14
@@ -714,6 +728,51 @@ def test_core_facts_cannot_be_repriced_or_rewritten(client, route_state):
         with pytest.raises(psycopg.errors.RaiseException):
             with psycopg.connect(route_state) as raw:
                 raw.execute(sql, (value,))
+
+
+def test_tariff_save_rejects_stale_currency_conversion_without_repricing(
+    pricing_client, route_state
+):
+    from uuid import uuid4
+
+    from app.billing_routes import router
+
+    client = pricing_client
+    client.app.include_router(router)
+    admin = admin_login(client, route_state)
+    published = client.get("/api/control/billing/catalog", headers=admin)
+    assert published.status_code == 200
+    pricing = published.json()["pricing"]
+    payload = {
+        "confirm": True,
+        "reason": "Currency display conversion test",
+        "service": "oral",
+        "expected_version": 0,
+        "expected_pricing_version": pricing["version"],
+        "tariff": {"enabled": True, "unit_credits": "12.5", "unit_cost_fen": "0.000001"},
+    }
+    with psycopg.connect(route_state) as raw:
+        raw.execute("UPDATE customer_credit_pricing SET version=version+1 WHERE id=1")
+    key = {**admin, "Idempotency-Key": str(uuid4())}
+    stale = client.put("/api/control/billing/tariff", headers=key, json=payload)
+    assert stale.status_code == 409
+    assert "充值换算已变化" in stale.text
+    with psycopg.connect(route_state) as raw:
+        assert (
+            raw.execute("SELECT count(*) FROM billing_tariffs WHERE service='oral'").fetchone()[0]
+            == 0
+        )
+    payload["expected_pricing_version"] += 1
+    saved = client.put("/api/control/billing/tariff", headers=key, json=payload)
+    assert saved.status_code == 200, saved.text
+    assert (
+        client.put("/api/control/billing/tariff", headers=key, json=payload).json() == saved.json()
+    )
+    with psycopg.connect(route_state) as raw:
+        row = raw.execute(
+            "SELECT unit_credits,unit_cost_fen FROM billing_tariffs WHERE service='oral'"
+        ).fetchone()
+        assert row == (Decimal("12.5"), Decimal("0.000001"))
 
 
 def test_microsecond_usage_and_fractional_cost_replay(client, route_state):

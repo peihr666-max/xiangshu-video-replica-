@@ -70,7 +70,6 @@ export function AdjustmentsPage({ userId }: { userId?: string }) {
   return (
     <div className="adjustments-page">
       <header>
-        <h1>调账历史</h1>
         {userId ? <p className="user-info">用户 ID: {userId}</p> : null}
       </header>
       {!userId ? (

@@ -33,13 +33,13 @@ const summaryPayload = {
   device_slots: { bound: 918, total: 1024 },
 };
 
-function installFetch() {
+function installFetch(payload: unknown = summaryPayload) {
   const fetchMock = vi.fn((url: string) => {
     if (url.includes("/api/control/dashboard/summary")) {
       return Promise.resolve({
         ok: true,
         status: 200,
-        json: async () => summaryPayload,
+        json: async () => payload,
       });
     }
     return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
@@ -70,7 +70,13 @@ describe("OverviewPage", () => {
     expect(screen.getByText("¥4850.00")).toBeInTheDocument();
     expect(screen.getByText("¥486.20")).toBeInTheDocument();
     expect(screen.getByText("¥1128.40")).toBeInTheDocument();
-    expect(screen.getByText("918 台")).toBeInTheDocument();
+    expect(screen.queryByText("918 台")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "登录设备" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "有效客户" })).toHaveTextContent(
+      "89",
+    );
     expect(screen.getByText("近 7 日生成与成本")).toBeInTheDocument();
     expect(screen.getByText("成本（元）")).toBeInTheDocument();
     expect(screen.getByText("成功生成数（条）")).toBeInTheDocument();
@@ -79,15 +85,14 @@ describe("OverviewPage", () => {
     expect(screen.queryByText("点击下钻资金流水")).toBeNull();
 
     // 待办计数
-    expect(screen.getByText("待批准配对")).toBeInTheDocument();
+    expect(screen.queryByText("待批准配对")).not.toBeInTheDocument();
     expect(screen.getByText("对账不一致")).toBeInTheDocument();
-    // 即将过期激活码为 0 时不提供「去处理」
-    const expiring = screen.getByText("即将过期激活码").closest("li");
-    expect(expiring?.querySelector("button")).toBeNull();
+    expect(screen.queryByText("即将过期激活码")).not.toBeInTheDocument();
 
     // 快捷操作跳转
-    fireEvent.click(screen.getByRole("button", { name: "快速发码" }));
-    expect(onNavigate).toHaveBeenCalledWith("issueCodes");
+    expect(
+      screen.queryByRole("button", { name: "快速发码" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "后台加款" }));
     expect(onNavigate).toHaveBeenCalledWith("customerAdjustments");
     fireEvent.click(screen.getByRole("button", { name: "发放赠送积分" }));
@@ -95,10 +100,7 @@ describe("OverviewPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "成本核对" }));
     expect(onNavigate).toHaveBeenCalledWith("costDetails");
 
-    const pendingPairings = screen.getByText("待批准配对").closest("li");
-    fireEvent.click(within(pendingPairings as HTMLElement).getByRole("button"));
-    expect(onNavigate).toHaveBeenCalledWith("codes");
-    const missingRates = screen.getByText("费率未配置科目").closest("li");
+    const missingRates = screen.getByText("成本待配置").closest("li");
     fireEvent.click(within(missingRates as HTMLElement).getByRole("button"));
     expect(onNavigate).toHaveBeenCalledWith("rates");
     const failedTasks = screen.getByText("失败任务待处理").closest("li");
@@ -114,5 +116,33 @@ describe("OverviewPage", () => {
     render(<OverviewPage />);
 
     expect(await screen.findByText(/network down/)).toBeInTheDocument();
+  });
+
+  it("keeps unsettled and legacy costs unknown in cards and chart", async () => {
+    installFetch({
+      ...summaryPayload,
+      today: {
+        ...summaryPayload.today,
+        cost_fen: null,
+        gross_fen: null,
+        margin_pct: null,
+        pending_operations: 1,
+        legacy_cost_records: 2,
+        legacy_settlements: 1,
+      },
+      trend: [{ day: "2026-09-05", succeeded: 1, failed: 0, cost_fen: null }],
+    });
+    render(<OverviewPage />);
+    const cost = await screen.findByRole("region", { name: "今日成本" });
+    expect(cost).toHaveTextContent("待核对");
+    expect(cost).not.toHaveTextContent("¥0.00");
+    expect(screen.getByRole("region", { name: "今日毛利" })).toHaveTextContent(
+      "待核对",
+    );
+    expect(screen.getByTitle("成本待核对")).toBeInTheDocument();
+    expect(screen.queryByTitle("成本 ¥0.00")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/2 条历史成本、1 条历史结算待核对/),
+    ).toBeInTheDocument();
   });
 });

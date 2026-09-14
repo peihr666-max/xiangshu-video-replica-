@@ -625,12 +625,15 @@ class MetasoH3Provider(H3Provider):
         }
 
 
-def metaso_h3_provider_from_settings(conn: BusinessConnection) -> MetasoH3Provider:
+def metaso_h3_provider_from_settings(
+    conn: BusinessConnection, *, task_id: str | None = None
+) -> MetasoH3Provider:
+    from app.h3_account_pool import account_api_key
+
     try:
-        config = SettingsRepository(conn).load_provider_config("metaso")
+        api_key = account_api_key(conn, task_id=task_id)
     except SettingsUnavailableError as exc:
         raise H3ProviderSettingsUnavailable("METASO settings cannot be read") from exc
-    api_key = config.get("api_key")
     if not api_key:
         raise H3ProviderSettingsUnavailable("METASO API key is not configured")
     return MetasoH3Provider(
@@ -641,7 +644,9 @@ def metaso_h3_provider_from_settings(conn: BusinessConnection) -> MetasoH3Provid
     )
 
 
-def h3_provider_for_task(conn: BusinessConnection, provider_name: str) -> H3Provider:
+def h3_provider_for_task(
+    conn: BusinessConnection, provider_name: str, *, task_id: str | None = None
+) -> H3Provider:
     if provider_name == "fake_h3":
         if is_customer_production():
             raise H3ProviderSettingsUnavailable(
@@ -658,7 +663,7 @@ def h3_provider_for_task(conn: BusinessConnection, provider_name: str) -> H3Prov
             result_content=_fake_h3_result_content(),
         )
     if provider_name == "metaso":
-        return metaso_h3_provider_from_settings(conn)
+        return metaso_h3_provider_from_settings(conn, task_id=task_id)
     raise H3ProviderSettingsUnavailable("generation task has an unsupported provider")
 
 
@@ -2857,7 +2862,7 @@ def run_next_generation_task(
         return get_task_result(conn, task_id)
     if provider is None:
         try:
-            provider = h3_provider_for_task(conn, str(lease["provider"]))
+            provider = h3_provider_for_task(conn, str(lease["provider"]), task_id=str(lease["id"]))
         except H3ProviderSettingsUnavailable:
             mark_task_provider_settings_unavailable(
                 conn,
@@ -4663,6 +4668,8 @@ def _acquire_fair_queue_lease(
     only on the PostgreSQL lane — the desktop SQLite lane has no
     fair_queue_enabled column and always takes the global FIFO below.
     """
+    from app.h3_account_pool import eligible_task_sql
+
     locked_until = (datetime.now(UTC) + timedelta(seconds=GENERATION_LEASE_SECONDS)).isoformat()
     for _ in range(_FAIR_QUEUE_MAX_ROUNDS):
         cursor_row = conn.execute(
@@ -4681,7 +4688,7 @@ def _acquire_fair_queue_lease(
             return None
         user_id = str(cursor_row["user_id"])
         task_row = conn.execute(
-            """
+            f"""
             UPDATE generation_tasks
             SET
                 attempt = attempt + CASE WHEN status IN ('PENDING', 'QUEUED') THEN 1 ELSE 0 END,
@@ -4708,6 +4715,7 @@ def _acquire_fair_queue_lease(
                         )
                     )
                     AND (t.locked_until IS NULL OR t.locked_until::timestamptz <= now())
+                    AND {eligible_task_sql(conn, "t")}
                     AND (t.next_poll_at IS NULL OR t.next_poll_at::timestamptz <= now())
                     AND EXISTS (
                         SELECT 1
@@ -4767,9 +4775,11 @@ def _acquire_global_fifo_lease(
     portable ``::timestamptz <= now()`` form (the translator parses both sides
     on the SQLite lane).
     """
+    from app.h3_account_pool import eligible_task_sql
+
     locked_until = (datetime.now(UTC) + timedelta(seconds=GENERATION_LEASE_SECONDS)).isoformat()
     row = conn.execute(
-        """
+        f"""
         UPDATE generation_tasks
         SET
             attempt = attempt + CASE WHEN status IN ('PENDING', 'QUEUED') THEN 1 ELSE 0 END,
@@ -4799,6 +4809,7 @@ def _acquire_global_fifo_lease(
                     locked_until IS NULL
                     OR locked_until::timestamptz <= now()
                 )
+                AND {eligible_task_sql(conn, "generation_tasks")}
                 AND (next_poll_at IS NULL OR next_poll_at::timestamptz <= now())
                 AND NOT EXISTS (
                     SELECT 1
@@ -4830,16 +4841,23 @@ def acquire_generation_task_lease(
     mark_expired_active_leases_needing_attention(conn)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        from app.h3_account_pool import assign_task_account, pool_capacity
+
+        lock_shared_generation_capacity(conn)
         runtime = read_runtime_limits(conn)
-        if not shared_generation_capacity_available(
+        if pool_capacity(conn) is None and not shared_generation_capacity_available(
             conn,
             max_concurrent_tasks=runtime["max_concurrent_h3_tasks"],
         ):
             conn.commit()
             return None
         if _fair_queue_enabled(conn):
-            return _acquire_fair_queue_lease(conn, worker_id=worker_id)
-        return _acquire_global_fifo_lease(conn, worker_id=worker_id)
+            lease = _acquire_fair_queue_lease(conn, worker_id=worker_id)
+        else:
+            lease = _acquire_global_fifo_lease(conn, worker_id=worker_id)
+        if lease is not None:
+            assign_task_account(conn, lease)
+        return lease
     except Exception:
         conn.rollback()
         raise
@@ -4945,7 +4963,9 @@ def prepare_generation_submission(
     provider_name = str(lease["provider"])
     if provider_name == "metaso" and first_frame_storage.provider != "cos":
         raise H3ProviderSettingsUnavailable("METASO requires COS first-frame storage")
-    selected_provider = provider or h3_provider_for_task(conn, provider_name)
+    selected_provider = provider or h3_provider_for_task(
+        conn, provider_name, task_id=str(lease["id"])
+    )
 
     def _signed_url(storage_uri: str) -> str:
         ref = storage_object_ref_from_uri(storage_uri)
@@ -6940,11 +6960,16 @@ def shared_generation_capacity_available(
     slot; SQLite's no-op UPDATE acquires its single-writer lock.
     """
     lock_shared_generation_capacity(conn)
+    from app.h3_account_pool import pool_capacity
+
+    # Managed H3 accounts have independent upstream slots. Oral/fake work keeps
+    # its existing local budget and cannot consume those account entitlements.
+    provider_filter = "AND provider != 'metaso'" if pool_capacity(conn) is not None else ""
     active_count = conn.execute(
-        """
+        f"""
         SELECT (
             SELECT COUNT(*) FROM generation_tasks
-            WHERE status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')
+            WHERE status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING') {provider_filter}
         ) + (
             SELECT COUNT(*) FROM oral_tasks
             WHERE status IN ('SUBMITTING', 'RUNNING', 'ARCHIVING')

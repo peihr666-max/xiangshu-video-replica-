@@ -1725,7 +1725,7 @@ function AssetCard({
           : previewStatus === "error"
             ? "预览加载失败，点击重试"
             : asset.delivery === "direct"
-              ? "供应商直出"
+              ? "生成完成"
               : asset.saved
                 ? "永久保存"
                 : "处理中"}
@@ -2256,7 +2256,7 @@ export function MaterialsPage() {
                 <dt>状态</dt>
                 <dd>
                   {selected.delivery === "direct"
-                    ? "供应商直出，尚未归档"
+                    ? "生成完成，尚未归档"
                     : selected.saved
                       ? "云端永久保存"
                       : "处理中"}
@@ -2403,9 +2403,7 @@ export function MaterialsPage() {
                 </Button>
               ) : null}
               {selected.delivery === "direct" ? (
-                <Hint>
-                  该结果仍由供应商托管，可预览；归档后才可作为云端素材复用。
-                </Hint>
+                <Hint>该结果可预览，归档完成后可作为云端素材复用。</Hint>
               ) : null}
             </>
           ) : (

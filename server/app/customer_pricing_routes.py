@@ -39,12 +39,14 @@ class PricingUpdate(AdminWriteContract):
     config: PricingConfig
 
 
-def pricing_response(conn: BusinessConnection) -> PricingResponse:
+def pricing_response(conn: BusinessConnection, *, admin: bool = False) -> PricingResponse:
     version, config = read_pricing(conn)
     from app.billing_catalog import SERVICES, retail_snapshot
 
     prices = []
     for subject, service in SERVICES.items():
+        if not admin and not service.customer_charge_allowed:
+            continue
         snapshot = retail_snapshot(conn, subject, 1)
         prices.append(
             PriceEntry(
@@ -74,7 +76,7 @@ def customer_prices(request: Request, response: Response) -> PricingResponse:
 def admin_prices(_actor: AdminReader, response: Response) -> PricingResponse:
     response.headers["Cache-Control"] = "no-store"
     with pg_transaction() as conn:
-        return pricing_response(BusinessConnection.postgres(conn))
+        return pricing_response(BusinessConnection.postgres(conn), admin=True)
 
 
 @router.put("/api/control/settings/customer-pricing", response_model=PricingResponse)
@@ -132,7 +134,7 @@ def update_prices(
                 ),
             ),
         )
-        return pricing_response(BusinessConnection.postgres(conn)).model_dump()
+        return pricing_response(BusinessConnection.postgres(conn), admin=True).model_dump()
 
     response.headers["Cache-Control"] = "no-store"
     return write_with_idempotency(

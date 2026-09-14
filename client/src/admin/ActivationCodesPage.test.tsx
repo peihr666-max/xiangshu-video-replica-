@@ -228,27 +228,21 @@ describe("ActivationCodesPage", () => {
     clearAdminActivationSession();
   });
 
-  it("shows activation codes, bound accounts and related devices together", async () => {
+  it("shows activation codes and accounts without device binding or pairing controls", async () => {
     render(<ActivationCodesPage />);
-
     expect(await screen.findByText("XS****01")).toBeInTheDocument();
-    expect(screen.getAllByText("customer_9")).toHaveLength(2);
-    expect(
-      screen.getByRole("button", { name: "1 台设备" }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("customer_9")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "激活码列表" }),
     ).toBeInTheDocument();
     expect(screen.getByText("共 3 条")).toBeInTheDocument();
     expect(
-      screen.getByRole("table", { name: "待批准配对列表" }),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "1 台设备" }));
-
-    expect(screen.getByText("办公室电脑")).toBeInTheDocument();
-    expect(screen.getAllByText("Windows")).toHaveLength(2);
-    expect(screen.getByText("已绑定")).toBeInTheDocument();
+      screen.queryByRole("columnheader", { name: "关联设备" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("table", { name: "待批准配对列表" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("办公室电脑")).not.toBeInTheDocument();
   });
 
   it("copies a code through the audited reveal route", async () => {
@@ -364,21 +358,6 @@ describe("ActivationCodesPage", () => {
     );
   });
 
-  it("unbinds a device without revoking its activation code", async () => {
-    render(<ActivationCodesPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "1 台设备" }));
-    fireEvent.click(screen.getByRole("button", { name: "解绑设备" }));
-    // 解绑属中危：只需原因，不需要勾选。
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "客户更换电脑" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
-
-    expect(await screen.findByText(/req-unbind-1/)).toBeInTheDocument();
-    expect(screen.getByText("已解绑")).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "使用中" })).toBeInTheDocument();
-  });
-
   it("archives a revoked activation code without deleting its audit history", async () => {
     const fetchMock = installFetch();
     render(<ActivationCodesPage />);
@@ -397,95 +376,6 @@ describe("ActivationCodesPage", () => {
     );
     expect(archiveCall?.[1]?.body).toBe(
       JSON.stringify({ confirm: true, reason: "清理已撤销测试码" }),
-    );
-  });
-
-  it("replaces a bound device through the pending pairing request", async () => {
-    const fetchMock = installFetch();
-    render(<ActivationCodesPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "1 台设备" }));
-
-    expect(screen.getByText("新办公室电脑")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "替换为新办公室电脑" }));
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "客户重装系统更换设备" },
-    });
-    fireEvent.click(screen.getByLabelText("我已知晓该操作的影响"));
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
-
-    expect(await screen.findByText(/req-replace-1/)).toBeInTheDocument();
-    expect(screen.queryByText("新办公室电脑")).toBeNull();
-    const replaceCall = fetchMock.mock.calls.find(([url]) =>
-      String(url).endsWith("/device-pairings/pairing-1/replace-device"),
-    );
-    expect(replaceCall?.[1]?.body).toBe(
-      JSON.stringify({
-        replace_device_id: "device-1",
-        confirm: true,
-        reason: "客户重装系统更换设备",
-      }),
-    );
-  });
-
-  it("offers ordinary approval when the first device is unavailable", async () => {
-    // PR #85 评审 P2：槽位 1 已解绑、槽位 2 仍绑定时，服务端普通批准通道
-    // 开放——UI 必须提供"批准设备"，而不是只剩替换槽位 2 一条路。
-    const items = codesPage.items.map((item) => ({ ...item }));
-    items[1] = {
-      ...items[1],
-      code_id: "code-4",
-      devices: [
-        {
-          device_id: "device-4a",
-          slot_no: 1,
-          display_name: "旧办公室电脑",
-          platform: "windows",
-          status: "UNBOUND",
-          bound_at: "2026-08-20T10:05:00+00:00",
-          last_active_at: "2026-08-21T10:05:00+00:00",
-          unbound_at: "2026-08-25T08:00:00+00:00",
-          revoked_at: null,
-        },
-        {
-          device_id: "device-4b",
-          slot_no: 2,
-          display_name: "备用笔记本",
-          platform: "windows",
-          status: "BOUND",
-          bound_at: "2026-08-21T10:05:00+00:00",
-          last_active_at: "2026-08-22T10:05:00+00:00",
-          unbound_at: null,
-          revoked_at: null,
-        },
-      ],
-      pending_pairings: [
-        {
-          pairing_request_id: "pairing-4",
-          display_name: "新办公室电脑",
-          platform: "windows",
-          status: "PENDING",
-          created_at: "2026-08-26T10:00:00+00:00",
-          expires_at: "2026-08-26T10:15:00+00:00",
-        },
-      ],
-    };
-    const fetchMock = installFetch({ items });
-    render(<ActivationCodesPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "2 台设备" }));
-
-    // 首设备不可用：普通批准可用；槽位 2 替换仍然可用（两条通道都展示）。
-    fireEvent.click(await screen.findByRole("button", { name: "批准设备" }));
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "首设备已解绑，直接批准新设备" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
-
-    expect(await screen.findByText(/req-approve-4/)).toBeInTheDocument();
-    const approveCall = fetchMock.mock.calls.find(([url]) =>
-      String(url).endsWith("/device-pairings/pairing-4/approve"),
-    );
-    expect(approveCall?.[1]?.body).toBe(
-      JSON.stringify({ confirm: true, reason: "首设备已解绑，直接批准新设备" }),
     );
   });
 

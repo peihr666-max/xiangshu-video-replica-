@@ -313,7 +313,7 @@ describe("SettingsPanel", () => {
     );
   });
 
-  it("用星光按钮按需读取并显示已保存密钥", async () => {
+  it("按需读取并显示已保存密钥", async () => {
     const fetchMock = installFetch();
     const { container } = render(<SettingsPanel />);
 
@@ -322,7 +322,6 @@ describe("SettingsPanel", () => {
     const input = metaso.getByLabelText("API Key");
     const reveal = metaso.getByRole("button", { name: "显示API Key" });
 
-    expect(reveal).toHaveTextContent("✨");
     expect(input).toHaveAttribute("type", "password");
     expect(input).toHaveValue("");
 
@@ -505,6 +504,14 @@ describe("SettingsPanel", () => {
         ),
       );
       await screen.findByText("数字人口播");
+      if (source === "control") {
+        expect(
+          screen.queryByRole("heading", { name: "数字人口播价格" }),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("button", { name: "保存口播价格" }),
+        ).not.toBeInTheDocument();
+      }
       const hifly = providerCard(container, "hifly");
       fireEvent.click(hifly.getByRole("button", { name: "只读检查" }));
 

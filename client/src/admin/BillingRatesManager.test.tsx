@@ -1,10 +1,17 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { adminRead, adminWrite } from "../api.admin";
 import { BillingRatesManager } from "./BillingRatesManager";
 
 vi.mock("../api.admin", () => ({ adminRead: vi.fn(), adminWrite: vi.fn() }));
 const catalog = {
+  pricing: { version: 3, points_per_yuan: 100 },
   services: [
     {
       service: "video_768p",
@@ -35,12 +42,17 @@ test("cost-only configuration leaves the customer tariff absent and disabled", a
   fireEvent.click(
     await screen.findByRole("button", { name: "配置 视频生成 · 768P" }),
   );
-  fireEvent.change(screen.getByLabelText("成本（分 / 秒，留空待核对）"), {
+  const row = screen
+    .getByRole("textbox", { name: "成本（积分 / 秒，留空待核对）" })
+    .closest("tr");
+  expect(row).not.toBeNull();
+  expect(
+    within(row as HTMLTableRowElement).getByText("视频生成 · 768P"),
+  ).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("成本（积分 / 秒，留空待核对）"), {
     target: { value: "0.000125" },
   });
-  fireEvent.change(screen.getByLabelText("调整原因"), {
-    target: { value: "录入供应商成本" },
-  });
+  expect(screen.queryByLabelText("调整原因")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "确认并保存" }));
   await waitFor(() =>
     expect(adminWrite).toHaveBeenCalledWith(
@@ -48,6 +60,7 @@ test("cost-only configuration leaves the customer tariff absent and disabled", a
       {
         service: "video_768p",
         expected_version: 0,
+        expected_pricing_version: 3,
         tariff: {
           enabled: false,
           unit_credits: null,
@@ -55,7 +68,7 @@ test("cost-only configuration leaves the customer tariff absent and disabled", a
           unit_rounding: "ceil",
         },
       },
-      "录入供应商成本",
+      "配置视频生成 · 768P成本与售价",
       expect.any(String),
       expect.any(String),
       "PUT",
@@ -70,9 +83,7 @@ test("enabling a tariff requires an explicit price and preserves the key after a
     await screen.findByRole("button", { name: "配置 视频生成 · 768P" }),
   );
   fireEvent.click(screen.getByLabelText("启用用户扣分"));
-  fireEvent.change(screen.getByLabelText("调整原因"), {
-    target: { value: "发布逐秒售价" },
-  });
+  expect(screen.queryByLabelText("调整原因")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "确认并保存" }));
   expect(adminWrite).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText("售价（积分 / 秒）"), {
@@ -95,4 +106,97 @@ test("auditors can read tariff rows but cannot open the write form", async () =>
   expect(
     screen.queryByRole("checkbox", { name: "启用用户扣分" }),
   ).not.toBeInTheDocument();
+});
+
+test("cost credits use the current exchange ratio while sale credits stay unchanged", async () => {
+  vi.mocked(adminRead).mockResolvedValue({
+    ...catalog,
+    pricing: { version: 9, points_per_yuan: 200 },
+  });
+  render(<BillingRatesManager />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "配置 视频生成 · 768P" }),
+  );
+  fireEvent.change(screen.getByLabelText("成本（积分 / 秒，留空待核对）"), {
+    target: { value: "25" },
+  });
+  fireEvent.change(screen.getByLabelText("售价（积分 / 秒）"), {
+    target: { value: "40" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "确认并保存" }));
+  await waitFor(() =>
+    expect(adminWrite).toHaveBeenCalledWith(
+      "/api/control/billing/tariff",
+      expect.objectContaining({
+        expected_pricing_version: 9,
+        tariff: expect.objectContaining({
+          unit_credits: "40",
+          unit_cost_fen: "12.5",
+        }),
+      }),
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      "PUT",
+    ),
+  );
+});
+
+test("keeps infrastructure and internal quality services out of the configuration table", async () => {
+  vi.mocked(adminRead).mockResolvedValue({
+    pricing: catalog.pricing,
+    services: [
+      ...catalog.services,
+      ...["cos", "zpay", "quality_inspection", "analysis_repair"].map(
+        (service) => ({
+          ...catalog.services[0],
+          service,
+          name: service,
+          customer_charge_allowed: false,
+        }),
+      ),
+    ],
+  });
+  render(<BillingRatesManager />);
+  await screen.findByRole("button", { name: "配置 视频生成 · 768P" });
+  for (const name of ["cos", "zpay", "quality_inspection", "analysis_repair"])
+    expect(screen.queryByText(name)).not.toBeInTheDocument();
+});
+
+test("saving unchanged credit displays preserves the original sub-cent cost", async () => {
+  vi.mocked(adminRead).mockResolvedValue({
+    pricing: { version: 8, points_per_yuan: 3 },
+    services: [
+      {
+        ...catalog.services[0],
+        tariff: {
+          ...catalog.services[0].tariff,
+          unit_credits: "1",
+          unit_cost_fen: "0.000001",
+          enabled: true,
+        },
+      },
+    ],
+  });
+  render(<BillingRatesManager />);
+  await screen.findByText("0.00000003");
+  fireEvent.click(screen.getByRole("button", { name: "配置 视频生成 · 768P" }));
+  expect(screen.getByLabelText("售价（积分 / 秒）")).toHaveValue("1");
+  fireEvent.click(screen.getByRole("button", { name: "确认并保存" }));
+  await waitFor(() =>
+    expect(adminWrite).toHaveBeenCalledWith(
+      "/api/control/billing/tariff",
+      expect.objectContaining({
+        expected_pricing_version: 8,
+        tariff: expect.objectContaining({
+          unit_credits: "1",
+          unit_cost_fen: "0.000001",
+        }),
+      }),
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      "PUT",
+    ),
+  );
 });

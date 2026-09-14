@@ -275,19 +275,23 @@ export function CustomerRechargeDialog({
               <span className="recharge-dialog__waiting" role="status">
                 正在等待支付结果
               </span>
-              <button
-                className="secondary-button"
-                onClick={() =>
-                  window.open(
-                    paymentCode.payment_url,
-                    "_blank",
-                    "noopener,noreferrer",
-                  )
-                }
-                type="button"
-              >
-                无法扫码？打开支付页面
-              </button>
+              {paymentCode.payment_url.startsWith("weixin://") ? (
+                <p>请使用微信扫一扫完成支付。</p>
+              ) : (
+                <button
+                  className="secondary-button"
+                  onClick={() =>
+                    window.open(
+                      paymentCode.payment_url,
+                      "_blank",
+                      "noopener,noreferrer",
+                    )
+                  }
+                  type="button"
+                >
+                  无法扫码？打开支付页面
+                </button>
+              )}
             </div>
           </div>
         ) : (

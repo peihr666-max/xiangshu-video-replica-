@@ -226,6 +226,14 @@ def test_merge_revision_closes_a_second_head(synthetic: Any) -> None:
     assert not any("exactly one migration head" in i for i in failures), failures
     # head 与 CW-056 字面量现在必然不一致（真源要跟着走），但那不是本用例的命题。
     assert not any("published chain" in i for i in failures), failures
+    synthetic.write_manifest(
+        synthetic.build_manifest(synthetic.load_revisions(), synthetic.load_cw056_constants())
+    )
+    assert not any("section 'graph' is stale" in i for i in synthetic.run_check())
+    manifest = synthetic.load_manifest()
+    manifest["graph"]["parents"]["004_merge"] = [_HEAD]
+    synthetic.write_manifest(manifest)
+    assert any("section 'graph' is stale" in i for i in synthetic.run_check())
 
 
 def test_branch_point_inside_the_published_range_is_rejected(synthetic: Any) -> None:
@@ -355,7 +363,7 @@ def test_rollout_guard_idiom_is_the_one_we_mirror() -> None:
 
 
 def _revisions_at_or_after(graph_parents: dict[str, Any], head: str) -> set[str]:
-    """head 及其祖先闭包（沿 ``graph.parents`` 向上走，兼容 tuple 父节点）。"""
+    """head 及其祖先闭包，兼容迁移元组与 JSON 数组父节点。"""
     seen: set[str] = set()
     stack = [head]
     while stack:
@@ -366,7 +374,7 @@ def _revisions_at_or_after(graph_parents: dict[str, Any], head: str) -> set[str]
         down = graph_parents.get(rev)
         if down is None:
             continue
-        stack.extend(down if isinstance(down, tuple) else [down])
+        stack.extend(down if isinstance(down, (tuple, list)) else [down])
     return seen
 
 

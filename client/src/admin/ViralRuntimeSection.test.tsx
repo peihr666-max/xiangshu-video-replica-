@@ -63,9 +63,7 @@ describe("ViralRuntimeSection", () => {
       target: { value: "1" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存采集设置" }));
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "调整本周选题" },
-    });
+    expect(screen.queryByLabelText("操作原因")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认更新" }));
     await screen.findByText("定时采集设置已更新。");
     const patch = fetchMock.mock.calls.find(
@@ -77,6 +75,8 @@ describe("ViralRuntimeSection", () => {
       ],
       per_keyword_limit: 12,
       collection_interval_days: 1,
+      reason: "更新爆款视频采集设置",
+      confirm: true,
     });
   });
   afterEach(() => {
@@ -103,7 +103,7 @@ describe("ViralRuntimeSection", () => {
     );
   });
 
-  it("通过带原因的幂等写暂停采集", async () => {
+  it("直接确认暂停采集并自动记录操作说明", async () => {
     setAdminCsrfToken("csrf-viral");
     const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
       if (init?.method === "PATCH") {
@@ -115,9 +115,7 @@ describe("ViralRuntimeSection", () => {
     render(<ViralRuntimeSection />);
 
     fireEvent.click(await screen.findByRole("button", { name: "暂停采集" }));
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "上游错误率超标" },
-    });
+    expect(screen.queryByLabelText("操作原因")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认更新" }));
 
     expect(
@@ -131,7 +129,7 @@ describe("ViralRuntimeSection", () => {
       collection_enabled: false,
       import_enabled: true,
       confirm: true,
-      reason: "上游错误率超标",
+      reason: "更新爆款视频采集开关",
     });
   });
 });

@@ -109,7 +109,7 @@ class WeChatNativeProvider(PaymentProvider):
 
     def load_merchant_config(self, conn: BusinessConnection) -> MerchantConfig:
         """Load and validate WeChat Native merchant config from provider_settings."""
-        raw = SettingsRepository(conn).load_provider_config(WECHAT_NATIVE_PROVIDER_NAME)
+        raw = SettingsRepository(conn).load_wechat_native_config()
         # Validate eagerly so incomplete settings raise ValueError per the Protocol.
         merchant_config_from_settings(raw)
         return MerchantConfig(
@@ -160,7 +160,7 @@ class WeChatNativeProvider(PaymentProvider):
                 merchant=wechat_merchant,
                 deployment=wechat_deployment,
                 out_trade_no=merchant_order_no,
-                description=f"内部视频生成条数充值 {credits} 条",
+                description=f"众墅之家积分充值 {credits} 积分",
                 amount_fen=amount_fen,
                 client_ip=client_ip,
             )

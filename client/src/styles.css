@@ -2217,11 +2217,6 @@ button.regenerate-button {
   margin-left: auto;
 }
 
-.admin-session__identity {
-  display: grid;
-  gap: 2px;
-}
-
 .admin-hint {
   margin: 0;
   color: var(--admin-copy-faint);
@@ -2869,20 +2864,6 @@ button.activation-generator__submit {
   font-variant-numeric: tabular-nums;
 }
 
-.admin-session__identity {
-  display: grid;
-  gap: 2px;
-  padding-left: 18px;
-  border-left: 1px solid var(--admin-line);
-  color: #c9c3b9;
-  line-height: 1.25;
-}
-
-.admin-session__identity span:last-child {
-  color: #77736d;
-  font-size: 12px;
-}
-
 .admin-shell--control .admin-session button,
 .admin-shell--control button.btn-secondary,
 .admin-shell--control button.admin-toolbar__secondary {
@@ -2923,35 +2904,28 @@ button.activation-generator__submit {
 
 .admin-sidebar__top {
   flex-direction: column;
-  padding: 0 20px 14px;
+  flex: 0 0 auto;
+  padding: 0 16px 8px;
 }
 
 .admin-brand {
   display: flex;
   width: 100%;
-  min-height: 128px;
+  min-height: clamp(64px, 15dvh, 100px);
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 11px;
   border-bottom: 1px solid var(--admin-line-soft);
 }
 
 .admin-brand img {
-  width: 42px;
-  height: 42px;
+  width: 155px;
+  max-width: 100%;
+  height: 36px;
   object-fit: contain;
-}
-
-.admin-brand div {
-  display: grid;
-  gap: 2px;
-}
-
-.admin-brand strong {
-  color: var(--admin-gold-bright);
-  font-family: inherit;
-  font-size: 23px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  filter: invert(1) grayscale(1) sepia(1) saturate(3) hue-rotate(355deg);
+  mix-blend-mode: screen;
 }
 
 .admin-brand span {
@@ -2961,34 +2935,22 @@ button.activation-generator__submit {
   letter-spacing: 0.02em;
 }
 
-.admin-sidebar__context {
-  display: grid;
-  gap: 9px;
-  padding: 16px 8px 4px;
-}
-
-.admin-sidebar__context h2 {
-  color: var(--admin-gold-bright);
-  font-size: 22px;
-  margin: 0;
-}
-
-.admin-sidebar__context p {
-  margin: 0;
-}
-
 .admin-nav-groups {
   display: grid;
   flex: 1;
   align-content: start;
-  gap: 18px;
-  overflow-y: auto;
-  padding: 12px 20px 22px;
-  scrollbar-width: thin;
+  min-height: 0;
+  gap: 10px;
+  overflow: visible;
+  padding: 8px 12px;
+}
+
+.admin-nav-group {
+  gap: 0;
 }
 
 .admin-nav-group h3 {
-  margin: 0 0 7px 9px;
+  margin: 0 0 5px 9px;
   color: var(--admin-gold);
   font-size: 12px;
   font-weight: 700;
@@ -3003,21 +2965,21 @@ button.activation-generator__submit {
 .admin-shell--control button.admin-tab {
   display: flex;
   width: 100%;
-  min-height: 64px;
+  min-height: clamp(32px, 6.5dvh, 52px);
   align-items: center;
   border: 1px solid var(--admin-line-soft);
   border-radius: 10px;
-  padding: 10px 14px;
-  gap: 14px;
+  padding: 6px 12px;
+  gap: 12px;
   color: #8f8a82;
   background: transparent;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 520;
   text-align: left;
 }
 
 .admin-shell--control button.admin-tab small {
-  display: block;
+  display: none;
   color: var(--admin-muted);
   font-size: 12px;
   line-height: 1.45;
@@ -3052,9 +3014,10 @@ button.activation-generator__submit {
 .admin-sidebar__footer {
   display: grid;
   gap: 3px;
-  margin: auto 20px 24px;
+  flex: 0 0 auto;
+  margin: auto 16px 10px;
   border-top: 1px solid var(--admin-line-soft);
-  padding: 14px 10px 2px;
+  padding: 8px 10px 2px;
   color: #b0aaa0;
   font-size: 14px;
 }
@@ -3806,33 +3769,6 @@ button.activation-generator__submit {
     padding: 24px 24px 38px;
     overflow: visible;
   }
-  .customers-table {
-    min-width: 0;
-    table-layout: fixed;
-  }
-  .customers-table th:nth-child(2),
-  .customers-table th:nth-child(3),
-  .customers-table th:nth-child(6),
-  .customers-table tbody > tr:not(.admin-detail-row) > td:nth-child(2),
-  .customers-table tbody > tr:not(.admin-detail-row) > td:nth-child(3),
-  .customers-table tbody > tr:not(.admin-detail-row) > td:nth-child(6) {
-    display: none;
-  }
-  .customers-table th:first-child {
-    width: 22%;
-  }
-  .customers-table th:nth-child(4) {
-    width: 15%;
-  }
-  .customers-table th:nth-child(5) {
-    width: 25%;
-  }
-  .customers-table th:nth-child(7) {
-    width: 20%;
-  }
-  .customers-table th:nth-child(8) {
-    width: 18%;
-  }
   .customer-detail-panel {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3873,14 +3809,8 @@ button.activation-generator__submit {
     font-size: 10px;
   }
   .admin-shell--control .admin-session time,
-  .admin-session__identity span:last-child,
   .admin-shell--control .admin-session button {
     display: none;
-  }
-  .admin-session__identity {
-    border-left: 0;
-    padding-left: 0;
-    font-size: 10px;
   }
   .admin-sidebar-backdrop {
     position: fixed;
@@ -4448,4 +4378,691 @@ button.activation-generator__submit {
 
 .admin-shell--control .pagination {
   font-size: 13px;
+}
+
+@media (max-height: 540px) {
+  .admin-nav-group h3,
+  .admin-brand span,
+  .admin-sidebar__footer small {
+    display: none;
+  }
+  .admin-nav-groups {
+    gap: 4px;
+  }
+}
+
+.billing-rates-table {
+  margin-top: 16px;
+}
+.billing-rates-table table {
+  width: 100%;
+  min-width: 820px;
+  table-layout: fixed;
+}
+.billing-rates-table td {
+  vertical-align: middle;
+}
+.billing-rates-table td > code,
+.billing-rates-table td > small {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--admin-muted);
+}
+.billing-rates-table td > input {
+  width: 112px;
+  min-width: 0;
+}
+.billing-rates-table tr.is-editing,
+.billing-rates-table .billing-rates-editor {
+  background: var(--admin-gold-wash);
+}
+.billing-rates-table td > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.billing-rates-table select {
+  display: block;
+  margin-top: 6px;
+  max-width: 160px;
+}
+.billing-rates-editor__actions {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+.billing-rates-editor__actions label {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+}
+
+/* 管理端正文、辅助信息、标题统一使用同一组字体令牌。 */
+.admin-shell--control {
+  --admin-font-body: 14px;
+  --admin-font-caption: 13px;
+  --admin-font-section: 16px;
+  --admin-font-title: 20px;
+  font-size: var(--admin-font-body);
+  line-height: 1.5;
+}
+.admin-shell--control .admin-workspace {
+  font-size: var(--admin-font-body);
+}
+.admin-shell--control
+  .admin-workspace
+  :is(
+    p,
+    label,
+    input,
+    select,
+    textarea,
+    button,
+    th,
+    td,
+    dt,
+    dd,
+    span,
+    a,
+    code,
+    summary,
+    .pagination,
+    .admin-hint
+  ) {
+  font-family: inherit;
+  font-size: var(--admin-font-body);
+  line-height: 1.5;
+  letter-spacing: normal;
+}
+.admin-shell--control .admin-workspace :is(input, select, textarea) {
+  font-weight: 400;
+}
+.admin-shell--control .admin-workspace :is(button, th, summary) {
+  font-weight: 600;
+}
+.admin-shell--control
+  .admin-workspace
+  :is(small, .admin-hint, .admin-toolbar__field > span, .status-badge) {
+  font-family: inherit;
+  font-size: var(--admin-font-caption);
+  line-height: 1.5;
+  letter-spacing: normal;
+}
+.admin-shell--control .admin-workspace h1 {
+  font-size: var(--admin-font-title);
+  line-height: 1.4;
+}
+.admin-shell--control .admin-workspace :is(h2, h3, h4) {
+  font-size: var(--admin-font-section);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.admin-shell--control .admin-workspace strong {
+  font-family: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.admin-shell--control .admin-workspace .admin-data-table :is(th, td),
+.admin-shell--control .admin-workspace .customer-id-copy__value {
+  font-size: var(--admin-font-body);
+  font-family: inherit;
+}
+.admin-shell--control .admin-workspace .customer-id-copy__value {
+  font-weight: 400;
+}
+.admin-shell--control .admin-workspace :is(th, button, .status-badge) {
+  white-space: nowrap;
+}
+.admin-shell--control
+  .admin-workspace
+  :is(
+    form,
+    section,
+    .admin-panel,
+    .provider-card,
+    .table-scroll,
+    .admin-table-scroll
+  ) {
+  min-width: 0;
+  max-width: 100%;
+}
+.admin-shell--control .admin-workspace :is(.table-scroll, .admin-table-scroll) {
+  overflow-x: auto;
+}
+.admin-shell--control .admin-workspace :is(input, select, textarea) {
+  max-width: 100%;
+}
+@media (min-width: 1024px) {
+  .admin-shell--control {
+    height: 100dvh;
+  }
+  .admin-shell--control .admin-workspace {
+    overflow: auto;
+  }
+}
+@media (max-width: 1023px) {
+  .admin-shell--control .admin-workspace {
+    padding: 16px;
+  }
+  .admin-shell--control .admin-panel {
+    padding: 16px;
+  }
+  .admin-shell--control .admin-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-shell--control .customer-detail-hero {
+    flex-wrap: wrap;
+  }
+  .admin-shell--control .customer-detail-operations {
+    min-width: 0;
+    width: 100%;
+  }
+}
+@media (max-width: 600px) {
+  .admin-shell--control .admin-workspace {
+    padding: 12px;
+  }
+  .admin-shell--control .admin-panel {
+    padding: 14px;
+  }
+  .admin-shell--control
+    :is(.admin-form, .admin-toolbar, .provider-grid, .customer-360-grid) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-shell--control .customer-detail-identity {
+    min-width: 0;
+    gap: 12px;
+  }
+  .admin-shell--control .customer-detail-identity p {
+    overflow-wrap: anywhere;
+  }
+  .admin-shell--control .admin-dialog-overlay {
+    padding: 12px;
+  }
+}
+
+.billing-rates-table :is(th, td):nth-child(1) {
+  width: 18%;
+}
+.billing-rates-table :is(th, td):nth-child(2) {
+  width: 24%;
+}
+.billing-rates-table :is(th, td):nth-child(3) {
+  width: 6%;
+}
+.billing-rates-table :is(th, td):nth-child(4),
+.billing-rates-table :is(th, td):nth-child(5) {
+  width: 12%;
+}
+.billing-rates-table :is(th, td):nth-child(6) {
+  width: 18%;
+}
+.billing-rates-table :is(th, td):nth-child(7) {
+  width: 10%;
+}
+.billing-rates-table .billing-rates-editor td {
+  width: auto;
+}
+.billing-rates-table td > small {
+  overflow-wrap: anywhere;
+}
+.billing-rates-table td button {
+  white-space: nowrap;
+}
+
+.billing-services-link {
+  justify-self: start;
+}
+.billing-rates-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.billing-rates-table :is(th, td):nth-child(4),
+.billing-rates-table :is(th, td):nth-child(5) {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.admin-shell--control .admin-workspace .billing-economics-table :is(th, td) {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.billing-economics .economics-kpis {
+  margin-top: 18px;
+}
+.billing-rates-table :is(th, td):nth-child(3) {
+  white-space: nowrap;
+}
+/* 无逐格标签的账务表在窄屏保留表头，仅表格容器横向滚动。 */
+@media (max-width: 760px) {
+  .admin-shell--control .admin-workspace .customers-table td::before {
+    font-family: inherit;
+    font-size: var(--admin-font-caption);
+    line-height: 1.5;
+  }
+  .admin-shell--control
+    .admin-workspace
+    .admin-data-table:not(.customers-table) {
+    display: table;
+    min-width: 820px;
+  }
+  .admin-shell--control
+    .admin-workspace
+    .admin-data-table:not(.customers-table)
+    thead {
+    display: table-header-group;
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
+    clip-path: none;
+  }
+  .admin-shell--control
+    .admin-workspace
+    .admin-data-table:not(.customers-table)
+    tbody {
+    display: table-row-group;
+  }
+  .admin-shell--control
+    .admin-workspace
+    .admin-data-table:not(.customers-table)
+    tbody
+    > tr:not(.admin-detail-row) {
+    display: table-row;
+  }
+  .admin-shell--control
+    .admin-workspace
+    .admin-data-table:not(.customers-table)
+    tbody
+    > tr:not(.admin-detail-row)
+    td {
+    display: table-cell;
+    text-align: left;
+  }
+  .admin-shell--control
+    .admin-workspace
+    .admin-data-table:not(.customers-table)
+    tbody
+    > tr:not(.admin-detail-row)
+    td::before {
+    content: none;
+  }
+}
+
+.admin-payment-channels label,
+.admin-payment-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.admin-payment-channels img,
+.admin-payment-brand img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+/* Management service cards have their own layout; the client legacy CSS is not loaded here. */
+.admin-shell--control .admin-services {
+  display: grid;
+  gap: 20px;
+}
+.admin-shell--control .admin-services__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 0;
+}
+.admin-shell--control .admin-services__header h2 {
+  margin: 0 0 6px;
+}
+.admin-shell--control .admin-services__header p {
+  margin: 0;
+  color: #a9a49a;
+  line-height: 1.6;
+}
+.admin-shell--control .admin-services__header .admin-page-tabs {
+  margin: 0;
+  flex-shrink: 0;
+}
+.admin-shell--control .admin-services .provider-grid,
+.admin-shell--control .admin-services__switches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.admin-shell--control .admin-services .provider-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto 1fr auto;
+  align-items: start;
+  gap: 20px 12px;
+  margin: 0;
+  padding: 22px;
+  border: 1px solid #353229;
+  border-radius: 12px;
+  background: #1b1b18;
+  box-shadow: none;
+}
+.admin-shell--control .admin-services .provider-card h3 {
+  margin: 0;
+  color: #eee7d9;
+}
+.admin-shell--control .admin-services .provider-card__heading p {
+  margin: 8px 0 0;
+  color: #a9a49a;
+  line-height: 1.65;
+  font-size: 12px;
+}
+.admin-shell--control .admin-services .config-state {
+  white-space: nowrap;
+  font-weight: 500;
+  padding: 4px 9px;
+  color: #a9a49a;
+  background: #292922;
+}
+.admin-shell--control .admin-services .config-state--ready {
+  color: #8edab0;
+  background: #193629;
+}
+.admin-shell--control .admin-services .field-stack {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 16px;
+  width: 100%;
+  align-self: start;
+}
+.admin-shell--control
+  .admin-services
+  :is(.field-stack, .runtime-fields, .admin-form-grid)
+  label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  color: #c7c1b5;
+  font-size: 14px;
+  font-weight: 400;
+}
+.admin-shell--control .admin-services :is(input, select) {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #414036;
+  border-radius: 8px;
+  background: #121310;
+  color: #f1eadb;
+  box-shadow: none;
+}
+.admin-shell--control .admin-services .form-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid #323027;
+}
+.admin-shell--control .admin-services .form-actions > span {
+  flex-basis: 100%;
+  line-height: 1.6;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.admin-shell--control
+  .admin-services
+  button:not(.secret-toggle):not([role="tab"]) {
+  width: auto;
+  min-height: 38px;
+  padding: 8px 18px;
+  border-radius: 8px;
+}
+.admin-shell--control .admin-services .form-actions .secondary-button {
+  border: 1px solid #4b4433;
+  background: transparent;
+  color: #d1bd92;
+}
+.admin-shell--control .admin-services .secret-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  min-height: 0;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #ada590;
+}
+.admin-shell--control .admin-services .secret-toggle:hover {
+  background: #343127;
+  color: #edca7e;
+}
+.admin-shell--control .admin-services .runtime-form,
+.admin-shell--control .admin-services__runtime {
+  display: grid;
+  gap: 20px;
+}
+.admin-shell--control .admin-services .runtime-form {
+  padding: 22px;
+  background: #1b1b18;
+  box-shadow: none;
+}
+.admin-shell--control .admin-services .runtime-form h3 {
+  margin: 0;
+}
+.admin-shell--control .admin-services .runtime-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.admin-shell--control .admin-services__switches > .admin-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 22px;
+}
+.admin-shell--control .admin-services__switches :is(h2, p) {
+  margin: 0;
+}
+.admin-shell--control .admin-services__switches > section > button {
+  align-self: flex-start;
+  margin-top: auto;
+}
+.billing-rates-editor__actions {
+  justify-content: flex-end;
+}
+@media (max-width: 700px) {
+  .admin-shell--control .admin-services__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .admin-shell--control .admin-services :is(.provider-grid, .runtime-fields),
+  .admin-shell--control .admin-services__switches {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-shell--control .admin-services .provider-card {
+    padding: 18px;
+  }
+}
+
+.admin-shell--control .billing-economics-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  padding: 20px;
+  margin: 20px 0;
+  border: 1px solid #38352c;
+  border-radius: 10px;
+  background: #171814;
+}
+.admin-shell--control .billing-economics-filters label,
+.admin-shell--control .admin-recharge-rate label {
+  display: grid;
+  gap: 8px;
+  color: #c7c1b5;
+  font-weight: 400;
+  min-width: 0;
+}
+.admin-shell--control .billing-economics-filters :is(input, select) {
+  width: 100%;
+  min-height: 42px;
+}
+.admin-shell--control .billing-economics-filters__actions {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid #353228;
+}
+.admin-shell--control .billing-economics-filters__actions button {
+  width: auto;
+  min-width: 90px;
+}
+.admin-shell--control .billing-economics-filters__actions button + button {
+  background: transparent;
+  color: #ddc797;
+  border: 1px solid #514733;
+}
+.admin-shell--control .admin-recharge-rate__form {
+  display: flex;
+  align-items: end;
+  gap: 14px;
+  max-width: 540px;
+}
+.admin-shell--control .admin-recharge-rate__form label {
+  flex: 1;
+}
+.admin-shell--control .admin-recharge-rate__form input {
+  width: 100%;
+}
+.admin-shell--control .admin-recharge-rate__form button {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 46px;
+}
+@media (max-width: 1100px) {
+  .admin-shell--control .billing-economics-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .admin-shell--control .billing-economics-filters {
+    padding: 14px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-shell--control .admin-recharge-rate__form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .admin-shell--control .billing-economics-filters__actions {
+    flex-wrap: wrap;
+  }
+}
+
+.admin-services .h3-accounts {
+  grid-column: 1 / -1;
+}
+.h3-accounts__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.h3-accounts__header p {
+  margin: 6px 0 16px;
+  color: var(--text-secondary);
+}
+.h3-accounts__header strong {
+  white-space: nowrap;
+  color: #d2b570;
+  font-size: 16px;
+}
+.h3-accounts__list {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.h3-account-row {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr minmax(100px, 0.6fr) minmax(120px, 0.7fr);
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #ffffff14;
+  border-radius: 10px;
+  background: #ffffff03;
+}
+.h3-account-row label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.h3-account-row input,
+.h3-account-row select {
+  width: 100%;
+  min-width: 0;
+}
+.h3-account-row__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+}
+.h3-account-row__actions span {
+  margin-right: auto;
+  color: var(--text-secondary);
+}
+.h3-account-row__error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+@media (max-width: 900px) {
+  .h3-account-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 600px) {
+  .h3-account-row {
+    grid-template-columns: 1fr;
+  }
+  .h3-accounts__header {
+    align-items: flex-start;
+  }
+}
+
+.admin-sidebar__footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.admin-sidebar__footer .admin-sidebar__avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 50%;
+  color: var(--admin-gold);
+  background: #d2b57014;
+  border: 1px solid #d2b57030;
+}
+.admin-sidebar__footer > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.admin-shell--control .admin-services__header {
+  justify-content: flex-start;
 }

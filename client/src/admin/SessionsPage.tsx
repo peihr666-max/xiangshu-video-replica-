@@ -8,7 +8,6 @@ import {
 
 import {
   type AdjustmentWriteInput,
-  AdminActivationError,
   AdminSessionError,
   type CustomerSessionListItem,
   createCustomerAdjustment,
@@ -90,7 +89,7 @@ export function SessionsPage({
   const [adjustKey, setAdjustKey] = useState<string | null>(null);
   const [credits, setCredits] = useState("");
   const [sourceType, setSourceType] = useState<string>("CS_TICKET");
-  const [sourceRef, setSourceRef] = useState("");
+  const [adjustReason, setAdjustReason] = useState("");
   const [adjustConfirmOpen, setAdjustConfirmOpen] = useState(false);
   const [writeError, setWriteError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -155,7 +154,7 @@ export function SessionsPage({
     setAdjustKey(null);
     setCredits("");
     setSourceType("CS_TICKET");
-    setSourceRef("");
+    setAdjustReason("");
     setAdjustConfirmOpen(false);
     setWriteError("");
     setSubmitting(false);
@@ -250,22 +249,23 @@ export function SessionsPage({
       setError("请输入大于 0 的积分整数");
       return;
     }
-    if (!sourceRef.trim()) {
-      setError("请填写来源单号");
+    if (!adjustReason.trim()) {
+      setError("请填写事由");
       return;
     }
+    setAdjustKey((key) => key ?? crypto.randomUUID());
     setAdjustConfirmOpen(true);
   }
 
-  async function submitAdjustment(reason: string) {
-    if (!activeUserId || submitting) return;
+  async function submitAdjustment() {
+    if (!activeUserId || submitting || readOnly || !adjustKey) return;
     const seconds = Number(credits);
     const input: AdjustmentWriteInput = {
       sourceDocumentType: sourceType,
-      sourceDocumentRef: sourceRef.trim(),
+      sourceDocumentRef: `GRANT-${adjustKey}`,
       credits: seconds,
     };
-    const key = adjustKey ?? crypto.randomUUID();
+    const key = adjustKey;
     setAdjustKey(key);
     setSubmitting(true);
     const actionContextId = contextIdRef.current;
@@ -273,7 +273,7 @@ export function SessionsPage({
       const result = await createCustomerAdjustment(
         activeUserId,
         input,
-        reason,
+        adjustReason.trim(),
         key,
       );
       if (contextIdRef.current !== actionContextId) return;
@@ -281,7 +281,7 @@ export function SessionsPage({
         `增加积分成功（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 积分`,
       );
       setCredits("");
-      setSourceRef("");
+      setAdjustReason("");
       setAdjustKey(null);
       setAdjustConfirmOpen(false);
       await load(viewUserId, offset);
@@ -290,9 +290,6 @@ export function SessionsPage({
       setWriteError(
         cause instanceof Error ? cause.message : "增加积分失败：未知错误",
       );
-      if (cause instanceof AdminActivationError && cause.status !== undefined) {
-        setAdjustKey(null);
-      }
     } finally {
       if (contextIdRef.current === actionContextId) {
         setSubmitting(false);
@@ -348,10 +345,7 @@ export function SessionsPage({
                   </span>
                   <div>
                     <strong>{item.username}</strong>
-                    <span>
-                      {item.device_name || item.device_id} ·{" "}
-                      {platformLabel(item.platform)}
-                    </span>
+                    <span>{platformLabel(item.platform)}</span>
                   </div>
                 </div>
                 <div className="admin-sessions__lease-meta">
@@ -418,18 +412,26 @@ export function SessionsPage({
               <label>
                 积分整数
                 <input
+                  disabled={adjustConfirmOpen}
                   min={1}
                   step={1}
                   type="number"
                   value={credits}
-                  onChange={(event) => setCredits(event.target.value)}
+                  onChange={(event) => {
+                    setCredits(event.target.value);
+                    setAdjustKey(null);
+                  }}
                 />
               </label>
               <label>
                 来源单类型
                 <select
+                  disabled={adjustConfirmOpen}
                   value={sourceType}
-                  onChange={(event) => setSourceType(event.target.value)}
+                  onChange={(event) => {
+                    setSourceType(event.target.value);
+                    setAdjustKey(null);
+                  }}
                 >
                   {SOURCE_DOCUMENT_OPTIONS.map((option) => (
                     <option key={option} value={option}>
@@ -439,13 +441,20 @@ export function SessionsPage({
                 </select>
               </label>
               <label>
-                来源单号
+                事由
                 <input
-                  value={sourceRef}
-                  onChange={(event) => setSourceRef(event.target.value)}
+                  disabled={adjustConfirmOpen}
+                  value={adjustReason}
+                  onChange={(event) => {
+                    setAdjustReason(event.target.value);
+                    setAdjustKey(null);
+                  }}
                 />
               </label>
-              <button type="submit">执行后台增加积分</button>
+              <p className="admin-hint">来源单号自动生成，事由留痕审计。</p>
+              <button type="submit" disabled={adjustConfirmOpen}>
+                执行后台增加积分
+              </button>
             </form>
           ) : null}
         </section>
@@ -456,7 +465,7 @@ export function SessionsPage({
         confirmLabel="确认强制下线"
         description={
           pendingRevoke
-            ? `将结束 ${pendingRevoke.username} 在 ${pendingRevoke.device_name || pendingRevoke.device_id} 上的当前会话。`
+            ? `将结束 ${pendingRevoke.username} 的当前登录会话。`
             : null
         }
         error={revokeError}
@@ -473,16 +482,24 @@ export function SessionsPage({
       <ConfirmDialog
         busy={submitting}
         confirmLabel="确认增加积分"
-        description={`即将为 ${activeUserId ?? ""} 增加 ${credits || "0"} 秒。`}
+        description={
+          <>
+            即将为 {activeUserId} 增加 {credits} 积分。
+            <br />
+            事由：{adjustReason.trim()}
+            <br />
+            来源单号：GRANT-{adjustKey}
+          </>
+        }
         error={writeError}
-        level="reasonAndAck"
+        level="standard"
         open={adjustConfirmOpen}
         title="确认后台增加积分"
         onClose={() => {
           setAdjustConfirmOpen(false);
           setWriteError("");
         }}
-        onConfirm={(reason) => void submitAdjustment(reason)}
+        onConfirm={() => void submitAdjustment()}
       />
     </section>
   );

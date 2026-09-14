@@ -11,11 +11,13 @@ const EVENT_OPTIONS = [
   ["", "全部事件"],
   ["ADMIN_ADJUSTMENT", "管理员调账"],
   ["operation_rate.update", "费率调整"],
+  ["billing.tariff.update", "API 成本与售价调整"],
+  ["customer_pricing.update", "充值换算调整"],
+  ["h3.account.update", "视频账号配置"],
+  ["payment.provider.update", "默认支付通道调整"],
+  ["payment.wechat.update", "微信商户配置"],
   ["customer_unit_price.update", "客户单价调整"],
   ["customer_unit_price.reset", "客户单价恢复默认"],
-  ["ADMIN_DEVICE_DEVICE_ADMIN_UNBOUND", "设备解绑"],
-  ["ACTIVATION_CODE_DELIVERED", "激活码交付"],
-  ["CODE_REVEAL", "查看激活码明文"],
   ["runtime_settings.update", "运行参数调整"],
 ] as const;
 
@@ -26,6 +28,7 @@ function eventLabel(eventType: string) {
     return EVENT_LABELS.get(eventType) ?? "系统操作";
   if (eventType.startsWith("ADMIN_DEVICE_")) return "设备管理";
   if (eventType.startsWith("ACTIVATION_CODE_")) return "激活码操作";
+  if (eventType === "CODE_REVEAL") return "查看激活码明文";
   if (eventType.includes("reconciliation")) return "对账查询";
   return "系统操作";
 }
@@ -171,10 +174,6 @@ export function AuditEventsPage() {
 
   return (
     <section aria-label="审计事件" className="admin-panel">
-      <header>
-        <h2>审计事件</h2>
-      </header>
-
       {error ? <PageBanner tone="error">{error}</PageBanner> : null}
 
       <form

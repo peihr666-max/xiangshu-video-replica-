@@ -65,14 +65,8 @@ describe("QueueModeSection", () => {
       await screen.findByRole("button", { name: "开启公平队列" }),
     );
 
-    // PR #85 review P2：生产开关纳入统一管理端写契约——原因必填。
     await screen.findByRole("dialog", { name: "开启公平队列" });
-    fireEvent.click(screen.getByRole("button", { name: "确认开启" }));
-    expect(await screen.findByText("请填写操作原因")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "灰度演练开启" },
-    });
+    expect(screen.queryByLabelText("操作原因")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认开启" }));
 
     expect(await screen.findByText("公平队列已开启。")).toBeInTheDocument();
@@ -90,7 +84,7 @@ describe("QueueModeSection", () => {
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
       fair_queue_enabled: true,
       confirm: true,
-      reason: "灰度演练开启",
+      reason: "开启公平队列",
     });
   });
 

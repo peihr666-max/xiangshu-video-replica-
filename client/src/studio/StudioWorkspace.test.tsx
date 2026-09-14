@@ -2393,7 +2393,7 @@ describe("视频生成（C2 独立创作）", () => {
     fireEvent.click(screen.getByRole("button", { name: "生成视频" }));
 
     expect(
-      await screen.findByText("该模式需要完成供应商核对后开放，敬请期待。"),
+      await screen.findByText("该模式暂未开放，敬请期待。"),
     ).toBeInTheDocument();
     expect(screen.queryByText("生成确认 · 视频生成")).toBeNull();
     expect(api.createIndependentVideoTask).not.toHaveBeenCalled();

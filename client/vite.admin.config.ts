@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, renameSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -91,6 +91,14 @@ const renameAdminHtmlPlugin: Plugin = {
       );
     }
     copyFileSync(faviconSource, resolve(outDir, "favicon.svg"));
+    // The admin and customer surfaces share the official wordmark. Copy only
+    // this asset; the rest of public/studio remains customer-only.
+    const brandSource = resolve(scriptDir, "public/studio/brand.png");
+    if (!existsSync(brandSource)) {
+      throw new Error(`[admin] 共享品牌 Logo 缺失：${brandSource}`);
+    }
+    mkdirSync(resolve(outDir, "studio"), { recursive: true });
+    copyFileSync(brandSource, resolve(outDir, "studio/brand.png"));
   },
 };
 
@@ -127,11 +135,11 @@ export default defineConfig({
     emptyOutDir: true,
     // CW-019: 断开 public/ 到管理制品的隐式全量搬运。Vite 默认 copyPublicDir
     // 会把 client/public/ 整个复制进 dist-admin，其中 studio/*.png 约 25 MB 是
-    // 客户工作台专用参考图（`grep -rn "/studio/" src/admin src/AdminApp.tsx` 零命中），
-    // 管理端从不引用。这不仅是体积问题：它是一条无评审、无断言、自动生效的
+    // 客户工作台专用参考图；管理端只复用 brand.png。这不仅是体积问题：
+    // 它是一条无评审、无断言、自动生效的
     // 跨制品耦合通道——今后任何人往 public/ 放客户专属素材，都会静默出现在管理
     // 制品并被管理站 nginx 以公开 URL 伺服，与 CW-019 建立的制品隔离前提相反。
-    // 管理制品真正需要的只有 favicon.svg，由上面的 writeBundle 钩子单文件拷贝。
+    // 管理制品只需 favicon.svg 和 studio/brand.png，由 writeBundle 显式复制。
     copyPublicDir: false,
     target:
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",

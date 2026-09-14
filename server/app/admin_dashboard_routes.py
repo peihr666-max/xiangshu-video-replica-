@@ -1,26 +1,17 @@
-"""W15 — 总览仪表盘聚合端点（AdminReader 只读）。
-
-一次性返回仪表盘所需的全部计数（避免前端拼十几个请求）：
-- 今日生成数 / 成功数（Asia/Shanghai 日界，沿用 042 的 created_at_utc）；
-- 在线设备（会话租约未过期的去重设备数）；
-- 活跃客户（role=customer 且 is_active 的用户数）；
-- 今日充值合计（PAID 订单金额，按 paid_at 的上海日界）；
-- 近 7 日生成趋势（按日成功/失败）；
-- 待办四项：待批准配对（PENDING 且未过期）、近 7 日失败任务、
-  对账不一致合计（复用 billing-reconciliation 口径）、7 天内即将过期激活码；
-- 设备槽位占用（BOUND 设备数 / 客户数 × 2）。
-
-只读聚合，无写路径；PostgreSQL-only（客户域，027+ 同）。
-"""
+"""Read-only dashboard; financial totals share the itemized reporting facts."""
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter
 
 from app.admin_auth_routes import AdminReader
+from app.billing_catalog import SERVICES
+from app.billing_reports import statistics
 from app.db_pg import pg_transaction
+from app.db_portable import BusinessConnection
 
 router = APIRouter(prefix="/api/control", tags=["admin-dashboard"])
 
@@ -43,9 +34,20 @@ def _timestamptz_day_expr(column: str) -> str:
     return _SHANGHAI_DATE % column
 
 
+def _number_or_none(value: Any) -> float | None:
+    # Keep the dashboard's numeric JSON contract; all accounting happens in Decimal upstream.
+    return float(value) if value is not None else None
+
+
 @router.get("/dashboard/summary")
 def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
-    with pg_transaction() as conn:
+    with pg_transaction(isolation="REPEATABLE READ") as conn:
+        today = _one(conn, "SELECT (now() AT TIME ZONE 'Asia/Shanghai')::date")
+        economics = statistics(
+            BusinessConnection.postgres(conn), start=today - timedelta(days=6), end=today
+        )
+        financial_by_day = {item["period"]: item for item in economics["periods"]}
+        today_financial = financial_by_day.get(today.isoformat(), {})
         today_generation = conn.execute(
             f"""
             SELECT count(*) AS total,
@@ -89,28 +91,6 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
             ORDER BY days.day
             """
         ).fetchall()
-        cost_trend_rows = conn.execute(
-            """
-            SELECT (occurred_at AT TIME ZONE 'Asia/Shanghai')::date AS day,
-                   COALESCE(SUM(cost_fen) FILTER (WHERE status = 'ACTUAL'), 0)
-            FROM operation_cost_records
-            WHERE occurred_at >= (
-                ((now() AT TIME ZONE 'Asia/Shanghai')::date - 6)::timestamp
-                AT TIME ZONE 'Asia/Shanghai'
-            )
-            GROUP BY 1
-            """
-        ).fetchall()
-
-        online_devices = int(
-            _one(
-                conn,
-                """
-                SELECT count(DISTINCT device_id) FROM customer_session_state
-                WHERE lease_until::timestamptz > now()
-                """,
-            )
-        )
         active_customers = int(
             _one(
                 conn,
@@ -141,59 +121,6 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                 """,
             )
         )
-        today_cost = conn.execute(
-            """
-            SELECT COALESCE(SUM(cost_fen), 0),
-                   COALESCE(SUM(usage_amount) FILTER (
-                       WHERE subject IN ('video_generation_768p', 'video_generation_2k')
-                         AND status = 'ACTUAL'
-                   ), 0),
-                   count(*) FILTER (WHERE status = 'UNKNOWN')
-            FROM operation_cost_records
-            WHERE (occurred_at AT TIME ZONE 'Asia/Shanghai')::date =
-                  (now() AT TIME ZONE 'Asia/Shanghai')::date
-            """
-        ).fetchone()
-        assert today_cost is not None
-        today_revenue_fen = int(
-            _one(
-                conn,
-                """
-                WITH effective_price AS (
-                    SELECT price_768p_fen, price_2k_fen
-                    FROM daily_external_prices
-                    WHERE price_date <= (now() AT TIME ZONE 'Asia/Shanghai')::date
-                    ORDER BY price_date DESC
-                    LIMIT 1
-                )
-                SELECT COALESCE(SUM(
-                    (-wt.reserved_delta) * CASE
-                        WHEN COALESCE(t.cost_rate_subject_snapshot, '') =
-                             'video_generation_2k'
-                        THEN p.price_2k_fen
-                        ELSE p.price_768p_fen
-                    END
-                ), 0)
-                FROM wallet_transactions wt
-                JOIN generation_tasks t ON t.id = wt.task_id
-                CROSS JOIN effective_price p
-                WHERE wt.type = 'SETTLE'
-                  AND ((wt.created_at::timestamp AT TIME ZONE 'UTC')
-                       AT TIME ZONE 'Asia/Shanghai')::date =
-                      (now() AT TIME ZONE 'Asia/Shanghai')::date
-                """,
-            )
-        )
-
-        pending_pairings = int(
-            _one(
-                conn,
-                """
-                SELECT count(*) FROM device_pairing_requests
-                WHERE status = 'PENDING' AND expires_at::timestamptz > now()
-                """,
-            )
-        )
         failed_tasks_7d = int(
             _one(
                 conn,
@@ -209,18 +136,6 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                      WHERE status = 'FAILED'
                        AND {_day_expr("created_at")} >=
                            (now() AT TIME ZONE 'Asia/Shanghai')::date - 6)
-                """,
-            )
-        )
-        expiring_codes = int(
-            _one(
-                conn,
-                """
-                SELECT count(*) FROM activation_codes c
-                JOIN activation_code_batches b ON b.id = c.batch_id
-                WHERE c.status IN ('GENERATED', 'ISSUED')
-                  AND b.activation_expires_at::timestamptz >= now()
-                  AND b.activation_expires_at::timestamptz < now() + make_interval(days => 7)
                 """,
             )
         )
@@ -244,47 +159,31 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                 """,
             )
         )
-        bound_devices = int(
-            _one(
-                conn,
-                "SELECT count(*) FROM customer_devices WHERE status = 'BOUND'",
-            )
-        )
-        # Unlimited concurrent devices; there is no capacity denominator.
-        total_device_capacity = None
-        unconfigured_rates = int(
-            _one(
-                conn,
-                """
-                SELECT count(*) FROM (VALUES
-                    ('video_generation_768p'), ('video_generation_2k'),
-                    ('video_analysis_768p'), ('video_analysis_2k'),
-                    ('first_frame_image'), ('character_sheet_image'), ('context_ir'),
-                    ('external_price_768p'), ('external_price_2k')
-                ) required(subject)
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM operation_cost_rates rate
-                    WHERE rate.subject = required.subject
-                )
-                """,
-            )
+        configured = {
+            row[0]
+            for row in conn.execute(
+                "SELECT service FROM billing_tariffs WHERE unit_cost_fen IS NOT NULL"
+            ).fetchall()
+        }
+        unconfigured_rates = sum(
+            item.customer_charge_allowed and key not in configured for key, item in SERVICES.items()
         )
 
-    cost_by_day = {str(row[0]): float(row[1]) for row in cost_trend_rows}
     trend = [
         {
             "day": str(row[0]),
             "succeeded": int(row[1]),
             "failed": int(row[2]),
-            "cost_fen": cost_by_day.get(str(row[0]), 0.0),
+            "cost_fen": _number_or_none(financial_by_day.get(str(row[0]), {}).get("cost_fen", 0)),
+            "legacy_cost_records": financial_by_day.get(str(row[0]), {}).get(
+                "legacy_cost_count", 0
+            ),
         }
         for row in trend_rows
     ]
     generation_count = int(today_generation[0])
     succeeded = int(today_generation[1])
-    cost_fen = float(today_cost[0])
-    unknown_cost_records = int(today_cost[2])
-    gross_fen = None if unknown_cost_records > 0 else today_revenue_fen - cost_fen
+    margin = today_financial.get("profit_margin")
     return {
         "today": {
             "generation_count": generation_count,
@@ -292,31 +191,24 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
             "success_rate_pct": (
                 None if generation_count == 0 else round(succeeded / generation_count * 100, 1)
             ),
-            "output_seconds": float(today_cost[1]),
-            "cost_fen": cost_fen,
-            "revenue_fen": today_revenue_fen,
-            "gross_fen": gross_fen,
-            "margin_pct": (
-                None
-                if today_revenue_fen == 0 or gross_fen is None
-                else round(gross_fen / today_revenue_fen * 100, 1)
-            ),
-            "online_devices": online_devices,
+            "output_seconds": float(today_financial.get("video_seconds", 0)),
+            "cost_fen": _number_or_none(today_financial.get("cost_fen", 0)),
+            "revenue_fen": _number_or_none(today_financial.get("revenue_fen", 0)),
+            "gross_fen": _number_or_none(today_financial.get("profit_fen", 0)),
+            "margin_pct": None if margin is None else float(round(margin * 100, 1)),
+            "pending_operations": today_financial.get("pending_count", 0),
+            "unknown_revenue_operations": today_financial.get("unknown_revenue_count", 0),
+            "legacy_cost_records": today_financial.get("legacy_cost_count", 0),
+            "legacy_settlements": today_financial.get("legacy_settlement_count", 0),
             "active_customers": active_customers,
             "recharge_fen": today_recharge_fen,
             "recharge_orders": today_recharge_orders,
         },
         "trend": trend,
         "todos": {
-            "pending_pairings": pending_pairings,
             "failed_tasks_7d": failed_tasks_7d,
             "reconciliation_problems": reconciliation_problems,
-            "expiring_codes_7d": expiring_codes,
             "unconfigured_rates": unconfigured_rates,
-            "unknown_cost_records": unknown_cost_records,
-        },
-        "device_slots": {
-            "bound": bound_devices,
-            "total": total_device_capacity,
+            "unknown_cost_records": today_financial.get("unknown_cost_count", 0),
         },
     }

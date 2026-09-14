@@ -66,14 +66,8 @@ describe("H3ExtendedModesSection", () => {
       await screen.findByRole("button", { name: "开启扩展模式" }),
     );
 
-    // CW-063：真实付费模式纳入统一管理端写契约——原因必填 + 幂等重放。
     await screen.findByRole("dialog", { name: "开启扩展模式" });
-    fireEvent.click(screen.getByRole("button", { name: "确认开启" }));
-    expect(await screen.findByText("请填写操作原因")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "供应商付费探针核对通过" },
-    });
+    expect(screen.queryByLabelText("操作原因")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认开启" }));
 
     expect(await screen.findByText("H3 扩展模式已开启。")).toBeInTheDocument();
@@ -91,7 +85,7 @@ describe("H3ExtendedModesSection", () => {
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
       h3_extended_modes_enabled: true,
       confirm: true,
-      reason: "供应商付费探针核对通过",
+      reason: "开启 H3 扩展模式",
     });
   });
 

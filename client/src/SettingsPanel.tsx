@@ -1,4 +1,10 @@
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   type BillingSettings,
@@ -50,13 +56,17 @@ const workspaceBackend: SettingsBackend = {
   testProvider: testProviderConnection,
 };
 
-export type SettingsPanelProps =
+export type SettingsPanelProps = {
+  section?: "all" | "providers" | "runtime";
+  videoAccounts?: ReactNode;
+} & (
   | { source?: "workspace"; readOnly?: boolean }
   | {
       source: "control";
       controlBackend: SettingsBackend;
       readOnly?: boolean;
-    };
+    }
+);
 
 function visibleErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim()
@@ -148,6 +158,7 @@ const PROVIDER_ORDER: ProviderName[] = [
 
 export function SettingsPanel(props: SettingsPanelProps) {
   const source = props.source ?? "workspace";
+  const section = props.section ?? "all";
   const readOnly = props.readOnly ?? false;
   const backend =
     props.source === "control" ? props.controlBackend : workspaceBackend;
@@ -237,36 +248,47 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
   return (
     <section className="settings-page" aria-label="服务设置">
-      <div className="provider-grid">
-        {PROVIDER_ORDER.map((provider) => {
-          // 服务端快照可能落后于前端枚举（灰度/旧版本），缺失的 provider
-          // 直接跳过，不让整个设置页白屏。
-          const providerSettings = settings.providers[provider];
-          if (!providerSettings) return null;
-          return (
-            <ProviderForm
-              key={provider}
-              provider={provider}
-              readOnly={readOnly}
-              settings={providerSettings}
-              onSave={saveProvider}
-              onReveal={source === "workspace" ? revealSavedSecret : undefined}
-              onTest={backend.testProvider}
-            />
-          );
-        })}
-      </div>
+      {section !== "runtime" && (
+        <div className="provider-grid">
+          {props.videoAccounts}
+          {PROVIDER_ORDER.map((provider) => {
+            if (provider === "metaso" && props.videoAccounts) return null;
+            // 服务端快照可能落后于前端枚举（灰度/旧版本），缺失的 provider
+            // 直接跳过，不让整个设置页白屏。
+            const providerSettings = settings.providers[provider];
+            if (!providerSettings) return null;
+            return (
+              <ProviderForm
+                key={provider}
+                provider={provider}
+                readOnly={readOnly}
+                settings={providerSettings}
+                onSave={saveProvider}
+                onReveal={
+                  source === "workspace" ? revealSavedSecret : undefined
+                }
+                onTest={backend.testProvider}
+              />
+            );
+          })}
+        </div>
+      )}
 
-      <RuntimeForm
-        readOnly={readOnly}
-        runtime={settings.runtime}
-        onSave={saveRuntime}
-      />
-      <OralPriceForm
-        readOnly={readOnly}
-        billing={settings.billing}
-        onSave={saveBilling}
-      />
+      {section !== "providers" && (
+        <RuntimeForm
+          accountConcurrency={source === "control"}
+          readOnly={readOnly}
+          runtime={settings.runtime}
+          onSave={saveRuntime}
+        />
+      )}
+      {source === "workspace" && section === "all" && (
+        <OralPriceForm
+          readOnly={readOnly}
+          billing={settings.billing}
+          onSave={saveBilling}
+        />
+      )}
     </section>
   );
 }
@@ -458,8 +480,13 @@ function ProviderForm({
   }
 
   return (
-    <form className="provider-card" data-provider={provider} onSubmit={submit}>
-      <div>
+    <form
+      className="provider-card"
+      data-provider={provider}
+      onSubmit={submit}
+      autoComplete="off"
+    >
+      <div className="provider-card__heading">
         <h3>{form.title}</h3>
         {form.note ? <p>{form.note}</p> : null}
       </div>
@@ -481,7 +508,8 @@ function ProviderForm({
               {field.label}
               <span className={field.secret ? "secret-field" : undefined}>
                 <input
-                  disabled={readOnly || isRevealing}
+                  disabled={readOnly || isRevealing || isSaving}
+                  autoComplete={field.secret ? "new-password" : "off"}
                   type={field.secret && !isVisible ? "password" : "text"}
                   value={values[field.name] ?? ""}
                   placeholder={
@@ -515,7 +543,21 @@ function ProviderForm({
                     aria-pressed={isVisible}
                     onClick={() => void toggleSecretVisibility(field.name)}
                   >
-                    <span aria-hidden="true">✨</span>
+                    <svg
+                      aria-hidden="true"
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+                      <circle cx="12" cy="12" r="3" />
+                      {isVisible ? <path d="m3 3 18 18" /> : null}
+                    </svg>
                   </button>
                 ) : null}
               </span>
@@ -557,10 +599,12 @@ function ProviderForm({
 }
 
 function RuntimeForm({
+  accountConcurrency = false,
   runtime,
   readOnly,
   onSave,
 }: {
+  accountConcurrency?: boolean;
   runtime: RuntimeSettings;
   readOnly: boolean;
   onSave: (runtime: RuntimeSettings) => Promise<void>;
@@ -623,21 +667,25 @@ function RuntimeForm({
             }
           />
         </label>
-        <label>
-          视频生成并发数
-          <input
-            disabled={readOnly || isSaving}
-            type="number"
-            min="1"
-            value={values.max_concurrent_h3_tasks}
-            onChange={(event) =>
-              setValues((current) => ({
-                ...current,
-                max_concurrent_h3_tasks: Number(event.target.value),
-              }))
-            }
-          />
-        </label>
+        {accountConcurrency ? (
+          <p>视频生成并发在“API 服务”中按账号设置。</p>
+        ) : (
+          <label>
+            视频生成并发数
+            <input
+              disabled={readOnly || isSaving}
+              type="number"
+              min="1"
+              value={values.max_concurrent_h3_tasks}
+              onChange={(event) =>
+                setValues((current) => ({
+                  ...current,
+                  max_concurrent_h3_tasks: Number(event.target.value),
+                }))
+              }
+            />
+          </label>
+        )}
       </div>
       <p className="storage-provider-hint">
         人物图片、参考视频与首帧保存到腾讯云存储（需在桶 CORS 放行

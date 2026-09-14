@@ -31,14 +31,11 @@
 }
 
 .admin-login__brand-mark img {
-  width: 42px;
-  height: 42px;
-}
-
-.admin-login__brand-mark span {
-  color: var(--admin-accent-strong);
-  font-weight: 650;
-  letter-spacing: 0.12em;
+  width: min(100%, 260px);
+  height: auto;
+  object-fit: contain;
+  filter: invert(1) grayscale(1) sepia(1) saturate(3) hue-rotate(355deg);
+  mix-blend-mode: screen;
 }
 
 .admin-login__brand h1 {
