@@ -39,10 +39,14 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Any
 
 import psycopg
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pg_test_kit import (
     create_test_database,
     drop_test_database,
@@ -52,6 +56,7 @@ from pg_test_kit import (
 
 from app.db_pg import DATABASE_URL_ENV, close_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
+from app.payment_routes import get_wechat_provider, get_zpay_provider, router
 from app.zpay_payments import (
     WECHAT_NATIVE_SETTLEMENT_SPEC,
     PaymentConfirmationError,
@@ -209,6 +214,137 @@ def _settle(
             allowed_channels=("wxpay",),
             provider_spec=WECHAT_NATIVE_SETTLEMENT_SPEC,
         )
+
+
+def _callback_client(wechat: bool) -> TestClient:
+    """Real router and Database dependency; only the provider boundary is faked."""
+    channel = "wxpay" if wechat else "alipay"
+    result = SimpleNamespace(
+        valid=True,
+        authenticated=True,
+        error_code=None,
+        trade_state="SUCCESS",
+        merchant_order_no=OUT_TRADE_NO,
+        provider_trade_no=TRANSACTION_ID,
+        amount_fen=_ORDER_AMOUNT_FEN,
+        channel=channel,
+        source_digest=SOURCE_DIGEST,
+    )
+    provider = SimpleNamespace(
+        load_merchant_config=lambda conn: SimpleNamespace(allowed_channels={channel}),
+        verify_notification=lambda params, merchant: result,
+        verify_notification_raw=lambda **kwargs: result,
+    )
+    application = FastAPI()
+    application.include_router(router)
+    application.dependency_overrides[get_wechat_provider if wechat else get_zpay_provider] = (
+        lambda: provider
+    )
+    return TestClient(application)
+
+
+def _notify(client: TestClient, wechat: bool) -> int:
+    response = (
+        client.post("/api/payments/wechat_native/notify", content=b"{}")
+        if wechat
+        else client.get("/api/payments/zpay/notify")
+    )
+    return response.status_code
+
+
+@pytest.mark.parametrize("wechat", [False, True], ids=["zpay", "wechat"])
+@pytest.mark.parametrize("failure", ["overflow", "missing_wallet", "ledger_conflict"])
+def test_callback_failure_rolls_back_committed_state_and_can_retry(
+    wechat_db: str, wechat: bool, failure: str
+) -> None:
+    """R-02: catching a domain error in a route must not commit half a payment."""
+    _seed_order(wechat_db, order_id="order_r02", merchant_order_no=OUT_TRADE_NO, wechat=wechat)
+    provider = "wechat_native" if wechat else "zpay"
+    if failure == "ledger_conflict":
+        _seed_order(wechat_db, order_id="other_order", merchant_order_no="r02_other")
+    with psycopg.connect(wechat_db) as raw:
+        if failure == "overflow":
+            raw.execute("UPDATE wallets SET available_credits = 2147483647")
+        elif failure == "missing_wallet":
+            raw.execute("DELETE FROM wallets")
+        else:
+            raw.execute(
+                "INSERT INTO wallet_transactions "
+                "(id, user_id, type, available_delta, reserved_delta, "
+                "recharge_order_id, idempotency_key) "
+                "VALUES ('conflict', 'user_1', 'CHARGE', 10, 0, 'other_order', %s)",
+                (f"{provider}:charge:order_r02",),
+            )
+    with _callback_client(wechat) as client:
+        for _ in range(2):
+            assert _notify(client, wechat) == (500 if failure == "missing_wallet" else 409)
+            # A fresh connection observes the committed state, after dependency teardown.
+            with psycopg.connect(wechat_db) as raw:
+                assert raw.execute(
+                    "SELECT status, paid_at, notify_digest, transaction_id, provider_trade_no "
+                    "FROM recharge_orders WHERE id = 'order_r02'"
+                ).fetchone() == ("PENDING", None, None, None, None)
+                assert raw.execute(
+                    "SELECT count(*) FROM wallet_transactions WHERE recharge_order_id = 'order_r02'"
+                ).fetchone() == (0,)
+                expected_balance = (
+                    None
+                    if failure == "missing_wallet"
+                    else (2147483647 if failure == "overflow" else _SEEDED_WALLET_CREDITS,)
+                )
+                assert raw.execute("SELECT available_credits FROM wallets").fetchone() == (
+                    expected_balance
+                )
+        # Repair the fixture's cause; the same notification must now settle exactly once.
+        with psycopg.connect(wechat_db) as raw:
+            if failure == "missing_wallet":
+                raw.execute(
+                    "INSERT INTO wallets(user_id, available_credits, reserved_credits) "
+                    "VALUES ('user_1', 100, 0)"
+                )
+            else:
+                raw.execute("UPDATE wallets SET available_credits = 100")
+                raw.execute("DELETE FROM wallet_transactions WHERE id = 'conflict'")
+        assert _notify(client, wechat) == 200
+        assert _notify(client, wechat) == 200
+    with psycopg.connect(wechat_db) as raw:
+        assert raw.execute("SELECT available_credits FROM wallets").fetchone() == (110,)
+        assert raw.execute(
+            "SELECT count(*), sum(available_delta) FROM wallet_transactions "
+            "WHERE recharge_order_id = 'order_r02'"
+        ).fetchone() == (1, 10)
+
+
+@pytest.mark.parametrize("wechat", [False, True], ids=["zpay", "wechat"])
+def test_concurrent_callbacks_are_idempotent_after_order_lock(wechat_db: str, wechat: bool) -> None:
+    _seed_order(wechat_db, order_id="order_r02", merchant_order_no=OUT_TRADE_NO, wechat=wechat)
+    with _callback_client(wechat) as client, ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(lambda _: _notify(client, wechat), range(4))) == [200] * 4
+    with psycopg.connect(wechat_db) as raw:
+        assert raw.execute("SELECT available_credits FROM wallets").fetchone() == (110,)
+        assert raw.execute(
+            "SELECT count(*), sum(available_delta) FROM wallet_transactions "
+            "WHERE recharge_order_id = 'order_r02'"
+        ).fetchone() == (1, 10)
+
+
+def test_settlement_success_does_not_commit_its_outer_transaction(wechat_db: str) -> None:
+    _seed_order(wechat_db, order_id="order_r02", merchant_order_no=OUT_TRADE_NO)
+    with pytest.raises(RuntimeError, match="outer failure"), pg_transaction() as raw:
+        confirm_recharge_payment(
+            BusinessConnection.postgres(raw),
+            merchant_order_no=OUT_TRADE_NO,
+            provider_trade_no=TRANSACTION_ID,
+            amount_fen=_ORDER_AMOUNT_FEN,
+            channel="wxpay",
+            source_digest=SOURCE_DIGEST,
+            provider_spec=WECHAT_NATIVE_SETTLEMENT_SPEC,
+        )
+        raise RuntimeError("outer failure")
+    with psycopg.connect(wechat_db) as raw:
+        assert raw.execute("SELECT status FROM recharge_orders").fetchone() == ("PENDING",)
+        assert raw.execute("SELECT available_credits FROM wallets").fetchone() == (100,)
+        assert raw.execute("SELECT count(*) FROM wallet_transactions").fetchone() == (0,)
 
 
 def _fetch_order(dsn: str, order_id: str) -> tuple[Any, ...]:
