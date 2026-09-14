@@ -6,8 +6,8 @@
 
 - Owner：Codex / 01a09d8c-b82a-79a3-b27c-bc66bbddad2c。
 - Reviewer：代码自检与后续 PR 门禁，未声称独立人工评审。
-- 分支：feat/image-consent-20260914；基线：origin/main ad3247b。
-- 隔离资源：IMAGE-CONSENT-20260914 worktree、预览 5198、image-consent-quality-20260914 / image-consent-pg-20260914 容器及独立网络。未修改在用 LOCAL-JOINT 环境。
+- 分支：feat/image-consent-20260914；开工基线：origin/main ad3247b；最终整合主干：50059bc。
+- 隔离资源：IMAGE-CONSENT-20260914 worktree、预览 5198、image-consent-quality-20260914 与 image-consent-pg-shard0—3-20260914 独立 PG 容器及独立网络。未修改在用 LOCAL-JOINT 环境。
 
 ## 实现与边界
 
@@ -24,24 +24,28 @@
 - RED：新增前端测试首先因找不到授权弹窗失败；实现后相关 33 项通过。
 - 真实浏览器：在 5198 预览中操作真实 SimpleCharacterUpload 组件，选择仓库示例图、点击生成，出现未勾选授权弹窗且确认按钮禁用；取消后重新打开仍未勾选。未点击最终确认，未上传示例图至供应商。截图归档至本机真实业务报告目录 20-image-authorization-modal.png。
 - 服务端专项：10 passed，包含三个未授权/过期拦截、真实 PostgreSQL 持久化及幂等审计、旧同步入口约束。PG 用例自建随机独立测试库并清理。
-- ruff / format / 受影响 mypy 通过；完整本地 Linux 门正在执行，最终结果回填于本文件。
+- 最终整合版本静态门通过：前端 1422 passed，Tauri fmt/check、ruff（341 文件）、mypy（147 模块）和密钥扫描通过。后端按提交的四份分片清单在四个独立 PG 容器运行，覆盖检查 95 个测试文件无缺失，初次聚合 2070 passed / 3 failed / 1 skipped；3 个失败均因隔离快照缺少 Git HEAD，补齐快照提交后对应打包套件 7 passed。唯一用例口径为 2073 passed / 1 既有 TLS skipped，无未解决失败。
 - 未测试：当前 5173 在用环境升级后的完整付费人物生成、真实供应商图像权属验证、Windows NSIS 与远程 PR 门禁。不能据此签收生产或完整口播链路。
+
+旧基线顺序检查因整合主干中止，最终版本顺序检查在静态门完成后转为分片；两次中止均不记作全量通过。最终测试以分片聚合结果为准，未并发访问同一 PG fixture。
+
+代码自检：全局与项目上传入口、旧同步入口拒绝、幂等审计、授权后才上传、取消重置、声明版本与图片绑定均核对；无新增未解决发现。被测 client/server/scripts/e2e 与任务提交的 Git 文件模式和内容哈希一致（排除容器本地依赖连接）；快照文档换行及被忽略的历史 dist 不作为运行源码差异。原始日志包括失败及复验均保留于本机真实业务报告目录。
 
 ## §14 证据记录
 
 ```text
 任务/工作包：IMAGE-CONSENT-20260914（用户新增维护需求；不改 CW/T 业务完成状态）
 Owner / Reviewer：Codex / 代码自检与后续 PR 门禁
-分支 / 基线 SHA：feat/image-consent-20260914 / ad3247b
+分支 / 基线 SHA：feat/image-consent-20260914 / 开工 ad3247b，整合 50059bc
 上游规格段落：2026-09-14 用户图像授权要求；AGENTS.md 工作流与安全红线
 改动文件：SimpleCharacterUpload 组件及测试、CharacterLibrary 测试、api.ts、生成 API 类型、simple_character_routes.py、image_tasks.py、test_character_image_authorization.py、测试分片清单及任务证据账本
 失败测试或回归锁定：弹窗缺失 RED → 前端专项 33 passed；后端无授权不得读取文件、真实 PG 授权与幂等审计专项通过
 实现结果：上传前明确确认、服务端拒绝缺失/旧授权、图像哈希及任务关联留痕
-验证命令与通过数：前端专项 33；后端专项 10；完整 Linux 门结果待回填
-证据层级：CODE_PRESENT，专项与浏览器取消路径已核验；完整门待结果
+验证命令与通过数：前端专项 33；后端专项 10；最终静态门前端 1422；最终 PG 分片 2070 passed / 3 环境失败 / 1 既有 skip；环境修复后受影响套件 7 passed，唯一用例覆盖 2073 passed / 1 skip
+证据层级：AUTOMATED_VERIFIED（完整静态门、全量 PG 及环境失败专项复验）；真实组件取消路径另有浏览器证据
 安全与可观测性：无密钥/会话入码；审计只保存声明版本、用途、图像哈希和任务关联
 迁移与回滚：无迁移；前后端同时发布或同时回滚；历史记录保留
 外部授权记录：用户已授权原真实业务测试预算与指定 AI 场景的 Hifly 分身测试；本功能验收未新增供应商请求
 未测试项：生产部署、远程门禁、在用业务环境升级后真实付费链路
-Lore 提交 SHA：待本任务提交及 PR
+Lore 提交 SHA：代码提交 60fe2c2；最终文档提交与 PR head 以远程评审为准，远程三门禁待核验
 ```
