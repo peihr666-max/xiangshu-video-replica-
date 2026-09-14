@@ -637,7 +637,27 @@ def test_payment_channel_setup_preserves_secrets_and_order_provider(
     replay = client.post(order_path + "/" + new["order_no"] + "/payment-code", headers=customer)
     assert replay.json() == qr.json()
     assert calls == [("zpay", old["order_no"]), ("wechat_native", new["order_no"])]
+    # Closing in the customer UI does not close the gateway payment. A late
+    # callback can still settle this order and must retain its merchant keys.
+    closed = client.delete(order_path + "/" + new["order_no"], headers=customer)
+    assert closed.status_code == 204, closed.text
+    blocked_after_close = patch(
+        "/wechat-native",
+        {"config": {"appid": "replacement-app", "mchid": "different-merchant"}},
+    )
+    assert blocked_after_close.status_code == 422, blocked_after_close.text
     with psycopg.connect(route_state) as raw:
+        assert (
+            raw.execute(
+                "SELECT status FROM recharge_orders WHERE merchant_order_no=%s",
+                (new["order_no"],),
+            ).fetchone()[0]
+            == "CLOSED"
+        )
+        assert (
+            SettingsRepository(BusinessConnection.postgres(raw)).load_wechat_native_config()
+            == retained
+        )
         rows = raw.execute(
             "SELECT merchant_order_no, provider FROM recharge_orders WHERE user_id=%s", (uid,)
         ).fetchall()

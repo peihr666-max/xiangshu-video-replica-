@@ -218,12 +218,14 @@ class SettingsRepository:
         merchant = merchant_config_from_settings(config)
         load_private_key(merchant.private_key_pem)
         if current and any(config.get(key) != current.get(key) for key in ("appid", "mchid")):
-            pending = self.conn.execute(
+            # Customer-side closure retains a payable gateway order and still
+            # accepts late settlement; it cannot retire the merchant identity.
+            unsettled = self.conn.execute(
                 "SELECT 1 FROM recharge_orders WHERE provider='wechat_native' "
-                "AND status='PENDING' LIMIT 1"
+                "AND status IN ('PENDING', 'CLOSED') LIMIT 1"
             ).fetchone()
-            if pending:
-                raise ValueError("Pending WeChat orders prevent changing merchant identity")
+            if unsettled:
+                raise ValueError("Unsettled WeChat orders prevent changing merchant identity")
         self._save_encrypted_config("wechat_native", config, actor_user_id=actor_user_id)
         return self.read_wechat_native_config()
 
