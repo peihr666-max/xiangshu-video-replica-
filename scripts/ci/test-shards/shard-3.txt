@@ -22,3 +22,4 @@ server/tests/test_postgres_migrations.py
 server/tests/test_storage_cross_instance.py
 server/tests/test_viral_decrypt.py
 server/tests/test_wechat_native_callback_pg.py
+server/tests/test_character_image_authorization.py

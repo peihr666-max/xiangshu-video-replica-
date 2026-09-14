@@ -342,12 +342,18 @@ describe("CharacterLibrary", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "一键生成五视图拼合图" }),
     );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "我已阅读并确认以上图像授权声明" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认授权并生成" }));
 
     await waitFor(() =>
       expect(api.uploadSimpleCharacter).toHaveBeenCalledWith(
         null,
         expect.any(File),
         "新人物",
+        "",
+        "2026-09-14-v1",
       ),
     );
     expect(
@@ -590,12 +596,18 @@ describe("CharacterLibrary", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "一键生成五视图拼合图" }),
     );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "我已阅读并确认以上图像授权声明" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认授权并生成" }));
 
     await waitFor(() =>
       expect(api.uploadSimpleCharacter).toHaveBeenCalledWith(
         null,
         expect.any(File),
         "林夏",
+        "",
+        "2026-09-14-v1",
       ),
     );
     expect(vi.mocked(api.uploadSimpleCharacter).mock.calls[0]?.[1].type).toBe(
@@ -626,6 +638,10 @@ describe("CharacterLibrary", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "一键生成五视图拼合图" }),
     );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "我已阅读并确认以上图像授权声明" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认授权并生成" }));
 
     expect(
       await screen.findByLabelText("人物 林夏 生成进度"),
