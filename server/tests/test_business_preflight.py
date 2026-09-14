@@ -49,6 +49,29 @@ class RequestDb:
         yield self.conn, self.actor
 
 
+def test_cloud_upload_completion_failure_is_retryable_and_cannot_queue_analysis(monkeypatch):
+    from app import media_routes
+    from app.storage import StorageBackendUnavailable
+
+    monkeypatch.setattr(media_routes, "prepare_upload_completion", Mock())
+    monkeypatch.setattr(
+        media_routes,
+        "probe_upload_completion",
+        Mock(side_effect=StorageBackendUnavailable("private provider failure")),
+    )
+    persist = Mock()
+    monkeypatch.setattr(media_routes, "persist_upload_completion", persist)
+    with pytest.raises(HTTPException) as failure:
+        media_routes.complete_asset_upload(
+            "asset-1", RequestDb(Mock(), SimpleNamespace(role="customer")), Mock(), Mock()
+        )
+    assert failure.value.status_code == 503
+    assert failure.value.detail["code"] == "STORAGE_PROVIDER_UNAVAILABLE"
+    assert "重试" in failure.value.detail["message"]
+    assert "private provider" not in str(failure.value.detail)
+    persist.assert_not_called()
+
+
 @pytest.mark.parametrize("requires_https, expected", [(True, False), (False, True)])
 def test_upload_does_not_auto_queue_analysis_with_unreadable_local_input(
     monkeypatch, requires_https, expected

@@ -278,6 +278,15 @@ def test_failed_todo_counts_oral_failures_when_no_video_failed(
 
         assert response.status_code == 200, response.text
         assert response.json()["todos"]["failed_tasks_7d"] == 1
+        assert response.json()["today"]["generation_count"] == 3
+        assert response.json()["trend"][-1]["failed"] == 1
+        with psycopg.connect(dashboard_pg_dsn, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE oral_tasks SET status = 'SUCCEEDED' WHERE id = 'dashboard-oral-failed'"
+            )
+        succeeded = client.get("/api/control/dashboard/summary", headers=admin_headers).json()
+        assert succeeded["today"]["succeeded"] == 2
+        assert succeeded["trend"][-1]["succeeded"] == 2
     finally:
         with psycopg.connect(dashboard_pg_dsn, autocommit=True) as conn:
             conn.execute("DELETE FROM oral_tasks WHERE id = 'dashboard-oral-failed'")
@@ -370,9 +379,9 @@ def _billing_fact(
         (
             operation,
             service,
-            "video" if service.startswith("video_") else "replica",
+            "oral" if service == "oral" else "video" if service.startswith("video_") else "replica",
             operation,
-            "second" if service.startswith("video_") else "call",
+            "second" if service.startswith("video_") or service == "oral" else "call",
             state,
             reserved,
             charged,
@@ -422,6 +431,8 @@ def test_dashboard_and_statistics_share_settled_financial_facts(
             units=6,
         )
         _billing_fact(raw, when=lower, revenue=0, reserved=4, charged=4, costs=("1",))
+        _billing_fact(raw, when=lower, service="oral", units=Decimal("9.08"), costs=("0",))
+        _billing_fact(raw, when=lower, service="oral", units=13, state="FAILED", costs=("0",))
         _billing_fact(
             raw, when=lower, revenue=0, reserved=7, charged=0, state="FAILED", costs=("0.5",)
         )
@@ -457,7 +468,7 @@ def test_dashboard_and_statistics_share_settled_financial_facts(
     assert totals["profit_fen"] == 93
     assert totals["refunded_credits"] == 11
     assert payload["today"]["recharge_fen"] == 10000  # Never added to consumption income.
-    assert payload["today"]["output_seconds"] == 6
+    assert payload["today"]["output_seconds"] == 15.08
     assert payload["today"]["margin_pct"] == 93
     assert payload["todos"]["unconfigured_rates"] == 11  # Zero cost is configured, NULL is not.
 

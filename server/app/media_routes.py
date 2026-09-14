@@ -646,7 +646,16 @@ def complete_asset_upload(
     with db.write() as (conn, actor):
         prepared = prepare_upload_completion(conn, actor=actor, asset_id=asset_id)
         is_customer = actor.role == "customer"
-    probed = probe_upload_completion(prepared, storage=storage, probe=probe)
+    try:
+        probed = probe_upload_completion(prepared, storage=storage, probe=probe)
+    except StorageBackendUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "STORAGE_PROVIDER_UNAVAILABLE",
+                "message": "素材库暂时无法完成视频校验，请稍后重试。本次未启动 AI 拆解。",
+            },
+        ) from exc
     with db.write() as (conn, actor):
         completed = persist_upload_completion(conn, actor=actor, probed=probed)
     result = CompleteUploadResponse(
