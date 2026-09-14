@@ -564,11 +564,16 @@ def perform_script_from_audio_task(
                 expires_in=_DOWNLOAD_INTENT_EXPIRES,
                 can_read=True,
             )
+            audio_input = intent.url
+            if isinstance(work.asr, DashScopeFunAsr):
+                audio_input = work.asr.prepare_audio_input(
+                    audio_input, audio_bytes=audio_bytes, duration_sec=duration
+                )
             if before_provider_call is not None:
                 before_provider_call()
             if isinstance(work.asr, DashScopeFunAsr):
                 return work.asr.transcribe(
-                    intent.url,
+                    audio_input,
                     duration_sec=duration,
                     on_submitted=on_submitted,
                     heartbeat=heartbeat,

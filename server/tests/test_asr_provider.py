@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -113,6 +114,195 @@ def test_flash_sync_mode_for_short_audio() -> None:
         "POST",
         "https://asr.example/api/v1/services/aigc/multimodal-generation/generation",
     )
+
+
+def test_flash_request_describes_the_extracted_m4a_audio() -> None:
+    def transport(method, url, *, headers, body, timeout_seconds):
+        payload = json.loads(body)
+        assert payload["parameters"] == {"format": "m4a", "sample_rate": "16000"}
+        assert headers["X-DashScope-SSE"] == "disable"
+        return 200, b'{"output":{"text":"ok"},"usage":{"duration":294}}'
+
+    provider = DashScopeFunAsr(make_config(), transport=transport)
+    assert provider.transcribe("https://media.example/a.m4a", duration_sec=294).text == "ok"
+
+
+@pytest.mark.parametrize("duration", [294, 300])
+def test_local_pipeline_uploads_inline_audio_before_paid_submission(
+    tmp_path, monkeypatch, duration
+):
+    from app import script_from_audio as pipeline
+    from app.storage import LocalStorageAdapter
+
+    audio = b"test extracted m4a bytes"
+    storage = LocalStorageAdapter(root=tmp_path / "storage")
+    storage.put_object("source.m4a", b"source", content_type="audio/mp4")
+    monkeypatch.setattr(
+        pipeline, "extract_audio", lambda ffmpeg, source, target: target.write_bytes(audio)
+    )
+    monkeypatch.setattr(pipeline, "probe_duration_seconds", lambda *args: duration)
+    events = []
+
+    def transport(method, url, *, headers, body, timeout_seconds):
+        events.append("POST")
+        payload = json.loads(body)
+        value = payload["input"]["messages"][0]["content"][0]["input_audio"]["data"]
+        assert value.startswith("data:audio/mp4;base64,")
+        assert base64.b64decode(value.split(",", 1)[1]) == audio
+        assert b"local://" not in body
+        assert payload["parameters"]["format"] == "m4a"
+        return 200, b'{"output":{"text":"ok"},"usage":{"duration":294}}'
+
+    work = pipeline.PreparedScriptFromAudio(
+        "test",
+        "project",
+        "asset",
+        "source.m4a",
+        storage,
+        DashScopeFunAsr(make_config(), transport=transport),
+        "ffmpeg",
+        "ffprobe",
+        "temp.m4a",
+    )
+    result = pipeline.perform_script_from_audio_task(
+        work, before_provider_call=lambda: events.append("billing")
+    )
+    assert result.text == "ok"
+    assert events == ["billing", "POST"]
+    assert storage.head_object("temp.m4a") is None
+    assert storage.head_object("source.m4a") is not None
+    assert work.audio_deleted
+
+
+@pytest.mark.parametrize("duration", [300.01, None, float("nan"), 0])
+def test_unsupported_local_audio_fails_before_billing_or_provider(tmp_path, monkeypatch, duration):
+    from app import script_from_audio as pipeline
+    from app.storage import LocalStorageAdapter
+
+    storage = LocalStorageAdapter(root=tmp_path)
+    storage.put_object("source", b"source", content_type="audio/mp4")
+    monkeypatch.setattr(
+        pipeline, "extract_audio", lambda ffmpeg, source, target: target.write_bytes(b"audio")
+    )
+    monkeypatch.setattr(pipeline, "probe_duration_seconds", lambda *args: duration)
+    transport = StubTransport([])
+    work = pipeline.PreparedScriptFromAudio(
+        "test",
+        "project",
+        "asset",
+        "source",
+        storage,
+        DashScopeFunAsr(make_config(flash_threshold_sec=600), transport=transport),
+        "ffmpeg",
+        "ffprobe",
+        "temp.m4a",
+    )
+    billing = []
+    with pytest.raises(AsrProviderError, match="本地音频"):
+        pipeline.perform_script_from_audio_task(
+            work, before_provider_call=lambda: billing.append(True)
+        )
+    assert not billing
+    assert not transport.calls
+    assert work.audio_deleted
+
+
+def test_inline_audio_limit_counts_base64_expansion(monkeypatch):
+    import app.asr as asr
+
+    monkeypatch.setattr(asr, "DASHSCOPE_INLINE_MAX_BYTES", 31)
+    provider = DashScopeFunAsr(make_config(), transport=StubTransport([]))
+    # Prefix is 22 bytes; 6 audio bytes encode to 8 bytes, 7 encode to 12.
+    assert provider.prepare_audio_input(
+        "local://media/a", audio_bytes=b"123456", duration_sec=30
+    ).endswith("MTIzNDU2")
+    with pytest.raises(AsrProviderError, match="过大"):
+        provider.prepare_audio_input("local://media/a", audio_bytes=b"1234567", duration_sec=30)
+
+
+def test_public_audio_keeps_signed_url_for_async():
+    provider = DashScopeFunAsr(make_config(), transport=StubTransport([]))
+    url = "https://media.example/audio.m4a?signature=test"
+    assert provider.prepare_audio_input(url, audio_bytes=b"audio", duration_sec=600) == url
+
+
+@pytest.mark.parametrize("duration", [301, 600])
+def test_config_cannot_send_long_audio_to_flash(duration):
+    transport = StubTransport([(200, b'{"output":{"task_id":"receipt"}}')])
+    provider = DashScopeFunAsr(make_config(flash_threshold_sec=900), transport=transport)
+    provider.resume = lambda *args, **kwargs: None
+    provider.transcribe("https://media.example/audio.m4a", duration_sec=duration)
+    assert transport.calls == [
+        ("POST", "https://asr.example/api/v1/services/audio/asr/transcription")
+    ]
+
+
+def test_inline_submission_uncertainty_keeps_audio_without_retry(tmp_path, monkeypatch):
+    from app import script_from_audio as pipeline
+    from app.asr import AsrSubmissionUncertain
+    from app.storage import LocalStorageAdapter
+
+    storage = LocalStorageAdapter(root=tmp_path)
+    storage.put_object("source", b"source", content_type="audio/mp4")
+    monkeypatch.setattr(
+        pipeline, "extract_audio", lambda ffmpeg, source, target: target.write_bytes(b"audio")
+    )
+    monkeypatch.setattr(pipeline, "probe_duration_seconds", lambda *args: 294)
+    calls = []
+
+    def transport(*args, **kwargs):
+        calls.append(True)
+        raise AsrSubmissionUncertain("connection lost")
+
+    work = pipeline.PreparedScriptFromAudio(
+        "test",
+        "project",
+        "asset",
+        "source",
+        storage,
+        DashScopeFunAsr(make_config(), transport=transport),
+        "ffmpeg",
+        "ffprobe",
+        "temp.m4a",
+    )
+    with pytest.raises(AsrSubmissionUncertain):
+        pipeline.perform_script_from_audio_task(work)
+    assert len(calls) == 1
+    assert storage.head_object("temp.m4a") is not None
+    assert not work.audio_deleted
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "local://media/audio",
+        "file:///tmp/audio",
+        "http://127.0.0.1/audio",
+        "http://localhost/audio",
+    ],
+)
+def test_non_public_url_is_never_submitted(url):
+    transport = StubTransport([])
+    provider = DashScopeFunAsr(make_config(), transport=transport)
+    with pytest.raises(AsrProviderError, match="音频"):
+        provider.transcribe(url, duration_sec=30)
+    assert not transport.calls
+
+
+def test_http_400_is_actionable_and_does_not_echo_provider_payload(caplog):
+    payload = {
+        "code": "InvalidParameter",
+        "message": "bad local://audio?secret=private",
+        "request_id": "40e0734d-096f-9ae3-86c1-a8c013287561",
+    }
+    transport = StubTransport([(400, json.dumps(payload).encode())])
+    provider = DashScopeFunAsr(make_config(), transport=transport)
+    with pytest.raises(AsrProviderError, match="音频格式") as error:
+        provider.transcribe("https://media.example/a.m4a", duration_sec=30)
+    assert "HTTP 400" in str(error.value)
+    assert "private" not in str(error.value) + caplog.text
+    assert payload["request_id"] in caplog.text
+    assert len(transport.calls) == 1
 
 
 def test_async_mode_submits_polls_and_downloads() -> None:

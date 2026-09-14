@@ -2,13 +2,15 @@
 
 移植自 oral-ip-agents-research 的 Fun-ASR 接入方案并同步化：按时长智能
 分流——短音频走 Flash 同步端点（秒级返回），长音频走异步 提交→轮询→
-下载结果。输入是公网可访问的音视频 URL（本地/云存储统一经
-``create_download_intent`` 产出签名地址）。凭据一律来自服务端加密供应商
+下载结果。云存储使用签名 URL；本地短音频使用受限的 Base64 直传，
+本地长音频在提交前拒绝。凭据一律来自服务端加密供应商
 配置存储（``dashscope`` provider），错误文案保持中性、不出现供应商名称。
 """
 
 from __future__ import annotations
 
+import base64
+import ipaddress
 import json
 import logging
 import math
@@ -18,7 +20,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+from uuid import UUID
 
 from app.db_portable import BusinessConnection
 from app.settings import SettingsRepository, SettingsUnavailableError
@@ -32,6 +36,8 @@ DASHSCOPE_FLASH_THRESHOLD_SECONDS = 300.0
 DASHSCOPE_POLL_INTERVAL_SECONDS = 2.0
 DASHSCOPE_POLL_MAX_ATTEMPTS = 90
 DASHSCOPE_TIMEOUT_SECONDS = 120.0
+DASHSCOPE_INLINE_MAX_BYTES = 10_000_000
+_INLINE_AUDIO_PREFIX = "data:audio/mp4;base64,"
 
 ASR_PROVIDER_OVERRIDE_ENV = "VIDEO_REPLICA_ASR_PROVIDER"
 
@@ -161,6 +167,62 @@ class DashScopeFunAsr:
 
     # ---------------- public ----------------
 
+    def _uses_flash(self, duration_sec: float | None) -> bool:
+        return (
+            duration_sec is not None
+            and math.isfinite(duration_sec)
+            and 0
+            < duration_sec
+            <= min(self._config.flash_threshold_sec, DASHSCOPE_FLASH_THRESHOLD_SECONDS)
+        )
+
+    def prepare_audio_input(
+        self, file_url: str, *, audio_bytes: bytes, duration_sec: float | None
+    ) -> str:
+        """Prepare extracted M4A before recording a paid attempt; never publish local files."""
+        if file_url.startswith("local://"):
+            if not self._uses_flash(duration_sec):
+                raise AsrProviderError(
+                    "本地音频直传需要已确认时长且不超过 5 分钟。"
+                    "请缩短音频，或由管理员启用云存储后重新上传。"
+                )
+            encoded_size = len(_INLINE_AUDIO_PREFIX) + 4 * ((len(audio_bytes) + 2) // 3)
+            if encoded_size > DASHSCOPE_INLINE_MAX_BYTES:
+                raise AsrProviderError(
+                    "本地音频编码后过大，无法直接转写。请压缩音频或启用云存储后重新上传。"
+                )
+            file_url = _INLINE_AUDIO_PREFIX + base64.b64encode(audio_bytes).decode("ascii")
+        self._validate_audio_input(file_url, duration_sec=duration_sec)
+        return file_url
+
+    def _validate_audio_input(self, file_url: str, *, duration_sec: float | None) -> None:
+        if file_url.startswith(_INLINE_AUDIO_PREFIX):
+            if not self._uses_flash(duration_sec) or len(file_url) > DASHSCOPE_INLINE_MAX_BYTES:
+                raise AsrProviderError("本地音频超出直传限制，请启用云存储后重新上传。")
+            return
+        try:
+            parsed = urlsplit(file_url)
+            host = (parsed.hostname or "").lower().rstrip(".")
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not host
+                or parsed.username
+                or parsed.password
+            ):
+                raise ValueError("not a public audio URL")
+            if host == "localhost" or host.endswith((".localhost", ".local")):
+                raise ValueError("local host")
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                address = None
+            if address is not None and not address.is_global:
+                raise ValueError("non-public address")
+        except ValueError as exc:
+            raise AsrProviderError(
+                "转写服务无法读取此音频地址。请使用本地短音频直传或云存储链接。"
+            ) from exc
+
     def transcribe(
         self,
         file_url: str,
@@ -172,7 +234,8 @@ class DashScopeFunAsr:
         cfg = self._config
         if not cfg.api_key:
             raise AsrProviderError("语音转写服务未配置")
-        if duration_sec is not None and duration_sec <= cfg.flash_threshold_sec:
+        self._validate_audio_input(file_url, duration_sec=duration_sec)
+        if self._uses_flash(duration_sec):
             logger.info(
                 "ASR flash sync mode (duration %.0fs <= %.0fs)",
                 duration_sec,
@@ -195,7 +258,7 @@ class DashScopeFunAsr:
                     }
                 ]
             },
-            "parameters": {"sample_rate": 16000},
+            "parameters": {"format": "m4a", "sample_rate": "16000"},
         }
         status, body = self._transport(
             "POST",
@@ -350,6 +413,20 @@ class DashScopeFunAsr:
             logger.warning("ASR service temporarily unavailable: HTTP %s", status)
             raise AsrServiceUnavailable("语音转写服务暂不可用，请稍后重试。")
         if status >= 400:
+            # Provider messages may echo signed input URLs or credentials. Only
+            # preserve the UUID request reference; never log the response body.
+            reference = "unavailable"
+            try:
+                error_data = json.loads(body)
+                if isinstance(error_data, dict):
+                    reference = str(UUID(str(error_data.get("request_id", ""))))
+            except (ValueError, TypeError):
+                pass
+            logger.warning("ASR request rejected: HTTP %s request_id=%s", status, reference)
+            if status == 400:
+                raise AsrProviderError(
+                    "语音转写请求未被接受，请检查音频格式、可访问地址与模型配置（HTTP 400）。"
+                )
             raise AsrProviderError(f"语音转写服务返回错误（HTTP {status}）")
         try:
             data: dict[str, Any] = json.loads(body.decode("utf-8"))
