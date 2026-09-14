@@ -1,9 +1,8 @@
 """Digital-human (数字人口播) provider client (C1 / 未接通能力拆解).
 
-Implements the vendor's V2 protocol from docs/飞影数字人API-V2-集成参考.md:
-every call posts/gets JSON against the uniform ``{"code", "msg", "data"}``
-envelope with Bearer-token auth, and vendor business codes map to one
-``HiflyError`` the service layer can render as Chinese customer copy.
+Implements the V2 protocol at https://api.hifly.cc/hifly.html. Current responses
+use top-level fields and catalog arrays; legacy nested payloads remain accepted.
+Vendor business codes map to one ``HiflyError`` for the service layer.
 
 The transport mirrors the Metaso provider in ``app.generation`` (stdlib
 urllib, injectable for tests). Credentials come exclusively from the
@@ -258,7 +257,13 @@ class HiflyClient:
             envelope = json.loads(content)
         except (UnicodeDecodeError, ValueError) as exc:
             raise HiflyError("数字人服务返回了无法解析的响应") from exc
-        if not isinstance(envelope, dict) or "code" not in envelope:
+        if not isinstance(envelope, dict):
+            raise HiflyError("数字人服务响应缺少业务状态码")
+        if "code" not in envelope:
+            # Only the documented upload-ticket endpoint omits code. Its
+            # mandatory ticket fields are validated by create_upload_url.
+            if path == TOOL_CREATE_UPLOAD_URL_PATH:
+                return envelope
             raise HiflyError("数字人服务响应缺少业务状态码")
         raw_code = envelope["code"]
         if isinstance(raw_code, bool):
@@ -278,11 +283,11 @@ class HiflyClient:
             raise HiflyError("数字人服务响应的业务状态码无效")
         if code != 0:
             raise HiflyError(
-                _vendor_message(code, str(envelope.get("msg", ""))),
+                _vendor_message(code, str(envelope.get("message") or envelope.get("msg", ""))),
                 vendor_code=code,
             )
         data = envelope.get("data")
-        return data if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else envelope
 
     def _creation_request(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
@@ -341,9 +346,10 @@ class HiflyClient:
             raise ValueError(f"title must be at most {_MAX_TITLE_CHARS} characters")
         if bool(video_url) == bool(file_id):
             raise ValueError("exactly one of video_url or file_id is required")
-        payload: dict[str, Any] = {"title": clean_title, "aigc_flag": bool(aigc_flag)}
+        payload: dict[str, Any] = {"title": clean_title, "aigc_flag": int(aigc_flag)}
         if video_url:
-            payload["video_url"] = video_url
+            source_field = "image_url" if path == AVATAR_CREATE_BY_IMAGE_PATH else "video_url"
+            payload[source_field] = video_url
         if file_id:
             payload["file_id"] = file_id
         data = self._creation_request(path, payload)
@@ -356,9 +362,10 @@ class HiflyClient:
         data = self._request(
             "GET", AVATAR_TASK_PATH, query={"task_id": _require_text(task_id, "task_id")}
         )
+        avatar_id = data.get("avatar") or data.get("avatar_id")
         return HiflyAvatarTaskSnapshot(
             status=_vendor_status(data.get("status")),
-            avatar_id=data.get("avatar_id") if isinstance(data.get("avatar_id"), str) else None,
+            avatar_id=avatar_id if isinstance(avatar_id, str) else None,
             raw=data,
         )
 
@@ -366,7 +373,7 @@ class HiflyClient:
         data = self._request(
             "GET", AVATAR_LIST_PATH, query={"page": max(1, page), "size": max(1, size), "kind": 2}
         )
-        rows = data.get("list")
+        rows = data.get("data", data.get("list"))
         return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
     # -- 声音 ----------------------------------------------------------------
@@ -414,7 +421,7 @@ class HiflyClient:
         if kind is not None:
             query["kind"] = kind
         data = self._request("GET", VOICE_LIST_PATH, query=query)
-        rows = data.get("list")
+        rows = data.get("data", data.get("list"))
         return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
     def voice_task(self, task_id: str) -> HiflyVoiceTaskSnapshot:
@@ -447,7 +454,7 @@ class HiflyClient:
         payload: dict[str, Any] = {
             "avatar": _require_text(avatar, "avatar"),
             "title": clean_title,
-            "aigc_flag": bool(aigc_flag),
+            "aigc_flag": int(aigc_flag),
         }
         if audio_url:
             payload["audio_url"] = audio_url
@@ -477,7 +484,7 @@ class HiflyClient:
             "text": clean_text,
             "avatar": _require_text(avatar, "avatar"),
             "title": clean_title,
-            "aigc_flag": bool(aigc_flag),
+            "aigc_flag": int(aigc_flag),
         }
         if subtitle:
             payload.update(dict(subtitle))
@@ -537,7 +544,7 @@ class HiflyClient:
 
     def account_credit(self) -> int:
         data = self._request("GET", ACCOUNT_CREDIT_PATH)
-        credit = data.get("credit")
+        credit = data.get("left", data.get("credit"))
         if (
             isinstance(credit, bool)
             or not isinstance(credit, int)

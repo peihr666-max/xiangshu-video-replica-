@@ -293,7 +293,7 @@ export function OrdersPage({ readOnly = false }: { readOnly?: boolean }) {
               </td>
               <td>{order.username}</td>
               <td>{formatFen(order.amount_fen)}</td>
-              <td>+{order.credits} 秒</td>
+              <td>+{order.credits} 积分</td>
               <td>
                 <OrderStatusBadge status={order.status} />
               </td>

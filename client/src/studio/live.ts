@@ -358,7 +358,11 @@ async function signedUrl(
 }
 
 function projectAsset(project: Project, url?: string): StudioAsset | undefined {
-  if (!project.reference_asset_id) return undefined;
+  if (
+    !project.reference_asset_id ||
+    project.reference_upload_status !== "READY"
+  )
+    return undefined;
   return {
     id: project.reference_asset_id,
     name: `${project.name} · 来源视频`,
@@ -377,7 +381,11 @@ async function loadProjects(): Promise<{
 }> {
   const projects = (await listProjects()).slice(0, projectLimit);
   const previewProjects = projects
-    .filter((project) => project.reference_asset_id)
+    .filter(
+      (project) =>
+        project.reference_asset_id &&
+        project.reference_upload_status === "READY",
+    )
     .slice(0, projectPreviewLimit);
   const previews = await Promise.allSettled(
     previewProjects.map(async (project) => ({

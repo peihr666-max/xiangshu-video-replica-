@@ -1135,7 +1135,7 @@ describe("V1.4 工作台上传与创作入口", () => {
     expect(screen.getByText("正在上传 乡墅案例.mp4… 40%")).toBeInTheDocument();
     act(() => reportProgress?.(100));
     expect(screen.getByText("正在上传 乡墅案例.mp4… 100%")).toBeInTheDocument();
-    expect(screen.queryByText("已上传云存储：乡墅案例.mp4")).toBeNull();
+    expect(screen.queryByText("已上传：乡墅案例.mp4")).toBeNull();
 
     pending.resolve?.({
       projectId: "proj-1",
@@ -1183,9 +1183,9 @@ describe("V1.4 工作台上传与创作入口", () => {
         }),
       ],
     });
-    expect(screen.getByText("已上传云存储：乡墅案例.mp4")).toBeInTheDocument();
+    expect(screen.getByText("已上传：乡墅案例.mp4")).toBeInTheDocument();
     expect(value.notify).toHaveBeenCalledWith(
-      "视频已上传云存储，来源已加入当前创作。",
+      "视频已上传，来源已加入当前创作。",
     );
   });
 
@@ -1251,7 +1251,7 @@ describe("V1.4 工作台上传与创作入口", () => {
     await first.promise.catch(() => undefined);
     await Promise.resolve();
     expect(value.patchDraft).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("已上传云存储：来源B.mp4")).toBeInTheDocument();
+    expect(screen.getByText("已上传：来源B.mp4")).toBeInTheDocument();
     expect(screen.queryByText(/迟到失败/)).toBeNull();
   });
 

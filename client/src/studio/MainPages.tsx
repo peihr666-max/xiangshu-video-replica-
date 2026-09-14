@@ -579,7 +579,7 @@ export function WorkbenchPage() {
               : current.assets,
           }));
         }
-        notify("视频已上传云存储，来源已加入当前创作。");
+        notify("视频已上传，来源已加入当前创作。");
       })
       .catch((error) => {
         if (
@@ -677,7 +677,7 @@ export function WorkbenchPage() {
             {upload.error
               ? `上传失败：${upload.error}`
               : upload.completed
-                ? `已上传云存储：${upload.name}`
+                ? `已上传：${upload.name}`
                 : `正在上传 ${upload.name}… ${upload.progress}%`}
           </p>
         )}

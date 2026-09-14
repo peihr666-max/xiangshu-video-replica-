@@ -482,6 +482,8 @@ def start_voice_clone(
         label="音频素材",
     )
     _require_audio_purpose(asset, "voice_clone", "声音克隆样本")
+    if int(asset["size_bytes"]) > 20 * 1024 * 1024:
+        raise OralDomainError("声音克隆样本不能超过 20 MB")
     _require_valid_consent(
         conn,
         actor=actor,

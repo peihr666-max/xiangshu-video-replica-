@@ -546,6 +546,15 @@ export function CustomerCenterPage({
             <option value="">全部业务</option>
             <option value="video">视频生成</option>
             <option value="oral">数字人口播</option>
+            <option value="character">人物形象及任务图片</option>
+            <option value="first_frame">首帧图片</option>
+            <option value="analysis">视频分析</option>
+            <option value="rewrite">文案改写</option>
+            <option value="asr">语音转写</option>
+            <option value="link_resolution">链接解析</option>
+            <option value="avatar_clone">口播分身创建</option>
+            <option value="voice_clone">声音克隆</option>
+            <option value="viral_data">爆款视频数据请求</option>
             <option value="recharge">充值 / 赠送</option>
           </select>
         </label>

@@ -315,6 +315,36 @@ describe("V1.4 workspace integration", () => {
     expect(api.getWallet).toHaveBeenCalledOnce();
   });
 
+  it("任务轮询同步钱包，后台结算后侧栏不需要重新登录", async () => {
+    const intervals = vi.spyOn(window, "setInterval");
+    api.getWallet.mockResolvedValue({
+      available_credits: 21,
+      reserved_credits: 0,
+    });
+    render(
+      <StudioWorkspace
+        currentUser={{ ...reviewUser, role: "employee" }}
+        initialState={createState("workbench")}
+      />,
+    );
+    await screen.findByRole("button", { name: "用户档案，积分 21 积分" });
+    api.getWallet.mockResolvedValue({
+      available_credits: 16,
+      reserved_credits: 0,
+    });
+    const callback = intervals.mock.calls.find(
+      ([, delay]) => delay === 20_000,
+    )?.[0];
+    if (typeof callback !== "function")
+      throw new Error("task polling was not scheduled");
+    await act(async () => {
+      callback();
+    });
+    expect(
+      await screen.findByRole("button", { name: "用户档案，积分 16 积分" }),
+    ).toBeVisible();
+  });
+
   it("切换账号后忽略旧钱包的迟到响应", async () => {
     let resolveOlder!: (value: unknown) => void;
     const olderWallet = new Promise((resolve) => {
@@ -630,6 +660,41 @@ describe("V1.4 workspace integration", () => {
       await screen.findByText("新完成办公室场景", { selector: "strong" }),
     ).toBeInTheDocument();
     expect(live.loadPersonAssets).toHaveBeenCalledTimes(2);
+  });
+  it("同账号资料刷新不重置已载入场景与媒体预览", async () => {
+    const data = createReviewData();
+    live.loadStudioData.mockResolvedValue({
+      ...data,
+      assets: data.assets.filter((asset) => asset.composite),
+    });
+    live.loadPersonAssets.mockResolvedValue({
+      assets: [
+        {
+          id: "scene-after-refresh",
+          personId: "zhang",
+          name: "联调场景",
+          kind: "image",
+          source: "人物库场景造型",
+          group: "场景形象照",
+          saved: true,
+        },
+      ],
+      errors: [],
+      loaded: 1,
+      total: 1,
+    });
+    const state = createReviewState("person-avatars");
+    state.draft.imageId = "scene-after-refresh";
+    const view = render(
+      <StudioWorkspace currentUser={reviewUser} initialState={state} />,
+    );
+    expect(await screen.findByText("已选：联调场景")).toBeVisible();
+    view.rerender(
+      <StudioWorkspace currentUser={{ ...reviewUser }} initialState={state} />,
+    );
+    expect(live.loadStudioData).toHaveBeenCalledTimes(1);
+    expect(live.loadPersonAssets).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("已选：联调场景")).toBeVisible();
   });
   it("renders the approved navigation order and keeps review data isolated", () => {
     render(

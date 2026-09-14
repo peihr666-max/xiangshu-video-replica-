@@ -615,11 +615,9 @@ def create_asset_upload_intent(
         is_customer = actor.role == "customer"
     upload_url = intent.url
     if intent.upload_required and storage.provider == "local":
-        # The client cannot PUT to a `local://` scheme URL; route uploads through
-        # the local server endpoint instead so the desktop app can upload files.
-        upload_url = (
-            f"{api_base_url()}/api/assets/local-objects/{quote(intent.storage_key, safe='/')}"
-        )
+        # Let the client resolve API-managed uploads through its configured
+        # proxy/base, instead of leaking the server's internal host and port.
+        upload_url = f"/api/assets/local-objects/{quote(intent.storage_key, safe='/')}"
     result = UploadIntentResponse(
         asset_id=intent.asset_id,
         project_id=intent.project_id,

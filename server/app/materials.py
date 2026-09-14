@@ -236,10 +236,11 @@ def validate_audio_contract(
 def probe_audio_duration(content: bytes) -> float | None:
     try:
         ffprobe = resolve_media_binary("ffprobe")
-        with tempfile.NamedTemporaryFile(suffix=".mp3") as audio_file:
-            audio_file.write(content)
-            audio_file.flush()
-            return probe_duration_seconds(ffprobe, Path(audio_file.name))
+        # Windows does not let ffprobe reopen an active delete-on-close handle.
+        with tempfile.TemporaryDirectory(prefix="material-audio-") as directory:
+            audio_path = Path(directory) / "source.mp3"
+            audio_path.write_bytes(content)
+            return probe_duration_seconds(ffprobe, audio_path)
     except (OSError, RuntimeError):
         return None
 

@@ -1337,3 +1337,7 @@ W19主干整合最终复验：PR87正常合并为main e8445c4，本任务整合�
 ## FIX-R02-DELIVERY-20260914
 
 支付回调原子性修复已从旧 worktree 迁到 `origin/main@281a828` 的独立交付分支。两渠道保存点回滚、订单锁、异步线程池及当前主线约束异常映射已通过专项 129 项、全仓静态门和后端 2038 项 / 1 项既有跳过；独立复审 PASS。变基到已合并联合交付的主线后将重新执行支付专项；未执行真实支付或生产账本操作，远程状态见[交付证据](evidence/FIX-R02-DELIVERY-20260914.md)。
+
+## BUSINESS-REMEDIATION-20260914
+
+独立分支 `fix/business-remediation-20260914` 从 main@06a5333 创建；Owner 当前 Codex 任务，Reviewer 代码自检及 PR 门禁。开工已核对远程 PR、分支、worktree 与共享 claim。范围为真实业务复测发现的上传、Hifly、Windows 音频、会话签名、场景/播放刷新及费用明细；端口 5199/5200/18099、独立 PG 与存储，不改原联调环境。前端 1429、专项后端 55、新增管理关联 1 项及静态检查通过；全量 PG 2094 passed / 1 既有 skip；收尾新增上限回归另验。分身、声音、口播成功；视频 9.08 秒完整播放，个人中心累计消费 167/余额 833 与后台一致。管理页面等待登录，云分析/首帧/H3 全流程尚未完成，不作整体验收通过。已授权远程推送及 PR，不合并部署。详见[整改清单](evidence/BUSINESS-REMEDIATION-20260914-CHECKLIST.md)及[复测证据](evidence/BUSINESS-REMEDIATION-20260914.md)。

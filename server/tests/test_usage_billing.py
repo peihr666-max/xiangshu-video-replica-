@@ -23,6 +23,59 @@ from app.db_portable import BusinessConnection
 from app.usage_billing import accept_operation, finish_operation, record_attempt
 
 
+def test_image_billing_and_customer_service_filter_share_settled_evidence(
+    pricing_client, route_state
+):
+    from app.control_routes import image_task_billing
+
+    customer, uid = account(pricing_client)
+    with psycopg.connect(route_state) as raw:
+        conn = BusinessConnection.postgres(raw)
+        raw.execute("UPDATE wallets SET available_credits=100 WHERE user_id=%s", (uid,))
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('character',true,5,1)"
+        )
+        op = accept_operation(
+            conn, user_id=uid, service="character", source_id="image-task", units=1
+        )
+        record_attempt(conn, operation_id=op, attempt_key="first", usage=1)
+        record_attempt(conn, operation_id=op, attempt_key="retry", usage=1)
+        finish_operation(conn, operation_id=op, units=1, succeeded=True)
+        assert image_task_billing(conn, task_id="image-task", user_id=uid) == (5, 0.02)
+        assert image_task_billing(conn, task_id="image-task", user_id="other-user") == (0, None)
+        record_attempt(conn, operation_id=op, attempt_key="unknown", usage=None)
+        assert image_task_billing(conn, task_id="image-task", user_id=uid) == (5, None)
+    response = pricing_client.get(
+        "/api/customer/wallet/transactions?business=character", headers=customer
+    )
+    assert response.status_code == 200, response.text
+    rows = response.json()["items"]
+    assert len(rows) == 2
+    assert {row["billing_operation_id"] for row in rows} == {op}
+    assert {row["service"] for row in rows} == {"character"}
+    assert sum(-row["reserved_delta"] for row in rows if row["type"] == "SETTLE") == 5
+    assert (
+        pricing_client.get(
+            "/api/customer/wallet/transactions?business=asr", headers=customer
+        ).json()["total"]
+        == 0
+    )
+    from app.account_admin_routes import router as account_admin_router
+
+    pricing_client.app.include_router(account_admin_router)
+    admin = admin_login(pricing_client, route_state)
+    admin_response = pricing_client.get(
+        f"/api/control/customers/{uid}/wallet-transactions", headers=admin
+    )
+    assert admin_response.status_code == 200, admin_response.text
+    admin_rows = admin_response.json()["items"]
+    assert {row["id"] for row in admin_rows} == {row["id"] for row in rows}
+    assert {row["source_id"] for row in admin_rows} == {"image-task"}
+    assert {row["service_name"] for row in admin_rows} == {SERVICES["character"].name}
+    assert {row["billing_operation_id"] for row in admin_rows} == {op}
+
+
 def test_collection_meter_counts_actual_calls_and_preserves_batch(client, route_state):
     from app.billing_meter import collection_billing_context, meter_call
     from app.viral_collection_billing import create_collection_batch

@@ -28,7 +28,7 @@ from app.materials import (
     resolve_materials,
     update_material,
 )
-from app.media_routes import MediaStorage, api_base_url
+from app.media_routes import MediaStorage
 from app.storage import StorageBackendUnavailable
 
 router = APIRouter(prefix="/api/studio/materials", tags=["studio-materials"])
@@ -86,9 +86,7 @@ def create_upload_intent(
         is_customer = actor.role == "customer"
     if storage.provider == "local":
         intent = intent.model_copy(
-            update={
-                "url": (f"{api_base_url()}/api/studio/materials/uploads/{intent.asset_id}/content")
-            }
+            update={"url": f"/api/studio/materials/uploads/{intent.asset_id}/content"}
         )
     if is_customer:
         return JSONResponse(content=intent.model_dump(mode="json", exclude={"storage_key"}))

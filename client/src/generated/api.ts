@@ -6227,6 +6227,14 @@ export interface components {
       reserved_balance_after: number | null;
       /** Oral Task Id */
       oral_task_id?: string | null;
+      /** Billing Operation Id */
+      billing_operation_id?: string | null;
+      /** Source Id */
+      source_id?: string | null;
+      /** Service */
+      service?: string | null;
+      /** Service Name */
+      service_name?: string | null;
     };
     /** ControlWalletTransactionPage */
     ControlWalletTransactionPage: {
@@ -16595,7 +16603,22 @@ export interface operations {
         transaction_type?:
           | ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE" | "CONVERSION")
           | null;
-        business?: ("video" | "oral" | "recharge") | null;
+        business?:
+          | (
+              | "video"
+              | "oral"
+              | "recharge"
+              | "character"
+              | "first_frame"
+              | "analysis"
+              | "rewrite"
+              | "asr"
+              | "link_resolution"
+              | "avatar_clone"
+              | "voice_clone"
+              | "viral_data"
+            )
+          | null;
         started_at?: string | null;
         ended_at?: string | null;
       };

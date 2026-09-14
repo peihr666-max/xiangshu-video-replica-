@@ -321,20 +321,8 @@ export interface AdminRechargeOrder {
   paid_at: string | null;
 }
 
-export interface AdminWalletTransaction {
-  id: string;
-  user_id: string;
-  username: string;
-  type: "CHARGE" | "RESERVE" | "SETTLE" | "RELEASE" | "CONVERSION";
-  available_delta: number;
-  reserved_delta: number;
-  available_balance_after: number | null;
-  reserved_balance_after: number | null;
-  recharge_order_id: string | null;
-  task_id: string | null;
-  billing_round: number | null;
-  created_at: string;
-}
+export type AdminWalletTransaction =
+  components["schemas"]["ControlWalletTransaction"];
 
 interface AdminListPage<T> {
   items: T[];

@@ -8,7 +8,7 @@
 
 - Base URL：`https://hfw-api.hifly.cc`（V2 接口；旧 `api.hifly.cc` 已废弃）。
 - 认证：请求头 `Authorization: Bearer ${token}`，token 在飞影个人中心 → API 明细获取。
-- 响应统一信封：`{"code": 0, "msg": "", "data": {...}}`；`code != 0` 即业务失败。
+- 2026-09-14 真实联调更正：成功字段可以在响应顶层，也兼容旧 `data` 对象；不能一律按 `data` 包装读取。`code != 0` 为业务失败，上传票据端点允许不返回 code，但必须验证票据必填字段。
 - 分页参数：`page`（≥1）+ `size`（≤100），分页信息在 `data.page_info`。
 - 上传：先 `POST /api/v2/hifly/tool/create_upload_url`（body: `file_extension`）→ 返回
   `upload_url` + `content_type` + `file_id`；再用 `PUT upload_url` 上传二进制（带 `Content-Type`）。
@@ -18,9 +18,9 @@
 ### 数字人（分身）
 | 接口 | 方法与路径 | 关键参数 | 返回 |
 |---|---|---|---|
-| 视频克隆分身 | POST `/api/v2/hifly/avatar/create_by_video` | `title`(≤20字)、`video_url` 或 `file_id`、`aigc_flag`(必填 bool) | `task_id` |
-| 照片克隆分身 | POST `/api/v2/hifly/avatar/create_by_image` | 同上（**企业专属会员**，消耗积分） | `task_id` |
-| 克隆任务状态 | GET `/api/v2/hifly/avatar/task?task_id=` | — | `status` 1 等待/2 处理中/3 完成/4 失败 + `avatar_id` |
+| 视频克隆分身 | POST `/api/v2/hifly/avatar/create_by_video` | `title`(≤20字)、`video_url` 或 `file_id`、`aigc_flag`(整数 0/1) | `task_id` |
+| 照片克隆分身 | POST `/api/v2/hifly/avatar/create_by_image` | `image_url` 或 `file_id`，整数 `aigc_flag`（**企业专属会员**，消耗积分） | `task_id` |
+| 克隆任务状态 | GET `/api/v2/hifly/avatar/task?task_id=` | — | `status` 1 等待/2 处理中/3 完成/4 失败 + `avatar`（兼容旧 `avatar_id`） |
 | 公共数字人列表 | GET `/api/v2/hifly/avatar/list?page&size&kind=2` | `kind=2` 公共 | 分页 `list[]`（id/title/cover_url 等） |
 
 ### 声音
@@ -43,7 +43,7 @@
 `st_outline_color`（`0xRRGGBB(AA)`）、`st_width`/`st_height`（≤1920/1080）、`st_x`/`st_y`（像素坐标）。
 
 ### 账户
-- 积分余额：GET `/api/v2/hifly/account/credit` → `data.credit`。
+- 积分余额：GET `/api/v2/hifly/account/credit` → 顶层 `left`（兼容旧 `data.credit`）；校验为非负整数，不把缺失或异常值当作零余额。供应商积分不能直接当成人民币费用。
 - 回调（webhook）：可选，创建类任务默认有回调；需公网可达 URL。**桌面单机/内网部署无公网回调，
   统一采用任务状态轮询**（与现有 metaso H3 轮询一致）；轮询失败有 5 分钟内重试兜底。
 

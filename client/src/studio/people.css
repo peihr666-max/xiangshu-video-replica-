@@ -327,6 +327,8 @@
 }
 .voice-card {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: space-between;
   align-items: center;
   border: 1px solid #292a27;
@@ -409,4 +411,15 @@
     align-items: flex-start;
     flex-direction: column;
   }
+}
+
+.voice-card > div {
+  min-width: 0;
+  max-width: 100%;
+}
+.voice-card > div:last-child {
+  flex-wrap: wrap;
+}
+.voice-card audio {
+  max-width: 100%;
 }

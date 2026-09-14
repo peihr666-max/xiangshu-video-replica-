@@ -207,11 +207,11 @@ export function AccountsPage() {
                 }
               >
                 {tx.available_delta > 0 ? "+" : ""}
-                {tx.available_delta} 秒
+                {tx.available_delta} 积分
               </td>
               <td>
                 {tx.reserved_delta > 0 ? "+" : ""}
-                {tx.reserved_delta} 秒
+                {tx.reserved_delta} 积分
               </td>
               <td>
                 {tx.available_balance_after === null ||
@@ -219,13 +219,21 @@ export function AccountsPage() {
                   "历史未记录"
                 ) : (
                   <>
-                    <strong>{tx.available_balance_after} 秒</strong> / 冻结{" "}
-                    {tx.reserved_balance_after} 秒
+                    <strong>{tx.available_balance_after} 积分</strong> / 冻结{" "}
+                    {tx.reserved_balance_after} 积分
                   </>
                 )}
               </td>
               <td>
-                <code>{tx.recharge_order_id ?? tx.task_id ?? "—"}</code>
+                {tx.service_name && <div>{tx.service_name}</div>}
+                <code>
+                  {tx.recharge_order_id ??
+                    tx.task_id ??
+                    tx.oral_task_id ??
+                    tx.source_id ??
+                    tx.billing_operation_id ??
+                    "—"}
+                </code>
               </td>
             </tr>
           ))}
@@ -242,7 +250,7 @@ export function AccountsPage() {
         onPageChange={setTransactionOffset}
       />
       <p className="admin-hint">
-        余额与变动单位均为秒；新流水按实际记账顺序计算余额，历史缺少可靠顺序的记录不推算余额。
+        余额与变动单位均为积分；新流水按实际记账顺序计算余额，历史缺少可靠顺序的记录不推算余额。
       </p>
     </section>
   );

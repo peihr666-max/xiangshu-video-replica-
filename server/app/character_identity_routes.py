@@ -36,7 +36,7 @@ from app.character_identity import (
     update_person_identity,
 )
 from app.customer_fence import BusinessReadConn
-from app.media_routes import api_base_url, get_media_storage
+from app.media_routes import get_media_storage
 from app.permissions import require_role
 from app.settings import SettingsRepository, SettingsUnavailableError
 from app.storage import StorageAdapter
@@ -183,11 +183,7 @@ def local_upload_intent(
     if storage.provider != "local":
         return intent
     return intent.model_copy(
-        update={
-            "url": (
-                f"{api_base_url()}/api/assets/local-objects/{quote(intent.storage_key, safe='/')}"
-            )
-        }
+        update={"url": f"/api/assets/local-objects/{quote(intent.storage_key, safe='/')}"}
     )
 
 

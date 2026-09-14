@@ -31,6 +31,7 @@ import {
   downloadMaterialAsset,
   extractSourceFrames,
   generateFirstFrames,
+  getAssetDownloadUrl,
   getCachedCharacterAssetUrl,
   getCharacterReferenceRecommendation,
   getCurrentUser,
@@ -205,6 +206,24 @@ describe("素材库 API", () => {
     expect(click).toHaveBeenCalledOnce();
     click.mockRestore();
   });
+  it.each([getAssetDownloadUrl, getCachedCharacterAssetUrl])(
+    "resolves signed media through the configured API proxy",
+    async (readUrl) => {
+      vi.stubEnv("VITE_API_BASE_URL", "https://studio.example.com/backend");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({
+            url: "/api/assets/signed-objects/test.png?expires=1&sig=test",
+          }),
+        }),
+      );
+      expect((await readUrl("asset-1")).url).toBe(
+        "https://studio.example.com/backend/api/assets/signed-objects/test.png?expires=1&sig=test",
+      );
+    },
+  );
 
   it("按扩展名规范化上传类型并完成素材上传", async () => {
     const fetchMock = vi
@@ -787,6 +806,16 @@ describe("API base URL resolution", () => {
 });
 
 describe("customer-visible service errors", () => {
+  it("preserves actionable analysis storage guidance before generic provider branding", () => {
+    expect(
+      customerVisibleErrorMessage({
+        code: "ANALYSIS_VIDEO_URL_UNAVAILABLE",
+        message: "请在设置中切换至腾讯云 COS 后重新上传。",
+      }),
+    ).toBe(
+      "当前视频尚未就绪，无法交给云端分析。请联系管理员配置云端素材存储，再重新上传视频。",
+    );
+  });
   it.each([
     [
       { code: "METASO_UPSTREAM_TIMEOUT", message: "MiniMax H3 timeout" },
@@ -2494,6 +2523,56 @@ describe("uploadReferenceVideo", () => {
     vi.unstubAllEnvs();
   });
 
+  it.each([
+    ["http://127.0.0.1:5199", "/api/assets/local-objects/source.mp4"],
+    [
+      "https://studio.example.com/backend",
+      "/api/studio/materials/uploads/a/content",
+    ],
+  ])(
+    "resolves managed uploads through the configured API base %s",
+    async (base, path) => {
+      const headers = new Map<string, string>();
+      const open = vi.fn();
+      class ProxyUploadRequest {
+        upload = { onprogress: null };
+        status = 204;
+        onload: (() => void) | null = null;
+        open = open;
+        setRequestHeader(name: string, value: string) {
+          headers.set(name, value);
+        }
+        send() {
+          this.onload?.();
+        }
+      }
+      vi.stubEnv("VITE_API_BASE_URL", base);
+      vi.stubGlobal("XMLHttpRequest", ProxyUploadRequest);
+      setCustomerSessionToken("customer-proxy-upload-test");
+      try {
+        await uploadReferenceVideo(
+          {
+            asset_id: "a",
+            project_id: "p",
+            storage_key: "source.mp4",
+            method: "PUT",
+            url: path,
+            headers: { "Content-Type": "video/mp4" },
+            expires_at: "2030-01-01T00:00:00Z",
+          },
+          new File(["video"], "source.mp4", { type: "video/mp4" }),
+          vi.fn(),
+        );
+        expect(open).toHaveBeenCalledWith("PUT", `${base}${path}`);
+        expect(headers.get("Authorization")).toBe(
+          "Bearer customer-proxy-upload-test",
+        );
+      } finally {
+        setCustomerSessionToken(null);
+      }
+    },
+  );
+
   it("does not send the development identity header to a cloud presigned URL", async () => {
     class CloudUploadRequest {
       static latest: CloudUploadRequest | null = null;
@@ -2521,6 +2600,7 @@ describe("uploadReferenceVideo", () => {
     }
 
     vi.stubGlobal("XMLHttpRequest", CloudUploadRequest);
+    setCustomerSessionToken("test-cloud-customer-token");
 
     await uploadReferenceVideo(
       {
@@ -2539,6 +2619,8 @@ describe("uploadReferenceVideo", () => {
     expect(
       CloudUploadRequest.latest?.headers.get("X-Dev-User-Id"),
     ).toBeUndefined();
+    setCustomerSessionToken(null);
+    expect(CloudUploadRequest.latest?.headers.has("Authorization")).toBe(false);
     expect(CloudUploadRequest.latest?.headers.get("Content-Type")).toBe(
       "video/mp4",
     );

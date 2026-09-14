@@ -972,7 +972,21 @@ def list_customer_wallet_transactions(
     token_group_id: str | None = Query(default=None, max_length=128),
     auth_source: Literal["session", "api_key", "internal", "historical"] | None = None,
     transaction_type: Literal["CHARGE", "RESERVE", "SETTLE", "RELEASE", "CONVERSION"] | None = None,
-    business: Literal["video", "oral", "recharge"] | None = None,
+    business: Literal[
+        "video",
+        "oral",
+        "recharge",
+        "character",
+        "first_frame",
+        "analysis",
+        "rewrite",
+        "asr",
+        "link_resolution",
+        "avatar_clone",
+        "voice_clone",
+        "viral_data",
+    ]
+    | None = None,
     started_at: datetime | None = None,
     ended_at: datetime | None = None,
 ) -> WalletTransactionPage:
@@ -997,11 +1011,13 @@ def list_customer_wallet_transactions(
         if business:
             clauses.append(
                 {
-                    "video": "wt.task_id IS NOT NULL",
-                    "oral": "wt.oral_task_id IS NOT NULL",
+                    "video": "(wt.task_id IS NOT NULL OR op.service IN ('video_768p','video_2k'))",
+                    "oral": "(wt.oral_task_id IS NOT NULL OR op.service = 'oral')",
                     "recharge": "wt.type = 'CHARGE'",
-                }[business]
+                }.get(business, "op.service = %s")
             )
+            if business not in {"video", "oral", "recharge"}:
+                params.append(business)
         if started_at:
             clauses.append("wt.created_at::timestamptz >= %s")
             params.append(started_at)
@@ -1011,6 +1027,8 @@ def list_customer_wallet_transactions(
         from_sql = (
             " FROM wallet_transactions wt LEFT JOIN customer_api_keys k ON k.id = "
             "wt.api_key_id AND k.user_id = wt.user_id "
+            "LEFT JOIN billing_operations op ON op.id=wt.billing_operation_id "
+            "AND op.user_id=wt.user_id "
             "LEFT JOIN recharge_orders credit_order ON credit_order.id = wt.recharge_order_id "
             "AND credit_order.user_id = wt.user_id "
             "LEFT JOIN admin_adjustments credit_adjustment ON "
