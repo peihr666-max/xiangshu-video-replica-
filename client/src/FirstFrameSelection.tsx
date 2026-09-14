@@ -6,6 +6,7 @@ import {
   type FirstFrameCandidate,
   type FirstFrameModel,
   type FirstFrameTask,
+  type GenerateFirstFramesInput,
   generateFirstFrames,
   getAssetDownloadUrl,
   getLatestFirstFrameTask,
@@ -55,6 +56,9 @@ export function FirstFrameSelection({
   const [model, setModel] = useState<FirstFrameModel>("gpt-image-2");
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [quantity, setQuantity] = useState(1);
+  const [aspectRatio, setAspectRatio] = useState<
+    NonNullable<GenerateFirstFramesInput["aspect_ratio"]> | "source"
+  >("source");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -69,6 +73,7 @@ export function FirstFrameSelection({
   // 质检未通过的候选需要两次点击：第一次是“知情”，第二次才真正确认。
   const [overrideArmed, setOverrideArmed] = useState(false);
   const loadRequestId = useRef(0);
+  const currentCandidateVersionId = useRef<string | null>(null);
   const previewRetryCounts = useRef(new Map<string, number>());
   const generationWatchId = useRef(0);
   const confirmationLifecycleId = useRef(0);
@@ -82,6 +87,7 @@ export function FirstFrameSelection({
     legacyCharacterSelected ? "legacy" : "versioned",
     version?.id ?? "",
     selectedAssetId,
+    aspectRatio,
   ].join("\0");
   const confirmationBindingKeyRef = useRef(confirmationBindingKey);
   confirmationBindingKeyRef.current = confirmationBindingKey;
@@ -111,6 +117,9 @@ export function FirstFrameSelection({
           return;
         }
         const latest = latestState.version;
+        currentCandidateVersionId.current = latestState.stale
+          ? null
+          : (latest?.id ?? null);
         const displayVersion = preferredVersion ?? latest;
         const latestPayload = latest ? readFirstFrameCandidates(latest) : null;
         const confirmedSelection = selection.version
@@ -159,6 +168,7 @@ export function FirstFrameSelection({
           return;
         }
         setModel(payload.model);
+        setAspectRatio(payload.aspect_ratio ?? "source");
         if (!simplified) {
           setPrompt(payload.prompt);
         }
@@ -200,9 +210,19 @@ export function FirstFrameSelection({
           setStatus("");
         }
         const previews = await Promise.allSettled(
-          payload.candidates.map(async (candidate) => {
-            const download = await getAssetDownloadUrl(candidate.asset_id);
-            return [candidate.asset_id, download.url] as const;
+          [
+            ...new Set([
+              ...payload.candidates.map((candidate) => candidate.asset_id),
+              ...(payload.review_mode === "HUMAN_CONFIRMATION"
+                ? [
+                    payload.source_frame_asset_id,
+                    ...(payload.character_reference_asset_ids ?? []),
+                  ].filter((id): id is string => Boolean(id))
+                : []),
+            ]),
+          ].map(async (assetId) => {
+            const download = await getAssetDownloadUrl(assetId);
+            return [assetId, download.url] as const;
           }),
         );
         if (!isCurrentRequest()) {
@@ -280,16 +300,22 @@ export function FirstFrameSelection({
   );
 
   useEffect(() => {
+    let cancelled = false;
+    currentCandidateVersionId.current = null;
     onBusyChangeRef.current?.(false);
     void (async () => {
       await load();
+      if (cancelled) return;
       try {
         const task = await getLatestFirstFrameTask(projectId);
+        if (cancelled) return;
         if (
           task &&
           (task.status === "PENDING" ||
             task.status === "RUNNING" ||
-            task.status === "SUCCEEDED")
+            (task.status === "SUCCEEDED" &&
+              task.result_version_id !== null &&
+              task.result_version_id === currentCandidateVersionId.current))
         ) {
           setGenerationTask(task);
           void followGeneration({
@@ -317,6 +343,7 @@ export function FirstFrameSelection({
       }
     })();
     return () => {
+      cancelled = true;
       loadRequestId.current += 1;
       generationWatchId.current += 1;
     };
@@ -345,8 +372,18 @@ export function FirstFrameSelection({
   }, [generationStartedAt]);
 
   const payload = version ? readFirstFrameCandidates(version) : null;
+  const aspectMatchesVersion =
+    (payload?.aspect_ratio ?? "source") === aspectRatio;
   const isHistoryVersion = Boolean(version && version.id !== latestVersionId);
   const selectedPreview = previewUrls[selectedAssetId];
+  const comparisonReady =
+    payload?.review_mode !== "HUMAN_CONFIRMATION" ||
+    Boolean(
+      payload.source_frame_asset_id &&
+        previewUrls[payload.source_frame_asset_id] &&
+        payload.character_reference_asset_ids?.length &&
+        payload.character_reference_asset_ids.every((id) => previewUrls[id]),
+    );
   const selectedCandidate = payload?.candidates.find(
     (candidate) => candidate.asset_id === selectedAssetId,
   );
@@ -399,6 +436,7 @@ export function FirstFrameSelection({
           // contact-sheet/reference-role prompt assembly on the server.
           prompt: simplified ? undefined : prompt,
           quantity,
+          ...(aspectRatio === "source" ? {} : { aspect_ratio: aspectRatio }),
           ...binding,
         },
         setGenerationTask,
@@ -411,11 +449,19 @@ export function FirstFrameSelection({
     if (readOnly) {
       return;
     }
-    if (!selectedAssetId || !selectedPreview || isHistoryVersion) {
+    if (
+      !selectedAssetId ||
+      !selectedPreview ||
+      !comparisonReady ||
+      !aspectMatchesVersion ||
+      isHistoryVersion
+    ) {
       setError("请先加载并查看最新候选首帧预览，再进行确认。");
       return;
     }
-    const needsOverride = selectedCandidate?.quality?.passed !== true;
+    const needsOverride =
+      payload?.review_mode !== "HUMAN_CONFIRMATION" &&
+      selectedCandidate?.quality?.passed !== true;
     if (needsOverride && !overrideArmed) {
       setOverrideArmed(true);
       setStatus(
@@ -520,6 +566,24 @@ export function FirstFrameSelection({
         </label>
       ) : null}
       <div className="source-frame-actions">
+        <label>
+          图片画幅
+          <select
+            aria-label="图片画幅"
+            value={aspectRatio}
+            disabled={readOnly || isSubmitting || !canGenerate}
+            onChange={(event) =>
+              setAspectRatio(event.target.value as typeof aspectRatio)
+            }
+          >
+            <option value="source">跟随原视频（默认）</option>
+            <option value="9:16">9:16 · 竖屏</option>
+            <option value="16:9">16:9 · 横屏</option>
+            <option value="1:1">1:1 · 方图</option>
+            <option value="3:4">3:4 · 竖图</option>
+            <option value="4:3">4:3 · 横图</option>
+          </select>
+        </label>
         <button
           disabled={readOnly || isSubmitting || !canGenerate}
           onClick={handleGenerate}
@@ -538,6 +602,8 @@ export function FirstFrameSelection({
             isSubmitting ||
             !selectedAssetId ||
             !selectedPreview ||
+            !comparisonReady ||
+            !aspectMatchesVersion ||
             isHistoryVersion
           }
           onClick={handleConfirm}
@@ -548,6 +614,9 @@ export function FirstFrameSelection({
             : "确认用于视频生成的首帧"}
         </button>
       </div>
+      {payload && !aspectMatchesVersion && !isSubmitting ? (
+        <p className="status-note">画幅已更改，请重新生成后确认首帧。</p>
+      ) : null}
       {generationStartedAt !== null ? (
         <div className="first-frame-generation-progress" role="status">
           <div className="first-frame-generation-progress__heading">
@@ -580,7 +649,11 @@ export function FirstFrameSelection({
             >
               <div>
                 <strong>本项目人物造型</strong>
-                <span>后台自动匹配</span>
+                <span>
+                  {payload.project_appearance.category === "SCENE_LOOK"
+                    ? "所选场景形象"
+                    : "后台自动匹配"}
+                </span>
               </div>
               <p>{payload.project_appearance.outfit_description}</p>
               <small>{payload.project_appearance.selection_reason}</small>
@@ -597,6 +670,40 @@ export function FirstFrameSelection({
               模拟输出：尚未调用正式图像生成服务。
             </p>
           ) : null}
+          {payload.review_mode === "HUMAN_CONFIRMATION" ? (
+            <section aria-label="首帧对照确认" className="first-frame-options">
+              <p>
+                请核对人物外观与场景形象一致，原视频背景、姿态、道具和构图保持不变。确认后进入视频生成。
+              </p>
+              {[
+                { id: payload.source_frame_asset_id, label: "原视频源画面" },
+                ...(payload.character_reference_asset_ids ?? []).map((id) => ({
+                  id,
+                  label: "所选场景形象",
+                })),
+              ].map(({ id, label }) =>
+                id ? (
+                  <figure key={id}>
+                    {previewUrls[id] ? (
+                      <img
+                        src={previewUrls[id]}
+                        alt={label}
+                        style={{
+                          maxWidth: "100%",
+                          maxHeight: 360,
+                          objectFit: "contain",
+                        }}
+                        onError={() => void handlePreviewError(id)}
+                      />
+                    ) : (
+                      <p>{label}预览暂不可用，请刷新重试。</p>
+                    )}
+                    <figcaption>{label}</figcaption>
+                  </figure>
+                ) : null,
+              )}
+            </section>
+          ) : null}
           <fieldset className="first-frame-options">
             <legend>
               {readOnly
@@ -608,6 +715,7 @@ export function FirstFrameSelection({
             {payload.candidates.map((candidate, index) => (
               <FirstFrameOption
                 candidate={candidate}
+                manualReview={payload.review_mode === "HUMAN_CONFIRMATION"}
                 checked={selectedAssetId === candidate.asset_id}
                 disabled={
                   readOnly ||
@@ -688,6 +796,7 @@ function firstFrameTaskStageLabel(task: FirstFrameTask | null): string {
 
 function FirstFrameOption({
   candidate,
+  manualReview = false,
   checked,
   disabled,
   index,
@@ -697,6 +806,7 @@ function FirstFrameOption({
   readOnly,
 }: {
   candidate: FirstFrameCandidate;
+  manualReview?: boolean;
   checked: boolean;
   disabled: boolean;
   index: number;
@@ -745,7 +855,9 @@ function FirstFrameOption({
         ) : null}
         {!candidate.quality ? (
           <small className="first-frame-quality-fail">
-            自动质检未完成，请查看图片后人工确认
+            {manualReview
+              ? "待人工确认：请对照场景形象核对替换效果"
+              : "自动质检未完成，请查看图片后人工确认"}
           </small>
         ) : null}
         {candidate.quality && !candidate.quality.passed ? (

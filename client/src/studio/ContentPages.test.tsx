@@ -246,6 +246,7 @@ function material(
     created_at: "2026-09-08 10:00:00",
     hidden: false,
     saved: true,
+    composite: false,
     allowed_uses: [],
     allowed_actions: ["preview", "download", "rename", "hide"],
     ...overrides,

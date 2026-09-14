@@ -1077,7 +1077,9 @@ def test_pg_first_frame_quality_transport_records_parent_cost(pg_state: str, mon
     monkeypatch.setattr(
         "app.generation_worker.prepare_first_frame_task",
         lambda *args, **kwargs: SimpleNamespace(
-            provider=SimpleNamespace(provider_name="fake"), plan=SimpleNamespace(model="fake")
+            provider=SimpleNamespace(provider_name="fake"),
+            plan=SimpleNamespace(model="fake"),
+            provider_submission=None,
         ),
     )
     monkeypatch.setattr(
@@ -1560,3 +1562,156 @@ def test_first_frame_quality_lease_is_short_and_generation_can_extend_it(pg_stat
         )
     )
     assert seconds > 1700
+
+
+@pytest.mark.parametrize("manual_review", [False, True])
+def test_first_frame_human_review_records_user_without_fake_qc_pass(
+    pg_state, monkeypatch, manual_review
+):
+    from app import first_frames
+    from app.auth import CurrentUser
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO assets (id,project_id,kind,storage_uri,sha256,size_bytes,"
+        "content_type,created_by_user_id) VALUES ('manual-frame','proj-1','first_frame',"
+        "'cos://qa/manual.png','hash',20,'image/png','u1')",
+    )
+    payload = {"candidates": [{"asset_id": "manual-frame", "quality": None}]}
+    if manual_review:
+        payload["review_mode"] = "HUMAN_CONFIRMATION"
+    monkeypatch.setattr(
+        first_frames,
+        "current_first_frame_candidates",
+        lambda *args, **kwargs: {"id": "candidate-version", "payload_json": json.dumps(payload)},
+    )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        actor = CurrentUser(id="u1", username="u1", display_name="User One", role="employee")
+        if not manual_review:
+            with pytest.raises(HTTPException) as exc:
+                first_frames.confirm_first_frame(
+                    conn, project_id="proj-1", first_frame_asset_id="manual-frame", actor=actor
+                )
+            assert exc.value.detail["code"] == "FIRST_FRAME_QUALITY_NOT_VERIFIED"
+            return
+        row = first_frames.confirm_first_frame(
+            conn, project_id="proj-1", first_frame_asset_id="manual-frame", actor=actor
+        )
+        stored = json.loads(row["payload_json"])
+        assert stored["review_mode"] == "HUMAN_CONFIRMATION"
+        assert stored["reviewed_by_user_id"] == "u1"
+        assert "quality_override" not in stored
+    assert _rows(
+        pg_state, "SELECT available_credits,reserved_credits FROM wallets WHERE user_id='u1'"
+    )[0] == {"available_credits": 1000, "reserved_credits": 0}
+
+
+def test_first_frame_async_receipt_is_fenced_and_resumes_original_task(pg_state):
+    import json
+
+    from app.image_tasks import (
+        _first_frame_checkpoint_candidates,
+        _parse_first_frame_submission,
+        record_image_task_provider,
+        save_first_frame_provider_submission,
+    )
+
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-1")
+    # Production requests are SHA256-bound; the raw fixture uses a placeholder.
+    _exec(pg_state, "UPDATE first_frame_tasks SET request_hash=%s WHERE id='ff-1'", (_SHA_A,))
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        lease = acquire_first_frame_task(conn, worker_id="worker-a")
+        record_image_task_provider(
+            conn, table="first_frame_tasks", lease=lease, provider="apilio", model="gpt-image-2"
+        )
+        receipt = {
+            "schema_version": 1,
+            "task_id": "vendor-1",
+            "account_fingerprint": _SHA_A,
+            "model": "gpt-image-2",
+            "output_count": 1,
+        }
+        save_first_frame_provider_submission(
+            conn, lease=lease, submission=receipt, cost_record_id="cost-original"
+        )
+    row = _rows(pg_state, "SELECT result_json FROM first_frame_tasks WHERE id='ff-1'")[0]
+    assert _first_frame_checkpoint_candidates(row) == []
+    assert _parse_first_frame_submission(row["result_json"])["cost_record_id"] == "cost-original"
+    _expire_running_lease(pg_state, "first_frame_tasks", "ff-1")
+    with pg_transaction() as raw:
+        resumed = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="worker-b")
+    assert resumed.attempt == 2
+    with pg_transaction() as raw:
+        with pytest.raises((RuntimeError, HTTPException)):
+            save_first_frame_provider_submission(
+                BusinessConnection.postgres(raw),
+                lease=lease,
+                submission={**receipt, "task_id": "must-not-overwrite"},
+            )
+    row = _rows(pg_state, "SELECT result_json FROM first_frame_tasks WHERE id='ff-1'")[0]
+    assert json.loads(row["result_json"])["provider_submission"]["task_id"] == "vendor-1"
+
+
+def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from app.first_frames import ApilioImageProvider
+    from app.image_tasks import (
+        enqueue_first_frame_task,
+        load_image_task_actor,
+        prepare_first_frame_task,
+    )
+
+    _seed_base(pg_state)
+    observed = []
+
+    def plan(*args, **kwargs):
+        observed.append(kwargs.get("aspect_ratio"))
+        return SimpleNamespace(
+            model="gpt-image-2",
+            quantity=1,
+            source_frame_selection_version_id="source-selection",
+            source_frame_asset_id="source-asset",
+            character_inputs=SimpleNamespace(reference_asset_ids=["scene"]),
+            project_appearance=SimpleNamespace(
+                fingerprint=_SHA_A,
+                source_analysis_version_id="analysis",
+                appearance_source="SCENE_LOOK",
+            ),
+        )
+
+    monkeypatch.setattr("app.image_tasks.prepare_first_frame_generation", plan)
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        actor = load_image_task_actor(conn, "u1")
+        kwargs = dict(
+            actor=actor,
+            project_id="proj-1",
+            model="gpt-image-2",
+            prompt=None,
+            quantity=1,
+            character_version_id=None,
+            character_reference_selection_id=None,
+            idempotency_key="ratio-key-1",
+        )
+        first = enqueue_first_frame_task(conn, **kwargs, aspect_ratio="9:16")
+        assert json.loads(first["request_json"])["aspect_ratio"] == "9:16"
+        assert enqueue_first_frame_task(conn, **kwargs, aspect_ratio="9:16")["id"] == first["id"]
+    with pg_transaction() as raw:
+        with pytest.raises(HTTPException) as conflict:
+            enqueue_first_frame_task(
+                BusinessConnection.postgres(raw), **kwargs, aspect_ratio="16:9"
+            )
+        assert conflict.value.status_code == 409
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        lease = acquire_first_frame_task(conn, worker_id="ratio-worker")
+        prepare_first_frame_task(
+            conn, lease=lease, provider=ApilioImageProvider(api_key="test-key")
+        )
+    assert observed[-1] == "9:16"

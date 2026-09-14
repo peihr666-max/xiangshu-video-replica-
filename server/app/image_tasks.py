@@ -25,6 +25,7 @@ from app.db_portable import BusinessConnection
 from app.first_frames import (
     FIRST_FRAME_IMAGE_CONTENT_TYPES,
     MAX_FIRST_FRAME_QUALITY_ATTEMPTS,
+    ApilioImageProvider,
     FakeFirstFrameQualityInspector,
     FirstFrameGenerationPlan,
     FirstFrameGenerationWork,
@@ -84,6 +85,7 @@ class FirstFrameTaskPrepared:
     provider: ImageProvider
     quality_inspector: FirstFrameQualityInspector
     checkpoint_candidates: list[dict[str, object]]
+    provider_submission: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,8 @@ def _first_frame_checkpoint_candidates(row: sqlite3.Row) -> list[dict[str, objec
     if raw is None:
         return []
     candidates = _parse_first_frame_checkpoint(raw)
+    if candidates is None and _parse_first_frame_submission(raw) is not None:
+        return []
     if candidates is None:
         raise _task_error(
             409,
@@ -140,6 +144,41 @@ def _parse_first_frame_checkpoint(raw: object) -> list[dict[str, object]] | None
     return cast(list[dict[str, object]], candidates)
 
 
+def _parse_first_frame_submission(raw: object) -> dict[str, object] | None:
+    try:
+        payload = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    receipt = payload.get("provider_submission")
+    execution = payload.get("execution")
+    if not isinstance(receipt, dict) or not isinstance(execution, dict):
+        return None
+    if (
+        receipt.get("schema_version") != 1
+        or execution.get("provider") != "apilio"
+        or receipt.get("model") != execution.get("model")
+        or not isinstance(receipt.get("output_count"), int)
+        or receipt["output_count"] not in {1, 2, 3, 4}
+        or not isinstance(receipt.get("cost_record_id"), str)
+    ):
+        return None
+    for key in ("account_fingerprint", "request_hash"):
+        value = receipt.get(key)
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(c not in "0123456789abcdef" for c in value)
+        ):
+            return None
+    try:
+        ApilioImageProvider._task_id(receipt.get("task_id"))
+    except Exception:
+        return None
+    return receipt
+
+
 def _has_recoverable_first_frame_checkpoint(raw: object) -> bool:
     try:
         payload = json.loads(str(raw))
@@ -152,6 +191,8 @@ def _has_recoverable_first_frame_checkpoint(raw: object) -> bool:
         return False
     if not str(execution.get("provider") or "") or not str(execution.get("model") or ""):
         return False
+    if _parse_first_frame_submission(raw) is not None:
+        return True
     candidates = _parse_first_frame_checkpoint(raw)
     if candidates is None:
         return False
@@ -242,6 +283,7 @@ def enqueue_first_frame_task(
     character_version_id: str | None,
     character_reference_selection_id: str | None,
     idempotency_key: str,
+    aspect_ratio: str | None = None,
 ) -> sqlite3.Row:
     # Authorization must precede the idempotent replay lookup. Otherwise an
     # unrelated user who guesses a project/key pair can observe another
@@ -266,6 +308,8 @@ def enqueue_first_frame_task(
         "character_version_id": character_version_id,
         "character_reference_selection_id": character_reference_selection_id,
     }
+    if aspect_ratio is not None:
+        request_parameters["aspect_ratio"] = aspect_ratio
     replay = conn.execute(
         "SELECT * FROM first_frame_tasks WHERE project_id = %s AND idempotency_key = %s",
         (project_id, idempotency_key),
@@ -273,6 +317,10 @@ def enqueue_first_frame_task(
     if replay is not None:
         stored_payload = json.loads(str(replay["request_json"]))
         stored_parameters = {key: stored_payload.get(key) for key in request_parameters}
+        if stored_payload.get("aspect_ratio") != aspect_ratio:
+            raise _task_error(
+                409, "FIRST_FRAME_TASK_IDEMPOTENCY_CONFLICT", "图片画幅已变化，请重新提交。"
+            )
         if canonical_request_hash(stored_parameters) != canonical_request_hash(request_parameters):
             raise _task_error(
                 409,
@@ -292,6 +340,7 @@ def enqueue_first_frame_task(
         quantity=quantity,
         character_version_id=character_version_id,
         character_reference_selection_id=character_reference_selection_id,
+        aspect_ratio=aspect_ratio,
     )
     request_payload = {
         **request_parameters,
@@ -316,7 +365,7 @@ def enqueue_first_frame_task(
     checkpoint_json: str | None = None
     previous = conn.execute(
         """
-        SELECT id, result_json, error_code FROM first_frame_tasks
+        SELECT id, result_json, error_code, status FROM first_frame_tasks
         WHERE project_id = %s AND request_hash = %s
           AND status IN ('FAILED','SUBMISSION_UNCERTAIN')
           AND result_json IS NOT NULL
@@ -328,6 +377,17 @@ def enqueue_first_frame_task(
         "IMAGE_TASK_PROVIDER_CHANGED",
         "IMAGE_TASK_EXECUTION_UNKNOWN",
     }
+    if (
+        previous is not None
+        and previous["status"] == "SUBMISSION_UNCERTAIN"
+        and _parse_first_frame_submission(previous["result_json"]) is not None
+        and _parse_first_frame_checkpoint(previous["result_json"]) is None
+    ):
+        raise _task_error(
+            409,
+            "FIRST_FRAME_PROVIDER_TASK_UNRESOLVED",
+            "已有图像任务等待供应商结果核对，请勿重复提交。",
+        )
     if previous is not None:
         from app.usage_billing import finish_source
 
@@ -336,8 +396,13 @@ def enqueue_first_frame_task(
         previous is not None
         and not checkpoint_blocked
         and _has_recoverable_first_frame_checkpoint(previous["result_json"])
+        and _parse_first_frame_checkpoint(previous["result_json"]) is not None
     ):
-        checkpoint_json = str(previous["result_json"])
+        checkpoint_payload = json.loads(str(previous["result_json"]))
+        # A new customer operation may reuse archived images, never another
+        # operation's in-flight supplier receipt or cost record.
+        checkpoint_payload.pop("provider_submission", None)
+        checkpoint_json = json.dumps(checkpoint_payload, ensure_ascii=False, sort_keys=True)
     task_id = str(uuid4())
     conn.execute(
         """
@@ -703,6 +768,7 @@ def prepare_first_frame_task(
     lease: ImageTaskLease,
     provider: ImageProvider,
     quality_inspector: FirstFrameQualityInspector | None = None,
+    quality_inspector_factory: Callable[[], FirstFrameQualityInspector] | None = None,
 ) -> FirstFrameTaskPrepared:
     row = _require_owned_task(conn, "first_frame_tasks", lease)
     payload = json.loads(str(row["request_json"]))
@@ -715,6 +781,7 @@ def prepare_first_frame_task(
             model=cast(Any, payload["model"]),
             prompt=cast(str | None, payload.get("prompt")),
             quantity=int(payload["quantity"]),
+            aspect_ratio=cast(str | None, payload.get("aspect_ratio")),
             character_version_id=cast(str | None, payload.get("character_version_id")),
             character_reference_selection_id=cast(
                 str | None, payload.get("character_reference_selection_id")
@@ -740,20 +807,66 @@ def prepare_first_frame_task(
         "project_appearance_fingerprint": plan.project_appearance.fingerprint,
         "source_analysis_version_id": plan.project_appearance.source_analysis_version_id,
     }
+    if payload.get("aspect_ratio") is not None:
+        current_payload["aspect_ratio"] = payload["aspect_ratio"]
     if canonical_request_hash(current_payload) != str(row["request_hash"]):
         raise _task_error(
             409,
             "FIRST_FRAME_TASK_INPUTS_CHANGED",
             "源画面或人物参考已变化，请重新提交首帧生成。",
         )
+    submission = _parse_first_frame_submission(row["result_json"])
+    if submission is not None and (
+        submission["request_hash"] != str(row["request_hash"])
+        or not isinstance(provider, ApilioImageProvider)
+        or submission["account_fingerprint"] != provider.account_fingerprint
+        or submission["output_count"] != plan.quantity
+    ):
+        raise _task_error(
+            409, "FIRST_FRAME_RECEIPT_CHANGED", "原图像任务的服务或输入已变化，请联系管理员核对。"
+        )
+    inspector = quality_inspector
+    if inspector is None and plan.project_appearance.appearance_source != "SCENE_LOOK":
+        inspector = quality_inspector_factory() if quality_inspector_factory else None
     conn.commit()
     return FirstFrameTaskPrepared(
         lease=lease,
         plan=plan,
         provider=provider,
-        quality_inspector=quality_inspector or FakeFirstFrameQualityInspector(),
+        quality_inspector=inspector or FakeFirstFrameQualityInspector(),
         checkpoint_candidates=_first_frame_checkpoint_candidates(row),
+        provider_submission=submission,
     )
+
+
+def save_first_frame_provider_submission(
+    conn: BusinessConnection,
+    *,
+    lease: ImageTaskLease,
+    submission: dict[str, object],
+    cost_record_id: str = "",
+) -> None:
+    row = _require_owned_task(conn, "first_frame_tasks", lease)
+    payload = json.loads(str(row["result_json"]))
+    receipt = {
+        **submission,
+        "request_hash": str(row["request_hash"]),
+        "cost_record_id": cost_record_id,
+    }
+    if "provider_submission" in payload and payload["provider_submission"] != receipt:
+        raise RuntimeError("first-frame provider receipt cannot be replaced")
+    payload["provider_submission"] = receipt
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if _parse_first_frame_submission(encoded) is None:
+        raise RuntimeError("invalid first-frame provider receipt")
+    updated = conn.execute(
+        "UPDATE first_frame_tasks SET result_json=%s, updated_at=CURRENT_TIMESTAMP "
+        "WHERE id=%s AND status='RUNNING' AND locked_by=%s AND attempt=%s",
+        (encoded, lease.id, lease.worker_id, lease.attempt),
+    )
+    if updated.rowcount != 1:
+        raise RuntimeError("first-frame task lease was lost")
+    conn.commit()
 
 
 def save_first_frame_task_checkpoint(
@@ -770,6 +883,7 @@ def save_first_frame_task_checkpoint(
     if current is None:
         raise RuntimeError("first-frame task lease was lost")
     execution: object = None
+    submission = _parse_first_frame_submission(current["result_json"])
     if current is not None and current["result_json"] is not None:
         try:
             current_payload = json.loads(str(current["result_json"]))
@@ -785,6 +899,8 @@ def save_first_frame_task_checkpoint(
     }
     if isinstance(execution, dict):
         payload["execution"] = execution
+    if submission is not None:
+        payload["provider_submission"] = submission
     updated = conn.execute(
         """
         UPDATE first_frame_tasks
@@ -817,6 +933,7 @@ def run_first_frame_task_outside_transaction(
     quality_heartbeat: Callable[[], None] | None = None,
     checkpoint_candidates: Callable[[list[GeneratedImage]], None] | None = None,
     on_generated_images: Callable[[int], None] | None = None,
+    save_provider_submission: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[FirstFrameGenerationWork, StoredFirstFrameCandidates]:
     if heartbeat is not None:
         heartbeat()
@@ -863,6 +980,8 @@ def run_first_frame_task_outside_transaction(
             archive_generated=archive_generated if checkpoint_candidates is not None else None,
             checkpoint_candidates=persist_checkpoint if checkpoint_candidates is not None else None,
             on_generated_images=on_generated_images,
+            provider_submission=prepared.provider_submission,
+            save_provider_submission=save_provider_submission,
         )
     except BaseException:
         if uncheckpointed_assets:
@@ -891,6 +1010,12 @@ def complete_first_frame_task(
 
     def mark_task_succeeded(version: sqlite3.Row) -> None:
         now = _now_text()
+        current = _require_owned_task(conn, "first_frame_tasks", prepared.lease)
+        result: dict[str, object] = {"version_id": str(version["id"])}
+        receipt = _parse_first_frame_submission(current["result_json"])
+        if receipt is not None:
+            result["provider_submission"] = receipt
+            result["execution"] = {"provider": prepared.provider.provider_name, "model": work.model}
         updated = conn.execute(
             """
             UPDATE first_frame_tasks
@@ -903,7 +1028,7 @@ def complete_first_frame_task(
             """,
             (
                 str(version["id"]),
-                json.dumps({"version_id": str(version["id"])}, sort_keys=True),
+                json.dumps(result, sort_keys=True),
                 now,
                 now,
                 prepared.lease.id,

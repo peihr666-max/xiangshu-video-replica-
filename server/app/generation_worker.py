@@ -79,6 +79,7 @@ from app.image_tasks import (
     record_image_task_provider,
     renew_image_task_lease,
     run_first_frame_task_outside_transaction,
+    save_first_frame_provider_submission,
     save_first_frame_task_checkpoint,
 )
 from app.media_routes import get_media_storage
@@ -710,14 +711,18 @@ def run_worker_once(
                     candidates=candidates,
                 )
 
+            def persist_first_frame_submission(submission: dict[str, object]) -> None:
+                save_first_frame_provider_submission(
+                    conn, lease=first_frame_lease, submission=submission
+                )
+
             try:
                 prepared = prepare_first_frame_task(
                     conn,
                     lease=first_frame_lease,
                     provider=image_provider or get_image_provider(conn),
-                    quality_inspector=(
-                        first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
-                    ),
+                    quality_inspector=first_frame_quality_inspector,
+                    quality_inspector_factory=lambda: get_first_frame_quality_inspector(conn),
                 )
                 record_image_task_provider(
                     conn,
@@ -726,6 +731,7 @@ def run_worker_once(
                     provider=prepared.provider.provider_name,
                     model=prepared.plan.model,
                 )
+                submission_started = prepared.provider_submission is not None
                 with billing_context(first_frame_lease.id):
                     work, stored = run_first_frame_task_outside_transaction(
                         prepared,
@@ -735,6 +741,7 @@ def run_worker_once(
                         heartbeat=renew_first_frame_lease,
                         quality_heartbeat=lambda: renew_first_frame_lease(quality_phase=True),
                         checkpoint_candidates=persist_first_frame_checkpoint,
+                        save_provider_submission=persist_first_frame_submission,
                     )
                 complete_first_frame_task(
                     conn,
@@ -1434,6 +1441,7 @@ def run_pg_worker_once(
             work = None
             first_frame_cost_id = ""
             first_frame_call_number = 0
+            has_provider_receipt = False
 
             def mark_pg_submission_started() -> None:
                 nonlocal submission_started, first_frame_cost_id, first_frame_call_number
@@ -1483,6 +1491,17 @@ def run_pg_worker_once(
                         candidates=candidates,
                     )
 
+            def persist_pg_first_frame_submission(submission: dict[str, object]) -> None:
+                nonlocal has_provider_receipt
+                with pg_transaction() as raw_conn:
+                    save_first_frame_provider_submission(
+                        BusinessConnection.postgres(raw_conn),
+                        lease=first_frame_lease,
+                        submission=submission,
+                        cost_record_id=first_frame_cost_id,
+                    )
+                has_provider_receipt = True
+
             try:
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
@@ -1490,9 +1509,8 @@ def run_pg_worker_once(
                         conn,
                         lease=first_frame_lease,
                         provider=image_provider or get_image_provider(conn),
-                        quality_inspector=(
-                            first_frame_quality_inspector or get_first_frame_quality_inspector(conn)
-                        ),
+                        quality_inspector=first_frame_quality_inspector,
+                        quality_inspector_factory=lambda: get_first_frame_quality_inspector(conn),
                     )
                     record_image_task_provider(
                         conn,
@@ -1501,6 +1519,22 @@ def run_pg_worker_once(
                         provider=prepared.provider.provider_name,
                         model=prepared.plan.model,
                     )
+                    if prepared.provider_submission is not None:
+                        has_provider_receipt = submission_started = True
+                        receipt_cost_id = str(prepared.provider_submission["cost_record_id"])
+                        receipt_cost = conn.execute(
+                            "SELECT status FROM operation_cost_records WHERE id=%s AND "
+                            "source_type='first_frame_task' AND source_id LIKE %s AND user_id=%s",
+                            (
+                                receipt_cost_id,
+                                f"{first_frame_lease.id}:%",
+                                first_frame_lease.created_by_user_id,
+                            ),
+                        ).fetchone()
+                        if receipt_cost is None:
+                            raise RuntimeError("first-frame receipt cost binding is missing")
+                        if receipt_cost["status"] == "PENDING":
+                            first_frame_cost_id = receipt_cost_id
                 with billing_context(first_frame_lease.id):
                     work, stored = run_first_frame_task_outside_transaction(
                         prepared,
@@ -1510,6 +1544,7 @@ def run_pg_worker_once(
                         heartbeat=renew_pg_first_frame_lease,
                         quality_heartbeat=lambda: renew_pg_first_frame_lease(quality_phase=True),
                         checkpoint_candidates=persist_pg_first_frame_checkpoint,
+                        save_provider_submission=persist_pg_first_frame_submission,
                     )
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
@@ -1530,7 +1565,15 @@ def run_pg_worker_once(
                     )
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
-                    complete_operation_cost(conn, record_id=first_frame_cost_id, usage_amount=None)
+                    # The same receipt can resume after transient polling/storage failures.
+                    # Keep its original cost pending until that recovery settles.
+                    known_failure = isinstance(exc, HTTPException) and exc.status_code < 500
+                    if not (
+                        has_provider_receipt and first_frame_lease.attempt < 2 and not known_failure
+                    ):
+                        complete_operation_cost(
+                            conn, record_id=first_frame_cost_id, usage_amount=None
+                        )
                     fail_image_task(
                         conn,
                         table="first_frame_tasks",

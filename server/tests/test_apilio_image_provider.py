@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -42,6 +43,10 @@ class FakeApilioTransport:
     def get(self, url: str) -> tuple[bytes, Mapping[str, str]]:
         content, content_type = self.downloads[url]
         return content, {"content-type": content_type}
+
+    def get_json(self, url: str, *, headers: Mapping[str, str]):
+        self.requests.append(RecordedRequest(url=url, headers=headers, body=b""))
+        return self.response_body, self.response_headers
 
 
 def image(content: bytes, content_type: str, filename: str) -> ImageInput:
@@ -418,7 +423,9 @@ def test_first_frame_quality_timeout_delivers_paid_checkpoint_without_regenerati
         quantity=1,
         model="gpt-image-2",
         effective_prompt="replace person",
-        project_appearance=SimpleNamespace(outfit_description="workwear"),
+        project_appearance=SimpleNamespace(
+            outfit_description="workwear", appearance_source="VIDEO_ANALYSIS"
+        ),
     )
     checkpoints = []
     result = perform_first_frame_generation(
@@ -451,3 +458,338 @@ def test_first_frame_quality_has_separate_single_attempt_budget():
     assert bounded.max_attempts == 1
     assert original.transport.timeout_seconds == 240
     assert original.max_attempts == 2
+
+
+@pytest.mark.parametrize("resuming", [False, True])
+def test_scene_replacement_has_no_ai_review_or_automatic_regeneration(resuming):
+    from types import SimpleNamespace
+
+    from app.first_frames import GeneratedImage, perform_first_frame_generation
+
+    class Inspector:
+        def inspect_source(self, *args, **kwargs):
+            pytest.fail("scene workflow must reuse validated source selection")
+
+        def inspect_candidate(self, *args, **kwargs):
+            pytest.fail("scene output is reviewed by its user")
+
+    class Provider:
+        calls = 0
+
+        def edit(self, **kwargs):
+            self.calls += 1
+            return [GeneratedImage(content=b"scene-result", content_type="image/png")]
+
+    provider = Provider()
+    work = SimpleNamespace(
+        source_image=image(b"source", "image/png", "source.png"),
+        reference_images=[image(b"scene", "image/png", "scene.png")],
+        quantity=1,
+        model="gpt-image-2",
+        effective_prompt="replace person",
+        project_appearance=SimpleNamespace(appearance_source="SCENE_LOOK"),
+    )
+    checkpoints = []
+    result = perform_first_frame_generation(
+        work,
+        provider=provider,
+        quality_inspector=Inspector(),
+        resumed_candidates=[
+            GeneratedImage(content=b"scene-result", content_type="image/png", quality_attempt=1)
+        ]
+        if resuming
+        else None,
+        checkpoint_candidates=lambda values: checkpoints.append(list(values)),
+    )
+    assert provider.calls == (0 if resuming else 1)
+    assert len(result) == 1 and result[0].quality is None
+    if not resuming:
+        assert checkpoints[-1] == result
+
+
+def test_scene_reference_never_adds_identity_original_photo():
+    import json
+    from types import SimpleNamespace
+
+    from app.first_frames import effective_reference_asset_ids
+
+    conn = SimpleNamespace(
+        execute=lambda *args: SimpleNamespace(
+            fetchone=lambda: {
+                "snapshot_json": json.dumps({"contact_sheet_asset_id": "scene-sheet"}),
+                "persona_snapshot_json": json.dumps(
+                    {"appearance_constraints_json": {"appearance_type": "scene"}}
+                ),
+                "source_asset_id": "original-identity-photo",
+            }
+        )
+    )
+    assert effective_reference_asset_ids(
+        conn, character_version_id="scene-version", legacy_selected=["scene-front"]
+    ) == (["scene-sheet"], ["scene_image"])
+
+
+def test_scene_prompt_uses_images_even_without_scene_text():
+    from app.first_frames import (
+        _apply_scene_look_snapshot,
+        derive_project_appearance_spec,
+        normalize_prompt,
+    )
+
+    appearance = _apply_scene_look_snapshot(
+        derive_project_appearance_spec(
+            analysis_payload={}, source_analysis_version_id=None, source_timestamp_seconds=None
+        ),
+        character_snapshot={
+            "persona_snapshot_json": {
+                "name": "selected scene",
+                "appearance_constraints_json": {"appearance_type": "scene"},
+            }
+        },
+        character_version_id="scene-version",
+    )
+    assert appearance.appearance_source == "SCENE_LOOK"
+    prompt = normalize_prompt(
+        None,
+        character_name="selected scene",
+        reference_roles=["scene_image"],
+        project_appearance=appearance,
+    )
+    assert "唯一外观依据" in prompt
+    assert "禁止模糊补边" in prompt
+    assert "原有字幕、文字和标识保持原样" in prompt
+    assert "原始照片" not in prompt
+    assert "后台自动匹配" not in prompt
+
+
+def test_scene_provider_timeout_does_not_resubmit_paid_generation():
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.first_frames import RetryableImageProviderFailed, perform_first_frame_generation
+
+    calls = []
+    completed = []
+
+    class Provider:
+        def edit(self, **kwargs):
+            calls.append(kwargs)
+            raise RetryableImageProviderFailed("response timed out")
+
+    work = SimpleNamespace(
+        source_image=image(b"source", "image/png", "source.png"),
+        reference_images=[image(b"scene", "image/png", "scene.png")],
+        quantity=1,
+        model="gpt-image-2",
+        effective_prompt="replace person",
+        project_appearance=SimpleNamespace(appearance_source="SCENE_LOOK"),
+    )
+    with pytest.raises(HTTPException):
+        perform_first_frame_generation(
+            work, provider=Provider(), after_provider_call=lambda: completed.append(True)
+        )
+    assert len(calls) == 1
+    assert completed == [], "an unanswered submission must remain uncertain"
+
+
+def test_async_edit_receipt_precedes_poll_and_uses_separate_authenticated_get():
+    transport = FakeApilioTransport(response_body=b'{"task_id":"task-123"}')
+    provider = ApilioImageProvider(api_key="test-key", transport=transport)
+    task_id = provider.submit_edit(
+        model="gpt-image-2",
+        prompt="replace person",
+        source_image=image(b"source", "image/png", "source.png"),
+        character_reference_images=[image(b"scene", "image/png", "scene.png")],
+        output_count=1,
+    )
+    assert task_id == "task-123"
+    assert transport.requests[0].url.endswith("/v1/images/edits?async=true")
+    output = png_with_dimensions(940, 1672)
+    transport.response_body = json.dumps(
+        {
+            "code": "success",
+            "data": {
+                "task_id": task_id,
+                "status": "SUCCESS",
+                "data": {"data": [{"url": "https://cdn.example/async.png"}]},
+            },
+        }
+    ).encode()
+    transport.downloads["https://cdn.example/async.png"] = (output, "image/png")
+    assert provider.poll_edit(task_id, output_count=1)[0].content == output
+    request = transport.requests[-1]
+    assert request.url == "https://api.apilio.ai/v1/images/tasks/task-123"
+    assert request.headers["Authorization"] == "Bearer test-key"
+    assert request.body == b""
+
+
+@pytest.mark.parametrize("task_id", ["../tokens", "https://other.example/x", "a?x=y", ""])
+def test_async_edit_rejects_unsafe_task_ids_before_network(task_id):
+    transport = FakeApilioTransport(response_body=b"{}")
+    provider = ApilioImageProvider(api_key="test-key", transport=transport)
+    with pytest.raises(ImageProviderFailed):
+        provider.poll_edit(task_id, output_count=1)
+    assert transport.requests == []
+
+
+def test_async_edit_pending_failure_and_mismatched_receipt():
+    from fastapi import HTTPException
+
+    transport = FakeApilioTransport(response_body=b"{}")
+    provider = ApilioImageProvider(api_key="test-key", transport=transport)
+    transport.response_body = b'{"code":"success","data":{"task_id":"t1","status":"IN_PROGRESS"}}'
+    assert provider.poll_edit("t1", output_count=1) is None
+    transport.response_body = b'{"code":"success","data":{"task_id":"other","status":"SUCCESS"}}'
+    with pytest.raises(ImageProviderFailed):
+        provider.poll_edit("t1", output_count=1)
+    transport.response_body = (
+        b'{"code":"success","data":{"task_id":"t1","status":"FAILURE","fail_reason":"secret"}}'
+    )
+    with pytest.raises(HTTPException) as failed:
+        provider.poll_edit("t1", output_count=1)
+    assert failed.value.status_code == 422
+    assert "secret" not in str(failed.value.detail)
+
+
+def test_async_scene_persists_receipt_before_poll_and_resume_never_posts(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.first_frames import generate_scene_async
+
+    transport = FakeApilioTransport(response_body=b'{"task_id":"scene-task"}')
+    provider = ApilioImageProvider(api_key="test-key", transport=transport)
+    work = SimpleNamespace(
+        model="gpt-image-2",
+        effective_prompt="replace person",
+        source_image=image(b"source", "image/png", "source.png"),
+        reference_images=[image(b"scene", "image/png", "scene.png")],
+        quantity=1,
+    )
+    receipt = {}
+    events = []
+
+    def save(value):
+        receipt.update(value)
+        events.append("save")
+
+    def poll(task_id, *, output_count):
+        assert receipt["task_id"] == task_id
+        events.append("poll")
+        return [object()]
+
+    monkeypatch.setattr(provider, "poll_edit", poll)
+    for saved in (None, receipt):
+        generate_scene_async(
+            work,
+            provider=provider,
+            submission=saved,
+            save_submission=save,
+            before_paid_call=lambda: events.append("post"),
+            heartbeat=lambda: None,
+        )
+    assert events == ["post", "save", "poll", "poll"]
+    assert len(transport.requests) == 1
+
+
+def test_async_scene_failed_receipt_write_never_polls(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.first_frames import generate_scene_async
+
+    provider = ApilioImageProvider(api_key="test-key")
+    monkeypatch.setattr(provider, "submit_edit", lambda **kwargs: "scene-task")
+    monkeypatch.setattr(
+        provider, "poll_edit", lambda *args, **kwargs: pytest.fail("uncommitted receipt polled")
+    )
+    work = SimpleNamespace(
+        model="gpt-image-2",
+        effective_prompt="replace",
+        source_image=image(b"source", "image/png", "source.png"),
+        reference_images=[],
+        quantity=1,
+    )
+
+    def save(value):
+        raise RuntimeError("lease lost")
+
+    with pytest.raises(RuntimeError, match="lease lost"):
+        generate_scene_async(
+            work,
+            provider=provider,
+            submission=None,
+            save_submission=save,
+            before_paid_call=lambda: None,
+            heartbeat=None,
+        )
+
+
+def test_apilio_accepts_typed_data_uri_in_b64_json():
+    output = png_with_dimensions(940, 1672)
+    transport = FakeApilioTransport(
+        response_body=json.dumps(
+            {"data": [{"b64_json": "data:image/png;base64," + base64.b64encode(output).decode()}]}
+        ).encode()
+    )
+    provider = ApilioImageProvider(api_key="test-key", transport=transport)
+    assert provider._parse_response(transport.response_body, output_count=1)[0].content == output
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "data:text/html;base64,",
+        "data:image/svg+xml;base64,",
+        "data:image/png,",
+        "data:image/jpeg;base64,",
+    ],
+)
+def test_apilio_data_uri_rejects_unsupported_or_mismatched_type(header):
+    output = png_with_dimensions(940, 1672)
+    transport = FakeApilioTransport(response_body=b"{}")
+    provider = ApilioImageProvider(api_key="test-key", transport=transport)
+    with pytest.raises(ImageProviderFailed):
+        provider._parse_image({"b64_json": header + base64.b64encode(output).decode()})
+
+
+@pytest.mark.parametrize(
+    "ratio,size",
+    [
+        ("9:16", "1008x1792"),
+        ("16:9", "1792x1008"),
+        ("1:1", "1024x1024"),
+        ("3:4", "1152x1536"),
+        ("4:3", "1536x1152"),
+    ],
+)
+def test_selected_aspect_ratio_is_sent_to_provider_and_validated_by_api(ratio, size):
+    from app.first_frame_routes import GenerateFirstFramesRequest
+
+    assert GenerateFirstFramesRequest(aspect_ratio=ratio).aspect_ratio == ratio
+    transport = FakeApilioTransport(response_body=b'{"task_id":"ratio-task"}')
+    provider = ApilioImageProvider(api_key="test-key", transport=transport)
+    for model in ("gpt-image-2", "nano-banana-pro-2k"):
+        provider.submit_edit(
+            model=model,
+            prompt="replace",
+            source_image=image(b"x", "image/png", "x.png"),
+            character_reference_images=[],
+            output_count=1,
+            aspect_ratio=ratio,
+        )
+        body = transport.requests[-1].body
+        field = (
+            f'name="size"\r\n\r\n{size}'
+            if model == "gpt-image-2"
+            else f'name="aspect_ratio"\r\n\r\n{ratio}'
+        )
+        assert field.encode() in body
+
+
+def test_aspect_ratio_api_rejects_arbitrary_dimensions():
+    from pydantic import ValidationError
+
+    from app.first_frame_routes import GenerateFirstFramesRequest
+
+    with pytest.raises(ValidationError):
+        GenerateFirstFramesRequest(aspect_ratio="9999:1")

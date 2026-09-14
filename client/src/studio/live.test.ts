@@ -462,6 +462,7 @@ describe("真实 Studio 只读适配器", () => {
       created_at: "2026-09-06 10:00:00",
       hidden: false,
       saved: true,
+      composite: false,
       allowed_uses: ["first_frame", "tail_frame", "reference"],
       allowed_actions: ["preview", "download", "rename", "hide"],
     } satisfies MaterialItem;
@@ -1123,6 +1124,7 @@ describe("真实 Studio 只读适配器", () => {
             created_at: "2026-09-08T10:00:00+08:00",
             hidden: false,
             saved: true,
+            composite: false,
             allowed_uses: ["reference"],
             allowed_actions: ["preview"],
           }) satisfies MaterialItem,
@@ -1761,6 +1763,7 @@ describe("studioAssetFromMaterial（素材映射数值时长）", () => {
     created_at: "2026-09-06 10:00:00",
     hidden: false,
     saved: true,
+    composite: false,
     allowed_uses: ["reference"],
     allowed_actions: ["preview", "download"],
   } satisfies MaterialItem;

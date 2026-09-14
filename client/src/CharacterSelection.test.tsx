@@ -97,6 +97,31 @@ const selected: api.ProjectMainCharacter = {
 };
 
 describe("CharacterSelection", () => {
+  it("requires explicit scene selection and excludes the restored base appearance", async () => {
+    vi.mocked(api.getProjectMainCharacter).mockResolvedValue(selected);
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      option,
+      sceneOption,
+    ]);
+    const onVersionChange = vi.fn();
+    render(
+      <CharacterSelection
+        projectId="scene-only"
+        variant="inline"
+        sceneOnly
+        onVersionChange={onVersionChange}
+      />,
+    );
+    const dropdown = await screen.findByRole("combobox", { name: "角色版本" });
+    await screen.findByRole("option", { name: /工地巡检/ });
+    expect(
+      within(dropdown).queryByRole("option", { name: /基础形象/ }),
+    ).not.toBeInTheDocument();
+    expect(dropdown).toHaveValue("");
+    expect(onVersionChange).toHaveBeenCalledWith(null);
+    expect(api.chooseProjectMainCharacterVersion).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.getProjectMainCharacter).mockResolvedValue(null);

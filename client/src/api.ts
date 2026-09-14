@@ -626,6 +626,10 @@ export type FirstFrameCandidate = {
 };
 
 export type FirstFrameCandidates = {
+  aspect_ratio?: GenerateFirstFramesInput["aspect_ratio"];
+  review_mode?: "HUMAN_CONFIRMATION" | "AUTOMATIC_QUALITY";
+  source_frame_asset_id?: string;
+  character_reference_asset_ids?: string[];
   provider: string;
   model: FirstFrameModel;
   prompt: string;
@@ -3969,6 +3973,26 @@ export function readFirstFrameCandidates(
     return null;
   }
   return {
+    review_mode:
+      payload.review_mode === "HUMAN_CONFIRMATION"
+        ? "HUMAN_CONFIRMATION"
+        : "AUTOMATIC_QUALITY",
+    aspect_ratio: ["9:16", "16:9", "1:1", "3:4", "4:3"].includes(
+      String(payload.aspect_ratio),
+    )
+      ? (payload.aspect_ratio as GenerateFirstFramesInput["aspect_ratio"])
+      : null,
+    source_frame_asset_id:
+      typeof payload.source_frame_asset_id === "string"
+        ? payload.source_frame_asset_id
+        : undefined,
+    character_reference_asset_ids:
+      Array.isArray(payload.character_reference_asset_ids) &&
+      payload.character_reference_asset_ids.every(
+        (id) => typeof id === "string",
+      )
+        ? payload.character_reference_asset_ids
+        : [],
     provider: payload.provider,
     model: payload.model,
     prompt: payload.prompt,
