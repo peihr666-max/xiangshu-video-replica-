@@ -5,7 +5,7 @@
 用户在真实业务联调中要求：人物照片上传生成人物多视图前必须弹出授权声明，明确上传者应有权使用照片及相应责任。本任务只实现该要求；原业务联调报告独立交付，不将组件测试冒充完整业务通过。
 
 - Owner：Codex / 01a09d8c-b82a-79a3-b27c-bc66bbddad2c。
-- Reviewer：代码自检；用户选择仅保留本地成果，未声称独立人工评审。
+- Reviewer：代码自检；已获远程 PR 授权，未声称独立人工评审。
 - 分支：feat/image-consent-20260914；开工基线：origin/main ad3247b；最终整合主干：50059bc。
 - 隔离资源：IMAGE-CONSENT-20260914 worktree、预览 5198、image-consent-quality-20260914 与 image-consent-pg-shard0—3-20260914 独立 PG 容器及独立网络。未修改在用 LOCAL-JOINT 环境。
 
@@ -35,7 +35,7 @@
 
 ```text
 任务/工作包：IMAGE-CONSENT-20260914（用户新增维护需求；不改 CW/T 业务完成状态）
-Owner / Reviewer：Codex / 代码自检；用户选择仅保留本地成果
+Owner / Reviewer：Codex / 代码自检；已获远程 PR 授权
 分支 / 基线 SHA：feat/image-consent-20260914 / 开工 ad3247b，整合 50059bc
 上游规格段落：2026-09-14 用户图像授权要求；AGENTS.md 工作流与安全红线
 改动文件：SimpleCharacterUpload 组件及测试、CharacterLibrary 测试、api.ts、生成 API 类型、simple_character_routes.py、image_tasks.py、test_character_image_authorization.py、测试分片清单及任务证据账本
@@ -47,12 +47,12 @@ Owner / Reviewer：Codex / 代码自检；用户选择仅保留本地成果
 迁移与回滚：无迁移；前后端同时发布或同时回滚；历史记录保留
 外部授权记录：用户已授权原真实业务测试预算与指定 AI 场景的 Hifly 分身测试；本功能验收未新增供应商请求
 未测试项：生产部署、远程门禁、在用业务环境升级后真实付费链路
-Lore 提交 SHA：代码提交 60fe2c2；最终本地文档提交见分支历史；用户明确选择仅保留本地成果，不推送、不创建 PR、不部署，远程三门禁未运行
+Lore 提交 SHA：代码提交 60fe2c2；最终提交见分支历史；后续明确授权已覆盖先前本地交付选择，PR #106 已创建，不合并、不部署，远程三门禁待核验
 ```
 
 ## 用户交付选择
 
-自动审批拦截首次远程推送后，用户明确回复“仅保留本地成果”。按此指令结束远程交付流程，不再请求同一授权、不推送或创建 PR。独立 worktree 和分支保留，代码及报告本地完成；在用环境未部署。
+自动审批拦截首次远程推送后，用户明确回复“仅保留本地成果”。当时按该指令停止远程交付；其后用户明确授权远程推送与创建 PR，当前按后续授权执行。独立 worktree 和分支保留，代码及报告本地完成；在用环境未部署。
 
 ## 后续整改与远程提交授权
 
