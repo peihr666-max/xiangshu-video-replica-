@@ -6,9 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, TypedDict, cast
 from uuid import uuid4
 
-import psycopg
-
-from app.db_portable import BusinessConnection
+from app.db_portable import BusinessConnection, IntegrityConstraintError
 from app.zpay import ALLOWED_ZPAY_CHANNELS
 
 ZPAY_NOTIFY_BUSY_TIMEOUT_MS = 1000
@@ -296,7 +294,9 @@ def confirm_recharge_payment(
             if confirmed is None:  # pragma: no cover - protected by the transaction above
                 raise RuntimeError("confirmed recharge order disappeared")
             return confirmed
-    except (sqlite3.IntegrityError, psycopg.errors.UniqueViolation) as exc:
+    except IntegrityConstraintError as exc:
+        if exc.sqlstate != "23505":
+            raise
         raise PaymentConfirmationError(
             f"{prefix}_SETTLEMENT_CONFLICT",
             "Payment settlement conflicts with an existing ledger entry.",

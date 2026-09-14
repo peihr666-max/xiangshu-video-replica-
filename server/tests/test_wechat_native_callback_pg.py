@@ -304,6 +304,10 @@ def test_callback_failure_rolls_back_committed_state_and_can_retry(
                 )
             else:
                 raw.execute("UPDATE wallets SET available_credits = 100")
+                # Current main captures every CHARGE as a billing lot whose
+                # primary key references the ledger row. Remove the derived
+                # lot before repairing this deliberately injected conflict.
+                raw.execute("DELETE FROM billing_credit_lots WHERE id = 'conflict'")
                 raw.execute("DELETE FROM wallet_transactions WHERE id = 'conflict'")
         assert _notify(client, wechat) == 200
         assert _notify(client, wechat) == 200
