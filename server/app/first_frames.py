@@ -952,6 +952,21 @@ class ApilioFirstFrameQualityInspector:
         raise FirstFrameQualityInspectorFailed("first-frame quality request failed") from last_error
 
 
+def bounded_first_frame_quality_inspector(
+    inspector: FirstFrameQualityInspector,
+) -> FirstFrameQualityInspector:
+    """Use a separate budget for first-frame checks, without multiplying retries."""
+    if not isinstance(inspector, ApilioFirstFrameQualityInspector):
+        return inspector
+    return ApilioFirstFrameQualityInspector(
+        api_key=inspector.api_key,
+        base_url=inspector.base_url,
+        model=inspector.model,
+        transport=UrllibApilioTransport(timeout_seconds=60.0),
+        max_attempts=1,
+    )
+
+
 def bounded_source_frame_quality_inspector(
     inspector: FirstFrameQualityInspector,
 ) -> FirstFrameQualityInspector:
@@ -1698,6 +1713,7 @@ def perform_first_frame_generation(
     before_provider_call: Callable[[], None] | None = None,
     after_provider_call: Callable[[], None] | None = None,
     heartbeat: Callable[[], None] | None = None,
+    quality_heartbeat: Callable[[], None] | None = None,
     resumed_candidates: list[GeneratedImage] | None = None,
     archive_generated: Callable[[list[GeneratedImage], int], list[GeneratedImage]] | None = None,
     checkpoint_candidates: Callable[[list[GeneratedImage]], None] | None = None,
@@ -1711,23 +1727,27 @@ def perform_first_frame_generation(
     the human confirmation step owns the final gate.
     """
 
-    inspector = quality_inspector or FakeFirstFrameQualityInspector()
-    try:
-        if heartbeat is not None:
-            heartbeat()
-        source_inspection = inspector.inspect_source(work.source_image)
-    except FirstFrameQualityInspectorFailed as exc:
-        raise first_frame_error(
-            503,
-            "FIRST_FRAME_QUALITY_INSPECTOR_UNAVAILABLE",
-            "首帧自动质检暂时不可用，请稍后重试。",
-        ) from exc
-    if source_inspection.person_count != 1:
-        raise first_frame_error(
-            422,
-            "SINGLE_PERSON_SOURCE_REQUIRED",
-            "当前版本仅支持单人视频；所选源画面必须且只能包含一名真实人物。",
-        )
+    inspector = bounded_first_frame_quality_inspector(
+        quality_inspector or FakeFirstFrameQualityInspector()
+    )
+    # Durable candidates prove the unchanged source already passed inspection.
+    if not resumed_candidates:
+        try:
+            if heartbeat is not None:
+                heartbeat()
+            source_inspection = inspector.inspect_source(work.source_image)
+        except FirstFrameQualityInspectorFailed as exc:
+            raise first_frame_error(
+                503,
+                "FIRST_FRAME_QUALITY_INSPECTOR_UNAVAILABLE",
+                "首帧自动质检暂时不可用，请稍后重试。",
+            ) from exc
+        if source_inspection.person_count != 1:
+            raise first_frame_error(
+                422,
+                "SINGLE_PERSON_SOURCE_REQUIRED",
+                "当前版本仅支持单人视频；所选源画面必须且只能包含一名真实人物。",
+            )
 
     candidates = list(resumed_candidates or [])
     retry_issue_codes: list[str] = []
@@ -1793,20 +1813,19 @@ def perform_first_frame_generation(
                     retry_issue_codes.extend(candidate.quality.issue_codes)
                 continue
             try:
-                if heartbeat is not None:
-                    heartbeat()
+                renew_quality = quality_heartbeat or heartbeat
+                if renew_quality is not None:
+                    renew_quality()
                 inspection = inspector.inspect_candidate(
                     source_image=work.source_image,
                     character_reference_images=work.reference_images,
                     candidate=candidate,
                     expected_outfit=work.project_appearance.outfit_description,
                 )
-            except FirstFrameQualityInspectorFailed as exc:
-                raise first_frame_error(
-                    503,
-                    "FIRST_FRAME_QUALITY_INSPECTOR_UNAVAILABLE",
-                    "首帧自动质检暂时不可用，请稍后重试。",
-                ) from exc
+            except FirstFrameQualityInspectorFailed:
+                # Paid output is already checkpointed. Deliver it as unverified;
+                # never retry generation merely because the inspector is down.
+                return candidates
             quality = evaluate_first_frame_candidate_quality(
                 inspection,
                 attempt=quality_attempt,

@@ -399,7 +399,7 @@ describe("CharacterLibrary", () => {
       name: "工地巡检五视图",
     });
     expect(
-      within(sceneViews).getByRole("img", {
+      await within(sceneViews).findByRole("img", {
         name: "林夏 工地巡检 场景五视图",
       }),
     ).toHaveAttribute("src", "http://127.0.0.1:8000/mock/sheet-scene-1");

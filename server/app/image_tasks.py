@@ -597,13 +597,16 @@ def renew_image_task_lease(
     *,
     table: Literal["first_frame_tasks", "character_sheet_tasks"],
     lease: ImageTaskLease,
+    lease_minutes: int = IMAGE_TASK_LEASE_MINUTES,
 ) -> None:
     """Extend an owned lease before the next bounded external-I/O phase."""
 
+    if not 1 <= lease_minutes <= IMAGE_TASK_LEASE_MINUTES:
+        raise ValueError("invalid image task lease duration")
     updated = conn.execute(
         f"""
         UPDATE {table}
-        SET locked_until = now() + interval '{IMAGE_TASK_LEASE_MINUTES} minutes',
+        SET locked_until = now() + interval '{lease_minutes} minutes',
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s AND status = 'RUNNING' AND locked_by = %s AND attempt = %s
         """,
@@ -811,6 +814,7 @@ def run_first_frame_task_outside_transaction(
     before_provider_call: Callable[[], None] | None = None,
     after_provider_call: Callable[[], None] | None = None,
     heartbeat: Callable[[], None] | None = None,
+    quality_heartbeat: Callable[[], None] | None = None,
     checkpoint_candidates: Callable[[list[GeneratedImage]], None] | None = None,
     on_generated_images: Callable[[int], None] | None = None,
 ) -> tuple[FirstFrameGenerationWork, StoredFirstFrameCandidates]:
@@ -854,6 +858,7 @@ def run_first_frame_task_outside_transaction(
             before_provider_call=before_provider_call,
             after_provider_call=after_provider_call,
             heartbeat=heartbeat,
+            quality_heartbeat=quality_heartbeat,
             resumed_candidates=resumed_candidates,
             archive_generated=archive_generated if checkpoint_candidates is not None else None,
             checkpoint_candidates=persist_checkpoint if checkpoint_candidates is not None else None,

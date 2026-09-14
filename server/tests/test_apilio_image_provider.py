@@ -383,3 +383,71 @@ def jpeg_with_dimensions(width: int, height: int) -> bytes:
         + width.to_bytes(2, "big")
         + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00\xff\xd9"
     )
+
+
+@pytest.mark.parametrize("resuming", [False, True])
+def test_first_frame_quality_timeout_delivers_paid_checkpoint_without_regeneration(resuming):
+    from types import SimpleNamespace
+
+    from app.first_frames import (
+        FakeFirstFrameQualityInspector,
+        FirstFrameQualityInspectorFailed,
+        GeneratedImage,
+        perform_first_frame_generation,
+    )
+
+    class Inspector(FakeFirstFrameQualityInspector):
+        def inspect_source(self, source_image):
+            assert not resuming, "do not repeat the completed source inspection"
+            return super().inspect_source(source_image)
+
+        def inspect_candidate(self, **kwargs):
+            raise FirstFrameQualityInspectorFailed("timed out")
+
+    class Provider:
+        calls = 0
+
+        def edit(self, **kwargs):
+            self.calls += 1
+            return [GeneratedImage(content=b"paid-image", content_type="image/png")]
+
+    provider = Provider()
+    work = SimpleNamespace(
+        source_image=image(b"source", "image/png", "source.png"),
+        reference_images=[image(b"reference", "image/png", "ref.png")],
+        quantity=1,
+        model="gpt-image-2",
+        effective_prompt="replace person",
+        project_appearance=SimpleNamespace(outfit_description="workwear"),
+    )
+    checkpoints = []
+    result = perform_first_frame_generation(
+        work,
+        provider=provider,
+        quality_inspector=Inspector(),
+        resumed_candidates=[
+            GeneratedImage(content=b"paid-image", content_type="image/png", quality_attempt=1)
+        ]
+        if resuming
+        else None,
+        checkpoint_candidates=lambda values: checkpoints.append(list(values)),
+    )
+    assert provider.calls == (0 if resuming else 1)
+    assert len(result) == 1 and result[0].content == b"paid-image"
+    assert result[0].quality is None
+    if not resuming:
+        assert checkpoints[-1][0].content == b"paid-image"
+
+
+def test_first_frame_quality_has_separate_single_attempt_budget():
+    from app.first_frames import (
+        ApilioFirstFrameQualityInspector,
+        bounded_first_frame_quality_inspector,
+    )
+
+    original = ApilioFirstFrameQualityInspector(api_key="test-key")
+    bounded = bounded_first_frame_quality_inspector(original)
+    assert bounded.transport.timeout_seconds == 60
+    assert bounded.max_attempts == 1
+    assert original.transport.timeout_seconds == 240
+    assert original.max_attempts == 2

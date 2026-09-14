@@ -128,6 +128,42 @@ describe("FirstFrameSelection", () => {
     vi.mocked(generateFirstFrames).mockResolvedValue(candidatesVersion);
   });
 
+  it("labels unchecked output and requires explicit human confirmation", async () => {
+    const unverified = {
+      ...candidatesVersion,
+      payload: {
+        ...candidatesVersion.payload,
+        candidates: candidatesVersion.payload.candidates.map((candidate) => ({
+          ...candidate,
+          quality: null,
+        })),
+      },
+    };
+    vi.mocked(getLatestProjectFirstFrames).mockResolvedValue({
+      version: unverified,
+      stale: false,
+    });
+    vi.mocked(getProjectFirstFrameHistory).mockResolvedValue([unverified]);
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+      />,
+    );
+    expect(
+      await screen.findAllByText("自动质检未完成，请查看图片后人工确认"),
+    ).toHaveLength(2);
+    fireEvent.click(screen.getByRole("radio", { name: /首帧候选 1/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认用于视频生成的首帧" }),
+    );
+    expect(confirmFirstFrame).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "质检未通过，仍要使用此首帧" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows the Apilio model, candidates, and requires a visible choice before confirmation", async () => {
     render(
       <FirstFrameSelection

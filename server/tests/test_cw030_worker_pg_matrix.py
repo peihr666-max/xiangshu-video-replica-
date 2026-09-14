@@ -1524,3 +1524,39 @@ def test_second_device_cannot_grow_same_user_running_slot(pg_state: str) -> None
         _one(pg_state, "SELECT running_tasks_count FROM user_queue_cursors WHERE user_id = 'u1'")
         == 1
     )
+
+
+def test_first_frame_quality_lease_is_short_and_generation_can_extend_it(pg_state):
+    from app.image_tasks import renew_image_task_lease
+
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="quality-lease")
+    with pg_transaction() as raw:
+        lease = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="worker-a")
+    with pg_transaction() as raw:
+        renew_image_task_lease(
+            BusinessConnection.postgres(raw),
+            table="first_frame_tasks",
+            lease=lease,
+            lease_minutes=3,
+        )
+    seconds = float(
+        _one(
+            pg_state,
+            "SELECT extract(epoch FROM locked_until::timestamptz-now()) "
+            "FROM first_frame_tasks WHERE id='quality-lease'",
+        )
+    )
+    assert 0 < seconds <= 180
+    with pg_transaction() as raw:
+        renew_image_task_lease(
+            BusinessConnection.postgres(raw), table="first_frame_tasks", lease=lease
+        )
+    seconds = float(
+        _one(
+            pg_state,
+            "SELECT extract(epoch FROM locked_until::timestamptz-now()) "
+            "FROM first_frame_tasks WHERE id='quality-lease'",
+        )
+    )
+    assert seconds > 1700

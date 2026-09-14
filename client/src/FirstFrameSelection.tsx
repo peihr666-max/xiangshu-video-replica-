@@ -743,6 +743,11 @@ function FirstFrameOption({
               : ""}
           </small>
         ) : null}
+        {!candidate.quality ? (
+          <small className="first-frame-quality-fail">
+            自动质检未完成，请查看图片后人工确认
+          </small>
+        ) : null}
         {candidate.quality && !candidate.quality.passed ? (
           <small className="first-frame-quality-fail">
             质检未通过：

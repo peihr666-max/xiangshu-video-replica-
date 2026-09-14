@@ -695,11 +695,12 @@ def run_worker_once(
                 # checkpoint before quality inspection begins.
                 return
 
-            def renew_first_frame_lease() -> None:
+            def renew_first_frame_lease(*, quality_phase: bool = False) -> None:
                 renew_image_task_lease(
                     conn,
                     table="first_frame_tasks",
                     lease=first_frame_lease,
+                    lease_minutes=3 if quality_phase else 30,
                 )
 
             def persist_first_frame_checkpoint(candidates: list[Any]) -> None:
@@ -732,6 +733,7 @@ def run_worker_once(
                         before_provider_call=mark_submission_started,
                         after_provider_call=mark_submission_completed,
                         heartbeat=renew_first_frame_lease,
+                        quality_heartbeat=lambda: renew_first_frame_lease(quality_phase=True),
                         checkpoint_candidates=persist_first_frame_checkpoint,
                     )
                 complete_first_frame_task(
@@ -1464,12 +1466,13 @@ def run_pg_worker_once(
                     )
                 first_frame_cost_id = ""
 
-            def renew_pg_first_frame_lease() -> None:
+            def renew_pg_first_frame_lease(*, quality_phase: bool = False) -> None:
                 with pg_transaction() as raw_conn:
                     renew_image_task_lease(
                         BusinessConnection.postgres(raw_conn),
                         table="first_frame_tasks",
                         lease=first_frame_lease,
+                        lease_minutes=3 if quality_phase else 30,
                     )
 
             def persist_pg_first_frame_checkpoint(candidates: list[Any]) -> None:
@@ -1505,6 +1508,7 @@ def run_pg_worker_once(
                         before_provider_call=mark_pg_submission_started,
                         on_generated_images=record_pg_generated_images,
                         heartbeat=renew_pg_first_frame_lease,
+                        quality_heartbeat=lambda: renew_pg_first_frame_lease(quality_phase=True),
                         checkpoint_candidates=persist_pg_first_frame_checkpoint,
                     )
                 with pg_transaction() as raw_conn:
