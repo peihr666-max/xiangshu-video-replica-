@@ -1791,7 +1791,7 @@ export function MaterialsPage() {
       ? characterView
       : selected;
   const [page, setPage] = useState(() =>
-    selectedIndex >= 0 ? Math.floor(selectedIndex / pageSize) + 1 : 1,
+    review && selectedIndex >= 0 ? Math.floor(selectedIndex / pageSize) + 1 : 1,
   );
   const total = review ? reviewAssets.length : (remotePage?.total ?? 0);
   const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -1915,11 +1915,10 @@ export function MaterialsPage() {
     : assets;
 
   const retainForDraft = (asset: StudioAsset) => {
-    updateData((current) =>
-      current.assets.some((item) => item.id === asset.id)
-        ? current
-        : { ...current, assets: [asset, ...current.assets] },
-    );
+    updateData((current) => ({
+      ...current,
+      assets: [asset, ...current.assets.filter((item) => item.id !== asset.id)],
+    }));
   };
 
   const handleUpload = async (file: File) => {
@@ -2524,10 +2523,32 @@ export function PublishPage() {
           ),
         ];
         const materials = ids.length
-          ? await resolveMaterials(ids)
+          ? await resolveMaterials(
+              ids.map((id) => (id.startsWith("asset:") ? id : `asset:${id}`)),
+            )
           : { items: [] };
         if (operation.current !== current) return;
-        const assets = materials.items.map(studioAssetFromMaterial);
+        const previewResults = await Promise.allSettled(
+          materials.items.map(async (item) => {
+            const asset = studioAssetFromMaterial(item);
+            if (!item.asset_id || !item.allowed_actions.includes("preview"))
+              return asset;
+            return {
+              ...asset,
+              url: (await getAssetDownloadUrl(item.asset_id)).url,
+            };
+          }),
+        );
+        if (operation.current !== current) return;
+        const assets = previewResults.map((result, index) =>
+          result.status === "fulfilled"
+            ? result.value
+            : studioAssetFromMaterial(materials.items[index]),
+        );
+        if (previewResults.some((result) => result.status === "rejected"))
+          setActionError(
+            "部分草稿素材预览暂时不可用，可重新加载；草稿内容已保留。",
+          );
         setCloudVideos({
           requested: drafts.map((draft) => draft.assetId),
           available: materials.items

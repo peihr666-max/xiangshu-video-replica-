@@ -27,6 +27,7 @@ type WorkbenchUploadResult = {
 const {
   useStudio,
   loadTaskPreview,
+  saveTaskPreview,
   uploadWorkbenchSourceVideo,
   studioVideoFromViral,
   cancelStudioTask,
@@ -48,6 +49,7 @@ const {
 } = vi.hoisted(() => ({
   useStudio: vi.fn<() => StudioContextValue>(),
   loadTaskPreview: vi.fn(),
+  saveTaskPreview: vi.fn(),
   uploadWorkbenchSourceVideo:
     vi.fn<
       (
@@ -101,6 +103,7 @@ vi.mock("../api", async (importOriginal) => ({
 }));
 vi.mock("./live", () => ({
   loadTaskPreview,
+  saveTaskPreview,
   uploadWorkbenchSourceVideo,
   studioVideoFromViral,
   cancelStudioTask,
@@ -444,6 +447,52 @@ describe("V1.4 任务详情真实成片预览", () => {
     expect(next.tasks.find((item) => item.id === taskB.id)?.resultId).toBe(
       undefined,
     );
+  });
+
+  it("任务轮询不清除已加载的直出预览，临时结果不作为发布素材", async () => {
+    const asset: StudioAsset = {
+      id: "direct-task-result-a",
+      name: "直出成片",
+      kind: "video",
+      url: "/signed/direct-a",
+      group: "任务结果",
+      source: "任务中心",
+      saved: false,
+      generationTaskId: "provider-result-a",
+    };
+    let value = studio();
+    useStudio.mockImplementation(() => value);
+    loadTaskPreview.mockResolvedValue(asset);
+    const view = render(<TaskDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
+    await waitFor(() => expect(value.updateData).toHaveBeenCalledOnce());
+    const update = vi.mocked(value.updateData).mock.calls[0][0];
+    value = { ...value, data: update(value.data) };
+    view.rerender(<TaskDetailPage />);
+    const video = view.container.querySelector("video");
+    expect(video).not.toBeNull();
+    value = { ...value, data: { ...value.data, tasks: [{ ...taskA }] } };
+    view.rerender(<TaskDetailPage />);
+    expect(view.container.querySelector("video")).toBe(video);
+    expect(screen.getByRole("button", { name: "查看素材" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "去发布管理" })).toBeDisabled();
+    saveTaskPreview.mockResolvedValue({
+      ...asset,
+      id: "saved-result",
+      saved: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存到素材库" }));
+    expect(
+      await screen.findByRole("button", { name: "正在保存成片…" }),
+    ).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "去发布管理" })).toBeEnabled(),
+    );
+    expect(saveTaskPreview).toHaveBeenCalledWith(asset);
+    fireEvent.click(screen.getByRole("button", { name: "去发布管理" }));
+    expect(value.navigate).toHaveBeenCalledWith("publishing", {
+      selectedAssetId: "saved-result",
+    });
   });
 
   it("显示无结果状态，并允许重新尝试", async () => {

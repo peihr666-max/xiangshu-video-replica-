@@ -822,7 +822,7 @@ def list_generation_records(
         FROM generation_tasks AS task
         JOIN generation_batches AS batch ON batch.id = task.batch_id
         JOIN users ON users.id = batch.created_by_user_id
-        JOIN projects ON projects.id = batch.project_id
+        LEFT JOIN projects ON projects.id = batch.project_id
         {video_where}
         ORDER BY task.created_at DESC, task.id DESC
         LIMIT %s
@@ -831,7 +831,9 @@ def list_generation_records(
     ).fetchall()
     for row in video_rows:
         provider_cost = row["actual_cost"]
-        provider_cost_status: ProviderCostStatus = "KNOWN"
+        # Video completion multiplies measured usage by the frozen configured
+        # rate. The legacy actual_cost field is not a supplier invoice amount.
+        provider_cost_status: ProviderCostStatus = "ESTIMATED"
         if provider_cost is None:
             provider_cost = row["estimated_cost"]
             provider_cost_status = "ESTIMATED"
@@ -845,8 +847,8 @@ def list_generation_records(
                 user_id=str(row["user_id"]),
                 username=str(row["username"]),
                 display_name=str(row["display_name"]),
-                project_id=str(row["project_id"]),
-                project_name=str(row["project_name"]),
+                project_id=None if row["project_id"] is None else str(row["project_id"]),
+                project_name=None if row["project_name"] is None else str(row["project_name"]),
                 status=str(row["status"]),
                 provider=str(row["provider"]),
                 model=str(row["model"]),

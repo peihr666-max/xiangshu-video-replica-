@@ -309,14 +309,7 @@ export function FirstFrameSelection({
       try {
         const task = await getLatestFirstFrameTask(projectId);
         if (cancelled) return;
-        if (
-          task &&
-          (task.status === "PENDING" ||
-            task.status === "RUNNING" ||
-            (task.status === "SUCCEEDED" &&
-              task.result_version_id !== null &&
-              task.result_version_id === currentCandidateVersionId.current))
-        ) {
+        if (task && (task.status === "PENDING" || task.status === "RUNNING")) {
           setGenerationTask(task);
           void followGeneration({
             promise: resumeFirstFrameGeneration(
@@ -326,6 +319,14 @@ export function FirstFrameSelection({
             ),
             startedAt: Date.parse(task.started_at ?? task.created_at),
           });
+        } else if (
+          task?.status === "SUCCEEDED" &&
+          task.result_version_id !== null &&
+          task.result_version_id === currentCandidateVersionId.current
+        ) {
+          // Restore the selection suggestion without toggling upstream inputs
+          // read-only; that toggle reloads their bindings and restarts this effect.
+          await load(undefined, true);
         } else if (
           task &&
           (task.status === "FAILED" || task.status === "SUBMISSION_UNCERTAIN")

@@ -16,6 +16,7 @@ import * as live from "./live";
 import { createDraft } from "./state";
 
 const api = vi.hoisted(() => ({
+  archiveGenerationTask: vi.fn(),
   compileGenerationPrompt: vi.fn(),
   createGenerationBatch: vi.fn(),
   createScriptVersion: vi.fn(),
@@ -122,11 +123,12 @@ describe("任务详情按稳定对象类型读取", () => {
     api.getGenerationBatch.mockResolvedValue({
       id: "batch-deep",
       project_id: "project-1",
+      project_name: "联调项目名称",
       prompt_version_id: "prompt-1",
       status: "SUCCEEDED",
       quantity: 1,
       stale: false,
-      display_name: "深页普通生成",
+      display_name: null,
       creation_kind: "independent",
       progress: {
         total_count: 1,
@@ -190,6 +192,7 @@ describe("任务详情按稳定对象类型读取", () => {
       id: "batch-deep",
       backendKind: "generation_batch",
       backendId: "batch-deep",
+      title: "联调项目名称",
       type: "视频生成",
     });
     await expect(
@@ -495,7 +498,7 @@ describe("真实 Studio 只读适配器", () => {
     expect(result.unavailableIds).toEqual(["missing-audio"]);
   });
 
-  it("详情按需读取批次并优先预览成功的直出结果", async () => {
+  it("详情优先归档资产以保持轮询后的预览和素材引用一致", async () => {
     api.getGenerationBatch.mockResolvedValue(
       generationBatch([
         generationTask({ id: "archived-first", result_asset_id: "asset-1" }),
@@ -511,18 +514,75 @@ describe("真实 Studio 只读适配器", () => {
     const asset = await loadTaskPreview(studioTask);
 
     expect(api.getGenerationBatch).toHaveBeenCalledWith("batch-1");
-    expect(api.createGenerationTaskPreviewUrl).toHaveBeenCalledWith(
-      "direct-second",
+    expect(api.createGenerationResultPreviewUrl).toHaveBeenCalledWith(
+      "asset-1",
     );
-    expect(api.createGenerationResultPreviewUrl).not.toHaveBeenCalled();
+    expect(api.createGenerationTaskPreviewUrl).not.toHaveBeenCalled();
     expect(asset).toEqual({
-      id: "direct-task-direct-second",
+      id: "asset-1",
       name: "庭院镜头生成 · 首个可用结果",
       kind: "video",
-      url: "https://signed/direct",
+      url: "https://signed/result",
       group: "任务结果",
       source: "任务中心",
+      saved: true,
+    });
+  });
+
+  it("直出保存只使用既有任务入库接口，并返回真实资产引用", async () => {
+    api.resolveMaterials.mockResolvedValue({
+      items: [
+        {
+          id: "asset:saved-1",
+          asset_id: "saved-1",
+          owner_user_id: "user-1",
+          generation_task_id: "one",
+          project_id: null,
+          person_id: null,
+          title: "成片",
+          group: "任务结果",
+          media_type: "video",
+          source: "generation",
+          status: "ready",
+          delivery: "stored",
+          content_type: "video/mp4",
+          size_bytes: 1024,
+          duration_seconds: 4.458333,
+          created_at: "2026-09-14T15:00:00Z",
+          hidden: false,
+          saved: true,
+          composite: false,
+          allowed_uses: ["reference"],
+          allowed_actions: ["preview", "download", "rename", "hide"],
+        } satisfies MaterialItem,
+      ],
+      unavailable_ids: [],
+    });
+    api.archiveGenerationTask.mockResolvedValue(
+      generationTask({ result_asset_id: "saved-1" }),
+    );
+    api.getAssetDownloadUrl.mockResolvedValue({
+      url: "https://signed/saved-1",
+    });
+    const saved = await live.saveTaskPreview({
+      id: "direct-task-one",
+      generationTaskId: "one",
+      name: "成片",
+      kind: "video",
+      group: "结果",
+      source: "任务中心",
       saved: false,
+    });
+    expect(api.archiveGenerationTask).toHaveBeenCalledWith("one");
+    expect(api.createGenerationBatch).not.toHaveBeenCalled();
+    expect(saved).toMatchObject({
+      id: "saved-1",
+      assetId: "saved-1",
+      materialId: "asset:saved-1",
+      saved: true,
+      delivery: "stored",
+      url: "https://signed/saved-1",
+      allowedActions: ["preview", "download", "rename", "hide"],
     });
   });
 

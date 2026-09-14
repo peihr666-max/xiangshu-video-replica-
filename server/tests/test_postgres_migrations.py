@@ -1788,6 +1788,8 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
 
     def claim_oral(worker_id: str) -> str | None:
         with psycopg.connect(dsn) as raw:
+            if claim_start_barrier is not None:
+                claim_start_barrier.wait(timeout=10)
             lease = oral_worker.claim_oral_work(
                 BusinessConnection.postgres(raw), worker_id=worker_id
             )
@@ -1795,11 +1797,14 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
 
     def claim_generation(worker_id: str) -> str | None:
         with psycopg.connect(dsn) as raw:
+            if claim_start_barrier is not None:
+                claim_start_barrier.wait(timeout=10)
             task = generation.acquire_generation_task_lease(
                 BusinessConnection.postgres(raw), worker_id=worker_id
             )
             return None if task is None else str(task["id"])
 
+    claim_start_barrier: threading.Barrier | None = None
     try:
         command.upgrade(_alembic_config(sqlalchemy_dsn), "head")
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -1893,24 +1898,16 @@ def test_generation_capacity_claim_is_atomic_across_oral_and_generation_workers(
             )
             conn.execute("UPDATE user_queue_cursors SET running_tasks_count=0")
 
-        mixed_barrier = threading.Barrier(2)
-        original_generation_limits = generation.read_runtime_limits
-
-        def synchronized_mixed_limits(conn: BusinessConnection) -> dict[str, int]:
-            limits = original_generation_limits(conn)
-            mixed_barrier.wait(timeout=10)
-            return limits
-
-        monkeypatch.setattr(oral_worker, "read_runtime_limits", synchronized_mixed_limits)
-        monkeypatch.setattr(generation, "read_runtime_limits", synchronized_mixed_limits)
+        # Synchronize before either worker acquires the capacity row. Waiting
+        # inside read_runtime_limits deadlocks when generation holds that row
+        # while oral is still trying to enter its quarantine transaction.
+        claim_start_barrier = threading.Barrier(2)
         with ThreadPoolExecutor(max_workers=2) as executor:
             oral_future = executor.submit(claim_oral, "mixed-oral")
             generation_future = executor.submit(claim_generation, "mixed-generation")
             mixed_results = [oral_future.result(), generation_future.result()]
         assert sum(result is not None for result in mixed_results) == 1
-
-        monkeypatch.setattr(oral_worker, "read_runtime_limits", original_oral_limits)
-        monkeypatch.setattr(generation, "read_runtime_limits", original_generation_limits)
+        claim_start_barrier = None
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(
                 "UPDATE oral_tasks SET status='FAILED', queue_slot_acquired=0, "

@@ -1654,6 +1654,8 @@ export async function updateViralVideoAvailability(
 // ---------------------------------------------------------------------------
 
 export type CollectedViralVideo = {
+  cover_required?: boolean;
+  cover_key?: string | null;
   platform: "douyin" | "wechat_channels";
   video_id: string;
   category: string;

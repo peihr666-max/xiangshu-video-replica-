@@ -1929,6 +1929,16 @@ export async function listGenerationBatches(
   );
 }
 
+export async function archiveGenerationTask(
+  taskId: string,
+): Promise<GenerationTask> {
+  return requestGenerationJson<GenerationTask>(
+    `/api/generation-tasks/${encodeURIComponent(taskId)}/archive`,
+    "保存成片失败，请重试；不会重新生成或扣费",
+    { method: "POST" },
+  );
+}
+
 export async function retryGenerationTask(
   taskId: string,
   input: GenerationTaskRetryInput,

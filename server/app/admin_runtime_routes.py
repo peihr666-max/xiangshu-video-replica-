@@ -28,7 +28,12 @@ from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.admin_auth_routes import AdminReader, AdminWriter
-from app.admin_write_contract import AdminWriteContract, http_error, write_with_idempotency
+from app.admin_write_contract import (
+    AdminWriteContract,
+    http_error,
+    require_write_contract,
+    write_with_idempotency,
+)
 from app.db_pg import pg_transaction
 from app.db_portable import BusinessConnection
 from app.settings import DEFAULT_BILLING_SETTINGS, DEFAULT_RUNTIME_SETTINGS
@@ -427,6 +432,7 @@ def read_collected_viral_videos(
             f"""SELECT v.platform,v.video_id,v.category,v.title,v.author,v.duration_ms,
                 v.likes,v.comments,v.shares,v.collects,v.published_at,v.created_at,
                 v.homepage_featured,v.collection_published,v.cover_key,
+                (COALESCE(v.cover_url,'') != '') AS cover_required,
                 COALESCE(m.status,'PENDING') AS media_status,m.storage_uri
             FROM viral_videos v LEFT JOIN viral_media_preparations m
                 ON m.platform=v.platform AND m.video_id=v.video_id AND m.media_kind='video'
@@ -474,6 +480,32 @@ def preview_collected_viral_video(
     return {"url": _browser_playable_url(result.url, _actor.user_id)}
 
 
+def _prepare_feature_cover(platform: str, video_id: str) -> tuple[str, str] | None:
+    from app.media_routes import get_media_storage
+    from app.viral_media import CoverEnricher, UrlFetcher
+    from app.viral_store import get_viral_video
+
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        video = get_viral_video(conn, platform=platform, video_id=video_id)
+        if video is None or video.cover_key or not video.cover_url:
+            return None
+        ready = conn.execute(
+            "SELECT 1 FROM viral_media_preparations WHERE platform=%s AND video_id=%s "
+            "AND media_kind='video' AND status='SUCCEEDED' AND storage_uri IS NOT NULL",
+            (platform, video_id),
+        ).fetchone()
+        if ready is None:
+            return None
+        storage = get_media_storage(conn)
+    # Only the existing public cover is fetched, with a bounded download and
+    # deterministic cache key. No provider collection request or long PG lock.
+    cover = CoverEnricher(storage=storage, fetcher=UrlFetcher(max_bytes=10 * 1024 * 1024)).enrich(
+        video
+    )
+    return (video.cover_url, cover.cover_key) if cover.cover_key else None
+
+
 @router.patch("/viral/videos/{platform}/{video_id:path}/curation")
 def curate_collected_viral_video(
     platform: Literal["douyin", "wechat_channels"],
@@ -483,6 +515,11 @@ def curate_collected_viral_video(
     response: Response,
     actor: AdminWriter,
 ) -> dict[str, object]:
+    require_write_contract(request, payload)
+    prepared_cover = (
+        _prepare_feature_cover(platform, video_id) if payload.action == "feature" else None
+    )
+
     def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
         row = conn.execute(
             "SELECT cover_url,cover_key FROM viral_videos WHERE platform=%s AND video_id=%s "
@@ -497,9 +534,18 @@ def curate_collected_viral_video(
                 "AND media_kind='video' AND status='SUCCEEDED' AND storage_uri IS NOT NULL",
                 (platform, video_id),
             ).fetchone()
-            if ready is None or (row[0] and not row[1]):
+            if ready is None:
                 raise http_error(
                     409, "VIRAL_MEDIA_NOT_READY", "视频和封面归档完成后才能展示到首页。"
+                )
+            if row[0] and not row[1]:
+                if prepared_cover is None or prepared_cover[0] != row[0]:
+                    raise http_error(
+                        409, "VIRAL_COVER_NOT_READY", "视频已归档，但封面暂时无法获取，请稍后重试。"
+                    )
+                conn.execute(
+                    "UPDATE viral_videos SET cover_key=%s WHERE platform=%s AND video_id=%s",
+                    (prepared_cover[1], platform, video_id),
                 )
             hidden = conn.execute(
                 "SELECT 1 FROM viral_video_visibility WHERE platform=%s AND video_id=%s "

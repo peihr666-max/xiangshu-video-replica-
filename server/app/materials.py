@@ -284,9 +284,10 @@ def _candidate_cte() -> str:
             'stored' AS delivery
         FROM assets AS asset
         JOIN projects AS project ON project.id = asset.project_id
-        WHERE asset.content_type LIKE 'image/%%'
+        WHERE (asset.content_type LIKE 'image/%%'
            OR asset.content_type LIKE 'audio/%%'
-           OR asset.content_type LIKE 'video/%%'
+           OR asset.content_type LIKE 'video/%%')
+          AND NOT EXISTS (SELECT 1 FROM generation_tasks task WHERE task.result_asset_id=asset.id)
 
         UNION ALL
 
@@ -305,6 +306,7 @@ def _candidate_cte() -> str:
         WHERE asset.project_id IS NULL
           AND asset.kind IN ('material_image', 'material_audio', 'material_video')
           AND asset.created_by_user_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM generation_tasks task WHERE task.result_asset_id=asset.id)
 
         UNION ALL
 
@@ -352,24 +354,27 @@ def _candidate_cte() -> str:
         UNION ALL
 
         SELECT
-            'generation', task.id, project.owner_user_id, NULL, task.id,
+            CASE WHEN asset.id IS NULL THEN 'generation' ELSE 'asset' END,
+            COALESCE(asset.id,task.id), COALESCE(project.owner_user_id,batch.created_by_user_id),
+            asset.id, task.id,
             project.id, NULL,
-            COALESCE(batch.display_name, project.name) || ' · 成片',
-            '任务结果', 'generation', 'video/mp4', NULL, '{}',
-            task.created_at, 'video', 'ready', 'direct'
+            COALESCE(batch.display_name, project.name, '视频生成') || ' · 成片',
+            '任务结果', 'generation', 'video/mp4', asset.size_bytes,
+            COALESCE(asset.metadata_json,'{}'),
+            COALESCE(asset.created_at,task.created_at), 'video', 'ready',
+            CASE WHEN asset.id IS NULL THEN 'direct' ELSE 'stored' END
         FROM generation_tasks AS task
         JOIN generation_batches AS batch ON batch.id = task.batch_id
-        JOIN projects AS project ON project.id = batch.project_id
-        WHERE task.status = 'SUCCEEDED'
-          AND task.archive_status = 'DIRECT'
-          AND task.provider_result_url IS NOT NULL
-          AND task.provider_result_url != ''
-          AND task.result_asset_id IS NULL
-          AND task.superseded_by_task_id IS NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM customer_batch_visibility AS visibility
-              WHERE visibility.user_id = %s AND visibility.batch_id = batch.id
-          )
+        LEFT JOIN projects AS project ON project.id = batch.project_id
+        LEFT JOIN assets AS asset ON asset.id = task.result_asset_id
+        WHERE (asset.id IS NOT NULL AND asset.size_bytes > 0 AND asset.sha256 != '')
+           OR (task.status='SUCCEEDED' AND task.archive_status='DIRECT'
+               AND task.result_asset_id IS NULL AND task.superseded_by_task_id IS NULL
+               AND task.provider_result_url IS NOT NULL AND task.provider_result_url != ''
+               AND NOT EXISTS (
+                   SELECT 1 FROM customer_batch_visibility AS visibility
+                   WHERE visibility.user_id = %s AND visibility.batch_id = batch.id
+               ))
     )
     """
 

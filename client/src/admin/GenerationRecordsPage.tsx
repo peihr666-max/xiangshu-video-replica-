@@ -14,6 +14,7 @@ import {
   GENERATION_RECORD_TYPE_LABELS,
   GENERATION_STATUS_LABELS,
   labelFrom,
+  parseUtcTimestamp,
 } from "./ui/vocabulary";
 
 const PAGE_SIZE = 50;
@@ -298,7 +299,9 @@ function formatDuration(createdAt: string, completedAt: string | null): string {
   if (!completedAt) return "进行中";
   const seconds = Math.max(
     0,
-    Math.round((Date.parse(completedAt) - Date.parse(createdAt)) / 1000),
+    Math.round(
+      (parseUtcTimestamp(completedAt) - parseUtcTimestamp(createdAt)) / 1000,
+    ),
   );
   if (!Number.isFinite(seconds)) return "—";
   const minutes = Math.floor(seconds / 60);

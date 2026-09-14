@@ -363,6 +363,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/generation-tasks/{task_id}/archive": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Archive Generation Result */
+    post: operations["archive_generation_result_api_generation_tasks__task_id__archive_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/generation-tasks/{task_id}/retry": {
     parameters: {
       query?: never;
@@ -5527,6 +5544,8 @@ export interface components {
       id: string;
       /** Project Id */
       project_id?: string | null;
+      /** Project Name */
+      project_name?: string | null;
       /** Prompt Version Id */
       prompt_version_id: string;
       /** Status */
@@ -10879,6 +10898,37 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["GenerationTaskPreviewUrlResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  archive_generation_result_api_generation_tasks__task_id__archive_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TaskResult"];
         };
       };
       /** @description Validation Error */

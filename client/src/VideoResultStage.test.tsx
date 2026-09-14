@@ -112,6 +112,10 @@ function renderStage(
 }
 
 describe("VideoResultStage", () => {
+  it("displays legacy UTC completion timestamps in Beijing time", () => {
+    renderStage();
+    expect(screen.getAllByText("2026/8/16 18:00:06").length).toBeGreaterThan(0);
+  });
   it("shows delivered legacy QC results as complete without post-processing copy", () => {
     const delivered = task({
       stage: "QUALITY_FAILED",

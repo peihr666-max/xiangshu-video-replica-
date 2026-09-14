@@ -726,6 +726,8 @@ class StorageProviderTester:
             "users",
             "materials",
             "verified-uploads",
+            "viral/cover",
+            "viral/prepared",
         ):
             self._check_namespace(provider, config, namespace)
         return ProviderTestResult(status="ok", provider=provider, test_kind="storage_connection")

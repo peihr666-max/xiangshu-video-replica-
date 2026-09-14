@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 from typing import Literal, cast
 from uuid import uuid4
@@ -26,6 +27,7 @@ from app.generation import (
     GenerationRuntimeLimits,
     GenerationTaskRetryRequest,
     H3Provider,
+    H3ProviderFailed,
     H3ProviderSettingsUnavailable,
     PaidRegenerationRequest,
     PromptCompileRequest,
@@ -48,12 +50,15 @@ from app.generation import (
     generation_price_quote,
     generation_runtime_limits,
     get_generation_batch,
+    get_task_result,
     h3_provider_for_task,
     latest_generation_reconcile_operation,
     list_generation_batches,
     list_saved_prompts,
     load_generation_reconcile_operation,
     lock_prompt_version,
+    persist_generation_result_archive,
+    prepare_generation_result_archive,
     preview_prompt_text,
     regenerate_generation_batch,
     regenerate_generation_task,
@@ -65,6 +70,8 @@ from app.generation import (
     version_result,
     version_state,
 )
+from app.media import MAX_UPLOAD_BYTES, FFprobeVideoProbe, VideoProbeFailed, VideoProbeUnavailable
+from app.media_routes import MediaStorage
 from app.permissions import (
     require_not_auditor,
     require_project_access,
@@ -84,6 +91,7 @@ from app.script_rewrite import (
     script_rewrite_task_result,
     validated_script_rewrite_request,
 )
+from app.storage import StorageBackendUnavailable
 
 router = APIRouter(prefix="/api", tags=["generation"])
 logger = logging.getLogger(__name__)
@@ -739,6 +747,51 @@ def read_generation_task_preview_url(
             ) from exc
         result_url = "data:video/mp4;base64," + base64.b64encode(content).decode("ascii")
     return GenerationTaskPreviewUrlResponse(url=result_url)
+
+
+@router.post("/generation-tasks/{task_id}/archive", response_model=TaskResult)
+def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaStorage) -> TaskResult:
+    try:
+        with db.write() as (conn, actor):
+            prepared = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
+            if prepared["result_asset_id"]:
+                return get_task_result(conn, task_id)
+            provider = h3_provider_for_task(conn, str(prepared["provider"]), task_id=task_id)
+        # Download only the existing result; no generation submission or billing operation.
+        content = provider.download_result(str(prepared["provider_result_url"]))
+        if not content or len(content) > MAX_UPLOAD_BYTES or content[4:8] != b"ftyp":
+            raise VideoProbeFailed("invalid MP4 result")
+        metadata = FFprobeVideoProbe().probe(content, filename="result.mp4")
+        if not math.isfinite(metadata.duration_seconds) or metadata.duration_seconds <= 0:
+            raise VideoProbeFailed("invalid video duration")
+        digest = hashlib.sha256(content).hexdigest()
+        stored = storage.put_object(
+            f"generation-results/{task_id}/{digest}.mp4",
+            content,
+            content_type="video/mp4",
+        )
+    except (
+        H3ProviderFailed,
+        H3ProviderSettingsUnavailable,
+        VideoProbeFailed,
+        VideoProbeUnavailable,
+        StorageBackendUnavailable,
+    ) as exc:
+        raise HTTPException(
+            503,
+            detail={
+                "code": "RESULT_ARCHIVE_UNAVAILABLE",
+                "message": "成片保存暂时失败，请重试；不会重新生成或扣费。",
+            },
+        ) from exc
+    with db.write() as (conn, actor):
+        return persist_generation_result_archive(
+            conn,
+            actor=actor,
+            prepared=prepared,
+            stored=stored,
+            duration_seconds=metadata.duration_seconds,
+        )
 
 
 @router.post("/generation-tasks/{task_id}/retry", response_model=TaskResult)

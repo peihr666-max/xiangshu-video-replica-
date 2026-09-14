@@ -969,6 +969,7 @@ _GATED_WRITE_ROUTES: list[tuple[str, str, dict[str, object] | None]] = [
     ("delete", "/api/generation-batches/b-nonexistent", None),
     ("post", "/api/generation-batches/b-nonexistent/regenerate", None),
     ("post", "/api/generation-tasks/t-nonexistent/retry", None),
+    ("post", "/api/generation-tasks/t-nonexistent/archive", None),
     ("post", "/api/generation-tasks/t-nonexistent/regenerate", None),
     ("post", "/api/generation-tasks/t-nonexistent/reconcile", None),
 ]

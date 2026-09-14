@@ -532,6 +532,56 @@ def test_auditor_cannot_flip_queue_mode(client: TestClient):
 
 
 @pytest.mark.pg
+def test_homepage_selection_repairs_missing_cover_without_recollecting_video(
+    client: TestClient, route_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from app.storage import FakeStorageAdapter
+    from app.viral_media import CoverEnricher
+
+    headers = _admin_session(client)
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "UPDATE viral_videos SET cover_url='https://cdn.example.com/cover.jpg',cover_key=NULL"
+        )
+        conn.execute(
+            "INSERT INTO viral_media_preparations"
+            "(id,platform,video_id,media_kind,status,storage_uri) "
+            "VALUES('cover-media','douyin','admin-video/opaque=id','video','SUCCEEDED','fake://test/video.mp4')"
+        )
+    calls = []
+
+    def enrich(self, video):
+        calls.append(video.video_id)
+        return replace(video, cover_key="viral/cover/douyin/verified")
+
+    monkeypatch.setattr(CoverEnricher, "enrich", enrich)
+    monkeypatch.setattr(
+        "app.media_routes.get_media_storage",
+        lambda conn: FakeStorageAdapter(provider="cos", bucket="test"),
+    )
+    path = "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/curation"
+    payload = {"action": "feature", "reason": "补齐封面并验收首页", "confirm": True}
+    result = client.patch(
+        path, headers={**headers, "Idempotency-Key": "cover-repair"}, json=payload
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["homepage_featured"] is True
+    assert (
+        client.patch(
+            path, headers={**headers, "Idempotency-Key": "cover-repair"}, json=payload
+        ).status_code
+        == 200
+    )
+    assert calls == ["admin-video/opaque=id"]
+    with psycopg.connect(route_state) as conn:
+        assert conn.execute(
+            "SELECT cover_key FROM viral_videos WHERE video_id='admin-video/opaque=id'"
+        ).fetchone()[0]
+
+
+@pytest.mark.pg
 def test_admin_collected_video_requires_manual_homepage_selection_and_delete_is_durable(
     client: TestClient,
     route_state: str,

@@ -1564,6 +1564,43 @@ def test_first_frame_quality_lease_is_short_and_generation_can_extend_it(pg_stat
     assert seconds > 1700
 
 
+def test_compiled_video_prompt_uses_confirmed_image_instead_of_source_appearance():
+    from app.generation import compile_prompt_text
+
+    prompt = compile_prompt_text(
+        script_payload={"full_text": "先把建房预算规划好。"},
+        shot_payload={
+            "shots": [
+                {
+                    "shot_id": "shot-1",
+                    "start_time": 0,
+                    "end_time": 4,
+                    "shot_type": "中景",
+                    "composition": "人物居中",
+                    "camera_motion": "缓慢拉远",
+                    "subject": "穿浅色条纹衬衫的男子",
+                    "action": "右手抬起做手势，左手拿图纸",
+                    "scene": "建筑工地，背景有农田和房屋",
+                    "transition": "无",
+                }
+            ],
+        },
+        source_duration_seconds=4,
+        duration_seconds=4,
+        resolution="768P",
+    )
+    assert "穿浅色条纹衬衫" not in prompt
+    assert "主体：已确认首帧中的人物" in prompt
+    for preserved in [
+        "人物居中",
+        "缓慢拉远",
+        "右手抬起做手势，左手拿图纸",
+        "建筑工地，背景有农田和房屋",
+        "先把建房预算规划好。",
+    ]:
+        assert preserved in prompt
+
+
 @pytest.mark.parametrize("manual_review", [False, True])
 def test_first_frame_human_review_records_user_without_fake_qc_pass(
     pg_state, monkeypatch, manual_review
@@ -1581,10 +1618,21 @@ def test_first_frame_human_review_records_user_without_fake_qc_pass(
     payload = {"candidates": [{"asset_id": "manual-frame", "quality": None}]}
     if manual_review:
         payload["review_mode"] = "HUMAN_CONFIRMATION"
+    from app.analysis import insert_version
+
+    with pg_transaction() as raw:
+        candidate = insert_version(
+            BusinessConnection.postgres(raw),
+            project_id="proj-1",
+            asset_id="manual-frame",
+            kind="first_frame_candidates",
+            created_by_user_id="u1",
+            payload=payload,
+        )
     monkeypatch.setattr(
         first_frames,
         "current_first_frame_candidates",
-        lambda *args, **kwargs: {"id": "candidate-version", "payload_json": json.dumps(payload)},
+        lambda *args, **kwargs: candidate,
     )
     with pg_transaction() as raw:
         conn = BusinessConnection.postgres(raw)
@@ -1603,6 +1651,26 @@ def test_first_frame_human_review_records_user_without_fake_qc_pass(
         assert stored["review_mode"] == "HUMAN_CONFIRMATION"
         assert stored["reviewed_by_user_id"] == "u1"
         assert "quality_override" not in stored
+        from app.generation import confirmed_first_frame_sources
+
+        sources = confirmed_first_frame_sources(
+            conn, project_id="proj-1", first_frame_asset_id="manual-frame"
+        )
+        assert sources["first_frame_selection_version_id"] == str(row["id"])
+        for unverified_reviewer in (None, "u2"):
+            insert_version(
+                conn,
+                project_id="proj-1",
+                asset_id="manual-frame",
+                kind="first_frame_selection",
+                created_by_user_id="u1",
+                payload={**stored, "reviewed_by_user_id": unverified_reviewer},
+            )
+            with pytest.raises(HTTPException) as exc:
+                confirmed_first_frame_sources(
+                    conn, project_id="proj-1", first_frame_asset_id="manual-frame"
+                )
+            assert exc.value.detail["code"] == "FIRST_FRAME_QUALITY_NOT_VERIFIED"
     assert _rows(
         pg_state, "SELECT available_credits,reserved_credits FROM wallets WHERE user_id='u1'"
     )[0] == {"available_credits": 1000, "reserved_credits": 0}

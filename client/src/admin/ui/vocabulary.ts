@@ -148,13 +148,7 @@ export function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return "—";
   }
-  // 服务端旧时间列不带时区，但存储契约是 UTC，不能当作浏览器本地时间。
-  const timestamp = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(
-    value,
-  )
-    ? `${value.replace(" ", "T")}Z`
-    : value;
-  const date = new Date(timestamp);
+  const date = new Date(parseUtcTimestamp(value));
   if (Number.isNaN(date.getTime())) {
     return "—";
   }
@@ -162,6 +156,16 @@ export function formatDateTime(value: string | null | undefined): string {
     hour12: false,
     timeZone: "Asia/Shanghai",
   });
+}
+
+/** 服务端旧时间列按 UTC 解释，日期展示与耗时计算共用该契约。 */
+export function parseUtcTimestamp(value: string): number {
+  const timestamp = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(
+    value,
+  )
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  return Date.parse(timestamp);
 }
 
 /** 钱包额度展示统一后缀。 */

@@ -175,7 +175,16 @@ def test_hifly_tester_delegates_non_hifly_provider_to_fallback() -> None:
 
 
 @pytest.mark.parametrize(
-    "denied_namespace", ["projects", "generation-results", "users", "materials", "verified-uploads"]
+    "denied_namespace",
+    [
+        "projects",
+        "generation-results",
+        "users",
+        "materials",
+        "verified-uploads",
+        "viral/cover",
+        "viral/prepared",
+    ],
 )
 def test_storage_readiness_rejects_missing_business_directory(monkeypatch, denied_namespace):
     adapter = FakeStorageAdapter(provider="cos", bucket="contract-bucket")
@@ -203,7 +212,7 @@ def test_storage_readiness_verifies_and_cleans_all_business_directories(monkeypa
     checked = []
 
     def record_put(key, content, *, content_type):
-        checked.append(key.split("/")[0])
+        checked.append(key.split("/settings-diagnostics/")[0])
         return original_put(key, content, content_type=content_type)
 
     monkeypatch.setattr(adapter, "put_object", record_put)
@@ -211,7 +220,15 @@ def test_storage_readiness_verifies_and_cleans_all_business_directories(monkeypa
         "cos", _VALID_COS_CONFIG
     )
     assert result.status == "ok"
-    assert checked == ["projects", "generation-results", "users", "materials", "verified-uploads"]
+    assert checked == [
+        "projects",
+        "generation-results",
+        "users",
+        "materials",
+        "verified-uploads",
+        "viral/cover",
+        "viral/prepared",
+    ]
     assert adapter._objects == {}
 
 

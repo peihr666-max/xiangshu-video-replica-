@@ -1,4 +1,5 @@
 import {
+  archiveGenerationTask,
   type CurrentUser,
   cancelGenerationBatch,
   cancelOralTask,
@@ -289,23 +290,43 @@ export async function loadTaskPreview(
       (result.direct_result_available || Boolean(result.result_asset_id)),
   );
   const result =
-    successful.find((candidate) => candidate.direct_result_available) ??
-    successful[0];
+    successful.find((candidate) => candidate.result_asset_id) ?? successful[0];
   if (!result) return undefined;
 
-  const direct = result.direct_result_available;
+  const direct = !result.result_asset_id && result.direct_result_available;
   const assetId = result.result_asset_id;
   const url = direct
     ? await createGenerationTaskPreviewUrl(result.id)
     : await createGenerationResultPreviewUrl(assetId as string);
   return {
     id: direct ? `direct-task-${result.id}` : (assetId as string),
+    ...(direct
+      ? { generationTaskId: result.id, delivery: "direct" as const }
+      : {}),
     name: `${task.title} · 首个可用结果`,
     kind: "video",
     url,
     group: "任务结果",
     source: "任务中心",
     saved: !direct,
+  };
+}
+
+export async function saveTaskPreview(
+  asset: StudioAsset,
+): Promise<StudioAsset> {
+  if (!asset.generationTaskId || asset.saved)
+    throw new Error("当前成片无需保存。");
+  const result = await archiveGenerationTask(asset.generationTaskId);
+  if (!result.result_asset_id) throw new Error("成片尚未保存完成，请重试。");
+  const id = result.result_asset_id;
+  const resolved = await resolveMaterials([`asset:${id}`]);
+  const material = resolved.items.find((item) => item.asset_id === id);
+  if (!material)
+    throw new Error("成片已保存，但素材信息尚未读取成功，请重试。");
+  return {
+    ...studioAssetFromMaterial(material),
+    url: (await getAssetDownloadUrl(id)).url,
   };
 }
 
@@ -701,7 +722,7 @@ function studioTaskFromBatch(batch: GenerationBatch): StudioTask {
     backendStatus: batch.status,
     batchId: batch.id,
     projectId: batch.project_id,
-    title: batch.display_name?.trim() || batch.id,
+    title: batch.display_name?.trim() || batch.project_name || batch.id,
     type: CREATION_KIND_LABELS[batch.creation_kind] ?? "视频生成",
     status: studioTaskStatus({
       status: batch.status,

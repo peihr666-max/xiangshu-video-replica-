@@ -108,7 +108,7 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
   },
   cos: {
     title: "腾讯云存储",
-    note: "区域固定为上海 · 测试连接会在五个业务目录分别创建、校验并删除临时对象",
+    note: "区域固定为上海 · 测试连接会在七个业务目录分别创建、校验并删除临时对象，包含爆款封面和视频",
     fields: [
       { name: "access_key_id", label: "SecretId", secret: true },
       { name: "secret_access_key", label: "SecretKey", secret: true },
@@ -693,7 +693,7 @@ function RuntimeForm({
       </div>
       <p className="storage-provider-hint">
         人物图片、参考视频与首帧保存到腾讯云存储（需在桶 CORS 放行
-        PUT/GET/HEAD，否则上传失败）；生成的成片仅保存在本机。
+        PUT/GET/HEAD，否则上传失败）；生成的成片可在任务结果中保存到素材库，或下载到本机。
       </p>
       {runtime.active_storage_provider === "local" ? (
         <div>

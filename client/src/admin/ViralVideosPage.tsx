@@ -215,7 +215,9 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
                   </td>
                   <td>
                     {video.media_status === "SUCCEEDED" && video.storage_uri
-                      ? "已归档"
+                      ? video.cover_required && !video.cover_key
+                        ? "视频已归档，封面待补齐"
+                        : "视频与封面已就绪"
                       : video.media_status === "FAILED"
                         ? "转存失败"
                         : "待转存"}
@@ -302,7 +304,7 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
         description={
           pending?.action === "delete"
             ? "该视频会从前台移除，后续采集也不会重新展示。已导入项目的素材保留。"
-            : "归档完成的视频可以展示到首页。请填写操作原因。"
+            : "已归档视频会自动补齐封面后展示到首页。请填写操作原因。"
         }
         confirmLabel="确认操作"
         onClose={() => setPending(null)}

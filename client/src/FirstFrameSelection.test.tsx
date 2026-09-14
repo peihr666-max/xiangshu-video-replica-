@@ -174,6 +174,27 @@ describe("FirstFrameSelection", () => {
     expect(resumeFirstFrameGeneration).not.toHaveBeenCalled();
   });
 
+  it("restores completed candidates without marking the workspace as generating", async () => {
+    const onBusyChange = vi.fn();
+    vi.mocked(getLatestFirstFrameTask).mockResolvedValue({
+      ...pendingFirstFrameTask,
+      status: "SUCCEEDED",
+      result_version_id: candidatesVersion.id,
+    });
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+        onBusyChange={onBusyChange}
+      />,
+    );
+    await screen.findByText("已自动预选第一张候选，请查看后单击确认。");
+    expect(onBusyChange).not.toHaveBeenCalledWith(true);
+    expect(resumeFirstFrameGeneration).not.toHaveBeenCalled();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
   it("shows scene comparison and confirms manual-review output without a failed-QC override", async () => {
     const manual = {
       ...candidatesVersion,
