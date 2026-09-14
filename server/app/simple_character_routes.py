@@ -255,7 +255,13 @@ def create_simple_upload_intent(
         method="POST (multipart/form-data)",
         max_size_bytes=SIMPLE_UPLOAD_MAX_BYTES,
         allowed_content_types=sorted(SIMPLE_UPLOAD_ALLOWED_TYPES),
-        required_form_fields=["file", "display_name", "idempotency_key"],
+        required_form_fields=[
+            "file",
+            "display_name",
+            "idempotency_key",
+            "image_consent_version",
+            "image_consent_accepted",
+        ],
         task_status_url_template="/api/simple-characters/task-status/{task_id}",
     )
 
@@ -331,6 +337,8 @@ async def enqueue_global_simple_character(
     display_name: Annotated[str, Form()],
     idempotency_key: Annotated[str, Form()],
     persona_name: Annotated[str, Form()] = "",
+    image_consent_version: Annotated[str, Form()] = "",
+    image_consent_accepted: Annotated[bool, Form()] = False,
 ) -> CharacterSheetTaskResponse:
     return await _enqueue_simple_character_upload(
         storage=storage,
@@ -340,6 +348,8 @@ async def enqueue_global_simple_character(
         idempotency_key=idempotency_key,
         persona_name=persona_name,
         project_id=None,
+        image_consent_version=image_consent_version,
+        image_consent_accepted=image_consent_accepted,
     )
 
 
@@ -356,6 +366,8 @@ async def enqueue_project_simple_character(
     display_name: Annotated[str, Form()],
     idempotency_key: Annotated[str, Form()],
     persona_name: Annotated[str, Form()] = "",
+    image_consent_version: Annotated[str, Form()] = "",
+    image_consent_accepted: Annotated[bool, Form()] = False,
 ) -> CharacterSheetTaskResponse:
     return await _enqueue_simple_character_upload(
         storage=storage,
@@ -365,6 +377,8 @@ async def enqueue_project_simple_character(
         idempotency_key=idempotency_key,
         persona_name=persona_name,
         project_id=project_id,
+        image_consent_version=image_consent_version,
+        image_consent_accepted=image_consent_accepted,
     )
 
 
@@ -959,7 +973,13 @@ async def _enqueue_simple_character_upload(
     idempotency_key: str,
     persona_name: str,
     project_id: str | None,
+    image_consent_version: str,
+    image_consent_accepted: bool,
 ) -> CharacterSheetTaskResponse:
+    if not image_consent_accepted or image_consent_version != "2026-09-14-v1":
+        raise character_error(
+            422, "IMAGE_AUTHORIZATION_REQUIRED", "请先阅读并确认人物图像使用授权。"
+        )
     clean_name = display_name.strip()
     clean_key = idempotency_key.strip()
     if not clean_name:
@@ -1041,6 +1061,7 @@ async def _enqueue_simple_character_upload(
                 source_sha256=content_sha256,
                 source_size_bytes=len(content),
                 idempotency_key=clean_key,
+                image_consent_version=image_consent_version,
             )
         if str(row["source_storage_uri"]) != stored.uri:
             _best_effort_delete_task_input(storage, stored.uri)

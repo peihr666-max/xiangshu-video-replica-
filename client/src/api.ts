@@ -3173,8 +3173,14 @@ export async function uploadSimpleCharacter(
   file: File,
   displayName: string,
   personaName = "",
+  imageConsentVersion?: string,
 ): Promise<SimpleCharacterResult> {
+  if (imageConsentVersion !== "2026-09-14-v1") {
+    throw new Error("请先阅读并确认人物图像使用授权。");
+  }
   const form = new FormData();
+  form.append("image_consent_version", imageConsentVersion);
+  form.append("image_consent_accepted", "true");
   form.append("file", file);
   form.append("display_name", displayName);
   if (personaName.trim()) {

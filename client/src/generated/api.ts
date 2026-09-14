@@ -5457,6 +5457,16 @@ export interface components {
        * @default
        */
       persona_name: string;
+      /**
+       * Image Consent Version
+       * @default
+       */
+      image_consent_version: string;
+      /**
+       * Image Consent Accepted
+       * @default false
+       */
+      image_consent_accepted: boolean;
     };
     /** Body_enqueue_project_simple_character_api_simple_characters_tasks__project_id__generate_post */
     Body_enqueue_project_simple_character_api_simple_characters_tasks__project_id__generate_post: {
@@ -5471,6 +5481,16 @@ export interface components {
        * @default
        */
       persona_name: string;
+      /**
+       * Image Consent Version
+       * @default
+       */
+      image_consent_version: string;
+      /**
+       * Image Consent Accepted
+       * @default false
+       */
+      image_consent_accepted: boolean;
     };
     /** Body_enqueue_regenerate_contact_sheet_api_simple_characters_identities__identity_id__regenerate_contact_sheet_task_post */
     Body_enqueue_regenerate_contact_sheet_api_simple_characters_identities__identity_id__regenerate_contact_sheet_task_post: {
