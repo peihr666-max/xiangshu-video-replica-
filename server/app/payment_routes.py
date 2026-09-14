@@ -7,6 +7,7 @@ from typing import Annotated
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.concurrency import run_in_threadpool
 
 # Import to trigger provider registration
 import app.zpay_provider  # noqa: F401
@@ -162,7 +163,10 @@ async def wechat_native_notify(
     assert result.channel is not None
     assert result.source_digest is not None
     try:
-        confirm_recharge_payment(
+        # Synchronous PG lock waits must not block dependency teardown on this
+        # event loop: another callback may hold the order lock until commit.
+        await run_in_threadpool(
+            confirm_recharge_payment,
             conn,
             merchant_order_no=result.merchant_order_no,
             provider_trade_no=result.provider_trade_no,

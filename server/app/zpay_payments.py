@@ -6,9 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, TypedDict, cast
 from uuid import uuid4
 
-import psycopg
-
-from app.db_portable import BusinessConnection
+from app.db_portable import BusinessConnection, IntegrityConstraintError
 from app.zpay import ALLOWED_ZPAY_CHANNELS
 
 ZPAY_NOTIFY_BUSY_TIMEOUT_MS = 1000
@@ -120,6 +118,7 @@ def _read_settlement_order(
                 {trade_no_column} AS trade_ref
             FROM recharge_orders
             WHERE merchant_order_no = %s
+            FOR UPDATE
             """,
             (merchant_order_no,),
         ).fetchone(),
@@ -167,144 +166,138 @@ def confirm_recharge_payment(
         )
 
     conn.execute(f"PRAGMA busy_timeout = {ZPAY_NOTIFY_BUSY_TIMEOUT_MS}")
+    # A PG nested transaction is a real savepoint. Route handlers may catch a
+    # business error and return a normal response, so the rollback must happen
+    # here before that catch. Releasing this savepoint never commits the outer
+    # request transaction. BusinessConnection owns a PostgreSQL connection.
+    transaction = conn.raw.transaction()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        order = _read_settlement_order(
-            conn, merchant_order_no=merchant_order_no, trade_no_column=spec.trade_no_column
-        )
-        if order is None:
-            raise PaymentConfirmationError(
-                f"{prefix}_ORDER_NOT_FOUND",
-                "Recharge order does not exist.",
-                status_code=404,
+        with transaction:
+            order = _read_settlement_order(
+                conn, merchant_order_no=merchant_order_no, trade_no_column=spec.trade_no_column
             )
-        if str(order["provider"]) != spec.provider_name:
-            raise PaymentConfirmationError(
-                f"{prefix}_PROVIDER_MISMATCH",
-                f"Recharge order provider does not match {label}.",
-            )
-        if int(order["amount_fen"]) != amount_fen:
-            raise PaymentConfirmationError(
-                f"{prefix}_AMOUNT_MISMATCH",
-                f"{label} amount does not match the stored recharge order.",
-            )
-        merchant_channels = set(allowed_channels or (str(order["channel"]),))
-        if channel not in spec.channel_universe or channel not in merchant_channels:
-            raise PaymentConfirmationError(
-                f"{prefix}_CHANNEL_MISMATCH",
-                f"{label} channel is not enabled for this merchant.",
-            )
-
-        bound_order = conn.execute(
-            f"""
-            SELECT merchant_order_no
-            FROM recharge_orders
-            WHERE {spec.trade_no_column} = %s AND merchant_order_no != %s
-            """,
-            (provider_trade_no, merchant_order_no),
-        ).fetchone()
-        if bound_order is not None:
-            raise PaymentConfirmationError(
-                f"{prefix}_TRADE_ALREADY_BOUND",
-                f"{label} trade number is already bound to another recharge order.",
-            )
-
-        existing_trade_no = order["trade_ref"]
-        if existing_trade_no is not None and str(existing_trade_no) != provider_trade_no:
-            raise PaymentConfirmationError(
-                f"{prefix}_TRADE_NO_MISMATCH",
-                f"{label} trade number does not match the stored recharge order.",
-            )
-        if str(order["status"]) == "PAID":
-            # Idempotent replay: the order is already settled. The rollback
-            # abandons this read-only transaction (a no-op on the PG lane,
-            # where the outer pg_transaction owns commit authority).
-            conn.rollback()
-            return order
-        if str(order["status"]) not in {"PENDING", "CLOSED"}:
-            raise PaymentConfirmationError(
-                f"{prefix}_ORDER_NOT_SETTLEABLE",
-                "Recharge order is not waiting for settlement.",
-            )
-
-        updated = conn.execute(
-            f"""
-            UPDATE recharge_orders
-            SET status = 'PAID',
-                {spec.trade_no_column} = %s,
-                notify_digest = %s,
-                paid_at = CURRENT_TIMESTAMP
-            WHERE id = %s AND status IN ('PENDING', 'CLOSED')
-            """,
-            (provider_trade_no, source_digest, str(order["id"])),
-        )
-        if updated.rowcount != 1:
-            raise PaymentConfirmationError(
-                f"{prefix}_ORDER_CHANGED",
-                "Recharge order changed while payment was being confirmed.",
-            )
-
-        source_column = ", auth_source" if conn.is_postgres else ""
-        source_value = ", 'internal'" if conn.is_postgres else ""
-        conn.execute(
-            f"""
-            INSERT INTO wallet_transactions (
-                id, user_id, type, available_delta, reserved_delta,
-                recharge_order_id, task_id, billing_round, idempotency_key{source_column}
-            ) VALUES (%s, %s, 'CHARGE', %s, 0, %s, NULL, NULL, %s{source_value})
-            """,
-            (
-                str(uuid4()),
-                str(order["user_id"]),
-                int(order["credits"]),
-                str(order["id"]),
-                f"{spec.provider_name}:charge:{order['id']}",
-            ),
-        )
-        wallet = conn.execute(
-            """
-            UPDATE wallets
-            SET available_credits = available_credits + %s,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = %s AND available_credits <= 2147483647 - %s
-            """,
-            (int(order["credits"]), str(order["user_id"]), int(order["credits"])),
-        )
-        if wallet.rowcount != 1:
-            # Either the wallet is missing or the credit would overflow int4
-            # (the T23 admin-adjustment bound, M3 review LOW). Distinguish so
-            # the callback answers a final 409 instead of a retried 500.
-            exists = conn.execute(
-                "SELECT 1 FROM wallets WHERE user_id = %s", (str(order["user_id"]),)
-            ).fetchone()
-            if exists is None:
+            if order is None:
                 raise PaymentConfirmationError(
-                    "WALLET_NOT_FOUND",
-                    "Wallet record is missing for the recharge order owner.",
-                    status_code=500,
+                    f"{prefix}_ORDER_NOT_FOUND",
+                    "Recharge order does not exist.",
+                    status_code=404,
                 )
-            raise PaymentConfirmationError(
-                "WALLET_CREDIT_OVERFLOW",
-                "Wallet credit balance would overflow; settle manually.",
-                status_code=409,
-            )
+            if str(order["provider"]) != spec.provider_name:
+                raise PaymentConfirmationError(
+                    f"{prefix}_PROVIDER_MISMATCH",
+                    f"Recharge order provider does not match {label}.",
+                )
+            if int(order["amount_fen"]) != amount_fen:
+                raise PaymentConfirmationError(
+                    f"{prefix}_AMOUNT_MISMATCH",
+                    f"{label} amount does not match the stored recharge order.",
+                )
+            merchant_channels = set(allowed_channels or (str(order["channel"]),))
+            if channel not in spec.channel_universe or channel not in merchant_channels:
+                raise PaymentConfirmationError(
+                    f"{prefix}_CHANNEL_MISMATCH",
+                    f"{label} channel is not enabled for this merchant.",
+                )
 
-        conn.commit()
-        confirmed = _read_settlement_order(
-            conn, merchant_order_no=merchant_order_no, trade_no_column=spec.trade_no_column
-        )
-        if confirmed is None:  # pragma: no cover - protected by the transaction above
-            raise RuntimeError("confirmed recharge order disappeared")
-        return confirmed
-    except PaymentConfirmationError:
-        conn.rollback()
-        raise
-    except (sqlite3.IntegrityError, psycopg.errors.UniqueViolation) as exc:
-        conn.rollback()
+            bound_order = conn.execute(
+                f"""
+                SELECT merchant_order_no
+                FROM recharge_orders
+                WHERE {spec.trade_no_column} = %s AND merchant_order_no != %s
+                """,
+                (provider_trade_no, merchant_order_no),
+            ).fetchone()
+            if bound_order is not None:
+                raise PaymentConfirmationError(
+                    f"{prefix}_TRADE_ALREADY_BOUND",
+                    f"{label} trade number is already bound to another recharge order.",
+                )
+
+            existing_trade_no = order["trade_ref"]
+            if existing_trade_no is not None and str(existing_trade_no) != provider_trade_no:
+                raise PaymentConfirmationError(
+                    f"{prefix}_TRADE_NO_MISMATCH",
+                    f"{label} trade number does not match the stored recharge order.",
+                )
+            if str(order["status"]) == "PAID":
+                # The order lock serializes concurrent replays before any writes.
+                return order
+            if str(order["status"]) not in {"PENDING", "CLOSED"}:
+                raise PaymentConfirmationError(
+                    f"{prefix}_ORDER_NOT_SETTLEABLE",
+                    "Recharge order is not waiting for settlement.",
+                )
+
+            updated = conn.execute(
+                f"""
+                UPDATE recharge_orders
+                SET status = 'PAID',
+                    {spec.trade_no_column} = %s,
+                    notify_digest = %s,
+                    paid_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status IN ('PENDING', 'CLOSED')
+                """,
+                (provider_trade_no, source_digest, str(order["id"])),
+            )
+            if updated.rowcount != 1:
+                raise PaymentConfirmationError(
+                    f"{prefix}_ORDER_CHANGED",
+                    "Recharge order changed while payment was being confirmed.",
+                )
+
+            conn.execute(
+                """
+                INSERT INTO wallet_transactions (
+                    id, user_id, type, available_delta, reserved_delta,
+                    recharge_order_id, task_id, billing_round, idempotency_key, auth_source
+                ) VALUES (%s, %s, 'CHARGE', %s, 0, %s, NULL, NULL, %s, 'internal')
+                """,
+                (
+                    str(uuid4()),
+                    str(order["user_id"]),
+                    int(order["credits"]),
+                    str(order["id"]),
+                    f"{spec.provider_name}:charge:{order['id']}",
+                ),
+            )
+            wallet = conn.execute(
+                """
+                UPDATE wallets
+                SET available_credits = available_credits + %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = %s AND available_credits <= 2147483647 - %s
+                """,
+                (int(order["credits"]), str(order["user_id"]), int(order["credits"])),
+            )
+            if wallet.rowcount != 1:
+                # Either the wallet is missing or the credit would overflow int4
+                # (the T23 admin-adjustment bound, M3 review LOW). Distinguish so
+                # the callback answers a final 409 instead of a retried 500.
+                exists = conn.execute(
+                    "SELECT 1 FROM wallets WHERE user_id = %s", (str(order["user_id"]),)
+                ).fetchone()
+                if exists is None:
+                    raise PaymentConfirmationError(
+                        "WALLET_NOT_FOUND",
+                        "Wallet record is missing for the recharge order owner.",
+                        status_code=500,
+                    )
+                raise PaymentConfirmationError(
+                    "WALLET_CREDIT_OVERFLOW",
+                    "Wallet credit balance would overflow; settle manually.",
+                    status_code=409,
+                )
+
+            confirmed = _read_settlement_order(
+                conn, merchant_order_no=merchant_order_no, trade_no_column=spec.trade_no_column
+            )
+            if confirmed is None:  # pragma: no cover - protected by the transaction above
+                raise RuntimeError("confirmed recharge order disappeared")
+            return confirmed
+    except IntegrityConstraintError as exc:
+        if exc.sqlstate != "23505":
+            raise
         raise PaymentConfirmationError(
             f"{prefix}_SETTLEMENT_CONFLICT",
             "Payment settlement conflicts with an existing ledger entry.",
         ) from exc
-    except Exception:
-        conn.rollback()
-        raise
