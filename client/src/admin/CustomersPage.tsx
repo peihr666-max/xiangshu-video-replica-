@@ -8,6 +8,8 @@ import {
 } from "react";
 import { downloadCustomersCsv } from "../api";
 import {
+  type AdjustmentWriteResult,
+  AdminActivationError,
   type AdminRechargeOrder,
   type AdminWalletTransaction,
   type CustomerListItem,
@@ -35,11 +37,102 @@ import "./admin-customer-detail.css";
 
 interface CustomersPageProps {
   embedded?: boolean;
+  operatorId?: string;
   readOnly?: boolean;
+}
+
+type PendingGrantIntent = {
+  key: string;
+  operatorId: string;
+  userId: string;
+  credits: number;
+  sourceType: string;
+  sourceRef: string;
+  reason: string;
+  uncertain: boolean;
+  attemptId: string | null;
+};
+
+const PENDING_GRANT_STORAGE_PREFIX = "video-replica:admin-free-grant:v1:";
+
+function pendingGrantStorageKey(operatorId: string, userId: string): string {
+  return `${PENDING_GRANT_STORAGE_PREFIX}${encodeURIComponent(operatorId)}:${encodeURIComponent(userId)}`;
+}
+
+function readPendingGrant(
+  operatorId: string,
+  userId: string,
+): PendingGrantIntent | null {
+  const storageKey = pendingGrantStorageKey(operatorId, userId);
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PendingGrantIntent>;
+    if (
+      value.operatorId !== operatorId ||
+      value.userId !== userId ||
+      value.uncertain !== true ||
+      typeof value.key !== "string" ||
+      !value.key ||
+      !Number.isSafeInteger(value.credits) ||
+      Number(value.credits) <= 0 ||
+      Number(value.credits) > 2147483647 ||
+      typeof value.sourceType !== "string" ||
+      !value.sourceType ||
+      typeof value.sourceRef !== "string" ||
+      !value.sourceRef ||
+      typeof value.reason !== "string" ||
+      !value.reason ||
+      typeof value.attemptId !== "string" ||
+      !value.attemptId
+    ) {
+      window.sessionStorage.removeItem(storageKey);
+      return null;
+    }
+    return value as PendingGrantIntent;
+  } catch {
+    return null;
+  }
+}
+
+function persistPendingGrant(intent: PendingGrantIntent): boolean {
+  const storageKey = pendingGrantStorageKey(intent.operatorId, intent.userId);
+  if (typeof window === "undefined") return false;
+  try {
+    window.sessionStorage.setItem(storageKey, JSON.stringify(intent));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearPendingGrant(operatorId: string, userId: string): boolean {
+  const storageKey = pendingGrantStorageKey(operatorId, userId);
+  if (typeof window === "undefined") return false;
+  try {
+    window.sessionStorage.removeItem(storageKey);
+    return true;
+  } catch {
+    // Retaining a stale intent is safer than allowing a second idempotency key.
+    return false;
+  }
+}
+
+function clearPendingGrantForAttempt(
+  operatorId: string,
+  userId: string,
+  key: string,
+  attemptId: string,
+): boolean {
+  const current = readPendingGrant(operatorId, userId);
+  if (current?.key !== key || current.attemptId !== attemptId) return false;
+  return clearPendingGrant(operatorId, userId);
 }
 
 export function CustomersPage({
   embedded = false,
+  operatorId = "standalone-admin",
   readOnly = false,
 }: CustomersPageProps = {}) {
   const [customers, setCustomers] = useState<CustomerListItem[]>([]);
@@ -147,8 +240,23 @@ export function CustomersPage({
     return (
       <CustomerDetailView
         customer={focusedCustomer}
+        operatorId={operatorId}
         onChanged={() => void loadCustomers()}
+        onGranted={(result) => {
+          setCustomers((current) =>
+            current.map((customer) =>
+              customer.user_id === focusedCustomer.user_id
+                ? {
+                    ...customer,
+                    available_credits: result.wallet_balance_after,
+                  }
+                : customer,
+            ),
+          );
+          void loadCustomers();
+        }}
         readOnly={readOnly}
+        refreshError={error}
         onBack={() => setExpandedUserId(null)}
       />
     );
@@ -461,13 +569,19 @@ function Customer360Empty() {
 
 function CustomerDetailView({
   customer,
+  operatorId,
   onChanged,
+  onGranted,
   readOnly,
+  refreshError,
   onBack,
 }: {
   customer: CustomerListItem;
+  operatorId: string;
   onChanged: () => void;
+  onGranted: (result: AdjustmentWriteResult) => void;
   readOnly: boolean;
+  refreshError: string;
   onBack: () => void;
 }) {
   return (
@@ -475,6 +589,9 @@ function CustomerDetailView({
       className="customers-page customer-focused-detail"
       id={`customer-detail-${customer.user_id}`}
     >
+      {refreshError ? (
+        <PageBanner tone="error">{refreshError}</PageBanner>
+      ) : null}
       <button
         className="customer-detail-back btn-secondary"
         type="button"
@@ -547,7 +664,9 @@ function CustomerDetailView({
           <CustomerPriceEditor readOnly={readOnly} userId={customer.user_id} />
         )}
         <FreeCreditsSection
-          onChanged={onChanged}
+          key={`free-grant:${operatorId}:${customer.user_id}`}
+          onGranted={onGranted}
+          operatorId={operatorId}
           readOnly={readOnly}
           userId={customer.user_id}
         />
@@ -739,11 +858,13 @@ function CustomerPriceEditor({
  */
 function FreeCreditsSection({
   userId,
-  onChanged,
+  onGranted,
+  operatorId,
   readOnly,
 }: {
   userId: string;
-  onChanged: () => void;
+  onGranted: (result: AdjustmentWriteResult) => void;
+  operatorId: string;
   readOnly: boolean;
 }) {
   const [credits, setCredits] = useState("");
@@ -753,18 +874,33 @@ function FreeCreditsSection({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogError, setDialogError] = useState("");
   const [notice, setNotice] = useState("");
-  const retry = useRef<{
-    fingerprint: string;
-    key: string;
-    sourceRef: string;
-  } | null>(null);
+  const [pendingGrant, setPendingGrant] = useState<PendingGrantIntent | null>(
+    () => readPendingGrant(operatorId, userId),
+  );
   const saving = useRef(false);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   function requestGrant(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (readOnly || saving.current) return;
+    if (pendingGrant) {
+      setDialogError("");
+      setDialogOpen(true);
+      return;
+    }
     const creditsNumber = Number(credits);
-    if (!Number.isSafeInteger(creditsNumber) || creditsNumber <= 0) {
+    if (
+      !Number.isSafeInteger(creditsNumber) ||
+      creditsNumber <= 0 ||
+      creditsNumber > 2147483647
+    ) {
       setDialogError("赠送积分必须是大于 0 的整数");
       return;
     }
@@ -772,55 +908,96 @@ function FreeCreditsSection({
       setDialogError("请填写事由");
       return;
     }
-    const fingerprint = JSON.stringify([
+    const key = crypto.randomUUID();
+    setPendingGrant({
+      key,
+      operatorId,
       userId,
-      creditsNumber,
+      credits: creditsNumber,
       sourceType,
-      reason.trim(),
-    ]);
-    if (retry.current?.fingerprint !== fingerprint) {
-      const key = crypto.randomUUID();
-      retry.current = { fingerprint, key, sourceRef: `GRANT-${key}` };
-    }
+      sourceRef: `GRANT-${key}`,
+      reason: reason.trim(),
+      uncertain: false,
+      attemptId: null,
+    });
     setDialogError("");
     setDialogOpen(true);
   }
 
   async function submitGrant() {
-    if (saving.current || readOnly || !retry.current) return;
-    const creditsNumber = Number(credits);
-    const { key, sourceRef } = retry.current;
+    if (saving.current || readOnly || !pendingGrant) return;
+    const intent = pendingGrant;
+    const attemptId = crypto.randomUUID();
+    const inFlightIntent: PendingGrantIntent = {
+      ...intent,
+      // A page reload cannot observe this request's eventual response, so the
+      // durable copy must already be treated as uncertain before POST begins.
+      uncertain: true,
+      attemptId,
+    };
+    if (!persistPendingGrant(inFlightIntent)) {
+      setDialogError(
+        "无法安全保存待确认发放，本次请求尚未发送，请检查浏览器存储后重试",
+      );
+      return;
+    }
+    setPendingGrant(inFlightIntent);
     saving.current = true;
     setSubmitting(true);
     try {
       const result = await createCustomerAdjustment(
         userId,
         {
-          sourceDocumentType: sourceType,
-          sourceDocumentRef: sourceRef,
-          credits: creditsNumber,
+          sourceDocumentType: intent.sourceType,
+          sourceDocumentRef: intent.sourceRef,
+          credits: intent.credits,
         },
-        reason.trim(),
-        key,
+        intent.reason,
+        intent.key,
       );
+      clearPendingGrantForAttempt(operatorId, userId, intent.key, attemptId);
+      if (!mounted.current) return;
       setNotice(
-        `已发放 ${creditsNumber} 赠送积分（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 积分`,
+        `已发放 ${intent.credits} 赠送积分（request id: ${result.request_id}），余额 ${result.wallet_balance_after} 积分`,
       );
-      onChanged();
+      onGranted(result);
       setCredits("");
       setReason("");
-      retry.current = null;
+      setPendingGrant(null);
       setDialogOpen(false);
       setDialogError("");
     } catch (cause) {
-      setDialogError(
-        cause instanceof Error && cause.message.trim()
-          ? cause.message
-          : "发放赠送积分失败",
-      );
+      const definitivelyRejected =
+        cause instanceof AdminActivationError &&
+        cause.status !== undefined &&
+        cause.status >= 400 &&
+        cause.status < 500 &&
+        ![408, 409, 429].includes(cause.status);
+      if (definitivelyRejected && !intent.uncertain) {
+        const cleared = clearPendingGrantForAttempt(
+          operatorId,
+          userId,
+          intent.key,
+          attemptId,
+        );
+        if (cleared && mounted.current) {
+          setPendingGrant((current) =>
+            current?.key === intent.key && current.attemptId === attemptId
+              ? null
+              : current,
+          );
+        }
+      }
+      if (mounted.current) {
+        setDialogError(
+          cause instanceof Error && cause.message.trim()
+            ? cause.message
+            : "发放赠送积分失败",
+        );
+      }
     } finally {
       saving.current = false;
-      setSubmitting(false);
+      if (mounted.current) setSubmitting(false);
     }
   }
 
@@ -841,6 +1018,12 @@ function FreeCreditsSection({
     >
       <h3>赠送积分</h3>
       {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
+      {pendingGrant && !dialogOpen ? (
+        <p className="admin-hint">
+          上次发放结果尚未确认：{pendingGrant.credits} 积分，事由“
+          {pendingGrant.reason}”。重试会使用同一来源单号与幂等键。
+        </p>
+      ) : null}
       {dialogError && !dialogOpen ? (
         <PageBanner tone="error">{dialogError}</PageBanner>
       ) : null}
@@ -848,12 +1031,9 @@ function FreeCreditsSection({
         <label>
           积分来源
           <select
-            disabled={dialogOpen}
+            disabled={dialogOpen || pendingGrant !== null}
             value={sourceType}
-            onChange={(event) => {
-              setSourceType(event.target.value);
-              retry.current = null;
-            }}
+            onChange={(event) => setSourceType(event.target.value)}
           >
             <option value="FREE_GRANT">积分赠送</option>
             <option value="CREDIT_COMPENSATION">无收款补偿</option>
@@ -862,7 +1042,7 @@ function FreeCreditsSection({
         <label>
           发放积分
           <input
-            disabled={dialogOpen}
+            disabled={dialogOpen || pendingGrant !== null}
             min={1}
             placeholder="例如：10"
             step={1}
@@ -874,14 +1054,14 @@ function FreeCreditsSection({
         <label>
           事由
           <input
-            disabled={dialogOpen}
+            disabled={dialogOpen || pendingGrant !== null}
             placeholder="例如：新客赠送、活动奖励或售后补偿"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
           />
         </label>
         <button type="submit" disabled={dialogOpen}>
-          发放赠送积分
+          {pendingGrant ? "重试确认上次发放" : "发放赠送积分"}
         </button>
       </form>
 
@@ -890,11 +1070,11 @@ function FreeCreditsSection({
         confirmLabel="确认发放"
         description={
           <>
-            即将发放 {credits} 积分。
+            即将发放 {pendingGrant?.credits ?? credits} 积分。
             <br />
-            事由：{reason.trim()}
+            事由：{pendingGrant?.reason ?? reason.trim()}
             <br />
-            来源单号：{retry.current?.sourceRef}
+            来源单号：{pendingGrant?.sourceRef}
           </>
         }
         error={dialogError}
@@ -902,6 +1082,10 @@ function FreeCreditsSection({
         open={dialogOpen}
         title="发放赠送积分"
         onClose={() => {
+          if (!pendingGrant?.uncertain) {
+            clearPendingGrant(operatorId, userId);
+            setPendingGrant(null);
+          }
           setDialogOpen(false);
           setDialogError("");
         }}

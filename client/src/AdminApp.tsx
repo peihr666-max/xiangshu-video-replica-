@@ -773,7 +773,10 @@ export function AdminApp() {
           ) : null}
           {activeTab === "funds" ? <FundsPage readOnly={readOnly} /> : null}
           {activeTab === "customersMgmt" ? (
-            <CustomersManagementPage readOnly={readOnly} />
+            <CustomersManagementPage
+              operatorId={actor.user_id}
+              readOnly={readOnly}
+            />
           ) : null}
           {activeTab === "generationRecords" ? (
             <GenerationRecordsPage
