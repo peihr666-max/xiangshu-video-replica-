@@ -39,7 +39,7 @@ from app.first_frames import (
     prepare_first_frame_generation,
     store_first_frame_generation,
 )
-from app.permissions import require_not_auditor, require_project_access
+from app.permissions import require_not_auditor, require_project_access, write_audit
 from app.simple_character import (
     SIMPLE_CONTACT_SHEET_MODEL,
     PreparedSimpleCharacterGeneration,
@@ -395,8 +395,9 @@ def enqueue_character_sheet_task(
     idempotency_key: str,
     scene_description: str | None = None,
     costume_description: str | None = None,
+    image_consent_version: str | None = None,
 ) -> sqlite3.Row:
-    request_payload = {
+    request_payload: dict[str, object] = {
         "operation": operation,
         "project_id": project_id,
         "identity_id": identity_id,
@@ -410,6 +411,12 @@ def enqueue_character_sheet_task(
         "source_content_type": source_content_type,
         "source_size_bytes": source_size_bytes,
     }
+    if image_consent_version is not None:
+        request_payload["image_authorization"] = {
+            "accepted": True,
+            "version": image_consent_version,
+            "scope": "character_multiview",
+        }
     request_hash = canonical_request_hash(request_payload)
     replay = conn.execute(
         """
@@ -477,6 +484,21 @@ def enqueue_character_sheet_task(
         raise _task_error(409, "CHARACTER_SHEET_TASK_ENQUEUE_CONFLICT", "任务状态已变化，请重试。")
     from app.usage_billing import accept_operation
 
+    if image_consent_version is not None and str(row["id"]) == task_id:
+        write_audit(
+            conn,
+            actor=actor,
+            action="simple_character.image_authorization.accept",
+            entity_type="character_sheet_task",
+            entity_id=task_id,
+            metadata={
+                "accepted": True,
+                "version": image_consent_version,
+                "scope": "character_multiview",
+                "source_sha256": source_sha256,
+            },
+            commit=False,
+        )
     accept_operation(conn, user_id=actor.id, service="character", source_id=str(row["id"]), units=1)
     conn.commit()
     return cast(sqlite3.Row, row)
