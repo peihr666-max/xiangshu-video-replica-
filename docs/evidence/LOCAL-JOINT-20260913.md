@@ -183,3 +183,13 @@ Owner / Reviewer：当前 Codex 任务 / 代码自检，待 PR 独立评审
 核对正在使用的 1069 个非文档源文件与最终测试快照 SHA256 完全相同。代码自检 `admin-report-p1-self-review.json`，汇总 `admin-report-p1-final-results.json`，实际服务核验 `admin-report-p1-local-api.json`。新增证据文件链接检查与秘密扫描通过后进行本地文档提交。远程仍待此前明确推送授权，不冒称 PR/远程 CI/独立评审完成。
 
 四个本阶段临时 PostgreSQL 容器已在核对专属标签后删除；用户联调数据库继续运行，两个原有管理设置标签页保留。最终文档本地链接及秘密扫描已通过。
+
+## 2026-09-14 工作树整理交付
+
+本次从 `origin/main@11c3de13422f2bab009a052a9f2074bf8c13e12c` 新建独立交付分支 `chore/local-joint-delivery-20260914`，只迁入冻结提交 `db2209fa30e727c31045cffa4707ee17416d8152` 相对该主线的 99 文件净改动。正在运行的 `LOCAL-JOINT-20260913` 目录和其中后来接入的 ASR PR #101 代码均未被修改或夹带；ASR 三个文件与本交付没有重叠。
+
+独立代码评审发现：客户关闭微信充值订单后，网关仍可能晚到回调并结算，但旧保护只阻止存在 `PENDING` 订单时更换 `appid` / `mchid`，会让 `CLOSED` 订单使用错误商户身份验签。新增回归先得到 200 红灯，再将未结算保护扩展到 `PENDING` 和 `CLOSED`，绿灯 2 项通过；复审结论 PASS。该策略偏保守：只要仍保留可晚结算的关闭订单，就不允许更换商户身份，未来若实现网关关单或配置版本绑定可再收窄。
+
+最终候选的秘密扫描、前端 Biome/TypeScript/Vitest、e2e lint、Tauri fmt/check、Ruff/format 和 mypy 均通过；前端 **1420 passed**。修复后的后端官方清单覆盖 94 个测试文件，四个隔离 PostgreSQL 分片分别为 484、499、594、464 passed，合计 **2041 passed / 1 skipped**，四个退出码均为 0。独立评审已完成；没有调用真实支付、付费 Provider、生产存储或生产数据库。
+
+用户于 2026-09-14 要求对剩余 worktree 做风险评估，废弃项删除，有用且非在制成果提交并合并。交付分支的远程 PR、CI 与 squash 合并记录以最终 GitHub 状态为准；正在开发的 FIX-ASR、运行中的联调源目录继续保留。
