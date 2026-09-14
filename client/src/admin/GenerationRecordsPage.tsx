@@ -221,8 +221,8 @@ export function GenerationRecordsPage({
               <td>{formatDuration(item.created_at, item.completed_at)}</td>
               <td>
                 {item.charged_credits > 0
-                  ? `${item.charged_credits} 秒`
-                  : "0 秒"}
+                  ? `${item.charged_credits} 积分`
+                  : "0 积分"}
               </td>
               <td>{formatProviderCost(item)}</td>
               <td>

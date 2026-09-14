@@ -624,22 +624,26 @@ function RuntimeForm({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await save(values);
+  }
+
+  async function save(next: RuntimeSettings) {
     if (isSaving) {
       return;
     }
     setStatus("");
     const limitsValid =
-      Number.isInteger(values.max_generation_count_per_batch) &&
-      values.max_generation_count_per_batch >= 1 &&
-      Number.isInteger(values.max_concurrent_h3_tasks) &&
-      values.max_concurrent_h3_tasks >= 1;
+      Number.isInteger(next.max_generation_count_per_batch) &&
+      next.max_generation_count_per_batch >= 1 &&
+      Number.isInteger(next.max_concurrent_h3_tasks) &&
+      next.max_concurrent_h3_tasks >= 1;
     if (!limitsValid) {
       setStatus("数量上限与并发数必须为 ≥1 的整数");
       return;
     }
     setIsSaving(true);
     try {
-      await onSave(values);
+      await onSave(next);
       setStatus("已保存");
     } catch {
       setStatus("保存失败");
@@ -691,6 +695,22 @@ function RuntimeForm({
         人物图片、参考视频与首帧保存到腾讯云存储（需在桶 CORS 放行
         PUT/GET/HEAD，否则上传失败）；生成的成片仅保存在本机。
       </p>
+      {runtime.active_storage_provider === "local" ? (
+        <div>
+          <p>
+            当前仍使用本地存储，云端分析无法读取本地视频。请先通过腾讯云连接测试，再启用云存储并重新上传素材。
+          </p>
+          <button
+            type="button"
+            disabled={readOnly || isSaving}
+            onClick={() =>
+              void save({ ...runtime, active_storage_provider: "cos" })
+            }
+          >
+            启用腾讯云存储
+          </button>
+        </div>
+      ) : null}
       <div className="form-actions">
         <button disabled={readOnly || isSaving} type="submit">
           {isSaving ? "正在保存" : "保存"}

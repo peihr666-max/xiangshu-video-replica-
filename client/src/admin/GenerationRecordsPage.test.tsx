@@ -160,6 +160,8 @@ describe("GenerationRecordsPage", () => {
     render(<GenerationRecordsPage initialStatus="FAILED" />);
 
     expect(await screen.findByText("口播视频")).toBeInTheDocument();
+    expect(screen.getByText("12 积分")).toBeInTheDocument();
+    expect(screen.getByText("1 分 0 秒")).toBeInTheDocument();
     fireEvent.click(screen.getByText("查看详情"));
     expect(screen.getByText("数字人服务生成失败")).toBeInTheDocument();
     expect(screen.getByText("hifly-task-1")).toBeInTheDocument();
