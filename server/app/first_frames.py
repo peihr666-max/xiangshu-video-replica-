@@ -43,6 +43,7 @@ from app.source_frames import (
 from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
+    create_local_storage_from_environment,
     require_storage_match,
     storage_object_ref_from_uri,
 )
@@ -2556,13 +2557,26 @@ def read_asset_image(storage: StorageAdapter, asset: Mapping[str, object]) -> Im
         )
     try:
         reference = storage_object_ref_from_uri(str(asset["storage_uri"]))
-        require_storage_match(storage, reference)
-        content = storage.get_object(reference.key)
+        if reference.provider == "local":
+            from app.bootstrap import is_customer_production
+
+            if is_customer_production():
+                raise StorageBackendUnavailable("Legacy local assets require migration to COS")
+        # The authorized snapshot may reference a historical local asset after
+        # new writes switched to COS. Resolve only that explicit local URI;
+        # output archiving still uses the active storage and cloud buckets must match.
+        source_storage = (
+            create_local_storage_from_environment()
+            if reference.provider == "local" and storage.provider != "local"
+            else storage
+        )
+        require_storage_match(source_storage, reference)
+        content = source_storage.get_object(reference.key)
     except (KeyError, OSError, StorageBackendUnavailable, ValueError) as exc:
         raise first_frame_error(
             503,
             "FIRST_FRAME_INPUT_STORAGE_UNAVAILABLE",
-            "Source or character reference storage is temporarily unavailable.",
+            "无法读取源画面或人物参考图，请检查素材是否仍存在及其存储访问权限。",
         ) from exc
     return ImageInput(
         content=content,

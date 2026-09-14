@@ -2200,7 +2200,7 @@ describe("App", () => {
     expect(await screen.findByText("已保存")).toBeInTheDocument();
     expect(screen.getByLabelText("单次生成数量上限")).toBeEnabled();
     expect(
-      screen.getByText(/测试连接会创建并删除一个临时对象/),
+      screen.getByText(/测试连接会在五个业务目录分别创建、校验并删除临时对象/),
     ).toBeInTheDocument();
 
     const testButtons = screen.getAllByRole("button", { name: "测试连接" });

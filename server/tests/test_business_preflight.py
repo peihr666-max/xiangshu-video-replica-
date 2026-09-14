@@ -49,6 +49,64 @@ class RequestDb:
         yield self.conn, self.actor
 
 
+def test_first_frame_can_read_existing_local_reference_after_cloud_switch(tmp_path, monkeypatch):
+    from app import first_frames
+    from app.storage import FakeStorageAdapter, LocalStorageAdapter
+
+    local = LocalStorageAdapter(root=tmp_path)
+    reference = local.put_object(
+        "users/person/reference.png", b"existing-image", content_type="image/png"
+    )
+    cloud = FakeStorageAdapter(provider="cos", bucket="configured-bucket")
+    monkeypatch.setattr(
+        first_frames, "create_local_storage_from_environment", lambda: local, raising=False
+    )
+    image = first_frames.read_asset_image(
+        cloud, {"id": "reference-1", "content_type": "image/png", "storage_uri": reference.uri}
+    )
+    assert image.content == b"existing-image"
+    assert cloud._objects == {}
+
+
+def test_first_frame_cloud_bucket_mismatch_cannot_fall_back_to_local(monkeypatch):
+    from app import first_frames
+    from app.storage import FakeStorageAdapter
+
+    local = Mock(side_effect=AssertionError("Cloud bucket mismatch must not read local files"))
+    monkeypatch.setattr(first_frames, "create_local_storage_from_environment", local, raising=False)
+    with pytest.raises(HTTPException) as failure:
+        first_frames.read_asset_image(
+            FakeStorageAdapter(provider="cos", bucket="configured-bucket"),
+            {
+                "id": "reference-1",
+                "content_type": "image/png",
+                "storage_uri": "cos://other-bucket/image.png",
+            },
+        )
+    assert failure.value.detail["code"] == "FIRST_FRAME_INPUT_STORAGE_UNAVAILABLE"
+    local.assert_not_called()
+
+
+def test_first_frame_legacy_local_read_remains_forbidden_in_customer_production(monkeypatch):
+    from app import bootstrap, first_frames
+    from app.storage import FakeStorageAdapter
+
+    monkeypatch.setattr(bootstrap, "is_customer_production", lambda: True)
+    local = Mock(side_effect=AssertionError("Production must not read legacy local assets"))
+    monkeypatch.setattr(first_frames, "create_local_storage_from_environment", local)
+    with pytest.raises(HTTPException) as failure:
+        first_frames.read_asset_image(
+            FakeStorageAdapter(provider="cos", bucket="configured-bucket"),
+            {
+                "id": "reference-1",
+                "content_type": "image/png",
+                "storage_uri": "local://assets/image.png",
+            },
+        )
+    assert failure.value.detail["code"] == "FIRST_FRAME_INPUT_STORAGE_UNAVAILABLE"
+    local.assert_not_called()
+
+
 def test_cloud_upload_completion_failure_is_retryable_and_cannot_queue_analysis(monkeypatch):
     from app import media_routes
     from app.storage import StorageBackendUnavailable

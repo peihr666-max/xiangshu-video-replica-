@@ -108,7 +108,7 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
   },
   cos: {
     title: "腾讯云存储",
-    note: "区域固定为上海 · 测试连接会创建并删除一个临时对象",
+    note: "区域固定为上海 · 测试连接会在五个业务目录分别创建、校验并删除临时对象",
     fields: [
       { name: "access_key_id", label: "SecretId", secret: true },
       { name: "secret_access_key", label: "SecretKey", secret: true },
