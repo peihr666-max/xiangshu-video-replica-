@@ -13,8 +13,13 @@ import pytest
 from app import media, viral_import_routes
 from app.media import VideoMetadata
 from app.viral_import_routes import validate_resolved_media_content
-from app.viral_link import ResolvedViralLink, ViralLinkError
-from app.viral_media import ViralMediaDNSUnavailable
+from app.viral_link import (
+    DouyidouHttpTransport,
+    DouyidouLinkClient,
+    ResolvedViralLink,
+    ViralLinkError,
+)
+from app.viral_media import ViralMediaDNSUnavailable, ViralMediaResult
 
 
 def test_link_preflight_accepts_mp4_container_audio() -> None:
@@ -96,3 +101,67 @@ def test_preflight_dns_failure_has_actionable_redacted_error(
     assert result.value.code == "VIRAL_LINK_MEDIA_DNS_UNAVAILABLE"
     assert "DNS" in result.value.message
     assert "token" not in result.value.message
+
+
+def test_copy_preflight_uses_video_audio_track_instead_of_resolver_music(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preferences: list[str | None] = []
+
+    class Pipeline:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def fetch(self, video: Any, *, prefer: str | None = None) -> ViralMediaResult:
+            preferences.append(prefer)
+            return ViralMediaResult(
+                kind="video",
+                storage_uri="cos://media/video.mp4",
+                url="https://media.example/video.mp4",
+                size=100,
+                content_type="video/mp4",
+                cache_hit=False,
+                sha256="hash",
+            )
+
+    monkeypatch.setattr(viral_import_routes, "ViralMediaPipeline", Pipeline)
+    resolved = ResolvedViralLink(
+        platform="douyin",
+        video_id="7672703482771972081",
+        title="spoken video",
+        author="",
+        cover_url=None,
+        video_url="https://media.example/video.mp4",
+        audio_url="https://media.example/background-music.m4a",
+        duration_ms=10_000,
+        source_description="",
+    )
+    viral_import_routes.preflight_resolved_media(
+        resolved,
+        purpose="copy",
+        storage=None,  # type: ignore[arg-type]
+    )
+    assert preferences == ["video"]
+
+
+def test_copy_resolution_rejects_audio_only_media() -> None:
+    class Transport(DouyidouHttpTransport):
+        def request(self, url: str, *, headers: Any) -> bytes:
+            return json.dumps(
+                {
+                    "code": 0,
+                    "data": {
+                        "aweme_id": "7672703482771972081",
+                        "audio": ["https://media.example/background-music.m4a"],
+                    },
+                }
+            ).encode()
+
+    resolver = DouyidouLinkClient(app_id="test", app_secret="test", transport=Transport())
+    with pytest.raises(ViralLinkError) as result:
+        resolver.resolve(
+            "https://www.douyin.com/jingxuan?modal_id=7672703482771972081",
+            purpose="copy",
+        )
+    assert result.value.status_code == 422
+    assert result.value.code == "VIRAL_LINK_MEDIA_MISSING"

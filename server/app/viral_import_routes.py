@@ -238,7 +238,6 @@ def _resolved_video(resolved: ResolvedViralLink) -> ViralVideo:
         play_url=resolved.video_url,
         audio_url=resolved.audio_url,
         native={
-            "source_audio_verified": bool(resolved.audio_url),
             "source_description": resolved.source_description,
             "link_resolved": True,
         },
@@ -248,7 +247,10 @@ def _resolved_video(resolved: ResolvedViralLink) -> ViralVideo:
 def preflight_resolved_media(
     resolved: ResolvedViralLink, *, purpose: str, storage: StorageAdapter
 ) -> None:
-    prefer = "audio" if purpose == "copy" and resolved.audio_url else "video"
+    # Resolver audio URLs may point to a video's background music instead of its
+    # spoken soundtrack. Always cache the full video so copy extraction uses the
+    # audio track embedded in the original upload.
+    prefer = "video"
 
     def validate(content: Path, kind: str, content_type: str | None) -> None:
         validate_resolved_media_content(
