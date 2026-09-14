@@ -197,7 +197,12 @@ def compute_graph(revisions: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "bases": bases,
         "revision_count": len(revisions),
         "parents": {
-            rev: entry["down_revision"] for rev, entry in sorted(revisions.items())
+            rev: (
+                list(entry["down_revision"])
+                if isinstance(entry["down_revision"], tuple)
+                else entry["down_revision"]
+            )
+            for rev, entry in sorted(revisions.items())
         },
     }
 

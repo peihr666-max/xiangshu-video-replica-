@@ -19,6 +19,7 @@ from app.admin_write_contract import AdminWriteContract, write_with_idempotency
 from app.billing_catalog import SERVICES, Tariff, read_tariff, retail_snapshot
 from app.billing_reports import operation_rows, statistics
 from app.customer_fence import customer_read_transaction
+from app.customer_pricing import read_pricing
 from app.db_pg import pg_transaction
 from app.db_portable import BusinessConnection
 
@@ -61,6 +62,8 @@ def collection_charges(
 def catalog(conn: BusinessConnection, *, admin: bool) -> list[dict[str, Any]]:
     result = []
     for key, service in SERVICES.items():
+        if not admin and not service.customer_charge_allowed:
+            continue
         # Global pricing always precedes the tariff lock, matching admin writes.
         quote = retail_snapshot(conn, key, 1) if not admin else None
         tariff = read_tariff(conn, key)
@@ -85,13 +88,25 @@ class TariffUpdate(AdminWriteContract):
     service: str
     expected_version: int = Field(ge=0)
     tariff: Tariff
+    expected_pricing_version: int | None = Field(default=None, ge=0)
+
+
+def admin_catalog_response(conn: BusinessConnection) -> dict[str, Any]:
+    version, pricing = read_pricing(conn)
+    return {
+        "services": catalog(conn, admin=True),
+        "pricing": {
+            "version": version,
+            "points_per_yuan": pricing.points_per_yuan if pricing else None,
+        },
+    }
 
 
 @router.get("/api/control/billing/catalog")
 def admin_catalog(_actor: AdminReader, response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
     with pg_transaction() as raw:
-        return {"services": catalog(BusinessConnection.postgres(raw), admin=True)}
+        return admin_catalog_response(BusinessConnection.postgres(raw))
 
 
 @router.put("/api/control/billing/tariff")
@@ -111,6 +126,18 @@ def update_tariff(
         conn = BusinessConnection.postgres(raw)
         # Serialize missing-row inserts as well as updates; one publication truth per subject.
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("billing:tariffs",))
+        pricing_version, _pricing = read_pricing(conn)
+        if (
+            payload.expected_pricing_version is not None
+            and payload.expected_pricing_version != pricing_version
+        ):
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "PRICING_VERSION_CONFLICT",
+                    "message": "充值换算已变化，请取消编辑并重新读取价格后重试。",
+                },
+            )
         old = read_tariff(conn, payload.service)
         if (old.version if old else 0) != payload.expected_version:
             raise HTTPException(
@@ -159,7 +186,7 @@ def update_tariff(
                 ),
             ),
         )
-        return {"services": catalog(conn, admin=True)}
+        return admin_catalog_response(conn)
 
     return write_with_idempotency(
         request,
@@ -230,7 +257,7 @@ def report(
     module: str | None = None,
     provider: str | None = None,
 ) -> dict[str, Any]:
-    with pg_transaction() as raw:
+    with pg_transaction(isolation="REPEATABLE READ") as raw:
         return statistics(
             BusinessConnection.postgres(raw),
             start=start,

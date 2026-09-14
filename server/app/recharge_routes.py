@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import sqlite3
 from datetime import datetime, timedelta
@@ -7,8 +9,11 @@ from typing import Annotated, Literal, cast
 from uuid import uuid4
 
 import psycopg
+import qrcode  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, StrictInt
+
+import app.wechat_native_provider  # noqa: F401
 
 # Import to trigger provider registration
 import app.zpay_provider  # noqa: F401
@@ -43,6 +48,7 @@ from app.payment_provider import (
     DeploymentConfig,
     MerchantConfig,
     PaymentCodeError,
+    PaymentFormResult,
     PaymentProvider,
     get_payment_provider,
 )
@@ -236,12 +242,18 @@ def _insert_recharge_order(
     )
     extra_column = ", credit_pricing_snapshot_json" if conn.is_postgres else ""
     extra_value = ", %s" if conn.is_postgres else ""
-    payment_form = provider.create_payment_form(
-        merchant_order_no=merchant_order_no,
-        amount_fen=amount_fen,
-        credits=credits,
-        merchant=merchant,
-        deployment=deployment,
+    # Native QR is obtained after the local order commits; never call a paid
+    # gateway while holding the wallet transaction or its idempotency envelope.
+    payment_form = (
+        PaymentFormResult(gateway_url="", method="POST", form_fields={})
+        if provider.name == "wechat_native"
+        else provider.create_payment_form(
+            merchant_order_no=merchant_order_no,
+            amount_fen=amount_fen,
+            credits=credits,
+            merchant=merchant,
+            deployment=deployment,
+        )
     )
     with conn:
         conn.execute(
@@ -459,10 +471,17 @@ def create_customer_recharge_order(
                     response.headers[REPLAY_HEADER] = "true"
                     return replayed_order
 
+                # Serialize merchant changes with order creation so a new pending order
+                # cannot race a merchant-identity update.
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext('payment:settings'))")
+                active_provider = SettingsRepository(conn).read_active_payment_provider()
+                selected_provider = (
+                    provider if active_provider == "zpay" else get_payment_provider(active_provider)
+                )
                 billing, merchant, deployment = _stage_recharge_preconditions(
                     conn,
                     amount_fen=payload.amount_fen,
-                    provider=provider,
+                    provider=selected_provider,
                     customer_user_id=user.id,
                 )
                 order = _insert_recharge_order(
@@ -474,7 +493,7 @@ def create_customer_recharge_order(
                     billing=billing,
                     merchant=merchant,
                     deployment=deployment,
-                    provider=provider,
+                    provider=selected_provider,
                 )
                 assert envelope_id is not None
                 recovery_expires_at = (
@@ -694,6 +713,18 @@ def create_customer_payment_code(
                     "message": "This recharge order is no longer pending.",
                 },
             )
+        provider_name = str(order["provider"])
+        if provider_name not in {"zpay", "wechat_native"}:
+            raise HTTPException(409, detail="此订单不支持在线支付。")
+        if provider_name == "wechat_native":
+            provider = get_payment_provider(provider_name)
+            cached = business_conn.execute(
+                "SELECT code_url FROM recharge_orders WHERE merchant_order_no=%s", (order_no,)
+            ).fetchone()
+            if cached and cached[0]:
+                return _native_payment_code_response(
+                    order_no, int(order["amount_fen"]), int(order["credits"]), str(cached[0])
+                )
         try:
             merchant = provider.load_merchant_config(business_conn)
             deployment = provider.load_deployment_config()
@@ -725,12 +756,41 @@ def create_customer_payment_code(
                 "message": "支付二维码暂时无法生成，请稍后重试。",
             },
         ) from exc
+    if provider_name == "wechat_native":
+        code_url = payment_code.payment_url
+        if not code_url.startswith("weixin://") or len(code_url) > 2048:
+            raise HTTPException(502, detail="支付二维码内容无效，请稍后重试。")
+        with fenced_pg_transaction(snapshot) as (conn, ctx):
+            stored = conn.execute(
+                "UPDATE recharge_orders SET code_url=COALESCE(code_url,%s) "
+                "WHERE merchant_order_no=%s AND user_id=%s AND provider='wechat_native' "
+                "AND status='PENDING' RETURNING code_url",
+                (code_url, order_no, ctx.user_id),
+            ).fetchone()
+            if stored is None:
+                raise HTTPException(409, detail="订单状态已更新，请刷新充值记录。")
+            code_url = str(stored[0])
+        return _native_payment_code_response(order_no, amount_fen, credits, code_url)
     return CustomerPaymentCodeResponse(
         order_no=order_no,
         amount_fen=amount_fen,
         credits=credits,
         qr_image_url=payment_code.qr_image_url,
         payment_url=payment_code.payment_url,
+    )
+
+
+def _native_payment_code_response(
+    order_no: str, amount_fen: int, credits: int, code_url: str
+) -> CustomerPaymentCodeResponse:
+    buffer = io.BytesIO()
+    qrcode.make(code_url).save(buffer, format="PNG")
+    return CustomerPaymentCodeResponse(
+        order_no=order_no,
+        amount_fen=amount_fen,
+        credits=credits,
+        qr_image_url="data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii"),
+        payment_url=code_url,
     )
 
 

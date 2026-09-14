@@ -147,7 +147,9 @@ def statistics(
             known_cost ELSE 0 END) AS platform_cost_fen,
           sum(CASE WHEN unit='second' THEN actual_units ELSE 0 END) AS seconds,
           sum(CASE WHEN unit='image' THEN actual_units ELSE 0 END) AS images,
-          sum(CASE WHEN unit='call' AND user_id IS NOT NULL THEN actual_units ELSE 0 END) AS calls
+          sum(CASE WHEN unit='call' AND user_id IS NOT NULL THEN actual_units ELSE 0 END) AS calls,
+          sum(CASE WHEN service IN ('video_768p','video_2k') AND state='SUCCEEDED'
+            THEN actual_units ELSE 0 END) AS video_seconds
         FROM facts GROUP BY GROUPING SETS ((period),()) ORDER BY period NULLS LAST
     """,
         (
@@ -164,32 +166,70 @@ def statistics(
             grain,
         ),
     ).fetchall()
-    items = []
-    totals: dict[str, Any] = {}
-    for row in rows:
-        item = dict(row)
-        complete = not (
-            item["unknown_cost_count"]
-            or item["unknown_revenue_count"]
-            or item["pending_count"]
-            or (user_id is not None and item["shared_collection_charge_count"])
+    metrics = {
+        row["period"].date().isoformat() if row["period"] else None: {
+            key: value or 0 for key, value in dict(row).items() if key != "period"
+        }
+        for row in rows
+    }
+    # Old facts have no proven operation/provider attribution. Expose their date/customer
+    # coverage even under service filters; never price them with today's tariff or count
+    # the compatibility mirror of a linked attempt/settlement a second time.
+    legacy_rows = conn.execute(
+        """
+        WITH legacy AS (
+          SELECT occurred_at AS at,user_id,1 AS costs,0 AS settlements
+          FROM operation_cost_records WHERE billing_attempt_id IS NULL
+            AND occurred_at >= %s AND occurred_at < %s
+          UNION ALL
+          SELECT created_at::timestamp AT TIME ZONE 'UTC',user_id,0,1
+          FROM wallet_transactions WHERE type='SETTLE' AND billing_operation_id IS NULL
+            AND (created_at::timestamp AT TIME ZONE 'UTC') >= %s
+            AND (created_at::timestamp AT TIME ZONE 'UTC') < %s
         )
-        revenue = item["known_revenue_fen"] or 0
-        cost = item["known_cost_fen"] or 0
+        SELECT date_trunc(%s,at AT TIME ZONE 'Asia/Shanghai') AS period,
+          sum(costs) AS legacy_cost_count,sum(settlements) AS legacy_settlement_count
+        FROM legacy WHERE (%s::text IS NULL OR user_id=%s)
+        GROUP BY GROUPING SETS ((period),())
+        """,
+        (lower, upper, lower, upper, grain, user_id, user_id),
+    ).fetchall()
+    empty = dict.fromkeys(metrics[None], 0)
+    for row in legacy_rows:
+        period = row["period"].date().isoformat() if row["period"] else None
+        item = metrics.setdefault(period, empty.copy())
+        item["legacy_cost_count"] = int(row["legacy_cost_count"] or 0)
+        item["legacy_settlement_count"] = int(row["legacy_settlement_count"] or 0)
+    for period, item in metrics.items():
+        item["period"] = period
+        item.setdefault("legacy_cost_count", 0)
+        item.setdefault("legacy_settlement_count", 0)
+        cost_complete = not (
+            item["unknown_cost_count"] or item["pending_count"] or item["legacy_cost_count"]
+        )
+        revenue_complete = not (
+            item["unknown_revenue_count"]
+            or item["pending_count"]
+            or item["legacy_settlement_count"]
+        )
+        revenue, cost = item["known_revenue_fen"], item["known_cost_fen"]
+        item["cost_fen"] = cost if cost_complete else None
+        item["revenue_fen"] = revenue if revenue_complete else None
+        complete = (
+            cost_complete
+            and revenue_complete
+            and not (user_id is not None and item["shared_collection_charge_count"])
+        )
         item["profit_fen"] = revenue - cost if complete else None
         item["profit_margin"] = (revenue - cost) / revenue if complete and revenue else None
-        if item["period"] is None:
-            totals = item
-        else:
-            item["period"] = item["period"].date().isoformat()
-            items.append(item)
     return {
         "timezone": "Asia/Shanghai",
         "grain": grain,
         "start": start,
         "end": end,
-        "totals": totals,
-        "periods": items,
+        "totals": metrics[None],
+        "periods": [metrics[key] for key in sorted(key for key in metrics if key is not None)],
+        "legacy_scope": "date_and_customer",
         "basis": "请求结算归属周期；未结算请求按受理时间列示。成本或收入证据未齐时利润待核对。"
         "共享采集成本只记在平台请求，筛选单个客户时公共成本未分摊，请以采集批次核算利润。",
     }

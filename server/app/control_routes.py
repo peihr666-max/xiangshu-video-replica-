@@ -418,6 +418,7 @@ def _update_control_zpay_settings_business(
     payload: ZPaySettingsUpdate,
     request_id: str,
 ) -> dict[str, object]:
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext('payment:settings'))")
     try:
         repo = SettingsRepository(conn)
         current = repo.load_zpay_config()

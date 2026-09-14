@@ -28,8 +28,10 @@ export function AnalyticsPage({
         items={tabs}
         onChange={setTab}
       />
-      {tab === "profit" ? <BillingEconomics readOnly={readOnly} /> : null}
-      {tab === "cost" ? <BillingEconomics readOnly={readOnly} /> : null}
+      <BillingEconomics
+        readOnly={readOnly}
+        view={tab === "cost" ? "cost" : "profit"}
+      />
     </div>
   );
 }

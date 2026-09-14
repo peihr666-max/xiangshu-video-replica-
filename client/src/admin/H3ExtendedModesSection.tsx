@@ -15,8 +15,7 @@ import { StatusBadge } from "./ui/StatusBadge";
  * runtime_settings.h3_extended_modes_enabled 翻译成管理台上的一个开关。
  * 该列是尾帧 / 文生 T2V / 参考生 R2V 三种 H3 形态真实付费提交的总闸门，
  * 默认关闭（迁移 075），仅在供应商付费探针核对（缺口 4a）通过后才可开启。
- * 写契约与其它管理写一致：原因必填 + Idempotency-Key 幂等重放，审计行记录
- * 操作者原因，使一次真实扣费的开启始终可归因。
+ * 确认后自动记录开关操作说明，并沿用管理端幂等写契约。
  */
 export function H3ExtendedModesSection({
   readOnly = false,
@@ -46,7 +45,7 @@ export function H3ExtendedModesSection({
     void load();
   }, [load]);
 
-  async function toggle(reason: string) {
+  async function toggle() {
     if (enabled === null || saving) {
       return;
     }
@@ -54,7 +53,12 @@ export function H3ExtendedModesSection({
     setError("");
     setNotice("");
     try {
-      setEnabled(await updateH3ExtendedModes(!enabled, reason));
+      setEnabled(
+        await updateH3ExtendedModes(
+          !enabled,
+          enabled ? "关闭 H3 扩展模式" : "开启 H3 扩展模式",
+        ),
+      );
       setNotice(!enabled ? "H3 扩展模式已开启。" : "H3 扩展模式已关闭。");
       setConfirmOpen(false);
     } catch (cause) {
@@ -110,11 +114,12 @@ export function H3ExtendedModesSection({
             ? "关闭后，扩展形态回到禁止真实付费提交。切换立即生效并写入审计。"
             : "开启后，扩展形态将向供应商真实付费提交，请确认付费探针已核对通过。切换立即生效并写入审计。"
         }
-        level="reason"
+        error={error}
+        level="standard"
         open={confirmOpen}
         title={enabled ? "关闭扩展模式" : "开启扩展模式"}
         onClose={() => setConfirmOpen(false)}
-        onConfirm={(reason) => void toggle(reason)}
+        onConfirm={() => void toggle()}
       />
     </section>
   );

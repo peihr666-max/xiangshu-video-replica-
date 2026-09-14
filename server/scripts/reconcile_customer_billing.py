@@ -43,6 +43,8 @@ EXCLUDED_TABLES = frozenset({"alembic_version"})
 # a non-empty one is divergent state and must fail closed.
 PG_ONLY_TABLES: frozenset[str] = frozenset(
     {
+        "h3_provider_accounts",
+        "h3_provider_task_accounts",
         "admin_password_credentials",
         "admin_sessions",
         "admin_adjustments",
@@ -119,7 +121,7 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
         {"collection_interval_days", "keywords_json", "per_keyword_limit", "next_collection_at"}
     ),
     "viral_refresh_tasks": frozenset({"collection_config_json", "checkpoint_json", "retry_count"}),
-    "runtime_settings": frozenset({"fair_queue_enabled"}),
+    "runtime_settings": frozenset({"fair_queue_enabled", "active_payment_provider"}),
     "audit_logs": frozenset({"occurred_at"}),
     "generation_tasks": frozenset({"created_at_utc", "discount_rate_snapshot"}),
     # 083_recharge_orders_multi_provider: WeChat Native 支付回执列仅存在于

@@ -640,7 +640,10 @@ def run_worker_once(
                     conn,
                     lease=reconcile_lease,
                     provider_factory=lambda active_conn, provider_name: (
-                        reconcile_provider or h3_provider_for_task(active_conn, provider_name)
+                        reconcile_provider
+                        or h3_provider_for_task(
+                            active_conn, provider_name, task_id=reconcile_lease.task_id
+                        )
                     ),
                 )
                 reconcile_outcome = perform_generation_reconcile_operation(
@@ -986,7 +989,9 @@ def _run_pg_generation_step(
         try:
             with pg_transaction() as raw_conn:
                 conn = BusinessConnection.postgres(raw_conn)
-                provider = provider_override or h3_provider_for_task(conn, str(lease["provider"]))
+                provider = provider_override or h3_provider_for_task(
+                    conn, str(lease["provider"]), task_id=str(lease["id"])
+                )
         except H3ProviderSettingsUnavailable:
             with pg_transaction() as raw_conn:
                 reschedule_generation_poll(
@@ -1375,7 +1380,10 @@ def run_pg_worker_once(
                         BusinessConnection.postgres(raw_conn),
                         lease=reconcile_lease,
                         provider_factory=lambda active_conn, provider_name: (
-                            generation_provider or h3_provider_for_task(active_conn, provider_name)
+                            generation_provider
+                            or h3_provider_for_task(
+                                active_conn, provider_name, task_id=reconcile_lease.task_id
+                            )
                         ),
                     )
                 with billing_context(reconcile_lease.task_id):

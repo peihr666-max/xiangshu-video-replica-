@@ -315,7 +315,12 @@ def test_admin_price_publication_drives_authenticated_api_billing(pricing_client
         client.put(path, headers={"Idempotency-Key": str(uuid4())}, json=payload).status_code == 403
     )
     public = client.get("/api/customer/pricing", headers=token_headers(key))
-    assert public.status_code == 200 and public.json() == result.json()
+    assert public.status_code == 200
+    expected_public = result.json()
+    expected_public["prices"] = [
+        price for price in expected_public["prices"] if price["configurable"]
+    ]
+    assert public.json() == expected_public
     assert "upstream" not in public.text and "Price Admin" not in public.text
     with psycopg.connect(route_state) as raw:
         raw.execute("UPDATE wallets SET available_credits = 100 WHERE user_id = %s", (uid,))

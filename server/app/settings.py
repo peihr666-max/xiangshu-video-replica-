@@ -32,6 +32,8 @@ ACCEPTANCE_PAYMENT_AMOUNT_FEN_ENV = "VIDEO_REPLICA_ACCEPTANCE_PAYMENT_AMOUNT_FEN
 MAX_ACCEPTANCE_PAYMENT_FEN = 500
 SECRET_FIELDS = (
     "api_key",
+    "api_v3_key",
+    "private_key",
     "access_key_id",
     "secret",
     "token",
@@ -181,6 +183,55 @@ class SettingsRepository:
     def load_provider_config(self, provider: str) -> dict[str, str]:
         provider_name = normalize_provider(provider)
         return self._load_encrypted_config(provider_name)
+
+    def load_wechat_native_config(self) -> dict[str, str]:
+        return self._load_encrypted_config("wechat_native")
+
+    def read_wechat_native_config(self) -> dict[str, Any]:
+        config = self.load_wechat_native_config()
+        return {
+            "provider": "wechat_native",
+            "configured": bool(config),
+            "config": {
+                key: ("********" if value else "")
+                if key in {"api_v3_key", "private_key"}
+                else value
+                for key, value in config.items()
+            },
+        }
+
+    def save_wechat_native_config(
+        self, changes: dict[str, str], *, actor_user_id: str
+    ) -> dict[str, Any]:
+        from app.wechat_native_client import load_private_key, merchant_config_from_settings
+
+        allowed = {"appid", "mchid", "serial_no", "api_v3_key", "private_key"}
+        if set(changes) - allowed:
+            raise ValueError("Unsupported WeChat merchant setting")
+        current = self.load_wechat_native_config()
+        config = dict(current)
+        for key, value in changes.items():
+            value = value.strip()
+            if key in {"api_v3_key", "private_key"} and not value:
+                continue
+            config[key] = value
+        merchant = merchant_config_from_settings(config)
+        load_private_key(merchant.private_key_pem)
+        if current and any(config.get(key) != current.get(key) for key in ("appid", "mchid")):
+            pending = self.conn.execute(
+                "SELECT 1 FROM recharge_orders WHERE provider='wechat_native' "
+                "AND status='PENDING' LIMIT 1"
+            ).fetchone()
+            if pending:
+                raise ValueError("Pending WeChat orders prevent changing merchant identity")
+        self._save_encrypted_config("wechat_native", config, actor_user_id=actor_user_id)
+        return self.read_wechat_native_config()
+
+    def read_active_payment_provider(self) -> str:
+        row = self.conn.execute(
+            "SELECT active_payment_provider FROM runtime_settings WHERE id=1 FOR SHARE"
+        ).fetchone()
+        return str(row[0]) if row else "zpay"
 
     def load_zpay_config(self) -> dict[str, str]:
         return self._load_encrypted_config("zpay")

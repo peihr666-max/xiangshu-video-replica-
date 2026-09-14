@@ -13,8 +13,7 @@ import { StatusBadge } from "./ui/StatusBadge";
 /**
  * 公平队列开关（M4/M5 review M2）：把此前只能进数据库改的
  * PATCH /api/control/settings/queue-mode 翻译成管理台上的一个开关。
- * PR #85 review P2 起写契约与其它管理写一致：原因必填 + Idempotency-Key
- * 幂等重放，审计行记录操作者原因。
+ * 确认后自动记录操作说明，并沿用管理端幂等写契约。
  */
 export function QueueModeSection({ readOnly = false }: { readOnly?: boolean }) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -40,7 +39,7 @@ export function QueueModeSection({ readOnly = false }: { readOnly?: boolean }) {
     void load();
   }, [load]);
 
-  async function toggle(reason: string) {
+  async function toggle() {
     if (enabled === null || saving) {
       return;
     }
@@ -48,7 +47,12 @@ export function QueueModeSection({ readOnly = false }: { readOnly?: boolean }) {
     setError("");
     setNotice("");
     try {
-      setEnabled(await updateQueueMode(!enabled, reason));
+      setEnabled(
+        await updateQueueMode(
+          !enabled,
+          enabled ? "关闭公平队列" : "开启公平队列",
+        ),
+      );
       setNotice(!enabled ? "公平队列已开启。" : "公平队列已关闭。");
       setConfirmOpen(false);
     } catch (cause) {
@@ -103,11 +107,12 @@ export function QueueModeSection({ readOnly = false }: { readOnly?: boolean }) {
             ? "关闭后，生成任务的领取顺序回到默认策略。切换立即生效并写入审计。"
             : "开启后，多客户同时生成将进入公平队列调度。切换立即生效并写入审计。"
         }
-        level="reason"
+        error={error}
+        level="standard"
         open={confirmOpen}
         title={enabled ? "关闭公平队列" : "开启公平队列"}
         onClose={() => setConfirmOpen(false)}
-        onConfirm={(reason) => void toggle(reason)}
+        onConfirm={() => void toggle()}
       />
     </section>
   );

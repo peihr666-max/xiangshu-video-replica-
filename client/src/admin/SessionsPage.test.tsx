@@ -54,7 +54,8 @@ describe("SessionsPage", () => {
     render(<SessionsPage />);
 
     expect(await screen.findByText("customer_one")).toBeInTheDocument();
-    expect(screen.getByText("办公室电脑 · Windows")).toBeInTheDocument();
+    expect(screen.queryByText(/办公室电脑/)).not.toBeInTheDocument();
+    expect(screen.getByText("Windows")).toBeInTheDocument();
     expect(screen.getByText("租约剩余 60 秒")).toBeInTheDocument();
     expect(screen.getByText("心跳 30 秒前")).toBeInTheDocument();
     expect(screen.getByText("Epoch 3")).toBeInTheDocument();

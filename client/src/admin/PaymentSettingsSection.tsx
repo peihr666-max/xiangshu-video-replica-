@@ -1,149 +1,173 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import type { BillingSettings } from "../api";
-
 import {
+  adminWrite,
   type CustomerPaymentSettings,
   getCustomerPaymentSettings,
-  updateCustomerPaymentBilling,
   updateCustomerPaymentZPay,
 } from "../api.admin";
+import alipayLogo from "../assets/payments/alipay.ico";
+import wechatLogo from "../assets/payments/wechat-pay.ico";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { PageBanner } from "./ui/PageBanner";
-import { formatFen } from "./ui/vocabulary";
 
-type PendingConfirm = "zpay" | "billing" | null;
+type Provider = "zpay" | "wechat_native";
+type WeChatSettings = {
+  provider: string;
+  configured: boolean;
+  config: Record<string, string>;
+};
+type PaymentSettings = CustomerPaymentSettings & {
+  active_provider?: Provider;
+  wechat_native?: WeChatSettings;
+  deployment?: { ready: boolean; message: string };
+};
+type PendingConfirm = "zpay" | "wechat" | "provider" | null;
+const providerName = (provider: Provider) =>
+  provider === "zpay" ? "ZPay" : "微信官方（Native）";
+const confirmLabels = {
+  zpay: "保存 ZPay 设置",
+  wechat: "保存微信官方设置",
+  provider: "保存默认通道",
+};
+const emptyWechat = {
+  appid: "",
+  mchid: "",
+  serial_no: "",
+  api_v3_key: "",
+  private_key: "",
+};
 
-/**
- * 支付与价格设置（从 AdminApp 内联表单抽出）。密钥只展示掩码，
- * 新密钥留空表示保留旧值；网关与回调地址来自部署环境，不可提交。
- *
- * A-01/A-03（前端分析报告 2026-09-12）：两条写路径都接入全站统一的
- * 确认对话框契约——ZPay 触及生产收款配置与商户密钥，取 reasonAndAck；
- * 内部价格影响所有计费取 reason。确认原因透传到审计，不再由前端硬编码。
- * 计费配置加载完成（billing !== null）之前禁止提交，避免把占位 0 写入生产。
- */
+/** Merchant secrets are never prefilled; blank secret fields retain their saved values. */
 export function PaymentSettingsSection({
   readOnly = false,
 }: {
   readOnly?: boolean;
 }) {
-  const [settings, setSettings] = useState<CustomerPaymentSettings | null>(
-    null,
-  );
+  const [settings, setSettings] = useState<PaymentSettings | null>(null);
+  const [provider, setProvider] = useState<Provider>("zpay");
   const [zpayPid, setZpayPid] = useState("");
   const [zpayKey, setZpayKey] = useState("");
   const [channels, setChannels] = useState<Array<"alipay" | "wxpay">>([
     "alipay",
     "wxpay",
   ]);
-  const [billing, setBilling] = useState<BillingSettings | null>(null);
+  const [wechat, setWechat] = useState(emptyWechat);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState("");
+  const saving = useRef(false);
   const retry = useRef<{ fingerprint: string; key: string } | null>(null);
+  const disabled = readOnly || !settings || pendingConfirm !== null;
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      setError("");
-      try {
-        const nextSettings = await getCustomerPaymentSettings();
-        if (cancelled) {
-          return;
-        }
-        setSettings(nextSettings);
-        setBilling(nextSettings.billing);
-        setZpayPid(nextSettings.zpay.config.pid ?? "");
-        setZpayKey("");
-        setChannels(parseChannels(nextSettings.zpay.config.enabled_channels));
-      } catch (cause) {
-        if (!cancelled) {
+    void getCustomerPaymentSettings()
+      .then((value) => {
+        if (cancelled) return;
+        const next = value as PaymentSettings;
+        setSettings(next);
+        setProvider(next.active_provider ?? "zpay");
+        setZpayPid(next.zpay.config.pid ?? "");
+        setChannels(parseChannels(next.zpay.config.enabled_channels));
+        setWechat({
+          ...emptyWechat,
+          appid: next.wechat_native?.config.appid ?? "",
+          mchid: next.wechat_native?.config.mchid ?? "",
+          serial_no: next.wechat_native?.config.serial_no ?? "",
+        });
+      })
+      .catch((cause) => {
+        if (!cancelled)
           setError(
-            cause instanceof Error && cause.message
+            cause instanceof Error
               ? `加载失败：${cause.message}`
-              : "加载失败：读取支付与价格失败。",
+              : "加载支付配置失败。",
           );
-        }
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  async function saveZPay(event: FormEvent<HTMLFormElement>) {
+  function requestSave(
+    event: FormEvent<HTMLFormElement>,
+    kind: Exclude<PendingConfirm, null>,
+  ) {
     event.preventDefault();
-    // 再入守卫：确认框打开期间底层表单键盘仍可达（共享 ConfirmDialog 无焦点
-    // 陷阱），防止 pendingConfirm 被翻转导致串台。
-    if (pendingConfirm !== null || confirmBusy) {
-      return;
-    }
+    if (disabled || saving.current) return;
     setNotice("");
     setError("");
-    setPendingConfirm("zpay");
+    setConfirmError("");
+    setPendingConfirm(kind);
   }
 
-  async function saveBilling(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (pendingConfirm !== null || confirmBusy) {
-      return;
-    }
-    if (!billing) {
-      return;
-    }
-    setNotice("");
-    setError("");
-    setPendingConfirm("billing");
-  }
-
-  async function runConfirmedSave(reason: string) {
-    if (pendingConfirm === null || confirmBusy) {
-      return;
-    }
+  async function runConfirmedSave() {
+    if (!pendingConfirm || !settings || readOnly || saving.current) return;
+    const reason = confirmLabels[pendingConfirm];
     const fingerprint = JSON.stringify({
       pendingConfirm,
+      provider,
       zpayPid,
       zpayKey,
       channels,
-      billing,
+      wechat,
       reason,
     });
     if (retry.current?.fingerprint !== fingerprint)
       retry.current = { fingerprint, key: crypto.randomUUID() };
+    saving.current = true;
     setConfirmBusy(true);
     setConfirmError("");
     try {
       if (pendingConfirm === "zpay") {
-        await updateCustomerPaymentZPay(
-          {
-            pid: zpayPid,
-            key: zpayKey,
-            enabled_channels: channels,
-          },
+        const zpay = await updateCustomerPaymentZPay(
+          { pid: zpayPid, key: zpayKey, enabled_channels: channels },
           reason,
           retry.current.key,
         );
+        setSettings({ ...settings, zpay });
+        setZpayKey("");
         setNotice("ZPay 设置已保存。");
-      } else if (pendingConfirm === "billing" && billing) {
-        const nextBilling = await updateCustomerPaymentBilling(
+      } else if (pendingConfirm === "wechat") {
+        const next = await adminWrite<WeChatSettings>(
+          "/api/control/settings/customer-payments/wechat-native",
+          { config: wechat },
+          reason,
+          "保存微信官方设置失败。",
+          retry.current.key,
+          "PATCH",
+        );
+        setSettings({ ...settings, wechat_native: next });
+        setWechat({ ...wechat, api_v3_key: "", private_key: "" });
+        setNotice("微信官方设置已保存。");
+      } else {
+        const next = await adminWrite<
+          PaymentSettings & { active_provider: Provider }
+        >(
+          "/api/control/settings/customer-payments/provider",
           {
-            internal_base_unit_price_fen: billing.internal_base_unit_price_fen,
-            oral_unit_price_fen: billing.oral_unit_price_fen,
-            min_recharge_fen: billing.min_recharge_fen,
-            recharge_step_fen: billing.recharge_step_fen,
+            active_provider: provider,
+            ...(provider === "zpay"
+              ? {
+                  zpay: {
+                    pid: zpayPid,
+                    key: zpayKey,
+                    enabled_channels: channels,
+                  },
+                }
+              : { wechat_native: wechat }),
           },
           reason,
+          "保存默认通道失败。",
           retry.current.key,
+          "PATCH",
         );
-        setBilling(nextBilling);
-        setNotice("内部价格已保存。");
-      } else {
-        // 结构性兜底：正常流程不可达（saveBilling 已挡 !billing），
-        // 但宁可显式报错也不静默关框。
-        setConfirmError("内部状态异常，请关闭对话框后重试。");
-        return;
+        setSettings({ ...settings, ...next });
+        if (provider === "zpay") setZpayKey("");
+        else setWechat({ ...wechat, api_v3_key: "", private_key: "" });
+        setNotice("商户配置及默认充值通道已保存。");
       }
       retry.current = null;
       setPendingConfirm(null);
@@ -152,145 +176,216 @@ export function PaymentSettingsSection({
         cause instanceof Error && cause.message ? cause.message : "保存失败。",
       );
     } finally {
+      saving.current = false;
       setConfirmBusy(false);
     }
   }
 
   return (
     <section
-      aria-label="支付与价格"
+      aria-label="支付设置"
       className="admin-panel admin-payment-settings"
     >
       {error ? <PageBanner tone="error">{error}</PageBanner> : null}
       {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
-
-      <form className="admin-form" onSubmit={saveZPay}>
-        <h2>ZPay</h2>
-        <label>
-          ZPay 商户 PID
-          <input
-            disabled={readOnly}
-            value={zpayPid}
-            onChange={(event) => setZpayPid(event.target.value)}
-          />
-        </label>
-        <div className="admin-readonly-field">
-          已保存密钥
-          <span className="readonly-value">
-            {settings?.zpay.config.key || "未配置"}
-          </span>
-        </div>
-        <label>
-          新商户密钥
-          <input
-            autoComplete="new-password"
-            disabled={readOnly}
-            placeholder="留空则保留当前密钥"
-            type="password"
-            value={zpayKey}
-            onChange={(event) => setZpayKey(event.target.value)}
-          />
-        </label>
-        <fieldset className="admin-checks">
-          <legend>支付渠道</legend>
-          <label>
-            <input
-              checked={channels.includes("alipay")}
-              disabled={readOnly}
-              type="checkbox"
-              onChange={() => toggleChannel("alipay")}
-            />
-            支付宝
-          </label>
-          <label>
-            <input
-              checked={channels.includes("wxpay")}
-              disabled={readOnly}
-              type="checkbox"
-              onChange={() => toggleChannel("wxpay")}
-            />
-            微信
-          </label>
-        </fieldset>
-        <p className="admin-hint">支付接口地址由系统自动配置，无需填写。</p>
-        <button disabled={readOnly || !settings} type="submit">
-          保存 ZPay 设置
-        </button>
-      </form>
-
-      <form className="admin-form" onSubmit={saveBilling}>
-        <h2>充值限制与旧版兼容价格</h2>
-        <p className="admin-hint">
-          旧版兑换单价{" "}
-          {billing ? formatFen(billing.internal_base_unit_price_fen) : "—"} /
-          积分。发布客户积分价格后，在线充值使用上方的新兑换规则；最低充值与步长仍然有效。
+      {settings?.deployment?.ready === false ? (
+        <p className="admin-hint" role="status">
+          {settings.deployment.message}
+        </p>
+      ) : null}
+      <form
+        className="admin-form"
+        onSubmit={(event) => requestSave(event, "provider")}
+      >
+        <h2>充值通道</h2>
+        <p>
+          {settings
+            ? `当前默认：${providerName(settings.active_provider ?? "zpay")}`
+            : "正在加载支付配置…"}
         </p>
         <label>
-          旧版兑换单价（分/积分）
-          <input
-            disabled={readOnly || !billing}
-            inputMode="numeric"
-            type="number"
-            value={billing?.internal_base_unit_price_fen ?? 0}
-            onChange={(event) =>
-              updateBilling("internal_base_unit_price_fen", event.target.value)
-            }
-          />
+          默认充值通道
+          <select
+            disabled={disabled}
+            value={provider}
+            onChange={(event) => setProvider(event.target.value as Provider)}
+          >
+            <option value="zpay">ZPay</option>
+            <option value="wechat_native">微信官方（Native）</option>
+          </select>
         </label>
-        <label>
-          最低充值（分）
-          <input
-            disabled={readOnly || !billing}
-            inputMode="numeric"
-            type="number"
-            value={billing?.min_recharge_fen ?? 0}
-            onChange={(event) =>
-              updateBilling("min_recharge_fen", event.target.value)
-            }
-          />
-        </label>
-        <label>
-          递增步长（分）
-          <input
-            disabled={readOnly || !billing}
-            inputMode="numeric"
-            type="number"
-            value={billing?.recharge_step_fen ?? 0}
-            onChange={(event) =>
-              updateBilling("recharge_step_fen", event.target.value)
-            }
-          />
-        </label>
-        {/* A-03：配置未加载完成前禁止提交——此时输入框是占位 0，提交会把 0 写进生产价格。 */}
-        <button disabled={readOnly || !billing} type="submit">
-          保存内部价格
+        <p className="admin-hint">
+          客户按默认通道充值。切换后，新订单使用新通道，已有订单继续使用原通道。
+        </p>
+        <button disabled={disabled} type="submit">
+          保存默认通道
         </button>
       </form>
-
+      {provider === "zpay" ? (
+        <form
+          className="admin-form"
+          onSubmit={(event) => requestSave(event, "zpay")}
+        >
+          <h2>ZPay 商户配置</h2>
+          <label>
+            ZPay 商户 PID
+            <input
+              disabled={disabled}
+              value={zpayPid}
+              onChange={(event) => setZpayPid(event.target.value)}
+            />
+          </label>
+          <div className="admin-readonly-field">
+            已保存密钥
+            <span className="readonly-value">
+              {settings?.zpay.config.key || "未配置"}
+            </span>
+          </div>
+          <label>
+            新商户密钥
+            <input
+              autoComplete="new-password"
+              disabled={disabled}
+              placeholder="留空则保留当前密钥"
+              type="password"
+              value={zpayKey}
+              onChange={(event) => setZpayKey(event.target.value)}
+            />
+          </label>
+          <fieldset
+            className="admin-checks admin-payment-channels"
+            disabled={disabled}
+          >
+            <legend>支付渠道</legend>
+            <label>
+              <input
+                checked={channels.includes("alipay")}
+                type="checkbox"
+                onChange={() => toggleChannel("alipay")}
+              />
+              <img src={alipayLogo} alt="支付宝" />
+              <span aria-hidden="true">支付宝</span>
+            </label>
+            <label>
+              <input
+                checked={channels.includes("wxpay")}
+                type="checkbox"
+                onChange={() => toggleChannel("wxpay")}
+              />
+              <img src={wechatLogo} alt="微信支付" />
+              <span aria-hidden="true">微信支付</span>
+            </label>
+          </fieldset>
+          <p className="admin-hint">支付接口地址由系统自动配置，无需填写。</p>
+          <button disabled={disabled} type="submit">
+            保存 ZPay 设置
+          </button>
+        </form>
+      ) : (
+        <form
+          className="admin-form"
+          onSubmit={(event) => requestSave(event, "wechat")}
+        >
+          <h2 className="admin-payment-brand">
+            <img src={wechatLogo} alt="微信支付" />
+            微信官方商户配置
+          </h2>
+          <label>
+            AppID
+            <input
+              disabled={disabled}
+              value={wechat.appid}
+              onChange={(event) =>
+                setWechat({ ...wechat, appid: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            商户号（mchid）
+            <input
+              disabled={disabled}
+              value={wechat.mchid}
+              onChange={(event) =>
+                setWechat({ ...wechat, mchid: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            商户证书序列号
+            <input
+              disabled={disabled}
+              value={wechat.serial_no}
+              onChange={(event) =>
+                setWechat({ ...wechat, serial_no: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            API v3 密钥
+            <input
+              autoComplete="new-password"
+              disabled={disabled}
+              type="password"
+              placeholder={
+                settings?.wechat_native?.configured
+                  ? "已配置，留空保留"
+                  : "填写 32 字节 API v3 密钥"
+              }
+              value={wechat.api_v3_key}
+              onChange={(event) =>
+                setWechat({ ...wechat, api_v3_key: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            商户私钥（PEM）
+            <textarea
+              autoComplete="off"
+              disabled={disabled}
+              rows={4}
+              placeholder={
+                settings?.wechat_native?.configured
+                  ? "已配置，留空保留"
+                  : "粘贴商户证书对应的 PEM 私钥"
+              }
+              value={wechat.private_key}
+              onChange={(event) =>
+                setWechat({ ...wechat, private_key: event.target.value })
+              }
+            />
+          </label>
+          <p className="admin-hint">
+            保存默认通道时会一起保存当前商户配置。回调地址使用服务端
+            PUBLIC_BASE_URL，需配置可访问的 HTTPS 域名。
+          </p>
+          <button disabled={disabled} type="submit">
+            保存微信官方设置
+          </button>
+        </form>
+      )}
       <ConfirmDialog
         busy={confirmBusy}
-        confirmLabel={
-          pendingConfirm === "zpay" ? "确认保存 ZPay 设置" : "确认保存内部价格"
-        }
+        confirmLabel={`确认${confirmLabels[pendingConfirm ?? "provider"]}`}
         description={
-          pendingConfirm === "zpay"
-            ? "该操作更新生产收款配置（商户 PID / 商户密钥 / 支付渠道），保存后立即生效。"
-            : "该操作更新全局计费配置，影响后续所有生成扣费与充值门槛。"
+          pendingConfirm === "provider"
+            ? `保存当前商户配置，并将默认充值通道设置为${providerName(provider)}，对新订单生效。`
+            : "该操作更新商户收款配置，保存后立即生效。"
         }
         error={confirmError}
-        level={pendingConfirm === "zpay" ? "reasonAndAck" : "reason"}
+        level="standard"
         open={pendingConfirm !== null}
         title={
-          pendingConfirm === "zpay" ? "保存 ZPay 支付设置" : "保存内部价格"
+          pendingConfirm === "zpay"
+            ? "保存 ZPay 支付设置"
+            : confirmLabels[pendingConfirm ?? "provider"]
         }
         onClose={() => {
-          if (!confirmBusy) {
-            retry.current = null;
+          if (!saving.current) {
             setPendingConfirm(null);
             setConfirmError("");
           }
         }}
-        onConfirm={(reason) => void runConfirmedSave(reason)}
+        onConfirm={() => void runConfirmedSave()}
       />
     </section>
   );
@@ -302,18 +397,10 @@ export function PaymentSettingsSection({
         : [...current, channel],
     );
   }
-
-  function updateBilling(field: keyof BillingSettings, value: string) {
-    setBilling((current) =>
-      current ? { ...current, [field]: Number(value) } : current,
-    );
-  }
 }
 
 function parseChannels(value: unknown): Array<"alipay" | "wxpay"> {
-  if (typeof value !== "string") {
-    return ["alipay"];
-  }
+  if (typeof value !== "string") return ["alipay"];
   const next = value
     .split(",")
     .filter(

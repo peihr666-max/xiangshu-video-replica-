@@ -103,7 +103,7 @@ export function OverviewPage({
     );
   }
 
-  const { today, trend, todos, device_slots } = summary;
+  const { today, trend, todos } = summary;
   const maxTrend = Math.max(
     1,
     ...trend.map((point) => point.succeeded + point.failed),
@@ -130,13 +130,6 @@ export function OverviewPage({
     tab: string;
   }> = [
     {
-      key: "pairings",
-      label: "待批准配对",
-      count: todos.pending_pairings,
-      tone: "warn",
-      tab: "codes",
-    },
-    {
       key: "failed",
       label: "失败任务待处理",
       count: todos.failed_tasks_7d,
@@ -152,22 +145,22 @@ export function OverviewPage({
     },
     {
       key: "rates",
-      label: "费率未配置科目",
+      label: "成本待配置",
       count: todos.unconfigured_rates ?? 0,
       tone: "danger",
       tab: "rates",
-    },
-    {
-      key: "expiring",
-      label: "即将过期激活码",
-      count: todos.expiring_codes_7d,
-      tone: "info",
-      tab: "codes",
     },
   ];
 
   return (
     <div className="dashboard-page">
+      {(today.legacy_cost_records ?? 0) + (today.legacy_settlements ?? 0) >
+        0 && (
+        <p role="status">
+          今日有 {today.legacy_cost_records ?? 0} 条历史成本、
+          {today.legacy_settlements ?? 0} 条历史结算待核对。
+        </p>
+      )}
       <div className="dashboard-kpis">
         <KpiCard
           icon={clapperboardIcon}
@@ -187,12 +180,8 @@ export function OverviewPage({
           icon={walletIcon}
           label="今日成本"
           value={yuanOrUnknown(today.cost_fen, todos.unknown_cost_records)}
-          sub={
-            (todos.unknown_cost_records ?? 0) > 0
-              ? `${todos.unknown_cost_records} 项用量待核对`
-              : "实际用量口径"
-          }
-          tone={(todos.unknown_cost_records ?? 0) > 0 ? "warn" : undefined}
+          sub={today.cost_fen == null ? "结算或成本待核对" : "已确认成本"}
+          tone={today.cost_fen == null ? "warn" : undefined}
         />
         <KpiCard
           icon={gaugeIcon}
@@ -210,9 +199,9 @@ export function OverviewPage({
         />
         <KpiCard
           icon={usersIcon}
-          label="在线设备"
-          value={String(today.online_devices)}
-          sub={`活跃客户 ${today.active_customers}`}
+          label="有效客户"
+          value={String(today.active_customers)}
+          sub="已启用的客户账户"
         />
         <KpiCard
           icon={walletIcon}
@@ -282,15 +271,19 @@ export function OverviewPage({
                   title={`${point.day}：成功 ${point.succeeded} / 失败 ${point.failed}`}
                 >
                   <div className="dashboard-trend__bars">
-                    <div
-                      className="dashboard-trend__bar dashboard-trend__bar--cost"
-                      title={`成本 ¥${fenToYuan(point.cost_fen ?? 0)}`}
-                      style={{
-                        height: `${Math.round(((point.cost_fen ?? 0) / maxCost) * 100)}%`,
-                      }}
-                    >
-                      <b>{fenToYuan(point.cost_fen ?? 0)}</b>
-                    </div>
+                    {point.cost_fen == null ? (
+                      <span title="成本待核对">待核对</span>
+                    ) : (
+                      <div
+                        className="dashboard-trend__bar dashboard-trend__bar--cost"
+                        title={`成本 ¥${fenToYuan(point.cost_fen ?? 0)}`}
+                        style={{
+                          height: `${Math.round(((point.cost_fen ?? 0) / maxCost) * 100)}%`,
+                        }}
+                      >
+                        <b>{fenToYuan(point.cost_fen ?? 0)}</b>
+                      </div>
+                    )}
                   </div>
                   <span>
                     {point.day.slice(5)}
@@ -323,18 +316,10 @@ export function OverviewPage({
       </div>
 
       <div className="dashboard-bottom-grid">
-        <section className="admin-panel" aria-label="登录设备">
-          <h2>登录设备</h2>
-          <strong className="slot-count">{device_slots.bound} 台</strong>
-          <p className="admin-hint">设备数量不限，支持多设备同时在线</p>
-        </section>
         {!readOnly ? (
           <section className="admin-panel" aria-label="快捷操作">
             <h2>快捷操作</h2>
             <div className="dashboard-quick-actions">
-              <button type="button" onClick={() => onNavigate?.("issueCodes")}>
-                快速发码
-              </button>
               <button
                 type="button"
                 onClick={() => onNavigate?.("customerAdjustments")}
@@ -359,9 +344,9 @@ export function OverviewPage({
 }
 
 function yuanOrUnknown(
-  costFen: number | undefined,
+  costFen: number | null | undefined,
   unknownCount: number | undefined,
 ): string {
-  if (costFen === undefined || (unknownCount ?? 0) > 0) return "用量待核对";
+  if (costFen == null || (unknownCount ?? 0) > 0) return "待核对";
   return `¥${fenToYuan(costFen)}`;
 }

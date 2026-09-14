@@ -7,7 +7,10 @@ PENDING 配对、5 天内过期的可激活码、今日 PAID 充值单。
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, timedelta
+from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -210,16 +213,16 @@ def test_dashboard_summary_counts(admin_headers: dict[str, str], client: TestCli
     assert payload["today"]["recharge_orders"] == 1
 
     todos = payload["todos"]
-    assert todos["pending_pairings"] == 1
     assert todos["failed_tasks_7d"] == 1
-    assert todos["expiring_codes_7d"] == 1
     assert todos["reconciliation_problems"] == 0
-    assert todos["unconfigured_rates"] == 0
-    assert todos["unknown_cost_records"] == 0
+    from app.billing_catalog import SERVICES
 
-    assert payload["device_slots"]["total"] is None
-    # 无会话租约 → 在线 0
-    assert payload["today"]["online_devices"] == 0
+    assert todos["unconfigured_rates"] == sum(s.customer_charge_allowed for s in SERVICES.values())
+    assert todos["unknown_cost_records"] == 0
+    assert "device_slots" not in payload
+    assert "online_devices" not in payload["today"]
+    assert "pending_pairings" not in todos
+    assert "expiring_codes_7d" not in todos
 
     # 近 7 日趋势包含今日（一成一败）
     assert len(payload["trend"]) == 7
@@ -340,7 +343,212 @@ def test_cost_trend_includes_the_complete_first_shanghai_day(
     response = client.get("/api/control/dashboard/summary", headers=admin_headers)
 
     assert response.status_code == 200, response.text
-    assert response.json()["trend"][0]["cost_fen"] == 77
+    assert response.json()["trend"][0]["cost_fen"] is None
+    assert response.json()["trend"][0]["legacy_cost_records"] == 1
     assert response.json()["trend"][0]["succeeded"] == 1
     assert response.json()["trend"][0]["failed"] == 1
     assert response.json()["todos"]["failed_tasks_7d"] == 2
+
+
+def _billing_fact(
+    raw,
+    *,
+    when,
+    revenue=0,
+    reserved=0,
+    charged=0,
+    state="SUCCEEDED",
+    costs=("2.5",),
+    service="analysis",
+    units=1,
+):
+    operation = str(uuid4())
+    raw.execute(
+        "INSERT INTO billing_operations(id,user_id,service,module,source_id,unit,budget_units,"
+        "pricing_snapshot_json,state,reserved_credits,charged_credits,actual_units,revenue_fen,"
+        "created_at,completed_at) VALUES(%s,'cust_1',%s,%s,%s,%s,10,'{}',%s,%s,%s,%s,%s,%s,%s)",
+        (
+            operation,
+            service,
+            "video" if service.startswith("video_") else "replica",
+            operation,
+            "second" if service.startswith("video_") else "call",
+            state,
+            reserved,
+            charged,
+            units,
+            revenue,
+            when,
+            None if state == "PENDING" else when,
+        ),
+    )
+    for index, cost in enumerate(costs):
+        raw.execute(
+            "INSERT INTO billing_attempts(id,operation_id,attempt_key,service,provider,unit,"
+            "usage,cost_fen,state,completed_at) VALUES(%s,%s,%s,%s,'apilio','call',1,%s,%s,%s)",
+            (
+                str(uuid4()),
+                operation,
+                str(index),
+                service,
+                cost,
+                "ACTUAL" if cost is not None else "UNKNOWN",
+                when,
+            ),
+        )
+    return operation
+
+
+def test_dashboard_and_statistics_share_settled_financial_facts(
+    admin_headers,
+    client,
+    dashboard_pg_dsn,
+):
+    from app.billing_reports import date_bounds, statistics
+    from app.db_portable import BusinessConnection
+
+    with psycopg.connect(dashboard_pg_dsn) as raw:
+        today = raw.execute("SELECT (now() AT TIME ZONE 'Asia/Shanghai')::date").fetchone()[0]
+        lower, upper = date_bounds(today, today)
+        # Paid partial delivery, gifted credits, and a failed/refunded request.
+        _billing_fact(
+            raw,
+            when=lower,
+            revenue=100,
+            reserved=10,
+            charged=6,
+            costs=("2.5", "3"),
+            service="video_768p",
+            units=6,
+        )
+        _billing_fact(raw, when=lower, revenue=0, reserved=4, charged=4, costs=("1",))
+        _billing_fact(
+            raw, when=lower, revenue=0, reserved=7, charged=0, state="FAILED", costs=("0.5",)
+        )
+        # Exclusive Shanghai upper bound; adjacent days must not enter today's totals.
+        _billing_fact(raw, when=lower - timedelta(seconds=1), revenue=9000, costs=("900",))
+        _billing_fact(raw, when=upper, revenue=8000, costs=("800",))
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES ('analysis',false,NULL,0),('first_frame',true,0,NULL)"
+        )
+
+    def compare():
+        with psycopg.connect(dashboard_pg_dsn) as raw:
+            report = statistics(BusinessConnection.postgres(raw), start=today, end=today)
+        response = client.get("/api/control/dashboard/summary", headers=admin_headers)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        for dashboard_key, report_key in (
+            ("cost_fen", "cost_fen"),
+            ("revenue_fen", "revenue_fen"),
+            ("gross_fen", "profit_fen"),
+        ):
+            value = payload["today"][dashboard_key]
+            assert (Decimal(str(value)) if value is not None else None) == report["totals"][
+                report_key
+            ]
+        assert payload["trend"][-1]["cost_fen"] == payload["today"]["cost_fen"]
+        return payload, report["totals"]
+
+    payload, totals = compare()
+    assert totals["known_cost_fen"] == Decimal("7")
+    assert totals["known_revenue_fen"] == 100
+    assert totals["profit_fen"] == 93
+    assert totals["refunded_credits"] == 11
+    assert payload["today"]["recharge_fen"] == 10000  # Never added to consumption income.
+    assert payload["today"]["output_seconds"] == 6
+    assert payload["today"]["margin_pct"] == 93
+    assert payload["todos"]["unconfigured_rates"] == 11  # Zero cost is configured, NULL is not.
+
+    with psycopg.connect(dashboard_pg_dsn) as raw:
+        _billing_fact(raw, when=lower, revenue=None, costs=("1",))
+    payload, totals = compare()
+    assert payload["today"]["revenue_fen"] is None
+    assert payload["today"]["gross_fen"] is None
+    assert totals["cost_fen"] == 8
+
+    with psycopg.connect(dashboard_pg_dsn) as raw:
+        _billing_fact(raw, when=lower, costs=(None,))
+    payload, totals = compare()
+    assert totals["cost_fen"] is None
+    assert payload["todos"]["unknown_cost_records"] == 1
+
+    with psycopg.connect(dashboard_pg_dsn) as raw:
+        _billing_fact(raw, when=lower, revenue=None, state="PENDING", costs=())
+    payload, totals = compare()
+    assert totals["pending_count"] == payload["today"]["pending_operations"] == 1
+    assert payload["today"]["margin_pct"] is None
+
+
+def test_legacy_costs_and_settlements_are_visible_but_never_repriced(dashboard_pg_dsn):
+    from datetime import date
+
+    from app.billing_reports import statistics
+    from app.db_portable import BusinessConnection
+
+    with psycopg.connect(dashboard_pg_dsn) as raw:
+        raw.execute(
+            "INSERT INTO operation_cost_records(id,source_type,source_id,subject,user_id,unit,"
+            "unit_price_fen,usage_amount,cost_fen,status,occurred_at) VALUES "
+            "('legacy-only','generation','legacy-only','video_generation_768p','cust_1','second',"
+            "5,1,5,'ACTUAL','2024-02-29T16:00:00Z')"
+        )
+        raw.execute(
+            "INSERT INTO wallet_transactions(id,user_id,type,available_delta,reserved_delta,"
+            "task_id,billing_round,idempotency_key,created_at) VALUES "
+            "('legacy-settle','cust_1','SETTLE',0,-1,'t_ok',99,'legacy-settle',"
+            "'2024-02-29 16:00:00')"
+        )
+        report = statistics(
+            BusinessConnection.postgres(raw), start=date(2024, 3, 1), end=date(2024, 3, 1)
+        )
+        totals = report["totals"]
+        assert totals["operation_count"] == 0
+        assert totals["legacy_cost_count"] == totals["legacy_settlement_count"] == 1
+        assert totals["known_cost_fen"] == totals["known_revenue_fen"] == 0
+        assert totals["cost_fen"] is totals["revenue_fen"] is totals["profit_fen"] is None
+        assert report["periods"][0]["period"] == "2024-03-01"
+        empty = statistics(
+            BusinessConnection.postgres(raw), start=date(2024, 2, 29), end=date(2024, 2, 29)
+        )
+        assert empty["totals"]["profit_fen"] == 0
+        assert empty["totals"]["legacy_cost_count"] == 0
+
+
+def test_linked_compatibility_records_are_not_counted_twice_and_pending_is_not_zero(
+    dashboard_pg_dsn,
+):
+    from datetime import date, datetime
+
+    from app.billing_reports import statistics
+    from app.db_portable import BusinessConnection
+
+    with psycopg.connect(dashboard_pg_dsn) as raw:
+        when = datetime(2025, 1, 1, tzinfo=UTC)
+        operation = _billing_fact(raw, when=when, reserved=1, charged=1, revenue=3, costs=("2",))
+        attempt = raw.execute(
+            "SELECT id FROM billing_attempts WHERE operation_id=%s", (operation,)
+        ).fetchone()[0]
+        raw.execute(
+            "INSERT INTO operation_cost_records(id,source_type,source_id,subject,user_id,unit,"
+            "unit_price_fen,usage_amount,cost_fen,status,occurred_at,billing_attempt_id) VALUES "
+            "('linked-mirror','analysis','linked-mirror','video_analysis_768p','cust_1','call',"
+            "2,1,2,'ACTUAL',%s,%s)",
+            (when, attempt),
+        )
+        raw.execute(
+            "INSERT INTO wallet_transactions(id,user_id,type,available_delta,reserved_delta,"
+            "billing_operation_id,billing_round,idempotency_key,created_at) VALUES "
+            "('linked-settle','cust_1','SETTLE',0,-1,%s,1,'linked-settle','2025-01-01 00:00:00')",
+            (operation,),
+        )
+        conn = BusinessConnection.postgres(raw)
+        totals = statistics(conn, start=date(2025, 1, 1), end=date(2025, 1, 1))["totals"]
+        assert totals["legacy_cost_count"] == totals["legacy_settlement_count"] == 0
+        assert totals["cost_fen"] == 2 and totals["profit_fen"] == 1
+        _billing_fact(raw, when=when, state="PENDING", revenue=None, costs=())
+        totals = statistics(conn, start=date(2025, 1, 1), end=date(2025, 1, 1))["totals"]
+        assert totals["unknown_cost_count"] == 0 and totals["pending_count"] == 1
+        assert totals["cost_fen"] is totals["profit_fen"] is None
+        assert totals["known_cost_fen"] == 2

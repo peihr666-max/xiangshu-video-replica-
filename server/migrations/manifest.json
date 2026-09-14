@@ -5,7 +5,7 @@
       "001_core"
     ],
     "heads": [
-      "20260913T1600_shared_viral_media"
+      "20260914T0000_local_joint_merge"
     ],
     "parents": {
       "001_core": null,
@@ -99,9 +99,15 @@
       "20260912T2330_customer_credit_pricing": "20260912T2200_customer_token_lifecycle",
       "20260913T0630_account_credit_operations": "20260912T2330_customer_credit_pricing",
       "20260913T1100_itemized_billing": "20260913T0630_account_credit_operations",
-      "20260913T1600_shared_viral_media": "20260913T1100_itemized_billing"
+      "20260913T1600_shared_viral_media": "20260913T1100_itemized_billing",
+      "20260913T1800_payment_channels": "20260913T1100_itemized_billing",
+      "20260913T1825_h3_account_pool": "20260913T1800_payment_channels",
+      "20260914T0000_local_joint_merge": [
+        "20260913T1600_shared_viral_media",
+        "20260913T1825_h3_account_pool"
+      ]
     },
-    "revision_count": 92
+    "revision_count": 95
   },
   "manifest_schema_version": 1,
   "naming_policy": {
@@ -483,6 +489,18 @@
     "20260913T1600_shared_viral_media": {
       "file": "versions/20260913T1600_shared_viral_media.py",
       "sha256": "c53790ad711ec8b278e56aa0ab6c5059f2e1921b6b14c61c81f638d98105d683"
+    },
+    "20260913T1800_payment_channels": {
+      "file": "versions/20260913T1800_payment_channels.py",
+      "sha256": "e16a1837f851ef45dc7847cea14014afacf6d7af81e1d406ea98f4730996ae5c"
+    },
+    "20260913T1825_h3_account_pool": {
+      "file": "versions/20260913T1825_h3_account_pool.py",
+      "sha256": "3b12b253ca704dec636db5b370859043cba20a0760ac58c094227f1fb9e62c59"
+    },
+    "20260914T0000_local_joint_merge": {
+      "file": "versions/20260914T0000_local_joint_merge.py",
+      "sha256": "b12aba64ee6f0eaf23d177699dd30171c639e6660c876f80a4fe32b008d3cca8"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

@@ -9,8 +9,8 @@ import {
 import { type SettingsBackend, SettingsPanel } from "../SettingsPanel";
 import { BillingRatesManager } from "./BillingRatesManager";
 import { CustomerPricingManager } from "./CustomerPricingManager";
+import { H3AccountsManager } from "./H3AccountsManager";
 import { H3ExtendedModesSection } from "./H3ExtendedModesSection";
-import { LegacyCreditPolicyManager } from "./LegacyCreditPolicyManager";
 import { PaymentSettingsSection } from "./PaymentSettingsSection";
 import { QueueModeSection } from "./QueueModeSection";
 import { TabBar } from "./ui/TabBar";
@@ -18,7 +18,7 @@ import { ViralRuntimeSection } from "./ViralRuntimeSection";
 
 const tabs = [
   { id: "payment", label: "支付与价格" },
-  { id: "rates", label: "成本与售价" },
+  { id: "rates", label: "API 端点与价格" },
   { id: "services", label: "服务配置" },
 ];
 
@@ -48,6 +48,7 @@ export function SystemSettingsPage({
   initialTab?: "payment" | "rates" | "services";
 }) {
   const [tab, setTab] = useState<string>(initialTab);
+  const [serviceTab, setServiceTab] = useState("providers");
   return (
     <div>
       <TabBar
@@ -60,23 +61,46 @@ export function SystemSettingsPage({
         <>
           <CustomerPricingManager readOnly={readOnly} />
           <PaymentSettingsSection readOnly={readOnly} />
-          <LegacyCreditPolicyManager readOnly={readOnly} />
         </>
       ) : null}
       {tab === "rates" ? <BillingRatesManager readOnly={readOnly} /> : null}
       {tab === "services" ? (
-        <>
-          <QueueModeSection readOnly={readOnly} />
-          <H3ExtendedModesSection readOnly={readOnly} />
-          <ViralRuntimeSection readOnly={readOnly} />
-          <section className="admin-panel" aria-label="服务配置">
+        <div className="admin-services">
+          <header className="admin-services__header">
+            <TabBar
+              active={serviceTab}
+              ariaLabel="服务配置分组"
+              items={[
+                { id: "providers", label: "API 服务" },
+                { id: "runtime", label: "运行控制" },
+              ]}
+              onChange={setServiceTab}
+            />
+          </header>
+          {serviceTab === "providers" ? (
             <SettingsPanel
               controlBackend={controlBackend}
               readOnly={readOnly}
               source="control"
+              section="providers"
+              videoAccounts={<H3AccountsManager readOnly={readOnly} />}
             />
-          </section>
-        </>
+          ) : (
+            <div className="admin-services__runtime">
+              <div className="admin-services__switches">
+                <QueueModeSection readOnly={readOnly} />
+                <H3ExtendedModesSection readOnly={readOnly} />
+              </div>
+              <SettingsPanel
+                controlBackend={controlBackend}
+                readOnly={readOnly}
+                source="control"
+                section="runtime"
+              />
+              <ViralRuntimeSection readOnly={readOnly} />
+            </div>
+          )}
+        </div>
       ) : null}
     </div>
   );

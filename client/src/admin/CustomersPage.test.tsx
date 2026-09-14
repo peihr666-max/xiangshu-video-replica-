@@ -61,7 +61,7 @@ vi.mock("../api.admin", () => ({
 }));
 
 vi.mock("../api", () => ({
-  downloadCustomersCsv: vi.fn(),
+  downloadCustomersCsv: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe("CustomersPage (ADM-02 / T33)", () => {
@@ -141,11 +141,21 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       expect(screen.getByText("customer-2")).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/共 2 位客户/)).toBeInTheDocument();
-    expect(screen.getByText("5 / 8")).toBeInTheDocument();
-    expect(
-      screen.getByText("1", { selector: "td[data-label='待关注']" }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("第 1 / 1 页（共 2 位）")).toBeInTheDocument();
+    expect(screen.getByText("成功 5 / 8")).toBeInTheDocument();
+    const headers = within(screen.getByRole("table", { name: "客户列表" }))
+      .getAllByRole("columnheader")
+      .map((cell) => cell.textContent);
+    expect(headers).toEqual([
+      "用户名",
+      "客户 ID",
+      "注册时间",
+      "状态",
+      "可用额度",
+      "累计消耗",
+      "生成情况",
+      "操作",
+    ]);
     expect(screen.getByLabelText("customer-1 已结算消耗")).toHaveTextContent(
       "5",
     );
@@ -159,9 +169,7 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         .map((cell) => cell.textContent?.replace(/\s+/g, " ").trim()),
     ).toEqual([
       "customer-1",
-      "—",
       "user-1",
-      "ABC-123",
       // 与 formatDateTime 的展示契约一致：固定 Asia/Shanghai，
       // 否则期望值随 runner 时区漂移（CI 为 UTC，本地为 +8）。
       new Date(mockCustomers[0].created_at).toLocaleString("zh-CN", {
@@ -169,12 +177,9 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         timeZone: "Asia/Shanghai",
       }),
       "活跃",
-      "0 台",
-      "0 积分",
       "0 积分",
       "5 积分",
-      "5 / 8 · 1 失败 · 1 进行中",
-      "1",
+      "成功 5 / 8 失败 1 · 进行中 1",
       "展开详情",
     ]);
   });
@@ -253,6 +258,46 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     });
   });
 
+  it("applies filter drafts together and ignores an older response arriving last", async () => {
+    let resolveOld!: (
+      value: Awaited<ReturnType<typeof adminApi.listCustomers>>,
+    ) => void;
+    vi.mocked(adminApi.listCustomers).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOld = resolve;
+      }),
+    );
+    vi.mocked(adminApi.listCustomers).mockResolvedValue({
+      items: [
+        {
+          user_id: "new-id",
+          username: "new-user",
+          status: "active",
+          created_at: "2026-09-13T10:00:00Z",
+          activation_code: "",
+        },
+      ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+    render(<CustomersPage />);
+    fireEvent.change(screen.getByLabelText("最低余额"), {
+      target: { value: "10" },
+    });
+    fireEvent.change(screen.getByLabelText("注册起始"), {
+      target: { value: "2026-09-01" },
+    });
+    expect(adminApi.listCustomers).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+    await screen.findByText("new-user");
+    resolveOld({ items: [], total: 0, limit: 20, offset: 0 });
+    await waitFor(() =>
+      expect(screen.getByText("new-user")).toBeInTheDocument(),
+    );
+    expect(adminApi.listCustomers).toHaveBeenCalledTimes(2);
+  });
+
   it("exports the same date, status and balance filters as the list", async () => {
     vi.mocked(adminApi.listCustomers).mockResolvedValue({
       items: [],
@@ -316,15 +361,15 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "展开详情" }));
-    fireEvent.click(screen.getByRole("button", { name: "调账历史" }));
-    expect(adminApi.listAdminAdjustments).toHaveBeenCalledWith("user-1", {
-      limit: 20,
-      offset: 0,
-    });
+    expect(
+      screen.queryByRole("button", { name: "调账历史" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "复制客户 ID" }),
+    ).toBeInTheDocument();
   });
 
   it("opens a focused customer detail and returns to the filtered list", async () => {
-    const onOpenDevices = vi.fn();
     vi.mocked(adminApi.listCustomers).mockResolvedValue({
       items: [
         {
@@ -346,7 +391,7 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       offset: 0,
     });
 
-    render(<CustomersPage onOpenDevices={onOpenDevices} />);
+    render(<CustomersPage />);
 
     fireEvent.change(await screen.findByPlaceholderText("按用户名筛选"), {
       target: { value: "customer-1" },
@@ -372,10 +417,10 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("累计消耗")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", {
+      screen.queryByRole("button", {
         name: "调账历史",
       }),
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "← 返回客户列表" }),
     ).toBeInTheDocument();
@@ -390,23 +435,19 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         limit: 3,
         offset: 0,
       });
-      expect(adminApi.listDevices).toHaveBeenCalledWith({
-        userId: "user-1",
-        limit: 3,
-        offset: 0,
-      });
-      expect(adminApi.listCustomerSessions).toHaveBeenCalledWith("user-1", {
-        limit: 3,
-        offset: 0,
-      });
-      expect(adminApi.listAdminAdjustments).toHaveBeenCalledWith("user-1", {
-        limit: 3,
-        offset: 0,
-        sort: "desc",
-      });
+      expect(adminApi.listDevices).not.toHaveBeenCalled();
+      expect(adminApi.listCustomerSessions).not.toHaveBeenCalled();
+      expect(adminApi.listAdminAdjustments).not.toHaveBeenCalled();
     });
-    fireEvent.click(screen.getByRole("button", { name: "查看设备" }));
-    expect(onOpenDevices).toHaveBeenCalledWith("user-1");
+    expect(screen.queryByText("绑定设备")).not.toBeInTheDocument();
+    expect(screen.queryByText("登录设备")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "查看设备" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "查看会话" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("冻结额度")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "← 返回客户列表" }));
 
@@ -453,26 +494,22 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "保存客户售价" }));
 
-    // 改价确认对话框：原因必填，随写请求一起提交。
     await screen.findByRole("dialog", { name: "修改客户售价" });
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "客户合同价" },
-    });
+    expect(screen.queryByLabelText("操作原因")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
 
     await waitFor(() => {
       expect(adminApi.updateCustomerUnitPrice).toHaveBeenCalledWith(
         "user-1",
         880,
-        "客户合同价",
+        "更新客户售价",
       );
     });
     expect(await screen.findByText("客户售价已保存")).toBeInTheDocument();
   });
 
   it("grants free credits through the audited FREE_GRANT adjustment", async () => {
-    // 免费秒数发放（FREE_GRANT / 054）：来源单号必填，高危对话框确认，
-    // 服务端调用走 T23 调账闭环且 source_document_type 固定为 FREE_GRANT。
+    // 首步填写事由，自动单号在确认及重试时保持一致。
     vi.mocked(adminApi.listCustomers).mockResolvedValue({
       items: [
         {
@@ -505,24 +542,21 @@ describe("CustomersPage (ADM-02 / T33)", () => {
     fireEvent.change(await screen.findByLabelText("发放积分"), {
       target: { value: "10" },
     });
-    fireEvent.change(screen.getByLabelText("来源单号"), {
-      target: { value: "PROMO-2026-09-001" },
+    expect(screen.queryByLabelText("来源单号")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("事由"), {
+      target: { value: "新客活动发放" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发放赠送积分" }));
 
-    // 高危对话框：原因必填 + 我已知晓勾选。
-    await screen.findByRole("dialog", { name: "发放赠送积分" });
-    fireEvent.click(screen.getByRole("button", { name: "确认发放" }));
-    expect(
-      await within(
-        screen.getByRole("dialog", { name: "发放赠送积分" }),
-      ).findByRole("alert"),
-    ).toHaveTextContent("请填写操作原因");
+    const dialog = await screen.findByRole("dialog", { name: "发放赠送积分" });
+    expect(within(dialog).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(dialog).toHaveTextContent("新客活动发放");
+    expect(dialog).toHaveTextContent("GRANT-");
     expect(adminApi.createCustomerAdjustment).not.toHaveBeenCalled();
-
-    fireEvent.change(screen.getByLabelText("操作原因"), {
-      target: { value: "新客活动发放" },
-    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(adminApi.createCustomerAdjustment).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "发放赠送积分" }));
     vi.mocked(adminApi.listCustomers).mockResolvedValue({
       items: [
         {
@@ -538,7 +572,11 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       limit: 20,
       offset: 0,
     });
-    fireEvent.click(screen.getByLabelText("我已知晓该操作的影响"));
+    vi.mocked(adminApi.createCustomerAdjustment).mockRejectedValueOnce(
+      new Error("结果未知，请重试"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认发放" }));
+    await screen.findByText("结果未知，请重试");
     fireEvent.click(screen.getByRole("button", { name: "确认发放" }));
 
     await waitFor(() => {
@@ -546,7 +584,7 @@ describe("CustomersPage (ADM-02 / T33)", () => {
         "user-1",
         {
           sourceDocumentType: "FREE_GRANT",
-          sourceDocumentRef: "PROMO-2026-09-001",
+          sourceDocumentRef: expect.stringMatching(/^GRANT-[a-f0-9-]+$/),
           credits: 10,
         },
         "新客活动发放",
@@ -554,6 +592,9 @@ describe("CustomersPage (ADM-02 / T33)", () => {
       );
     });
     expect(await screen.findByText(/已发放 10 赠送积分/)).toBeInTheDocument();
+    expect(vi.mocked(adminApi.createCustomerAdjustment).mock.calls[1]).toEqual(
+      vi.mocked(adminApi.createCustomerAdjustment).mock.calls[0],
+    );
     await waitFor(() =>
       expect(
         within(screen.getByRole("region", { name: "客户核心指标" })).getByText(

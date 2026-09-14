@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { adminRead, downloadBillingCsv } from "../api.admin";
 import { BillingEvidenceForm } from "./BillingEvidenceForm";
-import { type BillingService, billingUnit } from "./BillingRatesManager";
+import { type BillingService, billingUnit } from "./billingTypes";
 import { ViralCollectionBilling } from "./ViralCollectionBilling";
 
 type Metric = {
@@ -16,6 +16,8 @@ type Metric = {
   unknown_cost_count: number;
   unknown_revenue_count: number;
   pending_count: number;
+  legacy_cost_count?: number;
+  legacy_settlement_count?: number;
   refunded_credits: number;
   seconds: string | null;
   images: string | null;
@@ -110,7 +112,14 @@ function params(filters: ReturnType<typeof initialFilters>) {
   ).toString();
 }
 
-export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
+export function BillingEconomics({
+  readOnly = false,
+  view = "profit",
+}: {
+  readOnly?: boolean;
+  view?: "profit" | "cost";
+}) {
+  const costView = view === "cost";
   const detailRequest = useRef(0);
   const [filters, setFilters] = useState(initialFilters);
   const [query, setQuery] = useState(() => params(initialFilters()));
@@ -213,11 +222,10 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
       })
     : undefined;
   return (
-    <section className="admin-panel" aria-label="逐项经营核算">
-      <h2>逐项经营核算</h2>
-      <p>
-        每次请求分别核算积分、消费收入、供应商成本与利润。赠送积分不计收入；来源或成本未确认时显示待核对。充值到账单独查看，不重复计入消费收入。
-      </p>
+    <section
+      className="admin-panel billing-economics"
+      aria-label={costView ? "成本明细" : "利润总览"}
+    >
       <button
         type="button"
         onClick={() => setShowCollections((value) => !value)}
@@ -226,6 +234,7 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
       </button>
       {showCollections && <ViralCollectionBilling key={query} query={query} />}
       <form
+        className="billing-economics-filters"
         onSubmit={(event) => {
           event.preventDefault();
           setQuery(params(filters));
@@ -326,16 +335,18 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
             ))}
           </select>
         </label>
-        <button type="submit" disabled={busy}>
-          查询
-        </button>
-        <button
-          type="button"
-          disabled={busy || !operations}
-          onClick={() => void exportRows()}
-        >
-          导出当前查询 CSV
-        </button>
+        <div className="billing-economics-filters__actions">
+          <button type="submit" disabled={busy}>
+            查询
+          </button>
+          <button
+            type="button"
+            disabled={busy || !operations}
+            onClick={() => void exportRows()}
+          >
+            导出当前查询 CSV
+          </button>
+        </div>
       </form>
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
@@ -344,14 +355,6 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
         <>
           <p>{report.basis} 时区：北京时间。</p>
           <p>
-            账务记录 {report.totals.operation_count} 笔 · 净扣{" "}
-            {report.totals.charged_credits ?? 0} 积分 · 退回{" "}
-            {report.totals.refunded_credits ?? 0} 积分 · 已确认收入{" "}
-            {money(report.totals.known_revenue_fen ?? 0)} · 已确认成本{" "}
-            {money(report.totals.known_cost_fen ?? 0)} · 利润{" "}
-            {money(report.totals.profit_fen)}
-          </p>
-          <p>
             供应商调用记录 {report.totals.provider_call_count ?? 0}{" "}
             次；客户采集计费 {report.totals.shared_collection_charge_count ?? 0}{" "}
             笔。 客户累计用量（含免费）：{report.totals.seconds ?? 0} 秒 /{" "}
@@ -359,21 +362,54 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
             次。平台承担的已确认成本：
             {money(report.totals.platform_cost_fen ?? 0)}。
           </p>
-          <p>
+          {(report.totals.legacy_cost_count ?? 0) +
+            (report.totals.legacy_settlement_count ?? 0) >
+            0 && (
+            <p role="status">
+              该日期及客户范围内有 {report.totals.legacy_cost_count ?? 0}{" "}
+              条历史成本、{report.totals.legacy_settlement_count ?? 0}{" "}
+              条历史结算待核对。
+            </p>
+          )}
+          <div className="economics-kpis economics-kpis--four">
+            {(costView
+              ? [
+                  ["已确认成本", money(report.totals.known_cost_fen ?? 0)],
+                  ["平台承担成本", money(report.totals.platform_cost_fen ?? 0)],
+                  ["待核对成本", `${report.totals.unknown_cost_count} 项`],
+                  ["请求数", `${report.totals.operation_count} 次`],
+                ]
+              : [
+                  ["已确认收入", money(report.totals.known_revenue_fen ?? 0)],
+                  ["已确认成本", money(report.totals.known_cost_fen ?? 0)],
+                  ["利润", money(report.totals.profit_fen)],
+                  ["净扣积分", String(report.totals.charged_credits ?? 0)],
+                ]
+            ).map(([label, value]) => (
+              <article key={label}>
+                <span>{label}</span>
+                <strong>{value}</strong>
+              </article>
+            ))}
+          </div>
+          <p className="admin-hint">
             待核对成本 {report.totals.unknown_cost_count} 项 · 待核对收入{" "}
             {report.totals.unknown_revenue_count} 项 · 未结算{" "}
             {report.totals.pending_count} 项
           </p>
           <div className="admin-table-scroll">
-            <table>
+            <table
+              className="admin-data-table billing-economics-table"
+              aria-label="周期汇总"
+            >
               <thead>
                 <tr>
                   <th>周期起始</th>
                   <th>账务记录数</th>
-                  <th>净扣积分</th>
-                  <th>已确认收入</th>
+                  <th>{costView ? "秒 / 张 / 次" : "净扣积分"}</th>
+                  {!costView && <th>已确认收入</th>}
                   <th>已确认成本</th>
-                  <th>利润</th>
+                  <th>{costView ? "平台承担成本" : "利润"}</th>
                 </tr>
               </thead>
               <tbody>
@@ -381,10 +417,20 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
                   <tr key={row.period}>
                     <td>{row.period}</td>
                     <td>{row.operation_count}</td>
-                    <td>{row.charged_credits}</td>
-                    <td>{money(row.known_revenue_fen ?? 0)}</td>
+                    <td>
+                      {costView
+                        ? `${row.seconds ?? 0} / ${row.images ?? 0} / ${row.calls ?? 0}`
+                        : row.charged_credits}
+                    </td>
+                    {!costView && <td>{money(row.known_revenue_fen ?? 0)}</td>}
                     <td>{money(row.known_cost_fen ?? 0)}</td>
-                    <td>{money(row.profit_fen)}</td>
+                    <td>
+                      {money(
+                        costView
+                          ? (row.platform_cost_fen ?? 0)
+                          : row.profit_fen,
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -396,17 +442,24 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
         <>
           <h3>请求账务明细（共 {operations.total} 条）</h3>
           <div className="admin-table-scroll">
-            <table>
+            <table
+              className="admin-data-table billing-economics-table"
+              aria-label="请求明细"
+            >
               <thead>
                 <tr>
                   <th>用户</th>
                   <th>科目</th>
                   <th>状态</th>
                   <th>用量</th>
-                  <th>积分</th>
-                  <th>收入</th>
+                  {!costView && (
+                    <>
+                      <th>积分</th>
+                      <th>收入</th>
+                    </>
+                  )}
                   <th>成本</th>
-                  <th>利润</th>
+                  {!costView && <th>利润</th>}
                   <th>详情</th>
                 </tr>
               </thead>
@@ -419,18 +472,14 @@ export function BillingEconomics({ readOnly = false }: { readOnly?: boolean }) {
                     <td>
                       {row.actual_units ?? "处理中"} {billingUnit[row.unit]}
                     </td>
-                    <td>{row.charged_credits}</td>
-                    <td>{money(row.revenue_fen)}</td>
-                    <td>
-                      {row.collection_batch_id && row.user_id
-                        ? "成本见采集批次"
-                        : money(row.cost_fen)}
-                    </td>
-                    <td>
-                      {row.collection_batch_id && row.user_id
-                        ? "未分摊公共成本"
-                        : money(row.profit_fen)}
-                    </td>
+                    {!costView && (
+                      <>
+                        <td>{row.charged_credits}</td>
+                        <td>{money(row.revenue_fen)}</td>
+                      </>
+                    )}
+                    <td>{money(row.cost_fen)}</td>
+                    {!costView && <td>{money(row.profit_fen)}</td>}
                     <td>
                       <button
                         type="button"

@@ -8,64 +8,38 @@ import {
 } from "react";
 import { downloadCustomersCsv } from "../api";
 import {
-  type AdjustmentListItem,
   type AdminRechargeOrder,
   type AdminWalletTransaction,
   type CustomerListItem,
-  type CustomerSessionListItem,
   type CustomerUnitPrice,
   createCustomerAdjustment,
-  type DeviceListItem,
   fetchCustomerUnitPrice,
-  listAdminAdjustments,
   listAdminRechargeOrders,
   listAdminWalletTransactions,
-  listCustomerSessions,
   listCustomers,
-  listDevices,
   updateCustomerUnitPrice,
 } from "../api.admin";
 import { AccountCreditPanel } from "./AccountCreditPanel";
-import { AdjustmentsPage } from "./AdjustmentsPage";
-import { LegacyCreditPolicyManager } from "./LegacyCreditPolicyManager";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
+import { CopyCustomerId } from "./ui/CopyCustomerId";
 import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
-import {
-  CustomerStatusBadge,
-  DeviceStatusBadge,
-  OrderStatusBadge,
-} from "./ui/StatusBadge";
+import { CustomerStatusBadge, OrderStatusBadge } from "./ui/StatusBadge";
 import {
   formatDateTime,
   formatFen,
   formatYuanFromFen,
-  platformLabel,
   transactionTypeLabel,
 } from "./ui/vocabulary";
 import "./admin-customer-detail.css";
 
-/**
- * T33 — customer list with pagination and filtering.
- *
- * The page shows all registered customers with their activation codes,
- * usernames, and current status. Admin users can navigate through
- * pages and filter by username; auditors see the same read-only view.
- *
- * Each row links to the adjustment history for that customer (ADM-02).
- */
 interface CustomersPageProps {
   embedded?: boolean;
-  onOpenDevices?: (userId: string) => void;
-  /** C1：从客户详情一键进入该客户的会话视图（免手输 UUID）。 */
-  onOpenSessions?: (userId: string) => void;
   readOnly?: boolean;
 }
 
 export function CustomersPage({
   embedded = false,
-  onOpenDevices,
-  onOpenSessions,
   readOnly = false,
 }: CustomersPageProps = {}) {
   const [customers, setCustomers] = useState<CustomerListItem[]>([]);
@@ -75,103 +49,93 @@ export function CustomersPage({
   const [pageSize] = useState(20);
   const [total, setTotal] = useState(0);
   const [usernameDraft, setUsernameDraft] = useState("");
-  const [usernameFilter, setUsernameFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [createdFrom, setCreatedFrom] = useState("");
   const [createdTo, setCreatedTo] = useState("");
   const [balanceMin, setBalanceMin] = useState("");
   const [balanceMax, setBalanceMax] = useState("");
-  const [detailUserId, setDetailUserId] = useState<string | null>(null);
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+  const [filters, setFilters] = useState({
+    username: "",
+    status: "all",
+    createdFrom: "",
+    createdTo: "",
+    balanceMin: "",
+    balanceMax: "",
+  });
+  const requestId = useRef(0);
 
   const loadCustomers = useCallback(async () => {
+    const sequence = ++requestId.current;
     try {
       setLoading(true);
       setError("");
       const response = await listCustomers({
         limit: pageSize,
         offset,
-        username_filter: usernameFilter || undefined,
-        status: statusFilter === "all" ? undefined : statusFilter,
-        createdFrom: createdFrom || undefined,
-        createdTo: createdTo || undefined,
-        balanceMin: balanceMin ? Number(balanceMin) : undefined,
-        balanceMax: balanceMax ? Number(balanceMax) : undefined,
+        username_filter: filters.username || undefined,
+        status: filters.status === "all" ? undefined : filters.status,
+        createdFrom: filters.createdFrom || undefined,
+        createdTo: filters.createdTo || undefined,
+        balanceMin: filters.balanceMin ? Number(filters.balanceMin) : undefined,
+        balanceMax: filters.balanceMax ? Number(filters.balanceMax) : undefined,
       });
+      if (sequence !== requestId.current) return;
       setCustomers(response.items);
       setTotal(response.total);
     } catch (err) {
+      if (sequence !== requestId.current) return;
       setError(
         err instanceof Error && err.message
           ? `加载失败：${err.message}`
           : "加载失败：未知错误",
       );
     } finally {
-      setLoading(false);
+      if (sequence === requestId.current) setLoading(false);
     }
-  }, [
-    balanceMax,
-    balanceMin,
-    createdFrom,
-    createdTo,
-    offset,
-    pageSize,
-    statusFilter,
-    usernameFilter,
-  ]);
+  }, [filters, offset, pageSize]);
 
   useEffect(() => {
     loadCustomers();
+    return () => {
+      requestId.current += 1;
+    };
   }, [loadCustomers]);
 
   const handleFilterSubmit = (e: FormEvent) => {
     e.preventDefault();
     setOffset(0);
     setExpandedUserId(null);
-    setUsernameFilter(usernameDraft.trim());
+    setFilters({
+      username: usernameDraft.trim(),
+      status: statusFilter,
+      createdFrom,
+      createdTo,
+      balanceMin,
+      balanceMax,
+    });
   };
-
-  if (detailUserId !== null) {
-    return (
-      <div className="customers-page">
-        <header>
-          <h1>调账历史</h1>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setDetailUserId(null)}
-          >
-            ← 返回客户列表
-          </button>
-        </header>
-        <AdjustmentsPage userId={detailUserId} />
-      </div>
-    );
-  }
 
   const failedGenerations = customers.reduce(
     (sum, customer) => sum + (customer.generation_failed ?? 0),
-    0,
-  );
-  const attentionGenerations = customers.reduce(
-    (sum, customer) => sum + (customer.generation_attention ?? 0),
     0,
   );
   const inProgressGenerations = customers.reduce(
     (sum, customer) => sum + (customer.generation_in_progress ?? 0),
     0,
   );
-  const visibleCustomers = customers;
 
   const exportList = () => {
     void downloadCustomersCsv({
-      status: statusFilter === "all" ? undefined : statusFilter,
-      username: usernameFilter || undefined,
-      createdFrom: createdFrom || undefined,
-      createdTo: createdTo || undefined,
-      balanceMin: balanceMin ? Number(balanceMin) : undefined,
-      balanceMax: balanceMax ? Number(balanceMax) : undefined,
-    });
+      status: filters.status === "all" ? undefined : filters.status,
+      username: filters.username || undefined,
+      createdFrom: filters.createdFrom || undefined,
+      createdTo: filters.createdTo || undefined,
+      balanceMin: filters.balanceMin ? Number(filters.balanceMin) : undefined,
+      balanceMax: filters.balanceMax ? Number(filters.balanceMax) : undefined,
+    }).catch((cause: unknown) =>
+      setError(cause instanceof Error ? cause.message : "导出失败"),
+    );
   };
 
   const focusedCustomer =
@@ -186,9 +150,6 @@ export function CustomersPage({
         onChanged={() => void loadCustomers()}
         readOnly={readOnly}
         onBack={() => setExpandedUserId(null)}
-        onOpenAdjustments={() => setDetailUserId(focusedCustomer.user_id)}
-        onOpenDevices={onOpenDevices}
-        onOpenSessions={onOpenSessions}
       />
     );
   }
@@ -204,7 +165,10 @@ export function CustomersPage({
         </header>
       ) : null}
 
-      <form className="admin-toolbar" onSubmit={handleFilterSubmit}>
+      <form
+        className="admin-toolbar customer-list-filters"
+        onSubmit={handleFilterSubmit}
+      >
         <label className="admin-toolbar__field">
           <span>用户名筛选</span>
           <input
@@ -228,6 +192,7 @@ export function CustomersPage({
           <input
             aria-label="注册截止"
             type="date"
+            min={createdFrom || undefined}
             value={createdTo}
             onChange={(event) => setCreatedTo(event.target.value)}
           />
@@ -265,12 +230,14 @@ export function CustomersPage({
             <option value="revoked">已撤销</option>
           </select>
         </label>
-        <button className="admin-toolbar__secondary" type="submit">
-          筛选
-        </button>
-        <button type="button" onClick={exportList}>
-          导出列表 CSV
-        </button>
+        <div className="customer-list-filters__actions">
+          <button className="admin-toolbar__secondary" type="submit">
+            筛选
+          </button>
+          <button type="button" onClick={exportList}>
+            导出列表 CSV
+          </button>
+        </div>
       </form>
 
       <section aria-label="需要处理" className="admin-attention-strip">
@@ -279,16 +246,10 @@ export function CustomersPage({
           失败生成 <b>{failedGenerations}</b>
         </span>
         <span>
-          待关注生成 <b>{attentionGenerations}</b>
-        </span>
-        <span>
           处理中 <b>{inProgressGenerations}</b>
         </span>
         <small>数据范围：当前筛选页</small>
       </section>
-      <p className="admin-hint">
-        计费单位：积分；单价与充值兑换比例在系统设置中配置。
-      </p>
 
       {loading && <div className="loading">加载中...</div>}
 
@@ -298,14 +259,7 @@ export function CustomersPage({
         <div className="empty-state">暂无客户数据</div>
       )}
 
-      {!loading &&
-      !error &&
-      customers.length > 0 &&
-      visibleCustomers.length === 0 ? (
-        <div className="empty-state">当前状态下暂无客户</div>
-      ) : null}
-
-      {!loading && !error && visibleCustomers.length > 0 && (
+      {!loading && !error && customers.length > 0 && (
         <>
           <div className="table-scroll admin-table-card">
             <table
@@ -315,45 +269,45 @@ export function CustomersPage({
               <thead>
                 <tr>
                   <th>用户名</th>
-                  <th>姓名</th>
                   <th>客户 ID</th>
-                  <th>激活码</th>
                   <th>注册时间</th>
                   <th>状态</th>
-                  <th>设备占用</th>
                   <th>可用额度</th>
-                  <th>冻结</th>
                   <th>累计消耗</th>
                   <th>生成情况</th>
-                  <th>待关注</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleCustomers.map((customer) => (
+                {customers.map((customer) => (
                   <tr key={customer.user_id}>
-                    <td data-label="用户名">{customer.username}</td>
-                    <td data-label="姓名">{customer.display_name || "—"}</td>
-                    <td data-label="客户 ID">
-                      <code>{customer.user_id}</code>
+                    <td data-label="用户名">
+                      <span
+                        className="customer-cell-ellipsis"
+                        title={customer.username}
+                      >
+                        {customer.username}
+                      </span>
                     </td>
-                    <td data-label="激活码">
-                      <code>{customer.activation_code}</code>
+                    <td data-label="客户 ID">
+                      <CopyCustomerId value={customer.user_id} />
                     </td>
                     <td data-label="注册时间">
-                      {formatDateTime(customer.created_at)}
+                      <time
+                        className="customer-cell-date"
+                        dateTime={customer.created_at}
+                      >
+                        {formatDateTime(customer.created_at).split(" ")[0]}{" "}
+                        <small>
+                          {formatDateTime(customer.created_at).split(" ")[1]}
+                        </small>
+                      </time>
                     </td>
                     <td data-label="状态">
                       <CustomerStatusBadge status={customer.status} />
                     </td>
-                    <td data-label="设备占用">
-                      {customer.device_slots_used ?? 0} 台
-                    </td>
                     <td data-label="可用额度">
                       <strong>{customer.available_credits ?? 0} 积分</strong>
-                    </td>
-                    <td data-label="冻结">
-                      {customer.reserved_credits ?? 0} 积分
                     </td>
                     <td
                       aria-label={`${customer.username} 已结算消耗`}
@@ -362,15 +316,16 @@ export function CustomersPage({
                       {customer.credits_spent ?? 0} 积分
                     </td>
                     <td data-label="生成情况">
-                      <span>
-                        {customer.generation_succeeded ?? 0} /{" "}
-                        {customer.generation_total ?? 0}
-                      </span>{" "}
-                      · {customer.generation_failed ?? 0} 失败 ·{" "}
-                      {customer.generation_in_progress ?? 0} 进行中
-                    </td>
-                    <td data-label="待关注">
-                      {customer.generation_attention ?? 0}
+                      <div className="customer-cell-generation">
+                        <span>
+                          成功 {customer.generation_succeeded ?? 0} /{" "}
+                          {customer.generation_total ?? 0}
+                        </span>{" "}
+                        <small>
+                          失败 {customer.generation_failed ?? 0} · 进行中{" "}
+                          {customer.generation_in_progress ?? 0}
+                        </small>
+                      </div>
                     </td>
                     <td data-label="操作">
                       <button
@@ -395,9 +350,6 @@ export function CustomersPage({
             total={total}
             onPageChange={setOffset}
           />
-          {total > pageSize ? null : (
-            <p className="admin-hint">共 {total} 位客户。</p>
-          )}
         </>
       )}
     </div>
@@ -407,9 +359,6 @@ export function CustomersPage({
 type Customer360Snapshot = {
   orders: AdminRechargeOrder[];
   transactions: AdminWalletTransaction[];
-  devices: DeviceListItem[];
-  sessions: CustomerSessionListItem[];
-  adjustments: AdjustmentListItem[];
 };
 
 function Customer360Data({ userId }: { userId: string }) {
@@ -422,18 +371,12 @@ function Customer360Data({ userId }: { userId: string }) {
     void Promise.all([
       listAdminRechargeOrders({ userId, limit: 3, offset: 0 }),
       listAdminWalletTransactions({ userId, limit: 3, offset: 0 }),
-      listDevices({ userId, limit: 3, offset: 0 }),
-      listCustomerSessions(userId, { limit: 3, offset: 0 }),
-      listAdminAdjustments(userId, { limit: 3, offset: 0, sort: "desc" }),
     ])
-      .then(([orders, transactions, devices, sessions, adjustments]) => {
+      .then(([orders, transactions]) => {
         if (!cancelled) {
           setSnapshot({
             orders: orders.items,
             transactions: transactions.items,
-            devices: devices.items,
-            sessions: sessions.items,
-            adjustments: adjustments.items,
           });
         }
       })
@@ -455,7 +398,7 @@ function Customer360Data({ userId }: { userId: string }) {
     return <PageBanner tone="error">{error}</PageBanner>;
   }
   if (!snapshot) {
-    return <p className="admin-hint">正在拼装客户运营数据…</p>;
+    return <p className="admin-hint">正在加载…</p>;
   }
 
   return (
@@ -493,63 +436,6 @@ function Customer360Data({ userId }: { userId: string }) {
           <Customer360Empty />
         )}
       </Customer360Panel>
-
-      <Customer360Panel title="绑定设备">
-        {snapshot.devices.length ? (
-          snapshot.devices.map((device) => (
-            <div className="customer-360-row" key={device.device_id}>
-              <span>
-                槽位 {device.slot_no} · {device.display_name || "未命名设备"}
-              </span>
-              <span>{platformLabel(device.platform)}</span>
-              <DeviceStatusBadge
-                status={
-                  device.status === "BOUND"
-                    ? device.online
-                      ? "ONLINE"
-                      : "OFFLINE"
-                    : device.status
-                }
-              />
-              <small>
-                {formatDateTime(device.last_heartbeat_at ?? device.bound_at)}
-              </small>
-            </div>
-          ))
-        ) : (
-          <Customer360Empty />
-        )}
-      </Customer360Panel>
-
-      <Customer360Panel title="当前会话">
-        {snapshot.sessions.length ? (
-          snapshot.sessions.map((session) => (
-            <div className="customer-360-row" key={session.session_id}>
-              <span>{session.device_name || session.device_id}</span>
-              <span>{platformLabel(session.platform)}</span>
-              <span>Epoch {session.session_epoch}</span>
-              <small>租约至 {formatDateTime(session.lease_until)}</small>
-            </div>
-          ))
-        ) : (
-          <Customer360Empty />
-        )}
-      </Customer360Panel>
-
-      <Customer360Panel title="最近调账">
-        {snapshot.adjustments.length ? (
-          snapshot.adjustments.map((adjustment) => (
-            <div className="customer-360-row" key={adjustment.adjustment_id}>
-              <span>{adjustment.admin_username || "管理员"}</span>
-              <code>{adjustment.source_document_ref}</code>
-              <strong>+{adjustment.credits} 积分</strong>
-              <small>{formatDateTime(adjustment.created_at)}</small>
-            </div>
-          ))
-        ) : (
-          <Customer360Empty />
-        )}
-      </Customer360Panel>
     </section>
   );
 }
@@ -578,17 +464,11 @@ function CustomerDetailView({
   onChanged,
   readOnly,
   onBack,
-  onOpenAdjustments,
-  onOpenDevices,
-  onOpenSessions,
 }: {
   customer: CustomerListItem;
   onChanged: () => void;
   readOnly: boolean;
   onBack: () => void;
-  onOpenAdjustments: () => void;
-  onOpenDevices?: (userId: string) => void;
-  onOpenSessions?: (userId: string) => void;
 }) {
   return (
     <div
@@ -605,17 +485,15 @@ function CustomerDetailView({
       <section className="customer-detail-hero">
         <div className="customer-detail-identity">
           <div aria-hidden="true" className="customer-detail-avatar">
-            {customer.display_name?.trim().slice(0, 1) ||
-              customer.username.slice(0, 1)}
+            {customer.username.slice(0, 1)}
           </div>
           <div>
             <div className="customer-detail-title">
               <h1>{customer.username}</h1>
               <CustomerStatusBadge status={customer.status} />
             </div>
-            <strong>{customer.display_name || "未设置姓名"}</strong>
             <p>
-              客户 ID <code>{customer.user_id}</code>
+              客户 ID <CopyCustomerId value={customer.user_id} />
             </p>
             <p>注册时间 {formatDateTime(customer.created_at)}</p>
           </div>
@@ -633,32 +511,6 @@ function CustomerDetailView({
               后台加款
             </button>
           ) : null}
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={onOpenAdjustments}
-          >
-            调账历史
-          </button>
-          {onOpenDevices ? (
-            <button
-              className="btn-secondary"
-              type="button"
-              onClick={() => onOpenDevices(customer.user_id)}
-            >
-              查看设备
-            </button>
-          ) : null}
-          {onOpenSessions ? (
-            <button
-              className="btn-secondary"
-              type="button"
-              onClick={() => onOpenSessions(customer.user_id)}
-            >
-              查看会话
-            </button>
-          ) : null}
-          <small>写操作需填写原因与来源单号，全程留痕审计</small>
         </div>
       </section>
 
@@ -666,11 +518,6 @@ function CustomerDetailView({
         <article>
           <span>可用额度</span>
           <strong>{customer.available_credits ?? 0}</strong>
-          <small>积分</small>
-        </article>
-        <article>
-          <span>冻结额度</span>
-          <strong>{customer.reserved_credits ?? 0}</strong>
           <small>积分</small>
         </article>
         <article>
@@ -683,33 +530,6 @@ function CustomerDetailView({
           <strong>{customer.generation_total ?? 0}</strong>
           <small>条</small>
         </article>
-      </section>
-
-      <section className="customer-detail-section customer-activation-summary">
-        <h2>激活与账户</h2>
-        <dl className="customer-detail-meta">
-          <div>
-            <dt>激活码</dt>
-            <dd>
-              <code>{customer.activation_code}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>登录设备</dt>
-            <dd>{customer.device_slots_used ?? 0} 台 · 数量不限</dd>
-          </div>
-          <div>
-            <dt>生成成功</dt>
-            <dd>
-              {customer.generation_succeeded ?? 0}/
-              {customer.generation_total ?? 0}
-            </dd>
-          </div>
-          <div>
-            <dt>异常关注</dt>
-            <dd>{customer.generation_attention ?? 0} 条</dd>
-          </div>
-        </dl>
       </section>
 
       <AccountCreditPanel
@@ -725,13 +545,6 @@ function CustomerDetailView({
       <div className="customer-detail-settings-grid">
         {customer.activation_code !== "账号注册" && (
           <CustomerPriceEditor readOnly={readOnly} userId={customer.user_id} />
-        )}
-        {customer.activation_code !== "账号注册" && (
-          <LegacyCreditPolicyManager
-            onChanged={onChanged}
-            userId={customer.user_id}
-            readOnly={readOnly}
-          />
         )}
         <FreeCreditsSection
           onChanged={onChanged}
@@ -844,9 +657,6 @@ function CustomerPriceEditor({
   return (
     <section aria-label="客户售价" className="customer-detail-section">
       <h3>客户售价</h3>
-      <p className="admin-hint">
-        历史充值兼容配置；启用系统积分计价后，以系统设置中的积分兑换比例为准。
-      </p>
       {loading ? <p className="admin-hint">正在读取客户售价…</p> : null}
       {pricing ? (
         <p className="admin-hint">
@@ -898,11 +708,11 @@ function CustomerPriceEditor({
         }
         description={
           pendingWrite?.kind === "reset"
-            ? "将清除该客户的独立定价，恢复为全局默认售价。原因将写入审计日志。"
-            : `将把该客户售价改为 ${pendingWrite ? formatFen(pendingWrite.unitPriceFen) : ""} / 秒（仅影响该客户之后的充值换算）。原因将写入审计日志。`
+            ? "将清除该客户的独立定价，恢复为全局默认售价。"
+            : `将把该客户售价改为 ${pendingWrite ? formatFen(pendingWrite.unitPriceFen) : ""} / 秒（仅影响该客户之后的充值换算）。`
         }
         error={dialogError}
-        level="reason"
+        level="standard"
         open={pendingWrite !== null}
         title={
           pendingWrite?.kind === "reset" ? "恢复全局默认售价" : "修改客户售价"
@@ -911,7 +721,13 @@ function CustomerPriceEditor({
           setPendingWrite(null);
           setDialogError("");
         }}
-        onConfirm={(reason: string) => void persistPrice(reason)}
+        onConfirm={() =>
+          void persistPrice(
+            pendingWrite?.kind === "reset"
+              ? "恢复客户默认售价"
+              : "更新客户售价",
+          )
+        }
       />
     </section>
   );
@@ -919,7 +735,7 @@ function CustomerPriceEditor({
 
 /**
  * 赠送积分发放（FREE_GRANT，054）：为账号发放无收款积分。
- * 走 T23 审计调账闭环——账面金额为 0、钱包照增、来源单与原因必填。
+ * 走 T23 审计调账闭环——账面金额为 0、钱包照增、自动单号与事由留痕。
  */
 function FreeCreditsSection({
   userId,
@@ -932,63 +748,59 @@ function FreeCreditsSection({
 }) {
   const [credits, setCredits] = useState("");
   const [sourceType, setSourceType] = useState("FREE_GRANT");
-  const [sourceRef, setSourceRef] = useState("");
+  const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogError, setDialogError] = useState("");
   const [notice, setNotice] = useState("");
-  const retry = useRef<{ fingerprint: string; key: string } | null>(null);
+  const retry = useRef<{
+    fingerprint: string;
+    key: string;
+    sourceRef: string;
+  } | null>(null);
+  const saving = useRef(false);
 
   function requestGrant(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (readOnly || saving.current) return;
     const creditsNumber = Number(credits);
     if (!Number.isSafeInteger(creditsNumber) || creditsNumber <= 0) {
       setDialogError("赠送积分必须是大于 0 的整数");
-      setDialogOpen(true);
       return;
     }
-    if (!sourceRef.trim()) {
-      setDialogError("请填写来源单号（运营审批或活动编号）");
-      setDialogOpen(true);
+    if (!reason.trim()) {
+      setDialogError("请填写事由");
       return;
+    }
+    const fingerprint = JSON.stringify([
+      userId,
+      creditsNumber,
+      sourceType,
+      reason.trim(),
+    ]);
+    if (retry.current?.fingerprint !== fingerprint) {
+      const key = crypto.randomUUID();
+      retry.current = { fingerprint, key, sourceRef: `GRANT-${key}` };
     }
     setDialogError("");
     setDialogOpen(true);
   }
 
-  async function submitGrant(reason: string) {
-    if (submitting || readOnly) {
-      return;
-    }
+  async function submitGrant() {
+    if (saving.current || readOnly || !retry.current) return;
     const creditsNumber = Number(credits);
-    if (
-      !Number.isSafeInteger(creditsNumber) ||
-      creditsNumber <= 0 ||
-      !sourceRef.trim()
-    ) {
-      setDialogError("请填写有效整数积分和来源单号");
-      return;
-    }
-    const fingerprint = JSON.stringify({
-      userId,
-      creditsNumber,
-      sourceType,
-      sourceRef: sourceRef.trim(),
-      reason,
-    });
-    if (retry.current?.fingerprint !== fingerprint)
-      retry.current = { fingerprint, key: crypto.randomUUID() };
-    const key = retry.current.key;
+    const { key, sourceRef } = retry.current;
+    saving.current = true;
     setSubmitting(true);
     try {
       const result = await createCustomerAdjustment(
         userId,
         {
           sourceDocumentType: sourceType,
-          sourceDocumentRef: sourceRef.trim(),
+          sourceDocumentRef: sourceRef,
           credits: creditsNumber,
         },
-        reason,
+        reason.trim(),
         key,
       );
       setNotice(
@@ -996,7 +808,7 @@ function FreeCreditsSection({
       );
       onChanged();
       setCredits("");
-      setSourceRef("");
+      setReason("");
       retry.current = null;
       setDialogOpen(false);
       setDialogError("");
@@ -1007,6 +819,7 @@ function FreeCreditsSection({
           : "发放赠送积分失败",
       );
     } finally {
+      saving.current = false;
       setSubmitting(false);
     }
   }
@@ -1027,15 +840,15 @@ function FreeCreditsSection({
       id="customer-free-grant"
     >
       <h3>赠送积分</h3>
-      <p className="admin-hint">
-        发放的赠送积分直接进入该账号钱包，生成视频时与充值积分同等冻结与结算；
-        账面金额记 0，来源单号与原因写入审计。
-      </p>
       {notice ? <PageBanner tone="notice">{notice}</PageBanner> : null}
+      {dialogError && !dialogOpen ? (
+        <PageBanner tone="error">{dialogError}</PageBanner>
+      ) : null}
       <form className="admin-form" onSubmit={requestGrant}>
         <label>
           积分来源
           <select
+            disabled={dialogOpen}
             value={sourceType}
             onChange={(event) => {
               setSourceType(event.target.value);
@@ -1049,6 +862,7 @@ function FreeCreditsSection({
         <label>
           发放积分
           <input
+            disabled={dialogOpen}
             min={1}
             placeholder="例如：10"
             step={1}
@@ -1058,29 +872,40 @@ function FreeCreditsSection({
           />
         </label>
         <label>
-          来源单号
+          事由
           <input
-            placeholder="必填，例如：PROMO-2026-09-001"
-            value={sourceRef}
-            onChange={(event) => setSourceRef(event.target.value)}
+            disabled={dialogOpen}
+            placeholder="例如：新客赠送、活动奖励或售后补偿"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
           />
         </label>
-        <button type="submit">发放赠送积分</button>
+        <button type="submit" disabled={dialogOpen}>
+          发放赠送积分
+        </button>
       </form>
 
       <ConfirmDialog
         busy={submitting}
         confirmLabel="确认发放"
-        description="赠送积分会立即进入客户钱包并可立即用于生成视频。原因将写入审计日志。"
+        description={
+          <>
+            即将发放 {credits} 积分。
+            <br />
+            事由：{reason.trim()}
+            <br />
+            来源单号：{retry.current?.sourceRef}
+          </>
+        }
         error={dialogError}
-        level="reasonAndAck"
+        level="standard"
         open={dialogOpen}
         title="发放赠送积分"
         onClose={() => {
           setDialogOpen(false);
           setDialogError("");
         }}
-        onConfirm={(reason: string) => void submitGrant(reason)}
+        onConfirm={() => void submitGrant()}
       />
     </section>
   );

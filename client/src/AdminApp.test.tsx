@@ -293,9 +293,16 @@ function installFetch(options?: {
     ) {
       return jsonResponse(settings.billing);
     }
-    if (url.endsWith("/api/control/settings/providers/metaso")) {
+    if (url.endsWith("/api/control/settings/h3-accounts")) {
       return jsonResponse({
-        provider: "metaso",
+        accounts: [],
+        total_concurrency: 0,
+        managed: false,
+      });
+    }
+    if (url.endsWith("/api/control/settings/providers/apilio")) {
+      return jsonResponse({
+        provider: "apilio",
         configured: true,
         config: { api_key: MASKED_SERVICE_KEY },
       });
@@ -586,12 +593,8 @@ describe("AdminApp", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "保存 ZPay 设置" }));
 
-    // A-01：保存走 reasonAndAck 确认框，操作原因透传审计
     await screen.findByRole("dialog", { name: "保存 ZPay 支付设置" });
-    fireEvent.change(screen.getByPlaceholderText("请填写可审计的操作原因"), {
-      target: { value: "商户换绑，工单 IT-42" },
-    });
-    fireEvent.click(screen.getByLabelText("我已知晓该操作的影响"));
+    expect(screen.queryByLabelText("操作原因")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认保存 ZPay 设置" }));
 
     await waitFor(() => {
@@ -617,7 +620,7 @@ describe("AdminApp", () => {
         key: "",
         enabled_channels: ["alipay", "wxpay"],
         confirm: true,
-        reason: "商户换绑，工单 IT-42",
+        reason: "保存 ZPay 设置",
       }),
     );
     expect(
@@ -636,12 +639,12 @@ describe("AdminApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
     fireEvent.click(screen.getByRole("tab", { name: "服务配置" }));
     expect(
-      await screen.findByRole("heading", { name: "视频生成" }),
+      await screen.findByRole("heading", { name: "视频生成 · 多账号" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "腾讯云存储" }),
     ).toBeInTheDocument();
-    fireEvent.change(screen.getAllByLabelText("API Key")[0], {
+    fireEvent.change(screen.getByLabelText("图像模型 API Key"), {
       target: { value: SERVICE_KEY_TEXT },
     });
     fireEvent.click(screen.getAllByRole("button", { name: "保存" })[0]);
@@ -650,23 +653,23 @@ describe("AdminApp", () => {
       expect(
         fetchMock.mock.calls.some(
           ([url, options]) =>
-            String(url).endsWith("/api/control/settings/providers/metaso") &&
+            String(url).endsWith("/api/control/settings/providers/apilio") &&
             options?.method === "PUT",
         ),
       ).toBe(true),
     );
     const saveCall = fetchMock.mock.calls.find(
       ([url, options]) =>
-        String(url).endsWith("/api/control/settings/providers/metaso") &&
+        String(url).endsWith("/api/control/settings/providers/apilio") &&
         options?.method === "PUT",
     );
     const saveRequest = saveCall?.[1] as RequestInit | undefined;
     expect(saveRequest).toBeTruthy();
     expect(saveCall?.[1]?.body).toBe(
       JSON.stringify({
-        config: { api_key: SERVICE_KEY_TEXT },
+        config: { api_key: SERVICE_KEY_TEXT, analysis_api_key: "" },
         confirm: true,
-        reason: "更新 metaso 服务配置",
+        reason: "更新 apilio 服务配置",
       }),
     );
     expect(
@@ -675,18 +678,15 @@ describe("AdminApp", () => {
     expect(screen.queryByText(/metaso|minimax|cos/i)).toBeNull();
   });
 
-  it("opens activation management only after account-password login", async () => {
+  it("opens customer management only after account-password login", async () => {
     installFetch();
 
     render(<AdminApp />);
     await signInWithPassword();
     fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
-    fireEvent.click(await screen.findByRole("tab", { name: "激活码" }));
-    fireEvent.click(screen.getByRole("button", { name: "生成激活码" }));
-
     expect(
-      await screen.findByRole("heading", { name: "生成激活码" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("tab", { name: "激活码" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("heading", { level: 1, name: "客户管理" }),
     ).toBeInTheDocument();
@@ -756,17 +756,6 @@ describe("AdminApp", () => {
     );
   });
 
-  it("opens the actual issuance form from the overview shortcut", async () => {
-    installFetch({ session: "valid" });
-    render(<AdminApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "快速发码" }));
-    expect(screen.getByRole("tab", { name: "激活码" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    expect(screen.getByLabelText(/初始秒数/)).toBeInTheDocument();
-  });
-
   it("renders the merged seven-item navigation with per-page tabs", async () => {
     installFetch({ session: "valid" });
 
@@ -794,9 +783,16 @@ describe("AdminApp", () => {
     expect(screen.getByRole("tab", { name: "成本明细" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "客户管理" }));
-    expect(screen.getByRole("tab", { name: "客户列表" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "激活码" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "设备与会话" }));
+    expect(
+      screen.queryByRole("tab", { name: "在线会话" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "激活码" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("当前模块")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "设备与会话" }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "审计中心" }));
     expect(screen.getByRole("tab", { name: "审计日志" })).toBeInTheDocument();
@@ -804,7 +800,9 @@ describe("AdminApp", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "系统设置" }));
     expect(screen.getByRole("tab", { name: "支付与价格" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "成本与售价" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "API 端点与价格" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "服务配置" })).toBeInTheDocument();
   });
 

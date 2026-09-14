@@ -56,7 +56,7 @@ export function AccountCreditPanel({
         retry.current.key,
       );
       onChanged?.();
-      setNotice("原订单已核验到账；重复回调不会再次增加积分。");
+      setNotice("原订单已核验到账。");
       setConfirm(false);
       retry.current = null;
       setRefresh((value) => value + 1);
@@ -68,32 +68,24 @@ export function AccountCreditPanel({
   }
   return (
     <section className="customer-detail-section" aria-label="账号积分查账">
-      <h3>账号积分与 Token 消费</h3>
-      {error && (
-        <PageBanner tone="error">
-          {error}
-          <button
-            type="button"
-            onClick={() => setRefresh((value) => value + 1)}
-          >
-            重新加载
-          </button>
-        </PageBanner>
-      )}
-      {notice && <PageBanner tone="notice">{notice}</PageBanner>}
-      {!data && !error && <p role="status">正在加载账号账目…</p>}
-      {data && (
-        <>
-          <p>
-            可用 {data.available_credits} 积分 · 待结算 {data.reserved_credits}{" "}
-            积分 · 累计消费 {data.total_consumed_credits} 积分
-          </p>
-          <p>
-            软件操作消费 {data.software_consumed_credits} 积分 ·
-            历史或内部来源消费 {data.other_consumed_credits} 积分
-          </p>
+      <details className="customer-account-tools">
+        <summary>充值核验与接口用量</summary>
+        {error && (
+          <PageBanner tone="error">
+            {error}
+            <button
+              type="button"
+              onClick={() => setRefresh((value) => value + 1)}
+            >
+              重新加载
+            </button>
+          </PageBanner>
+        )}
+        {notice && <PageBanner tone="notice">{notice}</PageBanner>}
+        {!data && !error && <p role="status">正在加载账号账目…</p>}
+        {data && data.tokens.length > 0 && (
           <div className="admin-table-wrap">
-            <table>
+            <table className="admin-data-table">
               <thead>
                 <tr>
                   <th>Token 名称</th>
@@ -114,41 +106,33 @@ export function AccountCreditPanel({
               </tbody>
             </table>
           </div>
-          {!data.tokens.length && <p>该账号暂无 Token。</p>}
-          <p className="admin-hint">
-            Token 更新前后的消费合并统计。后台只显示元数据。
-          </p>
-        </>
-      )}
-      {!readOnly && (
-        <form
-          className="admin-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (order.trim()) {
-              setError("");
-              setConfirm(true);
-            }
-          }}
-        >
-          <h4>充值漏到账核验</h4>
-          <p>
-            填写该账号原充值订单号，由服务端查询支付网关。只有核验成功才按原订单积分补发。
-          </p>
-          <label>
-            原商户订单号
-            <input
-              value={order}
-              required
-              disabled={busy}
-              onChange={(event) => setOrder(event.target.value)}
-            />
-          </label>
-          <button type="submit" disabled={busy}>
-            核验原订单并补发
-          </button>
-        </form>
-      )}
+        )}
+        {!readOnly && (
+          <form
+            className="admin-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (order.trim()) {
+                setError("");
+                setConfirm(true);
+              }
+            }}
+          >
+            <label>
+              原商户订单号
+              <input
+                value={order}
+                required
+                disabled={busy}
+                onChange={(event) => setOrder(event.target.value)}
+              />
+            </label>
+            <button type="submit" disabled={busy}>
+              核验原订单并补发
+            </button>
+          </form>
+        )}
+      </details>
       <ConfirmDialog
         open={confirm}
         busy={busy}

@@ -55,7 +55,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260913T1600_shared_viral_media"
+HEAD_REVISION = "20260914T0000_local_joint_merge"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -99,18 +99,18 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # 例如 triggers 用 information_schema.triggers 的**行数**（BEFORE UPDATE 与
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
-    "tables": 90,
-    "columns": 1064,
+    "check_constraints": 294,
+    "columns": 1078,
+    "foreign_keys": 175,
     "identity_columns": 0,
-    "sequences": 4,
     "jsonb_columns": 0,
-    "timestamptz_columns": 35,
-    "triggers": 27,
     "partial_indexes": 29,
-    "unique_constraints": 33,
-    "check_constraints": 290,
-    "foreign_keys": 173,
-    "primary_keys": 90,
+    "primary_keys": 92,
+    "sequences": 4,
+    "tables": 92,
+    "timestamptz_columns": 39,
+    "triggers": 27,
+    "unique_constraints": 34,
 }
 
 # head 的表名全集。counts 只能证明「数量没漂」，证明不了「同一批表」：
@@ -177,6 +177,8 @@ HEAD_TABLE_NAMES = (
     "generation_batches",
     "generation_task_operations",
     "generation_tasks",
+    "h3_provider_accounts",
+    "h3_provider_task_accounts",
     "internal_access_tokens",
     "legacy_credit_policy",
     "operation_cost_rates",
@@ -206,11 +208,11 @@ HEAD_TABLE_NAMES = (
     "user_queue_cursors",
     "users",
     "versions",
-    "viral_fetch_state",
-    "viral_import_tasks",
     "viral_collection_batches",
     "viral_collection_charges",
     "viral_collection_members",
+    "viral_fetch_state",
+    "viral_import_tasks",
     "viral_link_resolution_receipts",
     "viral_media_preparations",
     "viral_refresh_tasks",
@@ -229,7 +231,7 @@ HEAD_TABLE_NAMES = (
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
 # CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
-HEAD_SCHEMA_DIGEST = "0a6489a4af081348915575cb7c3ef76a11e0199f3f5714137226ed2f6526d419"
+HEAD_SCHEMA_DIGEST = "8cd5f4f9bebe47e375ec8c3b97305b10804c69ddba507dc63fb83d4c7998db4f"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (
@@ -450,11 +452,11 @@ def _is_ancestor(script: ScriptDirectory, candidate: str, target: str) -> bool:
     return False
 
 
-def test_migration_chain_has_single_linear_head() -> None:
-    """单 head + 完全线性（无分支点）。
+def test_migration_chain_has_single_head_with_registered_merge() -> None:
+    """Only the registered post-release merge may join the two installed branches.
 
-    多 head 会让 ``alembic upgrade head`` 变成歧义命令；分支点会让「已发布链」
-    不再唯一，从而让冻结哈希失去意义。
+    The published base..055 chain remains strictly linear and byte-frozen in the
+    following test. Additional or changed merge parents must still fail closed.
     """
     script = _script_directory()
     heads = script.get_heads()
@@ -466,7 +468,12 @@ def test_migration_chain_has_single_linear_head() -> None:
         for rev in revisions
         if isinstance(rev.down_revision, tuple)
     ]
-    assert not branch_points, f"migration chain must stay linear, found branches {branch_points}"
+    assert branch_points == [
+        (
+            "20260914T0000_local_joint_merge",
+            ("20260913T1600_shared_viral_media", "20260913T1825_h3_account_pool"),
+        )
+    ], f"unregistered migration merge: {branch_points}"
 
     roots = [rev.revision for rev in revisions if rev.down_revision is None]
     assert len(roots) == 1, f"expected exactly one base revision, got {roots}"
