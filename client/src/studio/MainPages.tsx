@@ -1432,7 +1432,9 @@ export function TaskDetailPage() {
         ? "完整口播音频"
         : task.scriptVersion
           ? `终稿 V${task.scriptVersion}`
-          : "项目分镜",
+          : task.backendKind === "oral_task"
+            ? "文案口播"
+            : "项目分镜",
     ],
     ["IP", person?.name || "—"],
     ...(task.driverMode !== "audio"
@@ -1449,7 +1451,7 @@ export function TaskDetailPage() {
       person?.avatars.find((avatar) => avatar.id === task.avatarId)?.name ||
         "—",
     ],
-    ["提交时间", task.submitted],
+    ["提交时间", formatTaskTime(task.submitted)],
     ["资产状态", result?.saved ? "已保存到素材库" : "以任务返回结果为准"],
   ];
   const recreate = (page: "copy" | "oral" | "replica") => {

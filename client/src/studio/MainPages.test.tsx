@@ -1045,6 +1045,12 @@ describe("V1.4 工作台对齐网格", () => {
 });
 
 describe("formatTaskTime", () => {
+  it("PostgreSQL 微秒及短时区偏移与标准 ISO 时间一致", () => {
+    const reference = new Date("2026-09-14T06:00:00Z");
+    expect(formatTaskTime("2026-09-14 05:17:11.591133+00", reference)).toBe(
+      formatTaskTime("2026-09-14T05:17:11.591Z", reference),
+    );
+  });
   const now = new Date("2026-09-06T10:00:00");
 
   it("当天显示“今天 HH:mm”", () => {
