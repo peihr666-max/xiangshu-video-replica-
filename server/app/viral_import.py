@@ -382,14 +382,9 @@ def prepare_viral_import_task(
             "该爆款视频当前不可用于创作。",
             retryable=False,
         )
-    verified_audio = bool(
-        video.audio_url
-        and video.native.get("link_resolved") is True
-        and video.native.get("source_audio_verified") is True
-    )
-    prefer: Literal["audio", "video"] = (
-        "audio" if lease.purpose == "copy" and verified_audio else "video"
-    )
+    # A resolver's standalone audio may be background music. The complete video
+    # is the authoritative source for both replication and speech extraction.
+    prefer: Literal["audio", "video"] = "video"
     try:
         client = viral_source_client_from_settings(conn)
     except ViralSourceUnavailable:

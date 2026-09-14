@@ -773,7 +773,7 @@ def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
 
         def request(self, url: str, *, headers: Any) -> bytes:
             self.calls += 1
-            return b'{"code":0,"data":{"note_id":"66e012345678901234abcdef","video":["https://cdn.example/note.mp4"]}}'
+            return b'{"code":0,"data":{"note_id":"66e012345678901234abcdef","video":["https://cdn.example/note.mp4"],"audio":["https://cdn.example/background-music.m4a"]}}'
 
     storage = FakeStorageAdapter(provider="fake", bucket="private")
 
@@ -817,7 +817,7 @@ def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
         "Authorization": "Bearer " + session["session_token"],
         "Idempotency-Key": "xhs-resolve",
     }
-    payload = {"url": "https://xhslink.com/a/local-contract", "purpose": "replica"}
+    payload = {"url": "https://xhslink.com/a/local-contract", "purpose": "copy"}
     resolved = client.post("/api/viral/link-resolutions", headers=headers, json=payload)
     assert resolved.status_code == 200, resolved.text
     replay = client.post("/api/viral/link-resolutions", headers=headers, json=payload)
@@ -834,7 +834,7 @@ def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
     assert item["platform"] == "xiaohongshu"
     assert item["videoId"] == "66e012345678901234abcdef"
     headers["Idempotency-Key"] = resolved.json()["importIdempotencyKey"]
-    task_body = {"platform": item["platform"], "videoId": item["videoId"], "purpose": "replica"}
+    task_body = {"platform": item["platform"], "videoId": item["videoId"], "purpose": "copy"}
     imported = client.post("/api/viral/videos/import-tasks", headers=headers, json=task_body)
     assert imported.status_code == 202, imported.text
     repeated = client.post("/api/viral/videos/import-tasks", headers=headers, json=task_body)

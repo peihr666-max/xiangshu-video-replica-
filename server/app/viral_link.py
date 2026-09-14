@@ -249,7 +249,7 @@ class DouyidouLinkClient:
             payload = {}
         video_url = _first_url(payload.get("video"))
         audio_url = _first_url(payload.get("audio"))
-        if not video_url and (purpose == "replica" or not audio_url):
+        if not video_url:
             raise ViralLinkError(
                 422,
                 "VIRAL_LINK_MEDIA_MISSING",
