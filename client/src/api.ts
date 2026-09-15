@@ -4448,6 +4448,18 @@ async function requestGenerationJson<T>(
 
 function generationRequestError(error: unknown, errorPrefix: string): Error {
   const { status, code } = error as RequestError;
+  const archiveMessage =
+    status === 409 && code === "RESULT_ARCHIVE_IN_PROGRESS"
+      ? "成片正在保存，请稍后刷新任务核对；不会重新生成或扣费。"
+      : status === 409 && code === "RESULT_ARCHIVE_LEASE_LOST"
+        ? "本次保存已中断，请刷新任务核对后再试；不会重新生成或扣费。"
+        : null;
+  if (archiveMessage) {
+    const mapped = new Error(archiveMessage) as RequestError;
+    mapped.status = status;
+    mapped.code = code;
+    return mapped;
+  }
   const referenceMessage =
     status === 422 && code === "INDEPENDENT_REFERENCE_DURATION_INVALID"
       ? "参考视频/音频每段须为2–15秒；缺少时长的历史素材请重新上传后选取。"

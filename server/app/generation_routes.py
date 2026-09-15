@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
+from app.db_pg import pg_transaction
+from app.db_portable import BusinessConnection
 from app.generation import (
     ApplySavedPromptRequest,
     BatchResult,
@@ -42,6 +44,7 @@ from app.generation import (
     VersionState,
     apply_saved_prompt,
     cancel_generation_batch,
+    claim_generation_result_archive,
     compile_prompt_version,
     confirm_generation_task_not_charged,
     create_generation_batch,
@@ -58,11 +61,12 @@ from app.generation import (
     load_generation_reconcile_operation,
     lock_prompt_version,
     persist_generation_result_archive,
-    prepare_generation_result_archive,
     preview_prompt_text,
     regenerate_generation_batch,
     regenerate_generation_task,
+    release_generation_result_archive_claim,
     rename_generation_batch,
+    renew_generation_result_archive_claim,
     require_batch_access,
     retry_generation_task,
     revise_prompt_version,
@@ -757,9 +761,10 @@ def read_generation_task_preview_url(
 
 @router.post("/generation-tasks/{task_id}/archive", response_model=TaskResult)
 def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaStorage) -> TaskResult:
+    prepared = None
     try:
         with db.write() as (conn, actor):
-            prepared = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
+            prepared = claim_generation_result_archive(conn, actor=actor, task_id=task_id)
             if prepared["result_asset_id"]:
                 return get_task_result(conn, task_id)
             provider = h3_provider_for_task(conn, str(prepared["provider"]), task_id=task_id)
@@ -770,6 +775,10 @@ def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaSto
         metadata = FFprobeVideoProbe().probe(content, filename="result.mp4")
         if not math.isfinite(metadata.duration_seconds) or metadata.duration_seconds <= 0:
             raise VideoProbeFailed("invalid video duration")
+        # Check ownership/session after the download and before CPU-heavy work.
+        with db.write() as (conn, actor):
+            renewed = renew_generation_result_archive_claim(conn, actor=actor, prepared=prepared)
+        prepared = renewed
         duration_seconds = metadata.duration_seconds
         normalization_metadata = None
         snapshot = json.loads(str(prepared["prompt_snapshot_json"] or "{}"))
@@ -801,11 +810,24 @@ def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaSto
                 "transformed": normalized.transformed,
             }
         digest = hashlib.sha256(content).hexdigest()
+        # No DB transaction stays open during normalization or object upload.
+        with db.write() as (conn, actor):
+            renewed = renew_generation_result_archive_claim(conn, actor=actor, prepared=prepared)
+        prepared = renewed
         stored = storage.put_object(
             f"generation-results/{task_id}/{digest}.mp4",
             content,
             content_type="video/mp4",
         )
+        with db.write() as (conn, actor):
+            return persist_generation_result_archive(
+                conn,
+                actor=actor,
+                prepared=prepared,
+                stored=stored,
+                duration_seconds=duration_seconds,
+                normalization_metadata=normalization_metadata,
+            )
     except (
         H3ProviderFailed,
         H3ProviderSettingsUnavailable,
@@ -823,15 +845,18 @@ def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaSto
                 "message": "成片保存暂时失败，请重试；不会重新生成或扣费。",
             },
         ) from exc
-    with db.write() as (conn, actor):
-        return persist_generation_result_archive(
-            conn,
-            actor=actor,
-            prepared=prepared,
-            stored=stored,
-            duration_seconds=duration_seconds,
-            normalization_metadata=normalization_metadata,
-        )
+    finally:
+        if prepared is not None and not prepared["result_asset_id"]:
+            try:
+                # A revoked session must not strand its claim. This internal
+                # transaction can only release the exact server-created lease.
+                with pg_transaction() as raw:
+                    release_generation_result_archive_claim(
+                        BusinessConnection.postgres(raw), prepared=prepared
+                    )
+            except Exception as exc:
+                # Preserve the original 401/409/503; expiry still permits recovery.
+                logger.warning("manual archive claim cleanup failed: %s", type(exc).__name__)
 
 
 @router.post("/generation-tasks/{task_id}/retry", response_model=TaskResult)

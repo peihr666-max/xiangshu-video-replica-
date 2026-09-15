@@ -5112,6 +5112,8 @@ def reschedule_generation_poll(
                 ) <= now() - (%s * interval '1 second') AS timed_out
             FROM generation_tasks
             WHERE id = %s AND status = 'RUNNING'
+              AND locked_by = %s AND locked_until = %s
+              AND superseded_by_task_id IS NULL
             FOR UPDATE
         )
         UPDATE generation_tasks AS task
@@ -5143,6 +5145,8 @@ def reschedule_generation_poll(
         (
             GENERATION_MAX_POLL_AGE_SECONDS,
             str(lease["id"]),
+            str(lease["locked_by"]),
+            str(lease["locked_until"]),
             delay_seconds,
         ),
     ).fetchone()
@@ -5656,6 +5660,9 @@ def _refresh_batch_status_in_transaction(
     )
 
 
+MANUAL_ARCHIVE_LEASE_SECONDS = 600
+
+
 def prepare_generation_result_archive(
     conn: BusinessConnection, *, actor: CurrentUser, task_id: str
 ) -> dict[str, Any]:
@@ -5694,6 +5701,91 @@ def prepare_generation_result_archive(
     return dict(row)
 
 
+def claim_generation_result_archive(
+    conn: BusinessConnection, *, actor: CurrentUser, task_id: str
+) -> dict[str, Any]:
+    """Claim only a completed result; ordinary workers cannot consume this lease."""
+    prepared = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
+    if prepared["result_asset_id"]:
+        return prepared
+    claimed = conn.execute(
+        """UPDATE generation_tasks
+           SET locked_by=%s,
+               locked_until=(clock_timestamp()+%s*interval '1 second')::text,
+               updated_at=CURRENT_TIMESTAMP
+           WHERE id=%s AND status='SUCCEEDED' AND archive_status IN ('DIRECT','ARCHIVED')
+             AND result_asset_id IS NULL AND superseded_by_task_id IS NULL
+             AND (locked_by IS NULL OR locked_until IS NULL
+                  OR locked_until::timestamptz <= clock_timestamp())
+           RETURNING id""",
+        (f"archive:{uuid4()}", MANUAL_ARCHIVE_LEASE_SECONDS, task_id),
+    ).fetchone()
+    current = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
+    if claimed is None and not current["result_asset_id"]:
+        raise generation_error(
+            409, "RESULT_ARCHIVE_IN_PROGRESS", "同一成片正在保存中，请稍后刷新任务核对。"
+        )
+    return current
+
+
+def _require_archive_source_unchanged(current: dict[str, Any], prepared: dict[str, Any]) -> None:
+    if any(
+        current[key] != prepared[key]
+        for key in ("provider_result_url", "project_id", "prompt_snapshot_json")
+    ):
+        raise generation_error(409, "RESULT_CHANGED", "成片记录已变化，请刷新后重试。")
+
+
+def _archive_lease_lost() -> HTTPException:
+    return generation_error(
+        409, "RESULT_ARCHIVE_LEASE_LOST", "本次保存处理权已失效，请刷新核对后重试。"
+    )
+
+
+def renew_generation_result_archive_claim(
+    conn: BusinessConnection, *, actor: CurrentUser, prepared: dict[str, Any]
+) -> dict[str, Any]:
+    """Renew between I/O stages, never resurrect an expired or replaced lease."""
+    current = prepare_generation_result_archive(conn, actor=actor, task_id=str(prepared["id"]))
+    _require_archive_source_unchanged(current, prepared)
+    row = conn.execute(
+        """UPDATE generation_tasks
+           SET locked_until=(clock_timestamp()+%s*interval '1 second')::text,
+               updated_at=CURRENT_TIMESTAMP
+           WHERE id=%s AND status='SUCCEEDED' AND result_asset_id IS NULL
+             AND superseded_by_task_id IS NULL
+             AND locked_by=%s AND locked_until=%s
+             AND locked_until::timestamptz > clock_timestamp()
+           RETURNING locked_until""",
+        (
+            MANUAL_ARCHIVE_LEASE_SECONDS,
+            prepared["id"],
+            prepared.get("locked_by"),
+            prepared.get("locked_until"),
+        ),
+    ).fetchone()
+    if row is None:
+        raise _archive_lease_lost()
+    return {**prepared, "locked_until": row["locked_until"]}
+
+
+def release_generation_result_archive_claim(
+    conn: BusinessConnection, *, prepared: dict[str, Any]
+) -> bool:
+    """Internal cleanup capability: clear only this exact claim, no assets/billing."""
+    owner = prepared.get("locked_by")
+    if not isinstance(owner, str) or not owner.startswith("archive:"):
+        return False
+    result = conn.execute(
+        """UPDATE generation_tasks SET locked_by=NULL,locked_until=NULL,
+                  updated_at=CURRENT_TIMESTAMP
+           WHERE id=%s AND status='SUCCEEDED' AND result_asset_id IS NULL
+             AND locked_by=%s AND locked_until=%s""",
+        (prepared["id"], owner, prepared.get("locked_until")),
+    )
+    return result.rowcount == 1
+
+
 def persist_generation_result_archive(
     conn: BusinessConnection,
     *,
@@ -5712,12 +5804,14 @@ def persist_generation_result_archive(
         current = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
         if current["result_asset_id"]:
             return get_task_result(conn, task_id)
-        if (
-            current["provider_result_url"] != prepared["provider_result_url"]
-            or current["project_id"] != prepared["project_id"]
-            or current["prompt_snapshot_json"] != prepared["prompt_snapshot_json"]
-        ):
-            raise generation_error(409, "RESULT_CHANGED", "成片记录已变化，请刷新后重试。")
+        _require_archive_source_unchanged(current, prepared)
+        claim = conn.execute(
+            """SELECT id FROM generation_tasks WHERE id=%s AND locked_by=%s
+                 AND locked_until=%s AND locked_until::timestamptz > clock_timestamp()""",
+            (task_id, prepared.get("locked_by"), prepared.get("locked_until")),
+        ).fetchone()
+        if claim is None:
+            raise _archive_lease_lost()
         asset_id = str(uuid4())
         conn.execute(
             """INSERT INTO assets(id,project_id,kind,storage_uri,sha256,size_bytes,
@@ -5743,11 +5837,15 @@ def persist_generation_result_archive(
                 current["created_by_user_id"],
             ),
         )
-        conn.execute(
+        updated = conn.execute(
             """UPDATE generation_tasks SET archive_status='ARCHIVED', result_asset_id=%s,
-                      updated_at=CURRENT_TIMESTAMP WHERE id=%s""",
-            (asset_id, task_id),
+                      locked_by=NULL,locked_until=NULL,updated_at=CURRENT_TIMESTAMP
+               WHERE id=%s AND locked_by=%s AND locked_until=%s
+                 AND locked_until::timestamptz > clock_timestamp()""",
+            (asset_id, task_id, prepared.get("locked_by"), prepared.get("locked_until")),
         )
+        if updated.rowcount != 1:
+            raise _archive_lease_lost()
         write_audit(
             conn,
             actor=actor,

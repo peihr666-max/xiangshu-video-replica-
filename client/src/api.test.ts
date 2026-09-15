@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applySavedGenerationPrompt,
+  archiveGenerationTask,
   attachCustomerSessionToken,
   CUSTOMER_SESSION_EXPIRED_EVENT,
   CUSTOMER_SESSION_REPLACED_EVENT,
@@ -806,6 +807,41 @@ describe("API base URL resolution", () => {
 });
 
 describe("customer-visible service errors", () => {
+  it.each([
+    [
+      "RESULT_ARCHIVE_IN_PROGRESS",
+      "成片正在保存，请稍后刷新任务核对；不会重新生成或扣费。",
+    ],
+    [
+      "RESULT_ARCHIVE_LEASE_LOST",
+      "本次保存已中断，请刷新任务核对后再试；不会重新生成或扣费。",
+    ],
+  ])(
+    "archive conflict %s explains the safe next step",
+    async (code, message) => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            detail: { code, message: "backend archive conflict" },
+          }),
+          {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(
+        archiveGenerationTask("archive-test-task"),
+      ).rejects.toMatchObject({
+        message,
+        code,
+        status: 409,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("cloud frame validation explains how to repair the input", () => {
     expect(
       customerVisibleErrorMessage({
