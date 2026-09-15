@@ -435,12 +435,44 @@ def complete_source_attempt(
         complete_attempt(conn, attempt_id=str(row[0]), usage=usage)
 
 
+def _reconcile_first_frame_auxiliary_costs(conn: BusinessConnection, *, limit: int) -> None:
+    """Close orphaned checks without inventing provider usage or customer charges.
+
+    First-frame quality calls are bounded to 60 seconds. Require thirty minutes
+    since both the call and task/operation completion, with no task lease. Lock
+    the source task as well as the attempt so a concurrent state change cannot
+    reopen work between eligibility and publication; skip busy rows entirely.
+    Primary image submissions and uncertain/running tasks remain untouched.
+    """
+    conn.execute(
+        """WITH stale AS (
+            SELECT a.id FROM first_frame_tasks t
+            JOIN billing_operations o ON o.source_id=t.id AND o.user_id=t.created_by_user_id
+            JOIN billing_attempts a ON a.operation_id=o.id
+            WHERE o.service='first_frame' AND o.state IN ('SUCCEEDED','FAILED','CANCELLED')
+              AND o.completed_at < now()-interval '30 minutes'
+              AND t.status IN ('SUCCEEDED','FAILED')
+              AND t.locked_by IS NULL AND t.locked_until IS NULL
+              AND t.completed_at::timestamptz < now()-interval '30 minutes'
+              AND t.updated_at::timestamptz < now()-interval '30 minutes'
+              AND a.service='quality_inspection' AND a.state='PENDING'
+              AND a.usage IS NULL AND a.cost_fen IS NULL
+              AND a.created_at < now()-interval '30 minutes'
+            ORDER BY a.created_at,a.id LIMIT %s
+            FOR UPDATE OF t,a SKIP LOCKED
+        ) UPDATE billing_attempts a SET state='UNKNOWN',completed_at=now()
+          FROM stale WHERE a.id=stale.id AND a.state='PENDING'""",
+        (max(0, limit),),
+    )
+
+
 def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
     """Recover finalization after terminal task writes, including worker crashes.
 
     Stopped, undelivered operations release credits independently of supplier costs.
     Recoverable in-flight requests stay pending. No HTTP polling is billed.
     """
+    _reconcile_first_frame_auxiliary_costs(conn, limit=limit)
     # A bounded synchronous refresh cannot still be running after thirty minutes.
     # Preserve each delivered cache update and release any unperformed remainder.
     stale = conn.execute(

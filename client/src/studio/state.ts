@@ -364,12 +364,20 @@ export const DEFAULT_MAX_REFERENCE_AUDIOS = 3;
 
 /** R2V 参考视频/音频时长上限（秒）：上传前前端探测拦截，选取时对已知时长拦截。 */
 export const MAX_REFERENCE_MEDIA_SECONDS = 15;
+export const MAX_REFERENCE_FILES = 12;
 
 export type ReferenceLimits = {
   maxReferenceImages?: number;
   maxReferenceVideos?: number;
   maxReferenceAudios?: number;
 };
+
+export function isReferenceAsset(asset: StudioAsset): boolean {
+  return (
+    asset.delivery !== "direct" &&
+    (asset.allowedUses === undefined || asset.allowedUses.includes("reference"))
+  );
+}
 
 /**
  * R2V 参考素材统一混合列表校验：一个 referenceIds 里可混合图片/视频/音频，
@@ -399,7 +407,7 @@ export function validateReferences(
     }
     seen.add(id);
     const asset = assetById.get(id);
-    if (!asset) {
+    if (!asset || !isReferenceAsset(asset)) {
       invalidCount += 1;
       continue;
     }
@@ -436,6 +444,8 @@ export function validateReferences(
   const overLimitCount = imageOverCount + videoOverCount + audioOverCount;
 
   const issues: string[] = [];
+  if (assets.length > MAX_REFERENCE_FILES)
+    issues.push(`参考素材合计最多 ${MAX_REFERENCE_FILES} 项，请移除部分素材。`);
   if (invalidCount > 0)
     issues.push(
       `参考素材仅支持图片、视频或音频，旧草稿中有 ${invalidCount} 项无效素材。`,
@@ -461,14 +471,30 @@ export function validateReferences(
     issues.push(
       `参考视频/音频时长不能超过 ${MAX_REFERENCE_MEDIA_SECONDS} 秒，旧草稿中有 ${overDurationCount} 项超时素材。`,
     );
+  for (const [label, media] of [
+    ["视频", videos],
+    ["音频", audios],
+  ] as const) {
+    const seconds = media.reduce(
+      (total, asset) => total + (asset.durationSeconds ?? 0),
+      0,
+    );
+    if (seconds > MAX_REFERENCE_MEDIA_SECONDS)
+      issues.push(
+        `参考${label}累计时长不能超过 15 秒，请移除部分素材或裁剪后重试。`,
+      );
+  }
 
   // 整理：按选择顺序保留，每类裁剪到各自上限；超时素材一并移除。
   const overDurationIds = new Set(overDurationMedia.map((asset) => asset.id));
   let keptImages = 0;
   let keptVideos = 0;
   let keptAudios = 0;
+  let videoSeconds = 0;
+  let audioSeconds = 0;
   const repairIds: string[] = [];
   for (const asset of assets) {
+    if (repairIds.length >= MAX_REFERENCE_FILES) break;
     if (overDurationIds.has(asset.id)) continue;
     if (asset.kind === "image") {
       if (keptImages < imageLimit) {
@@ -476,12 +502,21 @@ export function validateReferences(
         repairIds.push(asset.id);
       }
     } else if (asset.kind === "video") {
-      if (keptVideos < videoLimit) {
+      const seconds = asset.durationSeconds ?? 0;
+      if (
+        keptVideos < videoLimit &&
+        videoSeconds + seconds <= MAX_REFERENCE_MEDIA_SECONDS
+      ) {
         keptVideos += 1;
+        videoSeconds += seconds;
         repairIds.push(asset.id);
       }
-    } else if (keptAudios < audioLimit) {
+    } else if (
+      keptAudios < audioLimit &&
+      audioSeconds + (asset.durationSeconds ?? 0) <= MAX_REFERENCE_MEDIA_SECONDS
+    ) {
       keptAudios += 1;
+      audioSeconds += asset.durationSeconds ?? 0;
       repairIds.push(asset.id);
     }
   }

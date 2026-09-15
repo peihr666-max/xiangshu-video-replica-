@@ -69,7 +69,12 @@ from app.generation import (
     mark_expired_active_leases_needing_attention,
     mark_task_submission_uncertain,
 )
-from app.generation_worker import run_pg_worker_once, run_pg_worker_round
+from app.generation_worker import (
+    _cleanup_audio_objects,
+    _pg_audio_connection,
+    run_pg_worker_once,
+    run_pg_worker_round,
+)
 from app.image_tasks import (
     acquire_character_sheet_task,
     acquire_first_frame_task,
@@ -78,6 +83,7 @@ from app.image_tasks import (
 from app.script_from_audio import (
     acquire_script_from_audio_task,
     fail_script_from_audio_task,
+    prepare_script_from_audio_task,
 )
 from app.script_rewrite import (
     _script_rewrite_request_hash,
@@ -1392,6 +1398,74 @@ def test_script_from_audio_claim_is_exclusive(pg_state: str) -> None:
     first = _audio_lease(pg_state, "worker-a")
     assert first is not None
     assert _audio_lease(pg_state, "worker-b") is None
+
+
+@pytest.mark.parametrize("existing_key", [None, "legacy/input.m4a"])
+def test_asr_audio_uses_project_storage_and_preserves_existing_receipt(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch, existing_key: str | None
+) -> None:
+    _seed_base(pg_state)
+    _seed_source_frame_task(pg_state, task_id="sf-asset")
+    _seed_audio_task(pg_state, task_id="sfa-storage", audio_object_key=existing_key)
+    _exec(
+        pg_state,
+        "UPDATE script_from_audio_tasks SET request_json=%s WHERE id='sfa-storage'",
+        (json.dumps({"source_asset_id": "asset-ref"}),),
+    )
+    monkeypatch.setattr("app.script_from_audio.resolve_media_binary", lambda name: name)
+    monkeypatch.setattr("app.script_from_audio._configured_asr", lambda conn: object())
+    lease = _audio_lease(pg_state, "worker-a")
+    assert lease is not None
+    with pg_transaction() as raw:
+        work = prepare_script_from_audio_task(
+            BusinessConnection.postgres(raw),
+            lease=lease,
+            storage=FakeStorageAdapter(provider="cos", bucket="bucket"),
+        )
+    assert work.audio_object_key == (existing_key or "projects/proj-1/asr/sfa-storage.m4a")
+
+
+def test_asr_cleanup_failure_backs_off_and_keeps_the_object_receipt(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_base(pg_state)
+    _seed_source_frame_task(pg_state, task_id="sf-asset")
+    _seed_audio_task(
+        pg_state,
+        task_id="sfa-cleanup",
+        status="FAILED",
+        audio_object_key="projects/proj-1/asr/cleanup.m4a",
+    )
+    storage = FakeStorageAdapter(provider="cos", bucket="bucket")
+    calls: list[str] = []
+
+    def failed_delete(key: str, *, actor_id: str | None = None) -> None:
+        calls.append(key)
+        raise RuntimeError("object store unavailable")
+
+    monkeypatch.setattr(storage, "delete_object", failed_delete)
+    _cleanup_audio_objects(_pg_audio_connection, storage)
+    _cleanup_audio_objects(_pg_audio_connection, storage)
+    assert calls == ["projects/proj-1/asr/cleanup.m4a"]
+    row = _rows(
+        pg_state,
+        "SELECT audio_object_key,next_attempt_at FROM script_from_audio_tasks "
+        "WHERE id='sfa-cleanup'",
+    )[0]
+    assert row["audio_object_key"] == calls[0]
+    assert row["next_attempt_at"] is not None
+    _exec(
+        pg_state, "UPDATE script_from_audio_tasks SET next_attempt_at=NULL WHERE id='sfa-cleanup'"
+    )
+    monkeypatch.setattr(storage, "delete_object", lambda key, **kwargs: calls.append(key))
+    _cleanup_audio_objects(_pg_audio_connection, storage)
+    assert len(calls) == 2
+    assert (
+        _rows(
+            pg_state, "SELECT audio_object_key FROM script_from_audio_tasks WHERE id='sfa-cleanup'"
+        )[0]["audio_object_key"]
+        is None
+    )
 
 
 def test_script_from_audio_expired_presubmission_lease_resets_to_pending(pg_state: str) -> None:

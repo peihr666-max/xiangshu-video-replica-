@@ -86,6 +86,10 @@ html:has(.studio-shell) {
 .studio-shell textarea::placeholder {
   color: #858981;
 }
+.studio-menu-close,
+.studio-menu-backdrop {
+  display: none;
+}
 .studio-sidebar {
   position: fixed;
   inset: 0 auto 0 0;
@@ -1742,6 +1746,24 @@ html:has(.studio-shell) {
   }
 }
 @media (max-width: 800px) {
+  .studio-menu-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 14;
+    border: 0;
+    background: #0008;
+  }
+  .studio-menu-close {
+    display: block;
+    align-self: flex-end;
+    margin-bottom: 12px;
+    border: 1px solid #5c5e51;
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: #f6d87b;
+    background: #191b16;
+  }
   .studio-shell {
     --studio-sidebar: 0px;
   }

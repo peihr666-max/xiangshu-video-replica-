@@ -175,7 +175,13 @@ with psycopg.connect("${adminDsn}", autocommit=True) as c:
     [viteBin, "--port", WEB_PORT, "--strictPort"],
     {
       cwd: path.join(repoRoot, "client"),
-      env: { ...process.env, VITE_API_BASE_URL: API_URL },
+      // Browser sessions use same-origin HttpOnly cookies, as in deployment.
+      // Route API requests through the existing Vite proxy instead of CORS.
+      env: {
+        ...process.env,
+        VITE_API_BASE_URL: WEB_URL,
+        VITE_DEV_API_PROXY_TARGET: API_URL,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

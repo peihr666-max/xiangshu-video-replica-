@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -8,8 +9,64 @@ import {
 } from "../api";
 import {
   type CustomerCredentialStore,
+  customerCredentialStore,
   useCustomerSession,
 } from "./useCustomerSession";
+
+it("browser store restores only cookie CSRF handles after a fresh mount", async () => {
+  const deviceHandle = "web-device:csrf-device";
+  const sessionHandle = "web-session:csrf-session";
+  const fetchMock = vi.fn().mockImplementation(() =>
+    jsonResponse({
+      device_token: deviceHandle,
+      session_token: sessionHandle,
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const first = customerCredentialStore();
+  expect(await first.loadDeviceCredentialToken()).toBe(
+    "web-device:csrf-device",
+  );
+  expect(await first.loadSessionToken()).toBe("web-session:csrf-session");
+  const reloaded = customerCredentialStore();
+  expect(await reloaded.loadDeviceCredentialToken()).toBe(
+    "web-device:csrf-device",
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const headers = new Headers(fetchMock.mock.calls[0]?.[1].headers);
+  expect(headers.get("X-Customer-Web")).toBe("1");
+  expect(headers.has("Authorization")).toBe(false);
+});
+
+it("a live browser reload renews the lease without consuming a new login attempt; logout clears device cookies", async () => {
+  const store = memoryStore({ deviceToken: "web-device:csrf-device" });
+  store.devicePlatform = () => "browser";
+  await store.saveSessionToken("web-session:csrf-session");
+  const fetchMock = vi.fn().mockImplementation((url: string) => {
+    if (url.endsWith("/sessions/heartbeat"))
+      return jsonResponse({
+        session_id: "web-session-id",
+        session_epoch: 1,
+        lease_expires_at: "2099-01-01T00:00:00Z",
+      });
+    if (url.endsWith("/profile"))
+      return jsonResponse({ user_id: "web-user", username: "alice" });
+    if (url.endsWith("/sessions/logout")) return jsonResponse(null, 204);
+    return jsonResponse({}, 500);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const { result } = renderHook(() => useCustomerSession(store));
+  await waitFor(() => expect(result.current.screen).toBe("workspace"));
+  expect(result.current.user?.userId).toBe("web-user");
+  expect(
+    fetchMock.mock.calls.some(([url]) => url.endsWith("/sessions/login")),
+  ).toBe(false);
+  await act(async () => {
+    await result.current.logout();
+  });
+  expect(store.calls).toContain("clear-all");
+  expect(store.snapshot().deviceToken).toBeNull();
+});
 
 /** In-memory credential store — the reference implementation of the store
  * contract (the desktop build swaps in the Tauri DPAPI adapter, tests and
@@ -80,6 +137,7 @@ const renewedSessionTokenText = "session-token-2";
 // the first logout is still in flight (named constant so the repo secret scan
 // stays quiet, same posture as the fixtures above).
 const relaunchSessionTokenText = "session-token-3";
+const testPasswordText = "test-password";
 
 const activationBody = {
   username: "user-1",
@@ -128,6 +186,139 @@ describe("useCustomerSession", () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
   });
+
+  it("preserves a password login started from the expiry screen while old Cookie cleanup is delayed", async () => {
+    vi.stubGlobal("crypto", {
+      randomUUID: () => webcrypto.randomUUID(),
+      subtle: { digest: vi.fn().mockResolvedValue(new ArrayBuffer(32)) },
+    });
+    const oldDevice = "web-device:old-device";
+    const oldSession = "web-session:old-session";
+    const newDevice = "web-device:new-device";
+    const newSession = "web-session:new-session";
+    let resolveCleanup!: (
+      response: Awaited<ReturnType<typeof jsonResponse>>,
+    ) => void;
+    const cleanup = new Promise<Awaited<ReturnType<typeof jsonResponse>>>(
+      (resolve) => {
+        resolveCleanup = resolve;
+      },
+    );
+    const fetchMock = stubFetch((url, init) => {
+      if (url.endsWith("/browser-session")) {
+        return init?.method === "DELETE"
+          ? cleanup
+          : jsonResponse({
+              device_token: oldDevice,
+              session_token: oldSession,
+            });
+      }
+      if (url.endsWith("/sessions/heartbeat"))
+        return jsonResponse(heartbeatBody);
+      if (url.endsWith("/profile"))
+        return jsonResponse({ user_id: "user-1", username: "alice" });
+      if (url.endsWith("/customer/login"))
+        return jsonResponse({
+          ...activationBody,
+          device_token: newDevice,
+          session_token: newSession,
+        });
+      return jsonResponse({}, 500);
+    });
+    const store = customerCredentialStore();
+    const { result } = renderHook(() => useCustomerSession(store));
+    await waitFor(() => expect(result.current.screen).toBe("workspace"));
+
+    act(() => window.dispatchEvent(new Event(CUSTOMER_SESSION_EXPIRED_EVENT)));
+    expect(result.current.screen).toBe("session-expired");
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE"),
+      ).toBe(true),
+    );
+    // RootApp's terminal action is enabled immediately; it exposes the normal
+    // password form while the old asynchronous Cookie deletion is in flight.
+    act(() => result.current.restartAfterExpiry());
+    expect(result.current.screen).toBe("login");
+    let loginPending!: Promise<void>;
+    await act(async () => {
+      loginPending = result.current.loginWithPassword({
+        mode: "login",
+        username: "alice",
+        password: testPasswordText,
+      });
+    });
+    expect(result.current.screen).toBe("login");
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/customer/login"),
+      ),
+    ).toBe(false);
+
+    await act(async () => {
+      resolveCleanup(await jsonResponse(undefined, 204));
+      await loginPending;
+    });
+    expect(result.current.screen).toBe("workspace");
+    expect(await store.loadSessionToken()).toBe(newSession);
+    expect(await store.loadDeviceCredentialToken()).toBe(newDevice);
+  });
+
+  it.each(["http", "network"])(
+    "reports %s Cookie cleanup failure and allows explicit password login recovery",
+    async (failure) => {
+      vi.stubGlobal("crypto", webcrypto);
+      const oldDevice = "web-device:failed-cleanup-device";
+      const oldSession = "web-session:failed-cleanup-session";
+      const newSession = "web-session:recovered-session";
+      stubFetch((url, init) => {
+        if (url.endsWith("/browser-session")) {
+          if (init?.method === "DELETE") {
+            return failure === "network"
+              ? Promise.reject(new TypeError("offline"))
+              : jsonResponse({ detail: { code: "SERVICE_UNAVAILABLE" } }, 503);
+          }
+          return jsonResponse({
+            device_token: oldDevice,
+            session_token: oldSession,
+          });
+        }
+        if (url.endsWith("/sessions/heartbeat"))
+          return jsonResponse(heartbeatBody);
+        if (url.endsWith("/profile"))
+          return jsonResponse({ user_id: "user-1", username: "alice" });
+        if (url.endsWith("/customer/login"))
+          return jsonResponse({
+            ...activationBody,
+            device_token: oldDevice,
+            session_token: newSession,
+          });
+        return jsonResponse({}, 500);
+      });
+      const store = customerCredentialStore();
+      const { result } = renderHook(() => useCustomerSession(store));
+      await waitFor(() => expect(result.current.screen).toBe("workspace"));
+      act(() =>
+        window.dispatchEvent(new Event(CUSTOMER_SESSION_EXPIRED_EVENT)),
+      );
+      await waitFor(() =>
+        expect(result.current.error?.code).toBe("CREDENTIAL_CLEAR_FAILED"),
+      );
+      act(() => result.current.restartAfterExpiry());
+      expect(result.current.screen).toBe("login");
+      expect(result.current.error?.message).toContain("旧登录状态清理失败");
+      await act(async () => {
+        await result.current.loginWithPassword({
+          mode: "login",
+          username: "alice",
+          password: testPasswordText,
+        });
+      });
+      expect(result.current.screen).toBe("workspace");
+      expect(result.current.error).toBeNull();
+      expect(await store.loadSessionToken()).toBe(newSession);
+    },
+  );
 
   it("boots without a stored credential onto the activation screen", async () => {
     const store = memoryStore();

@@ -63,6 +63,12 @@ type TaskRecordsPanelProps = {
 
 type TaskViewMode = "stage" | "ops";
 
+function previewSourceVersion(task: GenerationTask): string {
+  return task.result_asset_id
+    ? `asset:${task.result_asset_id}`
+    : `direct:${task.id}:${task.attempt}`;
+}
+
 export function TaskRecordsPanel({
   currentUserId,
   handoffBatch,
@@ -132,6 +138,31 @@ export function TaskRecordsPanel({
   const canOperate = userRole !== "auditor";
 
   const updateBatch = useCallback((nextBatch: GenerationBatch | null) => {
+    const changed = new Set(
+      (nextBatch?.tasks ?? [])
+        .filter((task) => {
+          const previous = latestBatchRef.current?.tasks.find(
+            (item) => item.id === task.id,
+          );
+          return (
+            previous &&
+            previewSourceVersion(previous) !== previewSourceVersion(task)
+          );
+        })
+        .map((task) => task.id),
+    );
+    if (changed.size) {
+      setPreviewUrls((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([id]) => !changed.has(id)),
+        ),
+      );
+      setResultErrors((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([id]) => !changed.has(id)),
+        ),
+      );
+    }
     latestBatchRef.current = nextBatch;
     setBatch(nextBatch);
     if (nextBatch) {
@@ -714,6 +745,18 @@ export function TaskRecordsPanel({
       }
       const batchIdAtStart = activeBatchIdRef.current;
       const actionKey = `${task.id}:preview`;
+      const sourceVersion = previewSourceVersion(task);
+      const sourceIsCurrent = () => {
+        const current = latestBatchRef.current?.tasks.find(
+          (item) => item.id === task.id,
+        );
+        return (
+          isMountedRef.current &&
+          activeBatchIdRef.current === batchIdAtStart &&
+          current !== undefined &&
+          previewSourceVersion(current) === sourceVersion
+        );
+      };
       setActiveResultAction(actionKey);
       setResultErrors((current) => ({ ...current, [task.id]: "" }));
       try {
@@ -727,18 +770,12 @@ export function TaskRecordsPanel({
         } else {
           return;
         }
-        if (
-          !isMountedRef.current ||
-          activeBatchIdRef.current !== batchIdAtStart
-        ) {
+        if (!sourceIsCurrent()) {
           return;
         }
         setPreviewUrls((current) => ({ ...current, [task.id]: previewUrl }));
       } catch {
-        if (
-          isMountedRef.current &&
-          activeBatchIdRef.current === batchIdAtStart
-        ) {
+        if (sourceIsCurrent()) {
           setResultErrors((current) => ({
             ...current,
             [task.id]: "预览链接获取失败，请重试。",
@@ -757,6 +794,14 @@ export function TaskRecordsPanel({
 
   // 归档预览地址失效时清除黑屏播放器并展示可恢复动作。
   const handlePreviewSourceError = useCallback((task: GenerationTask) => {
+    const currentTask = latestBatchRef.current?.tasks.find(
+      (item) => item.id === task.id,
+    );
+    if (
+      !currentTask ||
+      previewSourceVersion(currentTask) !== previewSourceVersion(task)
+    )
+      return;
     setPreviewUrls((current) => {
       const next = { ...current };
       delete next[task.id];

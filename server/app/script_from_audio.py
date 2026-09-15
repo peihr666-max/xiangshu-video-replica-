@@ -442,7 +442,7 @@ def prepare_script_from_audio_task(
             "SCRIPT_FROM_AUDIO_MEDIA_TOOL_MISSING",
             str(exc),
         ) from exc
-    audio_key = str(row["audio_object_key"] or f"tmp/asr/{lease.project_id}/{lease.id}.m4a")
+    audio_key = str(row["audio_object_key"] or f"projects/{lease.project_id}/asr/{lease.id}.m4a")
     conn.execute(
         "UPDATE script_from_audio_tasks SET audio_object_key=%s WHERE id=%s "
         "AND status='RUNNING' AND locked_by=%s AND attempt=%s",

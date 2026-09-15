@@ -4,7 +4,7 @@ These cover the *pure* layers of ``app.independent`` that need no database:
 
 * the ``IndependentVideoRequest`` pydantic model — the unified mixed
   ``reference_asset_ids`` list (image/video/audio share one field) and its
-  total-length cap (8 + 3 + 3 = 14);
+  total-length cap (12 files);
 * ``_validate_independent_mode_assets`` — the extracted mode/asset matrix that
   decides which inputs each generation mode may carry: R2V requires ≥1
   reference and forbids first/last frame; T2V/I2V may not carry any reference
@@ -64,9 +64,9 @@ def test_request_accepts_mixed_reference_asset_ids() -> None:
 
 
 def test_request_rejects_reference_asset_ids_over_total_limit() -> None:
-    # 总兜底 = 图 8 + 视 3 + 音 3 = 14；15 项触发 pydantic too_long。
+    # 多模态文件总数最多12；13项触发请求校验。
     with pytest.raises(ValidationError):
-        _request(reference_asset_ids=[f"ref-{index}" for index in range(15)])
+        _request(reference_asset_ids=[f"ref-{index}" for index in range(13)])
 
 
 # ---------------------------------------------------------------------------

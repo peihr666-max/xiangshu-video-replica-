@@ -5112,6 +5112,8 @@ def reschedule_generation_poll(
                 ) <= now() - (%s * interval '1 second') AS timed_out
             FROM generation_tasks
             WHERE id = %s AND status = 'RUNNING'
+              AND locked_by = %s AND locked_until = %s
+              AND superseded_by_task_id IS NULL
             FOR UPDATE
         )
         UPDATE generation_tasks AS task
@@ -5143,6 +5145,8 @@ def reschedule_generation_poll(
         (
             GENERATION_MAX_POLL_AGE_SECONDS,
             str(lease["id"]),
+            str(lease["locked_by"]),
+            str(lease["locked_until"]),
             delay_seconds,
         ),
     ).fetchone()
@@ -5656,6 +5660,9 @@ def _refresh_batch_status_in_transaction(
     )
 
 
+MANUAL_ARCHIVE_LEASE_SECONDS = 600
+
+
 def prepare_generation_result_archive(
     conn: BusinessConnection, *, actor: CurrentUser, task_id: str
 ) -> dict[str, Any]:
@@ -5694,6 +5701,91 @@ def prepare_generation_result_archive(
     return dict(row)
 
 
+def claim_generation_result_archive(
+    conn: BusinessConnection, *, actor: CurrentUser, task_id: str
+) -> dict[str, Any]:
+    """Claim only a completed result; ordinary workers cannot consume this lease."""
+    prepared = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
+    if prepared["result_asset_id"]:
+        return prepared
+    claimed = conn.execute(
+        """UPDATE generation_tasks
+           SET locked_by=%s,
+               locked_until=(clock_timestamp()+%s*interval '1 second')::text,
+               updated_at=CURRENT_TIMESTAMP
+           WHERE id=%s AND status='SUCCEEDED' AND archive_status IN ('DIRECT','ARCHIVED')
+             AND result_asset_id IS NULL AND superseded_by_task_id IS NULL
+             AND (locked_by IS NULL OR locked_until IS NULL
+                  OR locked_until::timestamptz <= clock_timestamp())
+           RETURNING id""",
+        (f"archive:{uuid4()}", MANUAL_ARCHIVE_LEASE_SECONDS, task_id),
+    ).fetchone()
+    current = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
+    if claimed is None and not current["result_asset_id"]:
+        raise generation_error(
+            409, "RESULT_ARCHIVE_IN_PROGRESS", "同一成片正在保存中，请稍后刷新任务核对。"
+        )
+    return current
+
+
+def _require_archive_source_unchanged(current: dict[str, Any], prepared: dict[str, Any]) -> None:
+    if any(
+        current[key] != prepared[key]
+        for key in ("provider_result_url", "project_id", "prompt_snapshot_json")
+    ):
+        raise generation_error(409, "RESULT_CHANGED", "成片记录已变化，请刷新后重试。")
+
+
+def _archive_lease_lost() -> HTTPException:
+    return generation_error(
+        409, "RESULT_ARCHIVE_LEASE_LOST", "本次保存处理权已失效，请刷新核对后重试。"
+    )
+
+
+def renew_generation_result_archive_claim(
+    conn: BusinessConnection, *, actor: CurrentUser, prepared: dict[str, Any]
+) -> dict[str, Any]:
+    """Renew between I/O stages, never resurrect an expired or replaced lease."""
+    current = prepare_generation_result_archive(conn, actor=actor, task_id=str(prepared["id"]))
+    _require_archive_source_unchanged(current, prepared)
+    row = conn.execute(
+        """UPDATE generation_tasks
+           SET locked_until=(clock_timestamp()+%s*interval '1 second')::text,
+               updated_at=CURRENT_TIMESTAMP
+           WHERE id=%s AND status='SUCCEEDED' AND result_asset_id IS NULL
+             AND superseded_by_task_id IS NULL
+             AND locked_by=%s AND locked_until=%s
+             AND locked_until::timestamptz > clock_timestamp()
+           RETURNING locked_until""",
+        (
+            MANUAL_ARCHIVE_LEASE_SECONDS,
+            prepared["id"],
+            prepared.get("locked_by"),
+            prepared.get("locked_until"),
+        ),
+    ).fetchone()
+    if row is None:
+        raise _archive_lease_lost()
+    return {**prepared, "locked_until": row["locked_until"]}
+
+
+def release_generation_result_archive_claim(
+    conn: BusinessConnection, *, prepared: dict[str, Any]
+) -> bool:
+    """Internal cleanup capability: clear only this exact claim, no assets/billing."""
+    owner = prepared.get("locked_by")
+    if not isinstance(owner, str) or not owner.startswith("archive:"):
+        return False
+    result = conn.execute(
+        """UPDATE generation_tasks SET locked_by=NULL,locked_until=NULL,
+                  updated_at=CURRENT_TIMESTAMP
+           WHERE id=%s AND status='SUCCEEDED' AND result_asset_id IS NULL
+             AND locked_by=%s AND locked_until=%s""",
+        (prepared["id"], owner, prepared.get("locked_until")),
+    )
+    return result.rowcount == 1
+
+
 def persist_generation_result_archive(
     conn: BusinessConnection,
     *,
@@ -5701,6 +5793,7 @@ def persist_generation_result_archive(
     prepared: dict[str, Any],
     stored: StoredObject,
     duration_seconds: float,
+    normalization_metadata: dict[str, Any] | None = None,
 ) -> TaskResult:
     """Publish one physical asset; archiving never changes settled billing."""
     task_id = str(prepared["id"])
@@ -5711,11 +5804,14 @@ def persist_generation_result_archive(
         current = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
         if current["result_asset_id"]:
             return get_task_result(conn, task_id)
-        if (
-            current["provider_result_url"] != prepared["provider_result_url"]
-            or current["project_id"] != prepared["project_id"]
-        ):
-            raise generation_error(409, "RESULT_CHANGED", "成片记录已变化，请刷新后重试。")
+        _require_archive_source_unchanged(current, prepared)
+        claim = conn.execute(
+            """SELECT id FROM generation_tasks WHERE id=%s AND locked_by=%s
+                 AND locked_until=%s AND locked_until::timestamptz > clock_timestamp()""",
+            (task_id, prepared.get("locked_by"), prepared.get("locked_until")),
+        ).fetchone()
+        if claim is None:
+            raise _archive_lease_lost()
         asset_id = str(uuid4())
         conn.execute(
             """INSERT INTO assets(id,project_id,kind,storage_uri,sha256,size_bytes,
@@ -5727,15 +5823,29 @@ def persist_generation_result_archive(
                 stored.uri,
                 stored.sha256,
                 stored.size,
-                json.dumps({"duration_seconds": duration_seconds, "generation_task_id": task_id}),
+                json.dumps(
+                    {
+                        "duration_seconds": duration_seconds,
+                        "generation_task_id": task_id,
+                        **(
+                            {"video_normalization": normalization_metadata}
+                            if normalization_metadata is not None
+                            else {}
+                        ),
+                    }
+                ),
                 current["created_by_user_id"],
             ),
         )
-        conn.execute(
+        updated = conn.execute(
             """UPDATE generation_tasks SET archive_status='ARCHIVED', result_asset_id=%s,
-                      updated_at=CURRENT_TIMESTAMP WHERE id=%s""",
-            (asset_id, task_id),
+                      locked_by=NULL,locked_until=NULL,updated_at=CURRENT_TIMESTAMP
+               WHERE id=%s AND locked_by=%s AND locked_until=%s
+                 AND locked_until::timestamptz > clock_timestamp()""",
+            (asset_id, task_id, prepared.get("locked_by"), prepared.get("locked_until")),
         )
+        if updated.rowcount != 1:
+            raise _archive_lease_lost()
         write_audit(
             conn,
             actor=actor,
@@ -5969,7 +6079,9 @@ def list_generation_batches(
                 quantity=len(tasks),
                 created_at=str(row["created_at"]),
                 updated_at=str(row["updated_at"]),
-                display_name=optional_text(row["display_name"]),
+                display_name=batch_display_name(
+                    row["display_name"], row["creation_kind"], row["request_snapshot_json"]
+                ),
                 source_batch_id=optional_text(row["source_batch_id"]),
                 source_task_id=optional_text(row["source_task_id"]),
                 generation_reason=optional_text(row["generation_reason"]),
@@ -6170,7 +6282,9 @@ def get_generation_batch(
         status=status,
         quantity=len(tasks),
         stale=stale,
-        display_name=optional_text(batch["display_name"]),
+        display_name=batch_display_name(
+            batch["display_name"], batch["creation_kind"], batch["request_snapshot_json"]
+        ),
         source_batch_id=optional_text(batch["source_batch_id"]),
         source_task_id=optional_text(batch["source_task_id"]),
         generation_reason=optional_text(batch["generation_reason"]),
@@ -6312,22 +6426,40 @@ def cancel_generation_batch(
                 "BATCH_ALREADY_ACTIVE",
                 "A task in this batch is already being submitted or generated.",
             )
-        conn.execute(
+        cancelled_batch = conn.execute(
             """
             UPDATE generation_batches
             SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
             WHERE id = %s AND status = 'QUEUED'
+            RETURNING id
             """,
             (batch_id,),
-        )
-        conn.execute(
+        ).fetchone()
+        if cancelled_batch is None:
+            raise generation_error(
+                409,
+                "BATCH_NOT_CANCELLABLE",
+                "Only queued batches can be cancelled.",
+            )
+        cancelled_rows = conn.execute(
             """
             UPDATE generation_tasks
             SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
             WHERE batch_id = %s AND status = 'PENDING'
+            RETURNING id
             """,
             (batch_id,),
-        )
+        ).fetchall()
+        # A worker may claim after the initial read. PostgreSQL rechecks the
+        # PENDING predicate after acquiring each row lock, so require the
+        # complete batch before releasing any credit. The outer transaction
+        # rolls back both the batch update and any partial task cancellation.
+        if {str(row["id"]) for row in cancelled_rows} != {str(row["id"]) for row in task_rows}:
+            raise generation_error(
+                409,
+                "BATCH_ALREADY_ACTIVE",
+                "A task in this batch is already being submitted or generated.",
+            )
         for row in task_rows:
             finalize_internal_billing(conn, task_id=str(row["id"]), outcome="failed")
         write_audit(
@@ -7226,6 +7358,12 @@ def batch_status(stored_status: str, progress: BatchProgress) -> str:
         return "SUCCEEDED"
     if progress.counts["needs_attention"]:
         return "NEEDS_ATTENTION"
+    if progress.terminal_count > 0 or any(
+        progress.counts[stage] for stage in ("submitting", "queued", "running", "archiving")
+    ):
+        # QUEUED on a child task means the provider already accepted it; only a
+        # batch whose children are all PENDING remains an unstarted queue item.
+        return "RUNNING"
     return stored_status
 
 
@@ -7358,6 +7496,22 @@ def completed_duration_seconds(*, started_at: str | None, completed_at: str | No
         return round(max(0.0, (completed - started).total_seconds()), 3)
     except (TypeError, ValueError):
         return None
+
+
+def batch_display_name(name: Any, creation_kind: Any, snapshot: Any) -> str | None:
+    explicit = optional_text(name)
+    if explicit and explicit.strip():
+        return explicit
+    if creation_kind != "independent":
+        return explicit
+    try:
+        payload = json.loads(str(snapshot))
+    except (TypeError, ValueError):
+        return explicit
+    prompt = payload.get("prompt_text") if isinstance(payload, dict) else None
+    if not isinstance(prompt, str):
+        return explicit
+    return " ".join(prompt.split())[:80] or explicit
 
 
 def request_prompt_version_id(value: Any) -> str:

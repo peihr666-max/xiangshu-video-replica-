@@ -42,7 +42,7 @@ Migration findings (SQLite → PostgreSQL):
   ``snapshot_generation_rates`` reads on the PG lane; the seed captures and
   restores them (ON CONFLICT DO NOTHING) so every created task freezes a real
   cost snapshot.
-- ``reference_asset_ids`` over the *total* cap (8 + 3 + 3 = 14) is rejected by
+- ``reference_asset_ids`` over the *total* cap (12 files) is rejected by
   the ``IndependentVideoRequest`` model (``max_length``) at construction time, so
   the service-level assertion is a pydantic ``ValidationError`` (the route turned
   it into a 422 ``too_long`` body). The per-kind caps (image ≤ 8 / video ≤ 3 /
@@ -58,7 +58,9 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from threading import Barrier
 
 # Set the audit HMAC key before importing app modules (audit writers require it).
 os.environ.setdefault(
@@ -85,9 +87,11 @@ from app.db_portable import BusinessConnection
 from app.generation import (
     BatchResult,
     GenerationBatchListPage,
+    acquire_generation_task_lease,
     cancel_generation_batch,
     get_generation_batch,
     list_generation_batches,
+    refresh_batch_status,
 )
 from app.generation_worker import run_pg_worker_once
 from app.independent import (
@@ -262,6 +266,12 @@ def _seed_scene(dsn: str) -> None:
                     "employee_1",
                 ),
             ],
+        )
+
+        pg.execute(
+            "UPDATE assets SET metadata_json=%s "
+            "WHERE id IN ('material-video-owned', 'material-audio-owned')",
+            (json.dumps({"duration_seconds": 4}),),
         )
 
 
@@ -469,6 +479,16 @@ def test_i2v_batch_creation_reserves_seconds_and_marks_independent(scene: str) -
     assert batch.creation_kind == "independent"
     assert batch.stale is False
     assert batch.progress.total_count == 2
+    assert batch.display_name == "镜头缓缓推进，展示乡墅庭院的黄昏"
+    listed = next(item for item in _list_batches(EMPLOYEE_1).items if item.id == batch.id)
+    assert listed.display_name == batch.display_name
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE generation_batches SET display_name=%s WHERE id=%s", ("我的乡墅成片", batch.id)
+        )
+    assert _get_batch(batch.id, EMPLOYEE_1).display_name == "我的乡墅成片"
+    renamed = next(item for item in _list_batches(EMPLOYEE_1).items if item.id == batch.id)
+    assert renamed.display_name == "我的乡墅成片"
 
     with pg_transaction() as raw:
         conn = BusinessConnection.postgres(raw)
@@ -686,7 +706,7 @@ def test_reference_images_reject_duplicates_and_more_than_capability_limit(scene
     assert duplicate.value.status_code == 422
     assert duplicate.value.detail["code"] == "INDEPENDENT_REFERENCE_DUPLICATE"
 
-    # 超出总兜底上限（>14 项）由请求模型 max_length 拒绝（ValidationError
+    # 超出总兜底上限（>12 项）由请求模型 max_length 拒绝（ValidationError
     # too_long）；每类上限（图≤8/视≤3/音≤3）在分流后由
     # INDEPENDENT_REFERENCE_LIMIT_EXCEEDED 拒绝，纯函数层已单测覆盖。
     with pytest.raises(ValidationError):
@@ -719,6 +739,32 @@ def test_auditor_cannot_create_independent_tasks(scene: str) -> None:
 # ---------------------------------------------------------------------------
 # Worker lifecycle: settle on success, release on confirmed failure
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("task_status", ["SUBMITTING", "QUEUED", "RUNNING", "ARCHIVING"])
+def test_batch_lists_started_tasks_as_running_not_cancellable_queue(
+    scene: str, task_status: str
+) -> None:
+    batch = _create(
+        IndependentVideoRequest(
+            mode="i2v",
+            prompt_text="首尾帧进度复测",
+            first_frame_asset_id="frame-owned",
+            output_duration_seconds=4,
+            quantity=2,
+            idempotency_key="started-progress",
+        ),
+        EMPLOYEE_1,
+    )
+    with pg_transaction() as conn:
+        conn.execute(
+            "UPDATE generation_tasks SET status=%s WHERE id=%s", (task_status, batch.tasks[0].id)
+        )
+    listed = next(item for item in _list_batches(EMPLOYEE_1).items if item.id == batch.id)
+    assert listed.status == "RUNNING"
+    assert _get_batch(batch.id, EMPLOYEE_1).status == "RUNNING"
+    with pytest.raises(HTTPException):
+        _cancel_batch(batch.id, EMPLOYEE_1)
 
 
 def test_worker_settles_independent_task_and_releases_on_failure(scene: str) -> None:
@@ -949,6 +995,66 @@ def test_cancel_independent_batch_releases_reserved_seconds(scene: str) -> None:
     assert _ledger_count("RELEASE") == 1
 
 
+@pytest.mark.parametrize("refresh_claimed_batch", [False, True])
+def test_cancel_claim_race_rejects_without_partial_cancellation_or_refund(
+    scene: str, refresh_claimed_batch: bool
+) -> None:
+    """A worker claims after cancellation reads PENDING but before its writes."""
+    batch = _create(
+        IndependentVideoRequest(
+            mode="i2v",
+            prompt_text="取消与领取竞争",
+            first_frame_asset_id="frame-owned",
+            output_duration_seconds=6,
+            quantity=2,
+            idempotency_key="cancel-claim-race",
+        ),
+        EMPLOYEE_1,
+    )
+    read_completed = Barrier(2)
+
+    def claim_after_cancel_read() -> dict[str, object] | None:
+        read_completed.wait(timeout=10)
+        with pg_transaction() as raw:
+            conn = BusinessConnection.postgres(raw)
+            lease = acquire_generation_task_lease(conn, worker_id="cancel-race-worker")
+            if refresh_claimed_batch:
+                refresh_batch_status(conn, batch_id=batch.id)
+            return lease
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        claim = executor.submit(claim_after_cancel_read)
+
+        def before_cancel_write(sql: str) -> None:
+            if "UPDATE generation_batches" in sql and "status = 'CANCELLED'" in sql:
+                read_completed.wait(timeout=10)
+                assert claim.result(timeout=10) is not None
+
+        with pytest.raises(HTTPException) as rejected:
+            with pg_transaction() as raw:
+                conn = BusinessConnection.postgres(raw)
+                conn.set_trace_callback(before_cancel_write)
+                cancel_generation_batch(conn, actor=EMPLOYEE_1, batch_id=batch.id)
+
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail["code"] == (
+        "BATCH_NOT_CANCELLABLE" if refresh_claimed_batch else "BATCH_ALREADY_ACTIVE"
+    )
+    assert _wallet("employee_1") == (988, 12)
+    assert _ledger_count("RELEASE") == 0
+    with psycopg.connect(scene) as pg:
+        assert pg.execute(
+            "SELECT status FROM generation_batches WHERE id=%s", (batch.id,)
+        ).fetchone() == ("RUNNING" if refresh_claimed_batch else "QUEUED",)
+        assert pg.execute(
+            "SELECT status FROM generation_tasks WHERE batch_id=%s ORDER BY status", (batch.id,)
+        ).fetchall() == [("PENDING",), ("SUBMITTING",)]
+        assert pg.execute("SELECT COUNT(*) FROM external_call_logs").fetchone() == (0,)
+        assert pg.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='generation_batch.cancel'"
+        ).fetchone() == (0,)
+
+
 def test_failed_independent_task_releases_credits(
     scene: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1021,14 +1127,28 @@ def test_t2v_and_r2v_tasks_run_through_worker_with_protocol_payload(scene: str) 
     assert "first_frame" not in roles and "last_frame" not in roles
 
 
-def test_r2v_reference_video_and_audio_flow_through_worker_payload(scene: str) -> None:
+@pytest.mark.parametrize("library_assets", [False, True])
+def test_r2v_reference_video_and_audio_flow_through_worker_payload(
+    scene: str, library_assets: bool
+) -> None:
     """R2V 参考视频/音频端到端：请求 → prompt_snapshot → lease → provider_request。"""
     _enable_extended_modes()
+    if library_assets:
+        with pg_transaction() as raw:
+            conn = BusinessConnection.postgres(raw)
+            conn.execute(
+                "UPDATE assets SET kind = 'character_approved_image', project_id = 'project_a' "
+                "WHERE id = 'frame-owned'"
+            )
+            conn.execute(
+                "UPDATE assets SET kind = 'oral_audio', project_id = 'project_a' "
+                "WHERE id = 'material-audio-owned'"
+            )
     _create(
         IndependentVideoRequest(
             mode="r2v",
-            prompt_text="参考视频与音频生成别墅外观",
-            reference_asset_ids=["material-video-owned", "material-audio-owned"],
+            prompt_text="视频@1的人物用图片@2替换，音色参考@3，保留@10与user@1.example。",
+            reference_asset_ids=["material-video-owned", "frame-owned", "material-audio-owned"],
             output_duration_seconds=6,
             quantity=1,
             idempotency_key="r2v-media-worker",
@@ -1053,10 +1173,15 @@ def test_r2v_reference_video_and_audio_flow_through_worker_payload(scene: str) -
         "fake://generation-results/ref-audio.mp3"
     ]
     request_payload = json.loads(str(row["provider_request_json"]))
+    assert request_payload["content"][0]["text"] == (
+        "视频<Video 1>的人物用图片<Picture 1>替换，音色参考<Audio 1>，保留@10与user@1.example。"
+    )
+    assert snapshot["reference_labels"] == {"1": "<Video 1>", "2": "<Picture 1>", "3": "<Audio 1>"}
     roles = [item.get("role") for item in request_payload["content"][1:]]
-    assert roles == ["reference_video", "reference_audio"]
-    assert request_payload["content"][1]["video_url"]["url"]
-    assert request_payload["content"][2]["audio_url"]["url"]
+    assert roles == ["reference_image", "reference_video", "reference_audio"]
+    assert request_payload["content"][1]["image_url"]["url"]
+    assert request_payload["content"][2]["video_url"]["url"]
+    assert request_payload["content"][3]["audio_url"]["url"]
 
 
 def test_r2v_rejects_replica_source_video_as_reference(scene: str) -> None:
@@ -1120,3 +1245,105 @@ def test_video_task_route_creates_batch_through_fenced_write_on_pg(scene: str) -
     assert replay.json()["id"] == body["id"]
     assert _ledger_count("RESERVE") == 1
     assert _wallet("employee_1") == (990, 10)
+
+
+@pytest.mark.parametrize("duration", [None, 1.9, 15.01, float("nan")])
+def test_r2v_rejects_invalid_reference_duration_before_reserve(
+    scene: str, duration: float | None
+) -> None:
+    _enable_extended_modes()
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE assets SET metadata_json=%s WHERE id='material-video-owned'",
+            (json.dumps({"duration_seconds": duration}),),
+        )
+    with pytest.raises(HTTPException) as exc:
+        _create(
+            IndependentVideoRequest(
+                mode="r2v",
+                prompt_text="视频参考",
+                reference_asset_ids=["material-video-owned"],
+                output_duration_seconds=4,
+                quantity=1,
+                idempotency_key="invalid-duration",
+            ),
+            EMPLOYEE_1,
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "INDEPENDENT_REFERENCE_DURATION_INVALID"
+    assert _ledger_count("RESERVE") == 0
+
+
+def test_r2v_rejects_total_reference_duration_before_reserve(scene: str) -> None:
+    _enable_extended_modes()
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE assets SET metadata_json=%s WHERE id='material-video-owned'",
+            (json.dumps({"duration_seconds": 12}),),
+        )
+        raw.execute(
+            "UPDATE assets SET kind='material_video', content_type='video/mp4', "
+            "metadata_json=%s WHERE id='material-audio-owned'",
+            (json.dumps({"duration_seconds": 4}),),
+        )
+    with pytest.raises(HTTPException) as exc:
+        _create(
+            IndependentVideoRequest(
+                mode="r2v",
+                prompt_text="视频参考",
+                reference_asset_ids=["material-video-owned", "material-audio-owned"],
+                output_duration_seconds=4,
+                quantity=1,
+                idempotency_key="total-duration",
+            ),
+            EMPLOYEE_1,
+        )
+    assert exc.value.detail["code"] == "INDEPENDENT_REFERENCE_DURATION_LIMIT_EXCEEDED"
+    assert _ledger_count("RESERVE") == 0
+
+
+def test_r2v_allows_fifteen_seconds_per_media_type(scene: str) -> None:
+    _enable_extended_modes()
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE assets SET metadata_json=%s WHERE id IN "
+            "('material-video-owned', 'material-audio-owned')",
+            (json.dumps({"duration_seconds": 15}),),
+        )
+    result = _create(
+        IndependentVideoRequest(
+            mode="r2v",
+            prompt_text="分别引用视频和声音",
+            reference_asset_ids=["material-video-owned", "material-audio-owned"],
+            output_duration_seconds=4,
+            quantity=1,
+            idempotency_key="separate-duration-limits",
+        ),
+        EMPLOYEE_1,
+    )
+    assert result.quantity == 1
+    assert _ledger_count("RESERVE") == 1
+
+
+def test_r2v_rejects_audio_total_before_reserve(scene: str) -> None:
+    _enable_extended_modes()
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE assets SET kind='material_audio', content_type='audio/mpeg', "
+            "metadata_json=%s WHERE id IN ('material-video-owned', 'material-audio-owned')",
+            (json.dumps({"duration_seconds": 8}),),
+        )
+    with pytest.raises(HTTPException) as exc:
+        _create(
+            IndependentVideoRequest(
+                mode="r2v",
+                prompt_text="声音参考",
+                reference_asset_ids=["material-video-owned", "material-audio-owned"],
+                output_duration_seconds=4,
+                quantity=1,
+                idempotency_key="audio-duration-limit",
+            ),
+            EMPLOYEE_1,
+        )
+    assert exc.value.detail["code"] == "INDEPENDENT_REFERENCE_DURATION_LIMIT_EXCEEDED"
+    assert _ledger_count("RESERVE") == 0

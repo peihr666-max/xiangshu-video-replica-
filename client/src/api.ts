@@ -1934,8 +1934,9 @@ export async function archiveGenerationTask(
 ): Promise<GenerationTask> {
   return requestGenerationJson<GenerationTask>(
     `/api/generation-tasks/${encodeURIComponent(taskId)}/archive`,
-    "保存成片失败，请重试；不会重新生成或扣费",
+    "保存结果暂未确认，请刷新任务核对；不会重新生成或扣费",
     { method: "POST" },
+    CLOUD_OP_TIMEOUT_MS,
   );
 }
 
@@ -2017,6 +2018,10 @@ export async function downloadGenerationResult(
   assetId: string,
   filename: string,
 ): Promise<VideoDownloadResult> {
+  if (!isTauri()) {
+    await downloadMaterialAsset(assetId, filename);
+    return { status: "started" };
+  }
   return downloadVideoResult(
     async () => (await getGenerationResultDownloadUrl(assetId)).url,
     filename,
@@ -2027,6 +2032,16 @@ export async function downloadGenerationTaskResult(
   taskId: string,
   filename: string,
 ): Promise<VideoDownloadResult> {
+  if (!isTauri()) {
+    // A browser-managed HTTP attachment survives navigation and does not rely
+    // on a short-lived blob URL. Archive only the existing result, never submit
+    // generation again; the archive endpoint reuses an already saved asset.
+    const task = await archiveGenerationTask(taskId);
+    if (!task.result_asset_id) {
+      throw new Error("成片尚未保存完成，请重试；不会重新生成或扣费。");
+    }
+    return downloadGenerationResult(task.result_asset_id, filename);
+  }
   return downloadVideoResult(
     () => createGenerationTaskPreviewUrl(taskId),
     filename,
@@ -2069,15 +2084,6 @@ async function downloadVideoResult(
   getUrl: () => Promise<string>,
   filename: string,
 ): Promise<VideoDownloadResult> {
-  if (!isTauri()) {
-    downloadBlob(
-      await fetchGenerationResultBlob(await getUrl(), "下载生成结果失败"),
-      filename,
-    );
-    // 浏览器不会向页面确认用户是否保存了文件，不能声称已保存。
-    return { status: "started" };
-  }
-
   let destination: NativeVideoDownload | null;
   try {
     destination = await invoke<NativeVideoDownload | null>(
@@ -2555,6 +2561,8 @@ function uploadStorageObject(
       const accessToken = workspaceAccessToken();
       if (accessToken) {
         request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+        if (accessToken.startsWith("web-session:"))
+          request.setRequestHeader("X-Customer-Web", "1");
       }
     }
     for (const [name, value] of Object.entries(intent.headers)) {
@@ -4440,6 +4448,31 @@ async function requestGenerationJson<T>(
 
 function generationRequestError(error: unknown, errorPrefix: string): Error {
   const { status, code } = error as RequestError;
+  const archiveMessage =
+    status === 409 && code === "RESULT_ARCHIVE_IN_PROGRESS"
+      ? "成片正在保存，请稍后刷新任务核对；不会重新生成或扣费。"
+      : status === 409 && code === "RESULT_ARCHIVE_LEASE_LOST"
+        ? "本次保存已中断，请刷新任务核对后再试；不会重新生成或扣费。"
+        : null;
+  if (archiveMessage) {
+    const mapped = new Error(archiveMessage) as RequestError;
+    mapped.status = status;
+    mapped.code = code;
+    return mapped;
+  }
+  const referenceMessage =
+    status === 422 && code === "INDEPENDENT_REFERENCE_DURATION_INVALID"
+      ? "参考视频/音频每段须为2–15秒；缺少时长的历史素材请重新上传后选取。"
+      : status === 422 &&
+          code === "INDEPENDENT_REFERENCE_DURATION_LIMIT_EXCEEDED"
+        ? "参考视频、音频各自累计不能超过15秒，请移除部分素材或裁剪后重试。"
+        : null;
+  if (referenceMessage) {
+    const mapped = new Error(referenceMessage) as RequestError;
+    mapped.status = status;
+    mapped.code = code;
+    return mapped;
+  }
   const statusMessage =
     status === 401
       ? "登录已失效，请重新进入工作台"
@@ -4553,6 +4586,9 @@ const BRANDED_SERVICE_ERRORS: ReadonlyArray<{
 ];
 
 const CUSTOMER_ACCOUNT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  RATE_LIMITED: "操作过于频繁，请稍后重试。",
+  METASO_REQUIRES_CLOUD_STORAGE:
+    "所选素材尚未存入当前云端素材库。请选择已归档的素材，或联系管理员完成云端存储配置后重新上传。",
   ANALYSIS_VIDEO_URL_UNAVAILABLE:
     "当前视频尚未就绪，无法交给云端分析。请联系管理员配置云端素材存储，再重新上传视频。",
   SINGLE_PERSON_SOURCE_REQUIRED:
@@ -4713,8 +4749,7 @@ async function requestApi(
   if (callerSignal?.aborted) abortFromCaller();
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = new Headers(init.headers);
-  const customerOwnerAtStart =
-    internalAccessToken === null ? customerSessionOwner : null;
+  const customerOwnerAtStart = customerSessionOwner;
 
   if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
@@ -4725,6 +4760,8 @@ async function requestApi(
   const accessToken = workspaceAccessToken();
   if (accessToken) {
     headers.set("Authorization", `Bearer ${accessToken}`);
+    if (accessToken.startsWith("web-session:"))
+      headers.set("X-Customer-Web", "1");
   }
 
   try {
@@ -4765,7 +4802,9 @@ async function emitWorkspaceSessionEnded(
   response: Response,
   ownerAtStart: symbol | null,
 ) {
-  if (ownerAtStart !== null && ownerAtStart !== customerSessionOwner) {
+  // A request made in the unbound handoff window does not own a session
+  // attached later, just as a request from a replaced workspace does not.
+  if (ownerAtStart !== customerSessionOwner) {
     return;
   }
   if (customerSessionToken === null) {
@@ -4783,7 +4822,7 @@ async function emitWorkspaceSessionEnded(
     // be guessed as a permanent device revocation (which would wipe the
     // long-lived device credential).
   }
-  if (ownerAtStart !== null && ownerAtStart !== customerSessionOwner) {
+  if (ownerAtStart !== customerSessionOwner) {
     return;
   }
   window.dispatchEvent(new Event(lifecycle));
@@ -4953,7 +4992,10 @@ function isShotCard(value: unknown): value is ShotCard {
 
 type CustomerActivationResponse =
   components["schemas"]["CustomerActivationResponse"];
-type CustomerLoginResponse = components["schemas"]["LoginResponse"];
+type CustomerLoginResponse = components["schemas"]["LoginResponse"] & {
+  /** CSRF handle returned only when upgrading an existing browser login. */
+  device_token?: string;
+};
 type CustomerHeartbeatResponse = components["schemas"]["HeartbeatResponse"];
 export type CustomerDeviceListResponse =
   components["schemas"]["DeviceListResponse"];
@@ -5182,6 +5224,7 @@ async function customerErrorFromResponse(
 }
 
 type CustomerRequestOptions = {
+  browserSession?: boolean;
   method?: string;
   body?: unknown;
   credential?: CustomerCredential;
@@ -5199,7 +5242,41 @@ function isReplayed(response: Response): boolean {
   return response.headers.get("X-Idempotent-Replay") === "true";
 }
 
-async function requestCustomer(
+// Cookie response headers are applied by the browser before fetch resolves.
+// Serialize changes so an old deletion cannot arrive after a new login's
+// Set-Cookie. A failed request releases the queue, allowing an explicit retry.
+let browserCookieMutationQueue: Promise<void> = Promise.resolve();
+
+function requestCustomer(
+  path: string,
+  options: CustomerRequestOptions,
+): ReturnType<typeof requestCustomerNow> {
+  const browser =
+    options.browserSession || options.credential?.token.startsWith("web-");
+  const method =
+    options.method ?? (options.body !== undefined ? "POST" : "GET");
+  const changesCookies =
+    browser &&
+    ((path === "/api/customer/browser-session" && method === "DELETE") ||
+      (method === "POST" &&
+        [
+          "/api/customer/login",
+          "/api/customer/activate",
+          "/api/customer/sessions/login",
+          "/api/customer/sessions/switch",
+        ].includes(path)));
+  if (!changesCookies) return requestCustomerNow(path, options);
+  const pending = browserCookieMutationQueue.then(() =>
+    requestCustomerNow(path, options),
+  );
+  browserCookieMutationQueue = pending.then(
+    () => undefined,
+    () => undefined,
+  );
+  return pending;
+}
+
+async function requestCustomerNow(
   path: string,
   options: CustomerRequestOptions,
 ): Promise<{
@@ -5232,6 +5309,9 @@ async function requestCustomer(
   }
   if (options.credential) {
     headers.set("Authorization", `Bearer ${options.credential.token}`);
+  }
+  if (options.browserSession || options.credential?.token.startsWith("web-")) {
+    headers.set("X-Customer-Web", "1");
   }
   if (options.idempotencyKey) {
     headers.set("Idempotency-Key", options.idempotencyKey);
@@ -5348,12 +5428,39 @@ export async function customerPasswordLogin(
     "/api/customer/login",
     {
       method: "POST",
+      browserSession: input.device_platform === "browser",
       body: input,
       idempotencyKey,
       shouldDispatchLifecycle: () => false,
     },
   );
   return body;
+}
+
+/** Browser JS receives only CSRF handles; bearer credentials stay HttpOnly. */
+export async function customerBrowserCredentials(): Promise<{
+  device_token: string | null;
+  session_token: string | null;
+}> {
+  const { body } = await customerJson<{
+    device_token: string | null;
+    session_token: string | null;
+  }>("/api/customer/browser-session", {
+    browserSession: true,
+    shouldDispatchLifecycle: () => false,
+  });
+  return body;
+}
+
+export async function clearCustomerBrowserCredentials(
+  credential: CustomerCredential,
+): Promise<void> {
+  await customerJson<undefined>("/api/customer/browser-session", {
+    method: "DELETE",
+    browserSession: true,
+    credential,
+    shouldDispatchLifecycle: () => false,
+  });
 }
 
 /** Redeem an activation code: user + wallet + first device + first charge +
@@ -5365,6 +5472,7 @@ export async function customerActivate(
     "/api/customer/activate",
     {
       method: "POST",
+      browserSession: input.devicePlatform === "browser",
       body: {
         activation_code: input.activationCode,
         device_fingerprint: input.deviceFingerprint,
@@ -5387,6 +5495,7 @@ export type CustomerLoginResult = {
 };
 
 export type CustomerLoginOptions = {
+  browserSession?: boolean;
   idempotencyKey: string;
   /** Presenting the previous session token renews instead of conflicting. */
   sessionToken?: string;
@@ -5401,6 +5510,7 @@ async function customerEstablishSession(
 ): Promise<CustomerLoginResult> {
   const { response, body } = await customerJson<CustomerLoginResponse>(path, {
     method: "POST",
+    browserSession: options.browserSession,
     credential,
     body: { session_token: options.sessionToken ?? null },
     idempotencyKey: options.idempotencyKey,

@@ -23,10 +23,9 @@ verifier is deliberately minimal and self-contained:
   depth behind the suspend/revoke revocation propagation (SES-03);
 - the ``expected_*`` parameters mirror §12.4's in-transaction re-comparison
   (``user_id + device_id + session_id + session_epoch + lease``): any
-  mismatch answers ``SESSION_REPLACED`` so a request that passed a FastAPI
-  dependency earlier can never commit after a switch (the expected lease
-  must still *be* the row's lease — a lease pulled back by logout/revocation
-  is fenced even when the epoch is unchanged).
+  identity mismatch or shortened lease answers ``SESSION_REPLACED`` so a
+  request can never commit after a switch. A heartbeat may extend the same
+  session during slow business requests; logout/revocation still fences it.
 
 Timestamps: PostgreSQL is the only trusted clock (SES-01) — the lease
 judgement samples ``SELECT clock_timestamp()`` after the row lock, so a
@@ -144,12 +143,14 @@ def verify_session_context(
         raise _replaced("This session was replaced by a newer session.")
     if expected_session_epoch is not None and expected_session_epoch != session_epoch:
         raise _replaced("This session epoch was superseded by a newer session.")
-    if expected_lease_until is not None and lease_until_raw != expected_lease_until:
-        # §12.4 re-comparison of the full snapshot: the lease is part of the
-        # authority tuple. A heartbeat renews it forward (same logical
-        # session, no epoch bump) and the client never heartbeats mid-request,
-        # so an exact mismatch means the lease was pulled back (logout /
-        # revocation) — fence it. (PR #52 P2.)
+    if expected_lease_until is not None and _as_utc(lease_until_raw) < _as_utc(
+        expected_lease_until
+    ):
+        # A normal heartbeat can extend this same session while a provider or
+        # media request is in flight. Identity/epoch were compared above under
+        # the row lock; only a shortened lease invalidates that snapshot.
+        # Logout/revocation and actual expiry still fence the write. Compare
+        # instants rather than text so equivalent timestamp formats agree.
         raise _replaced("This session lease snapshot was superseded by a newer session.")
 
     # SES-01: PostgreSQL is the only trusted clock — the lease judgement

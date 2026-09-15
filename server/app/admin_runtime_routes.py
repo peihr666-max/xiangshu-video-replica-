@@ -435,9 +435,13 @@ def read_collected_viral_videos(
                 v.native_json::jsonb->>'_statistics_checked_at' AS statistics_checked_at,
                 v.native_json::jsonb->>'_statistics_retry_at' AS statistics_retry_at,
                 (COALESCE(v.cover_url,'') != '') AS cover_required,
-                COALESCE(m.status,'PENDING') AS media_status,m.storage_uri
+                COALESCE(m.status,'NOT_STARTED') AS media_status,m.storage_uri,
+                r.status AS archive_status,r.error_message_redacted AS archive_error
             FROM viral_videos v LEFT JOIN viral_media_preparations m
                 ON m.platform=v.platform AND m.video_id=v.video_id AND m.media_kind='video'
+            LEFT JOIN viral_refresh_tasks r ON r.platform=v.platform AND r.sort='latest'
+                AND r.collection_config_json::jsonb->>'kind'='single_archive'
+                AND r.collection_config_json::jsonb->>'video_id'=v.video_id
             WHERE {filters} ORDER BY v.created_at DESC,v.platform,v.video_id LIMIT %s OFFSET %s""",
             (*params, limit, offset),
         ).fetchall()
@@ -448,6 +452,83 @@ def read_collected_viral_videos(
         item["collection_published"] = bool(item["collection_published"])
         items.append(item)
     return {"items": items, "total": int(total), "offset": offset, "limit": limit}
+
+
+@router.post("/viral/videos/{platform}/{video_id:path}/archive", status_code=202)
+def archive_collected_viral_video(
+    platform: Literal["douyin", "wechat_channels"],
+    video_id: str,
+    payload: AdminWriteContract,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
+        # Serialize against the scheduler; reuse the durable latest slot without
+        # replacing a running collection or introducing an in-process job.
+        control = conn.execute(
+            "SELECT collection_enabled FROM viral_runtime_controls WHERE id=1 FOR UPDATE"
+        ).fetchone()
+        if control is None or not control[0]:
+            raise http_error(409, "VIRAL_COLLECTION_PAUSED", "后台采集已暂停，请先开启采集服务。")
+        video = conn.execute(
+            "SELECT 1 FROM viral_videos WHERE platform=%s AND video_id=%s "
+            "AND deleted_at IS NULL FOR UPDATE",
+            (platform, video_id),
+        ).fetchone()
+        if video is None:
+            raise http_error(404, "VIRAL_VIDEO_NOT_FOUND", "视频不存在或已删除。")
+        active = conn.execute(
+            "SELECT id,collection_config_json FROM viral_refresh_tasks "
+            "WHERE platform=%s AND status IN ('PENDING','RUNNING') FOR UPDATE",
+            (platform,),
+        ).fetchall()
+        for task in active:
+            config = json.loads(task[1])
+            if config.get("kind") == "single_archive" and config.get("video_id") == video_id:
+                return {"task_id": task[0], "queued": True}
+        if active:
+            raise http_error(409, "VIRAL_ARCHIVE_BUSY", "该平台已有后台任务，请完成后再转存。")
+        queued = conn.execute(
+            """INSERT INTO viral_refresh_tasks(id,platform,sort,collection_config_json)
+            VALUES(%s,%s,'latest',%s) ON CONFLICT(platform,sort) DO UPDATE SET
+                status='PENDING',collection_config_json=excluded.collection_config_json,
+                checkpoint_json='{}',retry_count=0,locked_by=NULL,locked_until=NULL,
+                error_code=NULL,error_message_redacted=NULL,retryable=0,
+                started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP RETURNING id""",
+            (
+                str(uuid.uuid4()),
+                platform,
+                json.dumps({"kind": "single_archive", "video_id": video_id}),
+            ),
+        ).fetchone()
+        if queued is None:
+            raise RuntimeError("viral archive task enqueue did not persist")
+        task_id = str(queued[0])
+        conn.execute(
+            """INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,metadata_json)
+            VALUES(%s,%s,'viral_video.archive','viral_video',%s,%s)""",
+            (
+                str(uuid.uuid4()),
+                actor.user_id,
+                f"{platform}:{video_id}",
+                json.dumps(
+                    {"request_id": request_id, "reason": payload.reason.strip(), "task_id": task_id}
+                ),
+            ),
+        )
+        return {"task_id": task_id, "queued": True}
+
+    return write_with_idempotency(
+        request,
+        response,
+        actor,
+        payload,
+        business,
+        success_status=202,
+        unavailable_code=RUNTIME_SETTINGS_SERVICE_UNAVAILABLE,
+        unavailable_message=RUNTIME_SETTINGS_SERVICE_UNAVAILABLE_MESSAGE,
+    )
 
 
 @router.post("/viral/videos/wechat_channels/{video_id:path}/statistics")

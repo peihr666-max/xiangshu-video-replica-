@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  archiveGenerationTask,
   downloadGenerationTaskResult,
   openVideoDownloadFolder,
   VideoDownloadUnconfirmedError,
@@ -66,6 +67,50 @@ describe("desktop video download feedback", () => {
     vi.useRealTimers();
   });
 
+  it("waits for slow cloud archiving beyond the ordinary five-second timeout", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockReset().mockImplementationOnce(
+      (_url, init: RequestInit) =>
+        new Promise((resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+          setTimeout(
+            () =>
+              resolve({
+                ok: true,
+                json: async () => ({ result_asset_id: "saved-asset" }),
+              }),
+            12_000,
+          );
+        }),
+    );
+    const archived = archiveGenerationTask("slow-archive");
+    await vi.advanceTimersByTimeAsync(12_001);
+    await expect(archived).resolves.toMatchObject({
+      result_asset_id: "saved-asset",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("reports an unconfirmed archive on timeout without submitting again", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockReset().mockImplementationOnce(
+      (_url, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        }),
+    );
+    const rejected = expect(
+      archiveGenerationTask("timed-out-archive"),
+    ).rejects.toThrow("保存结果暂未确认，请刷新任务核对");
+    await vi.advanceTimersByTimeAsync(60_001);
+    await rejected;
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("allows choosing a destination before fetching and cancelling without a request", async () => {
     native.invoke.mockResolvedValueOnce(null);
     expect(await downloadGenerationTaskResult("task-1", "video.mp4")).toEqual({
@@ -92,6 +137,11 @@ describe("desktop video download feedback", () => {
     expect(native.listen).toHaveBeenCalledWith(
       "video-download-finished",
       expect.any(Function),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://provider.example/video.mp4",
+      { signal: expect.any(AbortSignal), credentials: "omit" },
     );
     expect(settled).not.toHaveBeenCalled();
     expect(revoke).not.toHaveBeenCalled();
@@ -215,10 +265,81 @@ describe("desktop video download feedback", () => {
 
   it("keeps browser downloads explicit about being started rather than saved", async () => {
     native.isTauri.mockReturnValue(false);
+    fetchMock
+      .mockReset()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ result_asset_id: "asset-1" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ url: "https://signed.example/video.mp4" }),
+      });
     expect(await downloadGenerationTaskResult("task-1", "video.mp4")).toEqual({
       status: "started",
     });
     expect(native.invoke).not.toHaveBeenCalled();
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce();
+  });
+
+  it("downloads an authorized inline fixture without fetching a data URL", async () => {
+    fetchMock.mockReset().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ url: "data:video/mp4;base64,AP+AQQ==" }),
+    });
+    const download = downloadGenerationTaskResult("task-inline", "inline.mp4");
+    await vi.waitFor(() =>
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce(),
+    );
+    finish({
+      payload: { download_id: "download-1", success: true, path, error: null },
+    });
+    await expect(download).resolves.toMatchObject({ status: "saved" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "data:video/mp4;base64,%%%invalid%%%",
+    "https://provider.example/expired.mp4",
+  ])(
+    "does not save invalid inline data or an unavailable provider response: %s",
+    async (url) => {
+      fetchMock
+        .mockReset()
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ url }) })
+        .mockResolvedValueOnce({ ok: false, status: 403 });
+      await expect(
+        downloadGenerationTaskResult("task-failed", "video.mp4"),
+      ).rejects.toThrow();
+      expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+      expect(native.invoke).toHaveBeenCalledWith("cancel_video_download", {
+        downloadId: "download-1",
+      });
+    },
+  );
+
+  it("times out fetching a native result without retrying generation", async () => {
+    vi.useFakeTimers();
+    fetchMock
+      .mockReset()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ url: "https://provider.example/slow.mp4" }),
+      })
+      .mockImplementationOnce(
+        (_url, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("Aborted", "AbortError")),
+            );
+          }),
+      );
+    const rejected = expect(
+      downloadGenerationTaskResult("task-slow", "video.mp4"),
+    ).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(60_001);
+    await rejected;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
   });
 });
