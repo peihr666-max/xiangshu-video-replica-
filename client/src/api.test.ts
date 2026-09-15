@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -10,6 +11,7 @@ import {
   cancelOralTask,
   cancelSourceFrameTask,
   chooseProjectMainCharacterVersion,
+  clearMaterialCache,
   compileGenerationPrompt,
   completeMaterialUpload,
   completeVideoUpload,
@@ -30,6 +32,7 @@ import {
   downloadGenerationResult,
   downloadGenerationTaskResult,
   downloadMaterialAsset,
+  evictMaterialCachedPreview,
   extractSourceFrames,
   generateFirstFrames,
   getAssetDownloadUrl,
@@ -45,6 +48,8 @@ import {
   getLatestProjectFirstFrames,
   getLatestScriptRewriteTask,
   getLatestScriptVersion,
+  getMaterialCachedPreview,
+  getMaterialCacheUsage,
   getOralTask,
   getScriptFromAudioTask,
   getSettings,
@@ -89,6 +94,537 @@ import {
   waitForScriptRewriteTask,
   waitForSourceFrameTask,
 } from "./api";
+
+describe("素材持久缓存", () => {
+  afterEach(() => {
+    setCustomerSessionToken(null);
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function cacheFixture() {
+    const entries = new Map<string, Response>();
+    const cache = {
+      keys: async () => [...entries.keys()].map((key) => new Request(key)),
+      match: async (key: RequestInfo) =>
+        entries.get(typeof key === "string" ? key : key.url)?.clone(),
+      put: vi.fn(async (key: RequestInfo, value: Response) => {
+        entries.set(typeof key === "string" ? key : key.url, value.clone());
+      }),
+      delete: async (key: RequestInfo) =>
+        entries.delete(typeof key === "string" ? key : key.url),
+    };
+    const tails = new Map<string, Promise<unknown>>();
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: async (
+          name: string,
+          options: unknown,
+          callback?: () => Promise<unknown>,
+        ) => {
+          const action = callback ?? (options as () => Promise<unknown>);
+          const next = (tails.get(name) ?? Promise.resolve()).then(action);
+          tails.set(
+            name,
+            next.catch(() => undefined),
+          );
+          return next;
+        },
+      },
+    });
+    vi.stubGlobal("caches", { open: vi.fn(async () => cache) });
+    vi.stubGlobal("crypto", webcrypto);
+    let blobId = 0;
+    const create = vi.fn(() => `blob:material-${++blobId}`);
+    const revoke = vi.fn();
+    const NativeURL = URL;
+    vi.stubGlobal(
+      "URL",
+      class extends NativeURL {
+        static createObjectURL = create;
+        static revokeObjectURL = revoke;
+      },
+    );
+    const content = new Uint8Array([1, 2, 3, 4]);
+    const sha = Array.from(
+      new Uint8Array(await webcrypto.subtle.digest("SHA-256", content)),
+    )
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+    const metadata = {
+      id: "asset",
+      sha256: sha,
+      size_bytes: content.length,
+      content_type: "video/mp4",
+    };
+    const media = vi.fn(
+      async () =>
+        new Response(content, { headers: { "Content-Type": "video/mp4" } }),
+    );
+    const fetcher = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).endsWith("/download-url"))
+        return Response.json({
+          url: "https://media.example/video?secret-signature=private",
+        });
+      if (String(url).includes("/api/assets/")) return Response.json(metadata);
+      return media();
+    });
+    vi.stubGlobal("fetch", fetcher);
+    setCustomerSessionToken("test-cache-session");
+    return {
+      entries,
+      cache,
+      create,
+      revoke,
+      metadata,
+      content,
+      media,
+      fetcher,
+    };
+  }
+
+  it("首轮仅在线预览，主动填充后每次鉴权并独立释放 Blob URL", async () => {
+    const fixture = await cacheFixture();
+    const online = await getMaterialCachedPreview("user", "asset");
+    expect(online.cached).toBe(false);
+    expect(fixture.media).not.toHaveBeenCalled();
+    const populated = await getMaterialCachedPreview("user", "asset", {
+      populate: true,
+    });
+    const cached = await getMaterialCachedPreview("user", "asset");
+    expect(populated.cached).toBe(true);
+    expect(cached.cached).toBe(true);
+    expect(cached.url).not.toBe(populated.url);
+    expect(fixture.media).toHaveBeenCalledOnce();
+    expect(
+      fixture.fetcher.mock.calls.filter(([url]) =>
+        String(url).endsWith("/download-url"),
+      ),
+    ).toHaveLength(3);
+    expect([...fixture.entries.keys()].join(" ")).not.toMatch(
+      /private|test-cache-session|secret-signature/,
+    );
+    populated.release();
+    populated.release();
+    cached.release();
+    expect(fixture.revoke).toHaveBeenCalledTimes(2);
+    expect(await getMaterialCacheUsage("user")).toMatchObject({
+      bytes: 4,
+      limitBytes: 256 * 1024 * 1024,
+      available: true,
+    });
+    await evictMaterialCachedPreview("user", "asset");
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+    await clearMaterialCache("user");
+  });
+
+  it("隔离用户、API来源和素材内容版本，清理仅当前用户", async () => {
+    const f = await cacheFixture();
+    (
+      await getMaterialCachedPreview("first", "asset", { populate: true })
+    ).release();
+    expect((await getMaterialCachedPreview("second", "asset")).cached).toBe(
+      false,
+    );
+    (
+      await getMaterialCachedPreview("second", "asset", { populate: true })
+    ).release();
+    await clearMaterialCache("first");
+    expect((await getMaterialCacheUsage("first")).bytes).toBe(0);
+    expect((await getMaterialCacheUsage("second")).bytes).toBe(4);
+    vi.stubEnv("VITE_API_BASE_URL", "https://other-api.example");
+    expect((await getMaterialCachedPreview("second", "asset")).cached).toBe(
+      false,
+    );
+    vi.stubEnv("VITE_API_BASE_URL", "http://127.0.0.1:8000");
+    f.metadata.sha256 = "f".repeat(64);
+    expect((await getMaterialCachedPreview("second", "asset")).cached).toBe(
+      false,
+    );
+    expect(f.media).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([401, 403, 404, 500])(
+    "缓存命中时鉴权HTTP %s仍拒绝旧字节",
+    async (status) => {
+      const f = await cacheFixture();
+      (
+        await getMaterialCachedPreview("user", "asset", { populate: true })
+      ).release();
+      f.fetcher.mockResolvedValueOnce(
+        Response.json(
+          { detail: { code: "FORBIDDEN", message: "denied" } },
+          { status },
+        ),
+      );
+      await expect(getMaterialCachedPreview("user", "asset")).rejects.toThrow();
+      expect(f.create).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["sha", "size", "mime", "stream"])(
+    "拒绝损坏%s且不存入持久缓存",
+    async (failure) => {
+      const f = await cacheFixture();
+      if (failure === "sha") f.metadata.sha256 = "0".repeat(64);
+      if (failure === "size") f.metadata.size_bytes = 5;
+      if (failure === "mime")
+        f.media.mockResolvedValueOnce(
+          new Response(f.content, { headers: { "Content-Type": "text/html" } }),
+        );
+      if (failure === "stream")
+        f.media.mockResolvedValueOnce(
+          new Response(new Uint8Array(5), {
+            headers: { "Content-Type": "video/mp4" },
+          }),
+        );
+      const result = await getMaterialCachedPreview("user", "asset", {
+        populate: true,
+      });
+      expect(result.cached).toBe(false);
+      expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+    },
+  );
+
+  it("缓存磁盘内容损坏则删除且回退在线", async () => {
+    const f = await cacheFixture();
+    (
+      await getMaterialCachedPreview("user", "asset", { populate: true })
+    ).release();
+    const key = [...f.entries.keys()].find((value) =>
+      value.includes("/media/"),
+    );
+    expect(key).toBeDefined();
+    f.entries.set(
+      key as string,
+      new Response(new Uint8Array([9, 9, 9, 9]), {
+        headers: { "Content-Type": "video/mp4" },
+      }),
+    );
+    expect((await getMaterialCachedPreview("user", "asset")).cached).toBe(
+      false,
+    );
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+  });
+
+  it("同账号重新登录拒绝旧会话迟到数据", async () => {
+    const f = await cacheFixture();
+    let resolve!: (response: Response) => void;
+    f.media.mockImplementationOnce(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done;
+        }),
+    );
+    const pending = getMaterialCachedPreview("user", "asset", {
+      populate: true,
+    });
+    const rejected = expect(pending).rejects.toThrow("会话");
+    await vi.waitFor(() => expect(f.media).toHaveBeenCalledOnce());
+    setCustomerSessionToken("test-cache-session");
+    resolve(
+      new Response(f.content, { headers: { "Content-Type": "video/mp4" } }),
+    );
+    await rejected;
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["clear", "evict", "abort"])("%s阻止在途下载写回", async (action) => {
+    const f = await cacheFixture();
+    const controller = new AbortController();
+    let resolve!: (response: Response) => void;
+    f.media.mockImplementationOnce(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done;
+        }),
+    );
+    const pending = getMaterialCachedPreview("user", "asset", {
+      populate: true,
+      signal: controller.signal,
+    });
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await vi.waitFor(() => expect(f.media).toHaveBeenCalledOnce());
+    if (action === "clear") await clearMaterialCache("user");
+    else if (action === "evict")
+      await evictMaterialCachedPreview("user", "asset");
+    else controller.abort();
+    resolve(
+      new Response(f.content, { headers: { "Content-Type": "video/mp4" } }),
+    );
+    await rejected;
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+  });
+
+  it("同一素材并发填充只下载一次，取消一名调用者不影响另一名", async () => {
+    const f = await cacheFixture();
+    const controller = new AbortController();
+    let resolve!: (response: Response) => void;
+    f.media.mockImplementationOnce(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done;
+        }),
+    );
+    const first = getMaterialCachedPreview("user", "asset", {
+      populate: true,
+      signal: controller.signal,
+    });
+    const second = getMaterialCachedPreview("user", "asset", {
+      populate: true,
+    });
+    const rejected = expect(first).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await vi.waitFor(() =>
+      expect(
+        f.fetcher.mock.calls.filter(([url]) =>
+          String(url).includes("/api/assets/"),
+        ),
+      ).toHaveLength(4),
+    );
+    await vi.waitFor(() => expect(f.media).toHaveBeenCalledOnce());
+    controller.abort();
+    resolve(
+      new Response(f.content, { headers: { "Content-Type": "video/mp4" } }),
+    );
+    await rejected;
+    const result = await second;
+    expect(result.cached).toBe(true);
+    result.release();
+    expect(f.media).toHaveBeenCalledOnce();
+  });
+
+  it("无WebLocks或CacheStorage时只返回在线预览", async () => {
+    const f = await cacheFixture();
+    vi.stubGlobal("navigator", {});
+    expect(
+      (await getMaterialCachedPreview("user", "asset", { populate: true }))
+        .cached,
+    ).toBe(false);
+    expect(await getMaterialCacheUsage("user")).toMatchObject({
+      available: false,
+      bytes: 0,
+    });
+    expect(f.media).not.toHaveBeenCalled();
+    await clearMaterialCache("user");
+  });
+
+  it("配额异常或超50MiB文件回退在线播放", async () => {
+    const f = await cacheFixture();
+    f.cache.put.mockRejectedValueOnce(
+      new DOMException("full", "QuotaExceededError"),
+    );
+    expect(
+      (await getMaterialCachedPreview("user", "asset", { populate: true }))
+        .cached,
+    ).toBe(false);
+    f.metadata.size_bytes = 50 * 1024 * 1024 + 1;
+    expect(
+      (await getMaterialCachedPreview("user", "asset", { populate: true }))
+        .cached,
+    ).toBe(false);
+    expect(f.media).toHaveBeenCalledOnce();
+  });
+
+  it("其他标签更新持久清理代数后，旧填充不可复活", async () => {
+    const f = await cacheFixture();
+    (
+      await getMaterialCachedPreview("user", "asset", { populate: true })
+    ).release();
+    const key = [...f.entries.keys()].find((value) =>
+      value.includes("/media/"),
+    ) as string;
+    f.entries.delete(key);
+    let resolve!: (response: Response) => void;
+    f.media.mockImplementationOnce(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done;
+        }),
+    );
+    const pending = getMaterialCachedPreview("user", "asset", {
+      populate: true,
+    });
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await vi.waitFor(() => expect(f.media).toHaveBeenCalledTimes(2));
+    const stateKey = `${key.replace("/media/", "/state/").split("/asset/")[0]}/`;
+    f.entries.set(
+      stateKey,
+      new Response(null, {
+        headers: { "X-Material-Generation": "other-tab-clear" },
+      }),
+    );
+    resolve(
+      new Response(f.content, { headers: { "Content-Type": "video/mp4" } }),
+    );
+    await rejected;
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+  });
+
+  it("授权元数据请求挂起时其他标签清理也使旧请求失效", async () => {
+    const f = await cacheFixture();
+    (
+      await getMaterialCachedPreview("user", "asset", { populate: true })
+    ).release();
+    const key = [...f.entries.keys()].find((value) =>
+      value.includes("/media/"),
+    ) as string;
+    let resolve!: (response: Response) => void;
+    f.fetcher.mockResolvedValueOnce(
+      Response.json({ url: "https://media.example/video" }),
+    );
+    f.fetcher.mockImplementationOnce(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done;
+        }),
+    );
+    const pending = getMaterialCachedPreview("user", "asset", {
+      populate: true,
+    });
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await vi.waitFor(() => expect(resolve).toBeDefined());
+    const stateKey = `${key.replace("/media/", "/state/").split("/asset/")[0]}/`;
+    f.entries.delete(key);
+    f.entries.set(
+      stateKey,
+      new Response(null, {
+        headers: { "X-Material-Generation": "other-tab-clear-before-metadata" },
+      }),
+    );
+    resolve(Response.json(f.metadata));
+    await rejected;
+    expect(f.media).toHaveBeenCalledOnce();
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+  });
+
+  it("清理发生在Cache.put等待期间仍删除迟到写入", async () => {
+    const f = await cacheFixture();
+    let finishPut!: () => void;
+    const putReady = new Promise<void>((resolve) => {
+      finishPut = resolve;
+    });
+    f.cache.put.mockImplementationOnce(async (key, response) => {
+      await putReady;
+      f.entries.set(typeof key === "string" ? key : key.url, response.clone());
+    });
+    const pending = getMaterialCachedPreview("user", "asset", {
+      populate: true,
+    });
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await vi.waitFor(() => expect(f.cache.put).toHaveBeenCalledOnce());
+    const clearing = clearMaterialCache("user");
+    finishPut();
+    await rejected;
+    await clearing;
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+  });
+
+  it("最多并发下载2个文件，精准evict不取消其他素材", async () => {
+    const f = await cacheFixture();
+    const resolvers: ((response: Response) => void)[] = [];
+    f.media.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const first = getMaterialCachedPreview("user", "one", { populate: true });
+    const rejected = expect(first).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    const second = getMaterialCachedPreview("user", "two", { populate: true });
+    const third = getMaterialCachedPreview("user", "three", { populate: true });
+    await vi.waitFor(() => expect(f.media).toHaveBeenCalledTimes(2));
+    await evictMaterialCachedPreview("user", "one");
+    await rejected;
+    await vi.waitFor(() => expect(f.media).toHaveBeenCalledTimes(3));
+    for (const resolve of resolvers)
+      resolve(
+        new Response(f.content, { headers: { "Content-Type": "video/mp4" } }),
+      );
+    const results = await Promise.all([second, third]);
+    expect(results.every((result) => result.cached)).toBe(true);
+    for (const result of results) result.release();
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(8);
+  });
+
+  it("流读取超时会取消读取且不留下缓存", async () => {
+    const f = await cacheFixture();
+    let expire: (() => void) | undefined;
+    const schedule = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation((handler, timeout) => {
+      if (timeout === 60_000 && typeof handler === "function")
+        expire = () => handler();
+      return schedule(handler, timeout) as unknown as ReturnType<
+        typeof setTimeout
+      >;
+    });
+    const cancel = vi.fn();
+    f.media.mockResolvedValueOnce(
+      new Response(new ReadableStream({ cancel }), {
+        headers: { "Content-Type": "video/mp4" },
+      }),
+    );
+    const pending = getMaterialCachedPreview("user", "asset", {
+      populate: true,
+    });
+    await vi.waitFor(() => expect(f.media).toHaveBeenCalledOnce());
+    // Trigger the configured 60-second download timeout without waiting a minute.
+    expect(expire).toBeDefined();
+    expire?.();
+    expect((await pending).cached).toBe(false);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect((await getMaterialCacheUsage("user")).bytes).toBe(0);
+  });
+
+  it("跨用户总容量按LRU淘汰，清理不删除其他产品缓存键", async () => {
+    const f = await cacheFixture();
+    (
+      await getMaterialCachedPreview("user", "asset", { populate: true })
+    ).release();
+    const key = [...f.entries.keys()].find((value) =>
+      value.includes("/media/"),
+    ) as string;
+    f.entries.clear();
+    for (let index = 0; index < 6; index += 1) {
+      const oldKey = key.replace("/user/asset/", `/other/old-${index}/`);
+      f.entries.set(
+        oldKey,
+        new Response(null, {
+          headers: {
+            "Content-Length": String(50 * 1024 * 1024),
+            "X-Material-Accessed": String(index),
+          },
+        }),
+      );
+    }
+    f.entries.set("https://unrelated.example/other-app", new Response("keep"));
+    (
+      await getMaterialCachedPreview("user", "asset", { populate: true })
+    ).release();
+    const oldKeys = [...f.entries.keys()].filter((value) =>
+      value.includes("/other/"),
+    );
+    expect(oldKeys).toHaveLength(5);
+    expect(oldKeys.some((value) => value.includes("/old-0/"))).toBe(false);
+    await clearMaterialCache("user");
+    expect(f.entries.has("https://unrelated.example/other-app")).toBe(true);
+    expect((await getMaterialCacheUsage("other")).bytes).toBe(
+      250 * 1024 * 1024,
+    );
+  });
+});
 
 describe("爆款列表 API", () => {
   afterEach(() => {

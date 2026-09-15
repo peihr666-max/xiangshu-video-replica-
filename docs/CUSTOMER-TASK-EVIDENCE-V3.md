@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## 2026-09-15 MATERIAL-CACHE / R90 浏览器持久缓存
+
+缓存 API 24 项新增回归覆盖授权、账号/版本隔离、容量、校验、超时、并发及清理竞争，完整 API 134 项通过；页面新增 5 项回归，完整 ContentPages 90 项通过。有效 RED 后实现，最终完整前端 100 文件 1544 项通过；TypeScript/Biome/秘密扫描及独立交叉评审通过。真实既有视频从 Blob 完整播放 4.458333 秒，清理后容量由 15.3 MB 归零，45 条云端素材保留，已打开视频播放至结束无媒体错误。原始日志和浏览器观察仅留本机。该项为本机验证，不代表离线素材库或全部历史素材验收；详见[任务证据](evidence/BUSINESS-REMEDIATION-20260914.md)。
+
 ## 2026-09-15 JOINT-RETEST R89 请求收入与用量展示
 
 用户确认同时显示消费折合和实付收入后，经营分析列表/详情分别读取既有 nominal_revenue_fen 与 revenue_fen，利润保持原口径；用量一位小数且保留零值与未知状态。两组有效 RED 后，经营分析 8 项、管理端 31 文件 184 项通过，TypeScript/Biome/秘密扫描及交叉评审完成。真实管理端刷新、请求明细及核算详情已复验，未改账务事实。详见[任务证据](evidence/BUSINESS-REMEDIATION-20260914.md)，原始数据仅留本机。
