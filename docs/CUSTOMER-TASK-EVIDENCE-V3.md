@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## 2026-09-15 JOINT-RETEST R89 请求收入与用量展示
+
+用户确认同时显示消费折合和实付收入后，经营分析列表/详情分别读取既有 nominal_revenue_fen 与 revenue_fen，利润保持原口径；用量一位小数且保留零值与未知状态。两组有效 RED 后，经营分析 8 项、管理端 31 文件 184 项通过，TypeScript/Biome/秘密扫描及交叉评审完成。真实管理端刷新、请求明细及核算详情已复验，未改账务事实。详见[任务证据](evidence/BUSINESS-REMEDIATION-20260914.md)，原始数据仅留本机。
+
 ## 2026-09-15 JOINT-RETEST 用户质量验收与只读业务审计
 
 R88 陈旧辅助质检成本收口有效 RED 后，完整计费隔离 PostgreSQL 专项 49 passed；覆盖源任务并发重开、调用完成占锁、批量限制、幂等及客户账务不变。Ruff/format、Mypy、秘密扫描和交叉评审通过。确认无在途任务后，原 Worker 已重启加载；实际遗留记录由 PENDING 转 UNKNOWN，调用总数及任务/账务核对结果不变，未重新生成。状态缺陷已完成本机验证，账单核实仍独立保留。
