@@ -2128,6 +2128,7 @@ describe("CW-016 两个客户钱包入口路由到 live 钱包工作区", () => 
 });
 
 const nativeAccounts = vi.hoisted(() => ({
+  focusLocalPublishLogin: vi.fn(),
   canUseLocalPublishAccounts: vi.fn(() => true),
   listLocalPublishAccounts: vi.fn(),
   startLocalPublishLogin: vi.fn(),
@@ -2157,7 +2158,11 @@ describe("发布账号官方扫码", () => {
     });
     nativeAccounts.canUseLocalPublishAccounts.mockReturnValue(true);
     nativeAccounts.listLocalPublishAccounts.mockResolvedValue([]);
-    nativeAccounts.checkLocalPublishLogin.mockResolvedValue(null);
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "loading",
+      image: null,
+      account: null,
+    });
     nativeAccounts.cancelLocalPublishLogin.mockResolvedValue(undefined);
   });
   it("只从本机加载账号并显示官方用户名，不提供 Cookie 输入框", async () => {
@@ -2176,7 +2181,11 @@ describe("发布账号官方扫码", () => {
   });
   it("扫码添加以平台响应为准，未完成前不显示已连接", async () => {
     nativeAccounts.startLocalPublishLogin.mockResolvedValue("login-1");
-    nativeAccounts.checkLocalPublishLogin.mockResolvedValue(account);
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "connected",
+      image: null,
+      account,
+    });
     const { value } = open();
     await waitFor(() =>
       expect(
@@ -2232,10 +2241,54 @@ describe("发布账号官方扫码", () => {
     );
     expect(screen.getByText("小红书 · 平台真实昵称")).toBeInTheDocument();
   });
-  it("网页端明确解释本机功能并禁止创建伪账号", () => {
+  it("网页端读取云端账号并允许扫码添加", async () => {
     nativeAccounts.canUseLocalPublishAccounts.mockReturnValue(false);
     open();
-    expect(screen.getByRole("button", { name: "扫码添加账号" })).toBeDisabled();
-    expect(nativeAccounts.listLocalPublishAccounts).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "扫码添加账号" }),
+      ).toBeEnabled(),
+    );
+    expect(nativeAccounts.listLocalPublishAccounts).toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        "网页端账号的登录状态加密保存在服务器，可在个人中心解绑。",
+      ),
+    ).toBeInTheDocument();
+  });
+  it("个人中心显示二维码，过期后移除图片并可重新获取", async () => {
+    nativeAccounts.startLocalPublishLogin.mockResolvedValue("qr-1");
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "qr_ready",
+      image: "data:image/png;base64,cXI=",
+      account: null,
+    });
+    const { value } = open();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "扫码添加账号" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "扫码添加账号" }));
+    await screen.findByAltText("抖音登录二维码", {}, { timeout: 2500 });
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "expired",
+      image: null,
+      account: null,
+    });
+    await screen.findByText(
+      "二维码或本次连接已过期，请重新获取。",
+      {},
+      { timeout: 2500 },
+    );
+    expect(screen.queryByAltText("抖音登录二维码")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重新获取二维码" }));
+    await waitFor(() =>
+      expect(nativeAccounts.startLocalPublishLogin).toHaveBeenCalledTimes(2),
+    );
+    expect(nativeAccounts.cancelLocalPublishLogin).toHaveBeenCalledWith(
+      value.user.id,
+      "qr-1",
+    );
   });
 });

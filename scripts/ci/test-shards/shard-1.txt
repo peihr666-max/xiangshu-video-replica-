@@ -17,6 +17,7 @@ server/tests/test_health.py
 server/tests/test_migration_dialect_contract.py
 server/tests/test_ops_alerts.py
 server/tests/test_publish_accounts.py
+server/tests/test_publish_browser.py
 server/tests/test_sqlite_to_postgres.py
 server/tests/test_viral_keywords.py
 server/tests/test_viral_tikhub.py

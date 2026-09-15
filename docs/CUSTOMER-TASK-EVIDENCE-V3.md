@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## PUBLISH-QR-REUSE-20260915 — 双端官方扫码添加账号
+
+采用 MIT `dreammis/social-auto-upload@0012d2c355f88f683cc38dde2a2db209e14091bc` 的二维码定位适配；新增网页服务器隔离浏览器与 Fernet 状态保存，Windows 沿用本机 WebView2。三平台两套脚本实测取码通过；Linux 静态门（1465 前端 / 150 Python 文件类型检查）与专项 PG 11 项通过。后端首次全量 2168 passed / 18 failed / 1 既有 skip；修复后受影响模块分组复验 121、27、42 passed，覆盖全部失败，最终唯一覆盖 2186 passed / 1 既有 skip。查重确认 PR #109 为独立联调任务；扫码兼容其网页会话请求头后，前端专项 196 项通过。证据层级 AUTOMATED_VERIFIED；真实手机确认、Windows 安装包、PR 三门禁和部署未完成。Owner 当前 Codex 任务，Reviewer 待 PR；详见[独立证据](evidence/PUBLISH-QR-REUSE-20260915.md)。
+
 ## FIX-ASR-400-20260914 — 本地音频传递与请求参数
 
 本地短音频以 Base64 直传，云存储保留签名 URL；修正 Flash 必填音频格式和采样率类型，预检先于付费尝试。单次真实请求已返回 HTTP 200，并发现解析器独立音频可能是背景音乐；抖音、小红书的文案提取现统一使用完整视频内音轨。最终 Linux 静态门通过（1418 前端），全量 PG 2048 passed / 1 既有 skip。[证据](evidence/FIX-ASR-400-20260914.md)与[同类问题排查](媒体云端可访问性排查-20260914.md)区分代码修复、环境准备和真实付费验收。

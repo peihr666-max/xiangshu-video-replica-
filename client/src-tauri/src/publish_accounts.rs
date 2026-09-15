@@ -26,6 +26,14 @@ impl Platform {
             Self::Xiaohongshu => "https://creator.xiaohongshu.com",
         }
     }
+
+    fn login_url(&self) -> &'static str {
+        match self {
+            Self::Douyin => "https://creator.douyin.com/",
+            Self::WechatChannels => "https://channels.weixin.qq.com/platform",
+            Self::Xiaohongshu => "https://creator.xiaohongshu.com/login",
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -41,6 +49,95 @@ pub struct LocalAccount {
 struct Identity {
     platform_user_id: String,
     username: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PagePhase {
+    Loading,
+    QrReady,
+    Confirming,
+    ActionRequired,
+    Expired,
+}
+
+#[derive(Deserialize)]
+struct PageLogin {
+    phase: PagePhase,
+    image: Option<String>,
+    observed_at: u64,
+}
+
+#[derive(Deserialize)]
+struct PageSnapshot {
+    identity: Option<Identity>,
+    login: Option<PageLogin>,
+}
+
+#[derive(Serialize)]
+pub struct LoginStatus {
+    phase: &'static str,
+    image: Option<String>,
+    account: Option<LocalAccount>,
+}
+
+impl LoginStatus {
+    fn phase(phase: &'static str) -> Self {
+        Self {
+            phase,
+            image: None,
+            account: None,
+        }
+    }
+
+    fn from_page(page: Option<PageLogin>, now: u64) -> Self {
+        let Some(page) = page else {
+            return Self::phase("loading");
+        };
+        if page.observed_at > now.saturating_add(5000)
+            || now.saturating_sub(page.observed_at) > 15000
+        {
+            return Self::phase("action_required");
+        }
+        let phase = match page.phase {
+            PagePhase::Loading => "loading",
+            PagePhase::QrReady => "qr_ready",
+            PagePhase::Confirming => "confirming",
+            PagePhase::ActionRequired => "action_required",
+            PagePhase::Expired => "expired",
+        };
+        let image = page.image.filter(|value| valid_qr_image(value));
+        if phase == "qr_ready" {
+            if image.is_none() {
+                return Self::phase("action_required");
+            }
+            Self {
+                phase,
+                image,
+                account: None,
+            }
+        } else {
+            Self::phase(phase)
+        }
+    }
+}
+
+fn valid_qr_image(value: &str) -> bool {
+    value.len() <= 600_000
+        && [
+            "data:image/png;base64,",
+            "data:image/jpeg;base64,",
+            "data:image/webp;base64,",
+        ]
+        .iter()
+        .any(|prefix| {
+            value.strip_prefix(prefix).is_some_and(|data| {
+                !data.is_empty()
+                    && data
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'='))
+            })
+        })
 }
 
 struct Login {
@@ -144,7 +241,7 @@ fn official_window(
     let url = if clearing {
         "about:blank"
     } else {
-        platform.origin()
+        platform.login_url()
     };
     WebviewWindowBuilder::new(
         app,
@@ -156,6 +253,7 @@ fn official_window(
     .inner_size(1080.0, 780.0)
     .data_directory(profile)
     .initialization_script(include_str!("publish_identity.js"))
+    .initialization_script_for_all_frames(include_str!("publish_login.js"))
     .build()
     .map_err(|e| e.to_string())
 }
@@ -278,7 +376,7 @@ pub async fn check_local_publish_login(
     state: State<'_, PublishAccounts>,
     owner: String,
     login_id: String,
-) -> Result<Option<LocalAccount>, String> {
+) -> Result<LoginStatus, String> {
     main_only(&window)?;
     let dir = root(&app, &owner)?;
     let platform = {
@@ -288,13 +386,13 @@ pub async fn check_local_publish_login(
             .filter(|v| v.owner == owner)
             .ok_or("扫码会话不存在")?;
         if login.started.elapsed() > Duration::from_secs(300) {
-            return Err("扫码已超时，请取消并重新扫码".into());
+            return Ok(LoginStatus::phase("expired"));
         }
         login.platform.clone()
     };
-    let official = app
-        .get_webview_window(&format!("publish-{login_id}"))
-        .ok_or("官方窗口已关闭，请重新扫码")?;
+    let Some(official) = app.get_webview_window(&format!("publish-{login_id}")) else {
+        return Ok(LoginStatus::phase("closed"));
+    };
     if official
         .url()
         .map_err(|e| e.to_string())?
@@ -302,11 +400,11 @@ pub async fn check_local_publish_login(
         .ascii_serialization()
         != platform.origin()
     {
-        return Ok(None);
+        return Ok(LoginStatus::phase("action_required"));
     }
     let (send, receive) = std::sync::mpsc::channel();
     let script = format!(
-        "location.origin === {} ? (window.__xiangshuPublishIdentity || null) : null",
+        "location.origin === {} ? ({{identity: window.__xiangshuPublishIdentity || null, login: window.__xiangshuPublishLogin || null}}) : null",
         serde_json::to_string(platform.origin()).map_err(|e| e.to_string())?
     );
     official
@@ -319,10 +417,20 @@ pub async fn check_local_publish_login(
             .await
             .map_err(|e| e.to_string())?
             .map_err(|_| "官方页面未响应，请稍后重试")?;
-    let Some(identity) =
-        serde_json::from_str::<Option<Identity>>(&value).map_err(|_| "平台账号信息解析失败")?
-    else {
-        return Ok(None);
+    if value.len() > 620_000 {
+        return Err("平台登录信息过大，请重新扫码".into());
+    }
+    let snapshot =
+        serde_json::from_str::<Option<PageSnapshot>>(&value).map_err(|_| "平台账号信息解析失败")?;
+    let Some(snapshot) = snapshot else {
+        return Ok(LoginStatus::phase("loading"));
+    };
+    let Some(identity) = snapshot.identity else {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis() as u64;
+        return Ok(LoginStatus::from_page(snapshot.login, now));
     };
     if identity.username.trim().is_empty()
         || identity.platform_user_id.trim().is_empty()
@@ -371,7 +479,34 @@ pub async fn check_local_publish_login(
         .map_err(|e| e.to_string())?;
     official.close().map_err(|e| e.to_string())?;
     logins.remove(&login_id);
-    Ok(Some(account))
+    Ok(LoginStatus {
+        phase: "connected",
+        image: None,
+        account: Some(account),
+    })
+}
+
+#[tauri::command]
+pub async fn focus_local_publish_login(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, PublishAccounts>,
+    owner: String,
+    login_id: String,
+) -> Result<(), String> {
+    main_only(&window)?;
+    validate_owner(&owner)?;
+    let logins = state.logins.lock().map_err(|_| "扫码会话忙，请重试")?;
+    logins
+        .get(&login_id)
+        .filter(|login| login.owner == owner)
+        .ok_or("扫码会话不存在")?;
+    let official = app
+        .get_webview_window(&format!("publish-{login_id}"))
+        .ok_or("官方窗口已关闭，请重新扫码")?;
+    official.unminimize().map_err(|e| e.to_string())?;
+    official.show().map_err(|e| e.to_string())?;
+    official.set_focus().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -469,6 +604,38 @@ pub async fn remove_local_publish_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn qr_snapshot_rejects_stale_remote_and_non_raster_images() {
+        for image in [
+            "https://example.com/qr.png",
+            "data:image/svg+xml;base64,cXI=",
+            "data:image/png;base64,",
+        ] {
+            assert!(!valid_qr_image(image));
+        }
+        assert!(!valid_qr_image(&format!(
+            "data:image/png;base64,{}",
+            "a".repeat(600_000)
+        )));
+        let page = |at| {
+            Some(PageLogin {
+                phase: PagePhase::QrReady,
+                image: Some("data:image/png;base64,cXI=".into()),
+                observed_at: at,
+            })
+        };
+        let ready = LoginStatus::from_page(page(20_000), 20_001);
+        assert_eq!(ready.phase, "qr_ready");
+        assert!(ready.image.is_some());
+        assert!(ready.account.is_none());
+        let stale = LoginStatus::from_page(page(1000), 20_001);
+        assert_eq!(stale.phase, "action_required");
+        assert!(stale.image.is_none());
+        assert_eq!(
+            LoginStatus::from_page(page(30_000), 20_001).phase,
+            "action_required"
+        );
+    }
     #[test]
     fn owner_and_account_paths_cannot_escape_profile_root() {
         for invalid in [

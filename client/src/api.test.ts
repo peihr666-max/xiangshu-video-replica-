@@ -60,6 +60,7 @@ import {
   listSimpleCharacterLibraryPage,
   listViralVideos,
   lockGenerationPrompt,
+  publishBrowserRequest,
   readAnalysisPayload,
   readFirstFrameCandidates,
   reconcileUncertainTask,
@@ -88,6 +89,37 @@ import {
   waitForScriptRewriteTask,
   waitForSourceFrameTask,
 } from "./api";
+
+describe("扫码请求会话兼容", () => {
+  afterEach(() => {
+    setCustomerSessionToken(null);
+    vi.unstubAllGlobals();
+  });
+
+  it.each(["web-session:qr-fixture", "desktop-qr-fixture"])(
+    "%s 保留认证与扫码流取消信号",
+    async (token) => {
+      setInternalAccessToken(null);
+      setCustomerSessionToken(token);
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      await publishBrowserRequest("/api/studio/publish/browser/accounts", {
+        signal: controller.signal,
+      });
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      const headers = new Headers(init.headers);
+      expect(headers.get("Authorization")).toBe(`Bearer ${token}`);
+      expect(headers.get("X-Customer-Web")).toBe(
+        token.startsWith("web-session:") ? "1" : null,
+      );
+      expect(init.signal).toBe(controller.signal);
+      controller.abort();
+      expect(init.signal?.aborted).toBe(true);
+      expect(init.cache).toBe("no-store");
+    },
+  );
+});
 
 describe("爆款列表 API", () => {
   afterEach(() => {
