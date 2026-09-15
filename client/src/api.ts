@@ -4446,6 +4446,19 @@ async function requestGenerationJson<T>(
 
 function generationRequestError(error: unknown, errorPrefix: string): Error {
   const { status, code } = error as RequestError;
+  const referenceMessage =
+    status === 422 && code === "INDEPENDENT_REFERENCE_DURATION_INVALID"
+      ? "参考视频/音频每段须为2–15秒；缺少时长的历史素材请重新上传后选取。"
+      : status === 422 &&
+          code === "INDEPENDENT_REFERENCE_DURATION_LIMIT_EXCEEDED"
+        ? "参考视频、音频各自累计不能超过15秒，请移除部分素材或裁剪后重试。"
+        : null;
+  if (referenceMessage) {
+    const mapped = new Error(referenceMessage) as RequestError;
+    mapped.status = status;
+    mapped.code = code;
+    return mapped;
+  }
   const statusMessage =
     status === 401
       ? "登录已失效，请重新进入工作台"

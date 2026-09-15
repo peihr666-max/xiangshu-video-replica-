@@ -42,7 +42,7 @@ Migration findings (SQLite → PostgreSQL):
   ``snapshot_generation_rates`` reads on the PG lane; the seed captures and
   restores them (ON CONFLICT DO NOTHING) so every created task freezes a real
   cost snapshot.
-- ``reference_asset_ids`` over the *total* cap (8 + 3 + 3 = 14) is rejected by
+- ``reference_asset_ids`` over the *total* cap (12 files) is rejected by
   the ``IndependentVideoRequest`` model (``max_length``) at construction time, so
   the service-level assertion is a pydantic ``ValidationError`` (the route turned
   it into a 422 ``too_long`` body). The per-kind caps (image ≤ 8 / video ≤ 3 /
@@ -262,6 +262,12 @@ def _seed_scene(dsn: str) -> None:
                     "employee_1",
                 ),
             ],
+        )
+
+        pg.execute(
+            "UPDATE assets SET metadata_json=%s "
+            "WHERE id IN ('material-video-owned', 'material-audio-owned')",
+            (json.dumps({"duration_seconds": 4}),),
         )
 
 
@@ -696,7 +702,7 @@ def test_reference_images_reject_duplicates_and_more_than_capability_limit(scene
     assert duplicate.value.status_code == 422
     assert duplicate.value.detail["code"] == "INDEPENDENT_REFERENCE_DUPLICATE"
 
-    # 超出总兜底上限（>14 项）由请求模型 max_length 拒绝（ValidationError
+    # 超出总兜底上限（>12 项）由请求模型 max_length 拒绝（ValidationError
     # too_long）；每类上限（图≤8/视≤3/音≤3）在分流后由
     # INDEPENDENT_REFERENCE_LIMIT_EXCEEDED 拒绝，纯函数层已单测覆盖。
     with pytest.raises(ValidationError):
@@ -1175,3 +1181,105 @@ def test_video_task_route_creates_batch_through_fenced_write_on_pg(scene: str) -
     assert replay.json()["id"] == body["id"]
     assert _ledger_count("RESERVE") == 1
     assert _wallet("employee_1") == (990, 10)
+
+
+@pytest.mark.parametrize("duration", [None, 1.9, 15.01, float("nan")])
+def test_r2v_rejects_invalid_reference_duration_before_reserve(
+    scene: str, duration: float | None
+) -> None:
+    _enable_extended_modes()
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE assets SET metadata_json=%s WHERE id='material-video-owned'",
+            (json.dumps({"duration_seconds": duration}),),
+        )
+    with pytest.raises(HTTPException) as exc:
+        _create(
+            IndependentVideoRequest(
+                mode="r2v",
+                prompt_text="视频参考",
+                reference_asset_ids=["material-video-owned"],
+                output_duration_seconds=4,
+                quantity=1,
+                idempotency_key="invalid-duration",
+            ),
+            EMPLOYEE_1,
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "INDEPENDENT_REFERENCE_DURATION_INVALID"
+    assert _ledger_count("RESERVE") == 0
+
+
+def test_r2v_rejects_total_reference_duration_before_reserve(scene: str) -> None:
+    _enable_extended_modes()
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE assets SET metadata_json=%s WHERE id='material-video-owned'",
+            (json.dumps({"duration_seconds": 12}),),
+        )
+        raw.execute(
+            "UPDATE assets SET kind='material_video', content_type='video/mp4', "
+            "metadata_json=%s WHERE id='material-audio-owned'",
+            (json.dumps({"duration_seconds": 4}),),
+        )
+    with pytest.raises(HTTPException) as exc:
+        _create(
+            IndependentVideoRequest(
+                mode="r2v",
+                prompt_text="视频参考",
+                reference_asset_ids=["material-video-owned", "material-audio-owned"],
+                output_duration_seconds=4,
+                quantity=1,
+                idempotency_key="total-duration",
+            ),
+            EMPLOYEE_1,
+        )
+    assert exc.value.detail["code"] == "INDEPENDENT_REFERENCE_DURATION_LIMIT_EXCEEDED"
+    assert _ledger_count("RESERVE") == 0
+
+
+def test_r2v_allows_fifteen_seconds_per_media_type(scene: str) -> None:
+    _enable_extended_modes()
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE assets SET metadata_json=%s WHERE id IN "
+            "('material-video-owned', 'material-audio-owned')",
+            (json.dumps({"duration_seconds": 15}),),
+        )
+    result = _create(
+        IndependentVideoRequest(
+            mode="r2v",
+            prompt_text="分别引用视频和声音",
+            reference_asset_ids=["material-video-owned", "material-audio-owned"],
+            output_duration_seconds=4,
+            quantity=1,
+            idempotency_key="separate-duration-limits",
+        ),
+        EMPLOYEE_1,
+    )
+    assert result.quantity == 1
+    assert _ledger_count("RESERVE") == 1
+
+
+def test_r2v_rejects_audio_total_before_reserve(scene: str) -> None:
+    _enable_extended_modes()
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE assets SET kind='material_audio', content_type='audio/mpeg', "
+            "metadata_json=%s WHERE id IN ('material-video-owned', 'material-audio-owned')",
+            (json.dumps({"duration_seconds": 8}),),
+        )
+    with pytest.raises(HTTPException) as exc:
+        _create(
+            IndependentVideoRequest(
+                mode="r2v",
+                prompt_text="声音参考",
+                reference_asset_ids=["material-video-owned", "material-audio-owned"],
+                output_duration_seconds=4,
+                quantity=1,
+                idempotency_key="audio-duration-limit",
+            ),
+            EMPLOYEE_1,
+        )
+    assert exc.value.detail["code"] == "INDEPENDENT_REFERENCE_DURATION_LIMIT_EXCEEDED"
+    assert _ledger_count("RESERVE") == 0

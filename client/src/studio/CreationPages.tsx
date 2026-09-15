@@ -2523,7 +2523,9 @@ function VideoMaterialUpload({
         type="file"
       />
       {acceptsMedia && (
-        <small className="creation-upload-hint">视频/音频 ≤15 秒</small>
+        <small className="creation-upload-hint">
+          视频、音频各累计 ≤15 秒；参考合计 ≤12 项
+        </small>
       )}
     </>
   );

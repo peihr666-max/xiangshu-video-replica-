@@ -2633,6 +2633,14 @@ function StudioPicker({
                           );
                           return;
                         }
+                        const nextReferences = validateReferences(
+                          [...referenceValidation.referenceIds, asset.id],
+                          [...referenceValidation.assets, asset],
+                        );
+                        if (nextReferences.issues.length > 0) {
+                          notify(nextReferences.issues[0]);
+                          return;
+                        }
                         select({
                           referenceIds: [
                             ...referenceValidation.referenceIds,

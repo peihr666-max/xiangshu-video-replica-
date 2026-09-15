@@ -1558,7 +1558,9 @@ describe("V1.4 创作页面", () => {
     useStudio.mockReturnValue(value);
     render(<VideoPage />);
 
-    expect(screen.getByText("视频/音频 ≤15 秒")).toBeInTheDocument();
+    expect(
+      screen.getByText("视频、音频各累计 ≤15 秒；参考合计 ≤12 项"),
+    ).toBeInTheDocument();
   });
 
   it("参考图上传完成时按最新草稿追加而不复活已移除引用", async () => {

@@ -1390,6 +1390,31 @@ describe("generation workflow API", () => {
     ).rejects.toThrow(message);
   });
 
+  it("参考时长拒绝保留可执行的修复提示", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          detail: {
+            code: "INDEPENDENT_REFERENCE_DURATION_INVALID",
+            message: "internal detail",
+          },
+        }),
+      }),
+    );
+    await expect(
+      createScriptVersion("project-1", {
+        source: "custom",
+        text: "口播稿",
+        shot_card_version_id: "shot-1",
+      }),
+    ).rejects.toThrow(
+      "参考视频/音频每段须为2–15秒；缺少时长的历史素材请重新上传后选取。",
+    );
+  });
+
   it("maps generation timeout and offline failures to Chinese errors", async () => {
     const fetchMock = vi
       .fn()

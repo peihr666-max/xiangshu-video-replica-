@@ -2680,3 +2680,41 @@ def test_viral_list_reads_only_and_weekly_worker_prepares_cloud_media_on_pg(
         sort="hot",
         max_age=timedelta(minutes=5),
     )
+
+
+def test_material_video_completion_persists_probed_duration(
+    bus: BusinessConnection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import materials
+    from app.media_tools import MediaInspection
+
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    admin = actor("admin_1", "admin")
+    content = b"\x00\x00\x00\x18ftypisom" + b"test-video"
+
+    def inspect(content_bytes: bytes, **kwargs: Any) -> MediaInspection:
+        assert content_bytes == content
+        assert kwargs["expected_type"] == "video"
+        return MediaInspection(
+            media_type="video", duration_seconds=12.066667, width=720, height=1372
+        )
+
+    monkeypatch.setattr(materials, "inspect_media_bytes", inspect, raising=False)
+    intent = materials.create_material_upload_intent(
+        bus,
+        actor=admin,
+        storage=storage,
+        request=materials.MaterialUploadIntentRequest(
+            filename="ref.mp4", content_type="video/mp4", size_bytes=len(content)
+        ),
+    )
+    storage.put_object(intent.storage_key, content, content_type="video/mp4")
+    prepared = materials.prepare_material_upload(bus, actor=admin, asset_id=intent.asset_id)
+    probed = materials.probe_material_upload(prepared, storage=storage)
+    assert probed.duration_seconds == 12.066667
+    item = materials.persist_material_upload(bus, actor=admin, probed=probed)
+    assert item.duration_seconds == 12.066667
+    row = bus.execute("SELECT metadata_json FROM assets WHERE id=%s", (intent.asset_id,)).fetchone()
+    metadata = json.loads(row["metadata_json"])
+    assert metadata["video_duration_verified"] is True
+    assert "audio_duration_verified" not in metadata

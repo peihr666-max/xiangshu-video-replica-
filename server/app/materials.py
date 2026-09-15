@@ -21,7 +21,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
 from app.media import MAX_UPLOAD_BYTES, UPLOAD_INTENT_EXPIRES_IN
-from app.media_tools import probe_duration_seconds, resolve_media_binary
+from app.media_tools import (
+    MediaToolFailed,
+    MediaToolUnavailable,
+    MediaValidationFailed,
+    inspect_media_bytes,
+    probe_duration_seconds,
+    resolve_media_binary,
+)
 from app.permissions import require_asset_access, require_not_auditor, write_audit
 from app.storage import (
     StorageAdapter,
@@ -871,6 +878,18 @@ def probe_material_upload(
     if not _content_matches(prepared.media_type, content):
         raise material_error(422, "MATERIAL_CONTENT_INVALID", "文件内容与素材类型不匹配。")
     duration_seconds = None
+    if prepared.media_type == "video":
+        try:
+            inspection = inspect_media_bytes(
+                content, suffix=".mp4", expected_type="video", min_duration_seconds=0.001
+            )
+            duration_seconds = inspection.duration_seconds
+        except MediaValidationFailed as exc:
+            raise material_error(422, "MATERIAL_VIDEO_INVALID", "无法读取有效视频及时长。") from exc
+        except (MediaToolFailed, MediaToolUnavailable) as exc:
+            raise material_error(
+                503, "MATERIAL_VIDEO_PROBE_UNAVAILABLE", "视频校验服务暂不可用，请稍后重试。"
+            ) from exc
     if prepared.media_type == "audio" and prepared.audio_purpose is not None:
         duration_seconds = probe_audio_duration(content)
         if duration_seconds is None:
@@ -920,6 +939,9 @@ def persist_material_upload(
     metadata["upload_status"] = "READY"
     if probed.duration_seconds is not None:
         metadata["duration_seconds"] = probed.duration_seconds
+    if prepared.media_type == "video" and probed.duration_seconds is not None:
+        metadata["video_duration_verified"] = True
+    if prepared.media_type == "audio" and probed.duration_seconds is not None:
         metadata["audio_duration_verified"] = True
         validate_audio_contract(
             media_type="audio",
