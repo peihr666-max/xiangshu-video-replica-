@@ -71,6 +71,33 @@ def test_guard_reports_no_failures_on_the_real_tree() -> None:
     assert failures == [], "migration guard reported:\n  - " + "\n  - ".join(failures)
 
 
+def test_viral_copy_cache_migration_is_pg_only_and_has_registered_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    migration = REPO_ROOT / "server/migrations/versions/20260915T1600_viral_copy_cache.py"
+    spec = importlib.util.spec_from_file_location("viral_copy_cache_migration", migration)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "20260915T1600_viral_copy_cache"
+    assert module.down_revision == "20260914T0000_local_joint_merge"
+    calls: list[object] = []
+    monkeypatch.setattr(
+        module,
+        "op",
+        SimpleNamespace(
+            get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")),
+            execute=calls.append,
+            drop_table=calls.append,
+        ),
+    )
+    module.upgrade()
+    module.downgrade()
+    assert calls == []
+
+
 def test_guard_recomputation_agrees_with_cw056_frozen_literals() -> None:
     """双跑核心：守卫独立重算的结果必须等于 CW-056 的冻结字面量。
 

@@ -1,5 +1,10 @@
 # Customer Edition Task Evidence Record V3
 
+## 2026-09-15 VIRAL-COPY-CACHE
+
+服务器文案缓存核心有效 RED 为 3 failed / 2 passed，实现后核心 5 passed、扩展边界 12 passed；迁移静态 17 passed、隔离 PostgreSQL 迁移/历史起点 6 passed。最终缓存20项通过；完整Worker/ASR专项102项后追加两项历史竞争回归通过，完整前端1515项，独立PG全量2283 passed / 1既有 skipped。静态初次两处行长失败后补验剩余Python检查通过；收尾仅新增等待提示，单项及类型/格式检查通过。独立复审通过，本机追加迁移和已有文案持久缓存验证完成，无新增识别或收费。详见[任务证据](evidence/VIRAL-COPY-CACHE-20260915.md)。
+
+
 ## 2026-09-15 JOINT-RETEST R89 请求收入与用量展示
 
 用户确认同时显示消费折合和实付收入后，经营分析列表/详情分别读取既有 nominal_revenue_fen 与 revenue_fen，利润保持原口径；用量一位小数且保留零值与未知状态。两组有效 RED 后，经营分析 8 项、管理端 31 文件 184 项通过，TypeScript/Biome/秘密扫描及交叉评审完成。真实管理端刷新、请求明细及核算详情已复验，未改账务事实。详见[任务证据](evidence/BUSINESS-REMEDIATION-20260914.md)，原始数据仅留本机。
