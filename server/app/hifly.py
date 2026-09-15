@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
@@ -76,6 +77,46 @@ class HiflySubmissionUncertain(HiflyError):
 
 class HiflyTimeoutError(HiflyError):
     """A HiFly request exceeded the configured transport deadline."""
+
+
+def validate_oral_subtitle(subtitle: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Validate the documented subtitle fields without accepting provider overrides."""
+    if subtitle is None:
+        return None
+    if not isinstance(subtitle, Mapping):
+        raise HiflyError("字幕参数必须为对象")
+    integer_fields = {
+        "st_font_size": (1, 100),
+        "st_width": (0, 1920),
+        "st_height": (0, 1080),
+        "st_x": (None, None),
+        "st_y": (None, None),
+    }
+    colors = {"st_primary_color", "st_outline_color"}
+    supported = {"st_show", "st_font_name", *integer_fields, *colors}
+    if any(key not in supported for key in subtitle):
+        raise HiflyError("字幕参数包含不支持的字段")
+    for key, value in subtitle.items():
+        valid = False
+        if key == "st_show":
+            valid = type(value) is bool or (type(value) is int and value in (0, 1))
+        elif key == "st_font_name":
+            valid = isinstance(value, str) and bool(value.strip())
+        elif key in colors:
+            valid = (
+                isinstance(value, str)
+                and re.fullmatch(r"0x[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?", value) is not None
+            )
+        elif key in integer_fields:
+            lower, upper = integer_fields[key]
+            valid = (
+                type(value) is int
+                and (lower is None or value >= lower)
+                and (upper is None or value <= upper)
+            )
+        if not valid:
+            raise HiflyError("字幕参数类型或取值无效")
+    return dict(subtitle)
 
 
 class HiflySettingsUnavailable(RuntimeError):
@@ -486,8 +527,9 @@ class HiflyClient:
             "title": clean_title,
             "aigc_flag": int(aigc_flag),
         }
-        if subtitle:
-            payload.update(dict(subtitle))
+        clean_subtitle = validate_oral_subtitle(subtitle)
+        if clean_subtitle:
+            payload.update(clean_subtitle)
         data = self._creation_request(VIDEO_CREATE_BY_TTS_PATH, payload)
         return self._extract_task_id(data)
 
