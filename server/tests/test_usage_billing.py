@@ -23,6 +23,51 @@ from app.db_portable import BusinessConnection
 from app.usage_billing import accept_operation, finish_operation, record_attempt
 
 
+def test_customer_and_admin_ledgers_share_causal_order_and_pagination(pricing_client, route_state):
+    from app.account_admin_routes import router as account_admin_router
+
+    customer, uid = account(pricing_client)
+    with psycopg.connect(route_state) as raw:
+        conn = BusinessConnection.postgres(raw)
+        raw.execute("UPDATE wallets SET available_credits=100 WHERE user_id=%s", (uid,))
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('asr',true,2,1)"
+        )
+        op = accept_operation(conn, user_id=uid, service="asr", source_id="ordering", units=3)
+        finish_operation(conn, operation_id=op, units=2, succeeded=True)
+        # Same-timestamp settlements must follow the database sequence, not random UUID order.
+        for kind, row_id in (
+            ("RESERVE", "z-reserve"),
+            ("SETTLE", "m-settle"),
+            ("RELEASE", "a-release"),
+        ):
+            raw.execute(
+                "UPDATE wallet_transactions SET id=%s, created_at='2026-01-01T00:00:00+00:00' "
+                "WHERE billing_operation_id=%s AND type=%s",
+                (row_id, op, kind),
+            )
+    pricing_client.app.include_router(account_admin_router)
+    admin = admin_login(pricing_client, route_state)
+    expected = ["a-release", "m-settle", "z-reserve"]
+    for endpoint, headers in (
+        ("/api/customer/wallet/transactions", customer),
+        (f"/api/control/customers/{uid}/wallet-transactions", admin),
+    ):
+        response = pricing_client.get(endpoint, headers=headers)
+        assert response.status_code == 200, response.text
+        assert [row["id"] for row in response.json()["items"]] == expected
+        paged = pricing_client.get(endpoint + "?limit=1&offset=1", headers=headers)
+        assert paged.status_code == 200, paged.text
+        assert paged.json()["total"] == 3
+        assert [row["id"] for row in paged.json()["items"]] == ["m-settle"]
+    filtered = pricing_client.get(
+        "/api/customer/wallet/transactions?business=asr&transaction_type=RELEASE", headers=customer
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert [row["id"] for row in filtered.json()["items"]] == ["a-release"]
+
+
 def test_image_billing_and_customer_service_filter_share_settled_evidence(
     pricing_client, route_state
 ):
