@@ -149,6 +149,13 @@ const api = vi.hoisted(() => ({
   listMaterials: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
   getLatestScriptRewriteTask: vi.fn(async (): Promise<unknown> => null),
+  getLatestProjectShotCards: vi.fn(async () => null),
+  getLatestProjectAnalysis: vi.fn(async () => null),
+  getLatestGenerationPrompt: vi.fn(async () => ({
+    version: null,
+    stale: false,
+  })),
+  getLatestScriptVersion: vi.fn(async () => ({ version: null, stale: false })),
 }));
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -2089,6 +2096,42 @@ describe("V1.4 workspace integration", () => {
         expect(live.extractScriptFromUpload).toHaveBeenCalledTimes(1);
       },
     );
+
+    it("提取文案后往返视频复刻不会被空项目版本覆盖", async () => {
+      live.loadStudioData.mockResolvedValue({
+        ...emptyStudioData,
+        projects: [livePanel.project],
+      });
+      live.loadCloudDraft.mockResolvedValue(undefined);
+      live.extractScriptFromUpload.mockResolvedValue({
+        text: "需要保留的未保存转写原文",
+      });
+      const state = createState("workbench");
+      state.draft.projectId = "project-1";
+      state.draft.sourceAssetId = "asset-1";
+      render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "提取文案", exact: true }),
+      );
+      expect(await screen.findByLabelText("二创文案")).toHaveValue(
+        "需要保留的未保存转写原文",
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "视频创作", exact: true }),
+      );
+      await waitFor(() =>
+        expect(api.getLatestScriptVersion).toHaveBeenCalledWith("project-1"),
+      );
+      await act(async () => {});
+      fireEvent.click(
+        screen.getByRole("button", { name: "文案工坊", exact: true }),
+      );
+      expect(await screen.findByLabelText("二创文案")).toHaveValue(
+        "需要保留的未保存转写原文",
+      );
+      expect(screen.queryByText("尚未提取文案")).not.toBeInTheDocument();
+      expect(live.extractScriptFromUpload).toHaveBeenCalledTimes(1);
+    });
 
     it("提取文案成功后回填草稿并跳转文案工坊", async () => {
       live.loadStudioData.mockResolvedValue(emptyStudioData);

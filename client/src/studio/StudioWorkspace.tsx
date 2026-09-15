@@ -1690,6 +1690,7 @@ export function StudioWorkspace({
           projectId,
           sourceId: assetId,
           sourceAssetId: assetId,
+          scriptEdited: true,
           script: {
             ...currentScript,
             original: text,
