@@ -363,6 +363,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/generation-tasks/{task_id}/archive": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Archive Generation Result */
+    post: operations["archive_generation_result_api_generation_tasks__task_id__archive_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/generation-tasks/{task_id}/retry": {
     parameters: {
       query?: never;
@@ -2043,6 +2060,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/billing/viral-collections": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Collection Batches */
+    get: operations["collection_batches_api_control_billing_viral_collections_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/billing/viral-collections/{batch_id}/charges": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Collection Charges */
+    get: operations["collection_charges_api_control_billing_viral_collections__batch_id__charges_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/billing/catalog": {
     parameters: {
       query?: never;
@@ -2213,6 +2264,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/settings/h3-accounts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get H3 Accounts */
+    get: operations["get_h3_accounts_api_control_settings_h3_accounts_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/settings/h3-accounts/{account_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Put H3 Account */
+    put: operations["put_h3_account_api_control_settings_h3_accounts__account_id__put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/customers/{user_id}/recharge-orders/{order_no}/reconcile": {
     parameters: {
       query?: never;
@@ -2262,6 +2347,40 @@ export interface paths {
     options?: never;
     head?: never;
     patch?: never;
+    trace?: never;
+  };
+  "/api/control/settings/customer-payments/wechat-native": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Save Wechat Settings */
+    patch: operations["save_wechat_settings_api_control_settings_customer_payments_wechat_native_patch"];
+    trace?: never;
+  };
+  "/api/control/settings/customer-payments/provider": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Save Payment Provider */
+    patch: operations["save_payment_provider_api_control_settings_customer_payments_provider_patch"];
     trace?: never;
   };
   "/api/control/settings/customer-payments/billing": {
@@ -2419,6 +2538,57 @@ export interface paths {
     head?: never;
     /** Update Viral Video Availability */
     patch: operations["update_viral_video_availability_api_control_viral_videos__platform___video_id__availability_patch"];
+    trace?: never;
+  };
+  "/api/control/viral/videos": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Collected Viral Videos */
+    get: operations["read_collected_viral_videos_api_control_viral_videos_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/viral/videos/{platform}/{video_id}/preview": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Preview Collected Viral Video */
+    get: operations["preview_collected_viral_video_api_control_viral_videos__platform___video_id__preview_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/viral/videos/{platform}/{video_id}/curation": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Curate Collected Viral Video */
+    patch: operations["curate_collected_viral_video_api_control_viral_videos__platform___video_id__curation_patch"];
     trace?: never;
   };
   "/api/control/settings/queue-mode": {
@@ -5374,6 +5544,8 @@ export interface components {
       id: string;
       /** Project Id */
       project_id?: string | null;
+      /** Project Name */
+      project_name?: string | null;
       /** Prompt Version Id */
       prompt_version_id: string;
       /** Status */
@@ -6247,6 +6419,14 @@ export interface components {
       reserved_balance_after: number | null;
       /** Oral Task Id */
       oral_task_id?: string | null;
+      /** Billing Operation Id */
+      billing_operation_id?: string | null;
+      /** Source Id */
+      source_id?: string | null;
+      /** Service */
+      service?: string | null;
+      /** Service Name */
+      service_name?: string | null;
     };
     /** ControlWalletTransactionPage */
     ControlWalletTransactionPage: {
@@ -6549,6 +6729,16 @@ export interface components {
     CustomerPaymentSettings: {
       billing: components["schemas"]["BillingSettingsSnapshot"];
       zpay: components["schemas"]["MaskedZPaySettings"];
+      /** Wechat Native */
+      wechat_native: {
+        [key: string]: unknown;
+      };
+      /** Active Provider */
+      active_provider: string;
+      /** Deployment */
+      deployment: {
+        [key: string]: unknown;
+      };
     };
     /** CustomerProfileResponse */
     CustomerProfileResponse: {
@@ -6842,6 +7032,8 @@ export interface components {
        * @default 1
        */
       quantity: number;
+      /** Aspect Ratio */
+      aspect_ratio?: ("9:16" | "16:9" | "1:1" | "3:4" | "4:3") | null;
       /** Character Version Id */
       character_version_id?: string | null;
       /** Character Reference Selection Id */
@@ -6952,6 +7144,8 @@ export interface components {
        * @default 1
        */
       quantity: number;
+      /** Aspect Ratio */
+      aspect_ratio?: ("9:16" | "16:9" | "1:1" | "3:4" | "4:3") | null;
       /** Character Version Id */
       character_version_id?: string | null;
       /** Character Reference Selection Id */
@@ -7147,6 +7341,35 @@ export interface components {
       idempotency_key: string;
       /** Retry Reason */
       retry_reason: string;
+    };
+    /** H3AccountUpdate */
+    H3AccountUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Name */
+      name: string;
+      /**
+       * Api Key
+       * @default
+       */
+      api_key: string;
+      /** Concurrency Limit */
+      concurrency_limit: number;
+      /**
+       * Enabled
+       * @default true
+       */
+      enabled: boolean;
+      /** Expected Version */
+      expected_version: number;
     };
     /**
      * H3ExtendedModesResponse
@@ -7380,14 +7603,6 @@ export interface components {
     };
     /** MaterialItem */
     MaterialItem: {
-      /** Preview Asset Id */
-      preview_asset_id?: string | null;
-      /** Character Views */
-      character_views?: components["schemas"]["MaterialCharacterView"][];
-      /** Composite
-       * @default false
-       */
-      composite?: boolean;
       /** Id */
       id: string;
       /** Owner User Id */
@@ -7436,6 +7651,15 @@ export interface components {
       hidden: boolean;
       /** Saved */
       saved: boolean;
+      /**
+       * Composite
+       * @default false
+       */
+      composite: boolean;
+      /** Preview Asset Id */
+      preview_asset_id?: string | null;
+      /** Character Views */
+      character_views?: components["schemas"]["MaterialCharacterView"][];
       /** Allowed Uses */
       allowed_uses: string[];
       /** Allowed Actions */
@@ -7681,6 +7905,29 @@ export interface components {
       username: string;
       /** Has Password */
       has_password: boolean;
+    };
+    /** PaymentProviderUpdate */
+    PaymentProviderUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /**
+       * Active Provider
+       * @enum {string}
+       */
+      active_provider: "zpay" | "wechat_native";
+      zpay?: components["schemas"]["ZPaySettingsUpdate"] | null;
+      /** Wechat Native */
+      wechat_native?: {
+        [key: string]: string;
+      } | null;
     };
     /**
      * PendingPairingView
@@ -9103,6 +9350,8 @@ export interface components {
       /** Expected Version */
       expected_version: number;
       tariff: components["schemas"]["Tariff"];
+      /** Expected Pricing Version */
+      expected_pricing_version?: number | null;
     };
     /** TaskResult */
     TaskResult: {
@@ -9390,6 +9639,24 @@ export interface components {
        */
       status: "AVAILABLE" | "HIDDEN" | "UNAVAILABLE";
     };
+    /** ViralCurationRequest */
+    ViralCurationRequest: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: "feature" | "unfeature" | "delete";
+    };
     /** ViralFavoriteMutationResponse */
     ViralFavoriteMutationResponse: {
       /** Isfavorite */
@@ -9455,6 +9722,18 @@ export interface components {
       createdAt: string;
       /** Updatedat */
       updatedAt: string;
+    };
+    /** ViralKeywordConfig */
+    ViralKeywordConfig: {
+      /**
+       * Platform
+       * @enum {string}
+       */
+      platform: "douyin" | "wechat_channels";
+      /** Category */
+      category: string;
+      /** Keyword */
+      keyword: string;
     };
     /** ViralLinkResolutionRequest */
     ViralLinkResolutionRequest: {
@@ -9578,6 +9857,20 @@ export interface components {
       source_configured: boolean;
       /** Platforms */
       platforms: components["schemas"]["ViralPlatformStatus"][];
+      /** Keywords */
+      keywords?: components["schemas"]["ViralKeywordConfig"][];
+      /**
+       * Per Keyword Limit
+       * @default 10
+       */
+      per_keyword_limit: number;
+      /** Next Collection At */
+      next_collection_at?: string | null;
+      /**
+       * Collection Interval Days
+       * @default 7
+       */
+      collection_interval_days: number;
     };
     /** ViralRuntimeUpdateRequest */
     ViralRuntimeUpdateRequest: {
@@ -9595,6 +9888,12 @@ export interface components {
       collection_enabled: boolean;
       /** Import Enabled */
       import_enabled: boolean;
+      /** Keywords */
+      keywords?: components["schemas"]["ViralKeywordConfig"][] | null;
+      /** Per Keyword Limit */
+      per_keyword_limit?: number | null;
+      /** Collection Interval Days */
+      collection_interval_days?: (1 | 7) | null;
     };
     /** ViralStatisticsRequest */
     ViralStatisticsRequest: {
@@ -9608,6 +9907,11 @@ export interface components {
     };
     /** ViralVideoItem */
     ViralVideoItem: {
+      /**
+       * Homepagefeatured
+       * @default false
+       */
+      homepageFeatured: boolean;
       /** Platform */
       platform: string;
       /** Videoid */
@@ -9752,6 +10056,23 @@ export interface components {
       service?: string | null;
       /** Service Name */
       service_name?: string | null;
+    };
+    /** WeChatSettingsUpdate */
+    WeChatSettingsUpdate: {
+      /**
+       * Confirm
+       * @default false
+       */
+      confirm: boolean;
+      /**
+       * Reason
+       * @default
+       */
+      reason: string;
+      /** Config */
+      config?: {
+        [key: string]: string;
+      };
     };
     /** ZPaySettingsUpdate */
     ZPaySettingsUpdate: {
@@ -10577,6 +10898,37 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["GenerationTaskPreviewUrlResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  archive_generation_result_api_generation_tasks__task_id__archive_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TaskResult"];
         };
       };
       /** @description Validation Error */
@@ -12679,10 +13031,7 @@ export interface operations {
   create_download_url_api_assets__asset_id__download_url_post: {
     parameters: {
       query?: never;
-      header?: {
-        "X-Dev-User-Id"?: string | null;
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         asset_id: string;
       };
@@ -14220,6 +14569,78 @@ export interface operations {
       };
     };
   };
+  collection_batches_api_control_billing_viral_collections_get: {
+    parameters: {
+      query: {
+        start: string;
+        end: string;
+        limit?: number;
+        offset?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  collection_charges_api_control_billing_viral_collections__batch_id__charges_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+      };
+      header?: never;
+      path: {
+        batch_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   admin_catalog_api_control_billing_catalog_get: {
     parameters: {
       query?: never;
@@ -14551,6 +14972,65 @@ export interface operations {
       };
     };
   };
+  get_h3_accounts_api_control_settings_h3_accounts_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+    };
+  };
+  put_h3_account_api_control_settings_h3_accounts__account_id__put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        account_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["H3AccountUpdate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   reconcile_order_api_control_customers__user_id__recharge_orders__order_no__reconcile_post: {
     parameters: {
       query?: never;
@@ -14636,6 +15116,76 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CustomerPaymentSettings"];
+        };
+      };
+    };
+  };
+  save_wechat_settings_api_control_settings_customer_payments_wechat_native_patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WeChatSettingsUpdate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  save_payment_provider_api_control_settings_customer_payments_provider_patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PaymentProviderUpdate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
     };
@@ -15033,6 +15583,114 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ViralAvailabilityResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_collected_viral_videos_api_control_viral_videos_get: {
+    parameters: {
+      query?: {
+        platform?: ("douyin" | "wechat_channels") | null;
+        query?: string;
+        offset?: number;
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  preview_collected_viral_video_api_control_viral_videos__platform___video_id__preview_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        platform: "douyin" | "wechat_channels";
+        video_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: string;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  curate_collected_viral_video_api_control_viral_videos__platform___video_id__curation_patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        platform: "douyin" | "wechat_channels";
+        video_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ViralCurationRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
         };
       };
       /** @description Validation Error */
@@ -16615,7 +17273,22 @@ export interface operations {
         transaction_type?:
           | ("CHARGE" | "RESERVE" | "SETTLE" | "RELEASE" | "CONVERSION")
           | null;
-        business?: ("video" | "oral" | "recharge") | null;
+        business?:
+          | (
+              | "video"
+              | "oral"
+              | "recharge"
+              | "character"
+              | "first_frame"
+              | "analysis"
+              | "rewrite"
+              | "asr"
+              | "link_resolution"
+              | "avatar_clone"
+              | "voice_clone"
+              | "viral_data"
+            )
+          | null;
         started_at?: string | null;
         ended_at?: string | null;
       };
@@ -17493,6 +18166,7 @@ export interface operations {
         sort?: string;
         limit?: number;
         cursor?: string | null;
+        featured_only?: boolean;
       };
       header?: {
         "X-Dev-User-Id"?: string | null;
@@ -17662,10 +18336,7 @@ export interface operations {
   fetch_viral_video_media_api_viral_videos_media_post: {
     parameters: {
       query?: never;
-      header?: {
-        "X-Dev-User-Id"?: string | null;
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: never;
     };

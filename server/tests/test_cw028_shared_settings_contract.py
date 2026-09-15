@@ -174,6 +174,64 @@ def test_hifly_tester_delegates_non_hifly_provider_to_fallback() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "denied_namespace",
+    [
+        "projects",
+        "generation-results",
+        "users",
+        "materials",
+        "verified-uploads",
+        "viral/cover",
+        "viral/prepared",
+    ],
+)
+def test_storage_readiness_rejects_missing_business_directory(monkeypatch, denied_namespace):
+    adapter = FakeStorageAdapter(provider="cos", bucket="contract-bucket")
+    original_put = adapter.put_object
+
+    def restricted_put(key, content, *, content_type):
+        if key.startswith(denied_namespace + "/"):
+            raise StorageBackendUnavailable("AccessDenied: private provider details")
+        return original_put(key, content, content_type=content_type)
+
+    monkeypatch.setattr(adapter, "put_object", restricted_put)
+    tester = StorageProviderTester(storage_factory=lambda _config: adapter)
+    with pytest.raises(HTTPException) as failure:
+        tester.connection_test("cos", _VALID_COS_CONFIG)
+    assert failure.value.status_code == 503
+    assert failure.value.detail["namespace"] == denied_namespace
+    assert denied_namespace in failure.value.detail["message"]
+    assert "private provider" not in str(failure.value.detail)
+    assert adapter._objects == {}
+
+
+def test_storage_readiness_verifies_and_cleans_all_business_directories(monkeypatch):
+    adapter = FakeStorageAdapter(provider="cos", bucket="contract-bucket")
+    original_put = adapter.put_object
+    checked = []
+
+    def record_put(key, content, *, content_type):
+        checked.append(key.split("/settings-diagnostics/")[0])
+        return original_put(key, content, content_type=content_type)
+
+    monkeypatch.setattr(adapter, "put_object", record_put)
+    result = StorageProviderTester(storage_factory=lambda _config: adapter).connection_test(
+        "cos", _VALID_COS_CONFIG
+    )
+    assert result.status == "ok"
+    assert checked == [
+        "projects",
+        "generation-results",
+        "users",
+        "materials",
+        "verified-uploads",
+        "viral/cover",
+        "viral/prepared",
+    ]
+    assert adapter._objects == {}
+
+
 def test_noop_tester_paid_test_requires_real_provider_client() -> None:
     with pytest.raises(HTTPException) as excinfo:
         NoopProviderTester().paid_test("metaso", {"api_key": "k"})

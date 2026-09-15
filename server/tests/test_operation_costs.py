@@ -25,7 +25,7 @@ DB_NAME = "operation_costs_test"
 
 
 @pytest.mark.parametrize(
-    "mode", ["success", "quality_failure", "checkpoint_resume", "provider_retry"]
+    "mode", ["success", "quality_failure", "checkpoint_resume", "provider_retry", "receipt_resume"]
 )
 def test_first_frame_worker_cost_tracks_provider_output_before_checkpoint(
     cost_dsn: str, monkeypatch: pytest.MonkeyPatch, mode: str
@@ -58,14 +58,28 @@ def test_first_frame_worker_cost_tracks_provider_output_before_checkpoint(
     lease = SimpleNamespace(id=task_id, attempt=2, created_by_user_id=user_id)
     monkeypatch.setattr(worker, "acquire_first_frame_task", lambda *args, **kwargs: lease)
     provider = SimpleNamespace(provider_name="fake")
-    prepared = SimpleNamespace(provider=provider, plan=SimpleNamespace(model="gpt-image-2"))
+    receipt = None
+    if mode == "receipt_resume":
+        with psycopg.connect(cost_dsn) as conn:
+            cost_id = begin_operation_cost(
+                BusinessConnection.postgres(conn),
+                source_type="first_frame_task",
+                source_id=f"{task_id}:1:1",
+                subject="first_frame_image",
+                user_id=user_id,
+            )
+        receipt = {"cost_record_id": cost_id}
+    prepared = SimpleNamespace(
+        provider=provider, plan=SimpleNamespace(model="gpt-image-2"), provider_submission=receipt
+    )
     monkeypatch.setattr(worker, "prepare_first_frame_task", lambda *args, **kwargs: prepared)
     for name in ("record_image_task_provider", "complete_first_frame_task", "fail_image_task"):
         monkeypatch.setattr(worker, name, lambda *args, **kwargs: None)
 
     def generate(*args, **kwargs):
         if mode != "checkpoint_resume":
-            kwargs["before_provider_call"]()
+            if mode != "receipt_resume":
+                kwargs["before_provider_call"]()
             if mode == "provider_retry":
                 kwargs["before_provider_call"]()
             kwargs["on_generated_images"](2)

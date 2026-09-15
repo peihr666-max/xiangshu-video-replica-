@@ -60,7 +60,6 @@ router = APIRouter(prefix="/api/assets", tags=["media"])
 LOCAL_API_BASE_URL = "http://127.0.0.1:8000"
 PUBLIC_BASE_URL_ENV = "PUBLIC_BASE_URL"
 LOCAL_API_BASE_URL_ENV = "VIDEO_REPLICA_LOCAL_API_BASE_URL"
-AUTH_MODE_ENV = "VIDEO_REPLICA_AUTH_MODE"
 MAX_OBJECT_DOWNLOAD_BYTES = 512 * 1024 * 1024
 OBJECT_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
@@ -69,6 +68,8 @@ logger = logging.getLogger(__name__)
 
 def api_base_url() -> str:
     """Use the public HTTPS origin on a server and localhost for desktop fallback."""
+    from app.bootstrap import is_customer_production
+
     configured = os.environ.get(PUBLIC_BASE_URL_ENV, "").strip()
     if not configured:
         local_configured = os.environ.get(LOCAL_API_BASE_URL_ENV, "").strip()
@@ -76,7 +77,7 @@ def api_base_url() -> str:
             return LOCAL_API_BASE_URL
         parsed_local = urlsplit(local_configured)
         if (
-            os.environ.get(AUTH_MODE_ENV, "").strip() != "desktop"
+            is_customer_production()
             or parsed_local.scheme != "http"
             or parsed_local.hostname not in {"127.0.0.1", "localhost", "::1"}
             or parsed_local.username is not None
@@ -91,7 +92,7 @@ def api_base_url() -> str:
                     "code": "LOCAL_API_BASE_URL_INVALID",
                     "message": (
                         "VIDEO_REPLICA_LOCAL_API_BASE_URL must be a loopback HTTP "
-                        "origin in desktop auth mode."
+                        "origin outside customer production."
                     ),
                 },
             )
@@ -615,11 +616,9 @@ def create_asset_upload_intent(
         is_customer = actor.role == "customer"
     upload_url = intent.url
     if intent.upload_required and storage.provider == "local":
-        # The client cannot PUT to a `local://` scheme URL; route uploads through
-        # the local server endpoint instead so the desktop app can upload files.
-        upload_url = (
-            f"{api_base_url()}/api/assets/local-objects/{quote(intent.storage_key, safe='/')}"
-        )
+        # Let the client resolve API-managed uploads through its configured
+        # proxy/base, instead of leaking the server's internal host and port.
+        upload_url = f"/api/assets/local-objects/{quote(intent.storage_key, safe='/')}"
     result = UploadIntentResponse(
         asset_id=intent.asset_id,
         project_id=intent.project_id,
@@ -648,7 +647,16 @@ def complete_asset_upload(
     with db.write() as (conn, actor):
         prepared = prepare_upload_completion(conn, actor=actor, asset_id=asset_id)
         is_customer = actor.role == "customer"
-    probed = probe_upload_completion(prepared, storage=storage, probe=probe)
+    try:
+        probed = probe_upload_completion(prepared, storage=storage, probe=probe)
+    except StorageBackendUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "STORAGE_PROVIDER_UNAVAILABLE",
+                "message": "素材库暂时无法完成视频校验，请稍后重试。本次未启动 AI 拆解。",
+            },
+        ) from exc
     with db.write() as (conn, actor):
         completed = persist_upload_completion(conn, actor=actor, probed=probed)
     result = CompleteUploadResponse(

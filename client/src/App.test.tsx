@@ -2095,7 +2095,9 @@ describe("App", () => {
     expect(
       screen.getByText(/人物图片、参考视频与首帧保存到腾讯云存储/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/生成的成片仅保存在本机/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/生成的成片可在任务结果中保存到素材库/),
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText("存储方式")).not.toBeInTheDocument();
   });
 
@@ -2200,7 +2202,7 @@ describe("App", () => {
     expect(await screen.findByText("已保存")).toBeInTheDocument();
     expect(screen.getByLabelText("单次生成数量上限")).toBeEnabled();
     expect(
-      screen.getByText(/测试连接会创建并删除一个临时对象/),
+      screen.getByText(/测试连接会在七个业务目录分别创建、校验并删除临时对象/),
     ).toBeInTheDocument();
 
     const testButtons = screen.getAllByRole("button", { name: "测试连接" });

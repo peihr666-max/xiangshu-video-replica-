@@ -108,7 +108,7 @@ const PROVIDER_FORMS: Record<ProviderName, ProviderFormSpec> = {
   },
   cos: {
     title: "腾讯云存储",
-    note: "区域固定为上海 · 测试连接会创建并删除一个临时对象",
+    note: "区域固定为上海 · 测试连接会在七个业务目录分别创建、校验并删除临时对象，包含爆款封面和视频",
     fields: [
       { name: "access_key_id", label: "SecretId", secret: true },
       { name: "secret_access_key", label: "SecretKey", secret: true },
@@ -624,22 +624,26 @@ function RuntimeForm({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await save(values);
+  }
+
+  async function save(next: RuntimeSettings) {
     if (isSaving) {
       return;
     }
     setStatus("");
     const limitsValid =
-      Number.isInteger(values.max_generation_count_per_batch) &&
-      values.max_generation_count_per_batch >= 1 &&
-      Number.isInteger(values.max_concurrent_h3_tasks) &&
-      values.max_concurrent_h3_tasks >= 1;
+      Number.isInteger(next.max_generation_count_per_batch) &&
+      next.max_generation_count_per_batch >= 1 &&
+      Number.isInteger(next.max_concurrent_h3_tasks) &&
+      next.max_concurrent_h3_tasks >= 1;
     if (!limitsValid) {
       setStatus("数量上限与并发数必须为 ≥1 的整数");
       return;
     }
     setIsSaving(true);
     try {
-      await onSave(values);
+      await onSave(next);
       setStatus("已保存");
     } catch {
       setStatus("保存失败");
@@ -689,8 +693,24 @@ function RuntimeForm({
       </div>
       <p className="storage-provider-hint">
         人物图片、参考视频与首帧保存到腾讯云存储（需在桶 CORS 放行
-        PUT/GET/HEAD，否则上传失败）；生成的成片仅保存在本机。
+        PUT/GET/HEAD，否则上传失败）；生成的成片可在任务结果中保存到素材库，或下载到本机。
       </p>
+      {runtime.active_storage_provider === "local" ? (
+        <div>
+          <p>
+            当前仍使用本地存储，云端分析无法读取本地视频。请先通过腾讯云连接测试，再启用云存储并重新上传素材。
+          </p>
+          <button
+            type="button"
+            disabled={readOnly || isSaving}
+            onClick={() =>
+              void save({ ...runtime, active_storage_provider: "cos" })
+            }
+          >
+            启用腾讯云存储
+          </button>
+        </div>
+      ) : null}
       <div className="form-actions">
         <button disabled={readOnly || isSaving} type="submit">
           {isSaving ? "正在保存" : "保存"}

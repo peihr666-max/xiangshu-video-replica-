@@ -114,6 +114,23 @@ describe("GenerationRecordsPage", () => {
     });
   });
 
+  it("混合带时区和旧 UTC 时间的首帧耗时不被显示为零", async () => {
+    const page = await adminApi.getAdminGenerationRecords({});
+    vi.mocked(adminApi.getAdminGenerationRecords).mockResolvedValue({
+      ...page,
+      items: [
+        {
+          ...page.items[1],
+          created_at: "2026-09-14T15:00:03.355544+00:00",
+          completed_at: "2026-09-14 15:01:05",
+        },
+      ],
+      total: 1,
+    });
+    render(<GenerationRecordsPage />);
+    expect(await screen.findByText("1 分 2 秒")).toBeInTheDocument();
+  });
+
   it("opens failed records with the filter already applied", async () => {
     render(<GenerationRecordsPage initialStatus="FAILED" />);
 
@@ -160,6 +177,8 @@ describe("GenerationRecordsPage", () => {
     render(<GenerationRecordsPage initialStatus="FAILED" />);
 
     expect(await screen.findByText("口播视频")).toBeInTheDocument();
+    expect(screen.getByText("12 积分")).toBeInTheDocument();
+    expect(screen.getByText("1 分 0 秒")).toBeInTheDocument();
     fireEvent.click(screen.getByText("查看详情"));
     expect(screen.getByText("数字人服务生成失败")).toBeInTheDocument();
     expect(screen.getByText("hifly-task-1")).toBeInTheDocument();

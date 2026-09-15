@@ -690,6 +690,7 @@ export function ProjectDetailFlow({
           </p>
         ) : null}
         <CharacterSelection
+          sceneOnly
           onBusyChange={(busy) => markUpstreamBusy("character", busy)}
           onVersionChange={handleCharacterChange}
           projectId={project.id}

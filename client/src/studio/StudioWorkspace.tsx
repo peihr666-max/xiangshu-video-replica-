@@ -264,6 +264,22 @@ export function StudioWorkspace({
   reviewData,
   initialState,
 }: Props) {
+  // Profile polling can return a new object with identical identity fields.
+  // Keep those refreshes from replacing assets underneath playing media.
+  const workspaceUser = useMemo(
+    () => ({
+      id: currentUser.id,
+      username: currentUser.username,
+      display_name: currentUser.display_name,
+      role: currentUser.role,
+    }),
+    [
+      currentUser.id,
+      currentUser.username,
+      currentUser.display_name,
+      currentUser.role,
+    ],
+  );
   // Review is an explicit development entry; failed requests never enable it.
   const review = Boolean(import.meta.env.DEV && reviewData);
   const [state, setState] = useState<StudioState>(() => {
@@ -899,7 +915,10 @@ export function StudioWorkspace({
       }
     }
   };
-  const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  const refresh = useCallback(() => {
+    setRevision((value) => value + 1);
+    setWalletRevision((value) => value + 1);
+  }, []);
 
   const referenceDraftError = (draft: StudioDraft): string | undefined => {
     if (referenceAssetsPending) return "草稿参考图仍在恢复，请稍后重试。";
@@ -1017,13 +1036,15 @@ export function StudioWorkspace({
     }
   };
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision explicitly requests a full reload.
   useEffect(() => {
     if (review) return;
-    // The explicit refresh key intentionally reruns the same read-only requests.
-    if (revision > 0) loadedPeopleRef.current.clear();
+    // Every core reload replaces the asset slice, including a same-account
+    // profile refresh. Its person cache must be invalidated at the same time.
+    loadedPeopleRef.current.clear();
     let active = true;
     setData((previous) => ({ ...previous, loading: true }));
-    const coreLoad = loadStudioData(currentUser, { includeViral: false });
+    const coreLoad = loadStudioData(workspaceUser, { includeViral: false });
     void coreLoad
       .then((result) => {
         if (active)
@@ -1064,7 +1085,7 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [review, currentUser, revision]);
+  }, [review, workspaceUser, revision]);
 
   // Silent tasks poll: the shell reads everything once on entry, so a batch
   // that finishes while the customer watches would otherwise stay "running"
@@ -1075,6 +1096,7 @@ export function StudioWorkspace({
     if (review) return;
     const timer = window.setInterval(() => {
       if (document.hidden || busyRef.current) return;
+      retryWallet();
       void reloadTasks(currentUser)
         .then((tasks) => {
           setData((previous) => {
@@ -1096,7 +1118,7 @@ export function StudioWorkspace({
     return () => {
       window.clearInterval(timer);
     };
-  }, [review, currentUser]);
+  }, [review, currentUser, retryWallet]);
 
   const personToLoad = state.page.startsWith("person-")
     ? state.selectedPersonId

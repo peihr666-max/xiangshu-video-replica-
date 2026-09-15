@@ -720,10 +720,23 @@ class StorageProviderTester:
         if not config:
             return self.fallback.connection_test(provider, config)
 
+        for namespace in (
+            "projects",
+            "generation-results",
+            "users",
+            "materials",
+            "verified-uploads",
+            "viral/cover",
+            "viral/prepared",
+        ):
+            self._check_namespace(provider, config, namespace)
+        return ProviderTestResult(status="ok", provider=provider, test_kind="storage_connection")
+
+    def _check_namespace(self, provider: str, config: dict[str, str], namespace: str) -> None:
         adapter: StorageAdapter | None = None
         cleanup_required = False
         put_succeeded = False
-        test_key = f"projects/settings-diagnostics/{uuid.uuid4().hex}.txt"
+        test_key = f"{namespace}/settings-diagnostics/{uuid.uuid4().hex}.txt"
         payload = b"video-replica storage connection check"
         failure_phase = "initialize"
         operation_error: Exception | None = None
@@ -758,6 +771,7 @@ class StorageProviderTester:
                     "code": "STORAGE_CONNECTION_TEST_CLEANUP_FAILED",
                     "cleanup_failed": True,
                     "failure_phase": "delete",
+                    "namespace": namespace,
                     "message": "对象存储测试对象清理失败；可能残留测试对象，请检查本地服务日志。",
                 },
             ) from cleanup_error
@@ -769,15 +783,17 @@ class StorageProviderTester:
                     "code": "STORAGE_SETTINGS_INVALID",
                     "cleanup_failed": cleanup_error is not None,
                     "failure_phase": failure_phase,
+                    "namespace": namespace,
                     "message": "对象存储配置无效；请检查必填参数。",
                 },
             ) from operation_error
         if operation_error is not None:
             logger.warning("Storage connection test failed for provider %s", provider)
-            message = "对象存储连接测试失败；请运行测试设置并查看本地服务日志。"
+            message = f"对象存储目录 {namespace}/ 验证失败；请核对该目录的上传、读取及删除权限。"
             if cleanup_error is not None:
                 message = (
-                    "对象存储连接测试失败，且清理动作失败；可能残留测试对象，请查看本地服务日志。"
+                    f"对象存储目录 {namespace}/ 验证及清理失败；请核对该目录权限，"
+                    "并检查是否残留测试对象。"
                 )
             raise HTTPException(
                 status_code=503,
@@ -785,11 +801,10 @@ class StorageProviderTester:
                     "code": "STORAGE_CONNECTION_TEST_FAILED",
                     "cleanup_failed": cleanup_error is not None,
                     "failure_phase": failure_phase,
+                    "namespace": namespace,
                     "message": message,
                 },
             ) from operation_error
-
-        return ProviderTestResult(status="ok", provider=provider, test_kind="storage_connection")
 
     def paid_test(self, provider: str, config: dict[str, str]) -> ProviderTestResult:
         return self.fallback.paid_test(provider, config)

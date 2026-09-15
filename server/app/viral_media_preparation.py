@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -67,10 +70,10 @@ class ViralMediaPreparation:
             f"{storage.cache_namespace}|{MEDIA_PROCESSING_VERSION}".encode()
         ).hexdigest()
 
-    def _key(self, row: Any, kind: str) -> str:
+    def _key(self, row: Any, kind: str, *, scope: str | None = None) -> str:
         extension = "mp3" if kind == "audio" else "mp4"
         identity = hashlib.sha256(str(row["id"]).encode()).hexdigest()
-        return f"viral/prepared/{self.scope}/{identity}/{row['attempt']}.{extension}"
+        return f"viral/prepared/{scope or self.scope}/{identity}/{row['attempt']}.{extension}"
 
     def cached(self, *, platform: str, video_id: str, kind: str) -> StoredObject | None:
         with _connection() as conn:
@@ -79,7 +82,81 @@ class ViralMediaPreparation:
                 "WHERE platform=%s AND video_id=%s AND media_kind=%s",
                 (platform, video_id, kind),
             ).fetchone()
-        return self._cached(row, kind)
+        stored = self._cached(row, kind)
+        return stored if stored is not None else self._migrate_local_cache(row, kind)
+
+    def _migrate_local_cache(self, row: Any, kind: str) -> StoredObject | None:
+        """Copy a verified development-era object before atomically moving its pointer.
+
+        No source-provider call and no removal of the old object. A failed copy
+        leaves the old pointer intact; production rejects legacy local storage.
+        """
+        if (
+            row is None
+            or row["status"] != "SUCCEEDED"
+            or self.storage.provider != "cos"
+            or not str(row["storage_uri"] or "").startswith("local://")
+        ):
+            return None
+        from app.media_routes import storage_for_asset
+
+        with _connection() as conn:
+            source_storage = storage_for_asset(conn, str(row["storage_uri"]))
+        # Local directories may have been moved during restore. Validate the
+        # persisted immutable identity instead of trusting a new root's scope.
+        old_scope = str(row["cache_scope"] or "")
+        if re.fullmatch(r"[a-f0-9]{64}", old_scope) is None:
+            return None
+        source = source_storage.head_object(self._key(row, kind, scope=old_scope))
+        if (
+            source is None
+            or source.uri != row["storage_uri"]
+            or source.size <= 0
+            or not source.sha256
+        ):
+            return None
+        destination = self._key(row, kind)
+        migrated = self.storage.head_object(destination)
+        if migrated is None:
+            with tempfile.TemporaryDirectory(prefix="viral-cache-migration-") as directory:
+                path = Path(directory) / "media"
+                digest = hashlib.sha256()
+                size = 0
+                with path.open("wb") as output:
+                    for chunk in source_storage.iter_object(source.key):
+                        size += len(chunk)
+                        if size > source.size:
+                            raise ViralMediaBusy("历史素材校验失败，请重新归档。")
+                        digest.update(chunk)
+                        output.write(chunk)
+                if size != source.size or digest.hexdigest() != source.sha256:
+                    raise ViralMediaBusy("历史素材校验失败，请重新归档。")
+                self.storage.put_file(destination, path, content_type=source.content_type)
+            migrated = self.storage.head_object(destination)
+        if migrated is None or migrated.size != source.size or migrated.sha256 != source.sha256:
+            raise ViralMediaBusy("云端素材校验失败，原素材仍保留，请稍后重试。")
+        with _connection() as conn:
+            updated = conn.execute(
+                f"""UPDATE viral_media_preparations SET storage_uri=%s,cache_scope=%s,
+                    updated_at={_NOW}
+                WHERE id=%s AND status='SUCCEEDED' AND attempt=%s
+                    AND cache_scope=%s AND storage_uri=%s""",
+                (
+                    migrated.uri,
+                    self.scope,
+                    row["id"],
+                    row["attempt"],
+                    row["cache_scope"],
+                    row["storage_uri"],
+                ),
+            ).rowcount
+            current = conn.execute(
+                "SELECT * FROM viral_media_preparations WHERE id=%s", (row["id"],)
+            ).fetchone()
+        result = self._cached(current, kind)
+        if not updated and result is None:
+            raise ViralMediaLeaseLost("素材记录已更新，请重新读取。")
+        return result
 
     def _cached(self, row: Any, kind: str) -> StoredObject | None:
         if row is None or row["status"] != "SUCCEEDED" or row["cache_scope"] != self.scope:

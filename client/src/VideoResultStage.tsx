@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { formatDateTime as formatTimestamp } from "./admin/ui/vocabulary";
 import {
   customerVisibleErrorMessage,
   type GenerationBatch,
@@ -1117,10 +1118,6 @@ function formatCost(value: number | null | undefined) {
   return value === null || value === undefined
     ? "待回填"
     : `¥${value.toFixed(2)}`;
-}
-
-function formatTimestamp(value: string | null | undefined) {
-  return value ? value.replace("T", " ").replace("Z", "").slice(0, 19) : "—";
 }
 
 function formatStatus(status: string) {

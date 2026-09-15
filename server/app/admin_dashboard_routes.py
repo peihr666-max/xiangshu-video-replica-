@@ -60,6 +60,14 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
             """
         ).fetchone()
         assert today_generation is not None
+        today_oral = conn.execute(
+            f"""
+            SELECT count(*), count(*) FILTER (WHERE status = 'SUCCEEDED')
+            FROM oral_tasks
+            WHERE {_day_expr("created_at")} = {_timestamptz_day_expr("now()")}
+            """
+        ).fetchone()
+        assert today_oral is not None
 
         trend_rows = conn.execute(
             f"""
@@ -82,12 +90,21 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
                     AT TIME ZONE 'Asia/Shanghai'
                 )
                 GROUP BY 1
+            ), oral_by_day AS (
+                SELECT {_day_expr("created_at")} AS day,
+                       count(*) FILTER (WHERE status = 'SUCCEEDED') AS succeeded,
+                       count(*) FILTER (WHERE status = 'FAILED') AS failed
+                FROM oral_tasks
+                WHERE {_day_expr("created_at")} >=
+                    (now() AT TIME ZONE 'Asia/Shanghai')::date - 6
+                GROUP BY 1
             )
             SELECT days.day,
-                   COALESCE(generation_by_day.succeeded, 0),
-                   COALESCE(generation_by_day.failed, 0)
+                   COALESCE(generation_by_day.succeeded, 0) + COALESCE(oral_by_day.succeeded, 0),
+                   COALESCE(generation_by_day.failed, 0) + COALESCE(oral_by_day.failed, 0)
             FROM days
             LEFT JOIN generation_by_day USING (day)
+            LEFT JOIN oral_by_day USING (day)
             ORDER BY days.day
             """
         ).fetchall()
@@ -181,8 +198,8 @@ def dashboard_summary(_actor: AdminReader) -> dict[str, Any]:
         }
         for row in trend_rows
     ]
-    generation_count = int(today_generation[0])
-    succeeded = int(today_generation[1])
+    generation_count = int(today_generation[0]) + int(today_oral[0])
+    succeeded = int(today_generation[1]) + int(today_oral[1])
     margin = today_financial.get("profit_margin")
     return {
         "today": {

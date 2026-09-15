@@ -63,6 +63,7 @@ from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
     StoragePermissionError,
+    StoredObject,
     cloud_storage_config_from_settings,
     require_storage_match,
     storage_object_ref_from_uri,
@@ -71,7 +72,7 @@ from app.storage import (
 SCRIPT_KIND = "script"
 H3_PROMPT_KIND = "h3_prompt"
 GENERATION_SCHEMA_VERSION = "c.generation.v1"
-H3_PROMPT_TEMPLATE_VERSION = "h3.prompt.v5"
+H3_PROMPT_TEMPLATE_VERSION = "h3.prompt.v6"
 H3_PROMPT_TEMPLATE_SPEC = (
     (
         "intro",
@@ -86,7 +87,8 @@ H3_PROMPT_TEMPLATE_SPEC = (
     (
         "shot",
         "[{start:.1f}-{end:.1f}s] {shot_type}，{composition}，{camera_motion}；"
-        "主体：{subject}；人物动作：{motion_clause}；场景：{scene}，转场：{transition}。"
+        "主体：已确认首帧中的人物（身份与完整外观均以该图为准）；"
+        "人物动作：{motion_clause}；场景：{scene}，转场：{transition}。"
         "口播意图：{spoken}",
     ),
     ("script", "口播意图：{full_text}"),
@@ -813,6 +815,7 @@ class BatchResult(BaseModel):
 
     id: str
     project_id: str | None = None
+    project_name: str | None = None
     prompt_version_id: str
     status: str
     quantity: int
@@ -2720,7 +2723,7 @@ def require_confirmed_first_frame(
 ) -> None:
     selection = conn.execute(
         """
-        SELECT id, payload_json
+        SELECT id, payload_json, created_by_user_id
         FROM versions
         WHERE project_id = %s AND kind = 'first_frame_selection'
         ORDER BY version_number DESC
@@ -2785,7 +2788,15 @@ def require_confirmed_first_frame(
     quality_override = (
         isinstance(selection_payload, dict) and selection_payload.get("quality_override") is True
     )
-    if not quality_passed and not quality_override:
+    manual_review_confirmed = (
+        isinstance(candidate_payload, dict)
+        and candidate_payload.get("review_mode") == "HUMAN_CONFIRMATION"
+        and isinstance(selection_payload, dict)
+        and selection_payload.get("review_mode") == "HUMAN_CONFIRMATION"
+        and bool(selection["created_by_user_id"])
+        and selection_payload.get("reviewed_by_user_id") == selection["created_by_user_id"]
+    )
+    if not quality_passed and not quality_override and not manual_review_confirmed:
         raise generation_error(
             409,
             "FIRST_FRAME_QUALITY_NOT_VERIFIED",
@@ -5645,6 +5656,98 @@ def _refresh_batch_status_in_transaction(
     )
 
 
+def prepare_generation_result_archive(
+    conn: BusinessConnection, *, actor: CurrentUser, task_id: str
+) -> dict[str, Any]:
+    """Authorize a completed result before doing any provider/storage I/O."""
+    row = conn.execute(
+        """SELECT task.*, batch.project_id, batch.created_by_user_id
+           FROM generation_tasks AS task
+           JOIN generation_batches AS batch ON batch.id=task.batch_id
+           WHERE task.id=%s""",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise generation_error(404, "TASK_NOT_FOUND", "任务不存在。")
+    require_batch_access(
+        conn,
+        actor=actor,
+        project_id=row["project_id"],
+        created_by_user_id=str(row["created_by_user_id"]),
+        action="generation_task.archive",
+    )
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="generation_task.archive",
+        entity_type="generation_task",
+        entity_id=task_id,
+    )
+    if (
+        row["status"] != "SUCCEEDED"
+        or row["archive_status"] not in {"DIRECT", "ARCHIVED"}
+        or row["superseded_by_task_id"] is not None
+    ):
+        raise generation_error(409, "RESULT_NOT_READY", "当前任务没有可保存的成功成片。")
+    if not row["result_asset_id"] and not row["provider_result_url"]:
+        raise generation_error(409, "RESULT_URL_NOT_READY", "成片地址尚未就绪。")
+    return dict(row)
+
+
+def persist_generation_result_archive(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    prepared: dict[str, Any],
+    stored: StoredObject,
+    duration_seconds: float,
+) -> TaskResult:
+    """Publish one physical asset; archiving never changes settled billing."""
+    task_id = str(prepared["id"])
+    with conn:
+        conn.execute(
+            "SELECT id FROM generation_tasks WHERE id=%s FOR UPDATE", (task_id,)
+        ).fetchone()
+        current = prepare_generation_result_archive(conn, actor=actor, task_id=task_id)
+        if current["result_asset_id"]:
+            return get_task_result(conn, task_id)
+        if (
+            current["provider_result_url"] != prepared["provider_result_url"]
+            or current["project_id"] != prepared["project_id"]
+        ):
+            raise generation_error(409, "RESULT_CHANGED", "成片记录已变化，请刷新后重试。")
+        asset_id = str(uuid4())
+        conn.execute(
+            """INSERT INTO assets(id,project_id,kind,storage_uri,sha256,size_bytes,
+                       content_type,metadata_json,created_by_user_id)
+               VALUES (%s,%s,'material_video',%s,%s,%s,'video/mp4',%s,%s)""",
+            (
+                asset_id,
+                current["project_id"],
+                stored.uri,
+                stored.sha256,
+                stored.size,
+                json.dumps({"duration_seconds": duration_seconds, "generation_task_id": task_id}),
+                current["created_by_user_id"],
+            ),
+        )
+        conn.execute(
+            """UPDATE generation_tasks SET archive_status='ARCHIVED', result_asset_id=%s,
+                      updated_at=CURRENT_TIMESTAMP WHERE id=%s""",
+            (asset_id, task_id),
+        )
+        write_audit(
+            conn,
+            actor=actor,
+            action="generation_task.archive",
+            entity_type="generation_task",
+            entity_id=task_id,
+            metadata={"asset_id": asset_id, "size_bytes": stored.size, "sha256": stored.sha256},
+            commit=False,
+        )
+        return get_task_result(conn, task_id)
+
+
 def get_task_result(conn: BusinessConnection, task_id: str) -> TaskResult:
     row = conn.execute(
         """
@@ -5970,7 +6073,8 @@ def get_generation_batch(
         """
         SELECT id, project_id, created_by_user_id, request_snapshot_json, status,
                display_name, source_batch_id, source_task_id, generation_reason,
-               creation_kind
+               creation_kind,
+               (SELECT name FROM projects WHERE id=generation_batches.project_id) AS project_name
         FROM generation_batches
         WHERE id = %s
         """,
@@ -6061,6 +6165,7 @@ def get_generation_batch(
     return BatchResult(
         id=str(batch["id"]),
         project_id=(None if batch["project_id"] is None else str(batch["project_id"])),
+        project_name=optional_text(batch["project_name"]),
         prompt_version_id=prompt_version_id,
         status=status,
         quantity=len(tasks),
@@ -6839,7 +6944,6 @@ def compile_prompt_text(
                 shot_type=shot["shot_type"],
                 composition=shot["composition"],
                 camera_motion=shot_camera_motion_text(shot),
-                subject=shot["subject"],
                 motion_clause=render_shot_motion_clause(shot),
                 scene=shot["scene"],
                 transition=shot["transition"],

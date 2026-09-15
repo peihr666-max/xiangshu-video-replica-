@@ -246,6 +246,7 @@ function material(
     created_at: "2026-09-08 10:00:00",
     hidden: false,
     saved: true,
+    composite: false,
     allowed_uses: [],
     allowed_actions: ["preview", "download", "rename", "hide"],
     ...overrides,
@@ -3121,6 +3122,62 @@ describe("V1.4 内容与运营页面", () => {
     );
   });
 
+  it("复用素材时用最新名称和分组更新已有草稿缓存", async () => {
+    const item = material("renamed-video", {
+      title: "最新成片名称",
+      group: "联合调试验收",
+      media_type: "video",
+      content_type: "video/mp4",
+      duration_seconds: 4,
+      allowed_uses: ["reference"],
+    });
+    listMaterials.mockResolvedValue({
+      items: [item],
+      page: 1,
+      page_size: 6,
+      total: 1,
+    });
+    const base = studio();
+    const value = studio({
+      review: false,
+      data: {
+        ...base.data,
+        assets: [
+          {
+            id: "renamed-video",
+            name: "旧名称",
+            kind: "video",
+            group: "旧分组",
+            source: "任务中心",
+            saved: true,
+          },
+        ],
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<MaterialsPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "选择素材 最新成片名称" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "用于参考生视频" }),
+    );
+    const update = vi.mocked(value.updateData).mock.calls.at(-1)?.[0];
+    expect(update).toBeTypeOf("function");
+    const next = (update as (data: StudioData) => StudioData)(value.data);
+    expect(next.assets.filter((asset) => asset.id === "renamed-video")).toEqual(
+      [
+        expect.objectContaining({
+          name: "最新成片名称",
+          group: "联合调试验收",
+        }),
+      ],
+    );
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      referenceIds: ["renamed-video"],
+    });
+  });
+
   it("非审核素材页把搜索和来源筛选交给服务端", async () => {
     listMaterials.mockResolvedValue({
       items: [],
@@ -3728,6 +3785,7 @@ describe("V1.4 内容与运营页面", () => {
             {
               id: "old-draft",
               assetId: "historical-video",
+              coverId: "asset:historical-cover",
               title: "旧发布草稿",
               description: "正文",
               account: "",
@@ -3754,7 +3812,17 @@ describe("V1.4 内容与运营页面", () => {
           publishDrafts: [expect.objectContaining({ id: "old-draft" })],
         }),
       );
-      expect(resolveMaterials).toHaveBeenCalledWith(["historical-video"]);
+      expect(resolveMaterials).toHaveBeenCalledWith([
+        "asset:historical-video",
+        "asset:historical-cover",
+      ]);
+      if (available) {
+        const update = vi.mocked(value.updateData).mock.calls.at(-1)?.[0];
+        const next = (update as (data: StudioData) => StudioData)(value.data);
+        expect(
+          next.assets.find((asset) => asset.id === "historical-video")?.url,
+        ).toBe("https://storage.test/material");
+      }
       const save = screen.getByRole("button", { name: "保存草稿" });
       if (available) expect(save).toBeEnabled();
       else expect(save).toBeDisabled();

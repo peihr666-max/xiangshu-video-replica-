@@ -28,7 +28,12 @@ from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.admin_auth_routes import AdminReader, AdminWriter
-from app.admin_write_contract import AdminWriteContract, http_error, write_with_idempotency
+from app.admin_write_contract import (
+    AdminWriteContract,
+    http_error,
+    require_write_contract,
+    write_with_idempotency,
+)
 from app.db_pg import pg_transaction
 from app.db_portable import BusinessConnection
 from app.settings import DEFAULT_BILLING_SETTINGS, DEFAULT_RUNTIME_SETTINGS
@@ -427,6 +432,9 @@ def read_collected_viral_videos(
             f"""SELECT v.platform,v.video_id,v.category,v.title,v.author,v.duration_ms,
                 v.likes,v.comments,v.shares,v.collects,v.published_at,v.created_at,
                 v.homepage_featured,v.collection_published,v.cover_key,
+                v.native_json::jsonb->>'_statistics_checked_at' AS statistics_checked_at,
+                v.native_json::jsonb->>'_statistics_retry_at' AS statistics_retry_at,
+                (COALESCE(v.cover_url,'') != '') AS cover_required,
                 COALESCE(m.status,'PENDING') AS media_status,m.storage_uri
             FROM viral_videos v LEFT JOIN viral_media_preparations m
                 ON m.platform=v.platform AND m.video_id=v.video_id AND m.media_kind='video'
@@ -440,6 +448,88 @@ def read_collected_viral_videos(
         item["collection_published"] = bool(item["collection_published"])
         items.append(item)
     return {"items": items, "total": int(total), "offset": offset, "limit": limit}
+
+
+@router.post("/viral/videos/wechat_channels/{video_id:path}/statistics")
+def refresh_collected_wechat_statistics(
+    video_id: str,
+    payload: AdminWriteContract,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    from app.viral_statistics import refresh_viral_statistics
+    from app.viral_store import STATISTICS_CHECKED_AT_KEY, STATISTICS_RETRY_AT_KEY
+    from app.viral_tikhub import viral_source_client_from_settings
+
+    def business(raw: psycopg.Connection, request_id: str) -> dict[str, object]:
+        # Serialize same-record refreshes across API instances without holding
+        # its row lock during provider I/O (the collector also updates this row).
+        raw.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            (f"viral-statistics:{video_id}",),
+        )
+        if (
+            raw.execute(
+                "SELECT 1 FROM viral_videos WHERE platform='wechat_channels' "
+                "AND video_id=%s AND deleted_at IS NULL",
+                (video_id,),
+            ).fetchone()
+            is None
+        ):
+            raise http_error(404, "VIRAL_VIDEO_NOT_FOUND", "视频不存在或已删除。")
+        conn = BusinessConnection.postgres(raw)
+        videos = refresh_viral_statistics(
+            conn,
+            viral_source_client_from_settings(conn),
+            [video_id],
+        )
+        if not videos:
+            raise http_error(404, "VIRAL_VIDEO_NOT_FOUND", "视频已删除。")
+        video = videos[0]
+        checked = video.native.get(STATISTICS_CHECKED_AT_KEY)
+        retry = video.native.get(STATISTICS_RETRY_AT_KEY)
+        status = (
+            "failure"
+            if retry
+            else (
+                "complete"
+                if all(v is not None for v in (video.comments, video.shares, video.collects))
+                else "partial"
+            )
+        )
+        result: dict[str, object] = {
+            "video_id": video_id,
+            "likes": video.likes,
+            "comments": video.comments,
+            "shares": video.shares,
+            "collects": video.collects,
+            "statistics_checked_at": checked,
+            "statistics_retry_at": retry,
+            "statistics_status": status,
+        }
+        raw.execute(
+            "INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,metadata_json) "
+            "VALUES(%s,%s,'viral_video.statistics','viral_video',%s,%s)",
+            (
+                str(uuid.uuid4()),
+                actor.user_id,
+                f"wechat_channels:{video_id}",
+                json.dumps({**result, "reason": payload.reason.strip(), "request_id": request_id}),
+            ),
+        )
+        return result
+
+    return write_with_idempotency(
+        request,
+        response,
+        actor,
+        payload,
+        business,
+        success_status=200,
+        unavailable_code="VIRAL_STATISTICS_UNAVAILABLE",
+        unavailable_message="互动数据暂时无法获取，请稍后重试。",
+    )
 
 
 @router.get("/viral/videos/{platform}/{video_id:path}/preview")
@@ -474,6 +564,32 @@ def preview_collected_viral_video(
     return {"url": _browser_playable_url(result.url, _actor.user_id)}
 
 
+def _prepare_feature_cover(platform: str, video_id: str) -> tuple[str, str] | None:
+    from app.media_routes import get_media_storage
+    from app.viral_media import CoverEnricher, UrlFetcher
+    from app.viral_store import get_viral_video
+
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        video = get_viral_video(conn, platform=platform, video_id=video_id)
+        if video is None or video.cover_key or not video.cover_url:
+            return None
+        ready = conn.execute(
+            "SELECT 1 FROM viral_media_preparations WHERE platform=%s AND video_id=%s "
+            "AND media_kind='video' AND status='SUCCEEDED' AND storage_uri IS NOT NULL",
+            (platform, video_id),
+        ).fetchone()
+        if ready is None:
+            return None
+        storage = get_media_storage(conn)
+    # Only the existing public cover is fetched, with a bounded download and
+    # deterministic cache key. No provider collection request or long PG lock.
+    cover = CoverEnricher(storage=storage, fetcher=UrlFetcher(max_bytes=10 * 1024 * 1024)).enrich(
+        video
+    )
+    return (video.cover_url, cover.cover_key) if cover.cover_key else None
+
+
 @router.patch("/viral/videos/{platform}/{video_id:path}/curation")
 def curate_collected_viral_video(
     platform: Literal["douyin", "wechat_channels"],
@@ -483,6 +599,11 @@ def curate_collected_viral_video(
     response: Response,
     actor: AdminWriter,
 ) -> dict[str, object]:
+    require_write_contract(request, payload)
+    prepared_cover = (
+        _prepare_feature_cover(platform, video_id) if payload.action == "feature" else None
+    )
+
     def business(conn: psycopg.Connection, request_id: str) -> dict[str, object]:
         row = conn.execute(
             "SELECT cover_url,cover_key FROM viral_videos WHERE platform=%s AND video_id=%s "
@@ -497,9 +618,18 @@ def curate_collected_viral_video(
                 "AND media_kind='video' AND status='SUCCEEDED' AND storage_uri IS NOT NULL",
                 (platform, video_id),
             ).fetchone()
-            if ready is None or (row[0] and not row[1]):
+            if ready is None:
                 raise http_error(
                     409, "VIRAL_MEDIA_NOT_READY", "视频和封面归档完成后才能展示到首页。"
+                )
+            if row[0] and not row[1]:
+                if prepared_cover is None or prepared_cover[0] != row[0]:
+                    raise http_error(
+                        409, "VIRAL_COVER_NOT_READY", "视频已归档，但封面暂时无法获取，请稍后重试。"
+                    )
+                conn.execute(
+                    "UPDATE viral_videos SET cover_key=%s WHERE platform=%s AND video_id=%s",
+                    (prepared_cover[1], platform, video_id),
                 )
             hidden = conn.execute(
                 "SELECT 1 FROM viral_video_visibility WHERE platform=%s AND video_id=%s "
@@ -512,9 +642,16 @@ def curate_collected_viral_video(
                 )
         conn.execute(
             """UPDATE viral_videos SET homepage_featured=%s,
+                collection_published=CASE WHEN %s THEN 1 ELSE collection_published END,
                 deleted_at=CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE deleted_at END
             WHERE platform=%s AND video_id=%s""",
-            (int(payload.action == "feature"), payload.action == "delete", platform, video_id),
+            (
+                int(payload.action == "feature"),
+                payload.action == "feature",
+                payload.action == "delete",
+                platform,
+                video_id,
+            ),
         )
         conn.execute(
             """INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,metadata_json)

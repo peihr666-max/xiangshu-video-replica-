@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import (
     AuthenticatedUser,
+    CurrentUser,
     Database,
     authenticate_request,
     identity_source,
@@ -32,7 +33,6 @@ from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media import storage_key_from_uri
 from app.media_routes import (
-    api_base_url,
     signed_asset_session_epoch,
     storage_for_asset,
     validate_signed_asset_grant,
@@ -892,8 +892,14 @@ def read_asset(
 @router.post("/assets/{asset_id}/download-url", response_model=DownloadUrlResponse)
 def create_download_url(
     asset_id: str,
-    conn: Database,
-    actor: AuthenticatedUser,
+    db: BusinessDbDep,
+) -> DownloadUrlResponse:
+    with db.write() as (conn, actor):
+        return _create_download_grant(conn, actor=actor, asset_id=asset_id)
+
+
+def _create_download_grant(
+    conn: BusinessConnection, *, actor: CurrentUser, asset_id: str
 ) -> DownloadUrlResponse:
     require_not_auditor(
         conn,
@@ -908,6 +914,14 @@ def create_download_url(
         asset_id=asset_id,
         action="asset.download_url.create",
     )
+    if int(row["size_bytes"]) <= 0 or not str(row["sha256"] or "").strip():
+        raise HTTPException(
+            409,
+            detail={
+                "code": "ASSET_UPLOAD_NOT_COMPLETE",
+                "message": "素材尚未上传完成，请重新上传。",
+            },
+        )
     write_audit(
         conn,
         actor=actor,
@@ -937,10 +951,7 @@ def create_download_url(
             secret=secret,
         )
         query["sig"] = signature
-        url = (
-            f"{api_base_url()}/api/assets/signed-objects/{quote(object_key, safe='/')}"
-            f"?{urlencode(query)}"
-        )
+        url = f"/api/assets/signed-objects/{quote(object_key, safe='/')}?{urlencode(query)}"
     except StorageBackendUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -1013,9 +1024,7 @@ def create_cached_character_url(
             "sig": signature,
         }
     )
-    return DownloadUrlResponse(
-        url=f"{api_base_url()}/api/assets/character-cache/{cache_name}?{query}"
-    )
+    return DownloadUrlResponse(url=f"/api/assets/character-cache/{cache_name}?{query}")
 
 
 @router.get("/assets/character-cache/{cache_name}")

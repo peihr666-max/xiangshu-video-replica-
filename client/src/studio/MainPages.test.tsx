@@ -27,6 +27,7 @@ type WorkbenchUploadResult = {
 const {
   useStudio,
   loadTaskPreview,
+  saveTaskPreview,
   uploadWorkbenchSourceVideo,
   studioVideoFromViral,
   cancelStudioTask,
@@ -48,6 +49,7 @@ const {
 } = vi.hoisted(() => ({
   useStudio: vi.fn<() => StudioContextValue>(),
   loadTaskPreview: vi.fn(),
+  saveTaskPreview: vi.fn(),
   uploadWorkbenchSourceVideo:
     vi.fn<
       (
@@ -101,6 +103,7 @@ vi.mock("../api", async (importOriginal) => ({
 }));
 vi.mock("./live", () => ({
   loadTaskPreview,
+  saveTaskPreview,
   uploadWorkbenchSourceVideo,
   studioVideoFromViral,
   cancelStudioTask,
@@ -444,6 +447,52 @@ describe("V1.4 任务详情真实成片预览", () => {
     expect(next.tasks.find((item) => item.id === taskB.id)?.resultId).toBe(
       undefined,
     );
+  });
+
+  it("任务轮询不清除已加载的直出预览，临时结果不作为发布素材", async () => {
+    const asset: StudioAsset = {
+      id: "direct-task-result-a",
+      name: "直出成片",
+      kind: "video",
+      url: "/signed/direct-a",
+      group: "任务结果",
+      source: "任务中心",
+      saved: false,
+      generationTaskId: "provider-result-a",
+    };
+    let value = studio();
+    useStudio.mockImplementation(() => value);
+    loadTaskPreview.mockResolvedValue(asset);
+    const view = render(<TaskDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
+    await waitFor(() => expect(value.updateData).toHaveBeenCalledOnce());
+    const update = vi.mocked(value.updateData).mock.calls[0][0];
+    value = { ...value, data: update(value.data) };
+    view.rerender(<TaskDetailPage />);
+    const video = view.container.querySelector("video");
+    expect(video).not.toBeNull();
+    value = { ...value, data: { ...value.data, tasks: [{ ...taskA }] } };
+    view.rerender(<TaskDetailPage />);
+    expect(view.container.querySelector("video")).toBe(video);
+    expect(screen.getByRole("button", { name: "查看素材" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "去发布管理" })).toBeDisabled();
+    saveTaskPreview.mockResolvedValue({
+      ...asset,
+      id: "saved-result",
+      saved: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存到素材库" }));
+    expect(
+      await screen.findByRole("button", { name: "正在保存成片…" }),
+    ).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "去发布管理" })).toBeEnabled(),
+    );
+    expect(saveTaskPreview).toHaveBeenCalledWith(asset);
+    fireEvent.click(screen.getByRole("button", { name: "去发布管理" }));
+    expect(value.navigate).toHaveBeenCalledWith("publishing", {
+      selectedAssetId: "saved-result",
+    });
   });
 
   it("显示无结果状态，并允许重新尝试", async () => {
@@ -1045,6 +1094,12 @@ describe("V1.4 工作台对齐网格", () => {
 });
 
 describe("formatTaskTime", () => {
+  it("PostgreSQL 微秒及短时区偏移与标准 ISO 时间一致", () => {
+    const reference = new Date("2026-09-14T06:00:00Z");
+    expect(formatTaskTime("2026-09-14 05:17:11.591133+00", reference)).toBe(
+      formatTaskTime("2026-09-14T05:17:11.591Z", reference),
+    );
+  });
   const now = new Date("2026-09-06T10:00:00");
 
   it("当天显示“今天 HH:mm”", () => {
@@ -1135,7 +1190,7 @@ describe("V1.4 工作台上传与创作入口", () => {
     expect(screen.getByText("正在上传 乡墅案例.mp4… 40%")).toBeInTheDocument();
     act(() => reportProgress?.(100));
     expect(screen.getByText("正在上传 乡墅案例.mp4… 100%")).toBeInTheDocument();
-    expect(screen.queryByText("已上传云存储：乡墅案例.mp4")).toBeNull();
+    expect(screen.queryByText("已上传：乡墅案例.mp4")).toBeNull();
 
     pending.resolve?.({
       projectId: "proj-1",
@@ -1183,9 +1238,9 @@ describe("V1.4 工作台上传与创作入口", () => {
         }),
       ],
     });
-    expect(screen.getByText("已上传云存储：乡墅案例.mp4")).toBeInTheDocument();
+    expect(screen.getByText("已上传：乡墅案例.mp4")).toBeInTheDocument();
     expect(value.notify).toHaveBeenCalledWith(
-      "视频已上传云存储，来源已加入当前创作。",
+      "视频已上传，来源已加入当前创作。",
     );
   });
 
@@ -1251,7 +1306,7 @@ describe("V1.4 工作台上传与创作入口", () => {
     await first.promise.catch(() => undefined);
     await Promise.resolve();
     expect(value.patchDraft).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("已上传云存储：来源B.mp4")).toBeInTheDocument();
+    expect(screen.getByText("已上传：来源B.mp4")).toBeInTheDocument();
     expect(screen.queryByText(/迟到失败/)).toBeNull();
   });
 

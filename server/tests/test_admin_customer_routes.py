@@ -1450,6 +1450,25 @@ def test_list_customers_aggregates_generation_usage_and_settled_credits(
             " 'SUBMISSION_UNCERTAIN', 'PENDING')"
         )
         conn.execute(
+            "INSERT INTO person_identities (id,owner_user_id,display_name,authorization_status,"
+            "source_quality_status,status,created_by) VALUES "
+            "('usage-person',%s,'口播人物','AUTHORIZED','PASSED','ACTIVE',%s)",
+            (CUSTOMER_USER_ID, CUSTOMER_USER_ID),
+        )
+        conn.execute(
+            "INSERT INTO oral_avatars(id,identity_id,owner_user_id,title,status,source_kind,"
+            "source_asset_id) VALUES "
+            "('usage-avatar','usage-person',%s,'分身','READY','IMAGE','source')",
+            (CUSTOMER_USER_ID,),
+        )
+        for state in ("SUCCEEDED", "FAILED", "RUNNING", "SUBMISSION_UNCERTAIN", "ARCHIVE_FAILED"):
+            conn.execute(
+                "INSERT INTO oral_tasks(id,owner_user_id,identity_id,avatar_id,mode,title,status,"
+                "estimated_cost_fen,idempotency_key,request_hash) VALUES "
+                "(%s,%s,'usage-person','usage-avatar','TTS','口播',%s,0,%s,'hash')",
+                (f"usage-oral-{state}", CUSTOMER_USER_ID, state, f"usage-oral-{state}"),
+            )
+        conn.execute(
             "INSERT INTO wallet_transactions ("
             "id, user_id, type, available_delta, reserved_delta, task_id, "
             "billing_round, idempotency_key) VALUES ("
@@ -1462,11 +1481,11 @@ def test_list_customers_aggregates_generation_usage_and_settled_credits(
 
     assert response.status_code == 200, response.text
     customer = response.json()["items"][0]
-    assert customer["generation_total"] == 4
-    assert customer["generation_succeeded"] == 1
-    assert customer["generation_failed"] == 1
-    assert customer["generation_in_progress"] == 1
-    assert customer["generation_attention"] == 1
+    assert customer["generation_total"] == 9
+    assert customer["generation_succeeded"] == 2
+    assert customer["generation_failed"] == 2
+    assert customer["generation_in_progress"] == 2
+    assert customer["generation_attention"] == 3
     assert customer["credits_spent"] == 1
 
 

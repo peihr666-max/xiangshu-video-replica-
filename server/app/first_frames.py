@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import re
 import socket
 import sqlite3
 import time
@@ -43,6 +44,7 @@ from app.source_frames import (
 from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
+    create_local_storage_from_environment,
     require_storage_match,
     storage_object_ref_from_uri,
 )
@@ -257,6 +259,7 @@ class FirstFrameGenerationWork:
     reference_images: list[ImageInput]
     project_appearance: ProjectAppearanceSpec
     effective_prompt: str
+    aspect_ratio: str | None = None
 
 
 @dataclass(frozen=True)
@@ -274,6 +277,7 @@ class FirstFrameGenerationPlan:
     reference_assets: list[dict[str, object]]
     project_appearance: ProjectAppearanceSpec
     effective_prompt: str
+    aspect_ratio: str | None = None
 
 
 @dataclass(frozen=True)
@@ -490,6 +494,10 @@ class ApilioTransport(Protocol):
 
     def get(self, url: str) -> tuple[bytes, Mapping[str, str]]: ...
 
+    def get_json(
+        self, url: str, *, headers: Mapping[str, str]
+    ) -> tuple[bytes, Mapping[str, str]]: ...
+
 
 class UrllibApilioTransport:
     """Small stdlib transport so provider secrets never enter the client process."""
@@ -505,6 +513,10 @@ class UrllibApilioTransport:
         self, url: str, *, headers: Mapping[str, str], body: bytes
     ) -> tuple[bytes, Mapping[str, str]]:
         return self._open(Request(url, data=body, headers=dict(headers), method="POST"))
+
+    def get_json(self, url: str, *, headers: Mapping[str, str]) -> tuple[bytes, Mapping[str, str]]:
+        # Only called with a provider-origin URL, never an output/CDN URL.
+        return self._open(Request(url, headers=dict(headers), method="GET"), timeout_seconds=60)
 
     def get(self, url: str) -> tuple[bytes, Mapping[str, str]]:
         hostname, connect_ips = require_safe_provider_download_url(url)
@@ -576,10 +588,12 @@ class UrllibApilioTransport:
                 response.close()
             connection.close()
 
-    def _open(self, request: Request) -> tuple[bytes, Mapping[str, str]]:
+    def _open(
+        self, request: Request, *, timeout_seconds: float | None = None
+    ) -> tuple[bytes, Mapping[str, str]]:
         try:
             opener = build_opener(NoRedirectHandler())
-            with opener.open(request, timeout=self.timeout_seconds) as response:
+            with opener.open(request, timeout=timeout_seconds or self.timeout_seconds) as response:
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > MAX_PROVIDER_IMAGE_BYTES:
                     raise ImageProviderFailed("Apilio response exceeds the image size limit")
@@ -614,6 +628,82 @@ class ApilioImageProvider:
         self.base_url = base_url.rstrip("/")
         self.transport = transport or UrllibApilioTransport()
 
+    @property
+    def account_fingerprint(self) -> str:
+        return hashlib.sha256(f"{self.base_url}\n{self.api_key}".encode()).hexdigest()
+
+    def submit_edit(
+        self,
+        *,
+        model: FirstFrameModel,
+        prompt: str,
+        source_image: ImageInput,
+        character_reference_images: list[ImageInput],
+        output_count: int,
+        aspect_ratio: str | None = None,
+    ) -> str:
+        body, content_type = build_apilio_edit_multipart(
+            model=model,
+            prompt=prompt,
+            source_image=source_image,
+            character_reference_images=character_reference_images,
+            output_count=output_count,
+            aspect_ratio=aspect_ratio,
+        )
+        raw, _ = self.transport.post(
+            f"{self.base_url}{APILIO_IMAGE_EDIT_PATH}?async=true",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": content_type,
+                "Accept": "application/json",
+            },
+            body=body,
+        )
+        payload = self._json_object(raw)
+        return self._task_id(payload.get("task_id"))
+
+    @staticmethod
+    def _json_object(raw: bytes) -> dict[str, Any]:
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ImageProviderFailed("Apilio returned invalid task JSON") from exc
+        if not isinstance(payload, dict):
+            raise ImageProviderFailed("Apilio returned invalid task JSON")
+        return payload
+
+    @staticmethod
+    def _task_id(value: object) -> str:
+        if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,160}", value) is None:
+            raise ImageProviderFailed("Apilio returned an invalid task ID")
+        return value
+
+    def poll_edit(self, task_id: str, *, output_count: int) -> list[GeneratedImage] | None:
+        task_id = self._task_id(task_id)
+        raw, _ = self.transport.get_json(
+            f"{self.base_url}/v1/images/tasks/{task_id}",
+            headers={"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"},
+        )
+        payload = self._json_object(raw)
+        data = payload.get("data")
+        if payload.get("code") != "success" or not isinstance(data, dict):
+            raise ImageProviderFailed("Apilio returned invalid task status")
+        if data.get("task_id") != task_id:
+            raise ImageProviderFailed("Apilio returned a different task")
+        status = data.get("status")
+        if status == "FAILURE":
+            # Do not echo vendor text: it can contain signed URLs or credentials.
+            raise first_frame_error(
+                422, "FIRST_FRAME_PROVIDER_REJECTED", "图像服务生成失败，请调整素材后重试。"
+            )
+        if status == "SUCCESS":
+            return self._parse_response(
+                json.dumps(data.get("data")).encode(), output_count=output_count
+            )
+        if status not in {"NOT_START", "SUBMITTED", "IN_PROGRESS"}:
+            raise ImageProviderFailed("Apilio returned an unknown task status")
+        return None
+
     def edit(
         self,
         *,
@@ -622,6 +712,7 @@ class ApilioImageProvider:
         source_image: ImageInput,
         character_reference_images: list[ImageInput],
         output_count: int,
+        aspect_ratio: str | None = None,
     ) -> list[GeneratedImage]:
         body, content_type = build_apilio_edit_multipart(
             model=model,
@@ -629,6 +720,7 @@ class ApilioImageProvider:
             source_image=source_image,
             character_reference_images=character_reference_images,
             output_count=output_count,
+            aspect_ratio=aspect_ratio,
         )
         raw_body, _ = self.transport.post(
             f"{self.base_url}{APILIO_IMAGE_EDIT_PATH}",
@@ -658,11 +750,20 @@ class ApilioImageProvider:
             raise ImageProviderFailed("Apilio response is missing image output")
         encoded = item.get("b64_json")
         if isinstance(encoded, str) and encoded:
+            content_type = normalized_image_content_type(item.get("mime_type"))
+            if encoded.startswith("data:"):
+                header, separator, data = encoded.partition(",")
+                allowed_headers = {
+                    f"data:{mime};base64": mime for mime in FIRST_FRAME_IMAGE_CONTENT_TYPES
+                }
+                if not separator or header not in allowed_headers:
+                    raise ImageProviderFailed("Apilio returned an unsupported image data URI")
+                content_type = allowed_headers[header]
+                encoded = data
             try:
                 content = base64.b64decode(encoded, validate=True)
             except ValueError as exc:
                 raise ImageProviderFailed("Apilio returned invalid base64 image data") from exc
-            content_type = normalized_image_content_type(item.get("mime_type"))
             validate_provider_image_bytes(content, content_type)
             return GeneratedImage(content=content, content_type=content_type)
         url = item.get("url")
@@ -951,6 +1052,21 @@ class ApilioFirstFrameQualityInspector:
         raise FirstFrameQualityInspectorFailed("first-frame quality request failed") from last_error
 
 
+def bounded_first_frame_quality_inspector(
+    inspector: FirstFrameQualityInspector,
+) -> FirstFrameQualityInspector:
+    """Use a separate budget for first-frame checks, without multiplying retries."""
+    if not isinstance(inspector, ApilioFirstFrameQualityInspector):
+        return inspector
+    return ApilioFirstFrameQualityInspector(
+        api_key=inspector.api_key,
+        base_url=inspector.base_url,
+        model=inspector.model,
+        transport=UrllibApilioTransport(timeout_seconds=60.0),
+        max_attempts=1,
+    )
+
+
 def bounded_source_frame_quality_inspector(
     inspector: FirstFrameQualityInspector,
 ) -> FirstFrameQualityInspector:
@@ -988,6 +1104,7 @@ def build_apilio_edit_multipart(
     source_image: ImageInput,
     character_reference_images: list[ImageInput],
     output_count: int,
+    aspect_ratio: str | None = None,
 ) -> tuple[bytes, str]:
     boundary = f"----video-replica-{uuid4().hex}"
     body = bytearray()
@@ -1020,9 +1137,23 @@ def build_apilio_edit_multipart(
     add_field("response_format", "b64_json")
     add_field("n", str(output_count))
     if model == "gpt-image-2":
-        add_field("size", "auto")
+        sizes = {
+            "9:16": "1008x1792",
+            "16:9": "1792x1008",
+            "1:1": "1024x1024",
+            "3:4": "1152x1536",
+            "4:3": "1536x1152",
+            "2:3": "1024x1536",
+            "3:2": "1536x1024",
+            "4:5": "1024x1280",
+            "5:4": "1280x1024",
+            "21:9": "1792x768",
+        }
+        if aspect_ratio is not None and aspect_ratio not in sizes:
+            raise ImageProviderFailed("Unsupported image aspect ratio")
+        add_field("size", sizes[aspect_ratio] if aspect_ratio else "auto")
     else:
-        add_field("aspect_ratio", image_aspect_ratio(source_image))
+        add_field("aspect_ratio", aspect_ratio or image_aspect_ratio(source_image))
         add_field("image_size", "2K")
     body.extend(f"--{boundary}--\r\n".encode())
     return bytes(body), f"multipart/form-data; boundary={boundary}"
@@ -1305,8 +1436,9 @@ def _apply_scene_look_snapshot(
     name = str(persona.get("name") or "").strip()
     scene_description = str(persona.get("scene_description") or "").strip()
     costume_description = str(persona.get("costume_description") or "").strip()
-    if not name or not scene_description or not costume_description or not character_version_id:
-        return appearance
+    if not name or not character_version_id:
+        raise stale_first_frame_inputs()
+    costume_description = costume_description or "完整沿用所选场景形象图片中的外观、服饰与配饰"
     fingerprint_source = {
         "schema_version": PROJECT_CHARACTER_APPEARANCE_SCHEMA_VERSION,
         "source_analysis_version_id": appearance.source_analysis_version_id,
@@ -1314,6 +1446,8 @@ def _apply_scene_look_snapshot(
         "source_scene": appearance.scene,
         "subject": appearance.subject,
         "appearance_source": "SCENE_LOOK",
+        "review_mode": "HUMAN_CONFIRMATION",
+        "replacement_contract_version": 2,
         "scene_look_name": name,
         "scene_look_description": scene_description,
         "scene_look_version_id": character_version_id,
@@ -1580,6 +1714,7 @@ def prepare_first_frame_generation(
     quantity: int,
     character_version_id: str | None = None,
     character_reference_selection_id: str | None = None,
+    aspect_ratio: str | None = None,
 ) -> FirstFrameGenerationPlan:
     require_not_auditor(
         conn,
@@ -1594,6 +1729,8 @@ def prepare_first_frame_generation(
         raise first_frame_error(
             422, "FIRST_FRAME_MODEL_UNSUPPORTED", "The requested image model is unavailable."
         )
+    if aspect_ratio not in {None, "9:16", "16:9", "1:1", "3:4", "4:3"}:
+        raise first_frame_error(422, "FIRST_FRAME_ASPECT_RATIO_UNSUPPORTED", "图片画幅不受支持。")
     if quantity < 1 or quantity > MAX_FIRST_FRAME_CANDIDATES:
         raise first_frame_error(
             422,
@@ -1664,6 +1801,7 @@ def prepare_first_frame_generation(
         reference_assets=[asset_snapshot(asset) for asset in reference_assets],
         project_appearance=project_appearance,
         effective_prompt=effective_prompt,
+        aspect_ratio=aspect_ratio,
     )
 
 
@@ -1674,6 +1812,13 @@ def load_first_frame_generation_work(
 ) -> FirstFrameGenerationWork:
     """Read COS inputs after the customer session transaction has committed."""
 
+    source_image = read_asset_image(storage, plan.source_asset)
+    effective_prompt = plan.effective_prompt
+    if plan.aspect_ratio and plan.aspect_ratio != image_aspect_ratio(source_image):
+        effective_prompt = effective_prompt.replace(
+            "输出必须保持其画幅比例、取景范围和人物占画面比例。",
+            f"目标画幅为 {plan.aspect_ratio}，保留原有主体与人物姿态，保持人物占画面比例。",
+        ).replace("禁止裁切或扩图。", "禁止裁切原有主体，仅允许扩展原背景以适配目标画幅。")
     return FirstFrameGenerationWork(
         project_id=plan.project_id,
         actor=plan.actor,
@@ -1682,10 +1827,11 @@ def load_first_frame_generation_work(
         source_frame_asset_id=plan.source_frame_asset_id,
         source_frame_selection_version_id=plan.source_frame_selection_version_id,
         character_inputs=plan.character_inputs,
-        source_image=read_asset_image(storage, plan.source_asset),
+        source_image=source_image,
         reference_images=[read_asset_image(storage, asset) for asset in plan.reference_assets],
         project_appearance=plan.project_appearance,
-        effective_prompt=plan.effective_prompt,
+        effective_prompt=effective_prompt,
+        aspect_ratio=plan.aspect_ratio,
     )
 
 
@@ -1697,10 +1843,13 @@ def perform_first_frame_generation(
     before_provider_call: Callable[[], None] | None = None,
     after_provider_call: Callable[[], None] | None = None,
     heartbeat: Callable[[], None] | None = None,
+    quality_heartbeat: Callable[[], None] | None = None,
     resumed_candidates: list[GeneratedImage] | None = None,
     archive_generated: Callable[[list[GeneratedImage], int], list[GeneratedImage]] | None = None,
     checkpoint_candidates: Callable[[list[GeneratedImage]], None] | None = None,
     on_generated_images: Callable[[int], None] | None = None,
+    provider_submission: dict[str, object] | None = None,
+    save_provider_submission: Callable[[dict[str, object]], None] | None = None,
 ) -> list[GeneratedImage]:
     """Generate candidates outside the DB fence and label them with quality verdicts.
 
@@ -1710,23 +1859,33 @@ def perform_first_frame_generation(
     the human confirmation step owns the final gate.
     """
 
-    inspector = quality_inspector or FakeFirstFrameQualityInspector()
-    try:
-        if heartbeat is not None:
-            heartbeat()
-        source_inspection = inspector.inspect_source(work.source_image)
-    except FirstFrameQualityInspectorFailed as exc:
-        raise first_frame_error(
-            503,
-            "FIRST_FRAME_QUALITY_INSPECTOR_UNAVAILABLE",
-            "首帧自动质检暂时不可用，请稍后重试。",
-        ) from exc
-    if source_inspection.person_count != 1:
-        raise first_frame_error(
-            422,
-            "SINGLE_PERSON_SOURCE_REQUIRED",
-            "当前版本仅支持单人视频；所选源画面必须且只能包含一名真实人物。",
+    manual_review = work.project_appearance.appearance_source == "SCENE_LOOK"
+    inspector = (
+        None
+        if manual_review
+        else bounded_first_frame_quality_inspector(
+            quality_inspector or FakeFirstFrameQualityInspector()
         )
+    )
+    # Durable candidates prove the unchanged source already passed inspection.
+    if not manual_review and not resumed_candidates:
+        assert inspector is not None
+        try:
+            if heartbeat is not None:
+                heartbeat()
+            source_inspection = inspector.inspect_source(work.source_image)
+        except FirstFrameQualityInspectorFailed as exc:
+            raise first_frame_error(
+                503,
+                "FIRST_FRAME_QUALITY_INSPECTOR_UNAVAILABLE",
+                "首帧自动质检暂时不可用，请稍后重试。",
+            ) from exc
+        if source_inspection.person_count != 1:
+            raise first_frame_error(
+                422,
+                "SINGLE_PERSON_SOURCE_REQUIRED",
+                "当前版本仅支持单人视频；所选源画面必须且只能包含一名真实人物。",
+            )
 
     candidates = list(resumed_candidates or [])
     retry_issue_codes: list[str] = []
@@ -1739,7 +1898,7 @@ def perform_first_frame_generation(
             for candidate in candidates
             if candidate.quality is not None and candidate.quality.passed
         )
-        remaining = work.quantity - passed_count
+        remaining = work.quantity - (len(candidates) if manual_review else passed_count)
         if remaining <= 0:
             return candidates
         if not attempt_candidates:
@@ -1755,16 +1914,32 @@ def perform_first_frame_generation(
                 if before_provider_call is not None:
                     before_provider_call()
 
-            generated = edit_once_with_retry(
-                provider,
-                model=work.model,
-                prompt=prompt,
-                source_image=work.source_image,
-                character_reference_images=work.reference_images,
-                quantity=remaining,
-                before_provider_call=before_paid_call,
-                after_provider_call=after_provider_call,
-            )
+            if (
+                manual_review
+                and isinstance(provider, ApilioImageProvider)
+                and save_provider_submission
+            ):
+                generated = generate_scene_async(
+                    work,
+                    provider=provider,
+                    submission=provider_submission,
+                    save_submission=save_provider_submission,
+                    before_paid_call=before_paid_call,
+                    heartbeat=heartbeat,
+                )
+            else:
+                generated = edit_once_with_retry(
+                    provider,
+                    model=work.model,
+                    prompt=prompt,
+                    source_image=work.source_image,
+                    character_reference_images=work.reference_images,
+                    quantity=remaining,
+                    max_attempts=1 if manual_review else 2,
+                    aspect_ratio=getattr(work, "aspect_ratio", None),
+                    before_provider_call=before_paid_call,
+                    after_provider_call=after_provider_call,
+                )
             if on_generated_images is not None:
                 on_generated_images(len(generated))
             if len(generated) != remaining or any(
@@ -1785,6 +1960,9 @@ def perform_first_frame_generation(
             if checkpoint_candidates is not None:
                 checkpoint_candidates(candidates)
 
+        if manual_review:
+            return candidates
+        assert inspector is not None
         retry_issue_codes = []
         for candidate in attempt_candidates:
             if candidate.quality is not None:
@@ -1792,20 +1970,19 @@ def perform_first_frame_generation(
                     retry_issue_codes.extend(candidate.quality.issue_codes)
                 continue
             try:
-                if heartbeat is not None:
-                    heartbeat()
+                renew_quality = quality_heartbeat or heartbeat
+                if renew_quality is not None:
+                    renew_quality()
                 inspection = inspector.inspect_candidate(
                     source_image=work.source_image,
                     character_reference_images=work.reference_images,
                     candidate=candidate,
                     expected_outfit=work.project_appearance.outfit_description,
                 )
-            except FirstFrameQualityInspectorFailed as exc:
-                raise first_frame_error(
-                    503,
-                    "FIRST_FRAME_QUALITY_INSPECTOR_UNAVAILABLE",
-                    "首帧自动质检暂时不可用，请稍后重试。",
-                ) from exc
+            except FirstFrameQualityInspectorFailed:
+                # Paid output is already checkpointed. Deliver it as unverified;
+                # never retry generation merely because the inspector is down.
+                return candidates
             quality = evaluate_first_frame_candidate_quality(
                 inspection,
                 attempt=quality_attempt,
@@ -1878,7 +2055,9 @@ def first_frame_character_contract(
 ) -> dict[str, object]:
     roles = character_inputs.reference_asset_roles
     identity_source = (
-        "contact_sheet+source_photo"
+        "selected_scene_image"
+        if character_uses_scene_look(character_inputs)
+        else "contact_sheet+source_photo"
         if "contact_sheet" in roles and "source_photo" in roles
         else "legacy_views_only"
     )
@@ -2009,7 +2188,13 @@ def complete_first_frame_generation(
             "character_reference_asset_roles": work.character_inputs.reference_asset_roles,
             "provider": provider.provider_name,
             "model": work.model,
+            "aspect_ratio": work.aspect_ratio,
             "prompt": work.effective_prompt,
+            "review_mode": (
+                "HUMAN_CONFIRMATION"
+                if work.project_appearance.appearance_source == "SCENE_LOOK"
+                else "AUTOMATIC_QUALITY"
+            ),
             "reconstruction_mode": FIRST_FRAME_RECONSTRUCTION_MODE,
             "character_contract": first_frame_character_contract(work.character_inputs),
             "project_appearance": work.project_appearance.as_payload(),
@@ -2138,7 +2323,8 @@ def confirm_first_frame(
         )
     quality = candidate.get("quality")
     quality_passed = isinstance(quality, dict) and quality.get("passed") is True
-    if not quality_passed and not allow_unverified:
+    manual_review = payload.get("review_mode") == "HUMAN_CONFIRMATION"
+    if not quality_passed and not allow_unverified and not manual_review:
         # 质检未通过或未质检的候选仍可确认，但必须显式携带覆盖标记——
         # 人工决策要留下与自动质检同级的证据。
         raise first_frame_error(
@@ -2162,7 +2348,10 @@ def confirm_first_frame(
         "first_frame_candidates_version_id": str(candidate_version["id"]),
         "first_frame_asset_id": first_frame_asset_id,
     }
-    if not quality_passed:
+    if manual_review:
+        selection_payload["review_mode"] = "HUMAN_CONFIRMATION"
+        selection_payload["reviewed_by_user_id"] = actor.id
+    elif not quality_passed:
         selection_payload["quality_override"] = True
     row = insert_version(
         conn,
@@ -2220,6 +2409,7 @@ def effective_reference_asset_ids(
     row = conn.execute(
         """
         SELECT version.publication_snapshot_json AS snapshot_json,
+               version.persona_snapshot_json AS persona_snapshot_json,
                identity.source_asset_id AS source_asset_id
         FROM character_versions AS version
         JOIN character_personas AS persona ON persona.id = version.persona_id
@@ -2237,6 +2427,16 @@ def effective_reference_asset_ids(
     contact_sheet_asset_id = (
         snapshot.get("contact_sheet_asset_id") if isinstance(snapshot, dict) else None
     )
+    try:
+        persona = json.loads(str(row["persona_snapshot_json"] or ""))
+    except json.JSONDecodeError:
+        persona = None
+    constraints = persona.get("appearance_constraints_json") if isinstance(persona, dict) else None
+    if isinstance(constraints, dict) and constraints.get("appearance_type") == "scene":
+        if isinstance(contact_sheet_asset_id, str) and contact_sheet_asset_id:
+            return [contact_sheet_asset_id], ["scene_image"]
+        # Legacy published scene versions may contain separate approved views.
+        return legacy_selected, ["scene_image"] * len(legacy_selected)
     source_asset_id = row["source_asset_id"]
     if (
         isinstance(contact_sheet_asset_id, str)
@@ -2556,19 +2756,84 @@ def read_asset_image(storage: StorageAdapter, asset: Mapping[str, object]) -> Im
         )
     try:
         reference = storage_object_ref_from_uri(str(asset["storage_uri"]))
-        require_storage_match(storage, reference)
-        content = storage.get_object(reference.key)
+        if reference.provider == "local":
+            from app.bootstrap import is_customer_production
+
+            if is_customer_production():
+                raise StorageBackendUnavailable("Legacy local assets require migration to COS")
+        # The authorized snapshot may reference a historical local asset after
+        # new writes switched to COS. Resolve only that explicit local URI;
+        # output archiving still uses the active storage and cloud buckets must match.
+        source_storage = (
+            create_local_storage_from_environment()
+            if reference.provider == "local" and storage.provider != "local"
+            else storage
+        )
+        require_storage_match(source_storage, reference)
+        content = source_storage.get_object(reference.key)
     except (KeyError, OSError, StorageBackendUnavailable, ValueError) as exc:
         raise first_frame_error(
             503,
             "FIRST_FRAME_INPUT_STORAGE_UNAVAILABLE",
-            "Source or character reference storage is temporarily unavailable.",
+            "无法读取源画面或人物参考图，请检查素材是否仍存在及其存储访问权限。",
         ) from exc
     return ImageInput(
         content=content,
         content_type=content_type,
         filename=f"{asset['id']}.{image_extension(content_type)}",
     )
+
+
+def generate_scene_async(
+    work: FirstFrameGenerationWork,
+    *,
+    provider: ApilioImageProvider,
+    submission: dict[str, object] | None,
+    save_submission: Callable[[dict[str, object]], None],
+    before_paid_call: Callable[[], None],
+    heartbeat: Callable[[], None] | None,
+) -> list[GeneratedImage]:
+    if submission is None:
+        before_paid_call()
+        task_id = provider.submit_edit(
+            model=work.model,
+            prompt=work.effective_prompt,
+            source_image=work.source_image,
+            character_reference_images=work.reference_images,
+            output_count=work.quantity,
+            aspect_ratio=getattr(work, "aspect_ratio", None)
+            or image_aspect_ratio(work.source_image),
+        )
+        submission = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "account_fingerprint": provider.account_fingerprint,
+            "model": work.model,
+            "output_count": work.quantity,
+        }
+        # A failed receipt write must stop here: no poll and no second POST.
+        save_submission(submission)
+    if (
+        submission.get("account_fingerprint") != provider.account_fingerprint
+        or submission.get("model") != work.model
+        or submission.get("output_count") != work.quantity
+    ):
+        raise first_frame_error(
+            409, "FIRST_FRAME_PROVIDER_CHANGED", "图像服务配置已变化，请联系管理员核对原任务。"
+        )
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        if heartbeat is not None:
+            heartbeat()
+        try:
+            generated = provider.poll_edit(str(submission["task_id"]), output_count=work.quantity)
+            if generated is not None:
+                return generated
+        except RetryableImageProviderFailed:
+            # Retrying a read cannot create another paid generation.
+            pass
+        time.sleep(5)
+    raise RetryableImageProviderFailed("Apilio task polling timed out; receipt retained")
 
 
 def edit_once_with_retry(
@@ -2579,30 +2844,42 @@ def edit_once_with_retry(
     source_image: ImageInput,
     character_reference_images: list[ImageInput],
     quantity: int,
+    max_attempts: int = 2,
+    aspect_ratio: str | None = None,
     before_provider_call: Callable[[], None] | None = None,
     after_provider_call: Callable[[], None] | None = None,
 ) -> list[GeneratedImage]:
-    for attempt in range(2):
+    for attempt in range(max_attempts):
         try:
             if before_provider_call is not None:
                 before_provider_call()
-            generated = provider.edit(
-                model=model,
-                prompt=prompt,
-                source_image=source_image,
-                character_reference_images=character_reference_images,
-                output_count=quantity,
-            )
+            if isinstance(provider, ApilioImageProvider):
+                generated = provider.edit(
+                    model=model,
+                    prompt=prompt,
+                    source_image=source_image,
+                    character_reference_images=character_reference_images,
+                    output_count=quantity,
+                    aspect_ratio=aspect_ratio or image_aspect_ratio(source_image),
+                )
+            else:
+                generated = provider.edit(
+                    model=model,
+                    prompt=prompt,
+                    source_image=source_image,
+                    character_reference_images=character_reference_images,
+                    output_count=quantity,
+                )
             if after_provider_call is not None:
                 after_provider_call()
             return generated
         except RetryableImageProviderFailed as exc:
-            if attempt == 0 and after_provider_call is not None:
+            if attempt + 1 < max_attempts and after_provider_call is not None:
                 # A retryable provider response is known and the helper owns
                 # the safe retry. Only the final unresolved call stays marked
                 # as uncertain for the durable task state machine.
                 after_provider_call()
-            if attempt == 1:
+            if attempt + 1 == max_attempts:
                 raise first_frame_error(
                     502,
                     "FIRST_FRAME_PROVIDER_FAILED",
@@ -2632,20 +2909,22 @@ def normalize_prompt(
         source_timestamp_seconds=None,
     )
     if appearance.appearance_source == "SCENE_LOOK":
-        appearance_contract = (
-            f"用户已选择的场景造型：“{appearance.scene_look_name}”；"
-            f"服装、鞋履与配饰要求：{appearance.outfit_description}\n"
-            f"场景造型描述“{appearance.scene_look_description}”只用于核对人物造型与环境是否协调；"
-            f"实际背景仍以原视频源帧为准，当前源场景为“{appearance.scene}”。\n"
-            f"目标替换对象仅为源画面中承担“{appearance.subject}”角色的主要人物。"
-            "如果画面中有多人，只重构这一名主要人物；其他人物的身份、服装、数量、位置与动作均保持不变，"
-            "不得把目标人物外观扩散到旁人。"
+        server_template = (
+            f"将第 1 张原视频源画面中的唯一人物，替换为用户选中的场景形象“{character_name}”。\n"
+            "第 2 张及后续输入图是同一个已完成造型的场景人物，是唯一外观依据："
+            "完整沿用其面容、发型、肤色、体型、服装、鞋履和配饰。"
+            "不要重新设计服饰，不要保留原视频人物的外貌或衣服。\n"
+            "原视频源画面只提供人物姿态、动作、位置、朝向、遮挡关系、构图、机位、背景、道具和光照；"
+            "这些内容保持不变。将目标形象自然适配原姿态和透视。\n"
+            "以第 1 张源画面作为完整编辑画布，输出必须保持其画幅比例、取景范围和人物占画面比例。"
+            "只修改人物本身；人物以外的建筑、地面、植物、道具及原有字幕、文字和标识保持原样。"
+            "禁止模糊补边，禁止增加上下或左右留白，禁止把原画面缩进新背景，禁止裁切或扩图。"
+            "如果原图有黑边、字幕覆盖在人物身上，也按原位置原样保留。\n"
+            "场景参考图的背景、姿势、分格线、边框和多面板布局不属于替换内容，不能复制到结果。"
+            "只输出一张自然完整画面，不增加或删除其他主体。"
         )
-        contact_sheet_role = (
-            "第 2 张输入图是用户选中的场景五视图参考板，用于确定人物身份、长相、发型、身材比例、"
-            "服装、鞋履与配饰；服装、鞋履与配饰必须以该参考板为准。"
-        )
-        clothing_rule = "必须完整复刻所选场景造型中的服装、鞋履与配饰，不得保留原视频人物服装。"
+        # Scene appearance is already authored; free text must not redesign it.
+        return server_template
     else:
         appearance_contract = (
             f"项目人物造型（后台自动匹配）：场景为“{appearance.scene}”，"

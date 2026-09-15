@@ -27,6 +27,7 @@ from app.admin_write_contract import (
     write_with_idempotency as _write_with_idempotency,
 )
 from app.auth import Database, Role
+from app.billing_catalog import SERVICES
 from app.control_auth import ControlUser
 from app.db_portable import BusinessConnection
 from app.ops_metrics import get_or_create_request_id
@@ -133,6 +134,10 @@ class ControlWalletTransaction(BaseModel):
     available_balance_after: int | None
     reserved_balance_after: int | None
     oral_task_id: str | None = None
+    billing_operation_id: str | None = None
+    source_id: str | None = None
+    service: str | None = None
+    service_name: str | None = None
 
 
 class ControlWalletTransactionPage(BaseModel):
@@ -631,6 +636,11 @@ def list_wallet_transactions(
             tx.recharge_order_id,
             tx.task_id,
             tx.oral_task_id,
+            tx.billing_operation_id,
+            (SELECT op.source_id FROM billing_operations op
+             WHERE op.id=tx.billing_operation_id AND op.user_id=tx.user_id) AS source_id,
+            (SELECT op.service FROM billing_operations op
+             WHERE op.id=tx.billing_operation_id AND op.user_id=tx.user_id) AS service,
             tx.billing_round,
             tx.created_at,
             CASE WHEN tx.ledger_sequence IS NULL THEN NULL ELSE
@@ -657,7 +667,13 @@ def list_wallet_transactions(
         (*params, limit, offset),
     ).fetchall()
     return ControlWalletTransactionPage(
-        items=[ControlWalletTransaction(**dict(row)) for row in rows],
+        items=[
+            ControlWalletTransaction(
+                **dict(row),
+                service_name=SERVICES[row["service"]].name if row["service"] in SERVICES else None,
+            )
+            for row in rows
+        ],
         total=total,
         limit=limit,
         offset=offset,
@@ -806,7 +822,7 @@ def list_generation_records(
         FROM generation_tasks AS task
         JOIN generation_batches AS batch ON batch.id = task.batch_id
         JOIN users ON users.id = batch.created_by_user_id
-        JOIN projects ON projects.id = batch.project_id
+        LEFT JOIN projects ON projects.id = batch.project_id
         {video_where}
         ORDER BY task.created_at DESC, task.id DESC
         LIMIT %s
@@ -815,7 +831,9 @@ def list_generation_records(
     ).fetchall()
     for row in video_rows:
         provider_cost = row["actual_cost"]
-        provider_cost_status: ProviderCostStatus = "KNOWN"
+        # Video completion multiplies measured usage by the frozen configured
+        # rate. The legacy actual_cost field is not a supplier invoice amount.
+        provider_cost_status: ProviderCostStatus = "ESTIMATED"
         if provider_cost is None:
             provider_cost = row["estimated_cost"]
             provider_cost_status = "ESTIMATED"
@@ -829,8 +847,8 @@ def list_generation_records(
                 user_id=str(row["user_id"]),
                 username=str(row["username"]),
                 display_name=str(row["display_name"]),
-                project_id=str(row["project_id"]),
-                project_name=str(row["project_name"]),
+                project_id=None if row["project_id"] is None else str(row["project_id"]),
+                project_name=None if row["project_name"] is None else str(row["project_name"]),
                 status=str(row["status"]),
                 provider=str(row["provider"]),
                 model=str(row["model"]),
@@ -882,6 +900,7 @@ def list_generation_records(
         execution = _execution_metadata(task_result)
         records.append(
             _image_generation_record(
+                conn=conn,
                 row=row,
                 record_type="FIRST_FRAME_IMAGE",
                 operation="GENERATE",
@@ -924,6 +943,7 @@ def list_generation_records(
             provider = generation_source
         records.append(
             _image_generation_record(
+                conn=conn,
                 row=row,
                 record_type="CHARACTER_SHEET_IMAGE",
                 operation=str(row["operation"]),
@@ -1652,6 +1672,7 @@ def _oral_admin_error_message(*, status: str, raw_message: str | None) -> str | 
 
 def _image_generation_record(
     *,
+    conn: BusinessConnection,
     row: sqlite3.Row,
     record_type: Literal["FIRST_FRAME_IMAGE", "CHARACTER_SHEET_IMAGE"],
     operation: str,
@@ -1660,6 +1681,9 @@ def _image_generation_record(
     result_reference: str | None,
     record_data_status: RecordDataStatus,
 ) -> ControlGenerationRecord:
+    billing = image_task_billing(
+        conn, task_id=str(row["id"]), user_id=str(row["created_by_user_id"])
+    )
     return ControlGenerationRecord(
         record_id=str(row["id"]),
         record_type=record_type,
@@ -1672,14 +1696,16 @@ def _image_generation_record(
         status=str(row["status"]),
         provider=provider,
         model=model,
-        provider_cost=None,
+        provider_cost=billing[1],
         provider_cost_status=(
             "NOT_APPLICABLE"
             if provider in {"fake", "uploaded", "local_placeholder"}
             else "UNAVAILABLE"
+            if billing[1] is None
+            else "ESTIMATED"
         ),
         record_data_status=record_data_status,
-        charged_credits=0,
+        charged_credits=billing[0],
         result_reference=result_reference,
         provider_reference=None,
         error_code=_optional_text(row["error_code"]),
@@ -1687,6 +1713,33 @@ def _image_generation_record(
         created_at=str(row["created_at"]),
         completed_at=_optional_text(row["completed_at"]),
     )
+
+
+def image_task_billing(
+    conn: BusinessConnection,
+    *,
+    task_id: str,
+    user_id: str,
+) -> tuple[int, float | None]:
+    """Read settled points separately from attempts; retries must not multiply charges.
+
+    Attempt costs use frozen configured prices, not a supplier invoice. If even
+    one attempt lacks cost evidence the total remains unknown, rather than zero.
+    """
+    row = conn.execute(
+        "SELECT COALESCE(SUM(charged_credits),0) FROM billing_operations "
+        "WHERE source_id=%s AND user_id=%s AND service IN ('character','first_frame')",
+        (task_id, user_id),
+    ).fetchone()
+    attempts = conn.execute(
+        "SELECT COUNT(*), COUNT(a.cost_fen), SUM(a.cost_fen) FROM billing_attempts a "
+        "JOIN billing_operations op ON op.id=a.operation_id "
+        "WHERE op.source_id=%s AND op.user_id=%s "
+        "AND op.service IN ('character','first_frame')",
+        (task_id, user_id),
+    ).fetchone()
+    cost = float(attempts[2]) / 100 if attempts[0] and attempts[0] == attempts[1] else None
+    return int(row[0]), cost
 
 
 def _json_object(

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from app.db_portable import BusinessConnection
 from app.viral_store import (
     STATISTICS_CHECKED_AT_KEY,
+    STATISTICS_OBJECT_ID_KEY,
     STATISTICS_RETRY_AT_KEY,
     get_viral_video,
     mark_viral_statistics_failure,
@@ -65,6 +66,9 @@ def _needs_refresh(video: ViralVideo) -> bool:
 
 
 def _fetch_detail(client: ViralSourceClient, video: ViralVideo) -> WechatVideoDetail:
+    object_id = video.native.get(STATISTICS_OBJECT_ID_KEY)
+    if isinstance(object_id, str) and object_id:
+        return client.wechat_video_detail(object_id=object_id)
     return client.wechat_video_detail(
         export_id=str(video.native["export_id"]),
         object_nonce_id=str(video.native.get("object_nonce_id") or "") or None,
@@ -99,7 +103,10 @@ def refresh_viral_statistics(
             if not _needs_refresh(video):
                 continue
             export_id = video.native.get("export_id")
-            if not isinstance(export_id, str) or not export_id:
+            object_id = video.native.get(STATISTICS_OBJECT_ID_KEY)
+            if not (isinstance(export_id, str) and export_id) and not (
+                isinstance(object_id, str) and object_id
+            ):
                 mark_viral_statistics_failure(
                     conn, platform=video.platform, video_id=video.video_id
                 )

@@ -365,9 +365,12 @@ export function Media({
  * so review fixtures keep their curated wording. */
 export function formatTaskTime(value: string, now: Date = new Date()): string {
   if (!value) return value;
-  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(value)
+  const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(value)
     ? value.replace(" ", "T")
     : value;
+  const normalized = timestamp
+    .replace(/(\.\d{3})\d+(?=Z|[+-]\d{2}(?::?\d{2})?$)/, "$1")
+    .replace(/([+-]\d{2})$/, "$1:00");
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return value;
   const pad = (n: number) => String(n).padStart(2, "0");

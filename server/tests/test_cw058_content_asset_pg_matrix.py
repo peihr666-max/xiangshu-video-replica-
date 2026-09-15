@@ -1557,6 +1557,173 @@ def test_media_completion_rolls_back_atomically_when_enqueue_fails_on_pg(
     assert tasks is not None and tasks[0] == 0
 
 
+@pytest.mark.parametrize("standalone", [False, True])
+def test_direct_generation_archive_is_owned_idempotent_and_does_not_rebill(
+    bus: BusinessConnection, pg: psycopg.Connection, standalone: bool
+) -> None:
+    from app.generation import (
+        get_generation_batch,
+        persist_generation_result_archive,
+        prepare_generation_result_archive,
+    )
+    from app.materials import require_material
+
+    seed_project(pg, "archive-project", "employee_1")
+    pg.execute(
+        "INSERT INTO generation_batches (id, project_id, created_by_user_id, "
+        "idempotency_key, request_hash, request_snapshot_json, status) VALUES "
+        "('archive-batch','archive-project','employee_1','archive-key','h','{}','SUCCEEDED')"
+    )
+    pg.execute(
+        "INSERT INTO generation_tasks (id,batch_id,provider,model,status,archive_status,"
+        "provider_result_url,completed_at) VALUES "
+        "('archive-task','archive-batch','metaso','MiniMax-H3','SUCCEEDED','DIRECT',"
+        "'https://cdn.example.com/video.mp4',CURRENT_TIMESTAMP)"
+    )
+    owner = actor("employee_1", "employee")
+    if standalone:
+        pg.execute("UPDATE generation_batches SET project_id=NULL WHERE id='archive-batch'")
+    with pytest.raises(HTTPException):
+        prepare_generation_result_archive(
+            bus, actor=actor("employee_2", "employee"), task_id="archive-task"
+        )
+    with pytest.raises(HTTPException):
+        prepare_generation_result_archive(
+            bus, actor=actor("auditor_1", "auditor"), task_id="archive-task"
+        )
+    prepared = prepare_generation_result_archive(bus, actor=owner, task_id="archive-task")
+    storage = FakeStorageAdapter(provider="cos", bucket="archive-test")
+    stored = storage.put_object(
+        "generation-results/archive-task/video.mp4", b"verified-video", content_type="video/mp4"
+    )
+    for _ in range(2):
+        result = persist_generation_result_archive(
+            bus,
+            actor=owner,
+            prepared=prepared,
+            stored=stored,
+            duration_seconds=4.458333,
+        )
+    assert result.result_asset_id
+    material = require_material(bus, actor=owner, material_id=f"asset:{result.result_asset_id}")
+    assert material.saved and material.delivery == "stored"
+    assert material.source == "generation"
+    assert material.duration_seconds == pytest.approx(4.458333)
+    assert "download" in material.allowed_actions
+    assert pg.execute("SELECT count(*) FROM assets").fetchone()[0] == 1
+    assert (
+        pg.execute(
+            "SELECT count(*) FROM audit_logs WHERE action='generation_task.archive'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert pg.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 0
+    detail = get_generation_batch(bus, actor=owner, batch_id="archive-batch")
+    assert detail.project_name == (None if standalone else "CW058 archive-project")
+    pg.execute(
+        "INSERT INTO customer_batch_visibility(user_id,batch_id) "
+        "VALUES ('employee_1','archive-batch')"
+    )
+    # Removing a task from history must not remove a separately saved material
+    # or break a publishing draft that references its physical asset.
+    retained = require_material(bus, actor=owner, material_id=f"asset:{result.result_asset_id}")
+    assert retained.saved and retained.source == "generation"
+    from app.control_routes import list_generation_records
+
+    pg.execute("UPDATE generation_tasks SET actual_cost=0.08 WHERE id='archive-task'")
+    records = list_generation_records(bus, owner, record_type="VIDEO", limit=50, offset=0)
+    assert records.total == len(records.items) == 1
+    assert records.items[0].project_id == (None if standalone else "archive-project")
+    assert records.items[0].provider_cost == 0.08
+    # record_video_generation_cost uses frozen configured rates, not an invoice.
+    assert records.items[0].provider_cost_status == "ESTIMATED"
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "download", "settings", "nan", "changed", "revoked"]
+)
+def test_archive_http_rechecks_before_commit_and_preserves_billing(
+    lane_env: str, pg: psycopg.Connection, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    from contextlib import contextmanager
+
+    from app.customer_fence import get_business_db
+    from app.generation import H3ProviderFailed, H3ProviderSettingsUnavailable
+    from app.main import app
+    from app.media_routes import get_media_storage
+
+    seed_project(pg, "archive-http-project", "employee_1")
+    pg.execute(
+        "INSERT INTO generation_batches(id,project_id,created_by_user_id,idempotency_key,"
+        "request_hash,request_snapshot_json,status) VALUES "
+        "('archive-http-batch','archive-http-project','employee_1','archive-http-key','h','{}','SUCCEEDED')"
+    )
+    pg.execute(
+        "INSERT INTO generation_tasks(id,batch_id,provider,model,status,archive_status,"
+        "provider_result_url) VALUES ('archive-http-task','archive-http-batch','metaso',"
+        "'MiniMax-H3','SUCCEEDED','DIRECT','https://cdn.example/result.mp4')"
+    )
+    pg.commit()
+    downloads: list[str] = []
+
+    class TestDb:
+        @contextmanager
+        def write(self):
+            with pg_transaction() as raw:
+                if outcome == "revoked" and downloads:
+                    raise HTTPException(401, detail={"code": "SESSION_REPLACED"})
+                yield BusinessConnection.postgres(raw), actor("employee_1", "employee")
+
+    class Provider:
+        def download_result(self, url: str) -> bytes:
+            downloads.append(url)
+            if outcome == "download":
+                raise H3ProviderFailed("temporary download failure")
+            if outcome == "changed":
+                pg.execute(
+                    "UPDATE generation_tasks SET provider_result_url='https://cdn.example/new.mp4' "
+                    "WHERE id='archive-http-task'"
+                )
+                pg.commit()
+            return b"\x00\x00\x00\x18ftypisom" + b"test-video"
+
+    def provider(*args, **kwargs):
+        if outcome == "settings":
+            raise H3ProviderSettingsUnavailable("not configured")
+        return Provider()
+
+    monkeypatch.setattr("app.generation_routes.h3_provider_for_task", provider)
+    monkeypatch.setattr(
+        "app.generation_routes.FFprobeVideoProbe.probe",
+        lambda *_args, **_kwargs: VideoMetadata(float("nan") if outcome == "nan" else 4.0),
+    )
+    app.dependency_overrides[get_business_db] = TestDb
+    app.dependency_overrides[get_media_storage] = lambda: FakeStorageAdapter(
+        provider="cos", bucket="http-archive-test"
+    )
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        result = client.post("/api/generation-tasks/archive-http-task/archive")
+        expected = {"success": 200, "changed": 409, "revoked": 401}.get(outcome, 503)
+        assert result.status_code == expected, result.text
+        if outcome == "success":
+            replay = client.post("/api/generation-tasks/archive-http-task/archive")
+            assert replay.status_code == 200
+            assert replay.json()["result_asset_id"] == result.json()["result_asset_id"]
+            assert len(downloads) == 1
+        else:
+            assert pg.execute("SELECT count(*) FROM assets").fetchone()[0] == 0
+            assert (
+                pg.execute(
+                    "SELECT archive_status FROM generation_tasks WHERE id='archive-http-task'"
+                ).fetchone()[0]
+                == "DIRECT"
+            )
+        assert pg.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_materials_pagination_hide_rename_and_audit_on_pg(
     bus: BusinessConnection, pg: psycopg.Connection
 ) -> None:

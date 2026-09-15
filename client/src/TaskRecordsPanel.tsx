@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { formatDateTime as formatTimestamp } from "./admin/ui/vocabulary";
 import {
   confirmGenerationTaskNotCharged,
   createGenerationResultPreviewUrl,
@@ -1851,10 +1852,6 @@ function formatCost(value: number | null | undefined) {
   return value === null || value === undefined
     ? "待回填"
     : `¥${value.toFixed(2)}`;
-}
-
-function formatTimestamp(value: string) {
-  return value.replace("T", " ").replace("Z", "").slice(0, 19);
 }
 
 function batchStorageKey(currentUserId?: string): string {

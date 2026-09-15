@@ -128,6 +128,148 @@ describe("FirstFrameSelection", () => {
     vi.mocked(generateFirstFrames).mockResolvedValue(candidatesVersion);
   });
 
+  it("sends the selected image aspect ratio in simplified mode", async () => {
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+        simplified
+      />,
+    );
+    await screen.findByRole("button", { name: "重新生成候选首帧" });
+    fireEvent.change(screen.getByLabelText("图片画幅"), {
+      target: { value: "9:16" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "重新生成候选首帧" }));
+    await waitFor(() =>
+      expect(generateFirstFrames).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({ aspect_ratio: "9:16" }),
+        expect.any(Function),
+      ),
+    );
+  });
+
+  it("does not resume an old completed task after the scene binding changes", async () => {
+    vi.mocked(getLatestProjectFirstFrames).mockResolvedValue({
+      version: null,
+      stale: true,
+    });
+    vi.mocked(getLatestFirstFrameTask).mockResolvedValue({
+      ...pendingFirstFrameTask,
+      status: "SUCCEEDED",
+      result_version_id: "old-candidates",
+    });
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+        simplified
+      />,
+    );
+    await screen.findByText("上游输入已更新，请重新生成人物置换首帧。");
+    await waitFor(() => expect(getLatestFirstFrameTask).toHaveBeenCalled());
+    expect(resumeFirstFrameGeneration).not.toHaveBeenCalled();
+  });
+
+  it("restores completed candidates without marking the workspace as generating", async () => {
+    const onBusyChange = vi.fn();
+    vi.mocked(getLatestFirstFrameTask).mockResolvedValue({
+      ...pendingFirstFrameTask,
+      status: "SUCCEEDED",
+      result_version_id: candidatesVersion.id,
+    });
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+        onBusyChange={onBusyChange}
+      />,
+    );
+    await screen.findByText("已自动预选第一张候选，请查看后单击确认。");
+    expect(onBusyChange).not.toHaveBeenCalledWith(true);
+    expect(resumeFirstFrameGeneration).not.toHaveBeenCalled();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("shows scene comparison and confirms manual-review output without a failed-QC override", async () => {
+    const manual = {
+      ...candidatesVersion,
+      payload: {
+        ...candidatesVersion.payload,
+        review_mode: "HUMAN_CONFIRMATION",
+        source_frame_asset_id: "source-original",
+        character_reference_asset_ids: ["scene-reference"],
+        candidates: [
+          { ...candidatesVersion.payload.candidates[0], quality: null },
+        ],
+      },
+    };
+    vi.mocked(getLatestProjectFirstFrames).mockResolvedValue({
+      version: manual,
+      stale: false,
+    });
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+        simplified
+      />,
+    );
+    await screen.findByRole("img", { name: "所选场景形象" });
+    expect(
+      screen.getByRole("img", { name: "原视频源画面" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /首帧候选 1/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认用于视频生成的首帧" }),
+    );
+    await waitFor(() =>
+      expect(confirmFirstFrame).toHaveBeenCalledWith("project-1", "first-1"),
+    );
+    expect(screen.queryByText(/该候选未通过自动质检/)).not.toBeInTheDocument();
+  });
+
+  it("labels unchecked output and requires explicit human confirmation", async () => {
+    const unverified = {
+      ...candidatesVersion,
+      payload: {
+        ...candidatesVersion.payload,
+        candidates: candidatesVersion.payload.candidates.map((candidate) => ({
+          ...candidate,
+          quality: null,
+        })),
+      },
+    };
+    vi.mocked(getLatestProjectFirstFrames).mockResolvedValue({
+      version: unverified,
+      stale: false,
+    });
+    vi.mocked(getProjectFirstFrameHistory).mockResolvedValue([unverified]);
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+      />,
+    );
+    expect(
+      await screen.findAllByText("自动质检未完成，请查看图片后人工确认"),
+    ).toHaveLength(2);
+    fireEvent.click(screen.getByRole("radio", { name: /首帧候选 1/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认用于视频生成的首帧" }),
+    );
+    expect(confirmFirstFrame).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "质检未通过，仍要使用此首帧" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows the Apilio model, candidates, and requires a visible choice before confirmation", async () => {
     render(
       <FirstFrameSelection

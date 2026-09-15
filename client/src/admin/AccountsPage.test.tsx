@@ -62,6 +62,31 @@ function installFetch() {
 }
 
 describe("AccountsPage", () => {
+  it("shows point units and traces general business charges to their source", async () => {
+    const page = transactionPage(0, 1);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        jsonResponse({
+          ...page,
+          items: [
+            {
+              ...page.items[0],
+              recharge_order_id: null,
+              billing_operation_id: "operation-1",
+              source_id: "image-task-1",
+              service_name: "人物形象及任务图片",
+            },
+          ],
+        }),
+      ),
+    );
+    render(<AccountsPage />);
+    expect(await screen.findByText("image-task-1")).toBeVisible();
+    expect(screen.getByText("人物形象及任务图片")).toBeVisible();
+    expect(screen.getByText("18 积分")).toBeVisible();
+    expect(screen.queryByText("18 秒")).toBeNull();
+  });
   it("exports wallet filters from the wallet page", async () => {
     const fetchMock = installFetch();
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:test");
@@ -113,9 +138,9 @@ describe("AccountsPage", () => {
 
     expect(await screen.findByText("operator-1")).toBeInTheDocument();
     expect(screen.getByText("充值到账")).toBeInTheDocument();
-    expect(screen.getByText("+10 秒")).toBeInTheDocument();
-    expect(screen.getByText(/18 秒/)).toBeInTheDocument();
-    expect(screen.getByText(/冻结 2 秒/)).toBeInTheDocument();
+    expect(screen.getByText("+10 积分")).toBeInTheDocument();
+    expect(screen.getByText(/18 积分/)).toBeInTheDocument();
+    expect(screen.getByText(/冻结 2 积分/)).toBeInTheDocument();
   });
 
   it("does not invent balances for unsequenced history", async () => {

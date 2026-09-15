@@ -161,6 +161,16 @@ async function switchToOpsView() {
 }
 
 describe("TaskRecordsPanel", () => {
+  it("displays historical batch timestamps in Beijing time", async () => {
+    render(
+      <TaskRecordsPanel
+        handoffBatch={null}
+        onHandoffConsumed={vi.fn()}
+        userRole="customer"
+      />,
+    );
+    expect(await screen.findByText(/2026\/8\/16 18:00:00/)).toBeInTheDocument();
+  });
   it("preserves an unconfirmed download warning without claiming failure or hiding preview", async () => {
     vi.mocked(api.downloadGenerationResult).mockRejectedValueOnce(
       new api.VideoDownloadUnconfirmedError(),
@@ -2134,7 +2144,7 @@ describe("TaskRecordsPanel", () => {
     expect(screen.getByText("成片时长")).toBeInTheDocument();
     expect(screen.getByText("15 秒")).toBeInTheDocument();
     expect(screen.getByText("提交时间")).toBeInTheDocument();
-    expect(screen.getByText("2026-08-16 10:00:00")).toBeInTheDocument();
+    expect(screen.getByText("2026/8/16 18:00:00")).toBeInTheDocument();
 
     // 右栏操作区默认收起，展开后呈现对账与付费重生成入口。
     const resolutionControls = screen

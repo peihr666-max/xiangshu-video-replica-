@@ -25,7 +25,12 @@ from app.viral_tikhub import MAX_TAGS, ViralVideo, WechatVideoDetail, is_irrelev
 VIRAL_FETCH_TTL = timedelta(hours=1)
 STATISTICS_CHECKED_AT_KEY = "_statistics_checked_at"
 STATISTICS_RETRY_AT_KEY = "_statistics_retry_at"
-_STATISTICS_METADATA_KEYS = (STATISTICS_CHECKED_AT_KEY, STATISTICS_RETRY_AT_KEY)
+STATISTICS_OBJECT_ID_KEY = "_statistics_object_id"
+_STATISTICS_METADATA_KEYS = (
+    STATISTICS_CHECKED_AT_KEY,
+    STATISTICS_RETRY_AT_KEY,
+    STATISTICS_OBJECT_ID_KEY,
+)
 _METADATA_LOOKUP_CHUNK_SIZE = 400
 # 桌面服务是单进程；统一串行化 native_json 的读改写，避免不同请求互相覆盖。
 _NATIVE_JSON_RMW_LOCK = threading.RLock()
@@ -743,6 +748,9 @@ def update_viral_statistics(
         native = _native_from_json(row["native_json"])
         native[STATISTICS_CHECKED_AT_KEY] = datetime.now(UTC).isoformat()
         native.pop(STATISTICS_RETRY_AT_KEY, None)
+        object_id = str(getattr(detail, "object_id", ""))
+        if object_id.isascii() and object_id.isdigit() and len(object_id) <= 20:
+            native[STATISTICS_OBJECT_ID_KEY] = object_id
         description = getattr(detail, "description", None)
         if description:
             native["source_description"] = description

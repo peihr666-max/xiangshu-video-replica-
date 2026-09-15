@@ -124,6 +124,28 @@ test("opening account records refreshes a balance changed by an administrator", 
   expect(screen.queryByText("125")).toBeNull();
 });
 
+test("filters the actual image, transcription and link services shown in the ledger", async () => {
+  render(<CustomerCenterPage account={setup()} />);
+  await screen.findByText("125");
+  fireEvent.click(screen.getByRole("tab", { name: "消费记录" }));
+  for (const [value, label] of [
+    ["character", "人物形象及任务图片"],
+    ["asr", "语音转写"],
+    ["link_resolution", "链接解析"],
+  ]) {
+    expect(screen.getByRole("option", { name: label })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("业务"), { target: { value } });
+    await waitFor(() =>
+      expect(mocks.transactions).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          filters: expect.objectContaining({ business: value }),
+        }),
+      ),
+    );
+  }
+});
+
 test.each([
   ["oral-1", null, "oral-oral-1", "oral_task", "oral-1"],
   [null, "batch-1", "batch-1", "generation_batch", "batch-1"],

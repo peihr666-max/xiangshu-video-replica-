@@ -28,6 +28,7 @@ export function CharacterSelection({
   projectId,
   readOnly = false,
   variant = "full",
+  sceneOnly = false,
 }: {
   onBusyChange?: (isBusy: boolean) => void;
   onSelectionChange?: (hasSelection: boolean) => void;
@@ -37,6 +38,7 @@ export function CharacterSelection({
   // inline：详情页第二段区头的内联下拉形态（选择即落库，仅完整七类
   // 资产的版本可选）；full：旧工作台的面板形态（radio 列表 + 确认）。
   variant?: "full" | "inline";
+  sceneOnly?: boolean;
 }) {
   const [versions, setVersions] = useState<ProjectCharacterVersionOption[]>([]);
   const [currentSelection, setCurrentSelection] =
@@ -82,9 +84,14 @@ export function CharacterSelection({
         if (!active) {
           return;
         }
-        const restoredSelection = selectionSummary(selection)
-          ? selection
-          : null;
+        const restoredSelection =
+          selectionSummary(selection) &&
+          (!sceneOnly ||
+            isSceneSnapshot(
+              selection?.character_snapshot.persona_snapshot_json,
+            ))
+            ? selection
+            : null;
         setCurrentSelection(restoredSelection);
         setSelectedVersionId(restoredSelection?.character_version_id ?? "");
         // 仅「restore 成功且无快照」才允许自动预选：restore 失败时快照
@@ -113,13 +120,14 @@ export function CharacterSelection({
     return () => {
       active = false;
     };
-  }, [onSelectionChange, onVersionChange, projectId]);
+  }, [onSelectionChange, onVersionChange, projectId, sceneOnly]);
 
   // P0-03-01：项目无角色快照进入时，自动预选最近发布的可用版本并落库
   //（choose 服务端原子复用快照，重复选择幂等）；仅每个项目自动一次，
   // 只读身份、restore 失败、空列表与写入失败都静默转手动态选择。
   useEffect(() => {
     if (
+      sceneOnly ||
       isRestoring ||
       !restoredEmpty ||
       readOnly ||
@@ -179,7 +187,14 @@ export function CharacterSelection({
     return () => {
       active = false;
     };
-  }, [currentSelection, isRestoring, projectId, readOnly, restoredEmpty]);
+  }, [
+    currentSelection,
+    isRestoring,
+    projectId,
+    readOnly,
+    restoredEmpty,
+    sceneOnly,
+  ]);
 
   // inline 下拉需要常驻版本列表：restore 完成后即拉取，失败只降级为
   // 空列表提示，不阻断主流程。
@@ -339,13 +354,20 @@ export function CharacterSelection({
   // 详情页第二段区头形态：一行「角色：<下拉>」，选择即生效。
   if (variant === "inline") {
     const inlineVersions = versions.filter(
-      (version) => version.assets.length === 7,
+      (version) =>
+        version.assets.length === 7 &&
+        (!sceneOnly || isSceneAppearance(version)),
     );
     const hasCurrentOption = inlineVersions.some(
       (version) => version.character_version_id === selectedVersionId,
     );
     return (
       <section className="flow-character-row" aria-label="角色">
+        {sceneOnly ? (
+          <p>
+            外观、服饰与配饰沿用所选场景形象；原视频的背景、姿态和构图保持不变。
+          </p>
+        ) : null}
         <label>
           角色
           <select
@@ -354,6 +376,11 @@ export function CharacterSelection({
             onChange={(event) => void handleInlineChange(event.target.value)}
             value={selectedVersionId}
           >
+            {sceneOnly && !isRestoring && inlineVersions.length > 0 ? (
+              <option value="" disabled>
+                请选择场景形象
+              </option>
+            ) : null}
             {isRestoring || (!hasCurrentOption && !inlineVersions.length) ? (
               <option value="">
                 {isRestoring ? "恢复中…" : "暂无可选角色"}
@@ -681,4 +708,20 @@ function authorizationLabel(value: string | null): string {
   const part = (type: "day" | "month" | "year") =>
     parts.find((item) => item.type === type)?.value ?? "";
   return `授权有效至 ${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function isSceneSnapshot(persona: unknown): boolean {
+  if (
+    typeof persona !== "object" ||
+    persona === null ||
+    !("appearance_constraints_json" in persona)
+  )
+    return false;
+  const constraints = persona.appearance_constraints_json;
+  return (
+    typeof constraints === "object" &&
+    constraints !== null &&
+    "appearance_type" in constraints &&
+    constraints.appearance_type === "scene"
+  );
 }

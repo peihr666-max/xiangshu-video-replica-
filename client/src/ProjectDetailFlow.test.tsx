@@ -98,7 +98,10 @@ const mainCharacter = {
     schema_version: "project-character-selection.v1",
     identity: { display_name: "林夏", authorization_expires_at: null },
     character_version_number: 1,
-    persona_snapshot_json: { name: "田园博主" },
+    persona_snapshot_json: {
+      appearance_constraints_json: { appearance_type: "scene" },
+      name: "田园博主",
+    },
   },
 } as unknown as api.ProjectMainCharacter;
 
@@ -197,7 +200,11 @@ const characterVersions = [
   {
     character_version_id: "cv-1",
     identity_name: "林夏",
-    persona_snapshot_json: { name: "田园博主", occupation: "博主" },
+    persona_snapshot_json: {
+      appearance_constraints_json: { appearance_type: "scene" },
+      name: "田园博主",
+      occupation: "博主",
+    },
     version_number: 1,
     published_at: "2025-01-02T00:00:00Z",
     authorization_expires_at: null,
@@ -218,7 +225,11 @@ const characterVersions = [
   {
     character_version_id: "cv-2",
     identity_name: "小叮当",
-    persona_snapshot_json: { name: "工地管家", occupation: "管家" },
+    persona_snapshot_json: {
+      appearance_constraints_json: { appearance_type: "scene" },
+      name: "工地管家",
+      occupation: "管家",
+    },
     version_number: 2,
     published_at: "2025-01-03T00:00:00Z",
     authorization_expires_at: null,
@@ -300,7 +311,10 @@ describe("ProjectDetailFlow", () => {
             schema_version: "project-character-selection.v1",
             identity: { display_name: "林夏", authorization_expires_at: null },
             character_version_number: 1,
-            persona_snapshot_json: { name: "田园博主" },
+            persona_snapshot_json: {
+              appearance_constraints_json: { appearance_type: "scene" },
+              name: "田园博主",
+            },
           },
         }) as unknown as api.ProjectMainCharacter,
     );
@@ -358,7 +372,7 @@ describe("ProjectDetailFlow", () => {
     expect(roleSelect).toHaveValue("cv-1");
     expect(
       screen.getByRole("option", {
-        name: /林夏 · 人物基准：田园博主 · V1/,
+        name: /林夏 · 场景：田园博主 · V1/,
       }),
     ).toBeInTheDocument();
     expect(screen.getByText("源画面自动处理")).toBeInTheDocument();
@@ -553,7 +567,7 @@ describe("ProjectDetailFlow", () => {
     await waitFor(() =>
       expect(
         screen.getByRole("option", {
-          name: /小叮当 · 人物基准：工地管家 · V2/,
+          name: /小叮当 · 场景：工地管家 · V2/,
         }),
       ).toBeInTheDocument(),
     );

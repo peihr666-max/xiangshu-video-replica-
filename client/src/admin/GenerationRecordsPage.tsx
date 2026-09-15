@@ -14,6 +14,7 @@ import {
   GENERATION_RECORD_TYPE_LABELS,
   GENERATION_STATUS_LABELS,
   labelFrom,
+  parseUtcTimestamp,
 } from "./ui/vocabulary";
 
 const PAGE_SIZE = 50;
@@ -221,8 +222,8 @@ export function GenerationRecordsPage({
               <td>{formatDuration(item.created_at, item.completed_at)}</td>
               <td>
                 {item.charged_credits > 0
-                  ? `${item.charged_credits} 秒`
-                  : "0 秒"}
+                  ? `${item.charged_credits} 积分`
+                  : "0 积分"}
               </td>
               <td>{formatProviderCost(item)}</td>
               <td>
@@ -298,7 +299,9 @@ function formatDuration(createdAt: string, completedAt: string | null): string {
   if (!completedAt) return "进行中";
   const seconds = Math.max(
     0,
-    Math.round((Date.parse(completedAt) - Date.parse(createdAt)) / 1000),
+    Math.round(
+      (parseUtcTimestamp(completedAt) - parseUtcTimestamp(createdAt)) / 1000,
+    ),
   );
   if (!Number.isFinite(seconds)) return "—";
   const minutes = Math.floor(seconds / 60);

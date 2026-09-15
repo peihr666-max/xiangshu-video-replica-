@@ -1334,7 +1334,10 @@ function VoicePanel({ person }: { person: StudioPerson }) {
   };
   const handleAudioUpload = async (file: File) => {
     if (review || readOnly || busy) return;
-    const validationError = validateOralAudioFile(file);
+    const validationError =
+      file.size > 20 * 1024 * 1024
+        ? "声音克隆样本不能超过 20 MB。"
+        : validateOralAudioFile(file);
     if (validationError) {
       setError(validationError);
       return;
@@ -1663,7 +1666,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
           {busy ? "提交中…" : "开始克隆声音"}
         </Button>
         <Hint>
-          仅支持 MP3，时长 5–180 秒（3 分钟），上限 50
+          仅支持 MP3，时长 5–180 秒（3 分钟），上限 20
           MB；克隆任务是异步的，只有已就绪且确认的声音可用于口播。
         </Hint>
       </Panel>

@@ -1283,14 +1283,30 @@ describe("PeoplePages", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("声音样本明确限制为 5–180 秒 MP3 且不超过 50 MB", () => {
+  it("声音样本明确限制为 5–180 秒 MP3 且不超过 20 MB", () => {
     currentPage = "person-voices";
     render(<PersonPage />);
 
     expect(screen.getByText(/5–180 秒（3 分钟）清晰干声/)).toBeInTheDocument();
     expect(
-      screen.getByText(/MP3，时长 5–180 秒（3 分钟），上限 50 MB/),
+      screen.getByText(/MP3，时长 5–180 秒（3 分钟），上限 20 MB/),
     ).toBeInTheDocument();
+  });
+
+  it("声音克隆超过供应商 20 MB 上限时不上传也不探测", async () => {
+    currentPage = "person-voices";
+    review = false;
+    render(<PersonPage />);
+    const file = new File(["ID3audio"], "oversized.mp3", {
+      type: "audio/mpeg",
+    });
+    Object.defineProperty(file, "size", { value: 20 * 1024 * 1024 + 1 });
+    fireEvent.change(screen.getByLabelText("选择声音样本"), {
+      target: { files: [file] },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("20 MB");
+    expect(oralLive.readAudioDuration).not.toHaveBeenCalled();
+    expect(oralLive.uploadOralAudioMaterial).not.toHaveBeenCalled();
   });
 
   it("声音样本选择使用独立用途选择器", () => {

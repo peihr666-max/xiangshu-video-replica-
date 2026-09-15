@@ -59,6 +59,12 @@ function apiBaseUrl(): string {
   );
 }
 
+function resolveManagedMediaUrl(url: string): string {
+  return url.startsWith("/") && !url.startsWith("//")
+    ? `${apiBaseUrl()}${url}`
+    : url;
+}
+
 type HealthResponse = components["schemas"]["HealthResponse"];
 export type UserRole = "employee" | "admin" | "auditor" | "customer";
 
@@ -129,6 +135,7 @@ export type ControlRechargeOrderPage = {
 
 export type ControlWalletTransaction = WalletTransaction & {
   username: string;
+  source_id?: string | null;
 };
 
 export type ControlWalletTransactionPage = {
@@ -619,6 +626,10 @@ export type FirstFrameCandidate = {
 };
 
 export type FirstFrameCandidates = {
+  aspect_ratio?: GenerateFirstFramesInput["aspect_ratio"];
+  review_mode?: "HUMAN_CONFIRMATION" | "AUTOMATIC_QUALITY";
+  source_frame_asset_id?: string;
+  character_reference_asset_ids?: string[];
   provider: string;
   model: FirstFrameModel;
   prompt: string;
@@ -1918,6 +1929,16 @@ export async function listGenerationBatches(
   );
 }
 
+export async function archiveGenerationTask(
+  taskId: string,
+): Promise<GenerationTask> {
+  return requestGenerationJson<GenerationTask>(
+    `/api/generation-tasks/${encodeURIComponent(taskId)}/archive`,
+    "保存成片失败，请重试；不会重新生成或扣费",
+    { method: "POST" },
+  );
+}
+
 export async function retryGenerationTask(
   taskId: string,
   input: GenerationTaskRetryInput,
@@ -2519,7 +2540,10 @@ function uploadStorageObject(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open(intent.method, intent.url);
+    // API-managed uploads follow the same configured base (including a proxy
+    // prefix) as JSON requests. Absolute provider URLs retain their signature.
+    const uploadUrl = resolveManagedMediaUrl(intent.url);
+    request.open(intent.method, uploadUrl);
     // Scale the timeout with the payload (~200KB/s) so large 50MB uploads are
     // not cut off on slow links, while small files keep a tight bound.
     request.timeout = Math.max(60_000, Math.ceil(file.size / 200));
@@ -2527,7 +2551,7 @@ function uploadStorageObject(
     // Bearer token; a direct-to-COS/Provider presigned upload must never
     // receive it. The development-identity header is removed entirely, so a
     // formal customer upload can never carry a synthetic dev identity.
-    if (isApiUploadUrl(intent.url)) {
+    if (isApiUploadUrl(uploadUrl)) {
       const accessToken = workspaceAccessToken();
       if (accessToken) {
         request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
@@ -2547,7 +2571,7 @@ function uploadStorageObject(
         resolve();
         return;
       }
-      if (request.status === 401 && isApiUploadUrl(intent.url)) {
+      if (request.status === 401 && isApiUploadUrl(uploadUrl)) {
         emitSessionExpired();
         reject(new Error("登录已失效，请重新进入工作台。"));
         return;
@@ -2557,7 +2581,7 @@ function uploadStorageObject(
     request.onerror = () =>
       reject(
         new Error(
-          isApiUploadUrl(intent.url)
+          isApiUploadUrl(uploadUrl)
             ? `${errorPrefix}失败（无法连接服务，请确认服务已启动）`
             : `${errorPrefix}失败（无法连接素材库；请检查网络以及素材库跨域访问规则）`,
         ),
@@ -3895,23 +3919,25 @@ export async function confirmFirstFrame(
 export async function getAssetDownloadUrl(
   assetId: string,
 ): Promise<DownloadUrl> {
-  return requestApiJson<DownloadUrl>(
+  const result = await requestApiJson<DownloadUrl>(
     `/api/assets/${encodeURIComponent(assetId)}/download-url`,
     "读取源画面失败",
     { method: "POST" },
     CLOUD_OP_TIMEOUT_MS,
   );
+  return { ...result, url: resolveManagedMediaUrl(result.url) };
 }
 
 export async function getCachedCharacterAssetUrl(
   assetId: string,
 ): Promise<DownloadUrl> {
-  return requestApiJson<DownloadUrl>(
+  const result = await requestApiJson<DownloadUrl>(
     `/api/assets/${encodeURIComponent(assetId)}/cached-url`,
     "读取人物图片缓存失败",
     { method: "POST" },
     CLOUD_OP_TIMEOUT_MS,
   );
+  return { ...result, url: resolveManagedMediaUrl(result.url) };
 }
 
 export function readSourceFrameCandidates(
@@ -3957,6 +3983,26 @@ export function readFirstFrameCandidates(
     return null;
   }
   return {
+    review_mode:
+      payload.review_mode === "HUMAN_CONFIRMATION"
+        ? "HUMAN_CONFIRMATION"
+        : "AUTOMATIC_QUALITY",
+    aspect_ratio: ["9:16", "16:9", "1:1", "3:4", "4:3"].includes(
+      String(payload.aspect_ratio),
+    )
+      ? (payload.aspect_ratio as GenerateFirstFramesInput["aspect_ratio"])
+      : null,
+    source_frame_asset_id:
+      typeof payload.source_frame_asset_id === "string"
+        ? payload.source_frame_asset_id
+        : undefined,
+    character_reference_asset_ids:
+      Array.isArray(payload.character_reference_asset_ids) &&
+      payload.character_reference_asset_ids.every(
+        (id) => typeof id === "string",
+      )
+        ? payload.character_reference_asset_ids
+        : [],
     provider: payload.provider,
     model: payload.model,
     prompt: payload.prompt,
@@ -4507,6 +4553,10 @@ const BRANDED_SERVICE_ERRORS: ReadonlyArray<{
 ];
 
 const CUSTOMER_ACCOUNT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  ANALYSIS_VIDEO_URL_UNAVAILABLE:
+    "当前视频尚未就绪，无法交给云端分析。请联系管理员配置云端素材存储，再重新上传视频。",
+  SINGLE_PERSON_SOURCE_REQUIRED:
+    "当前参考画面未通过单人检查。请选择只有一位清晰人物的画面，再生成首帧。",
   ACTIVATION_UNAVAILABLE: "该激活码当前无法使用，请确认激活码仍在有效期内。",
   PAIRING_UNAVAILABLE: "该激活码当前无法用于设备配对，请联系服务人员处理。",
   SESSION_CONFLICT: "另一台设备当前正在使用此账号，请稍后重新打开应用。",

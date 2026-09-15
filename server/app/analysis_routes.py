@@ -375,6 +375,15 @@ def create_project_analysis_task(
             project_id=project_id,
             request=request,
         )
+        provider = get_video_analysis_provider(conn)
+        if provider.requires_https_video_url and str(asset["storage_uri"]).startswith("local://"):
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "ANALYSIS_VIDEO_URL_UNAVAILABLE",
+                    "message": "当前视频位于本地，云端分析无法读取。请配置云端素材存储后重新上传。",
+                },
+            )
         row, created = enqueue_analysis_task(
             conn,
             project_id=project_id,

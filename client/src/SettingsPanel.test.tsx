@@ -250,6 +250,49 @@ describe("SettingsPanel", () => {
     expect(screen.getByLabelText("数字人口播单价（元/条）")).toHaveValue(18);
   });
 
+  it("explicitly enables cloud storage without saving unrelated draft limits", async () => {
+    const runtime = {
+      ...settingsSnapshot.runtime,
+      active_storage_provider: "local" as const,
+    };
+    const saveRuntime = vi
+      .fn()
+      .mockResolvedValue({ ...runtime, active_storage_provider: "cos" });
+    const backend = {
+      ...controlTestBackend,
+      load: vi.fn().mockResolvedValue({ ...settingsSnapshot, runtime }),
+      saveRuntime,
+    };
+    render(
+      <SettingsPanel
+        source="control"
+        controlBackend={backend}
+        section="runtime"
+      />,
+    );
+    const enable = await screen.findByRole("button", {
+      name: "启用腾讯云存储",
+    });
+    expect(
+      screen.getByText(/当前仍使用本地存储，云端分析无法读取本地视频/),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("单次生成数量上限"), {
+      target: { value: "7" },
+    });
+    fireEvent.click(enable);
+    await waitFor(() =>
+      expect(saveRuntime).toHaveBeenCalledWith({
+        ...runtime,
+        active_storage_provider: "cos",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "启用腾讯云存储" }),
+      ).toBeNull(),
+    );
+  });
+
   it("updates the oral unit price through the admin billing route", async () => {
     const fetchMock = installFetch();
     render(<SettingsPanel />);

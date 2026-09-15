@@ -20,12 +20,13 @@ import {
   loadStudioTaskDetail,
   loadTaskPreview,
   retryStudioTask,
+  saveTaskPreview,
   studioVideoFromViral,
   uploadWorkbenchSourceVideo,
 } from "./live";
 import { PlatformLogo } from "./PlatformLogo";
 import { draftFromTask } from "./state";
-import type { StudioData, StudioTask, StudioVideo } from "./types";
+import type { StudioAsset, StudioData, StudioTask, StudioVideo } from "./types";
 import {
   Button,
   Empty,
@@ -579,7 +580,7 @@ export function WorkbenchPage() {
               : current.assets,
           }));
         }
-        notify("视频已上传云存储，来源已加入当前创作。");
+        notify("视频已上传，来源已加入当前创作。");
       })
       .catch((error) => {
         if (
@@ -677,7 +678,7 @@ export function WorkbenchPage() {
             {upload.error
               ? `上传失败：${upload.error}`
               : upload.completed
-                ? `已上传云存储：${upload.name}`
+                ? `已上传：${upload.name}`
                 : `正在上传 ${upload.name}… ${upload.progress}%`}
           </p>
         )}
@@ -1281,9 +1282,12 @@ export function TaskDetailPage() {
     refresh,
     user,
   } = useStudio();
-  const [actionBusy, setActionBusy] = useState<"download" | "retry">();
+  const [actionBusy, setActionBusy] = useState<
+    "download" | "retry" | "archive"
+  >();
   const [previewLoad, setPreviewLoad] = useState<{
     key?: string;
+    asset?: StudioAsset;
     status: "idle" | "loading" | "empty" | "error" | "ready";
   }>({ status: "idle" });
   const [detailLoad, setDetailLoad] = useState<{
@@ -1320,6 +1324,7 @@ export function TaskDetailPage() {
   previewContextRef.current = previewContextKey;
   useEffect(() => {
     previewContextRef.current = previewContextKey;
+    setActionBusy(undefined);
     return () => {
       previewRequestRef.current += 1;
     };
@@ -1420,7 +1425,11 @@ export function TaskDetailPage() {
         }
       />
     );
-  const result = data.assets.find((asset) => asset.id === task.resultId);
+  // Task-list polling contains persisted IDs only. Keep a loaded direct preview
+  // in its user/task context so refreshing the list cannot unmount playback.
+  const result =
+    (previewLoad.key === previewContextKey ? previewLoad.asset : undefined) ??
+    data.assets.find((asset) => asset.id === task.resultId);
   const previewStatus =
     previewLoad.key === previewContextKey ? previewLoad.status : "idle";
   const person = data.people.find((item) => item.id === task.ipId);
@@ -1432,7 +1441,9 @@ export function TaskDetailPage() {
         ? "完整口播音频"
         : task.scriptVersion
           ? `终稿 V${task.scriptVersion}`
-          : "项目分镜",
+          : task.backendKind === "oral_task"
+            ? "文案口播"
+            : "项目分镜",
     ],
     ["IP", person?.name || "—"],
     ...(task.driverMode !== "audio"
@@ -1449,7 +1460,7 @@ export function TaskDetailPage() {
       person?.avatars.find((avatar) => avatar.id === task.avatarId)?.name ||
         "—",
     ],
-    ["提交时间", task.submitted],
+    ["提交时间", formatTaskTime(task.submitted)],
     ["资产状态", result?.saved ? "已保存到素材库" : "以任务返回结果为准"],
   ];
   const recreate = (page: "copy" | "oral" | "replica") => {
@@ -1498,13 +1509,44 @@ export function TaskDetailPage() {
           item.id === requestedTask.id ? { ...item, resultId: asset.id } : item,
         ),
       }));
-      setPreviewLoad({ key: requestedContext, status: "ready" });
+      setPreviewLoad({ key: requestedContext, status: "ready", asset });
     } catch {
       if (
         requestId === previewRequestRef.current &&
         previewContextRef.current === requestedContext
       )
         setPreviewLoad({ key: requestedContext, status: "error" });
+    }
+  };
+  const saveResult = async () => {
+    if (!result || result.saved || actionBusy) return;
+    const requestedContext = previewContextKey;
+    setActionBusy("archive");
+    try {
+      const asset = await saveTaskPreview(result);
+      if (previewContextRef.current !== requestedContext) return;
+      updateData((current) => ({
+        ...current,
+        assets: [
+          ...current.assets.filter(
+            (item) => item.id !== result.id && item.id !== asset.id,
+          ),
+          asset,
+        ],
+        tasks: current.tasks.map((item) =>
+          item.id === task.id ? { ...item, resultId: asset.id } : item,
+        ),
+      }));
+      setPreviewLoad({ key: requestedContext, status: "ready", asset });
+      notify("成片已保存到素材库，可复用或创建发布草稿。未重复扣费。");
+    } catch (error) {
+      if (previewContextRef.current === requestedContext)
+        notify(
+          error instanceof Error ? error.message : "保存成片失败，请重试。",
+        );
+    } finally {
+      if (previewContextRef.current === requestedContext)
+        setActionBusy(undefined);
     }
   };
   const downloadResult = async () => {
@@ -1601,6 +1643,14 @@ export function TaskDetailPage() {
         <Panel>
           <h2>动作</h2>
           <div className="studio-result-actions">
+            {!review && result?.generationTaskId && !result.saved && (
+              <Button
+                onClick={() => void saveResult()}
+                disabled={actionBusy === "archive"}
+              >
+                {actionBusy === "archive" ? "正在保存成片…" : "保存到素材库"}
+              </Button>
+            )}
             {!review && task.status === "completed" && !result && (
               <Button
                 variant="primary"
@@ -1627,10 +1677,10 @@ export function TaskDetailPage() {
               {actionBusy === "download" ? "正在下载…" : "下载成片"}
             </Button>
             <Button
-              disabled={!result || task.status !== "completed"}
+              disabled={!result?.saved || task.status !== "completed"}
               onClick={() =>
                 navigate("materials", {
-                  selectedAssetId: task.resultId,
+                  selectedAssetId: result?.id,
                   returnTo: "task-detail",
                 })
               }
@@ -1640,9 +1690,9 @@ export function TaskDetailPage() {
             </Button>
             <Button
               variant="primary"
-              disabled={!result || task.status !== "completed"}
+              disabled={!result?.saved || task.status !== "completed"}
               onClick={() =>
-                navigate("publishing", { selectedAssetId: task.resultId })
+                navigate("publishing", { selectedAssetId: result?.id })
               }
             >
               <Icon name="upload" />
@@ -1653,6 +1703,11 @@ export function TaskDetailPage() {
             <Hint>该批次暂时没有可预览的成功结果。</Hint>
           )}
           {previewStatus === "error" && <Hint>预览加载失败，请重试。</Hint>}
+          {result && !result.saved && (
+            <Hint>
+              保存到素材库后可复用和创建发布草稿，保存不会重新生成或扣积分。
+            </Hint>
+          )}
           {!review && task.status === "completed" && (
             <Hint>
               预览仅展示首个可用结果；完整结果与下载请进入“历史任务与下载”。

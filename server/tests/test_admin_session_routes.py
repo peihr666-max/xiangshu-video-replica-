@@ -212,6 +212,122 @@ def _admin_session(client: TestClient, actor: str = "admin_u") -> dict[str, str]
     return {ADMIN_CSRF_HEADER: response.json()["csrf_token"]}
 
 
+@pytest.mark.parametrize("result", ["complete", "partial", "failure"])
+def test_admin_refreshes_wechat_statistics_once_without_customer_charge(
+    client: TestClient, route_state: str, monkeypatch: pytest.MonkeyPatch, result: str
+) -> None:
+    from types import SimpleNamespace
+
+    from app import viral_tikhub
+
+    calls = []
+
+    class Source:
+        def wechat_video_detail(self, **kwargs):
+            calls.append(kwargs)
+            if result == "failure":
+                raise RuntimeError("source unavailable")
+            return SimpleNamespace(
+                object_id="15003884913433053492",
+                like_count=276,
+                comment_count=3,
+                forward_count=798 if result == "complete" else None,
+                fav_count=279 if result == "complete" else None,
+                description=None,
+            )
+
+    monkeypatch.setattr(viral_tikhub, "viral_source_client_from_settings", lambda conn: Source())
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "INSERT INTO viral_videos(platform,video_id,title,likes,native_json) "
+            "VALUES('wechat_channels','opaque/video=id','互动测试',180,"
+            '\'{"export_id":"test-export"}\')'
+        )
+    path = "/api/control/viral/videos/wechat_channels/opaque%2Fvideo%3Did/statistics"
+    headers = _admin_session(client)
+    body = {"reason": "补齐视频号互动字段", "confirm": True}
+    # Merely reading the list must never issue a billable provider request.
+    assert client.get("/api/control/viral/videos", headers=headers).status_code == 200
+    assert not calls
+    for key in ("refresh-statistics", "refresh-statistics", "refresh-again"):
+        response = client.post(path, headers={**headers, "Idempotency-Key": key}, json=body)
+        assert response.status_code == 200, response.text
+        assert response.json()["statistics_status"] == result
+    assert len(calls) == 1
+    with psycopg.connect(route_state) as conn:
+        row = conn.execute(
+            "SELECT likes,comments,shares,collects FROM viral_videos "
+            "WHERE platform='wechat_channels'"
+        ).fetchone()
+        assert row == (
+            (276, 3, 798, 279)
+            if result == "complete"
+            else (276, 3, None, None)
+            if result == "partial"
+            else (180, None, None, None)
+        )
+        assert conn.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM audit_logs WHERE action='viral_video.statistics'"
+            ).fetchone()[0]
+            == 2
+        )
+    if result == "complete":
+        with psycopg.connect(route_state) as conn:
+            conn.execute(
+                "UPDATE viral_videos SET native_json=(native_json::jsonb "
+                '|| \'{"export_id":"","_statistics_checked_at":"2000-01-01T00:00:00Z"}\')::text '
+                "WHERE platform='wechat_channels'"
+            )
+        response = client.post(
+            path, headers={**headers, "Idempotency-Key": "refresh-stable-id"}, json=body
+        )
+        assert response.status_code == 200
+        assert calls[-1] == {"object_id": "15003884913433053492"}
+
+
+def test_auditor_cannot_refresh_paid_video_statistics(client: TestClient) -> None:
+    response = client.post(
+        "/api/control/viral/videos/wechat_channels/opaque/statistics",
+        headers={**_admin_session(client, "auditor_u"), "Idempotency-Key": "auditor-refresh"},
+        json={"reason": "审计只读账号", "confirm": True},
+    )
+    assert response.status_code == 403
+
+
+def test_statistics_provider_wait_does_not_hold_video_row_lock(
+    client: TestClient, route_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app import viral_tikhub
+
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "INSERT INTO viral_videos(platform,video_id,title,native_json) "
+            "VALUES('wechat_channels','concurrent-video','原始标题','{\"export_id\":\"export/test\"}')"
+        )
+
+    class Source:
+        def wechat_video_detail(self, **kwargs):
+            with psycopg.connect(route_state, options="-c lock_timeout=500") as other:
+                other.execute(
+                    "UPDATE viral_videos SET title='采集器同时更新' "
+                    "WHERE video_id='concurrent-video'"
+                )
+            return SimpleNamespace(like_count=1, comment_count=2, forward_count=3, fav_count=4)
+
+    monkeypatch.setattr(viral_tikhub, "viral_source_client_from_settings", lambda conn: Source())
+    response = client.post(
+        "/api/control/viral/videos/wechat_channels/concurrent-video/statistics",
+        headers={**_admin_session(client), "Idempotency-Key": "concurrent-statistics"},
+        json={"reason": "并发采集不持有行锁", "confirm": True},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["statistics_status"] == "complete"
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -529,6 +645,96 @@ def test_auditor_cannot_flip_queue_mode(client: TestClient):
     denied = _queue_mode_write(client, headers, True)
     assert denied.status_code == 403
     assert denied.json()["detail"]["code"] == "AUDITOR_READ_ONLY"
+
+
+@pytest.mark.pg
+def test_homepage_selection_repairs_missing_cover_without_recollecting_video(
+    client: TestClient, route_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from app.storage import FakeStorageAdapter
+    from app.viral_media import CoverEnricher
+
+    headers = _admin_session(client)
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "UPDATE viral_videos SET cover_url='https://cdn.example.com/cover.jpg',cover_key=NULL"
+        )
+        conn.execute(
+            "INSERT INTO viral_media_preparations"
+            "(id,platform,video_id,media_kind,status,storage_uri) "
+            "VALUES('cover-media','douyin','admin-video/opaque=id','video','SUCCEEDED','fake://test/video.mp4')"
+        )
+    calls = []
+
+    def enrich(self, video):
+        calls.append(video.video_id)
+        return replace(video, cover_key="viral/cover/douyin/verified")
+
+    monkeypatch.setattr(CoverEnricher, "enrich", enrich)
+    monkeypatch.setattr(
+        "app.media_routes.get_media_storage",
+        lambda conn: FakeStorageAdapter(provider="cos", bucket="test"),
+    )
+    path = "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/curation"
+    payload = {"action": "feature", "reason": "补齐封面并验收首页", "confirm": True}
+    result = client.patch(
+        path, headers={**headers, "Idempotency-Key": "cover-repair"}, json=payload
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["homepage_featured"] is True
+    assert (
+        client.patch(
+            path, headers={**headers, "Idempotency-Key": "cover-repair"}, json=payload
+        ).status_code
+        == 200
+    )
+    assert calls == ["admin-video/opaque=id"]
+    with psycopg.connect(route_state) as conn:
+        assert conn.execute(
+            "SELECT cover_key FROM viral_videos WHERE video_id='admin-video/opaque=id'"
+        ).fetchone()[0]
+
+
+@pytest.mark.pg
+def test_manual_feature_publishes_ready_video_to_catalog_and_unfeature_keeps_it(
+    client: TestClient, route_state: str
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.db_portable import BusinessConnection
+    from app.viral_store import list_viral_video_page
+
+    headers = _admin_session(client)
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "UPDATE viral_videos SET published_at=%s,collection_published=0",
+            (int(datetime.now(UTC).timestamp()),),
+        )
+        conn.execute(
+            "INSERT INTO viral_media_preparations"
+            "(id,platform,video_id,media_kind,status,storage_uri) VALUES"
+            "('catalog-media','douyin','admin-video/opaque=id','video',"
+            "'SUCCEEDED','fake://test/video.mp4')"
+        )
+    path = "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/curation"
+    for action in ("feature", "unfeature"):
+        response = client.patch(
+            path,
+            headers={**headers, "Idempotency-Key": f"catalog-{action}"},
+            json={"action": action, "reason": "验收普通列表及首页独立展示", "confirm": True},
+        )
+        assert response.status_code == 200, response.text
+        with psycopg.connect(route_state) as conn:
+            bus = BusinessConnection.postgres(conn)
+            page = list_viral_video_page(bus, platform="douyin", sort="hot", limit=12)
+            assert page.total == 1
+            assert [item.video_id for item in page.items] == ["admin-video/opaque=id"]
+            featured = list_viral_video_page(
+                bus, platform="douyin", sort="hot", limit=12, featured_only=True
+            )
+            assert featured.total == int(action == "feature")
 
 
 @pytest.mark.pg

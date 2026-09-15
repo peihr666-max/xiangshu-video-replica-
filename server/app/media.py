@@ -560,6 +560,7 @@ def persist_upload_completion(
         )
         if (
             analysis_task is None
+            and _automatic_analysis_input_ready(conn, probed.storage_uri)
             and find_analysis_version_for_asset(
                 conn,
                 project_id=project_id,
@@ -627,6 +628,19 @@ def complete_upload(
     prepared = prepare_upload_completion(conn, actor=actor, asset_id=asset_id)
     probed = probe_upload_completion(prepared, storage=storage, probe=probe)
     return persist_upload_completion(conn, actor=actor, probed=probed)
+
+
+def _automatic_analysis_input_ready(conn: BusinessConnection, asset_uri: str) -> bool:
+    if not asset_uri.startswith("local://"):
+        return True
+    # The interactive analysis route explains the unavailable prerequisite.
+    # Upload completion itself must succeed without reserving a doomed task.
+    from app.analysis_routes import get_video_analysis_provider
+
+    try:
+        return not get_video_analysis_provider(conn).requires_https_video_url
+    except HTTPException:
+        return False
 
 
 def is_reference_video_asset(row: sqlite3.Row) -> bool:

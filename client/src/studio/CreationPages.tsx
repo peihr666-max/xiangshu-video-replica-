@@ -2057,14 +2057,15 @@ export function ReplacementPage() {
         <Panel className="creation-empty-workspace">
           <Empty
             title="人物替换（审核示例）"
-            description="真实模式将在此完成：确认源画面 → 匹配 IP 五视图参考 → 生成并确认置换首帧。"
+            description="确认源画面 → 选择场景形象与图片画幅 → 生成并确认置换首帧。"
           />
         </Panel>
       ) : (
         <>
           <Panel className="creation-replacement-step">
-            <div className="creation-panel-title">① 选择人物 IP</div>
+            <div className="creation-panel-title">① 选择场景形象</div>
             <CharacterSelection
+              sceneOnly
               onBusyChange={setLeafBusy}
               onVersionChange={handleCharacterChange}
               projectId={project.id}
@@ -2113,7 +2114,7 @@ export function ReplacementPage() {
             ) : (
               <Empty
                 title="等待前置步骤"
-                description="确认人物与源画面后，即可结合 IP 五视图生成置换首帧。"
+                description="选择场景形象并确认源画面后，即可替换原视频中的人物。"
               />
             )}
           </Panel>
@@ -2142,9 +2143,7 @@ export function ReplacementPage() {
       )}
       <footer className="creation-action-bar">
         <div>
-          <strong>
-            源画面 + IP 五视图 → 置换首帧，全流程复用后端已实现链路
-          </strong>
+          <strong>源画面 + 场景形象 → 置换首帧</strong>
           <Hint>确认后的首帧可直接用于文/图生视频。</Hint>
         </div>
         <Button

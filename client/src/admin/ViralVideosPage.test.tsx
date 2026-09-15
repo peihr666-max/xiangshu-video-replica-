@@ -26,21 +26,30 @@ const video = {
 function setup() {
   let deleted = false;
   let featured = false;
-  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-    if (init?.method === "PATCH") {
-      const payload = JSON.parse(String(init.body));
-      featured = payload.action === "feature";
-      deleted = payload.action === "delete";
-    }
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        items: deleted ? [] : [{ ...video, homepage_featured: featured }],
-        total: deleted ? 0 : 1,
-      }),
-    };
-  });
+  const fetchMock = vi.fn(
+    async (
+      _url: string,
+      init?: RequestInit,
+    ): Promise<{
+      ok: boolean;
+      status: number;
+      json: () => Promise<unknown>;
+    }> => {
+      if (init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        featured = payload.action === "feature";
+        deleted = payload.action === "delete";
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: deleted ? [] : [{ ...video, homepage_featured: featured }],
+          total: deleted ? 0 : 1,
+        }),
+      };
+    },
+  );
   vi.stubGlobal("fetch", fetchMock);
   setAdminCsrfToken("csrf-curation-test");
   return fetchMock;
@@ -138,6 +147,7 @@ describe("ViralVideosPage", () => {
     expect(patch?.[1]?.headers).toMatchObject({
       "X-Admin-CSRF": "csrf-curation-test",
     });
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     fireEvent.change(screen.getByLabelText("操作原因"), {
       target: { value: "不适合当前选题" },
@@ -158,5 +168,70 @@ describe("ViralVideosPage", () => {
     expect(
       screen.queryByRole("button", { name: "删除" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("列表收起技术明细，展开可查看完整信息且不会自动请求预览", async () => {
+    const fetchMock = setup();
+    render(<ViralVideosPage />);
+    await screen.findByText("庭院施工案例");
+    expect(screen.queryByText(video.video_id)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "删除" }),
+    ).not.toBeInTheDocument();
+    const details = screen.getByRole("button", { name: "查看详情" });
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(details);
+    expect(screen.getByText(video.video_id)).toBeInTheDocument();
+    expect(screen.getByText(video.storage_uri)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起详情" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "收起详情" }));
+    expect(screen.queryByText(video.video_id)).not.toBeInTheDocument();
+  });
+
+  it("仅点击补齐本页互动才调用写接口，保留真实零值和未提供字段", async () => {
+    const fetchMock = setup();
+    fetchMock.mockImplementation(async (_url, init) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        init?.method === "POST"
+          ? {
+              likes: 276,
+              comments: 0,
+              shares: null,
+              collects: 279,
+              statistics_checked_at: "2026-09-15T00:00:00Z",
+              statistics_retry_at: null,
+              statistics_status: "partial",
+            }
+          : {
+              items: [
+                { ...video, comments: null, shares: null, collects: null },
+              ],
+              total: 1,
+            },
+    }));
+    render(<ViralVideosPage />);
+    await screen.findByText("庭院施工案例");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "补齐本页互动" }));
+    expect(await screen.findByText(/接口部分提供 1 条/)).toBeInTheDocument();
+    expect(screen.getByText("276")).toBeInTheDocument();
+    expect(screen.getByText("评论").closest("div")).toHaveTextContent("评论0");
+    expect(screen.getByText("未提供")).toBeInTheDocument();
+    const write = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "POST",
+    );
+    expect(write?.[0]).toContain("opaque%2Fvideo%3Did/statistics");
+    expect(write?.[1]?.headers).toMatchObject({
+      "X-Admin-CSRF": "csrf-curation-test",
+    });
+    expect(JSON.parse(String(write?.[1]?.body))).toMatchObject({
+      confirm: true,
+    });
   });
 });

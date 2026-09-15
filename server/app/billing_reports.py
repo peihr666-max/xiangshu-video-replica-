@@ -148,7 +148,7 @@ def statistics(
           sum(CASE WHEN unit='second' THEN actual_units ELSE 0 END) AS seconds,
           sum(CASE WHEN unit='image' THEN actual_units ELSE 0 END) AS images,
           sum(CASE WHEN unit='call' AND user_id IS NOT NULL THEN actual_units ELSE 0 END) AS calls,
-          sum(CASE WHEN service IN ('video_768p','video_2k') AND state='SUCCEEDED'
+          sum(CASE WHEN service IN ('video_768p','video_2k','oral') AND state='SUCCEEDED'
             THEN actual_units ELSE 0 END) AS video_seconds
         FROM facts GROUP BY GROUPING SETS ((period),()) ORDER BY period NULLS LAST
     """,
