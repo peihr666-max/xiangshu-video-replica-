@@ -5969,7 +5969,9 @@ def list_generation_batches(
                 quantity=len(tasks),
                 created_at=str(row["created_at"]),
                 updated_at=str(row["updated_at"]),
-                display_name=optional_text(row["display_name"]),
+                display_name=batch_display_name(
+                    row["display_name"], row["creation_kind"], row["request_snapshot_json"]
+                ),
                 source_batch_id=optional_text(row["source_batch_id"]),
                 source_task_id=optional_text(row["source_task_id"]),
                 generation_reason=optional_text(row["generation_reason"]),
@@ -6170,7 +6172,9 @@ def get_generation_batch(
         status=status,
         quantity=len(tasks),
         stale=stale,
-        display_name=optional_text(batch["display_name"]),
+        display_name=batch_display_name(
+            batch["display_name"], batch["creation_kind"], batch["request_snapshot_json"]
+        ),
         source_batch_id=optional_text(batch["source_batch_id"]),
         source_task_id=optional_text(batch["source_task_id"]),
         generation_reason=optional_text(batch["generation_reason"]),
@@ -7364,6 +7368,22 @@ def completed_duration_seconds(*, started_at: str | None, completed_at: str | No
         return round(max(0.0, (completed - started).total_seconds()), 3)
     except (TypeError, ValueError):
         return None
+
+
+def batch_display_name(name: Any, creation_kind: Any, snapshot: Any) -> str | None:
+    explicit = optional_text(name)
+    if explicit and explicit.strip():
+        return explicit
+    if creation_kind != "independent":
+        return explicit
+    try:
+        payload = json.loads(str(snapshot))
+    except (TypeError, ValueError):
+        return explicit
+    prompt = payload.get("prompt_text") if isinstance(payload, dict) else None
+    if not isinstance(prompt, str):
+        return explicit
+    return " ".join(prompt.split())[:80] or explicit
 
 
 def request_prompt_version_id(value: Any) -> str:

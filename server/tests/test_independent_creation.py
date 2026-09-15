@@ -469,6 +469,16 @@ def test_i2v_batch_creation_reserves_seconds_and_marks_independent(scene: str) -
     assert batch.creation_kind == "independent"
     assert batch.stale is False
     assert batch.progress.total_count == 2
+    assert batch.display_name == "镜头缓缓推进，展示乡墅庭院的黄昏"
+    listed = next(item for item in _list_batches(EMPLOYEE_1).items if item.id == batch.id)
+    assert listed.display_name == batch.display_name
+    with pg_transaction() as raw:
+        raw.execute(
+            "UPDATE generation_batches SET display_name=%s WHERE id=%s", ("我的乡墅成片", batch.id)
+        )
+    assert _get_batch(batch.id, EMPLOYEE_1).display_name == "我的乡墅成片"
+    renamed = next(item for item in _list_batches(EMPLOYEE_1).items if item.id == batch.id)
+    assert renamed.display_name == "我的乡墅成片"
 
     with pg_transaction() as raw:
         conn = BusinessConnection.postgres(raw)
