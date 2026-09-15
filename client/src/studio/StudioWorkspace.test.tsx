@@ -2086,6 +2086,45 @@ describe("V1.4 workspace integration", () => {
       ).toBe("提取出的乡墅口播原文");
     });
 
+    it.each(["success", "failure"])(
+      "文案提取 %s 后刷新结算或退款余额",
+      async (outcome) => {
+        live.loadStudioData.mockResolvedValue(emptyStudioData);
+        live.loadCloudDraft.mockResolvedValue(undefined);
+        api.customerGetWallet.mockResolvedValue({ available_credits: 351 });
+        let finish!: () => void;
+        live.extractScriptFromUpload.mockReturnValue(
+          new Promise((resolve, reject) => {
+            finish = () =>
+              outcome === "success"
+                ? resolve({ text: "已完成转写" })
+                : reject(new Error("转写失败"));
+          }),
+        );
+        const state = createState("workbench");
+        state.draft.projectId = "project-1";
+        state.draft.sourceAssetId = "asset-1";
+        render(
+          <StudioWorkspace
+            currentUser={{ ...reviewUser, id: "customer-a" }}
+            customerAccount={customerAccount(customerStore("session-token"))}
+            initialState={state}
+          />,
+        );
+        await screen.findByRole("button", { name: "用户档案，积分 351 积分" });
+        fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
+        api.customerGetWallet.mockResolvedValue({
+          available_credits: outcome === "success" ? 353 : 377,
+        });
+        await act(async () => finish());
+        expect(
+          await screen.findByRole("button", {
+            name: `用户档案，积分 ${outcome === "success" ? 353 : 377} 积分`,
+          }),
+        ).toBeInTheDocument();
+      },
+    );
+
     it("同一账号提取期间切换为审计员会丢弃迟到成功回调", async () => {
       live.loadStudioData.mockResolvedValue(emptyStudioData);
       live.loadCloudDraft.mockResolvedValue(undefined);

@@ -167,13 +167,15 @@ def _cleanup_audio_objects(
 ) -> None:
     # Leave uncertain submissions' input available until the signed URL expires.
     cutoff = (datetime.now(UTC) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     with connection() as conn:
         rows = conn.execute(
             "SELECT id,audio_object_key FROM script_from_audio_tasks "
             "WHERE audio_object_key IS NOT NULL AND (status IN ('SUCCEEDED','FAILED') "
             "OR (status='SUBMISSION_UNCERTAIN' AND updated_at<=%s)) "
+            "AND (next_attempt_at IS NULL OR next_attempt_at<=%s) "
             "ORDER BY updated_at,id LIMIT 10",
-            (cutoff,),
+            (cutoff, now),
         ).fetchall()
     for row in rows:
         try:
@@ -189,6 +191,16 @@ def _cleanup_audio_objects(
                 )
                 conn.commit()
         except Exception as exc:
+            # 权限/网络故障保持清理凭据，但不要每个空闲轮次重复访问对象存储。
+            retry_at = (datetime.now(UTC) + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+            with connection() as conn:
+                conn.execute(
+                    "UPDATE script_from_audio_tasks SET next_attempt_at=%s "
+                    "WHERE id=%s AND audio_object_key=%s "
+                    "AND status IN ('SUCCEEDED','FAILED','SUBMISSION_UNCERTAIN')",
+                    (retry_at, row["id"], row["audio_object_key"]),
+                )
+                conn.commit()
             logger.warning("ASR cleanup deferred for task %s: %s", row["id"], type(exc).__name__)
 
 

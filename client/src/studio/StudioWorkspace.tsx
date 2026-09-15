@@ -1698,6 +1698,7 @@ export function StudioWorkspace({
           },
         });
         navigate("copy", { returnTo: "workbench" });
+        setWalletRevision((value) => value + 1);
         notify("文案已提取，请在文案工坊核对内容并确认终稿。");
       })
       .catch((cause: unknown) => {
@@ -1707,6 +1708,7 @@ export function StudioWorkspace({
           permissionGenerationRef.current !== permissionGeneration
         )
           return;
+        setWalletRevision((value) => value + 1);
         notify(
           customerVisibleErrorMessage(cause, "文案提取失败，请稍后重试。"),
         );
