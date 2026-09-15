@@ -1078,3 +1078,177 @@ def test_undelivered_link_receipts_recover_reserved_credits(client, route_state,
         )
         assert claimed_again is False
         assert replay["id"] == receipt["id"]
+
+
+@pytest.mark.parametrize(
+    ("scenario", "recovered"),
+    [
+        ("succeeded", True),
+        ("failed", True),
+        ("active_operation", False),
+        ("running_task", False),
+        ("uncertain_task", False),
+        ("task_owner", False),
+        ("task_deadline", False),
+        ("recent_attempt", False),
+        ("recent_operation", False),
+        ("recent_task", False),
+        ("missing_task", False),
+        ("primary_attempt", False),
+        ("actual_attempt", False),
+        ("unknown_attempt", False),
+        ("concurrent_reopen", False),
+        ("concurrent_completion", False),
+        ("batch_limit", True),
+    ],
+)
+def test_terminal_first_frame_auxiliary_cost_recovery(client, route_state, scenario, recovered):
+    from app.usage_billing import begin_attempt, complete_attempt, reconcile_operations
+
+    _, uid = account(client)
+    with psycopg.connect(route_state) as raw:
+        conn = BusinessConnection.postgres(raw)
+        raw.execute("UPDATE wallets SET available_credits=100 WHERE user_id=%s", (uid,))
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('first_frame',true,5,2),('quality_inspection',false,NULL,7)"
+        )
+        raw.execute(
+            "INSERT INTO projects(id,owner_user_id,name) VALUES('aux-project',%s,'aux')", (uid,)
+        )
+        task_status = (
+            "RUNNING"
+            if scenario in {"active_operation", "running_task"}
+            else "SUBMISSION_UNCERTAIN"
+            if scenario == "uncertain_task"
+            else "FAILED"
+            if scenario == "failed"
+            else "SUCCEEDED"
+        )
+        if scenario != "missing_task":
+            raw.execute(
+                "INSERT INTO first_frame_tasks(id,created_by_user_id,project_id,"
+                "idempotency_key,request_hash,request_json,status,completed_at,updated_at) "
+                "VALUES('aux-task',%s,'aux-project','aux-key','aux-hash','{}',%s,"
+                "(now()-interval '2 hours')::text,(now()-interval '2 hours')::text)",
+                (uid, task_status),
+            )
+        operation = accept_operation(
+            conn, user_id=uid, service="first_frame", source_id="aux-task", units=1
+        )
+        attempt = begin_attempt(
+            conn,
+            operation_id=operation,
+            attempt_key="interrupted-check",
+            service="first_frame" if scenario == "primary_attempt" else "quality_inspection",
+        )
+        if scenario != "active_operation":
+            finish_operation(
+                conn,
+                operation_id=operation,
+                units=0 if scenario == "failed" else 1,
+                succeeded=scenario != "failed",
+            )
+        # Age fixture facts only; production immutable-fact triggers are restored
+        # before reconciliation or any assertions execute.
+        raw.execute("SET LOCAL session_replication_role=replica")
+        raw.execute(
+            "UPDATE billing_attempts SET created_at=now()-interval '2 hours' WHERE id=%s",
+            (attempt,),
+        )
+        if scenario != "active_operation":
+            raw.execute(
+                "UPDATE billing_operations SET completed_at=now()-interval '2 hours' WHERE id=%s",
+                (operation,),
+            )
+        if scenario == "task_owner":
+            raw.execute("UPDATE first_frame_tasks SET locked_by='active-worker'")
+        elif scenario == "task_deadline":
+            raw.execute("UPDATE first_frame_tasks SET locked_until=(now()+interval '1 hour')::text")
+        elif scenario == "recent_attempt":
+            raw.execute("UPDATE billing_attempts SET created_at=now() WHERE id=%s", (attempt,))
+        elif scenario == "recent_operation":
+            raw.execute(
+                "UPDATE billing_operations SET completed_at=now() WHERE id=%s", (operation,)
+            )
+        elif scenario == "recent_task":
+            raw.execute("UPDATE first_frame_tasks SET updated_at=now()::text")
+        raw.execute("SET LOCAL session_replication_role=origin")
+        if scenario == "batch_limit":
+            raw.execute(
+                "INSERT INTO billing_attempts(id,operation_id,attempt_key,service,provider,"
+                "unit,unit_cost_fen,created_at) SELECT a.id||'-'||n,a.operation_id,"
+                "a.attempt_key||'-'||n,a.service,a.provider,a.unit,a.unit_cost_fen,"
+                "a.created_at+interval '1 minute' FROM billing_attempts a "
+                "CROSS JOIN generate_series(1,2) n WHERE a.id=%s",
+                (attempt,),
+            )
+        if scenario in {"actual_attempt", "unknown_attempt"}:
+            complete_attempt(
+                conn, attempt_id=attempt, usage=1 if scenario == "actual_attempt" else None
+            )
+
+        def snapshot(sql, params=()):
+            return [tuple(row) for row in raw.execute(sql, params).fetchall()]
+
+        before_attempt = snapshot("SELECT * FROM billing_attempts WHERE id=%s", (attempt,))
+        before_operations = snapshot("SELECT * FROM billing_operations ORDER BY id")
+        before_wallets = snapshot("SELECT * FROM wallets ORDER BY user_id")
+        before_ledger = snapshot("SELECT * FROM wallet_transactions ORDER BY id")
+        before_tasks = snapshot("SELECT * FROM first_frame_tasks ORDER BY id")
+        before_audits = snapshot("SELECT * FROM audit_logs ORDER BY id")
+        if scenario in {"concurrent_reopen", "concurrent_completion"}:
+            raw.commit()
+            with psycopg.connect(route_state) as concurrent:
+                if scenario == "concurrent_reopen":
+                    concurrent.execute(
+                        "UPDATE first_frame_tasks SET status='RUNNING',locked_by='new-worker',"
+                        "locked_until=(now()+interval '1 hour')::text WHERE id='aux-task'"
+                    )
+                else:
+                    complete_attempt(
+                        BusinessConnection.postgres(concurrent), attempt_id=attempt, usage=1
+                    )
+                raw.execute("SET LOCAL lock_timeout='1s'")
+                assert reconcile_operations(conn) == 0
+                assert (
+                    snapshot("SELECT * FROM billing_attempts WHERE id=%s", (attempt,))
+                    == before_attempt
+                )
+                raw.commit()
+            before_attempt = snapshot("SELECT * FROM billing_attempts WHERE id=%s", (attempt,))
+            before_tasks = snapshot("SELECT * FROM first_frame_tasks ORDER BY id")
+        assert reconcile_operations(conn, limit=0) == 0
+        assert snapshot("SELECT * FROM billing_attempts WHERE id=%s", (attempt,)) == before_attempt
+        # This returns settled operations, not the number of recovered auxiliary costs.
+        assert reconcile_operations(conn, limit=1) == 0
+        after_attempt = snapshot("SELECT * FROM billing_attempts WHERE id=%s", (attempt,))
+        if scenario == "batch_limit":
+            assert snapshot(
+                "SELECT state,count(*) FROM billing_attempts GROUP BY state ORDER BY state"
+            ) == [
+                ("PENDING", 2),
+                ("UNKNOWN", 1),
+            ]
+        if recovered:
+            assert snapshot(
+                "SELECT state,usage,cost_fen,unit_cost_fen,completed_at IS NOT NULL "
+                "FROM billing_attempts WHERE id=%s",
+                (attempt,),
+            ) == [("UNKNOWN", None, None, Decimal(7), True)]
+            # A stale response cannot rewrite an unknown observation into guessed cost.
+            with pytest.raises(RuntimeError, match="用量"):
+                complete_attempt(conn, attempt_id=attempt, usage=1)
+        else:
+            assert after_attempt == before_attempt
+        assert reconcile_operations(conn) == 0
+        if scenario == "batch_limit":
+            assert snapshot("SELECT state,count(*) FROM billing_attempts GROUP BY state") == [
+                ("UNKNOWN", 3)
+            ]
+        assert snapshot("SELECT * FROM billing_attempts WHERE id=%s", (attempt,)) == after_attempt
+        assert snapshot("SELECT * FROM billing_operations ORDER BY id") == before_operations
+        assert snapshot("SELECT * FROM wallets ORDER BY user_id") == before_wallets
+        assert snapshot("SELECT * FROM wallet_transactions ORDER BY id") == before_ledger
+        assert snapshot("SELECT * FROM first_frame_tasks ORDER BY id") == before_tasks
+        assert snapshot("SELECT * FROM audit_logs ORDER BY id") == before_audits
