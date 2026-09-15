@@ -2582,6 +2582,12 @@ function StudioPicker({
                     type="button"
                     key={asset.id}
                     onClick={() => {
+                      if (usesCloudImages && asset.url) {
+                        updateData((current) => ({
+                          ...current,
+                          assets: mergeStudioAssets(current.assets, [asset]),
+                        }));
+                      }
                       if (kind === "avatar-photo") {
                         select({ imageId: asset.id });
                         navigate("person-avatars", {

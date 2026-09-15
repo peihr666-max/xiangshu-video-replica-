@@ -721,6 +721,32 @@ def test_auditor_cannot_create_independent_tasks(scene: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("task_status", ["SUBMITTING", "QUEUED", "RUNNING", "ARCHIVING"])
+def test_batch_lists_started_tasks_as_running_not_cancellable_queue(
+    scene: str, task_status: str
+) -> None:
+    batch = _create(
+        IndependentVideoRequest(
+            mode="i2v",
+            prompt_text="首尾帧进度复测",
+            first_frame_asset_id="frame-owned",
+            output_duration_seconds=4,
+            quantity=2,
+            idempotency_key="started-progress",
+        ),
+        EMPLOYEE_1,
+    )
+    with pg_transaction() as conn:
+        conn.execute(
+            "UPDATE generation_tasks SET status=%s WHERE id=%s", (task_status, batch.tasks[0].id)
+        )
+    listed = next(item for item in _list_batches(EMPLOYEE_1).items if item.id == batch.id)
+    assert listed.status == "RUNNING"
+    assert _get_batch(batch.id, EMPLOYEE_1).status == "RUNNING"
+    with pytest.raises(HTTPException):
+        _cancel_batch(batch.id, EMPLOYEE_1)
+
+
 def test_worker_settles_independent_task_and_releases_on_failure(scene: str) -> None:
     batch = _create(
         IndependentVideoRequest(

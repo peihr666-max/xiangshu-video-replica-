@@ -7226,6 +7226,12 @@ def batch_status(stored_status: str, progress: BatchProgress) -> str:
         return "SUCCEEDED"
     if progress.counts["needs_attention"]:
         return "NEEDS_ATTENTION"
+    if progress.terminal_count > 0 or any(
+        progress.counts[stage] for stage in ("submitting", "queued", "running", "archiving")
+    ):
+        # QUEUED on a child task means the provider already accepted it; only a
+        # batch whose children are all PENDING remains an unstarted queue item.
+        return "RUNNING"
     return stored_status
 
 

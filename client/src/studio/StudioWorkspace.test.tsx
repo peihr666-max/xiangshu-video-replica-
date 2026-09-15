@@ -772,6 +772,38 @@ describe("V1.4 workspace integration", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("← 返回创作")).toBeInTheDocument();
   });
+  it("素材选择器已加载的尾帧预览在选中后保留到创作页面", async () => {
+    const material = {
+      id: "tail-cloud",
+      assetId: "tail-cloud",
+      name: "云端尾帧",
+      kind: "image" as const,
+      source: "我的上传",
+      group: "尾帧素材",
+      saved: true,
+    };
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      assets: [],
+      materials: [material],
+    });
+    api.getAssetDownloadUrl.mockResolvedValue({
+      url: "https://signed.example/tail.png",
+    });
+    const state = createState("video");
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    await waitFor(() => expect(live.loadStudioData).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "尾帧 尾帧（可选）" }));
+    expect(
+      await screen.findByRole("img", { name: "云端尾帧" }),
+    ).toHaveAttribute("src", "https://signed.example/tail.png");
+    fireEvent.click(screen.getByRole("button", { name: /云端尾帧.*我的上传/ }));
+    expect(await screen.findByRole("img", { name: "尾帧" })).toHaveAttribute(
+      "src",
+      "https://signed.example/tail.png",
+    );
+  });
+
   it("管理员可以从新版工作区进入服务设置", async () => {
     live.loadStudioData.mockResolvedValue({
       ...createReviewData(),
