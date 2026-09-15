@@ -302,6 +302,19 @@
 .content-material-layout {
   grid-template-columns: minmax(0, 1fr) 290px;
 }
+.content-material-cache {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--studio-muted, #747b88);
+}
+.content-material-cache p {
+  flex-basis: 100%;
+  margin: 0;
+}
 .content-material-filters {
   align-items: center;
   display: grid;

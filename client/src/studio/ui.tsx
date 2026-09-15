@@ -279,8 +279,10 @@ export function Media({
   className = "",
   onError,
   presentation,
+  onPlay,
 }: {
   presentation?: "video";
+  onPlay?: () => void;
   asset?: StudioAsset;
   alt: string;
   className?: string;
@@ -301,6 +303,7 @@ export function Media({
         {asset.url ? (
           <audio
             controls
+            onPlay={onPlay}
             src={asset.url}
             aria-label={alt}
             onError={() => onError?.(asset.url)}
@@ -315,6 +318,7 @@ export function Media({
   if (asset.kind === "video" || presentation === "video")
     return (
       <VideoPreview
+        onPlay={onPlay}
         className={`studio-media ${className}`}
         controls
         src={asset.kind === "video" ? asset.url : undefined}

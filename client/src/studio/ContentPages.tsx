@@ -9,15 +9,19 @@ import type {
   ViralVideoItem,
 } from "../api";
 import {
+  clearMaterialCache,
   completeMaterialUpload,
   createGenerationTaskPreviewUrl,
   createMaterialUploadIntent,
   createViralImportTask,
   downloadMaterialAsset,
+  evictMaterialCachedPreview,
   fetchViralVideo,
   fetchViralVideoMedia,
   fetchViralVideoStatistics,
   getAssetDownloadUrl,
+  getMaterialCachedPreview,
+  getMaterialCacheUsage,
   getStudioDraft,
   getViralImportTask,
   hideMaterial,
@@ -114,6 +118,7 @@ function persistViralDetailUrl(video: StudioVideo) {
 type MaterialPreviewState = {
   status: "loading" | "ready" | "error";
   url?: string;
+  cached?: boolean;
 };
 type MaterialPreviewStates = Record<string, MaterialPreviewState>;
 
@@ -1699,12 +1704,14 @@ function AssetCard({
   previewStatus,
   onSelect,
   onPreviewError,
+  onPlay,
 }: {
   asset: StudioAsset;
   selected: boolean;
   previewStatus?: "loading" | "ready" | "error";
   onSelect: () => void;
   onPreviewError: (failedUrl?: string) => void;
+  onPlay: () => void;
 }) {
   return (
     <button
@@ -1713,7 +1720,12 @@ function AssetCard({
       onClick={onSelect}
       aria-label={`选择素材 ${asset.name}`}
     >
-      <Media asset={asset} alt={asset.name} onError={onPreviewError} />
+      <Media
+        asset={asset}
+        alt={asset.name}
+        onError={onPreviewError}
+        onPlay={onPlay}
+      />
       <strong>{asset.name}</strong>
       <span>
         {asset.group} ·{" "}
@@ -1735,7 +1747,13 @@ function AssetCard({
 }
 
 export function MaterialsPage() {
+  const { user } = useStudio();
+  return <MaterialsPageContent key={user.id} />;
+}
+
+function MaterialsPageContent() {
   const {
+    user,
     data,
     state,
     review,
@@ -1762,6 +1780,22 @@ export function MaterialsPage() {
   const visiblePreviewIdsRef = useRef(new Set<string>());
   const previewRequestVersionsRef = useRef(new Map<string, number>());
   const previewLoadingIdsRef = useRef(new Set<string>());
+  const previewResourcesRef = useRef(
+    new Map<string, { url: string; release: () => void }>(),
+  );
+  const cacheControllersRef = useRef(new Set<AbortController>());
+  const warmingIdsRef = useRef(new Set<string>());
+  const evictionRef = useRef(new Map<string, Promise<void>>());
+  const aliveRef = useRef(true);
+  const cacheRevisionRef = useRef(0);
+  const cacheSuppressedRef = useRef(false);
+  const [cacheUsage, setCacheUsage] = useState<{
+    bytes: number;
+    limitBytes: number;
+    available: boolean;
+  }>();
+  const [cacheMessage, setCacheMessage] = useState("");
+  const [clearingCache, setClearingCache] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const groupInputRef = useRef<HTMLInputElement | null>(null);
@@ -1796,51 +1830,186 @@ export function MaterialsPage() {
   const total = review ? reviewAssets.length : (remotePage?.total ?? 0);
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const selectedAssetIdRef = useRef(state.selectedAssetId);
-  const loadPreview = useCallback(async (asset: StudioAsset) => {
+  const refreshCacheUsage = useCallback(async () => {
+    const revision = cacheRevisionRef.current;
+    try {
+      const usage = await getMaterialCacheUsage(user.id);
+      if (aliveRef.current && revision === cacheRevisionRef.current)
+        setCacheUsage(usage);
+    } catch {
+      /* Cache status must not prevent online preview. */
+    }
+  }, [user.id]);
+  useEffect(() => {
+    aliveRef.current = true;
+    if (!review) void refreshCacheUsage();
+    return () => {
+      aliveRef.current = false;
+      cacheRevisionRef.current += 1;
+      for (const controller of cacheControllersRef.current) controller.abort();
+      for (const resource of previewResourcesRef.current.values())
+        resource.release();
+      previewResourcesRef.current.clear();
+    };
+  }, [refreshCacheUsage, review]);
+  const loadPreview = useCallback(
+    async (asset: StudioAsset) => {
+      if (
+        asset.url ||
+        !asset.allowedActions?.includes("preview") ||
+        previewLoadingIdsRef.current.has(asset.id)
+      )
+        return;
+      previewLoadingIdsRef.current.add(asset.id);
+      const requestVersion =
+        (previewRequestVersionsRef.current.get(asset.id) ?? 0) + 1;
+      previewRequestVersionsRef.current.set(asset.id, requestVersion);
+      const revision = cacheRevisionRef.current;
+      const controller = new AbortController();
+      cacheControllersRef.current.add(controller);
+      setPreviewStates((current) => ({
+        ...current,
+        [asset.id]: { status: "loading" },
+      }));
+      try {
+        await evictionRef.current.get(asset.id);
+        const result = asset.assetId
+          ? await getMaterialCachedPreview(
+              user.id,
+              asset.previewAssetId ?? asset.assetId,
+              {
+                populate: asset.kind === "image" && !cacheSuppressedRef.current,
+                signal: controller.signal,
+              },
+            )
+          : undefined;
+        const url =
+          result?.url ??
+          (asset.generationTaskId
+            ? await createGenerationTaskPreviewUrl(asset.generationTaskId)
+            : undefined);
+        if (
+          !aliveRef.current ||
+          revision !== cacheRevisionRef.current ||
+          previewRequestVersionsRef.current.get(asset.id) !== requestVersion ||
+          !visiblePreviewIdsRef.current.has(asset.id)
+        ) {
+          result?.release();
+          return;
+        }
+        previewResourcesRef.current.get(asset.id)?.release();
+        if (result) previewResourcesRef.current.set(asset.id, result);
+        setPreviewStates((current) => ({
+          ...current,
+          [asset.id]: url
+            ? {
+                status: "ready",
+                url,
+                ...(result?.cached ? { cached: true } : {}),
+              }
+            : { status: "error" },
+        }));
+        if (result?.cached) void refreshCacheUsage();
+      } catch {
+        if (
+          !aliveRef.current ||
+          revision !== cacheRevisionRef.current ||
+          previewRequestVersionsRef.current.get(asset.id) !== requestVersion ||
+          !visiblePreviewIdsRef.current.has(asset.id)
+        )
+          return;
+        setPreviewStates((current) => ({
+          ...current,
+          [asset.id]: { status: "error" },
+        }));
+      } finally {
+        cacheControllersRef.current.delete(controller);
+        if (previewRequestVersionsRef.current.get(asset.id) === requestVersion)
+          previewLoadingIdsRef.current.delete(asset.id);
+      }
+    },
+    [refreshCacheUsage, user.id],
+  );
+
+  const warmPreview = async (asset: StudioAsset) => {
     if (
-      asset.url ||
-      !asset.allowedActions?.includes("preview") ||
-      previewLoadingIdsRef.current.has(asset.id)
+      review ||
+      !asset.assetId ||
+      previewStates[asset.id]?.cached ||
+      warmingIdsRef.current.has(asset.id) ||
+      clearingCache ||
+      cacheSuppressedRef.current
     )
       return;
-    previewLoadingIdsRef.current.add(asset.id);
-    const requestVersion =
-      (previewRequestVersionsRef.current.get(asset.id) ?? 0) + 1;
-    previewRequestVersionsRef.current.set(asset.id, requestVersion);
-    setPreviewStates((current) => ({
-      ...current,
-      [asset.id]: { status: "loading" },
-    }));
+    warmingIdsRef.current.add(asset.id);
+    const revision = cacheRevisionRef.current;
+    const controller = new AbortController();
+    cacheControllersRef.current.add(controller);
     try {
-      const url = asset.assetId
-        ? (await getAssetDownloadUrl(asset.previewAssetId ?? asset.assetId)).url
-        : asset.generationTaskId
-          ? await createGenerationTaskPreviewUrl(asset.generationTaskId)
-          : undefined;
-      if (
-        previewRequestVersionsRef.current.get(asset.id) !== requestVersion ||
-        !visiblePreviewIdsRef.current.has(asset.id)
-      )
-        return;
-      setPreviewStates((current) => ({
-        ...current,
-        [asset.id]: url ? { status: "ready", url } : { status: "error" },
-      }));
+      await evictionRef.current.get(asset.id);
+      const result = await getMaterialCachedPreview(
+        user.id,
+        asset.previewAssetId ?? asset.assetId,
+        { populate: true, signal: controller.signal },
+      );
+      result.release(); // Keep the currently playing source stable.
+      if (aliveRef.current && revision === cacheRevisionRef.current) {
+        setCacheMessage(
+          result.cached
+            ? "已缓存到本机，下次预览优先使用。"
+            : "当前素材继续在线预览，未写入本机缓存。",
+        );
+        void refreshCacheUsage();
+      }
     } catch {
-      if (
-        previewRequestVersionsRef.current.get(asset.id) !== requestVersion ||
-        !visiblePreviewIdsRef.current.has(asset.id)
-      )
-        return;
-      setPreviewStates((current) => ({
-        ...current,
-        [asset.id]: { status: "error" },
-      }));
+      // Background caching must never interrupt the active player.
     } finally {
-      if (previewRequestVersionsRef.current.get(asset.id) === requestVersion)
-        previewLoadingIdsRef.current.delete(asset.id);
+      cacheControllersRef.current.delete(controller);
     }
-  }, []);
+  };
+
+  const invalidatePreview = (asset: StudioAsset, failedUrl?: string) => {
+    if (previewStates[asset.id]?.url !== failedUrl) return;
+    previewResourcesRef.current.get(asset.id)?.release();
+    previewResourcesRef.current.delete(asset.id);
+    if (failedUrl?.startsWith("blob:") && asset.assetId) {
+      const eviction = evictMaterialCachedPreview(
+        user.id,
+        asset.previewAssetId ?? asset.assetId,
+      ).catch(() => {});
+      evictionRef.current.set(asset.id, eviction);
+    }
+    warmingIdsRef.current.delete(asset.id);
+    setPreviewStates((current) =>
+      failMaterialPreview(current, asset.id, failedUrl),
+    );
+  };
+
+  const clearLocalCache = async () => {
+    setClearingCache(true);
+    cacheSuppressedRef.current = true;
+    cacheRevisionRef.current += 1;
+    for (const controller of cacheControllersRef.current) controller.abort();
+    previewLoadingIdsRef.current.clear();
+    try {
+      await clearMaterialCache(user.id);
+      if (!aliveRef.current) return;
+      // Existing Blob URLs may finish playing; their persistent copies are gone.
+      warmingIdsRef.current = new Set(visiblePreviewIdsRef.current);
+      setCacheMessage("本机缓存已清理，云端素材保留。当前播放不受影响。");
+      await refreshCacheUsage();
+    } catch {
+      if (aliveRef.current) setCacheMessage("清理本机缓存失败，请重试。");
+    } finally {
+      if (aliveRef.current) {
+        setClearingCache(false);
+        for (const asset of remoteAssets) {
+          if (previewStates[asset.id]?.status !== "ready")
+            void loadPreview(asset);
+        }
+      }
+    }
+  };
 
   useEffect(() => {
     if (review) return;
@@ -1877,9 +2046,24 @@ export function MaterialsPage() {
   }, [page, pages, remotePage?.page, review]);
 
   useEffect(() => {
+    void kind;
+    void page;
+    void query;
+    void source;
+    cacheSuppressedRef.current = false;
+  }, [kind, page, query, source]);
+
+  useEffect(() => {
     if (review || remotePage?.page !== page) return;
     const visibleIds = new Set(remoteAssets.map((asset) => asset.id));
     visiblePreviewIdsRef.current = visibleIds;
+    for (const [id, resource] of previewResourcesRef.current) {
+      if (!visibleIds.has(id)) {
+        resource.release();
+        previewResourcesRef.current.delete(id);
+        warmingIdsRef.current.delete(id);
+      }
+    }
     setPreviewStates((current) =>
       Object.fromEntries(
         Object.entries(current).filter(([id]) => visibleIds.has(id)),
@@ -1915,9 +2099,15 @@ export function MaterialsPage() {
     : assets;
 
   const retainForDraft = (asset: StudioAsset) => {
+    const retained = asset.url?.startsWith("blob:")
+      ? { ...asset, url: undefined }
+      : asset;
     updateData((current) => ({
       ...current,
-      assets: [asset, ...current.assets.filter((item) => item.id !== asset.id)],
+      assets: [
+        retained,
+        ...current.assets.filter((item) => item.id !== asset.id),
+      ],
     }));
   };
 
@@ -1995,6 +2185,13 @@ export function MaterialsPage() {
     setBusyAction("hide");
     try {
       await hideMaterial(selected.materialId);
+      if (selected.assetId) {
+        await evictMaterialCachedPreview(
+          user.id,
+          selected.previewAssetId ?? selected.assetId,
+        ).catch(() => {});
+        void refreshCacheUsage();
+      }
       setSelectedAsset(undefined);
       patchState({ selectedAssetId: undefined });
       setRemotePage((current) =>
@@ -2115,6 +2312,29 @@ export function MaterialsPage() {
         }}
       />
       {!review ? (
+        <section aria-label="本机素材缓存" className="content-material-cache">
+          <span>
+            {cacheUsage?.available
+              ? `本机缓存 ${(cacheUsage.bytes / 1024 / 1024).toFixed(1)} MB · 总上限 ${Math.round(cacheUsage.limitBytes / 1024 / 1024)} MB`
+              : cacheUsage
+                ? "当前浏览器暂不支持本机缓存，使用在线预览。"
+                : "正在读取本机缓存…"}
+          </span>
+          <Button
+            variant="quiet"
+            disabled={clearingCache || !cacheUsage?.available}
+            onClick={() => void clearLocalCache()}
+          >
+            {clearingCache ? "正在清理…" : "清理本机缓存"}
+          </Button>
+          <p>
+            图片自动缓存，视频和音频首次播放时后台缓存；单个文件不超过 50
+            MB，超限继续在线预览。
+          </p>
+          {cacheMessage ? <p role="status">{cacheMessage}</p> : null}
+        </section>
+      ) : null}
+      {!review ? (
         <form
           aria-label="素材筛选"
           className="content-material-filters"
@@ -2170,10 +2390,9 @@ export function MaterialsPage() {
                   patchState({ selectedAssetId: asset.id });
                 }}
                 onPreviewError={(failedUrl) => {
-                  setPreviewStates((current) =>
-                    failMaterialPreview(current, asset.id, failedUrl),
-                  );
+                  invalidatePreview(asset, failedUrl);
                 }}
+                onPlay={() => void warmPreview(asset)}
               />
             ))}
           </div>
@@ -2224,6 +2443,10 @@ export function MaterialsPage() {
               {selected.composite && selected.characterViews?.length ? (
                 <CharacterMaterialViews
                   key={selected.id}
+                  userId={user.id}
+                  cacheRevision={cacheRevisionRef.current}
+                  cacheClearing={clearingCache}
+                  cachePopulateAllowed={!cacheSuppressedRef.current}
                   asset={selected}
                   onSelected={setCharacterView}
                 />
@@ -2235,10 +2458,9 @@ export function MaterialsPage() {
                   }}
                   alt={selected.name}
                   onError={(failedUrl) => {
-                    setPreviewStates((current) =>
-                      failMaterialPreview(current, selected.id, failedUrl),
-                    );
+                    invalidatePreview(selected, failedUrl);
                   }}
+                  onPlay={() => void warmPreview(selected)}
                 />
               )}
               <dl>

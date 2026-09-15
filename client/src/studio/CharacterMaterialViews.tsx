@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { getAssetDownloadUrl } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { evictMaterialCachedPreview, getMaterialCachedPreview } from "../api";
 import type { StudioAsset } from "./types";
 import { Button, Media } from "./ui";
 
@@ -16,9 +16,17 @@ const labels: Record<string, string> = {
 /** One material set, with explicit single-image selection for downstream creation. */
 export function CharacterMaterialViews({
   asset,
+  userId,
+  cacheRevision = 0,
+  cacheClearing = false,
+  cachePopulateAllowed = true,
   onSelected,
 }: {
   asset: StudioAsset;
+  userId: string;
+  cacheRevision?: number;
+  cacheClearing?: boolean;
+  cachePopulateAllowed?: boolean;
   onSelected: (value: StudioAsset | undefined) => void;
 }) {
   const views = asset.characterViews ?? [];
@@ -28,6 +36,15 @@ export function CharacterMaterialViews({
   const [preview, setPreview] = useState<{ id: string; url: string }>();
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
+  const resourceRef = useRef<
+    | {
+        userId: string;
+        viewId: string;
+        revision: number;
+        release: () => void;
+      }
+    | undefined
+  >(undefined);
   const isSheet = viewId === asset.id;
   const view = views.find((item) => item.assetId === viewId);
   const label = isSheet
@@ -35,21 +52,61 @@ export function CharacterMaterialViews({
     : (labels[view?.viewType ?? ""] ?? "人物视角");
   const url = preview?.id === viewId ? preview.url : undefined;
 
+  useEffect(
+    () => () => {
+      resourceRef.current?.release();
+      resourceRef.current = undefined;
+    },
+    [],
+  );
+
   useEffect(() => {
+    void cacheRevision;
+    const resource = resourceRef.current;
+    if (
+      resource &&
+      resource.userId === userId &&
+      resource.viewId === viewId &&
+      resource.revision === revision
+    )
+      return; // Clearing persistent bytes must not revoke an already displayed image.
+    resource?.release();
+    resourceRef.current = undefined;
+    setPreview(undefined);
+    if (cacheClearing) return;
     let active = true;
-    void revision;
+    const controller = new AbortController();
     setError("");
-    void getAssetDownloadUrl(viewId)
+    void getMaterialCachedPreview(userId, viewId, {
+      populate: cachePopulateAllowed,
+      signal: controller.signal,
+    })
       .then((result) => {
-        if (active) setPreview({ id: viewId, url: result.url });
+        if (active) {
+          resourceRef.current = {
+            userId,
+            viewId,
+            revision,
+            release: result.release,
+          };
+          setPreview({ id: viewId, url: result.url });
+        } else result.release();
       })
       .catch(() => {
         if (active) setError("当前视角图片加载失败，请重试。");
       });
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [viewId, revision]);
+  }, [
+    userId,
+    viewId,
+    revision,
+    cacheRevision,
+    cacheClearing,
+    cachePopulateAllowed,
+  ]);
 
   useEffect(() => {
     onSelected(
@@ -104,7 +161,11 @@ export function CharacterMaterialViews({
         asset={{ ...asset, id: viewId, url, composite: isSheet }}
         alt={`${asset.name} ${label}`}
         className={`character-material-preview ${isSheet ? "is-sheet" : ""}`}
-        onError={() => setError("当前视角图片加载失败，请重试。")}
+        onError={() => {
+          setError("当前视角图片加载失败，请重试。");
+          if (url?.startsWith("blob:"))
+            void evictMaterialCachedPreview(userId, viewId).catch(() => {});
+        }}
       />
       <p>
         当前选中：{label}。

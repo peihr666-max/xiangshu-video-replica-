@@ -34,6 +34,10 @@ const {
   hideMaterial,
   downloadMaterialAsset,
   getAssetDownloadUrl,
+  getMaterialCachedPreview,
+  getMaterialCacheUsage,
+  clearMaterialCache,
+  evictMaterialCachedPreview,
   getStudioDraft,
   saveStudioDraft,
   resolveMaterials,
@@ -57,6 +61,10 @@ const {
   hideMaterial: vi.fn(),
   downloadMaterialAsset: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
+  getMaterialCachedPreview: vi.fn(),
+  getMaterialCacheUsage: vi.fn(),
+  clearMaterialCache: vi.fn(),
+  evictMaterialCachedPreview: vi.fn(),
   getStudioDraft: vi.fn(
     async (): Promise<{
       revision: number;
@@ -88,6 +96,10 @@ vi.mock("../api", () => ({
   hideMaterial,
   downloadMaterialAsset,
   getAssetDownloadUrl,
+  getMaterialCachedPreview,
+  getMaterialCacheUsage,
+  clearMaterialCache,
+  evictMaterialCachedPreview,
   getStudioDraft,
   saveStudioDraft,
   resolveMaterials,
@@ -366,6 +378,20 @@ describe("V1.4 内容与运营页面", () => {
     hideMaterial.mockReset();
     downloadMaterialAsset.mockReset();
     getAssetDownloadUrl.mockReset();
+    getMaterialCachedPreview
+      .mockReset()
+      .mockImplementation(async (_userId, assetId) => ({
+        ...(await getAssetDownloadUrl(assetId)),
+        cached: false,
+        release: vi.fn(),
+      }));
+    getMaterialCacheUsage.mockReset().mockResolvedValue({
+      bytes: 0,
+      limitBytes: 256 * 1024 * 1024,
+      available: true,
+    });
+    clearMaterialCache.mockReset().mockResolvedValue(undefined);
+    evictMaterialCachedPreview.mockReset().mockResolvedValue(undefined);
     createGenerationTaskPreviewUrl.mockReset();
     getAssetDownloadUrl.mockResolvedValue({
       url: "https://storage.test/material",
@@ -2926,6 +2952,99 @@ describe("V1.4 内容与运营页面", () => {
     );
   });
 
+  it.each([false, true])(
+    "清理五视图缓存保留就绪图片并恢复未完成预览（ready=%s）",
+    async (ready) => {
+      listMaterials.mockResolvedValue({
+        items: [
+          {
+            ...material("sheet"),
+            composite: true,
+            preview_asset_id: "front",
+            character_views: [
+              { asset_id: "front", view_type: "FRONT_FULL" },
+              { asset_id: "left", view_type: "LEFT_SIDE" },
+            ],
+            allowed_uses: ["reference"],
+          },
+        ],
+        page: 1,
+        page_size: 6,
+        total: 1,
+      });
+      const release = vi.fn();
+      let rejectPending: ((reason: unknown) => void) | undefined;
+      getMaterialCachedPreview.mockImplementation(
+        async (_user, id, options) => {
+          if (id === "left" && options?.populate) {
+            if (!ready)
+              return new Promise((_resolve, reject) => {
+                rejectPending = reject;
+              });
+            return { url: "blob:left-ready", cached: true, release };
+          }
+          return {
+            url: `https://storage.test/${id}`,
+            cached: false,
+            release: vi.fn(),
+          };
+        },
+      );
+      clearMaterialCache.mockImplementation(async () => {
+        rejectPending?.(new DOMException("素材缓存已清理", "AbortError"));
+      });
+      useStudio.mockReturnValue(studio({ review: false }));
+      const rendered = render(<MaterialsPage />);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "选择素材 sheet.png" }),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "左侧面" }));
+      await waitFor(() =>
+        expect(
+          getMaterialCachedPreview.mock.calls.some(
+            (call) => call[1] === "left" && call[2]?.populate === true,
+          ),
+        ).toBe(true),
+      );
+      if (ready)
+        await waitFor(() =>
+          expect(
+            screen.getByRole("img", {
+              name: "sheet.png 左侧面",
+            }),
+          ).toHaveAttribute("src", "blob:left-ready"),
+        );
+      fireEvent.click(screen.getByRole("button", { name: "清理本机缓存" }));
+      await screen.findByText(
+        "本机缓存已清理，云端素材保留。当前播放不受影响。",
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByRole("img", {
+            name: "sheet.png 左侧面",
+          }),
+        ).toHaveAttribute(
+          "src",
+          ready ? "blob:left-ready" : "https://storage.test/left",
+        ),
+      );
+      expect(
+        getMaterialCachedPreview.mock.calls.filter(
+          (call) => call[1] === "left" && call[2]?.populate === true,
+        ),
+      ).toHaveLength(1);
+      expect(release).not.toHaveBeenCalled();
+      if (!ready)
+        expect(
+          getMaterialCachedPreview.mock.calls.some(
+            (call) => call[1] === "left" && call[2]?.populate === false,
+          ),
+        ).toBe(true);
+      rendered.unmount();
+      if (ready) expect(release).toHaveBeenCalledOnce();
+    },
+  );
+
   it("素材库六条分页，初始定位已选素材且筛选后保留右侧选择", () => {
     const base = studio();
     const assets = Array.from({ length: 7 }, (_, index) => ({
@@ -3176,6 +3295,128 @@ describe("V1.4 内容与运营页面", () => {
     expect(value.patchDraft).toHaveBeenCalledWith({
       referenceIds: ["renamed-video"],
     });
+  });
+
+  it("视频播放才后台填充缓存且不替换正在播放的地址", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        material("cache-video", { media_type: "video", title: "缓存视频.mp4" }),
+      ],
+      page: 1,
+      total: 1,
+    });
+    const release = vi.fn();
+    getMaterialCachedPreview.mockImplementation(
+      async (_userId, _assetId, options) =>
+        options?.populate
+          ? { url: "blob:cached-video", cached: true, release }
+          : {
+              url: "https://storage.test/video",
+              cached: false,
+              release: vi.fn(),
+            },
+    );
+    useStudio.mockReturnValue(
+      studio({
+        review: false,
+        user: { id: "cache-user" } as StudioContextValue["user"],
+      }),
+    );
+    render(<MaterialsPage />);
+    const video = await screen.findByLabelText("缓存视频.mp4");
+    await waitFor(() =>
+      expect(video).toHaveAttribute("src", "https://storage.test/video"),
+    );
+    expect(
+      getMaterialCachedPreview.mock.calls.some((call) => call[2]?.populate),
+    ).toBe(false);
+    fireEvent.play(video);
+    await waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect(getMaterialCachedPreview).toHaveBeenLastCalledWith(
+      "cache-user",
+      "cache-video",
+      expect.objectContaining({ populate: true }),
+    );
+    expect(video).toHaveAttribute("src", "https://storage.test/video");
+  });
+
+  it("缓存命中在卸载时释放，清理只删除本机缓存", async () => {
+    listMaterials.mockResolvedValue({
+      items: [material("cache-image")],
+      page: 1,
+      total: 1,
+    });
+    const release = vi.fn();
+    getMaterialCachedPreview.mockResolvedValue({
+      url: "blob:cached-image",
+      cached: true,
+      release,
+    });
+    getMaterialCacheUsage.mockResolvedValue({
+      bytes: 1048576,
+      limitBytes: 268435456,
+      available: true,
+    });
+    useStudio.mockReturnValue(
+      studio({
+        review: false,
+        user: { id: "cache-user" } as StudioContextValue["user"],
+      }),
+    );
+    const view = render(<MaterialsPage />);
+    await screen.findByRole("img", { name: "cache-image.png" });
+    fireEvent.click(screen.getByRole("button", { name: "清理本机缓存" }));
+    await waitFor(() =>
+      expect(clearMaterialCache).toHaveBeenCalledWith("cache-user"),
+    );
+    expect(hideMaterial).not.toHaveBeenCalled();
+    view.unmount();
+    expect(release).toHaveBeenCalled();
+  });
+
+  it("切换账号丢弃旧缓存预览并释放迟到的Blob", async () => {
+    listMaterials.mockResolvedValue({
+      items: [material("cache-image")],
+      page: 1,
+      total: 1,
+    });
+    let resolveOld!: (value: unknown) => void;
+    const releaseOld = vi.fn();
+    getMaterialCachedPreview.mockImplementation((userId) =>
+      userId === "old-user"
+        ? new Promise((resolve) => {
+            resolveOld = resolve;
+          })
+        : Promise.resolve({
+            url: "blob:new-user",
+            cached: true,
+            release: vi.fn(),
+          }),
+    );
+    const context = studio({
+      review: false,
+      user: { id: "old-user" } as StudioContextValue["user"],
+    });
+    useStudio.mockReturnValue(context);
+    const view = render(<MaterialsPage />);
+    await waitFor(() => expect(resolveOld).toBeTypeOf("function"));
+    useStudio.mockReturnValue({
+      ...context,
+      user: { ...context.user, id: "new-user" },
+    });
+    view.rerender(<MaterialsPage />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("img", { name: "cache-image.png" }),
+      ).toHaveAttribute("src", "blob:new-user"),
+    );
+    await act(async () => {
+      resolveOld({ url: "blob:old-user", cached: true, release: releaseOld });
+    });
+    expect(releaseOld).toHaveBeenCalledOnce();
+    expect(
+      screen.getByRole("img", { name: "cache-image.png" }),
+    ).toHaveAttribute("src", "blob:new-user");
   });
 
   it("非审核素材页把搜索和来源筛选交给服务端", async () => {
