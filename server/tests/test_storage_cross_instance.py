@@ -957,6 +957,22 @@ def test_owner_with_valid_signature_reads_the_asset(fence_env: FenceEnv) -> None
     assert str(granted["id"]) == asset_id
 
 
+def test_unicode_object_key_grant_preserves_exact_asset_binding(fence_env: FenceEnv) -> None:
+    project_id = f"cw031-unicode-{uuid4().hex[:8]}"
+    asset_id = _seed_asset(fence_env, project_id)
+    key = f"projects/{project_id}/回老家 建房？.mp4"
+    with psycopg.connect(fence_env.dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE assets SET storage_uri = %s WHERE id = %s",
+            (f"cos://{COS_BUCKET}/{key}", asset_id),
+        )
+    assert _grant(fence_env, user_id=ADMIN_USER_ID, asset_id=asset_id, key=key)["id"] == asset_id
+    with pytest.raises(HTTPException) as denied:
+        _grant(fence_env, user_id=ADMIN_USER_ID, asset_id=asset_id, key=key.replace("家", "乡"))
+    assert denied.value.status_code == 403
+    assert denied.value.detail["code"] == "SIGNED_ASSET_GRANT_FORBIDDEN"
+
+
 def test_tampered_or_expired_signature_is_rejected(fence_env: FenceEnv) -> None:
     project_id = f"cw031-authz-{uuid4().hex[:8]}"
     asset_id = _seed_asset(fence_env, project_id)

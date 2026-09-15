@@ -213,12 +213,14 @@ def route_state(registration_dsn: str) -> Iterator[str]:
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch, route_state: str) -> Iterator[TestClient]:
+    from app.customer_auth_routes import CustomerBrowserTransport
     from app.customer_auth_routes import router as customer_auth_router
     from app.customer_session_routes import router as session_router
     from app.recharge_routes import router as recharge_router
     from app.viral_import_routes import router as viral_import_router
 
     app = FastAPI()
+    app.add_middleware(CustomerBrowserTransport)
     app.include_router(customer_auth_router)
     app.include_router(session_router)
     app.include_router(recharge_router)
@@ -255,6 +257,170 @@ def _password_login(client: TestClient, **overrides: Any) -> Any:
             **overrides,
         },
     )
+
+
+def test_browser_cookie_refresh_csrf_logout_and_bearer_isolation(client: TestClient) -> None:
+    client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD})
+    web = {"X-Customer-Web": "1", "Origin": "http://127.0.0.1"}
+    login = client.post(
+        "/api/customer/login",
+        headers={**web, "Idempotency-Key": str(uuid.uuid4())},
+        json={
+            "username": "alice",
+            "password": VALID_PASSWORD,
+            "device_fingerprint": "cookie-reload-device-0001",
+            "device_platform": "browser",
+        },
+    )
+    assert login.status_code == 200, login.text
+    body = login.json()
+    assert body["session_token"].startswith("web-session:")
+    assert body["device_token"].startswith("web-device:")
+    assert client.cookies.get("customer_web_session") not in login.text
+    assert client.cookies.get("customer_web_device") not in login.text
+    cookies = login.headers.get_list("set-cookie")
+    assert len(cookies) == 2
+    assert all("HttpOnly" in c and "SameSite=strict" in c and "Path=/api" in c for c in cookies)
+    session = {**web, "Authorization": "Bearer " + body["session_token"]}
+    assert client.get("/api/customer/profile", headers=session).status_code == 200
+    # Cookie possession without the CSRF marker must not authenticate writes.
+    assert client.post("/api/customer/sessions/heartbeat", headers=web).status_code == 401
+    assert (
+        client.post(
+            "/api/customer/sessions/heartbeat",
+            headers={
+                **session,
+                "Origin": "https://attacker.example",
+            },
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/customer/sessions/heartbeat",
+            headers={
+                **web,
+                "Authorization": "Bearer web-session:incorrect",
+            },
+        ).status_code
+        == 403
+    )
+    # A reload gets non-secret handles; the normal device verifier renews it.
+    boot = client.get("/api/customer/browser-session", headers=web)
+    assert boot.status_code == 200
+    assert boot.headers["cache-control"] == "no-store"
+    assert boot.json()["device_token"] == body["device_token"]
+    malformed = client.post(
+        "/api/customer/sessions/login",
+        headers={**web, "Authorization": "Bearer " + boot.json()["device_token"]},
+        json={"session_token": "web-session:无效"},
+    )
+    assert malformed.status_code == 403
+    assert malformed.json()["detail"]["code"] == "BROWSER_CSRF_INVALID"
+    restored = client.post(
+        "/api/customer/sessions/login",
+        headers={
+            **web,
+            "Authorization": "Bearer " + boot.json()["device_token"],
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+        json={"session_token": boot.json()["session_token"]},
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["session_id"] == body["session_id"]
+    assert restored.json()["session_token"] == body["session_token"]
+    assert (
+        client.post(
+            "/api/customer/sessions/logout",
+            headers={
+                **session,
+                "Idempotency-Key": str(uuid.uuid4()),
+            },
+        ).status_code
+        == 204
+    )
+    assert client.get("/api/customer/profile", headers=session).status_code in (401, 403)
+    cleared = client.delete(
+        "/api/customer/browser-session",
+        headers={
+            **web,
+            "Authorization": "Bearer " + body["device_token"],
+        },
+    )
+    assert cleared.status_code == 204
+    assert client.get("/api/customer/browser-session", headers=web).json() == {
+        "device_token": None,
+        "session_token": None,
+    }
+    # The handle alone is never a credential on a fresh browser/desktop lane.
+    assert client.get("/api/customer/profile", headers=session).status_code == 403
+    assert (
+        client.get(
+            "/api/customer/profile",
+            headers={
+                "Authorization": "Bearer " + body["session_token"],
+            },
+        ).status_code
+        == 401
+    )
+
+
+def test_existing_browser_session_upgrades_without_password_or_new_device(
+    client: TestClient,
+) -> None:
+    client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD})
+    original = _password_login(client).json()
+    upgrade = client.post(
+        "/api/customer/sessions/login",
+        headers={
+            "X-Customer-Web": "1",
+            "Origin": "http://127.0.0.1",
+            "Authorization": "Bearer " + original["device_token"],
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+        json={"session_token": original["session_token"]},
+    )
+    assert upgrade.status_code == 200, upgrade.text
+    assert upgrade.json()["session_id"] == original["session_id"]
+    assert upgrade.json()["device_token"].startswith("web-device:")
+    assert upgrade.json()["session_token"].startswith("web-session:")
+    assert original["session_token"] not in upgrade.text
+    assert original["device_token"] not in upgrade.text
+    assert client.cookies.get("customer_web_session") == original["session_token"]
+
+
+def test_browser_production_cookie_flags_and_account_revocation(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    route_state: str,
+) -> None:
+    import app.customer_auth_routes as routes
+
+    monkeypatch.setattr(routes, "is_customer_production", lambda: True)
+    monkeypatch.setattr(routes, "customer_public_origin", lambda: "https://customer.example")
+    client.base_url = "https://customer.example"
+    client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD})
+    web = {"X-Customer-Web": "1", "Origin": "https://customer.example"}
+    login = client.post(
+        "/api/customer/login",
+        headers={
+            **web,
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+        json={
+            "username": "alice",
+            "password": VALID_PASSWORD,
+            "device_fingerprint": "cookie-secure-device-0001",
+        },
+    )
+    assert login.status_code == 200, login.text
+    assert all("Secure" in value for value in login.headers.get_list("set-cookie"))
+    headers = {**web, "Authorization": "Bearer " + login.json()["session_token"]}
+    assert client.get("/api/customer/profile", headers=headers).status_code == 200
+    with psycopg.connect(route_state) as conn:
+        conn.execute("UPDATE users SET is_active = 0 WHERE username = 'alice'")
+    assert client.get("/api/customer/profile", headers=headers).status_code == 401
+    assert client.post("/api/customer/sessions/heartbeat", headers=headers).status_code == 401
 
 
 def test_password_login_profile_heartbeat_logout_and_no_device_bypass(client: TestClient) -> None:

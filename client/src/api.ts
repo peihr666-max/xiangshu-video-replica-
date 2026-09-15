@@ -4572,6 +4572,7 @@ const BRANDED_SERVICE_ERRORS: ReadonlyArray<{
 ];
 
 const CUSTOMER_ACCOUNT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  RATE_LIMITED: "操作过于频繁，请稍后重试。",
   METASO_REQUIRES_CLOUD_STORAGE:
     "所选素材尚未存入当前云端素材库。请选择已归档的素材，或联系管理员完成云端存储配置后重新上传。",
   ANALYSIS_VIDEO_URL_UNAVAILABLE:
@@ -4745,6 +4746,8 @@ async function requestApi(
   const accessToken = workspaceAccessToken();
   if (accessToken) {
     headers.set("Authorization", `Bearer ${accessToken}`);
+    if (accessToken.startsWith("web-session:"))
+      headers.set("X-Customer-Web", "1");
   }
 
   try {
@@ -4975,7 +4978,10 @@ function isShotCard(value: unknown): value is ShotCard {
 
 type CustomerActivationResponse =
   components["schemas"]["CustomerActivationResponse"];
-type CustomerLoginResponse = components["schemas"]["LoginResponse"];
+type CustomerLoginResponse = components["schemas"]["LoginResponse"] & {
+  /** CSRF handle returned only when upgrading an existing browser login. */
+  device_token?: string;
+};
 type CustomerHeartbeatResponse = components["schemas"]["HeartbeatResponse"];
 export type CustomerDeviceListResponse =
   components["schemas"]["DeviceListResponse"];
@@ -5204,6 +5210,7 @@ async function customerErrorFromResponse(
 }
 
 type CustomerRequestOptions = {
+  browserSession?: boolean;
   method?: string;
   body?: unknown;
   credential?: CustomerCredential;
@@ -5254,6 +5261,9 @@ async function requestCustomer(
   }
   if (options.credential) {
     headers.set("Authorization", `Bearer ${options.credential.token}`);
+  }
+  if (options.browserSession || options.credential?.token.startsWith("web-")) {
+    headers.set("X-Customer-Web", "1");
   }
   if (options.idempotencyKey) {
     headers.set("Idempotency-Key", options.idempotencyKey);
@@ -5370,12 +5380,39 @@ export async function customerPasswordLogin(
     "/api/customer/login",
     {
       method: "POST",
+      browserSession: input.device_platform === "browser",
       body: input,
       idempotencyKey,
       shouldDispatchLifecycle: () => false,
     },
   );
   return body;
+}
+
+/** Browser JS receives only CSRF handles; bearer credentials stay HttpOnly. */
+export async function customerBrowserCredentials(): Promise<{
+  device_token: string | null;
+  session_token: string | null;
+}> {
+  const { body } = await customerJson<{
+    device_token: string | null;
+    session_token: string | null;
+  }>("/api/customer/browser-session", {
+    browserSession: true,
+    shouldDispatchLifecycle: () => false,
+  });
+  return body;
+}
+
+export async function clearCustomerBrowserCredentials(
+  credential: CustomerCredential,
+): Promise<void> {
+  await customerJson<undefined>("/api/customer/browser-session", {
+    method: "DELETE",
+    browserSession: true,
+    credential,
+    shouldDispatchLifecycle: () => false,
+  });
 }
 
 /** Redeem an activation code: user + wallet + first device + first charge +
@@ -5387,6 +5424,7 @@ export async function customerActivate(
     "/api/customer/activate",
     {
       method: "POST",
+      browserSession: input.devicePlatform === "browser",
       body: {
         activation_code: input.activationCode,
         device_fingerprint: input.deviceFingerprint,
@@ -5409,6 +5447,7 @@ export type CustomerLoginResult = {
 };
 
 export type CustomerLoginOptions = {
+  browserSession?: boolean;
   idempotencyKey: string;
   /** Presenting the previous session token renews instead of conflicting. */
   sessionToken?: string;
@@ -5423,6 +5462,7 @@ async function customerEstablishSession(
 ): Promise<CustomerLoginResult> {
   const { response, body } = await customerJson<CustomerLoginResponse>(path, {
     method: "POST",
+    browserSession: options.browserSession,
     credential,
     body: { session_token: options.sessionToken ?? null },
     idempotencyKey: options.idempotencyKey,

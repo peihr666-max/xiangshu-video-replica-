@@ -70,8 +70,8 @@ function CustomerShell({
   startInPairing?: boolean;
 }) {
   // The credential store owns session state, so its identity must survive
-  // memo cache invalidation (including Fast Refresh). A page reload still
-  // clears browser credentials; only the desktop vault persists them.
+  // memo cache invalidation (including Fast Refresh). Browser reloads restore
+  // CSRF handles from HttpOnly cookies; desktop credentials stay in the vault.
   const [store] = useState(customerCredentialStore);
   const [pairing, setPairing] = useState(startInPairing);
 

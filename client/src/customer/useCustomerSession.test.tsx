@@ -8,8 +8,64 @@ import {
 } from "../api";
 import {
   type CustomerCredentialStore,
+  customerCredentialStore,
   useCustomerSession,
 } from "./useCustomerSession";
+
+it("browser store restores only cookie CSRF handles after a fresh mount", async () => {
+  const deviceHandle = "web-device:csrf-device";
+  const sessionHandle = "web-session:csrf-session";
+  const fetchMock = vi.fn().mockImplementation(() =>
+    jsonResponse({
+      device_token: deviceHandle,
+      session_token: sessionHandle,
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const first = customerCredentialStore();
+  expect(await first.loadDeviceCredentialToken()).toBe(
+    "web-device:csrf-device",
+  );
+  expect(await first.loadSessionToken()).toBe("web-session:csrf-session");
+  const reloaded = customerCredentialStore();
+  expect(await reloaded.loadDeviceCredentialToken()).toBe(
+    "web-device:csrf-device",
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const headers = new Headers(fetchMock.mock.calls[0]?.[1].headers);
+  expect(headers.get("X-Customer-Web")).toBe("1");
+  expect(headers.has("Authorization")).toBe(false);
+});
+
+it("a live browser reload renews the lease without consuming a new login attempt; logout clears device cookies", async () => {
+  const store = memoryStore({ deviceToken: "web-device:csrf-device" });
+  store.devicePlatform = () => "browser";
+  await store.saveSessionToken("web-session:csrf-session");
+  const fetchMock = vi.fn().mockImplementation((url: string) => {
+    if (url.endsWith("/sessions/heartbeat"))
+      return jsonResponse({
+        session_id: "web-session-id",
+        session_epoch: 1,
+        lease_expires_at: "2099-01-01T00:00:00Z",
+      });
+    if (url.endsWith("/profile"))
+      return jsonResponse({ user_id: "web-user", username: "alice" });
+    if (url.endsWith("/sessions/logout")) return jsonResponse(null, 204);
+    return jsonResponse({}, 500);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const { result } = renderHook(() => useCustomerSession(store));
+  await waitFor(() => expect(result.current.screen).toBe("workspace"));
+  expect(result.current.user?.userId).toBe("web-user");
+  expect(
+    fetchMock.mock.calls.some(([url]) => url.endsWith("/sessions/login")),
+  ).toBe(false);
+  await act(async () => {
+    await result.current.logout();
+  });
+  expect(store.calls).toContain("clear-all");
+  expect(store.snapshot().deviceToken).toBeNull();
+});
 
 /** In-memory credential store — the reference implementation of the store
  * contract (the desktop build swaps in the Tauri DPAPI adapter, tests and

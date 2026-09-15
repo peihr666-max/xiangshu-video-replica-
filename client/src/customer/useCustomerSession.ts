@@ -7,7 +7,10 @@ import {
   CUSTOMER_SESSION_REVOKED_EVENT,
   CustomerApiError,
   type CustomerDeviceCredential,
+  clearCustomerBrowserCredentials,
   customerActivate,
+  customerBrowserCredentials,
+  customerGetProfile,
   customerHeartbeat,
   customerLogin,
   customerLogout,
@@ -25,8 +28,8 @@ import {
 /** The persistent-credential boundary for the customer lane (dev doc §14).
  *
  * The desktop build backs this with the Tauri DPAPI command bridge
- * (customer_credentials.rs); tests and the browser lane inject an isolated,
- * non-persistent implementation. The hook itself never touches
+ * (customer_credentials.rs); the browser adapter retains only CSRF handles
+ * backed by HttpOnly cookies. Tests inject isolated stores. The hook never touches
  * localStorage/sessionStorage — §7/§10.2 forbid a plaintext secret in Web
  * Storage, and the injected store is the only place a credential survives.
  */
@@ -253,12 +256,46 @@ export function useCustomerSession(
         token: deviceToken,
       };
       const previousSessionToken = await store.loadSessionToken();
+      if (previousSessionToken?.startsWith("web-session:")) {
+        const sessionCredential = {
+          kind: "session" as const,
+          token: previousSessionToken,
+        };
+        try {
+          const lease = await customerHeartbeat(sessionCredential, {
+            shouldDispatchLifecycle: () => false,
+          });
+          const profile = await customerGetProfile(sessionCredential);
+          sessionTokenRef.current = previousSessionToken;
+          sessionGenerationRef.current += 1;
+          setSessionToken(previousSessionToken);
+          setUser({ userId: profile.user_id, username: profile.username });
+          noteLease(lease.lease_expires_at);
+          return;
+        } catch (cause) {
+          // Only a genuinely expired lease can use normal device recovery.
+          // Revocation/replacement and transport errors must not auto-relogin.
+          if (
+            !(cause instanceof CustomerApiError) ||
+            cause.code !== "SESSION_EXPIRED"
+          )
+            throw cause;
+        }
+      }
       const result = await customerLogin(credential, {
+        browserSession: store.devicePlatform() === "browser",
         idempotencyKey: newIdempotencyKey(),
         sessionToken: previousSessionToken ?? undefined,
       });
       try {
-        await store.saveSessionToken(result.session.session_token);
+        if (result.session.device_token?.startsWith("web-device:")) {
+          await store.saveActivation(
+            result.session.device_token,
+            result.session.session_token,
+          );
+        } else {
+          await store.saveSessionToken(result.session.session_token);
+        }
       } catch (cause) {
         throw credentialStoreError(cause);
       }
@@ -713,7 +750,11 @@ export function useCustomerSession(
       // taken over since this logout began (a late logout must not clobber it).
       if (sessionGenerationRef.current === logoutGeneration) {
         try {
-          await store.clearSessionToken();
+          if (store.devicePlatform() === "browser") {
+            await store.clearAllCredentials();
+          } else {
+            await store.clearSessionToken();
+          }
           credentialCleared = true;
         } catch {
           // A failing vault write still returns the user to the login screen;
@@ -794,9 +835,8 @@ export function useCustomerSession(
 // ---------------------------------------------------------------------------
 // Credential-store adapters (dev doc §14: the desktop and browser lanes stay
 // separate). The desktop lane talks to the Tauri DPAPI vault
-// (customer_credentials.rs); the browser lane gets an isolated,
-// non-persistent store — a browser session restart simply returns to the
-// activation screen, and no secret ever lands in Web Storage (§7).
+// (customer_credentials.rs); browser credentials remain in HttpOnly cookies,
+// while this adapter caches only CSRF handles. No secret enters Web Storage.
 // ---------------------------------------------------------------------------
 
 export function isTauriRuntime(): boolean {
@@ -857,28 +897,72 @@ function tauriCustomerCredentialStore(): CustomerCredentialStore {
   };
 }
 
-function inMemoryCustomerCredentialStore(): CustomerCredentialStore {
+function browserCookieCredentialStore(): CustomerCredentialStore {
+  // These values are CSRF handles, not bearer tokens. A new page reconstructs
+  // them from the same-origin endpoint, which never exposes its HttpOnly cookies.
   let deviceToken: string | null = null;
   let sessionToken: string | null = null;
   const instanceId = newIdempotencyKey();
+  let initialized = false;
+  let pending: Promise<void> | null = null;
+  let revision = 0;
+  const load = async () => {
+    if (initialized) return;
+    if (!pending) {
+      const started = revision;
+      pending = customerBrowserCredentials()
+        .then((credentials) => {
+          if (revision !== started) return;
+          deviceToken = credentials.device_token?.startsWith("web-device:")
+            ? credentials.device_token
+            : null;
+          sessionToken = credentials.session_token?.startsWith("web-session:")
+            ? credentials.session_token
+            : null;
+          initialized = true;
+        })
+        .finally(() => {
+          pending = null;
+        });
+    }
+    await pending;
+  };
   return {
     async loadDeviceCredentialToken() {
+      await load();
       return deviceToken;
     },
     async loadSessionToken() {
+      await load();
       return sessionToken;
     },
     async saveActivation(nextDeviceToken, nextSessionToken) {
+      revision += 1;
+      initialized = true;
       deviceToken = nextDeviceToken;
       sessionToken = nextSessionToken.trim() || null;
     },
     async saveSessionToken(nextSessionToken) {
+      revision += 1;
       sessionToken = nextSessionToken;
     },
     async clearSessionToken() {
+      if (sessionToken)
+        await clearCustomerBrowserCredentials({
+          kind: "session",
+          token: sessionToken,
+        });
+      revision += 1;
       sessionToken = null;
     },
     async clearAllCredentials() {
+      const token = deviceToken ?? sessionToken;
+      if (token)
+        await clearCustomerBrowserCredentials({
+          kind: deviceToken ? "device" : "session",
+          token,
+        });
+      revision += 1;
       deviceToken = null;
       sessionToken = null;
     },
@@ -892,10 +976,10 @@ function inMemoryCustomerCredentialStore(): CustomerCredentialStore {
 }
 
 /** The production credential store for the current runtime: the Tauri DPAPI
- * vault on the desktop build, the isolated in-memory store on the browser
- * lane. Tests inject their own store instead. */
+ * vault on desktop, HttpOnly Cookie transport in browsers. Tests inject
+ * their own store instead. */
 export function customerCredentialStore(): CustomerCredentialStore {
   return isTauriRuntime()
     ? tauriCustomerCredentialStore()
-    : inMemoryCustomerCredentialStore();
+    : browserCookieCredentialStore();
 }
