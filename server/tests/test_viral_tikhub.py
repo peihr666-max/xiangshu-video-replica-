@@ -475,6 +475,16 @@ def test_wechat_video_detail_preserves_present_zero_and_ignores_invalid_counts()
     assert detail.comment_count is None
 
 
+def test_wechat_detail_accepts_exact_large_object_id_without_expiring_export_id() -> None:
+    client, transports = _client([])
+    client._detail_transport.payloads = [
+        {"code": 200, "data": {"id": 15003884913433053492, "like_count": 0}}
+    ]
+    detail = client.wechat_video_detail(object_id="15003884913433053492")
+    assert detail.object_id == "15003884913433053492"
+    assert transports[1].requests[0]["body"] == {"object_id": "15003884913433053492", "raw": False}
+
+
 def test_wechat_video_detail_cache_reuses_success_and_separates_api_keys() -> None:
     _reset_wechat_detail_cache()
     payload = {"code": 200, "data": {"id": "detail", "like_count": 7}}

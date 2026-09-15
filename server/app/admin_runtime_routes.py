@@ -432,6 +432,8 @@ def read_collected_viral_videos(
             f"""SELECT v.platform,v.video_id,v.category,v.title,v.author,v.duration_ms,
                 v.likes,v.comments,v.shares,v.collects,v.published_at,v.created_at,
                 v.homepage_featured,v.collection_published,v.cover_key,
+                v.native_json::jsonb->>'_statistics_checked_at' AS statistics_checked_at,
+                v.native_json::jsonb->>'_statistics_retry_at' AS statistics_retry_at,
                 (COALESCE(v.cover_url,'') != '') AS cover_required,
                 COALESCE(m.status,'PENDING') AS media_status,m.storage_uri
             FROM viral_videos v LEFT JOIN viral_media_preparations m
@@ -446,6 +448,88 @@ def read_collected_viral_videos(
         item["collection_published"] = bool(item["collection_published"])
         items.append(item)
     return {"items": items, "total": int(total), "offset": offset, "limit": limit}
+
+
+@router.post("/viral/videos/wechat_channels/{video_id:path}/statistics")
+def refresh_collected_wechat_statistics(
+    video_id: str,
+    payload: AdminWriteContract,
+    request: Request,
+    response: Response,
+    actor: AdminWriter,
+) -> dict[str, object]:
+    from app.viral_statistics import refresh_viral_statistics
+    from app.viral_store import STATISTICS_CHECKED_AT_KEY, STATISTICS_RETRY_AT_KEY
+    from app.viral_tikhub import viral_source_client_from_settings
+
+    def business(raw: psycopg.Connection, request_id: str) -> dict[str, object]:
+        # Serialize same-record refreshes across API instances without holding
+        # its row lock during provider I/O (the collector also updates this row).
+        raw.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            (f"viral-statistics:{video_id}",),
+        )
+        if (
+            raw.execute(
+                "SELECT 1 FROM viral_videos WHERE platform='wechat_channels' "
+                "AND video_id=%s AND deleted_at IS NULL",
+                (video_id,),
+            ).fetchone()
+            is None
+        ):
+            raise http_error(404, "VIRAL_VIDEO_NOT_FOUND", "视频不存在或已删除。")
+        conn = BusinessConnection.postgres(raw)
+        videos = refresh_viral_statistics(
+            conn,
+            viral_source_client_from_settings(conn),
+            [video_id],
+        )
+        if not videos:
+            raise http_error(404, "VIRAL_VIDEO_NOT_FOUND", "视频已删除。")
+        video = videos[0]
+        checked = video.native.get(STATISTICS_CHECKED_AT_KEY)
+        retry = video.native.get(STATISTICS_RETRY_AT_KEY)
+        status = (
+            "failure"
+            if retry
+            else (
+                "complete"
+                if all(v is not None for v in (video.comments, video.shares, video.collects))
+                else "partial"
+            )
+        )
+        result: dict[str, object] = {
+            "video_id": video_id,
+            "likes": video.likes,
+            "comments": video.comments,
+            "shares": video.shares,
+            "collects": video.collects,
+            "statistics_checked_at": checked,
+            "statistics_retry_at": retry,
+            "statistics_status": status,
+        }
+        raw.execute(
+            "INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,metadata_json) "
+            "VALUES(%s,%s,'viral_video.statistics','viral_video',%s,%s)",
+            (
+                str(uuid.uuid4()),
+                actor.user_id,
+                f"wechat_channels:{video_id}",
+                json.dumps({**result, "reason": payload.reason.strip(), "request_id": request_id}),
+            ),
+        )
+        return result
+
+    return write_with_idempotency(
+        request,
+        response,
+        actor,
+        payload,
+        business,
+        success_status=200,
+        unavailable_code="VIRAL_STATISTICS_UNAVAILABLE",
+        unavailable_message="互动数据暂时无法获取，请稍后重试。",
+    )
 
 
 @router.get("/viral/videos/{platform}/{video_id:path}/preview")

@@ -12,6 +12,7 @@ import {
   curateViralVideo,
   listCollectedViralVideos,
   previewCollectedViralVideo,
+  refreshCollectedVideoStatistics,
 } from "../api.admin";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { PageBanner } from "./ui/PageBanner";
@@ -57,6 +58,7 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [statisticsProgress, setStatisticsProgress] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const detailPrefix = useId();
   const [preview, setPreview] = useState<{ title: string; url: string } | null>(
@@ -69,6 +71,7 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
   } | null>(null);
   const generation = useRef(0);
   const previewGeneration = useRef(0);
+  const statisticsKeys = useRef(new Map<string, string>());
   const load = useCallback(async () => {
     const current = ++generation.current;
     setLoading(true);
@@ -135,6 +138,55 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
     setPending({ video, action, key: crypto.randomUUID() });
   }
 
+  async function refreshStatistics() {
+    if (readOnly || saving || loading) return;
+    const videos = items.filter(
+      (video) => video.platform === "wechat_channels",
+    );
+    const current = generation.current;
+    setSaving(true);
+    setError("");
+    setNotice("");
+    let complete = 0;
+    let partial = 0;
+    let failed = 0;
+    try {
+      for (const [index, video] of videos.entries()) {
+        if (generation.current !== current) return;
+        setStatisticsProgress(`正在核对互动 ${index + 1}/${videos.length}`);
+        const key =
+          statisticsKeys.current.get(video.video_id) ?? crypto.randomUUID();
+        statisticsKeys.current.set(video.video_id, key);
+        const result = await refreshCollectedVideoStatistics(video, key);
+        statisticsKeys.current.delete(video.video_id);
+        if (generation.current !== current) return;
+        if (result.statistics_status === "complete") complete += 1;
+        else if (result.statistics_status === "partial") partial += 1;
+        else failed += 1;
+        setItems((previous) =>
+          previous.map((item) =>
+            item.platform === video.platform && item.video_id === video.video_id
+              ? { ...item, ...result }
+              : item,
+          ),
+        );
+      }
+      setNotice(
+        `互动核对完成：完整 ${complete} 条，接口部分提供 ${partial} 条，暂未获取 ${failed} 条。`,
+      );
+    } catch (cause) {
+      setError(
+        adminActivationErrorMessage(
+          cause,
+          "互动补采已暂停，已更新的数据保留。",
+        ),
+      );
+    } finally {
+      setStatisticsProgress("");
+      setSaving(false);
+    }
+  }
+
   return (
     <section
       className="admin-panel admin-viral-library"
@@ -170,6 +222,9 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
       </p>
       {error && <PageBanner tone="error">{error}</PageBanner>}
       {notice && <PageBanner tone="notice">{notice}</PageBanner>}
+      {statisticsProgress && (
+        <PageBanner tone="notice">{statisticsProgress}</PageBanner>
+      )}
       <form
         className="admin-toolbar admin-viral-toolbar"
         onSubmit={(event) => {
@@ -215,7 +270,22 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
         >
           刷新数据
         </button>
+        {!readOnly && items.some((v) => v.platform === "wechat_channels") && (
+          <button
+            type="button"
+            disabled={saving || loading}
+            onClick={() => void refreshStatistics()}
+          >
+            补齐本页互动
+          </button>
+        )}
       </form>
+      {items.some((v) => v.platform === "wechat_channels") && (
+        <p className="admin-hint">
+          视频号互动按需获取，24 小时内复用已获取数据；失败后冷却 10
+          分钟。补采计入平台接口用量，不扣客户积分。
+        </p>
+      )}
       {preview && (
         <section className="admin-viral-preview" aria-label="云端视频预览">
           <h3>{preview.title}</h3>
@@ -310,11 +380,22 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
                               <dd>
                                 {typeof value === "number"
                                   ? value.toLocaleString("zh-CN")
-                                  : "—"}
+                                  : video.statistics_checked_at
+                                    ? "未提供"
+                                    : "—"}
                               </dd>
                             </div>
                           ))}
                         </dl>
+                        {video.platform === "wechat_channels" && (
+                          <p className="admin-hint admin-viral-statistics-time">
+                            {video.statistics_retry_at
+                              ? "获取失败，保留原值"
+                              : video.statistics_checked_at
+                                ? `更新于 ${displayDate(video.statistics_checked_at, true)}`
+                                : "互动待补齐"}
+                          </p>
+                        )}
                       </td>
                       <td>
                         <div className="admin-viral-status">

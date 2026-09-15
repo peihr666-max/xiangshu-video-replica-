@@ -5209,6 +5209,12 @@ button.activation-generator__submit {
   white-space: nowrap;
   font-weight: 600;
 }
+.admin-viral-statistics-time {
+  margin: 10px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .admin-viral-status {
   display: flex;
   flex-direction: column;

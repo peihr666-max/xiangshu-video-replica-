@@ -211,7 +211,7 @@ class WechatVideoDetail:
     height: int | None
 
 
-_WechatDetailCacheKey = tuple[bytes, str, str, str]
+_WechatDetailCacheKey = tuple[bytes, str, str, str, str]
 _WECHAT_DETAIL_CACHE: OrderedDict[_WechatDetailCacheKey, tuple[float, WechatVideoDetail]] = (
     OrderedDict()
 )
@@ -651,13 +651,18 @@ class ViralSourceClient:
         return videos
 
     def wechat_video_detail(
-        self, *, export_id: str, object_nonce_id: str | None = None
+        self,
+        *,
+        export_id: str = "",
+        object_nonce_id: str | None = None,
+        object_id: str | None = None,
     ) -> WechatVideoDetail:
         cache_key: _WechatDetailCacheKey = (
             hashlib.sha256(self.api_key.encode("utf-8")).digest(),
             self._base_url,
             export_id,
             object_nonce_id or "",
+            object_id or "",
         )
         request_lock = _WECHAT_DETAIL_REQUEST_LOCKS[
             hash(cache_key) % len(_WECHAT_DETAIL_REQUEST_LOCKS)
@@ -672,7 +677,7 @@ class ViralSourceClient:
                 _WECHAT_DETAIL_CACHE.pop(cache_key, None)
 
             detail = self._fetch_wechat_video_detail(
-                export_id=export_id, object_nonce_id=object_nonce_id
+                export_id=export_id, object_nonce_id=object_nonce_id, object_id=object_id
             )
             with _WECHAT_DETAIL_CACHE_LOCK:
                 _WECHAT_DETAIL_CACHE[cache_key] = (time.monotonic(), detail)
@@ -682,9 +687,11 @@ class ViralSourceClient:
             return detail
 
     def _fetch_wechat_video_detail(
-        self, *, export_id: str, object_nonce_id: str | None
+        self, *, export_id: str, object_nonce_id: str | None, object_id: str | None = None
     ) -> WechatVideoDetail:
         payload: dict[str, Any] = {"export_id": export_id, "raw": False}
+        if object_id:
+            payload = {"object_id": object_id, "raw": False}
         if object_nonce_id:
             payload["object_nonce_id"] = object_nonce_id
         data = self._request(self._detail_transport, WECHAT_VIDEO_DETAIL_PATH, payload)

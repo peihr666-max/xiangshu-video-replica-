@@ -282,16 +282,21 @@ export async function adminWrite<T>(
   fallback: string,
   idempotencyKey?: string,
   method: "POST" | "PATCH" | "PUT" = "POST",
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<T> {
   const csrf = requireCsrfToken();
-  const response = await requestControl(path, {
-    method,
-    headers: {
-      [CSRF_HEADER]: csrf,
-      [IDEMPOTENCY_KEY_HEADER]: idempotencyKey ?? newIdempotencyKey(),
+  const response = await requestControl(
+    path,
+    {
+      method,
+      headers: {
+        [CSRF_HEADER]: csrf,
+        [IDEMPOTENCY_KEY_HEADER]: idempotencyKey ?? newIdempotencyKey(),
+      },
+      body: JSON.stringify({ ...fields, confirm: true, reason }),
     },
-    body: JSON.stringify({ ...fields, confirm: true, reason }),
-  });
+    timeoutMs,
+  );
   if (!response.ok) {
     throw await parseActivationError(response, fallback);
   }
@@ -1654,6 +1659,8 @@ export async function updateViralVideoAvailability(
 // ---------------------------------------------------------------------------
 
 export type CollectedViralVideo = {
+  statistics_checked_at?: string | null;
+  statistics_retry_at?: string | null;
   cover_required?: boolean;
   cover_key?: string | null;
   platform: "douyin" | "wechat_channels";
@@ -1707,6 +1714,31 @@ export function curateViralVideo(
     "更新爆款视频失败",
     idempotencyKey,
     "PATCH",
+  );
+}
+
+export function refreshCollectedVideoStatistics(
+  video: Pick<CollectedViralVideo, "video_id">,
+  key: string,
+) {
+  return adminWrite<
+    Pick<
+      CollectedViralVideo,
+      | "likes"
+      | "comments"
+      | "shares"
+      | "collects"
+      | "statistics_checked_at"
+      | "statistics_retry_at"
+    > & { statistics_status: "complete" | "partial" | "failure" }
+  >(
+    `/api/control/viral/videos/wechat_channels/${encodeURIComponent(video.video_id)}/statistics`,
+    {},
+    "管理端补齐视频号互动数据",
+    "获取互动数据失败",
+    key,
+    "POST",
+    45_000,
   );
 }
 

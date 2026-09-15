@@ -22,6 +22,7 @@ import {
   listActivationCodes,
   loginAdminWithPassword,
   recoverAdminPassword,
+  refreshCollectedVideoStatistics,
   resumeActivationCode,
   revokeActivationCode,
   revokeCustomerSession,
@@ -42,6 +43,46 @@ function jsonResponse(payload: unknown, status = 200) {
 // The mock literal is indirect so the repo secret scan (which flags
 // `token:` followed by a quoted literal) stays quiet — the T29 precedent.
 const CSRF_TOKEN_TEXT = "csrf-token-1";
+
+it("视频号互动补采允许超过普通管理请求的五秒等待", async () => {
+  vi.useFakeTimers();
+  setAdminCsrfToken(CSRF_TOKEN_TEXT);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise((resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+          setTimeout(
+            () =>
+              resolve({
+                ok: true,
+                status: 200,
+                json: async () => ({ likes: 3, statistics_status: "complete" }),
+              }),
+            6000,
+          );
+        }),
+    ),
+  );
+  try {
+    const result = refreshCollectedVideoStatistics(
+      { video_id: "opaque/id" },
+      "statistics-wait",
+    ).then(
+      (value) => ({ ok: true, value }),
+      () => ({ ok: false }),
+    );
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(await result).toMatchObject({ ok: true, value: { likes: 3 } });
+  } finally {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    setAdminCsrfToken("");
+  }
+});
 
 const exchangePayload = {
   session_id: "session-1",
