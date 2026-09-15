@@ -442,7 +442,7 @@ def perform_oral_work(
                     return OralWorkResult("waiting")
                 inspect_media_bytes(demo, suffix=".mp3", expected_type="audio")
                 stored = storage.put_object(
-                    f"oral/voices/{lease.record_id}/attempt-{lease.attempt_count}-"
+                    f"materials/oral/voices/{lease.record_id}/attempt-{lease.attempt_count}-"
                     f"{lease.lease_token}/demo.mp3",
                     demo,
                     content_type="audio/mpeg",
@@ -471,7 +471,7 @@ def perform_oral_work(
             content = vendor.download(result_url)
             verified = inspect_media_bytes(content, suffix=".mp4", expected_type="video")
             stored = storage.put_object(
-                f"oral/results/{lease.record_id}/attempt-{lease.attempt_count}-"
+                f"generation-results/oral/{lease.record_id}/attempt-{lease.attempt_count}-"
                 f"{lease.lease_token}.mp4",
                 content,
                 content_type="video/mp4",

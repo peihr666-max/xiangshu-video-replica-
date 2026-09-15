@@ -582,6 +582,46 @@ def test_homepage_selection_repairs_missing_cover_without_recollecting_video(
 
 
 @pytest.mark.pg
+def test_manual_feature_publishes_ready_video_to_catalog_and_unfeature_keeps_it(
+    client: TestClient, route_state: str
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.db_portable import BusinessConnection
+    from app.viral_store import list_viral_video_page
+
+    headers = _admin_session(client)
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "UPDATE viral_videos SET published_at=%s,collection_published=0",
+            (int(datetime.now(UTC).timestamp()),),
+        )
+        conn.execute(
+            "INSERT INTO viral_media_preparations"
+            "(id,platform,video_id,media_kind,status,storage_uri) VALUES"
+            "('catalog-media','douyin','admin-video/opaque=id','video',"
+            "'SUCCEEDED','fake://test/video.mp4')"
+        )
+    path = "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/curation"
+    for action in ("feature", "unfeature"):
+        response = client.patch(
+            path,
+            headers={**headers, "Idempotency-Key": f"catalog-{action}"},
+            json={"action": action, "reason": "验收普通列表及首页独立展示", "confirm": True},
+        )
+        assert response.status_code == 200, response.text
+        with psycopg.connect(route_state) as conn:
+            bus = BusinessConnection.postgres(conn)
+            page = list_viral_video_page(bus, platform="douyin", sort="hot", limit=12)
+            assert page.total == 1
+            assert [item.video_id for item in page.items] == ["admin-video/opaque=id"]
+            featured = list_viral_video_page(
+                bus, platform="douyin", sort="hot", limit=12, featured_only=True
+            )
+            assert featured.total == int(action == "feature")
+
+
+@pytest.mark.pg
 def test_admin_collected_video_requires_manual_homepage_selection_and_delete_is_durable(
     client: TestClient,
     route_state: str,

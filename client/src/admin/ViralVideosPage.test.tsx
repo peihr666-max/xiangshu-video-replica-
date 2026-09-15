@@ -138,6 +138,7 @@ describe("ViralVideosPage", () => {
     expect(patch?.[1]?.headers).toMatchObject({
       "X-Admin-CSRF": "csrf-curation-test",
     });
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     fireEvent.change(screen.getByLabelText("操作原因"), {
       target: { value: "不适合当前选题" },
@@ -158,5 +159,27 @@ describe("ViralVideosPage", () => {
     expect(
       screen.queryByRole("button", { name: "删除" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("列表收起技术明细，展开可查看完整信息且不会自动请求预览", async () => {
+    const fetchMock = setup();
+    render(<ViralVideosPage />);
+    await screen.findByText("庭院施工案例");
+    expect(screen.queryByText(video.video_id)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "删除" }),
+    ).not.toBeInTheDocument();
+    const details = screen.getByRole("button", { name: "查看详情" });
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(details);
+    expect(screen.getByText(video.video_id)).toBeInTheDocument();
+    expect(screen.getByText(video.storage_uri)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起详情" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "收起详情" }));
+    expect(screen.queryByText(video.video_id)).not.toBeInTheDocument();
   });
 });

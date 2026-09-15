@@ -558,9 +558,16 @@ def curate_collected_viral_video(
                 )
         conn.execute(
             """UPDATE viral_videos SET homepage_featured=%s,
+                collection_published=CASE WHEN %s THEN 1 ELSE collection_published END,
                 deleted_at=CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE deleted_at END
             WHERE platform=%s AND video_id=%s""",
-            (int(payload.action == "feature"), payload.action == "delete", platform, video_id),
+            (
+                int(payload.action == "feature"),
+                payload.action == "feature",
+                payload.action == "delete",
+                platform,
+                video_id,
+            ),
         )
         conn.execute(
             """INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,metadata_json)

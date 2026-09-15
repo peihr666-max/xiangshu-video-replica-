@@ -100,6 +100,7 @@ from app.oral import (
 from app.oral_routes import get_oral_vendor
 from app.oral_worker import (
     OralLeaseLostError,
+    OralWorkKind,
     OralWorkLease,
     OralWorkResult,
     claim_oral_work,
@@ -2845,6 +2846,53 @@ def test_expired_oral_submission_releases_queue_slot_once(scene: str) -> None:
     assert (row["status"], row["queue_slot_acquired"]) == ("SUBMISSION_UNCERTAIN", 0)
 
 
+@pytest.mark.parametrize("kind", ["voice_poll", "task_archive"])
+def test_oral_outputs_use_existing_authorized_cloud_namespaces(
+    fake_source_storage: FakeSourceStorage, kind: OralWorkKind
+) -> None:
+    vendor, transport = make_vendor()
+    transport.on(
+        "GET",
+        "/api/v2/hifly/voice/task",
+        envelope(
+            {
+                "status": 3,
+                "voice": "cloud-voice",
+                "demo_url": "https://tmp.example/cloud-demo.mp3",
+            }
+        ),
+    )
+    transport.on("GET", "https://tmp.example/cloud-demo.mp3", fake_source_storage.media.audio)
+    transport.on("GET", "https://tmp.example/cloud-result.mp4", fake_source_storage.media.video)
+    original_put = fake_source_storage.put_object
+
+    def restricted_put(key: str, content: bytes, *, content_type: str) -> StoredObject:
+        if not key.startswith(("materials/", "generation-results/")):
+            raise PermissionError("object is outside the configured business namespaces")
+        return original_put(key, content, content_type=content_type)
+
+    fake_source_storage.put_object = restricted_put  # type: ignore[method-assign]
+    result = perform_oral_work(
+        OralWorkLease(
+            kind=kind,
+            record_id="cloud-oral-record",
+            worker_id="cloud-oral-worker",
+            lease_token="cloud-oral-lease",
+            attempt_count=1,
+            row={
+                "vendor_task_id": "cloud-oral-vendor",
+                "provider_result_url": "https://tmp.example/cloud-result.mp4",
+            },
+        ),
+        vendor=vendor,
+        storage=fake_source_storage,
+    )
+    assert result.outcome == "ready"
+    assert result.stored is not None
+    assert result.stored.key in fake_source_storage.objects
+    assert all(method == "GET" for method, _ in transport.calls)
+
+
 def test_generation_worker_completes_oral_task_and_settles_once(
     scene: str, fake_source_storage: FakeSourceStorage
 ) -> None:
@@ -2966,7 +3014,9 @@ def test_oral_worker_rejects_invalid_provider_video_without_settlement(
         (created.task_id,),
     )
     assert [row["type"] for row in ledger] == ["RESERVE"]
-    assert not any(key.startswith("oral/results/") for key in fake_source_storage.objects)
+    assert not any(
+        key.startswith("generation-results/oral/") for key in fake_source_storage.objects
+    )
 
 
 def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
@@ -3006,7 +3056,7 @@ def test_oral_archive_retry_reuses_result_without_resubmit_or_rereserve(
 
     def fail_once(key: str, content: bytes, *, content_type: str) -> StoredObject:
         nonlocal failures
-        if failures == 0 and key.startswith("oral/results/"):
+        if failures == 0 and key.startswith("generation-results/oral/"):
             failures += 1
             raise RuntimeError("temporary storage outage")
         return original_put(key, content, content_type=content_type)

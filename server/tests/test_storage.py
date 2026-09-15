@@ -25,6 +25,42 @@ from app.storage import (
 )
 
 
+@pytest.mark.parametrize("auth_mode", ["desktop", "customer"])
+def test_nonproduction_media_origin_supports_customer_auth_without_bypassing_it(
+    monkeypatch: pytest.MonkeyPatch, auth_mode: str
+) -> None:
+    from app.media_routes import api_base_url
+
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "0")
+    monkeypatch.setenv("VIDEO_REPLICA_AUTH_MODE", auth_mode)
+    monkeypatch.setenv("VIDEO_REPLICA_LOCAL_API_BASE_URL", "http://127.0.0.1:18099")
+    assert api_base_url() == "http://127.0.0.1:18099"
+
+
+@pytest.mark.parametrize(
+    "origin,production",
+    [
+        ("http://example.com:18099", "0"),
+        ("http://127.0.0.1:18099/path", "0"),
+        ("http://127.0.0.1:18099", "1"),
+    ],
+)
+def test_media_origin_rejects_nonlocal_or_production_http(
+    monkeypatch: pytest.MonkeyPatch, origin: str, production: str
+) -> None:
+    from fastapi import HTTPException
+
+    from app.media_routes import api_base_url
+
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", production)
+    monkeypatch.setenv("VIDEO_REPLICA_AUTH_MODE", "customer")
+    monkeypatch.setenv("VIDEO_REPLICA_LOCAL_API_BASE_URL", origin)
+    with pytest.raises(HTTPException):
+        api_base_url()
+
+
 @pytest.mark.parametrize("cloud", [False, True])
 def test_file_upload_streams_and_preserves_digest(tmp_path: Path, cloud: bool) -> None:
     source = tmp_path / "source.mp4"

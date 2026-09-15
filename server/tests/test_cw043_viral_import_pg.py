@@ -63,6 +63,92 @@ from app.viral_import import (
 CW043_VIRAL_IMPORT_TEST_DB = "cw043_viral_import_test"
 
 
+@pytest.mark.parametrize(
+    "failure", [None, "upload", "tampered", "production", "superseded", "relocated"]
+)
+def test_cached_local_media_moves_to_cos_without_provider_call_or_losing_source(
+    pg_state, tmp_path, monkeypatch, failure
+):
+    from fastapi import HTTPException
+
+    from app.storage import FakeStorageAdapter, LocalStorageAdapter
+    from app.viral_media_preparation import ViralMediaLeaseLost, ViralMediaPreparation
+
+    monkeypatch.setenv("VIDEO_REPLICA_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "0")
+    old = LocalStorageAdapter(root=tmp_path, bucket="local-private")
+    content = b"verified historical video"
+    original, _ = ViralMediaPreparation(storage=old).fetch(
+        platform="douyin",
+        video_id="legacy-migrate",
+        kind="video",
+        prepare=lambda key, check: old.put_object(key, content, content_type="video/mp4"),
+    )
+    before = _rows(
+        pg_state, "SELECT * FROM viral_media_preparations WHERE video_id='legacy-migrate'"
+    )[0]
+    cloud = FakeStorageAdapter(provider="cos", bucket="current")
+    if failure == "upload":
+
+        def fail_upload(*args, **kwargs):
+            raise RuntimeError("cloud unavailable")
+
+        monkeypatch.setattr(cloud, "put_file", fail_upload)
+    elif failure == "tampered":
+        _exec(
+            pg_state,
+            "UPDATE viral_media_preparations SET storage_uri='local://local-private/unrelated.mp4' "
+            "WHERE video_id='legacy-migrate'",
+        )
+    elif failure == "production":
+        monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "1")
+    elif failure == "relocated":
+        import shutil
+
+        restored = tmp_path.parent / f"{tmp_path.name}-restored"
+        shutil.copytree(tmp_path, restored)
+        monkeypatch.setenv("VIDEO_REPLICA_STORAGE_ROOT", str(restored))
+    elif failure == "superseded":
+        original_put = cloud.put_file
+
+        def concurrent_update(*args, **kwargs):
+            stored = original_put(*args, **kwargs)
+            _exec(
+                pg_state,
+                "UPDATE viral_media_preparations SET status='RUNNING',"
+                "attempt=attempt+1 WHERE video_id='legacy-migrate'",
+            )
+            return stored
+
+        monkeypatch.setattr(cloud, "put_file", concurrent_update)
+    coordinator = ViralMediaPreparation(storage=cloud)
+    if failure in {"upload", "production", "superseded"}:
+        with pytest.raises((RuntimeError, HTTPException, ViralMediaLeaseLost)):
+            coordinator.cached(platform="douyin", video_id="legacy-migrate", kind="video")
+    else:
+        result = coordinator.cached(platform="douyin", video_id="legacy-migrate", kind="video")
+        if failure == "tampered":
+            assert result is None
+        else:
+            assert result is not None and result.uri.startswith("cos://current/")
+            assert cloud.get_object(result.key) == content
+            assert (
+                coordinator.cached(platform="douyin", video_id="legacy-migrate", kind="video")
+                == result
+            )
+    after = _rows(
+        pg_state, "SELECT * FROM viral_media_preparations WHERE video_id='legacy-migrate'"
+    )[0]
+    if failure in {"upload", "production"}:
+        assert after["storage_uri"] == before["storage_uri"]
+        assert after["cache_scope"] == before["cache_scope"]
+    elif failure == "superseded":
+        assert after["status"] == "RUNNING"
+        assert after["attempt"] == before["attempt"] + 1
+        assert after["storage_uri"] == before["storage_uri"]
+    assert old.get_object(original.key) == content
+
+
 def test_shared_media_preparation_cross_connection_cache(pg_state: str, tmp_path) -> None:
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event

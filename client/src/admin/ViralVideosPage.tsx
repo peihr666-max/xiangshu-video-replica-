@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import {
   adminActivationErrorMessage,
   type CollectedViralVideo,
@@ -9,8 +16,33 @@ import {
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
+import { StatusBadge } from "./ui/StatusBadge";
 
 type Action = "feature" | "unfeature" | "delete";
+
+function mediaReady(video: CollectedViralVideo) {
+  return video.media_status === "SUCCEEDED" && Boolean(video.storage_uri);
+}
+
+function archiveLabel(video: CollectedViralVideo) {
+  if (mediaReady(video))
+    return video.cover_required && !video.cover_key ? "封面待补齐" : "归档就绪";
+  return video.media_status === "FAILED" ? "转存失败" : "待转存";
+}
+
+function displayDate(value: string | number, full = false) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    ...(full
+      ? ({ hour: "2-digit", minute: "2-digit", second: "2-digit" } as const)
+      : {}),
+  }).format(date);
+}
 
 export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
   const [items, setItems] = useState<CollectedViralVideo[]>([]);
@@ -25,6 +57,8 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const detailPrefix = useId();
   const [preview, setPreview] = useState<{ title: string; url: string } | null>(
     null,
   );
@@ -102,15 +136,42 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
   }
 
   return (
-    <section className="admin-panel" aria-label="爆款视频库">
-      <h2>采集记录</h2>
+    <section
+      className="admin-panel admin-viral-library"
+      aria-label="爆款视频库"
+    >
+      <header className="admin-viral-heading">
+        <div>
+          <h2>
+            采集记录 <span>{total.toLocaleString("zh-CN")}</span>
+          </h2>
+          <p className="admin-hint">
+            筛选内容、核对归档，将优质视频展示到首页。
+          </p>
+        </div>
+        <section className="admin-viral-summary" aria-label="当前页概况">
+          <span>
+            本页 <strong>{items.length}</strong>
+          </span>
+          <span>
+            归档就绪{" "}
+            <strong>
+              {items.filter((v) => archiveLabel(v) === "归档就绪").length}
+            </strong>
+          </span>
+          <span>
+            首页展示{" "}
+            <strong>{items.filter((v) => v.homepage_featured).length}</strong>
+          </span>
+        </section>
+      </header>
       <p className="admin-hint">
-        新采集视频默认保存在视频库。归档完成后，可选择展示到首页；取消首页展示后仍可在爆款列表查看。删除后前台不可用，已导入项目的素材保留。
+        归档完成后可展示到首页；取消首页展示仍保留在爆款列表。完整标题、时间和云地址可在详情中查看。
       </p>
       {error && <PageBanner tone="error">{error}</PageBanner>}
       {notice && <PageBanner tone="notice">{notice}</PageBanner>}
       <form
-        className="admin-toolbar"
+        className="admin-toolbar admin-viral-toolbar"
         onSubmit={(event) => {
           event.preventDefault();
           setFilters({ ...filters, query: search.trim(), offset: 0 });
@@ -134,7 +195,7 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
             <option value="wechat_channels">视频号</option>
           </select>
         </label>
-        <label>
+        <label className="admin-viral-search">
           搜索视频
           <input
             disabled={saving}
@@ -156,7 +217,7 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
         </button>
       </form>
       {preview && (
-        <section aria-label="云端视频预览">
+        <section className="admin-viral-preview" aria-label="云端视频预览">
           <h3>{preview.title}</h3>
           <video
             controls
@@ -180,114 +241,219 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
       ) : items.length === 0 ? (
         <p>暂无符合条件的采集视频。</p>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table className="admin-table">
+        <section
+          className="admin-table-scroll admin-viral-table-scroll"
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: 键盘用户需要聚焦滚动区域，以方向键查看窄窗口中的完整表格。
+          tabIndex={0}
+          aria-label="爆款视频明细，可横向滚动"
+        >
+          <table className="admin-data-table admin-viral-table">
+            <colgroup>
+              <col className="admin-viral-col-video" />
+              <col className="admin-viral-col-metrics" />
+              <col className="admin-viral-col-status" />
+              <col className="admin-viral-col-actions" />
+            </colgroup>
             <thead>
               <tr>
-                <th>视频</th>
-                <th>时长与互动</th>
-                <th>采集与归档</th>
-                <th>首页</th>
-                <th>操作</th>
+                <th scope="col">视频信息</th>
+                <th scope="col">互动数据</th>
+                <th scope="col">归档 / 首页</th>
+                <th scope="col">操作</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((video) => (
-                <tr key={`${video.platform}:${video.video_id}`}>
-                  <td>
-                    <strong>{video.title || "未命名视频"}</strong>
-                    <p>
-                      {video.platform === "douyin" ? "抖音" : "视频号"} ·{" "}
-                      {video.category} · {video.author || "未知作者"}
-                    </p>
-                    <small style={{ overflowWrap: "anywhere" }}>
-                      {video.video_id}
-                    </small>
-                  </td>
-                  <td>
-                    {(video.duration_ms / 1000).toFixed(1)} 秒
-                    <p>
-                      点赞 {video.likes} · 评论 {video.comments ?? "—"}
-                    </p>
-                    <p>
-                      分享 {video.shares ?? "—"} · 收藏 {video.collects ?? "—"}
-                    </p>
-                  </td>
-                  <td>
-                    {video.media_status === "SUCCEEDED" && video.storage_uri
-                      ? video.cover_required && !video.cover_key
-                        ? "视频已归档，封面待补齐"
-                        : "视频与封面已就绪"
-                      : video.media_status === "FAILED"
-                        ? "转存失败"
-                        : "待转存"}
-                    <p>
-                      采集：{new Date(video.created_at).toLocaleString("zh-CN")}
-                    </p>
-                    <p>
-                      发布：
-                      {video.published_at
-                        ? new Date(video.published_at * 1000).toLocaleString(
-                            "zh-CN",
-                          )
-                        : "未知"}
-                    </p>
-                    <details>
-                      <summary>云存储地址</summary>
-                      <small style={{ overflowWrap: "anywhere" }}>
-                        {video.storage_uri ?? "尚未生成"}
-                      </small>
-                    </details>
-                  </td>
-                  <td>{video.homepage_featured ? "展示中" : "未展示"}</td>
-                  <td>
-                    <button
-                      type="button"
-                      disabled={
-                        saving ||
-                        video.media_status !== "SUCCEEDED" ||
-                        !video.storage_uri
-                      }
-                      onClick={() => void showPreview(video)}
-                    >
-                      预览
-                    </button>
-                    {!readOnly && (
-                      <>
-                        <button
-                          type="button"
-                          disabled={
-                            saving ||
-                            (!video.homepage_featured &&
-                              (video.media_status !== "SUCCEEDED" ||
-                                !video.storage_uri))
-                          }
-                          onClick={() =>
-                            choose(
-                              video,
-                              video.homepage_featured ? "unfeature" : "feature",
-                            )
-                          }
+              {items.map((video) => {
+                const key = `${video.platform}:${video.video_id}`;
+                const open = expanded === key;
+                const detailId = `${detailPrefix}-${encodeURIComponent(key)}`;
+                return (
+                  <Fragment key={key}>
+                    <tr className={open ? "is-expanded" : undefined}>
+                      <td>
+                        <div className="admin-viral-meta">
+                          <span className="admin-viral-platform">
+                            {video.platform === "douyin" ? "抖音" : "视频号"}
+                          </span>
+                          <span>{video.category || "未分类"}</span>
+                          <span>
+                            {video.duration_ms > 0
+                              ? `${(video.duration_ms / 1000).toFixed(1)} 秒`
+                              : "时长未知"}
+                          </span>
+                        </div>
+                        <strong
+                          className="admin-viral-title"
+                          title={video.title}
                         >
-                          {video.homepage_featured
-                            ? "取消首页展示"
-                            : "展示到首页"}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={saving}
-                          onClick={() => choose(video, "delete")}
-                        >
-                          删除
-                        </button>
-                      </>
+                          {video.title || "未命名视频"}
+                        </strong>
+                        <div className="admin-viral-byline">
+                          <span title={video.author}>
+                            {video.author || "未知作者"}
+                          </span>
+                          <time dateTime={video.created_at}>
+                            {displayDate(video.created_at)} 采集
+                          </time>
+                        </div>
+                      </td>
+                      <td>
+                        <dl className="admin-viral-metrics">
+                          {[
+                            ["点赞", video.likes],
+                            ["评论", video.comments],
+                            ["分享", video.shares],
+                            ["收藏", video.collects],
+                          ].map(([label, value]) => (
+                            <div key={label}>
+                              <dt>{label}</dt>
+                              <dd>
+                                {typeof value === "number"
+                                  ? value.toLocaleString("zh-CN")
+                                  : "—"}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </td>
+                      <td>
+                        <div className="admin-viral-status">
+                          <StatusBadge
+                            tone={
+                              archiveLabel(video) === "归档就绪"
+                                ? "good"
+                                : video.media_status === "FAILED"
+                                  ? "danger"
+                                  : "warn"
+                            }
+                          >
+                            {archiveLabel(video)}
+                          </StatusBadge>
+                          <span
+                            className={
+                              video.homepage_featured
+                                ? "admin-viral-featured"
+                                : "admin-viral-muted"
+                            }
+                          >
+                            {video.homepage_featured ? "展示中" : "未展示"}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="admin-viral-actions">
+                          <button
+                            type="button"
+                            disabled={
+                              saving ||
+                              video.media_status !== "SUCCEEDED" ||
+                              !video.storage_uri
+                            }
+                            onClick={() => void showPreview(video)}
+                          >
+                            预览
+                          </button>
+                          <button
+                            type="button"
+                            aria-expanded={open}
+                            aria-controls={open ? detailId : undefined}
+                            onClick={() => setExpanded(open ? null : key)}
+                          >
+                            {open ? "收起详情" : "查看详情"}
+                          </button>
+                          {!readOnly && (
+                            <button
+                              type="button"
+                              disabled={
+                                saving ||
+                                (!video.homepage_featured &&
+                                  (video.media_status !== "SUCCEEDED" ||
+                                    !video.storage_uri))
+                              }
+                              onClick={() =>
+                                choose(
+                                  video,
+                                  video.homepage_featured
+                                    ? "unfeature"
+                                    : "feature",
+                                )
+                              }
+                            >
+                              {video.homepage_featured
+                                ? "取消首页展示"
+                                : "展示到首页"}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="admin-detail-row">
+                        <td colSpan={4}>
+                          <section
+                            id={detailId}
+                            className="admin-viral-detail"
+                            aria-label="视频完整详情"
+                          >
+                            <p className="admin-viral-full-title">
+                              {video.title || "未命名视频"}
+                            </p>
+                            <dl>
+                              <div>
+                                <dt>视频 ID</dt>
+                                <dd>{video.video_id}</dd>
+                              </div>
+                              <div>
+                                <dt>作者 / 分类</dt>
+                                <dd>
+                                  {video.author || "未知作者"} /{" "}
+                                  {video.category || "未分类"}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>发布时间（北京时间）</dt>
+                                <dd>
+                                  {video.published_at
+                                    ? displayDate(
+                                        video.published_at * 1000,
+                                        true,
+                                      )
+                                    : "未知"}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>采集时间（北京时间）</dt>
+                                <dd>{displayDate(video.created_at, true)}</dd>
+                              </div>
+                              <div className="admin-viral-storage">
+                                <dt>云存储地址</dt>
+                                <dd>{video.storage_uri ?? "尚未生成"}</dd>
+                              </div>
+                            </dl>
+                            {!readOnly && (
+                              <div className="admin-viral-danger-zone">
+                                <span>
+                                  删除后前台不可用，已导入项目的素材保留。
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={saving}
+                                  onClick={() => choose(video, "delete")}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            )}
+                          </section>
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                </tr>
-              ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
-        </div>
+        </section>
       )}
       <Pagination
         offset={filters.offset}
@@ -304,7 +470,9 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
         description={
           pending?.action === "delete"
             ? "该视频会从前台移除，后续采集也不会重新展示。已导入项目的素材保留。"
-            : "已归档视频会自动补齐封面后展示到首页。请填写操作原因。"
+            : pending?.action === "unfeature"
+              ? "取消后首页不再展示，视频仍保留在爆款列表。请填写操作原因。"
+              : "已归档视频会自动补齐封面后展示到首页。请填写操作原因。"
         }
         confirmLabel="确认操作"
         onClose={() => setPending(null)}
