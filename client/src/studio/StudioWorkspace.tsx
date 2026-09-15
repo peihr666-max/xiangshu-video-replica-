@@ -295,6 +295,7 @@ export function StudioWorkspace({
   );
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState("");
+  const noticeTimerRef = useRef<number>(undefined);
   const [picker, setPicker] = useState<PickerKind>();
   const [livePanel, setLivePanel] = useState<LivePanel>();
   const [characterTarget, setCharacterTarget] = useState<{
@@ -398,7 +399,13 @@ export function StudioWorkspace({
     videoSubmitAttemptRef.current += 1;
     pendingRouteRef.current = undefined;
   }
-  const notify = useCallback((message: string) => setNotice(message), []);
+  const notify = useCallback((message: string) => {
+    window.clearTimeout(noticeTimerRef.current);
+    setNotice(message);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(""), 3000);
+  }, []);
+
+  useEffect(() => () => window.clearTimeout(noticeTimerRef.current), []);
 
   useEffect(() => {
     const request = { userId: currentUser.id, revision: walletRevision };
