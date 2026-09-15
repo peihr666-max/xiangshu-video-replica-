@@ -975,6 +975,40 @@ describe("customer workspace session lifecycle", () => {
     releaseCurrent();
     window.removeEventListener(CUSTOMER_SESSION_EXPIRED_EVENT, listener);
   });
+
+  it("does not expire a newly attached session for a request sent during the credential handoff", async () => {
+    let finishRequest: ((response: Response) => void) | undefined;
+    const response = new Promise<Response>((resolve) => {
+      finishRequest = resolve;
+    });
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) => response);
+    vi.stubGlobal("fetch", fetchMock);
+    setCustomerSessionToken(null);
+    setInternalAccessToken(null);
+    const listener = vi.fn();
+    window.addEventListener(CUSTOMER_SESSION_EXPIRED_EVENT, listener);
+    const pendingRequest = listProjects();
+    const failure = expect(pendingRequest).rejects.toThrow();
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).has("Authorization"),
+    ).toBe(false);
+    const releaseCurrent = attachCustomerSessionToken(customerSessionText);
+    try {
+      finishRequest?.(
+        new Response(
+          JSON.stringify({
+            detail: { code: "SESSION_EXPIRED", message: "missing session" },
+          }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      await failure;
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      releaseCurrent();
+      window.removeEventListener(CUSTOMER_SESSION_EXPIRED_EVENT, listener);
+    }
+  });
 });
 
 const generationVersion = {

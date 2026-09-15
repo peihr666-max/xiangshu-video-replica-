@@ -4732,8 +4732,7 @@ async function requestApi(
   if (callerSignal?.aborted) abortFromCaller();
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = new Headers(init.headers);
-  const customerOwnerAtStart =
-    internalAccessToken === null ? customerSessionOwner : null;
+  const customerOwnerAtStart = customerSessionOwner;
 
   if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
@@ -4784,7 +4783,9 @@ async function emitWorkspaceSessionEnded(
   response: Response,
   ownerAtStart: symbol | null,
 ) {
-  if (ownerAtStart !== null && ownerAtStart !== customerSessionOwner) {
+  // A request made in the unbound handoff window does not own a session
+  // attached later, just as a request from a replaced workspace does not.
+  if (ownerAtStart !== customerSessionOwner) {
     return;
   }
   if (customerSessionToken === null) {
@@ -4802,7 +4803,7 @@ async function emitWorkspaceSessionEnded(
     // be guessed as a permanent device revocation (which would wipe the
     // long-lived device credential).
   }
-  if (ownerAtStart !== null && ownerAtStart !== customerSessionOwner) {
+  if (ownerAtStart !== customerSessionOwner) {
     return;
   }
   window.dispatchEvent(new Event(lifecycle));

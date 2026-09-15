@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 // 客户 lane 基础与账户屏样式（F-01/P0-1 修复）：客户制品不含 styles.css，
 // 全局 reset、:root 令牌与激活/登录/配对等屏样式必须随本入口加载。
 import "./customer/customer-access.css";
@@ -69,10 +69,10 @@ function CustomerShell({
 }: {
   startInPairing?: boolean;
 }) {
-  // A stable store identity for the whole mount: the in-memory browser store
-  // keeps its credentials in closures, so a per-render store would lose them
-  // (and every lifecycle listener would re-mount on each render).
-  const store = useMemo(customerCredentialStore, []);
+  // The credential store owns session state, so its identity must survive
+  // memo cache invalidation (including Fast Refresh). A page reload still
+  // clears browser credentials; only the desktop vault persists them.
+  const [store] = useState(customerCredentialStore);
   const [pairing, setPairing] = useState(startInPairing);
 
   if (pairing) {

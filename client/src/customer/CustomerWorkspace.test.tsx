@@ -169,6 +169,59 @@ describe("CustomerWorkspace (T31)", () => {
     });
   });
 
+  it.each(["store", "session"] as const)(
+    "waits for replacement %s credentials before exposing the workspace",
+    async (replacement) => {
+      const fetchMock = stubDeviceFetch();
+      vi.stubGlobal("fetch", fetchMock);
+      const onLogout = vi.fn();
+      const onSessionExpired = vi.fn();
+      const initialStore = fakeStore();
+      const view = render(
+        <CustomerWorkspace
+          user={user}
+          store={initialStore}
+          onLogout={onLogout}
+          onSessionExpired={onSessionExpired}
+        />,
+      );
+      await screen.findByRole("navigation", { name: "主要导航" });
+      let resolveCredential: ((value: string) => void) | undefined;
+      const pendingCredential = new Promise<string>((resolve) => {
+        resolveCredential = resolve;
+      });
+      const nextStore = replacement === "store" ? fakeStore() : initialStore;
+      vi.mocked(nextStore.loadSessionToken).mockReturnValue(pendingCredential);
+      const requestCount = fetchMock.mock.calls.length;
+      view.rerender(
+        <CustomerWorkspace
+          user={replacement === "session" ? { ...user } : user}
+          store={nextStore}
+          onLogout={onLogout}
+          onSessionExpired={onSessionExpired}
+        />,
+      );
+      expect(screen.queryByRole("navigation", { name: "主要导航" })).toBeNull();
+      expect(screen.getByText("正在进入工作区…")).toBeInTheDocument();
+      const nextSessionText = "replacement-workspace-session";
+      await act(async () => {
+        resolveCredential?.(nextSessionText);
+        await pendingCredential;
+      });
+      await screen.findByRole("navigation", { name: "主要导航" });
+      const newProjectRequests = fetchMock.mock.calls
+        .slice(requestCount)
+        .filter(([url]) => url.endsWith("/api/projects"));
+      expect(newProjectRequests.length).toBeGreaterThan(0);
+      for (const [, init] of newProjectRequests) {
+        expect(new Headers(init?.headers).get("Authorization")).toBe(
+          `Bearer ${nextSessionText}`,
+        );
+      }
+      expect(onSessionExpired).not.toHaveBeenCalled();
+    },
+  );
+
   it("shows a non-auth profile failure and retries without hanging", async () => {
     let profileAttempts = 0;
     let allowProfileSuccess = false;
