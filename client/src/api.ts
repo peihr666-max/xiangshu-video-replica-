@@ -2561,6 +2561,8 @@ function uploadStorageObject(
       const accessToken = workspaceAccessToken();
       if (accessToken) {
         request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+        if (accessToken.startsWith("web-session:"))
+          request.setRequestHeader("X-Customer-Web", "1");
       }
     }
     for (const [name, value] of Object.entries(intent.headers)) {
@@ -5228,7 +5230,41 @@ function isReplayed(response: Response): boolean {
   return response.headers.get("X-Idempotent-Replay") === "true";
 }
 
-async function requestCustomer(
+// Cookie response headers are applied by the browser before fetch resolves.
+// Serialize changes so an old deletion cannot arrive after a new login's
+// Set-Cookie. A failed request releases the queue, allowing an explicit retry.
+let browserCookieMutationQueue: Promise<void> = Promise.resolve();
+
+function requestCustomer(
+  path: string,
+  options: CustomerRequestOptions,
+): ReturnType<typeof requestCustomerNow> {
+  const browser =
+    options.browserSession || options.credential?.token.startsWith("web-");
+  const method =
+    options.method ?? (options.body !== undefined ? "POST" : "GET");
+  const changesCookies =
+    browser &&
+    ((path === "/api/customer/browser-session" && method === "DELETE") ||
+      (method === "POST" &&
+        [
+          "/api/customer/login",
+          "/api/customer/activate",
+          "/api/customer/sessions/login",
+          "/api/customer/sessions/switch",
+        ].includes(path)));
+  if (!changesCookies) return requestCustomerNow(path, options);
+  const pending = browserCookieMutationQueue.then(() =>
+    requestCustomerNow(path, options),
+  );
+  browserCookieMutationQueue = pending.then(
+    () => undefined,
+    () => undefined,
+  );
+  return pending;
+}
+
+async function requestCustomerNow(
   path: string,
   options: CustomerRequestOptions,
 ): Promise<{

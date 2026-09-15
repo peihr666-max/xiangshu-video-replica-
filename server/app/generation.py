@@ -6316,22 +6316,40 @@ def cancel_generation_batch(
                 "BATCH_ALREADY_ACTIVE",
                 "A task in this batch is already being submitted or generated.",
             )
-        conn.execute(
+        cancelled_batch = conn.execute(
             """
             UPDATE generation_batches
             SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
             WHERE id = %s AND status = 'QUEUED'
+            RETURNING id
             """,
             (batch_id,),
-        )
-        conn.execute(
+        ).fetchone()
+        if cancelled_batch is None:
+            raise generation_error(
+                409,
+                "BATCH_NOT_CANCELLABLE",
+                "Only queued batches can be cancelled.",
+            )
+        cancelled_rows = conn.execute(
             """
             UPDATE generation_tasks
             SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
             WHERE batch_id = %s AND status = 'PENDING'
+            RETURNING id
             """,
             (batch_id,),
-        )
+        ).fetchall()
+        # A worker may claim after the initial read. PostgreSQL rechecks the
+        # PENDING predicate after acquiring each row lock, so require the
+        # complete batch before releasing any credit. The outer transaction
+        # rolls back both the batch update and any partial task cancellation.
+        if {str(row["id"]) for row in cancelled_rows} != {str(row["id"]) for row in task_rows}:
+            raise generation_error(
+                409,
+                "BATCH_ALREADY_ACTIVE",
+                "A task in this batch is already being submitted or generated.",
+            )
         for row in task_rows:
             finalize_internal_billing(conn, task_id=str(row["id"]), outcome="failed")
         write_audit(

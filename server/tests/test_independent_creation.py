@@ -58,7 +58,9 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from threading import Barrier
 
 # Set the audit HMAC key before importing app modules (audit writers require it).
 os.environ.setdefault(
@@ -85,9 +87,11 @@ from app.db_portable import BusinessConnection
 from app.generation import (
     BatchResult,
     GenerationBatchListPage,
+    acquire_generation_task_lease,
     cancel_generation_batch,
     get_generation_batch,
     list_generation_batches,
+    refresh_batch_status,
 )
 from app.generation_worker import run_pg_worker_once
 from app.independent import (
@@ -989,6 +993,66 @@ def test_cancel_independent_batch_releases_reserved_seconds(scene: str) -> None:
     assert cancelled.status == "CANCELLED"
     assert _wallet("employee_1") == (1000, 0)  # RELEASE：全额退还
     assert _ledger_count("RELEASE") == 1
+
+
+@pytest.mark.parametrize("refresh_claimed_batch", [False, True])
+def test_cancel_claim_race_rejects_without_partial_cancellation_or_refund(
+    scene: str, refresh_claimed_batch: bool
+) -> None:
+    """A worker claims after cancellation reads PENDING but before its writes."""
+    batch = _create(
+        IndependentVideoRequest(
+            mode="i2v",
+            prompt_text="取消与领取竞争",
+            first_frame_asset_id="frame-owned",
+            output_duration_seconds=6,
+            quantity=2,
+            idempotency_key="cancel-claim-race",
+        ),
+        EMPLOYEE_1,
+    )
+    read_completed = Barrier(2)
+
+    def claim_after_cancel_read() -> dict[str, object] | None:
+        read_completed.wait(timeout=10)
+        with pg_transaction() as raw:
+            conn = BusinessConnection.postgres(raw)
+            lease = acquire_generation_task_lease(conn, worker_id="cancel-race-worker")
+            if refresh_claimed_batch:
+                refresh_batch_status(conn, batch_id=batch.id)
+            return lease
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        claim = executor.submit(claim_after_cancel_read)
+
+        def before_cancel_write(sql: str) -> None:
+            if "UPDATE generation_batches" in sql and "status = 'CANCELLED'" in sql:
+                read_completed.wait(timeout=10)
+                assert claim.result(timeout=10) is not None
+
+        with pytest.raises(HTTPException) as rejected:
+            with pg_transaction() as raw:
+                conn = BusinessConnection.postgres(raw)
+                conn.set_trace_callback(before_cancel_write)
+                cancel_generation_batch(conn, actor=EMPLOYEE_1, batch_id=batch.id)
+
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail["code"] == (
+        "BATCH_NOT_CANCELLABLE" if refresh_claimed_batch else "BATCH_ALREADY_ACTIVE"
+    )
+    assert _wallet("employee_1") == (988, 12)
+    assert _ledger_count("RELEASE") == 0
+    with psycopg.connect(scene) as pg:
+        assert pg.execute(
+            "SELECT status FROM generation_batches WHERE id=%s", (batch.id,)
+        ).fetchone() == ("RUNNING" if refresh_claimed_batch else "QUEUED",)
+        assert pg.execute(
+            "SELECT status FROM generation_tasks WHERE batch_id=%s ORDER BY status", (batch.id,)
+        ).fetchall() == [("PENDING",), ("SUBMITTING",)]
+        assert pg.execute("SELECT COUNT(*) FROM external_call_logs").fetchone() == (0,)
+        assert pg.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='generation_batch.cancel'"
+        ).fetchone() == (0,)
 
 
 def test_failed_independent_task_releases_credits(

@@ -2542,58 +2542,66 @@ describe("uploadReferenceVideo", () => {
     },
   );
 
-  it("does not send the development identity header to a cloud presigned URL", async () => {
-    class CloudUploadRequest {
-      static latest: CloudUploadRequest | null = null;
-      headers = new Map<string, string>();
-      onerror: (() => void) | null = null;
-      onload: (() => void) | null = null;
-      ontimeout: (() => void) | null = null;
-      status = 200;
-      timeout = 0;
-      upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
-        onprogress: null,
-      };
+  it.each(["test-cloud-customer-token", "web-session:test-cloud-csrf"])(
+    "does not send customer authentication headers to a cloud presigned URL (%s)",
+    async (sessionToken) => {
+      class CloudUploadRequest {
+        static latest: CloudUploadRequest | null = null;
+        headers = new Map<string, string>();
+        onerror: (() => void) | null = null;
+        onload: (() => void) | null = null;
+        ontimeout: (() => void) | null = null;
+        status = 200;
+        timeout = 0;
+        upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
+          onprogress: null,
+        };
 
-      constructor() {
-        CloudUploadRequest.latest = this;
+        constructor() {
+          CloudUploadRequest.latest = this;
+        }
+
+        open() {}
+        setRequestHeader(name: string, value: string) {
+          this.headers.set(name, value);
+        }
+        send() {
+          this.onload?.();
+        }
       }
 
-      open() {}
-      setRequestHeader(name: string, value: string) {
-        this.headers.set(name, value);
-      }
-      send() {
-        this.onload?.();
-      }
-    }
+      vi.stubGlobal("XMLHttpRequest", CloudUploadRequest);
+      setCustomerSessionToken(sessionToken);
 
-    vi.stubGlobal("XMLHttpRequest", CloudUploadRequest);
-    setCustomerSessionToken("test-cloud-customer-token");
+      await uploadReferenceVideo(
+        {
+          asset_id: "asset-1",
+          project_id: "project-1",
+          storage_key: "projects/project-1/reference.mp4",
+          method: "PUT",
+          url: "https://cos.example.com/presigned-upload",
+          headers: { "Content-Type": "video/mp4" },
+          expires_at: "2030-01-01T00:00:00Z",
+        },
+        new File(["video"], "reference.mp4", { type: "video/mp4" }),
+        vi.fn(),
+      );
 
-    await uploadReferenceVideo(
-      {
-        asset_id: "asset-1",
-        project_id: "project-1",
-        storage_key: "projects/project-1/reference.mp4",
-        method: "PUT",
-        url: "https://cos.example.com/presigned-upload",
-        headers: { "Content-Type": "video/mp4" },
-        expires_at: "2030-01-01T00:00:00Z",
-      },
-      new File(["video"], "reference.mp4", { type: "video/mp4" }),
-      vi.fn(),
-    );
-
-    expect(
-      CloudUploadRequest.latest?.headers.get("X-Dev-User-Id"),
-    ).toBeUndefined();
-    setCustomerSessionToken(null);
-    expect(CloudUploadRequest.latest?.headers.has("Authorization")).toBe(false);
-    expect(CloudUploadRequest.latest?.headers.get("Content-Type")).toBe(
-      "video/mp4",
-    );
-  });
+      expect(
+        CloudUploadRequest.latest?.headers.get("X-Dev-User-Id"),
+      ).toBeUndefined();
+      setCustomerSessionToken(null);
+      expect(CloudUploadRequest.latest?.headers.has("Authorization")).toBe(
+        false,
+      );
+      expect(CloudUploadRequest.latest?.headers.has("X-Customer-Web")).toBe(
+        false,
+      );
+      expect(CloudUploadRequest.latest?.headers.get("Content-Type")).toBe(
+        "video/mp4",
+      );
+    },
+  );
 
   it("does not send X-Dev-User-Id header for API uploads (CW-015: remove development identity path)", async () => {
     class LocalUploadRequest {
@@ -2641,64 +2649,70 @@ describe("uploadReferenceVideo", () => {
     expect(LocalUploadRequest.latest?.headers.has("X-Dev-User-Id")).toBe(false);
   });
 
-  it("uses customerSessionToken instead of internalAccessToken for API uploads (CW-015: remove internal token priority)", async () => {
-    class ManagedUploadRequest {
-      static latest: ManagedUploadRequest | null = null;
-      headers = new Map<string, string>();
-      onerror: (() => void) | null = null;
-      onload: (() => void) | null = null;
-      ontimeout: (() => void) | null = null;
-      status = 204;
-      timeout = 0;
-      upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
-        onprogress: null,
-      };
+  it.each(["customer-session-token-1", "web-session:test-managed-csrf"])(
+    "uses the customer credential and browser transport when needed for API uploads (%s)",
+    async (sessionToken) => {
+      class ManagedUploadRequest {
+        static latest: ManagedUploadRequest | null = null;
+        headers = new Map<string, string>();
+        onerror: (() => void) | null = null;
+        onload: (() => void) | null = null;
+        ontimeout: (() => void) | null = null;
+        status = 204;
+        timeout = 0;
+        upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
+          onprogress: null,
+        };
 
-      constructor() {
-        ManagedUploadRequest.latest = this;
+        constructor() {
+          ManagedUploadRequest.latest = this;
+        }
+
+        open() {}
+        setRequestHeader(name: string, value: string) {
+          this.headers.set(name, value);
+        }
+        send() {
+          this.onload?.();
+        }
       }
 
-      open() {}
-      setRequestHeader(name: string, value: string) {
-        this.headers.set(name, value);
-      }
-      send() {
-        this.onload?.();
-      }
-    }
+      vi.stubGlobal("XMLHttpRequest", ManagedUploadRequest);
+      // CW-015: 即使设置了 internalAccessToken，也不应该使用它
+      setInternalAccessToken("internal-token-1");
+      setCustomerSessionToken(sessionToken);
 
-    vi.stubGlobal("XMLHttpRequest", ManagedUploadRequest);
-    // CW-015: 即使设置了 internalAccessToken，也不应该使用它
-    setInternalAccessToken("internal-token-1");
-    setCustomerSessionToken("customer-session-token-1");
+      try {
+        await uploadReferenceVideo(
+          {
+            asset_id: "asset-1",
+            project_id: "project-1",
+            storage_key: "projects/project-1/reference.mp4",
+            method: "PUT",
+            url: "http://127.0.0.1:8000/api/assets/local-objects/projects/project-1/reference.mp4",
+            headers: { "Content-Type": "video/mp4" },
+            expires_at: "2030-01-01T00:00:00Z",
+          },
+          new File(["video"], "reference.mp4", { type: "video/mp4" }),
+          vi.fn(),
+        );
+      } finally {
+        setInternalAccessToken(null);
+        setCustomerSessionToken(null);
+      }
 
-    try {
-      await uploadReferenceVideo(
-        {
-          asset_id: "asset-1",
-          project_id: "project-1",
-          storage_key: "projects/project-1/reference.mp4",
-          method: "PUT",
-          url: "http://127.0.0.1:8000/api/assets/local-objects/projects/project-1/reference.mp4",
-          headers: { "Content-Type": "video/mp4" },
-          expires_at: "2030-01-01T00:00:00Z",
-        },
-        new File(["video"], "reference.mp4", { type: "video/mp4" }),
-        vi.fn(),
+      // CW-015: 正式客户构建只使用 customerSessionToken
+      expect(ManagedUploadRequest.latest?.headers.get("Authorization")).toBe(
+        `Bearer ${sessionToken}`,
       );
-    } finally {
-      setInternalAccessToken(null);
-      setCustomerSessionToken(null);
-    }
-
-    // CW-015: 正式客户构建只使用 customerSessionToken
-    expect(ManagedUploadRequest.latest?.headers.get("Authorization")).toBe(
-      "Bearer customer-session-token-1",
-    );
-    expect(ManagedUploadRequest.latest?.headers.has("X-Dev-User-Id")).toBe(
-      false,
-    );
-  });
+      expect(ManagedUploadRequest.latest?.headers.get("X-Customer-Web")).toBe(
+        sessionToken.startsWith("web-session:") ? "1" : undefined,
+      );
+      expect(ManagedUploadRequest.latest?.headers.has("X-Dev-User-Id")).toBe(
+        false,
+      );
+    },
+  );
 
   it("emits the unified session-expired event when a local upload returns 401", async () => {
     class UnauthorizedUploadRequest {

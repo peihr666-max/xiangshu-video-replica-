@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -136,6 +137,7 @@ const renewedSessionTokenText = "session-token-2";
 // the first logout is still in flight (named constant so the repo secret scan
 // stays quiet, same posture as the fixtures above).
 const relaunchSessionTokenText = "session-token-3";
+const testPasswordText = "test-password";
 
 const activationBody = {
   username: "user-1",
@@ -184,6 +186,139 @@ describe("useCustomerSession", () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
   });
+
+  it("preserves a password login started from the expiry screen while old Cookie cleanup is delayed", async () => {
+    vi.stubGlobal("crypto", {
+      randomUUID: () => webcrypto.randomUUID(),
+      subtle: { digest: vi.fn().mockResolvedValue(new ArrayBuffer(32)) },
+    });
+    const oldDevice = "web-device:old-device";
+    const oldSession = "web-session:old-session";
+    const newDevice = "web-device:new-device";
+    const newSession = "web-session:new-session";
+    let resolveCleanup!: (
+      response: Awaited<ReturnType<typeof jsonResponse>>,
+    ) => void;
+    const cleanup = new Promise<Awaited<ReturnType<typeof jsonResponse>>>(
+      (resolve) => {
+        resolveCleanup = resolve;
+      },
+    );
+    const fetchMock = stubFetch((url, init) => {
+      if (url.endsWith("/browser-session")) {
+        return init?.method === "DELETE"
+          ? cleanup
+          : jsonResponse({
+              device_token: oldDevice,
+              session_token: oldSession,
+            });
+      }
+      if (url.endsWith("/sessions/heartbeat"))
+        return jsonResponse(heartbeatBody);
+      if (url.endsWith("/profile"))
+        return jsonResponse({ user_id: "user-1", username: "alice" });
+      if (url.endsWith("/customer/login"))
+        return jsonResponse({
+          ...activationBody,
+          device_token: newDevice,
+          session_token: newSession,
+        });
+      return jsonResponse({}, 500);
+    });
+    const store = customerCredentialStore();
+    const { result } = renderHook(() => useCustomerSession(store));
+    await waitFor(() => expect(result.current.screen).toBe("workspace"));
+
+    act(() => window.dispatchEvent(new Event(CUSTOMER_SESSION_EXPIRED_EVENT)));
+    expect(result.current.screen).toBe("session-expired");
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE"),
+      ).toBe(true),
+    );
+    // RootApp's terminal action is enabled immediately; it exposes the normal
+    // password form while the old asynchronous Cookie deletion is in flight.
+    act(() => result.current.restartAfterExpiry());
+    expect(result.current.screen).toBe("login");
+    let loginPending!: Promise<void>;
+    await act(async () => {
+      loginPending = result.current.loginWithPassword({
+        mode: "login",
+        username: "alice",
+        password: testPasswordText,
+      });
+    });
+    expect(result.current.screen).toBe("login");
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/customer/login"),
+      ),
+    ).toBe(false);
+
+    await act(async () => {
+      resolveCleanup(await jsonResponse(undefined, 204));
+      await loginPending;
+    });
+    expect(result.current.screen).toBe("workspace");
+    expect(await store.loadSessionToken()).toBe(newSession);
+    expect(await store.loadDeviceCredentialToken()).toBe(newDevice);
+  });
+
+  it.each(["http", "network"])(
+    "reports %s Cookie cleanup failure and allows explicit password login recovery",
+    async (failure) => {
+      vi.stubGlobal("crypto", webcrypto);
+      const oldDevice = "web-device:failed-cleanup-device";
+      const oldSession = "web-session:failed-cleanup-session";
+      const newSession = "web-session:recovered-session";
+      stubFetch((url, init) => {
+        if (url.endsWith("/browser-session")) {
+          if (init?.method === "DELETE") {
+            return failure === "network"
+              ? Promise.reject(new TypeError("offline"))
+              : jsonResponse({ detail: { code: "SERVICE_UNAVAILABLE" } }, 503);
+          }
+          return jsonResponse({
+            device_token: oldDevice,
+            session_token: oldSession,
+          });
+        }
+        if (url.endsWith("/sessions/heartbeat"))
+          return jsonResponse(heartbeatBody);
+        if (url.endsWith("/profile"))
+          return jsonResponse({ user_id: "user-1", username: "alice" });
+        if (url.endsWith("/customer/login"))
+          return jsonResponse({
+            ...activationBody,
+            device_token: oldDevice,
+            session_token: newSession,
+          });
+        return jsonResponse({}, 500);
+      });
+      const store = customerCredentialStore();
+      const { result } = renderHook(() => useCustomerSession(store));
+      await waitFor(() => expect(result.current.screen).toBe("workspace"));
+      act(() =>
+        window.dispatchEvent(new Event(CUSTOMER_SESSION_EXPIRED_EVENT)),
+      );
+      await waitFor(() =>
+        expect(result.current.error?.code).toBe("CREDENTIAL_CLEAR_FAILED"),
+      );
+      act(() => result.current.restartAfterExpiry());
+      expect(result.current.screen).toBe("login");
+      expect(result.current.error?.message).toContain("旧登录状态清理失败");
+      await act(async () => {
+        await result.current.loginWithPassword({
+          mode: "login",
+          username: "alice",
+          password: testPasswordText,
+        });
+      });
+      expect(result.current.screen).toBe("workspace");
+      expect(result.current.error).toBeNull();
+      expect(await store.loadSessionToken()).toBe(newSession);
+    },
+  );
 
   it("boots without a stored credential onto the activation screen", async () => {
     const store = memoryStore();

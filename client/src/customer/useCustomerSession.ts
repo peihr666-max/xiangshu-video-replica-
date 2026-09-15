@@ -392,9 +392,27 @@ export function useCustomerSession(
   // the right thing to the persisted credential: expired/replaced keep the
   // device credential (§13.2: back to the login screen), revoked clears
   // everything (recovery flow).
+  const clearLifecycleCredentials = useCallback(
+    (all: boolean) => {
+      const generation = sessionGenerationRef.current;
+      const clearing = all
+        ? store.clearAllCredentials()
+        : store.clearSessionToken();
+      void clearing.catch(() => {
+        if (sessionGenerationRef.current !== generation) return;
+        setError(
+          new CustomerApiError({
+            code: "CREDENTIAL_CLEAR_FAILED",
+            message: "旧登录状态清理失败，请检查网络后重新登录。",
+            transportKind: "unknown",
+          }),
+        );
+      });
+    },
+    [store],
+  );
   useEffect(() => {
     const clearSession = () => {
-      void store.clearSessionToken();
       sessionTokenRef.current = null;
       sessionGenerationRef.current += 1;
       latestHeartbeatRequestIdRef.current += 1;
@@ -402,6 +420,7 @@ export function useCustomerSession(
       setUser(null);
       setConflict(null);
       setSessionRuntime(null);
+      clearLifecycleCredentials(false);
     };
     const onExpired = () => {
       clearSession();
@@ -412,7 +431,6 @@ export function useCustomerSession(
       dispatch({ type: "session-replaced" });
     };
     const onRevoked = () => {
-      void store.clearAllCredentials();
       sessionTokenRef.current = null;
       sessionGenerationRef.current += 1;
       latestHeartbeatRequestIdRef.current += 1;
@@ -420,6 +438,7 @@ export function useCustomerSession(
       setUser(null);
       setConflict(null);
       setSessionRuntime(null);
+      clearLifecycleCredentials(true);
       dispatch({ type: "device-revoked" });
     };
     window.addEventListener(CUSTOMER_SESSION_EXPIRED_EVENT, onExpired);
@@ -430,7 +449,7 @@ export function useCustomerSession(
       window.removeEventListener(CUSTOMER_SESSION_REPLACED_EVENT, onReplaced);
       window.removeEventListener(CUSTOMER_SESSION_REVOKED_EVENT, onRevoked);
     };
-  }, [store]);
+  }, [clearLifecycleCredentials]);
 
   // Keep the lease alive while the workspace is live. A failing heartbeat
   // ends through the lifecycle events above (the transport dispatches them
@@ -782,7 +801,9 @@ export function useCustomerSession(
   }, [store]);
 
   const restartAfterExpiry = useCallback(() => {
-    setError(null);
+    setError((current) =>
+      current?.code === "CREDENTIAL_CLEAR_FAILED" ? current : null,
+    );
     setConflict(null);
     dispatch({ type: "restart-login" });
   }, []);
@@ -793,7 +814,6 @@ export function useCustomerSession(
   // transport-driven expiry, then the §4.2 expired terminal screen offers the
   // deterministic recovery path.
   const expireSessionLocally = useCallback(() => {
-    void store.clearSessionToken();
     sessionTokenRef.current = null;
     sessionGenerationRef.current += 1;
     latestHeartbeatRequestIdRef.current += 1;
@@ -802,11 +822,14 @@ export function useCustomerSession(
     setConflict(null);
     setSessionRuntime(null);
     setError(null);
+    clearLifecycleCredentials(false);
     dispatch({ type: "session-expired" });
-  }, [store]);
+  }, [clearLifecycleCredentials]);
 
   const restartAfterRevocation = useCallback(() => {
-    setError(null);
+    setError((current) =>
+      current?.code === "CREDENTIAL_CLEAR_FAILED" ? current : null,
+    );
     setConflict(null);
     dispatch({ type: "restart-activation" });
   }, []);
@@ -947,21 +970,25 @@ function browserCookieCredentialStore(): CustomerCredentialStore {
       sessionToken = nextSessionToken;
     },
     async clearSessionToken() {
+      const started = revision;
       if (sessionToken)
         await clearCustomerBrowserCredentials({
           kind: "session",
           token: sessionToken,
         });
+      if (revision !== started) return;
       revision += 1;
       sessionToken = null;
     },
     async clearAllCredentials() {
+      const started = revision;
       const token = deviceToken ?? sessionToken;
       if (token)
         await clearCustomerBrowserCredentials({
           kind: deviceToken ? "device" : "session",
           token,
         });
+      if (revision !== started) return;
       revision += 1;
       deviceToken = null;
       sessionToken = null;

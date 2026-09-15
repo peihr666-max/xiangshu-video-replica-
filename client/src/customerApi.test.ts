@@ -4,6 +4,7 @@ import {
   CUSTOMER_SESSION_REPLACED_EVENT,
   CUSTOMER_SESSION_REVOKED_EVENT,
   CustomerApiError,
+  clearCustomerBrowserCredentials,
   customerActivate,
   customerApproveDevicePairing,
   customerCloseRechargeOrder,
@@ -13,6 +14,7 @@ import {
   customerListDevices,
   customerLogin,
   customerLogout,
+  customerPasswordLogin,
   customerResetActivationCode,
   customerSwitch,
   customerUnbindDevice,
@@ -29,6 +31,7 @@ const deviceTokenText = "device-token";
 const sessionTokenText = "session-token";
 const oneTimeTokenText = "one-time-token";
 const previousSessionTokenText = "previous-session-token";
+const testPasswordText = "test-password";
 
 // ---------------------------------------------------------------------------
 // FE-01 drift guards — the adapter must be cut from the generated contract,
@@ -151,6 +154,71 @@ describe("customer API adapter requests", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+  it("waits for old Cookie deletion before every browser authentication entry point", async () => {
+    const browserDevice = "web-device:queue-device";
+    const browserSession = "web-session:queue-session";
+    let finishDelete!: (response: Response) => void;
+    const deletion = new Promise<Response>((resolve) => {
+      finishDelete = resolve;
+    });
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const path = new URL(url).pathname;
+        requests.push(path);
+        if (path.endsWith("/browser-session")) return deletion;
+        return Promise.resolve(jsonResponse(200, loginBody));
+      }),
+    );
+    const clearing = clearCustomerBrowserCredentials({
+      kind: "session",
+      token: browserSession,
+    });
+    const attempts = [
+      customerPasswordLogin(
+        {
+          username: "alice",
+          password: testPasswordText,
+          device_fingerprint: "browser",
+          device_platform: "browser",
+        },
+        "queue-password",
+      ),
+      customerActivate({
+        activationCode: "XS04-test-fixture",
+        deviceFingerprint: "browser",
+        deviceName: "browser",
+        devicePlatform: "browser",
+        idempotencyKey: "queue-activate",
+      }),
+      customerLogin(
+        { kind: "device", token: browserDevice },
+        { idempotencyKey: "queue-login" },
+      ),
+      customerSwitch(
+        { kind: "device", token: browserDevice },
+        { idempotencyKey: "queue-switch" },
+      ),
+    ];
+    await Promise.resolve();
+    expect(requests).toEqual(["/api/customer/browser-session"]);
+    // Heartbeats do not mutate cookies and must stay live while deletion waits.
+    await customerHeartbeat({ kind: "session", token: browserSession });
+    expect(requests).toEqual([
+      "/api/customer/browser-session",
+      "/api/customer/sessions/heartbeat",
+    ]);
+    finishDelete(noContent());
+    await Promise.all([clearing, ...attempts]);
+    expect(requests.slice(2)).toEqual([
+      "/api/customer/login",
+      "/api/customer/activate",
+      "/api/customer/sessions/login",
+      "/api/customer/sessions/switch",
+    ]);
   });
 
   it("activates with an idempotency key and no bearer header", async () => {
