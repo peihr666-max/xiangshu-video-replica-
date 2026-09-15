@@ -1640,17 +1640,35 @@ def test_direct_generation_archive_is_owned_idempotent_and_does_not_rebill(
 
 
 @pytest.mark.parametrize(
-    "outcome", ["success", "download", "settings", "nan", "changed", "revoked"]
+    "outcome",
+    [
+        "success",
+        "download",
+        "settings",
+        "nan",
+        "changed",
+        "revoked",
+        "normalize",
+        "normalization-failed",
+        "snapshot-changed",
+        "normalized-revoked",
+        "adaptive",
+        "other-resolution",
+        "other-ratio",
+        "missing-ratio",
+    ],
 )
 def test_archive_http_rechecks_before_commit_and_preserves_billing(
     lane_env: str, pg: psycopg.Connection, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     from contextlib import contextmanager
+    from types import SimpleNamespace
 
     from app.customer_fence import get_business_db
     from app.generation import H3ProviderFailed, H3ProviderSettingsUnavailable
     from app.main import app
     from app.media_routes import get_media_storage
+    from app.media_tools import MediaValidationFailed
 
     seed_project(pg, "archive-http-project", "employee_1")
     pg.execute(
@@ -1663,14 +1681,38 @@ def test_archive_http_rechecks_before_commit_and_preserves_billing(
         "provider_result_url) VALUES ('archive-http-task','archive-http-batch','metaso',"
         "'MiniMax-H3','SUCCEEDED','DIRECT','https://cdn.example/result.mp4')"
     )
+    normalized_outcomes = {
+        "normalize",
+        "normalization-failed",
+        "snapshot-changed",
+        "normalized-revoked",
+    }
+    snapshot: object = {}
+    if outcome in normalized_outcomes:
+        snapshot = {"resolution": "2K", "ratio": "9:16"}
+    elif outcome == "adaptive":
+        snapshot = {"resolution": "2K", "ratio": "adaptive"}
+    elif outcome == "other-resolution":
+        snapshot = {"resolution": "768P", "ratio": "9:16"}
+    elif outcome == "other-ratio":
+        snapshot = {"resolution": "2K", "ratio": "16:9"}
+    elif outcome == "missing-ratio":
+        snapshot = {"resolution": "2K"}
+    pg.execute(
+        "UPDATE generation_tasks SET prompt_snapshot_json=%s WHERE id='archive-http-task'",
+        (json.dumps(snapshot),),
+    )
     pg.commit()
     downloads: list[str] = []
+    normalization_calls: list[tuple[bytes, int, int]] = []
+    original_content = b"\x00\x00\x00\x18ftypisom" + b"test-video"
+    normalized_content = b"\x00\x00\x00\x18ftypisom" + b"normalized-video"
 
     class TestDb:
         @contextmanager
         def write(self):
             with pg_transaction() as raw:
-                if outcome == "revoked" and downloads:
+                if outcome in {"revoked", "normalized-revoked"} and downloads:
                     raise HTTPException(401, detail={"code": "SESSION_REPLACED"})
                 yield BusinessConnection.postgres(raw), actor("employee_1", "employee")
 
@@ -1685,7 +1727,31 @@ def test_archive_http_rechecks_before_commit_and_preserves_billing(
                     "WHERE id='archive-http-task'"
                 )
                 pg.commit()
-            return b"\x00\x00\x00\x18ftypisom" + b"test-video"
+            if outcome == "snapshot-changed":
+                pg.execute(
+                    "UPDATE generation_tasks SET prompt_snapshot_json=%s "
+                    "WHERE id='archive-http-task'",
+                    (json.dumps({"resolution": "2K", "ratio": "adaptive"}),),
+                )
+                pg.commit()
+            return original_content
+
+    def normalize(content: bytes, *, target_width: int, target_height: int):
+        normalization_calls.append((content, target_width, target_height))
+        if outcome == "normalization-failed":
+            raise MediaValidationFailed("invalid decoded video")
+        return SimpleNamespace(
+            content=normalized_content,
+            duration_seconds=4.0,
+            width=1440,
+            height=2560,
+            source_sample_aspect_ratio="64:63",
+            source_display_aspect_ratio="4:7",
+            sample_aspect_ratio="1:1",
+            display_aspect_ratio="9:16",
+            source_rotation_degrees=0,
+            transformed=True,
+        )
 
     def provider(*args, **kwargs):
         if outcome == "settings":
@@ -1693,25 +1759,77 @@ def test_archive_http_rechecks_before_commit_and_preserves_billing(
         return Provider()
 
     monkeypatch.setattr("app.generation_routes.h3_provider_for_task", provider)
+    monkeypatch.setattr("app.generation_routes.normalize_generated_video", normalize, raising=False)
     monkeypatch.setattr(
         "app.generation_routes.FFprobeVideoProbe.probe",
         lambda *_args, **_kwargs: VideoMetadata(float("nan") if outcome == "nan" else 4.0),
     )
     app.dependency_overrides[get_business_db] = TestDb
-    app.dependency_overrides[get_media_storage] = lambda: FakeStorageAdapter(
-        provider="cos", bucket="http-archive-test"
-    )
+    storage = FakeStorageAdapter(provider="cos", bucket="http-archive-test")
+    uploaded_content: list[bytes] = []
+    put_object = storage.put_object
+
+    def record_upload(key: str, content: bytes, *, content_type: str):
+        uploaded_content.append(content)
+        return put_object(key, content, content_type=content_type)
+
+    monkeypatch.setattr(storage, "put_object", record_upload)
+    app.dependency_overrides[get_media_storage] = lambda: storage
     try:
         client = TestClient(app, raise_server_exceptions=False)
         result = client.post("/api/generation-tasks/archive-http-task/archive")
-        expected = {"success": 200, "changed": 409, "revoked": 401}.get(outcome, 503)
+        successful = {
+            "success",
+            "normalize",
+            "adaptive",
+            "other-resolution",
+            "other-ratio",
+            "missing-ratio",
+        }
+        expected = (
+            200
+            if outcome in successful
+            else {
+                "changed": 409,
+                "snapshot-changed": 409,
+                "revoked": 401,
+                "normalized-revoked": 401,
+            }.get(outcome, 503)
+        )
         assert result.status_code == expected, result.text
-        if outcome == "success":
+        if outcome in successful:
             replay = client.post("/api/generation-tasks/archive-http-task/archive")
             assert replay.status_code == 200
             assert replay.json()["result_asset_id"] == result.json()["result_asset_id"]
             assert len(downloads) == 1
+            asset = pg.execute("SELECT sha256,metadata_json FROM assets").fetchone()
+            saved_metadata = json.loads(asset[1])
+            if outcome == "normalize":
+                assert normalization_calls == [(original_content, 1440, 2560)]
+                assert uploaded_content == [normalized_content]
+                assert asset[0] == hashlib.sha256(normalized_content).hexdigest()
+                assert saved_metadata["video_normalization"] == {
+                    "policy": "explicit_2k_portrait_v1",
+                    "requested_resolution": "2K",
+                    "requested_ratio": "9:16",
+                    "source_sha256": hashlib.sha256(original_content).hexdigest(),
+                    "width": 1440,
+                    "height": 2560,
+                    "source_sample_aspect_ratio": "64:63",
+                    "source_display_aspect_ratio": "4:7",
+                    "sample_aspect_ratio": "1:1",
+                    "display_aspect_ratio": "9:16",
+                    "source_rotation_degrees": 0,
+                    "transformed": True,
+                }
+            else:
+                assert normalization_calls == []
+                assert uploaded_content == [original_content]
+                assert asset[0] == hashlib.sha256(original_content).hexdigest()
+                assert "video_normalization" not in saved_metadata
         else:
+            if outcome == "normalization-failed":
+                assert uploaded_content == []
             assert pg.execute("SELECT count(*) FROM assets").fetchone()[0] == 0
             assert (
                 pg.execute(
@@ -1720,6 +1838,10 @@ def test_archive_http_rechecks_before_commit_and_preserves_billing(
                 == "DIRECT"
             )
         assert pg.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 0
+        if outcome != "changed":
+            assert pg.execute(
+                "SELECT provider_result_url FROM generation_tasks WHERE id='archive-http-task'"
+            ).fetchone() == ("https://cdn.example/result.mp4",)
     finally:
         app.dependency_overrides.clear()
 

@@ -5701,6 +5701,7 @@ def persist_generation_result_archive(
     prepared: dict[str, Any],
     stored: StoredObject,
     duration_seconds: float,
+    normalization_metadata: dict[str, Any] | None = None,
 ) -> TaskResult:
     """Publish one physical asset; archiving never changes settled billing."""
     task_id = str(prepared["id"])
@@ -5714,6 +5715,7 @@ def persist_generation_result_archive(
         if (
             current["provider_result_url"] != prepared["provider_result_url"]
             or current["project_id"] != prepared["project_id"]
+            or current["prompt_snapshot_json"] != prepared["prompt_snapshot_json"]
         ):
             raise generation_error(409, "RESULT_CHANGED", "成片记录已变化，请刷新后重试。")
         asset_id = str(uuid4())
@@ -5727,7 +5729,17 @@ def persist_generation_result_archive(
                 stored.uri,
                 stored.sha256,
                 stored.size,
-                json.dumps({"duration_seconds": duration_seconds, "generation_task_id": task_id}),
+                json.dumps(
+                    {
+                        "duration_seconds": duration_seconds,
+                        "generation_task_id": task_id,
+                        **(
+                            {"video_normalization": normalization_metadata}
+                            if normalization_metadata is not None
+                            else {}
+                        ),
+                    }
+                ),
                 current["created_by_user_id"],
             ),
         )

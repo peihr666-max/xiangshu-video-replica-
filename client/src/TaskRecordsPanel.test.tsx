@@ -722,6 +722,71 @@ describe("TaskRecordsPanel", () => {
     expect(screen.getByText("任务已结束 1 / 1")).toBeInTheDocument();
   });
 
+  it.each([false, true])(
+    "replaces direct preview after the same task is archived (old signing delayed=%s)",
+    async (delayed) => {
+      const direct = batch({
+        status: "SUCCEEDED",
+        quantity: 1,
+        tasks: [
+          task({
+            archive_status: "DIRECT",
+            result_asset_id: null,
+            direct_result_available: true,
+          }),
+        ],
+      });
+      const archived = batch({
+        ...direct,
+        tasks: [task({ result_asset_id: "normalized-asset" })],
+      });
+      let finishOld!: (url: string) => void;
+      const pendingOld = new Promise<string>((resolve) => {
+        finishOld = resolve;
+      });
+      vi.mocked(api.getGenerationBatch).mockResolvedValue(direct);
+      vi.mocked(api.createGenerationTaskPreviewUrl).mockReturnValue(
+        delayed
+          ? pendingOld
+          : Promise.resolve("https://provider-preview/old-direct"),
+      );
+      render(
+        <TaskRecordsPanel
+          handoffBatch={null}
+          onHandoffConsumed={vi.fn()}
+          userRole="customer"
+        />,
+      );
+      await waitFor(() =>
+        expect(api.createGenerationTaskPreviewUrl).toHaveBeenCalledWith(
+          "task-ok",
+        ),
+      );
+      if (!delayed)
+        expect(
+          await screen.findByLabelText("结果预览 task-ok"),
+        ).toHaveAttribute("src", "https://provider-preview/old-direct");
+      vi.mocked(api.getGenerationBatch).mockResolvedValue(archived);
+      fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+      await waitFor(() =>
+        expect(api.getGenerationBatch).toHaveBeenCalledTimes(2),
+      );
+      if (delayed)
+        await act(async () => {
+          finishOld("https://provider-preview/old-direct");
+        });
+      await waitFor(() =>
+        expect(screen.getByLabelText("结果预览 task-ok")).toHaveAttribute(
+          "src",
+          "https://stage-preview/normalized-asset",
+        ),
+      );
+      expect(api.createGenerationResultPreviewUrl).toHaveBeenCalledWith(
+        "normalized-asset",
+      );
+    },
+  );
+
   it("synchronizes list progress without remounting video or flashing during background polls", async () => {
     vi.useFakeTimers();
     const running = batch({

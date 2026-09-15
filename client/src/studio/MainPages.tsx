@@ -1306,6 +1306,9 @@ export function TaskDetailPage() {
   );
   detailUserIdRef.current = user.id;
   const task = data.tasks.find((item) => item.id === state.selectedTaskId);
+  const currentResultIdRef = useRef(task?.resultId);
+  currentResultIdRef.current = task?.resultId;
+  const currentPreviewUrlRef = useRef<string | undefined>(undefined);
   const detailKind = state.selectedTaskKind;
   const detailId = state.selectedTaskBackendId;
   const detailKey =
@@ -1429,9 +1432,13 @@ export function TaskDetailPage() {
     );
   // Task-list polling contains persisted IDs only. Keep a loaded direct preview
   // in its user/task context so refreshing the list cannot unmount playback.
+  const cachedPreview =
+    previewLoad.key === previewContextKey ? previewLoad.asset : undefined;
   const result =
-    (previewLoad.key === previewContextKey ? previewLoad.asset : undefined) ??
-    data.assets.find((asset) => asset.id === task.resultId);
+    (cachedPreview && (!task.resultId || cachedPreview.id === task.resultId)
+      ? cachedPreview
+      : undefined) ?? data.assets.find((asset) => asset.id === task.resultId);
+  currentPreviewUrlRef.current = result?.url;
   const previewStatus =
     previewLoad.key === previewContextKey ? previewLoad.status : "idle";
   const person = data.people.find((item) => item.id === task.ipId);
@@ -1502,6 +1509,16 @@ export function TaskDetailPage() {
         return;
       if (!asset) {
         setPreviewLoad({ key: requestedContext, status: "empty" });
+        return;
+      }
+      // A poll may have announced an archived/replaced asset while the old
+      // signing request was in flight. Do not overwrite that physical ID.
+      if (
+        currentResultIdRef.current &&
+        currentResultIdRef.current !== requestedTask.resultId &&
+        currentResultIdRef.current !== asset.id
+      ) {
+        setPreviewLoad({ key: requestedContext, status: "idle" });
         return;
       }
       updateData((current) => ({
@@ -1635,6 +1652,19 @@ export function TaskDetailPage() {
               : "任务处理中或待核对，尚无可预览成片"
           }
           className="studio-result-preview"
+          onError={(failedUrl) => {
+            if (
+              !failedUrl ||
+              previewContextRef.current !== previewContextKey ||
+              currentPreviewUrlRef.current !== failedUrl
+            )
+              return;
+            setPreviewLoad({
+              key: previewContextKey,
+              status: "error",
+              asset: result,
+            });
+          }}
         />
         <Panel>
           <h2>任务信息</h2>
@@ -1658,22 +1688,24 @@ export function TaskDetailPage() {
                 {actionBusy === "archive" ? "正在保存成片…" : "保存到素材库"}
               </Button>
             )}
-            {!review && task.status === "completed" && !result && (
-              <Button
-                variant="primary"
-                onClick={previewResult}
-                disabled={previewStatus === "loading"}
-              >
-                <Icon name="play" />
-                {previewStatus === "loading"
-                  ? "正在加载预览…"
-                  : previewStatus === "error"
-                    ? "重试预览"
-                    : previewStatus === "empty"
-                      ? "重新尝试"
-                      : "预览成片"}
-              </Button>
-            )}
+            {!review &&
+              task.status === "completed" &&
+              (!result?.url || previewStatus === "error") && (
+                <Button
+                  variant="primary"
+                  onClick={previewResult}
+                  disabled={previewStatus === "loading"}
+                >
+                  <Icon name="play" />
+                  {previewStatus === "loading"
+                    ? "正在加载预览…"
+                    : previewStatus === "error"
+                      ? "重试预览"
+                      : previewStatus === "empty"
+                        ? "重新尝试"
+                        : "预览成片"}
+                </Button>
+              )}
             <Button
               onClick={() => void downloadResult()}
               disabled={
