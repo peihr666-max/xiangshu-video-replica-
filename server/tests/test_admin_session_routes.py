@@ -45,6 +45,108 @@ FUTURE_EXPIRY = "2099-01-01T00:00:00+00:00"
 SESSIONS_PATH = "/api/control/customers/{user_id}/sessions"
 
 
+@pytest.mark.pg
+def test_single_archive_is_durable_idempotent_and_does_not_recollect(
+    client: TestClient, route_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.db_portable import BusinessConnection
+    from app.storage import FakeStorageAdapter
+    from app.viral_collection import run_viral_collection
+    from app.viral_refresh import acquire_viral_refresh_task, complete_viral_refresh_task
+
+    headers = _admin_session(client)
+    path = "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/archive"
+    body = {"confirm": True, "reason": "修复单条归档并保留列表"}
+    with psycopg.connect(route_state) as conn:
+        conn.execute("DELETE FROM viral_refresh_tasks")
+        conn.execute("UPDATE viral_runtime_controls SET collection_enabled=1,keywords_json='[]'")
+        conn.execute("UPDATE viral_videos SET collection_published=1")
+    first = client.post(path, headers={**headers, "Idempotency-Key": "archive-one"}, json=body)
+    assert first.status_code == 202, first.text
+    replay = client.post(path, headers={**headers, "Idempotency-Key": "archive-one"}, json=body)
+    assert replay.status_code == 202
+    assert replay.headers["X-Idempotent-Replay"] == "true"
+    assert (
+        client.get("/api/control/viral/videos", headers=headers).json()["items"][0][
+            "archive_status"
+        ]
+        == "PENDING"
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.viral_collection.viral_source_client_from_settings", lambda conn: object()
+    )
+    monkeypatch.setattr("app.viral_collection.CoverEnricher.enrich", lambda self, video: video)
+    monkeypatch.setattr(
+        "app.viral_collection.ViralMediaPipeline.fetch",
+        lambda self, video, **kwargs: calls.append(video.video_id),
+    )
+    with psycopg.connect(route_state) as raw:
+        lease = acquire_viral_refresh_task(
+            BusinessConnection.postgres(raw), worker_id="archive-test"
+        )
+    assert lease is not None
+    run_viral_collection(lease, FakeStorageAdapter(provider="cos", bucket="test"))
+    with psycopg.connect(route_state) as raw:
+        complete_viral_refresh_task(BusinessConnection.postgres(raw), lease=lease)
+        assert raw.execute("SELECT collection_published FROM viral_videos").fetchone()[0] == 1
+        assert raw.execute("SELECT count(*) FROM viral_collection_batches").fetchone()[0] == 0
+        assert (
+            raw.execute(
+                "SELECT count(*) FROM audit_logs WHERE action='viral_video.archive'"
+            ).fetchone()[0]
+            == 1
+        )
+    assert calls == ["admin-video/opaque=id"]
+
+
+@pytest.mark.pg
+@pytest.mark.parametrize("blocked", ["paused", "deleted", "busy", "auditor"])
+def test_single_archive_rejection_preserves_queue_and_wallet(
+    client: TestClient, route_state: str, blocked: str
+) -> None:
+    headers = _admin_session(client, "auditor_u" if blocked == "auditor" else "admin_u")
+    with psycopg.connect(route_state) as conn:
+        if blocked == "paused":
+            conn.execute("UPDATE viral_runtime_controls SET collection_enabled=0")
+        elif blocked == "deleted":
+            conn.execute("UPDATE viral_videos SET deleted_at=CURRENT_TIMESTAMP")
+        elif blocked == "busy":
+            conn.execute(
+                "INSERT INTO viral_refresh_tasks(id,platform,sort,status,collection_config_json) "
+                "VALUES('existing-collection','douyin','hot','PENDING','{\"keywords\":[]}')"
+            )
+        before = conn.execute(
+            "SELECT id,status,collection_config_json FROM viral_refresh_tasks ORDER BY id"
+        ).fetchall()
+        wallet_before = conn.execute("SELECT * FROM wallets ORDER BY user_id").fetchall()
+    result = client.post(
+        "/api/control/viral/videos/douyin/admin-video%2Fopaque%3Did/archive",
+        headers={**headers, "Idempotency-Key": f"archive-blocked-{blocked}"},
+        json={"confirm": True, "reason": "验证拒绝路径无业务副作用"},
+    )
+    assert (
+        result.status_code == {"paused": 409, "deleted": 404, "busy": 409, "auditor": 403}[blocked]
+    )
+    assert (
+        result.json()["detail"]["code"]
+        == {
+            "paused": "VIRAL_COLLECTION_PAUSED",
+            "deleted": "VIRAL_VIDEO_NOT_FOUND",
+            "busy": "VIRAL_ARCHIVE_BUSY",
+            "auditor": "AUDITOR_READ_ONLY",
+        }[blocked]
+    )
+    with psycopg.connect(route_state) as conn:
+        assert (
+            conn.execute(
+                "SELECT id,status,collection_config_json FROM viral_refresh_tasks ORDER BY id"
+            ).fetchall()
+            == before
+        )
+        assert conn.execute("SELECT * FROM wallets ORDER BY user_id").fetchall() == wallet_before
+
+
 def _pg_dsn() -> str:
     return os.environ.get("TEST_POSTGRESQL_URL", DEFAULT_DSN)
 

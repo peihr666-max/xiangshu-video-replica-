@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   adminActivationErrorMessage,
+  archiveCollectedViralVideo,
   type CollectedViralVideo,
   curateViralVideo,
   listCollectedViralVideos,
@@ -19,16 +20,26 @@ import { PageBanner } from "./ui/PageBanner";
 import { Pagination } from "./ui/Pagination";
 import { StatusBadge } from "./ui/StatusBadge";
 
-type Action = "feature" | "unfeature" | "delete";
+type Action = "feature" | "unfeature" | "delete" | "archive";
+
+function archiveBusy(video: CollectedViralVideo) {
+  return (
+    video.archive_status === "PENDING" || video.archive_status === "RUNNING"
+  );
+}
 
 function mediaReady(video: CollectedViralVideo) {
   return video.media_status === "SUCCEEDED" && Boolean(video.storage_uri);
 }
 
 function archiveLabel(video: CollectedViralVideo) {
+  if (video.archive_status === "PENDING") return "转存排队中";
+  if (video.archive_status === "RUNNING") return "正在转存";
   if (mediaReady(video))
     return video.cover_required && !video.cover_key ? "封面待补齐" : "归档就绪";
-  return video.media_status === "FAILED" ? "转存失败" : "待转存";
+  return video.media_status === "FAILED" || video.archive_status === "FAILED"
+    ? "转存失败"
+    : "待转存";
 }
 
 function displayDate(value: string | number, full = false) {
@@ -113,16 +124,21 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
     setSaving(true);
     setError("");
     try {
-      await curateViralVideo(
-        pending.video,
-        pending.action,
-        reason,
-        pending.key,
-      );
+      if (pending.action === "archive")
+        await archiveCollectedViralVideo(pending.video, reason, pending.key);
+      else
+        await curateViralVideo(
+          pending.video,
+          pending.action,
+          reason,
+          pending.key,
+        );
       setNotice(
-        pending.action === "delete"
-          ? "视频已删除，前台不再展示。"
-          : "首页展示设置已更新。",
+        pending.action === "archive"
+          ? "已提交后台转存，可刷新数据查看进度。归档不会自动修改首页展示。"
+          : pending.action === "delete"
+            ? "视频已删除，前台不再展示。"
+            : "首页展示设置已更新。",
       );
       setPending(null);
       setPreview(null);
@@ -135,6 +151,7 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
     }
   }
   function choose(video: CollectedViralVideo, action: Action) {
+    setError("");
     setPending({ video, action, key: crypto.randomUUID() });
   }
 
@@ -423,6 +440,20 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
                       </td>
                       <td>
                         <div className="admin-viral-actions">
+                          {!readOnly && archiveLabel(video) !== "归档就绪" && (
+                            <button
+                              type="button"
+                              disabled={saving || archiveBusy(video)}
+                              onClick={() => choose(video, "archive")}
+                            >
+                              {archiveBusy(video)
+                                ? "后台转存中"
+                                : video.archive_status === "FAILED" ||
+                                    video.media_status === "FAILED"
+                                  ? "重试转存"
+                                  : "转存到云端"}
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={
@@ -510,6 +541,12 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
                                 <dt>云存储地址</dt>
                                 <dd>{video.storage_uri ?? "尚未生成"}</dd>
                               </div>
+                              {video.archive_error && (
+                                <div>
+                                  <dt>转存说明</dt>
+                                  <dd>{video.archive_error}</dd>
+                                </div>
+                              )}
                             </dl>
                             {!readOnly && (
                               <div className="admin-viral-danger-zone">
@@ -546,14 +583,23 @@ export function ViralVideosPage({ readOnly = false }: { readOnly?: boolean }) {
       <ConfirmDialog
         open={pending !== null}
         busy={saving}
+        error={error}
         level="reason"
-        title={pending?.action === "delete" ? "删除爆款视频" : "更新首页展示"}
+        title={
+          pending?.action === "archive"
+            ? "转存单条视频"
+            : pending?.action === "delete"
+              ? "删除爆款视频"
+              : "更新首页展示"
+        }
         description={
-          pending?.action === "delete"
-            ? "该视频会从前台移除，后续采集也不会重新展示。已导入项目的素材保留。"
-            : pending?.action === "unfeature"
-              ? "取消后首页不再展示，视频仍保留在爆款列表。请填写操作原因。"
-              : "已归档视频会自动补齐封面后展示到首页。请填写操作原因。"
+          pending?.action === "archive"
+            ? "后台将获取此视频并转存到已配置的云存储，可能产生供应商调用费用。已完成的视频文件会复用；不会重新搜索整个列表或修改首页展示。请填写操作原因。"
+            : pending?.action === "delete"
+              ? "该视频会从前台移除，后续采集也不会重新展示。已导入项目的素材保留。"
+              : pending?.action === "unfeature"
+                ? "取消后首页不再展示，视频仍保留在爆款列表。请填写操作原因。"
+                : "已归档视频会自动补齐封面后展示到首页。请填写操作原因。"
         }
         confirmLabel="确认操作"
         onClose={() => setPending(null)}

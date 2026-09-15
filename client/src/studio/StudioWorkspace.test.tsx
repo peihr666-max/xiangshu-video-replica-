@@ -2110,22 +2110,16 @@ describe("V1.4 workspace integration", () => {
       state.draft.projectId = "project-1";
       state.draft.sourceAssetId = "asset-1";
       render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
-      fireEvent.click(
-        screen.getByRole("button", { name: "提取文案", exact: true }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: /^提取文案$/ }));
       expect(await screen.findByLabelText("二创文案")).toHaveValue(
         "需要保留的未保存转写原文",
       );
-      fireEvent.click(
-        screen.getByRole("button", { name: "视频创作", exact: true }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: /^视频创作$/ }));
       await waitFor(() =>
         expect(api.getLatestScriptVersion).toHaveBeenCalledWith("project-1"),
       );
       await act(async () => {});
-      fireEvent.click(
-        screen.getByRole("button", { name: "文案工坊", exact: true }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: /^文案工坊$/ }));
       expect(await screen.findByLabelText("二创文案")).toHaveValue(
         "需要保留的未保存转写原文",
       );
