@@ -996,209 +996,109 @@ describe("generation workflow API", () => {
     vi.useRealTimers();
   });
 
-  it("downloads a direct result using task authorization without forwarding credentials", async () => {
-    vi.useFakeTimers();
+  it("archives an existing direct result and starts an HTTP download without reading MP4 bytes", async () => {
     setCustomerSessionToken("test-customer-session");
-    const video = new Blob(["provider video"], { type: "video/mp4" });
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ url: "https://provider.example/video.mp4" }),
+        json: async () => ({ result_asset_id: "asset 1" }),
       })
-      .mockResolvedValueOnce({ ok: true, blob: async () => video });
-    const createObjectURL = vi.fn(() => "blob:direct-result");
-    const revokeObjectURL = vi.fn();
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ url: "https://signed.example/result.mp4" }),
+      });
     const click = vi
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(function (this: HTMLAnchorElement) {
+        expect(this.href).toBe("https://signed.example/result.mp4");
         expect(this.download).toBe("direct-task.mp4");
-        expect(this.href).toBe("blob:direct-result");
       });
     vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
-
-    await downloadGenerationTaskResult("task 1", "direct-task.mp4");
-
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      "http://127.0.0.1:8000/api/generation-tasks/task%201/preview-url",
+    const result = await downloadGenerationTaskResult(
+      "task 1",
+      "direct-task.mp4",
     );
-    expect(
-      new Headers(fetchMock.mock.calls[0][1].headers).get("Authorization"),
-    ).toBe("Bearer test-customer-session");
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "https://provider.example/video.mp4",
-      {
-        signal: expect.any(AbortSignal),
-        credentials: "omit",
-      },
-    );
-    expect(createObjectURL).toHaveBeenCalledWith(video);
-    expect(click).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(revokeObjectURL).toHaveBeenCalledWith("blob:direct-result");
-  });
-
-  it("downloads authorized inline MP4 bytes without a data URL fetch", async () => {
-    setCustomerSessionToken("test-inline-session");
-    const fetchMock = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ url: "data:video/mp4;base64,AP+AQQ==" }),
-    });
-    const createObjectURL = vi.fn((_blob: Blob) => "blob:inline-result");
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(function (this: HTMLAnchorElement) {
-        expect(this.download).toBe("inline.mp4");
-        expect(this.href).toBe("blob:inline-result");
-      });
-    vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL: vi.fn() });
-
-    await downloadGenerationTaskResult("task-inline", "inline.mp4");
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      "http://127.0.0.1:8000/api/generation-tasks/task-inline/preview-url",
-    );
-    expect(
-      new Headers(fetchMock.mock.calls[0][1].headers).get("Authorization"),
-    ).toBe("Bearer test-inline-session");
-    const blob = createObjectURL.mock.calls[0][0] as Blob;
-    expect(blob.type).toBe("video/mp4");
-    const bytes = await new Promise<Uint8Array>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () =>
-        resolve(new Uint8Array(reader.result as ArrayBuffer));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsArrayBuffer(blob);
-    });
-    expect([...bytes]).toEqual([0, 255, 128, 65]);
+    expect(result).toEqual({ status: "started" });
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:8000/api/generation-tasks/task%201/archive",
+      "http://127.0.0.1:8000/api/assets/asset%201/download-url",
+    ]);
+    for (const call of fetchMock.mock.calls) {
+      expect(call[1].method).toBe("POST");
+      expect(new Headers(call[1].headers).get("Authorization")).toBe(
+        "Bearer test-customer-session",
+      );
+    }
     expect(click).toHaveBeenCalledOnce();
   });
 
-  it("rejects malformed inline MP4 base64 without saving or fetching it", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ url: "data:video/mp4;base64,%%%invalid%%%" }),
-    });
-    const createObjectURL = vi.fn();
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL: vi.fn() });
-
-    await expect(
-      downloadGenerationTaskResult("task-inline", "inline.mp4"),
-    ).rejects.toThrow("下载生成结果失败：内联视频数据无效。");
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(createObjectURL).not.toHaveBeenCalled();
-    expect(click).not.toHaveBeenCalled();
-  });
-
-  it.each([403, 404, 409])(
-    "does not fetch a provider file when task authorization returns %i",
+  it.each([403, 404, 409, 503])(
+    "does not download or resubmit generation when archive returns %i",
     async (status) => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: false,
         status,
         json: async () => ({ detail: { code: "RESULT_NOT_AVAILABLE" } }),
       });
+      const click = vi
+        .spyOn(HTMLAnchorElement.prototype, "click")
+        .mockImplementation(() => undefined);
       vi.stubGlobal("fetch", fetchMock);
       await expect(
         downloadGenerationTaskResult("task-other", "video.mp4"),
       ).rejects.toThrow();
       expect(fetchMock).toHaveBeenCalledOnce();
+      expect(click).not.toHaveBeenCalled();
     },
   );
 
-  it("does not save an unavailable provider response as an MP4", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ url: "https://provider.example/expired.mp4" }),
-      })
-      .mockResolvedValueOnce({ ok: false, status: 403 });
+  it("does not claim download started before archive provides an asset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result_asset_id: null }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      downloadGenerationTaskResult("task-pending", "video.mp4"),
+    ).rejects.toThrow("成片尚未保存完成");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("starts a signed result download without a second fetch or an in-memory blob", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ url: "https://signed.example/result.mp4" }),
+    });
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        expect(this.href).toBe("https://signed.example/result.mp4");
+        expect(this.download).toBe("task-1.mp4");
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      downloadGenerationResult("asset 1", "task-1.mp4"),
+    ).resolves.toEqual({ status: "started" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:8000/api/assets/asset%201/download-url",
+    );
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a missing download URL instead of navigating to the current page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ url: "" }) }),
+    );
     const click = vi
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", fetchMock);
     await expect(
-      downloadGenerationTaskResult("task-expired", "video.mp4"),
-    ).rejects.toThrow("403");
+      downloadGenerationResult("asset 1", "video.mp4"),
+    ).rejects.toThrow("下载链接");
     expect(click).not.toHaveBeenCalled();
-  });
-
-  it("times out a direct file download without retrying a paid generation", async () => {
-    vi.useFakeTimers();
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ url: "https://provider.example/slow.mp4" }),
-      })
-      .mockImplementationOnce(
-        (_url, init: RequestInit) =>
-          new Promise((_resolve, reject) => {
-            init.signal?.addEventListener("abort", () =>
-              reject(new DOMException("Aborted", "AbortError")),
-            );
-          }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-    const download = expect(
-      downloadGenerationTaskResult("task-slow", "video.mp4"),
-    ).rejects.toThrow();
-    await vi.advanceTimersByTimeAsync(60_001);
-    await download;
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("downloads a signed cross-origin result through a local blob URL", async () => {
-    vi.useFakeTimers();
-    const resultBlob = new Blob(["video"], { type: "video/mp4" });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ url: "https://signed.example/result.mp4" }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        blob: async () => resultBlob,
-      });
-    const createObjectUrl = vi.fn(() => "blob:generation-result");
-    const revokeObjectUrl = vi.fn();
-    const anchorClick = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("URL", {
-      createObjectURL: createObjectUrl,
-      revokeObjectURL: revokeObjectUrl,
-    });
-
-    await downloadGenerationResult("asset 1", "task-1.mp4");
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      "http://127.0.0.1:8000/api/assets/asset%201/download-url",
-      expect.objectContaining({ method: "POST" }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "https://signed.example/result.mp4",
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(createObjectUrl).toHaveBeenCalledWith(resultBlob);
-    expect(anchorClick).toHaveBeenCalledOnce();
-
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:generation-result");
   });
 
   it("uses the local character cache for previews and manual downloads", async () => {

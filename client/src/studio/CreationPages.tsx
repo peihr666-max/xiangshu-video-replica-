@@ -2257,8 +2257,11 @@ function videoStageIndex(status: StudioTask["status"]): number {
 }
 
 function formatElapsed(from: string): string {
-  // 服务端 CURRENT_TIMESTAMP 是 UTC 文本；补 Z 防止按本地时区解析出巨幅偏差。
-  const started = new Date(`${from.replace(" ", "T")}Z`).getTime();
+  // 只给无时区的服务端 UTC 文本补 Z，保留 ISO 时间已有的偏移量。
+  const normalized = from.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
+  const started = new Date(
+    /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}Z`,
+  ).getTime();
   if (Number.isNaN(started)) return "";
   const seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
   const minutes = Math.floor(seconds / 60);
@@ -2270,15 +2273,16 @@ function VideoProgressView({ task }: { task: StudioTask }) {
   const [copyIndex, setCopyIndex] = useState(0);
   const [, setTick] = useState(0);
   const failed = task.status === "failed" || task.status === "uncertain";
+  const completed = task.status === "completed";
 
   useEffect(() => {
-    if (failed) return;
+    if (failed || completed) return;
     const timer = window.setInterval(() => {
       setCopyIndex((value) => (value + 1) % REASSURANCE_COPY.length);
       setTick((value) => value + 1);
     }, 6000);
     return () => window.clearInterval(timer);
-  }, [failed]);
+  }, [failed, completed]);
 
   if (failed) {
     return (
@@ -2326,9 +2330,15 @@ function VideoProgressView({ task }: { task: StudioTask }) {
       />
       <div className="creation-progress-meta">
         <span>{task.status === "completed" ? "生成完成" : `${progress}%`}</span>
-        <span>已等待 {formatElapsed(task.submitted)}</span>
+        {!completed && formatElapsed(task.submitted) ? (
+          <span>已等待 {formatElapsed(task.submitted)}</span>
+        ) : null}
       </div>
-      <p className="creation-progress-copy">{REASSURANCE_COPY[copyIndex]}</p>
+      <p className="creation-progress-copy">
+        {completed
+          ? "成片已生成，可以查看、播放或下载。"
+          : REASSURANCE_COPY[copyIndex]}
+      </p>
     </div>
   );
 }
@@ -2829,9 +2839,14 @@ export function VideoPage() {
                 </div>
               )}
               {referenceModeDisabled && (
-                <p className="settings-error" role="alert">
-                  参考生视频当前未开放，请等待能力开启后再提交。
-                </p>
+                <div>
+                  <p className="settings-error" role="alert">
+                    参考生视频当前未开放，请等待能力开启后再提交。
+                  </p>
+                  <Button onClick={retryVideoCapabilities} variant="outline">
+                    刷新开放状态
+                  </Button>
+                </div>
               )}
               {!referenceAssetsPending &&
                 !referenceAssetsError &&
@@ -2977,7 +2992,27 @@ export function VideoPage() {
               }
             />
           ) : videoTask ? (
-            <VideoProgressView task={videoTask} />
+            <>
+              <VideoProgressView task={videoTask} />
+              {videoTask.status === "completed" ? (
+                <Button
+                  variant="primary"
+                  onClick={() =>
+                    navigate("task-detail", {
+                      selectedTaskId: videoTask.id,
+                      selectedTaskKind: videoTask.backendKind,
+                      selectedTaskBackendId:
+                        videoTask.backendId ??
+                        videoTask.batchId ??
+                        videoTask.id,
+                      returnTo: state.page,
+                    })
+                  }
+                >
+                  查看成片
+                </Button>
+              ) : null}
+            </>
           ) : referenceMode ? (
             references.length ? (
               <Media

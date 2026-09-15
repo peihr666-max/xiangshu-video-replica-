@@ -1198,6 +1198,110 @@ describe("V1.4 创作页面", () => {
     expect(replicaApi.getAssetDownloadUrl).toHaveBeenCalledTimes(2);
   });
 
+  it("参考模式未开放时可主动刷新而不提交付费任务", () => {
+    const value = studio();
+    const retry = vi.fn();
+    value.state = { ...value.state, page: "reference" };
+    useStudio.mockReturnValue({
+      ...value,
+      review: false,
+      videoCapabilitiesStatus: "ready",
+      videoCapabilities: {
+        extended_modes_enabled: false,
+        t2v_enabled: false,
+        i2v_enabled: true,
+        r2v_enabled: false,
+        last_frame_enabled: false,
+        max_reference_images: 8,
+        max_reference_videos: 3,
+        max_reference_audios: 3,
+        max_quantity: 4,
+      },
+      retryVideoCapabilities: retry,
+    });
+    render(<VideoPage />);
+    fireEvent.click(screen.getByRole("button", { name: "刷新开放状态" }));
+    expect(retry).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "生成视频" })).toBeDisabled();
+  });
+
+  it("完成任务有明确成片入口且不继续显示等待提示", () => {
+    const value = studio();
+    value.state = {
+      ...value.state,
+      page: "video",
+      draft: {
+        ...value.state.draft,
+        firstFrameId: undefined,
+        videoBatchId: "done",
+      },
+    };
+    value.data = {
+      ...value.data,
+      tasks: [
+        {
+          id: "done",
+          backendKind: "generation_batch",
+          backendId: "done",
+          title: "庭院",
+          type: "视频生成",
+          status: "completed",
+          submitted: "2026-09-15T03:45:09+00:00",
+        },
+      ],
+    };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+    fireEvent.click(screen.getByRole("button", { name: "查看成片" }));
+    expect(value.navigate).toHaveBeenCalledWith(
+      "task-detail",
+      expect.objectContaining({
+        selectedTaskId: "done",
+        selectedTaskBackendId: "done",
+        returnTo: "video",
+      }),
+    );
+    expect(screen.queryByText(/已等待/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    "2026-09-15T03:45:09+00:00",
+    "2026-09-15T03:45:09Z",
+    "2026-09-15 03:45:09",
+    "2026-09-15 03:45:09.123456+00",
+    "2026-09-15 11:45:09+08",
+  ])("生成等待时长正确读取时区时间 %s", (submitted) => {
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2026-09-15T03:46:19Z"));
+    const value = studio();
+    value.state = {
+      ...value.state,
+      page: "video",
+      draft: {
+        ...value.state.draft,
+        firstFrameId: undefined,
+        videoBatchId: "running",
+      },
+    };
+    value.data = {
+      ...value.data,
+      tasks: [
+        {
+          id: "running",
+          title: "庭院",
+          type: "视频生成",
+          status: "running",
+          submitted,
+        },
+      ],
+    };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+    expect(screen.getByText("已等待 1 分 10 秒")).toBeInTheDocument();
+    clock.mockRestore();
+  });
+
   it("历史视频任务不遮挡新首帧加载失败与重试", async () => {
     replicaApi.getAssetDownloadUrl.mockRejectedValue(
       new Error("签名服务暂时不可用"),

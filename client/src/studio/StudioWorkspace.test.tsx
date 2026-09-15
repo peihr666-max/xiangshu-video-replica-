@@ -492,6 +492,23 @@ describe("V1.4 workspace integration", () => {
       screen.getByRole("button", { name: "用户档案，积分 读取失败" }),
     ).toBeInTheDocument();
   });
+  it("展开导航后可直接关闭并恢复入口焦点，无需切换当前业务", () => {
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("workbench")}
+      />,
+    );
+    const toggle = screen.getByRole("button", { name: "展开导航" });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "关闭导航" }));
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+    expect(screen.getByRole("heading", { name: /工作台/ })).toBeInTheDocument();
+  });
+
   it("保持共享壳层尺寸稳定，避免路由切换时 Logo 和标题跳动", () => {
     const { container } = render(
       <StudioWorkspace
@@ -1729,6 +1746,34 @@ describe("V1.4 workspace integration", () => {
       expect(live.persistCloudDraft).toHaveBeenCalledTimes(1);
     });
 
+    it.each(["video", "reference"] as const)(
+      "%s 视频草稿直接保存云端而不创建空文案",
+      async (page) => {
+        live.loadStudioData.mockResolvedValue({
+          ...emptyStudioData,
+          materials: [],
+        });
+        live.loadCloudDraft.mockResolvedValue(undefined);
+        const state = createState(page);
+        state.draft.prompt = "按参考人物生成工地讲解视频";
+        state.draft.script.text = "";
+        render(
+          <StudioWorkspace currentUser={reviewUser} initialState={state} />,
+        );
+        await screen.findByRole("button", { name: "保存草稿" });
+        fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+        expect(
+          await screen.findByText(
+            "视频草稿已保存到云端，可继续编辑或换设备恢复。",
+          ),
+        ).toBeInTheDocument();
+        expect(live.persistSavedScript).not.toHaveBeenCalled();
+        expect(live.persistCloudDraft.mock.calls[0]?.[0]).toEqual(
+          expect.objectContaining({ prompt: state.draft.prompt }),
+        );
+      },
+    );
+
     it("版本保存失败时仍保持未保存门禁", async () => {
       live.loadStudioData.mockResolvedValue(emptyStudioData);
       live.loadCloudDraft.mockResolvedValue(undefined);
@@ -2375,6 +2420,75 @@ describe("数字人口播提交", () => {
 });
 
 describe("视频生成（C2 独立创作）", () => {
+  it("参考选择器排除供应商直链条目并保留已归档资产", async () => {
+    live.loadStudioData.mockResolvedValue({
+      ...emptyStudioData,
+      materials: [
+        {
+          id: "generation:task-direct",
+          name: "尚未归档的视频",
+          kind: "video",
+          group: "任务结果",
+          source: "生成结果",
+          saved: false,
+          delivery: "direct",
+          allowedUses: [],
+        },
+        {
+          id: "stored-video",
+          assetId: "stored-video",
+          name: "已经保存的视频",
+          kind: "video",
+          group: "任务结果",
+          source: "生成结果",
+          saved: true,
+          allowedUses: ["reference"],
+        },
+      ],
+    });
+    render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        initialState={createState("reference")}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /从素材库选择/ }),
+    );
+    expect(
+      await screen.findByRole("button", { name: /已经保存的视频/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /尚未归档的视频/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("视频提交失败在确认弹窗内显示，不误报未扣费", async () => {
+    live.loadStudioData.mockResolvedValue(emptyStudioData);
+    api.createIndependentVideoTask.mockRejectedValueOnce(
+      new Error("素材已失效，请重新选择"),
+    );
+    render(<StudioWorkspace currentUser={reviewUser} />);
+    await openVideoPage();
+    fireEvent.change(screen.getByLabelText("提示词"), {
+      target: { value: "乡墅庭院" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成视频" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "生成确认 · 视频生成",
+    });
+    await screen.findByText(/9\.60 元/);
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "确认费用并提交" }),
+    );
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "素材已失效，请重新选择",
+    );
+    expect(
+      within(dialog).queryByText("尚未提交 · 未扣费"),
+    ).not.toBeInTheDocument();
+    expect(api.createIndependentVideoTask).toHaveBeenCalledOnce();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();

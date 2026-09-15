@@ -1021,14 +1021,28 @@ def test_t2v_and_r2v_tasks_run_through_worker_with_protocol_payload(scene: str) 
     assert "first_frame" not in roles and "last_frame" not in roles
 
 
-def test_r2v_reference_video_and_audio_flow_through_worker_payload(scene: str) -> None:
+@pytest.mark.parametrize("library_assets", [False, True])
+def test_r2v_reference_video_and_audio_flow_through_worker_payload(
+    scene: str, library_assets: bool
+) -> None:
     """R2V 参考视频/音频端到端：请求 → prompt_snapshot → lease → provider_request。"""
     _enable_extended_modes()
+    if library_assets:
+        with pg_transaction() as raw:
+            conn = BusinessConnection.postgres(raw)
+            conn.execute(
+                "UPDATE assets SET kind = 'character_approved_image', project_id = 'project_a' "
+                "WHERE id = 'frame-owned'"
+            )
+            conn.execute(
+                "UPDATE assets SET kind = 'oral_audio', project_id = 'project_a' "
+                "WHERE id = 'material-audio-owned'"
+            )
     _create(
         IndependentVideoRequest(
             mode="r2v",
-            prompt_text="参考视频与音频生成别墅外观",
-            reference_asset_ids=["material-video-owned", "material-audio-owned"],
+            prompt_text="视频@1的人物用图片@2替换，音色参考@3，保留@10与user@1.example。",
+            reference_asset_ids=["material-video-owned", "frame-owned", "material-audio-owned"],
             output_duration_seconds=6,
             quantity=1,
             idempotency_key="r2v-media-worker",
@@ -1053,10 +1067,15 @@ def test_r2v_reference_video_and_audio_flow_through_worker_payload(scene: str) -
         "fake://generation-results/ref-audio.mp3"
     ]
     request_payload = json.loads(str(row["provider_request_json"]))
+    assert request_payload["content"][0]["text"] == (
+        "视频<Video 1>的人物用图片<Picture 1>替换，音色参考<Audio 1>，保留@10与user@1.example。"
+    )
+    assert snapshot["reference_labels"] == {"1": "<Video 1>", "2": "<Picture 1>", "3": "<Audio 1>"}
     roles = [item.get("role") for item in request_payload["content"][1:]]
-    assert roles == ["reference_video", "reference_audio"]
-    assert request_payload["content"][1]["video_url"]["url"]
-    assert request_payload["content"][2]["audio_url"]["url"]
+    assert roles == ["reference_image", "reference_video", "reference_audio"]
+    assert request_payload["content"][1]["image_url"]["url"]
+    assert request_payload["content"][2]["video_url"]["url"]
+    assert request_payload["content"][3]["audio_url"]["url"]
 
 
 def test_r2v_rejects_replica_source_video_as_reference(scene: str) -> None:

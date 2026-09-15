@@ -1934,8 +1934,9 @@ export async function archiveGenerationTask(
 ): Promise<GenerationTask> {
   return requestGenerationJson<GenerationTask>(
     `/api/generation-tasks/${encodeURIComponent(taskId)}/archive`,
-    "保存成片失败，请重试；不会重新生成或扣费",
+    "保存结果暂未确认，请刷新任务核对；不会重新生成或扣费",
     { method: "POST" },
+    CLOUD_OP_TIMEOUT_MS,
   );
 }
 
@@ -2017,6 +2018,10 @@ export async function downloadGenerationResult(
   assetId: string,
   filename: string,
 ): Promise<VideoDownloadResult> {
+  if (!isTauri()) {
+    await downloadMaterialAsset(assetId, filename);
+    return { status: "started" };
+  }
   return downloadVideoResult(
     async () => (await getGenerationResultDownloadUrl(assetId)).url,
     filename,
@@ -2027,6 +2032,16 @@ export async function downloadGenerationTaskResult(
   taskId: string,
   filename: string,
 ): Promise<VideoDownloadResult> {
+  if (!isTauri()) {
+    // A browser-managed HTTP attachment survives navigation and does not rely
+    // on a short-lived blob URL. Archive only the existing result, never submit
+    // generation again; the archive endpoint reuses an already saved asset.
+    const task = await archiveGenerationTask(taskId);
+    if (!task.result_asset_id) {
+      throw new Error("成片尚未保存完成，请重试；不会重新生成或扣费。");
+    }
+    return downloadGenerationResult(task.result_asset_id, filename);
+  }
   return downloadVideoResult(
     () => createGenerationTaskPreviewUrl(taskId),
     filename,
@@ -2069,15 +2084,6 @@ async function downloadVideoResult(
   getUrl: () => Promise<string>,
   filename: string,
 ): Promise<VideoDownloadResult> {
-  if (!isTauri()) {
-    downloadBlob(
-      await fetchGenerationResultBlob(await getUrl(), "下载生成结果失败"),
-      filename,
-    );
-    // 浏览器不会向页面确认用户是否保存了文件，不能声称已保存。
-    return { status: "started" };
-  }
-
   let destination: NativeVideoDownload | null;
   try {
     destination = await invoke<NativeVideoDownload | null>(

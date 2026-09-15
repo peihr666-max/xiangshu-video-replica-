@@ -371,6 +371,13 @@ export type ReferenceLimits = {
   maxReferenceAudios?: number;
 };
 
+export function isReferenceAsset(asset: StudioAsset): boolean {
+  return (
+    asset.delivery !== "direct" &&
+    (asset.allowedUses === undefined || asset.allowedUses.includes("reference"))
+  );
+}
+
 /**
  * R2V 参考素材统一混合列表校验：一个 referenceIds 里可混合图片/视频/音频，
  * 按资产 kind 分流后各自计数、各自套用上限（默认图 8 / 视频 3 / 音频 3），
@@ -399,7 +406,7 @@ export function validateReferences(
     }
     seen.add(id);
     const asset = assetById.get(id);
-    if (!asset) {
+    if (!asset || !isReferenceAsset(asset)) {
       invalidCount += 1;
       continue;
     }

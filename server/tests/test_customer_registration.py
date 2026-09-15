@@ -754,10 +754,12 @@ def test_concurrent_password_retries_create_one_device_and_one_session(
         )
 
 
+@pytest.mark.parametrize("renew_during", [None, "provider", "media"])
 def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
     client: TestClient,
     route_state: str,
     monkeypatch: pytest.MonkeyPatch,
+    renew_during: str | None,
 ) -> None:
     import app.viral_import as domain
     import app.viral_import_routes as routes
@@ -773,6 +775,8 @@ def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
 
         def request(self, url: str, *, headers: Any) -> bytes:
             self.calls += 1
+            if renew_during == "provider":
+                renew_session()
             return b'{"code":0,"data":{"note_id":"66e012345678901234abcdef","video":["https://cdn.example/note.mp4"],"audio":["https://cdn.example/background-music.m4a"]}}'
 
     storage = FakeStorageAdapter(provider="fake", bucket="private")
@@ -803,7 +807,11 @@ def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
     )
     monkeypatch.setattr(routes, "douyidou_link_client_from_settings", lambda conn: resolver)
     monkeypatch.setattr(routes, "get_media_storage", lambda conn: storage)
-    monkeypatch.setattr(routes, "preflight_resolved_media", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        routes,
+        "preflight_resolved_media",
+        lambda *args, **kwargs: renew_session() if renew_during == "media" else None,
+    )
     monkeypatch.setattr(domain, "ViralMediaPipeline", Pipeline)
     monkeypatch.setattr(domain, "viral_source_client_from_settings", lambda conn: None)
     with psycopg.connect(route_state) as conn:
@@ -813,6 +821,20 @@ def test_password_customer_xiaohongshu_resolution_import_and_replay_on_postgres(
         )
     user = client.post(REGISTER_PATH, json={"username": "alice", "password": VALID_PASSWORD}).json()
     session = _password_login(client).json()
+    with psycopg.connect(route_state) as conn:
+        conn.execute(
+            "UPDATE customer_session_state SET lease_until="
+            "(clock_timestamp() + interval '60 seconds')::text WHERE user_id=%s",
+            (user["user_id"],),
+        )
+
+    def renew_session() -> None:
+        renewed = client.post(
+            "/api/customer/sessions/heartbeat",
+            headers={"Authorization": "Bearer " + session["session_token"]},
+        )
+        assert renewed.status_code == 200, renewed.text
+
     headers = {
         "Authorization": "Bearer " + session["session_token"],
         "Idempotency-Key": "xhs-resolve",

@@ -213,6 +213,7 @@ export function WorkbenchPage() {
     updateData,
     state,
     extractScriptFromUpload,
+    refresh,
   } = useStudio();
   const accountId = user.id || "anonymous";
   const accountGenerationRef = useRef({ accountId, generation: 0 });
@@ -383,6 +384,7 @@ export function WorkbenchPage() {
         sourceId: task.sourceAssetId,
         sourceAssetId: task.sourceAssetId,
       });
+      refresh();
       if (purpose === "copy") {
         extractScriptFromUpload(task.projectId, task.sourceAssetId);
       } else {
@@ -1443,7 +1445,9 @@ export function TaskDetailPage() {
           ? `终稿 V${task.scriptVersion}`
           : task.backendKind === "oral_task"
             ? "文案口播"
-            : "项目分镜",
+            : task.projectId
+              ? "项目分镜"
+              : "独立视频创作",
     ],
     ["IP", person?.name || "—"],
     ...(task.driverMode !== "audio"
@@ -1540,10 +1544,13 @@ export function TaskDetailPage() {
       setPreviewLoad({ key: requestedContext, status: "ready", asset });
       notify("成片已保存到素材库，可复用或创建发布草稿。未重复扣费。");
     } catch (error) {
-      if (previewContextRef.current === requestedContext)
+      if (previewContextRef.current === requestedContext) {
         notify(
           error instanceof Error ? error.message : "保存成片失败，请重试。",
         );
+        // 超时不代表服务端停止归档；只重新读取结果，不重发保存或生成请求。
+        await previewResult();
+      }
     } finally {
       if (previewContextRef.current === requestedContext)
         setActionBusy(undefined);

@@ -375,6 +375,26 @@ const referenceFixture = (
 });
 
 describe("R2V 参考素材统一混合列表校验", () => {
+  it("未归档成片与明确禁止参考的素材不能成为付费任务资产", () => {
+    const result = validateReferences(
+      ["direct", "forbidden", "stored"],
+      [
+        {
+          ...referenceFixture("direct", "video"),
+          delivery: "direct",
+          saved: false,
+        },
+        {
+          ...referenceFixture("forbidden", "audio"),
+          allowedUses: ["voice_clone"],
+        },
+        { ...referenceFixture("stored", "video"), allowedUses: ["reference"] },
+      ],
+    );
+    expect(result.invalidCount).toBe(2);
+    expect(result.referenceIds).toEqual(["stored"]);
+    expect(result.repairIds).toEqual(["stored"]);
+  });
   it("默认每类上限为图 8 / 视频 3 / 音频 3", () => {
     expect(DEFAULT_MAX_REFERENCE_IMAGES).toBe(8);
     expect(DEFAULT_MAX_REFERENCE_VIDEOS).toBe(3);

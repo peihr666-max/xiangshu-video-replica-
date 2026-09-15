@@ -17,6 +17,7 @@ worker 提交/轮询/归档、钱包按秒计费（RESERVE/SETTLE/RELEASE）、�
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Any, Literal
 from uuid import uuid4
@@ -53,12 +54,13 @@ _FRAME_IMAGE_KINDS = {
     "first_frame",
     "character_source_image",
     "character_contact_sheet",
+    "character_approved_image",
 }
 # R2V 多模态参考允许的视频/音频资产类别：用户素材通道（materials）产物。
 # 与“复刻源视频”（kind=reference_video，被拆解的原始爆款）区分——那不是 H3
 # R2V 的生成参考输入。
 _REFERENCE_VIDEO_KINDS = {"video", "material_video"}
-_REFERENCE_AUDIO_KINDS = {"audio", "material_audio"}
+_REFERENCE_AUDIO_KINDS = {"audio", "material_audio", "oral_audio"}
 # R2V 参考素材允许的类别并集：统一混合列表 reference_asset_ids 里的资产按
 # kind 自动分流到图片/视频/音频三个 role。
 _REFERENCE_ANY_KINDS = _FRAME_IMAGE_KINDS | _REFERENCE_VIDEO_KINDS | _REFERENCE_AUDIO_KINDS
@@ -343,7 +345,8 @@ def create_independent_batch(
     reference_images: list[dict[str, str]] = []
     reference_videos: list[dict[str, str]] = []
     reference_audios: list[dict[str, str]] = []
-    for asset_id in request.reference_asset_ids:
+    reference_labels: dict[str, str] = {}
+    for index, asset_id in enumerate(request.reference_asset_ids, start=1):
         resolved = _validated_frame_asset(
             conn,
             actor=actor,
@@ -362,14 +365,28 @@ def create_independent_batch(
                     "name": f"ref-{len(reference_images) + 1}",
                 }
             )
+            reference_labels[str(index)] = f"<Picture {len(reference_images)}>"
         elif kind in _REFERENCE_VIDEO_KINDS:
             reference_videos.append({"asset_id": resolved["asset_id"], "uri": resolved["uri"]})
+            reference_labels[str(index)] = f"<Video {len(reference_videos)}>"
         else:
             reference_audios.append({"asset_id": resolved["asset_id"], "uri": resolved["uri"]})
+            reference_labels[str(index)] = f"<Audio {len(reference_audios)}>"
     _validate_reference_kind_limits(
         image_count=len(reference_images),
         video_count=len(reference_videos),
         audio_count=len(reference_audios),
+    )
+    # UI 的 @N 按混合素材排列，供应商标签则按媒体类型独立编号。
+    # 原文保留在批次快照，仅编译发给模型的文本；不改写邮箱等普通内容。
+    provider_prompt = (
+        re.sub(
+            r"(?<![A-Za-z0-9_@])@([1-9]\d*)(?!\d)",
+            lambda match: reference_labels.get(match[1], match[0]),
+            request.prompt_text,
+        )
+        if mode_upper == "R2V"
+        else request.prompt_text
     )
 
     try:
@@ -405,7 +422,8 @@ def create_independent_batch(
         task_prompt_snapshot: dict[str, Any] = {
             "schema_version": "independent.v1",
             "generation_mode": mode_upper,
-            "prompt_text": request.prompt_text,
+            "prompt_text": provider_prompt,
+            "reference_labels": reference_labels,
             "output_duration_seconds": request.output_duration_seconds,
             "resolution": request.resolution,
             "ratio": request.ratio,
