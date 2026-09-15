@@ -375,6 +375,7 @@ export function StudioWorkspace({
   const [videoQuoteRevision, setVideoQuoteRevision] = useState(0);
   const [videoSubmitting, setVideoSubmitting] = useState(false);
   const [videoSubmitError, setVideoSubmitError] = useState("");
+  const [videoSubmitRejected, setVideoSubmitRejected] = useState(false);
   const busyRef = useRef(false);
   const pendingRouteRef = useRef<
     ReturnType<typeof studioRouteFromHash> | undefined
@@ -987,6 +988,7 @@ export function StudioWorkspace({
     videoSubmittingRef.current = true;
     setVideoSubmitting(true);
     setVideoSubmitError("");
+    setVideoSubmitRejected(false);
     try {
       const mode = resolveVideoMode(state.page, Boolean(draft.firstFrameId));
       if (mode === "r2v") {
@@ -1041,6 +1043,11 @@ export function StudioWorkspace({
           "视频生成任务提交失败，请稍后重试。",
         );
         setVideoSubmitError(message);
+        // Validation runs before task creation and billing; transport errors
+        // remain uncertain and keep the existing idempotent retry guidance.
+        setVideoSubmitRejected(
+          cause instanceof Error && "status" in cause && cause.status === 422,
+        );
       }
     } finally {
       if (videoSubmitAttemptRef.current === attempt) {
@@ -1503,6 +1510,7 @@ export function StudioWorkspace({
       generationDialogRevisionRef.current += 1;
       generationRef.current = kind;
       setVideoSubmitError("");
+      setVideoSubmitRejected(false);
       setGeneration(kind);
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : "请检查生成原材料");
@@ -2061,7 +2069,9 @@ export function StudioWorkspace({
                 <dt>提交状态</dt>
                 <dd>
                   {generation === "视频生成" && videoSubmitError
-                    ? "提交未成功确认，请核对任务及流水"
+                    ? videoSubmitRejected
+                      ? "提交被拒绝 · 未创建任务 · 未扣费"
+                      : "提交未成功确认，请核对任务及流水"
                     : "尚未提交 · 未扣费"}
                 </dd>
               </div>

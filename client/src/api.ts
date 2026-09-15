@@ -4572,6 +4572,8 @@ const BRANDED_SERVICE_ERRORS: ReadonlyArray<{
 ];
 
 const CUSTOMER_ACCOUNT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  METASO_REQUIRES_CLOUD_STORAGE:
+    "所选素材尚未存入当前云端素材库。请选择已归档的素材，或联系管理员完成云端存储配置后重新上传。",
   ANALYSIS_VIDEO_URL_UNAVAILABLE:
     "当前视频尚未就绪，无法交给云端分析。请联系管理员配置云端素材存储，再重新上传视频。",
   SINGLE_PERSON_SOURCE_REQUIRED:

@@ -806,6 +806,16 @@ describe("API base URL resolution", () => {
 });
 
 describe("customer-visible service errors", () => {
+  it("cloud frame validation explains how to repair the input", () => {
+    expect(
+      customerVisibleErrorMessage({
+        code: "METASO_REQUIRES_CLOUD_STORAGE",
+        message: "METASO H3 requires an HTTPS first-frame URL",
+      }),
+    ).toBe(
+      "所选素材尚未存入当前云端素材库。请选择已归档的素材，或联系管理员完成云端存储配置后重新上传。",
+    );
+  });
   it("preserves actionable analysis storage guidance before generic provider branding", () => {
     expect(
       customerVisibleErrorMessage({

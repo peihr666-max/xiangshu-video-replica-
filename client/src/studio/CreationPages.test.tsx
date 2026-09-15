@@ -1072,6 +1072,18 @@ describe("V1.4 创作页面", () => {
 
   it("视频页按确认首帧 ID 恢复签名预览并交给生成请求", async () => {
     const value = studio({ review: false });
+    value.videoCapabilitiesStatus = "ready";
+    value.videoCapabilities = {
+      extended_modes_enabled: false,
+      t2v_enabled: false,
+      i2v_enabled: true,
+      r2v_enabled: false,
+      last_frame_enabled: false,
+      max_reference_images: 8,
+      max_reference_videos: 3,
+      max_reference_audios: 3,
+      max_quantity: 4,
+    };
     value.state = {
       ...value.state,
       page: "video",
@@ -1225,44 +1237,110 @@ describe("V1.4 创作页面", () => {
     expect(screen.getByRole("button", { name: "生成视频" })).toBeDisabled();
   });
 
-  it("完成任务有明确成片入口且不继续显示等待提示", () => {
-    const value = studio();
-    value.state = {
-      ...value.state,
-      page: "video",
-      draft: {
-        ...value.state.draft,
-        firstFrameId: undefined,
-        videoBatchId: "done",
-      },
-    };
-    value.data = {
-      ...value.data,
-      tasks: [
-        {
-          id: "done",
-          backendKind: "generation_batch",
-          backendId: "done",
-          title: "庭院",
-          type: "视频生成",
-          status: "completed",
-          submitted: "2026-09-15T03:45:09+00:00",
+  it.each(["loading", "error", "closed", "closed-image", "open-image"])(
+    "文图生视频按能力状态决定能否提交：%s",
+    (state) => {
+      const value = studio({ review: false });
+      value.state = {
+        ...value.state,
+        page: "video",
+        draft: {
+          ...value.state.draft,
+          firstFrameId: state.endsWith("image") ? "frame-1" : undefined,
         },
-      ],
-    };
-    useStudio.mockReturnValue(value);
-    render(<VideoPage />);
-    fireEvent.click(screen.getByRole("button", { name: "查看成片" }));
-    expect(value.navigate).toHaveBeenCalledWith(
-      "task-detail",
-      expect.objectContaining({
-        selectedTaskId: "done",
-        selectedTaskBackendId: "done",
-        returnTo: "video",
-      }),
-    );
-    expect(screen.queryByText(/已等待/)).not.toBeInTheDocument();
-  });
+      };
+      value.data.assets = value.data.assets.map((asset) =>
+        asset.id === "frame-1"
+          ? { ...asset, url: "https://assets.example/frame.png" }
+          : asset,
+      );
+      value.videoCapabilitiesStatus =
+        state === "loading" || state === "error" ? state : "ready";
+      value.videoCapabilities =
+        state === "loading"
+          ? undefined
+          : {
+              extended_modes_enabled: false,
+              t2v_enabled: false,
+              i2v_enabled: state !== "closed-image",
+              r2v_enabled: false,
+              last_frame_enabled: false,
+              max_reference_images: 8,
+              max_reference_videos: 3,
+              max_reference_audios: 3,
+              max_quantity: 4,
+            };
+      value.retryVideoCapabilities = vi.fn();
+      useStudio.mockReturnValue(value);
+      render(<VideoPage />);
+      const submit = screen.getByRole("button", { name: "生成视频" });
+      if (state === "open-image") {
+        expect(submit).toBeEnabled();
+      } else {
+        expect(submit).toBeDisabled();
+        if (state.startsWith("closed") || state === "error") {
+          fireEvent.click(
+            screen.getByRole("button", {
+              name: state.startsWith("closed")
+                ? "刷新开放状态"
+                : "重试读取视频能力",
+            }),
+          );
+          expect(value.retryVideoCapabilities).toHaveBeenCalledOnce();
+        }
+      }
+    },
+  );
+
+  it.each(["completed", "cancelled"] as const)(
+    "终态 %s 不继续显示等待提示",
+    (status) => {
+      const value = studio();
+      value.state = {
+        ...value.state,
+        page: "video",
+        draft: {
+          ...value.state.draft,
+          firstFrameId: undefined,
+          videoBatchId: "done",
+        },
+      };
+      value.data = {
+        ...value.data,
+        tasks: [
+          {
+            id: "done",
+            backendKind: "generation_batch",
+            backendId: "done",
+            title: "庭院",
+            type: "视频生成",
+            status,
+            submitted: "2026-09-15T03:45:09+00:00",
+          },
+        ],
+      };
+      useStudio.mockReturnValue(value);
+      render(<VideoPage />);
+      if (status === "completed") {
+        fireEvent.click(screen.getByRole("button", { name: "查看成片" }));
+        expect(value.navigate).toHaveBeenCalledWith(
+          "task-detail",
+          expect.objectContaining({
+            selectedTaskId: "done",
+            selectedTaskBackendId: "done",
+            returnTo: "video",
+          }),
+        );
+      } else {
+        expect(screen.getByText("任务已取消")).toBeInTheDocument();
+        expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("button", { name: "查看成片" }),
+        ).not.toBeInTheDocument();
+      }
+      expect(screen.queryByText(/已等待/)).not.toBeInTheDocument();
+    },
+  );
 
   it.each([
     "2026-09-15T03:45:09+00:00",

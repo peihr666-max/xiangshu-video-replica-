@@ -2658,7 +2658,7 @@ describe("视频生成（C2 独立创作）", () => {
     );
   }
 
-  it("T2V 扩展模式被门禁时不打开确认弹窗并提示等待供应商核对", async () => {
+  it("T2V 未开放时提前禁用提交并提示可选用图生视频", async () => {
     api.getIndependentCapabilities.mockResolvedValue({
       extended_modes_enabled: false,
       t2v_enabled: false,
@@ -2680,8 +2680,9 @@ describe("视频生成（C2 独立创作）", () => {
     fireEvent.click(screen.getByRole("button", { name: "生成视频" }));
 
     expect(
-      await screen.findByText("该模式暂未开放，敬请期待。"),
+      await screen.findByText("文生视频当前未开放，可添加首帧使用图生视频。"),
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成视频" })).toBeDisabled();
     expect(screen.queryByText("生成确认 · 视频生成")).toBeNull();
     expect(api.createIndependentVideoTask).not.toHaveBeenCalled();
   });
@@ -3836,6 +3837,9 @@ describe("视频生成（C2 独立创作）", () => {
     expect(
       await screen.findByText("提交结果未知，请安全重试。"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText("提交未成功确认，请核对任务及流水"),
+    ).toBeInTheDocument();
     fireEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
         name: "关闭",
@@ -3867,6 +3871,27 @@ describe("视频生成（C2 独立创作）", () => {
     const thirdRequest = api.createIndependentVideoTask.mock.calls[2]?.[0];
     expect(thirdRequest.prompt_text).toBe("夜景乡墅庭院");
     expect(thirdRequest.idempotency_key).not.toBe(firstRequest.idempotency_key);
+  });
+
+  it("视频参数被拒绝时明确未创建任务且未扣费", async () => {
+    api.createIndependentVideoTask.mockRejectedValueOnce(
+      Object.assign(new Error("生成参数无效，请检查后重试"), {
+        status: 422,
+        code: "METASO_REQUIRES_CLOUD_STORAGE",
+      }),
+    );
+    live.loadStudioData.mockResolvedValue(emptyStudioData);
+    render(<StudioWorkspace currentUser={reviewUser} />);
+    await openVideoPage();
+    fireEvent.change(screen.getByLabelText("提示词"), {
+      target: { value: "庭院镜头" },
+    });
+    fireEvent.click(await findEnabledButton("生成视频"));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
+    expect(
+      await screen.findByText("提交被拒绝 · 未创建任务 · 未扣费"),
+    ).toBeInTheDocument();
+    expect(api.createIndependentVideoTask).toHaveBeenCalledOnce();
   });
 
   it("提示词导入：从我的提示词一键回填", async () => {

@@ -2274,15 +2274,27 @@ function VideoProgressView({ task }: { task: StudioTask }) {
   const [, setTick] = useState(0);
   const failed = task.status === "failed" || task.status === "uncertain";
   const completed = task.status === "completed";
+  const cancelled = task.status === "cancelled";
 
   useEffect(() => {
-    if (failed || completed) return;
+    if (failed || completed || cancelled) return;
     const timer = window.setInterval(() => {
       setCopyIndex((value) => (value + 1) % REASSURANCE_COPY.length);
       setTick((value) => value + 1);
     }, 6000);
     return () => window.clearInterval(timer);
-  }, [failed, completed]);
+  }, [failed, completed, cancelled]);
+
+  if (cancelled) {
+    return (
+      <div className="creation-progress" role="status">
+        <div className="creation-progress-headline">任务已取消</div>
+        <p className="creation-progress-copy">
+          本次任务已结束，计费结果可在账户流水中查看。
+        </p>
+      </div>
+    );
+  }
 
   if (failed) {
     return (
@@ -2662,6 +2674,16 @@ export function VideoPage() {
   const effectiveCapabilitiesStatus = review
     ? "ready"
     : (videoCapabilitiesStatus ?? (videoCapabilities ? "ready" : "loading"));
+  const videoCapabilityPending =
+    !referenceMode && effectiveCapabilitiesStatus === "loading";
+  const videoCapabilityError =
+    !referenceMode && effectiveCapabilitiesStatus === "error";
+  const videoModeDisabled =
+    !referenceMode &&
+    !review &&
+    (firstFrameId
+      ? videoCapabilities?.i2v_enabled === false
+      : videoCapabilities?.t2v_enabled === false);
   const referenceCapabilityPending =
     referenceMode && effectiveCapabilitiesStatus === "loading";
   const referenceCapabilityError =
@@ -2687,7 +2709,10 @@ export function VideoPage() {
         !referenceHasIssues &&
         !referenceAssetsPending &&
         !referenceAssetsError
-      : !firstFrameId || Boolean(firstFrame));
+      : !videoCapabilityPending &&
+        !videoCapabilityError &&
+        !videoModeDisabled &&
+        (!firstFrameId || Boolean(firstFrame)));
   const videoTask = state.draft.videoBatchId
     ? data.tasks.find((task) => task.id === state.draft.videoBatchId)
     : undefined;
@@ -2903,6 +2928,31 @@ export function VideoPage() {
           ) : (
             <ControlGroup label="首尾帧">
               <Hint>无首帧时文生视频；添加首帧后图生视频。</Hint>
+              {videoCapabilityPending && (
+                <p role="status">正在读取视频生成能力，请稍候。</p>
+              )}
+              {videoCapabilityError && (
+                <div>
+                  <p className="settings-error" role="alert">
+                    视频生成能力读取失败，请重试。
+                  </p>
+                  <Button onClick={retryVideoCapabilities} variant="outline">
+                    重试读取视频能力
+                  </Button>
+                </div>
+              )}
+              {videoModeDisabled && !videoCapabilityError && (
+                <div>
+                  <p className="settings-error" role="alert">
+                    {firstFrameId
+                      ? "图生视频当前未开放，请等待能力开启后再提交。"
+                      : "文生视频当前未开放，可添加首帧使用图生视频。"}
+                  </p>
+                  <Button onClick={retryVideoCapabilities} variant="outline">
+                    刷新开放状态
+                  </Button>
+                </div>
+              )}
               <div className="creation-frame-row">
                 <div className="creation-frame-slot">
                   <button
