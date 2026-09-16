@@ -1467,4 +1467,4 @@ R28 收尾：完整 PostgreSQL 四分片为 486 + 505 + 612 + 510 = 2113 passed 
 
 ## 2026-09-16 PROMPT-OPTIMIZE-20260916 · 证据登记
 
-用户已授权 Codex 接手 Claude 会话 fbeae78e 的既有独立 worktree/分支，原进程已停止且成果已备份；不重复开发。H01—H14 实现与代码自检完成；本地静态门和后端全量后的全部失败项/新增专项通过，H15 提交 PR 与 CI 中。改动范围、规格映射、评审与测试见 [H3 实施证据](evidence/PROMPT-OPTIMIZE-20260916-EVIDENCE.md)。AUTOMATED_VERIFIED（本地）；PR 三门禁另行核验，未宣称独立评审、真实链路、合并或部署完成。
+用户已授权 Codex 接手 Claude 会话 fbeae78e 的既有独立 worktree/分支，原进程已停止且成果已备份；不重复开发。H01—H14 实现与代码自检完成；本地静态门和后端全量后的全部失败项/新增专项通过，H15 已提交 [PR #125](https://github.com/peihr666-max/xiangshu-video-replica-/pull/125) 并触发 CI，当前为 REVIEW 交付状态。改动范围、规格映射、评审与测试见 [H3 实施证据](evidence/PROMPT-OPTIMIZE-20260916-EVIDENCE.md)。AUTOMATED_VERIFIED（本地）；远程三门禁以 PR 当前 head 的 Checks 为准，未宣称独立评审、真实链路、合并或部署完成。

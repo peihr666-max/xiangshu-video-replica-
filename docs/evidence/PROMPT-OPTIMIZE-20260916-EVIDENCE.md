@@ -10,11 +10,12 @@
 - 失败测试或回归锁定：先将 studio/live 的隐式编译断言改为最终文本提交，4 项 RED 后 GREEN；旧异步按钮等待期间覆盖文字与撤销覆盖修改由新组件测试锁定。
 - 实现结果：一次拆解返回源事实和 H3 候选；按五种模式共用规则；可选异步优化复用 worker；当前文本在已有建批事务中冻结。原同步实现被替换，未新增第二套队列。
 - 验证命令与通过数：下节持续回填。
-- 证据层级：AUTOMATED_VERIFIED（本地全量与修复专项完成，PR 三门禁待触发）；未进行真实付费调用。
+- 证据层级：AUTOMATED_VERIFIED（本地验收完成；远程门禁以 PR 当前 head 的 Checks 为准）；未进行真实付费调用。
 - 安全与可观测性：查询归属、资产授权、上下文摘要、幂等键、租约 CAS、不确定状态不重发；优化科目独立，失败退客户预扣，已发生供应商成本保留。
 - 迁移与回滚：追加未发布 `20260916T2000_prompt_optimization_receipts`，一张任务表与分析上下文列；旧客户端版本号请求保持兼容。代码回退需停止新任务消费；数据库降级会删除新任务记录，只能在备份及队列排空后由部署方安排。
 - 外部授权记录：用户明确授权接手原会话、代码修改、评审、CI 与 PR；未授权合并、部署或真实付费探针。
 - 未测试项：真实 Gemini/H3 生成效果、生产账务、L2VA 供应商能力；未进行视觉浏览器实测。
+- PR：[#125](https://github.com/peihr666-max/xiangshu-video-replica-/pull/125)；[当前 head CI](https://github.com/peihr666-max/xiangshu-video-replica-/pull/125/checks)。本地验证通过后提交，远程结果不在文档中预标为通过。
 - 实现提交：`f8c037e6f06aa69fbefadf593094a096f2d1c206`；无 Lore 工具调用。
 - 主线同步：开发期间 main 合入发布账号扫码 PR #123（`3e120752`）；在同一任务分支合并，仅四份账本追加记录冲突，分别保留两个任务记录。后端源码无主线增量，不重复后端全量。
 
@@ -50,12 +51,12 @@
 
 ## 验证记录
 
-- Windows 专项：新编辑器 6 项；受影响旧创作页面 154 项；最终 Linux 前端全量 104 文件 / 1584 项通过；H3 纯函数、单次请求、台词与不确定性保护 10 项通过。
+- Windows 专项：新编辑器 6 项；受影响旧创作页面 154 项；合并 main 后 Linux 前端全量 104 文件 / 1591 项通过；H3 纯函数、单次请求、台词与不确定性保护 10 项通过。
 - Windows 静态：TypeScript、Ruff、格式与 mypy 155 个应用文件通过；generated API 更新后补齐一个既有上传测试夹具字段。
-- Linux 最终静态门通过：前端 104 文件 / 1584 项、TypeScript、secret、e2e lint、Rust fmt/check、Ruff/format、mypy 155 文件。隔离 PG 首轮全量已完成：2387 passed / 12 failed / 1 skipped，耗时 54m19s；12 项初始失败已全部修复并复验通过（82.91s），新增及关键链路 26 项全部通过（56.31s）；迁移 manifest、Ruff 与格式复验通过。既有跳过为 production TLS 分支，由纯配置测试覆盖。首轮静态门曾通过，但镜像源码覆盖保留了一份已删除的旧测试（多 12 项）；最终门改为先清除容器内旧源码、再复制当前 worktree。只以最终源码结果为验收依据。之前失败保留在本机日志，不以局部通过替代全量门禁。
-- 最终日志：`linux-static-final2.log`、`backend-full.log`、`backend-retest.log`；全量只执行一轮，随后只跑失败项与新增/受影响专项。
+- Linux 最终静态门通过：前端 104 文件 / 1591 项、TypeScript、secret、e2e lint、Rust fmt/check、Ruff/format、mypy 155 文件。隔离 PG 首轮全量已完成：2387 passed / 12 failed / 1 skipped，耗时 54m19s；12 项初始失败已全部修复并复验通过（82.91s），新增及关键链路 26 项全部通过（56.31s）；迁移 manifest、Ruff 与格式复验通过。既有跳过为 production TLS 分支，由纯配置测试覆盖。首轮静态门曾通过，但镜像源码覆盖保留了一份已删除的旧测试（多 12 项）；最终门改为先清除容器内旧源码、再复制当前 worktree。只以最终源码结果为验收依据。之前失败保留在本机日志，不以局部通过替代全量门禁。
+- 最终日志：`linux-static-merged.log`、`backend-full.log`、`backend-retest.log`；全量只执行一轮，随后只跑失败项与新增/受影响专项。
 - 本机证据目录：`outputs/h3-prompt-implementation-20260916/`（工作区父目录），含接手备份、逐轮测试日志、schema 探测和 OpenAPI。
-- 测试资源：本任务 `h3-prompt-pg-20260916`、`h3-prompt-tests`、`h3-prompt-static`、`h3-prompt-retest` 均 `--rm`，无命名卷，复用原镜像；收尾清理自身容器，不保留测试数据库。
+- 测试资源：本任务 `h3-prompt-pg-20260916`、`h3-prompt-tests`、`h3-prompt-static`、`h3-prompt-retest` 均 `--rm`，无命名卷，复用原镜像；本任务所有测试容器及数据库已清理，无遗留命名卷。
 
 ## 限制与产品边界
 
