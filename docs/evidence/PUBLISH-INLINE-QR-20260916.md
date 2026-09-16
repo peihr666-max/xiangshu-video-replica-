@@ -21,16 +21,16 @@ Owner 为当前 Codex 任务；Reviewer 为执行者自检与后续 PR 门禁，
 - 独立临时 Edge 浏览器访问真实官方页面，三平台全部 `qr_ready`：抖音 PNG 2910 字符，视频号 77530，小红书 2502。探针只输出状态、长度及不含查询参数的路径，未保存真实二维码或凭据，未扫码登录。
 - Linux 完整 `npm run check:static` 通过：103 前端文件 / 1582 测试、TypeScript、Biome、秘密扫描、E2E lint、cargo fmt/check、Ruff/format、mypy 151 文件。最后追加的响应式 CSS 单独通过 Biome 和实际浏览器复验。
 - 实际组件在 Edge 中验证三平台点击 → 内嵌图片 → 模拟已验证账号回填 → 标签过滤，官方窗口调用 0 次、页面错误 0。390px 窄屏最初发现账号行溢出，修正后 `overflow=false`。截图使用标注为“界面测试示意”的占位图片，绝不把模拟确认当作手机登录。
-- 102 文件的全量 PostgreSQL 四分片正在执行，最终结果待回填。
+- 102 文件的全量 PostgreSQL 四分片完成：525 + 540 + 616 + 708 = **2389 passed / 1 既有 skipped**，四个进程退出码均为 0；独立数据库，无缺库跳过。原始日志保存在 `outputs/publish-inline-qr-20260916/pytest-shard-0.log` 至 `pytest-shard-3.log`。
 - Windows NSIS 与实际 WebView2 安装包手机扫码确认尚未验证；Edge 取码不能替代该验收。旧客户端需重新构建后才会包含 Rust 的隐藏窗口改动。
 
 ## 安全、资源和交付
 
 无需数据库迁移或新依赖。Cookie 仍由本机隔离 WebView2 资料目录或原云端加密存储保管。二维码刷新消息继续验证官方 origin 和 iframe 来源。自检覆盖取消时迟到响应、平台切换、账号更新和官方窗口三种用途。
 
-测试使用 `publish-inline-quality` 与 `publish-inline-pg-0` 至 `publish-inline-pg-3`，全部 `--rm`，无命名卷；端口只在任务容器内部，不触碰其他数据库。Linux 源码快照、原始日志和探针位于工作区根 `outputs/publish-inline-qr-20260916/`。结束前停止本任务容器，核对无残留资源。
+测试使用 `publish-inline-quality` 与 `publish-inline-pg-0` 至 `publish-inline-pg-3`，全部 `--rm`，无命名卷；端口只在任务容器内部，不触碰其他数据库。Linux 源码快照、原始日志和探针位于工作区根 `outputs/publish-inline-qr-20260916/`。结束前停止本任务容器，核对无残留资源，清理结果归档在同目录 `cleanup.json`。
 
-没有合并、部署或真实视频发布。PR 状态及最终检查结果待回填。
+实现提交 `d6564d7`；本地完整门通过，按仓库流程提交 Draft PR。没有合并、部署或真实视频发布；远程 Windows NSIS 与手机验收独立核验，不沿用本地 Linux 结果。
 
 ## §14 证据字段
 
@@ -39,7 +39,7 @@ Owner / Reviewer：当前 Codex / 执行者自检、PR 门禁。
 上游规格：本次用户指令；仓库 AGENTS 协作流程。
 文件边界：见代码开发清单本任务追加段。
 失败测试：平台点击、平台过滤、直接显示登录结果、正常扫码无打开窗口入口、隐藏页面主动读取。
-证据层级：代码与专项自动化已验证；不声明真实手机链路或生产完成。
+证据层级：AUTOMATED_VERIFIED（本地完整静态、前端与 PostgreSQL）；不声明真实手机链路或生产完成。
 迁移/回滚：无迁移，回退本 PR 即恢复旧交互。
 未测试项：手机确认、真实账号重启复用、实际新版 Windows WebView2 安装包。
 外部授权：源代码实现及仓库既定 PR 流程；没有发布或部署授权。
