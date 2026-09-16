@@ -34,3 +34,10 @@
 - 适配层总是给 `publish()` 传 `cover_path`（用户选择的封面或预抽帧的 tempfile），避免上游
   默认把抽帧临时文件写进模块目录导致并发互相覆盖。
 - 发布短链通过 post_list 匹配解析（best-effort），拿不到时记录为已发布但无短链。
+
+## PUBLISH-DELIVERY-20260917 复用增量
+
+- 正式投递由 `app/publish_delivery.py` 经 `channels_adapter.publish_to_channels` 调用 `ChannelsPublisher.publish()`；Cookie 由
+  `app/publish_credentials.py` 从扫码账号 `storage_state` 按 `weixin.qq.com` / `qq.com` 域过滤拼接，不再手工粘贴。
+- `schedule` 参数未使用——定时由本仓 `publish_records.scheduled_at` 在 worker 侧到点投递。`post_list` / `get_object_short_link`
+  的结果回收在 PR-B（PUBLISH-FALLBACK-SYNC）接入。

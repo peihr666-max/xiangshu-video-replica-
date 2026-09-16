@@ -165,6 +165,24 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # PUBLISH-DELIVERY-20260917: platform deliveries (API first, browser fallback)
+  # and account login probes run apart from the H3 generation loop — one
+  # upload can block for minutes. Douyin signing needs the base image's Node.js.
+  worker-publish:
+    image: ${APP_IMAGE:?deploy/customer/.env must define APP_IMAGE}
+    restart: unless-stopped
+    env_file:
+      - customer.env
+    command:
+      - sh
+      - -lc
+      - cd /opt/video-replica/server && exec python -m app.publish_worker --idle-seconds 3
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   worker-viral:
     image: ${APP_IMAGE:?deploy/customer/.env must define APP_IMAGE}
     restart: unless-stopped

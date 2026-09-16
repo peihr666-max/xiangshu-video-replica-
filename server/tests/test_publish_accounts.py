@@ -675,13 +675,22 @@ def test_worker_round_verifies_invalid_account(
 def test_claim_verify_does_not_touch_publish_records(lane_env: str, pg: psycopg.Connection) -> None:
     """A12：verify claim 与中断租约复位都只碰 ``publish_accounts``.
 
-    082 只建 accounts 表，所以这条用例在**结构上**锁住范围切分：若
-    ``_quarantine_expired_verifies()`` 仍像原 ``_quarantine_expired_publishes()``
-    那样同时 UPDATE ``publish_records``，claim 会在缺表时直接报错。
+    第二阶段（20260917T1000_publish_records）已建 ``publish_records`` 表，但
+    verify 半边的范围切分不变：把 records 表临时改名藏起来后，claim 与复位
+    仍须在 accounts-only 的库上跑通——若 ``_quarantine_expired_verifies()``
+    像 ``publish_records._quarantine_expired_publishes()`` 那样触碰 records，
+    这里会直接报缺表。
     """
+    pg.execute("ALTER TABLE publish_records RENAME TO publish_records_hidden_a12")
+    try:
+        _run_verify_claim_on_accounts_only_schema(lane_env, pg)
+    finally:
+        pg.execute("ALTER TABLE publish_records_hidden_a12 RENAME TO publish_records")
+
+
+def _run_verify_claim_on_accounts_only_schema(lane_env: str, pg: psycopg.Connection) -> None:
     tables = pg.execute(
         "SELECT tablename FROM pg_tables"
-        # Browser login tables are independent of this legacy worker's records contract.
         " WHERE schemaname = 'public' AND tablename IN ('publish_accounts','publish_records')"
         " ORDER BY tablename"
     ).fetchall()

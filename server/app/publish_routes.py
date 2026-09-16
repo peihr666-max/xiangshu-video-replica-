@@ -3,10 +3,10 @@
 Read routes ride the plain authenticated lane; every write goes through the
 T21 fenced ``BusinessDbDep.write()`` exactly like the other studio routes.
 
-Only the four ``/accounts`` endpoints exist in this phase: list, connect,
-unbind and request an async login-state probe. The ``/records`` endpoints
-(draft / queue / cover / schedule / submit / cancel) belong to the phase-2
-delivery path per docs/evidence/CW002-SCOPE-DECISIONS.md §8.
+Only the four legacy cookie-paste ``/accounts`` endpoints live here: list,
+connect, unbind and request an async login-state probe. The delivery path
+(``/api/studio/publish/records``) is ``app.publish_record_routes`` and reads
+the browser-login accounts (``/api/studio/publish/browser/accounts``).
 
 No endpoint ever returns credential material — the response models in
 app.publish carry display_name / status / timestamps only.
