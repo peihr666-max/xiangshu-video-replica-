@@ -88,3 +88,13 @@
 - 相关回归：CreationPages / StudioWorkspace / state / ReplicaPreparation，共 4 文件、235 项通过。秘密扫描、E2E lint、TypeScript 和冲突文件 Biome 通过。
 - 完整前端 `npm run check --workspace client -- --maxWorkers=2` 通过：106 文件 / 1624 项；包含全量 Biome 与 TypeScript。保留 4 条既有 CSS 选择器优先级警告，无错误。
 - 本次仅解决前端导入与文档追加冲突；既有后端全量证据见上文，未重复启动 Docker。本次合并提交的远程三门禁待 CI 核验，不将历史 CI 成功当作当前提交通过。
+
+## 2026-09-17 PR #128 Linux CI 时序修复
+
+合并提交 `415c86e9` 的 [CI 35128764951](https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/35128764951) 在前端会话替换测试失败（1623 passed / 1 failed），Windows NSIS 与秘密扫描通过。GitHub `mergeable=true`；本次是测试时序失败，并非再次出现合并冲突。
+
+- 本地重复运行在第 2 轮复现；临时诊断再次于第 2 轮捕获：旧凭据的项目请求发生在 `rerender` 内、凭据等待页面尚未提交时，新工作区请求使用新凭据。React `act` 先清空旧树待运行 effect，原测试提前截取请求计数导致旧请求被计入新工作区。
+- 只修改 `CustomerWorkspace.test.tsx`：确认等待页面已提交后记录计数，显式清空微任务并断言凭据未到达时没有新增项目请求，凭据就绪后等待项目请求并逐项校验新凭据。保留替换 store/session 两种场景，不跳过测试、不放宽凭据断言、不改运行时认证或 CI 门禁。临时诊断已删除。
+- 修复后专项连续 15 轮通过，每轮 7 项；修复前失败日志与诊断、本轮验证日志保存在宿主 `outputs/pr128-ci-fix/`。
+- 完整前端 `npm run check --workspace client -- --maxWorkers=2` 通过：106 文件 / 1624 项，包含 Biome 与 TypeScript；秘密扫描通过。
+- 本轮仅修改前端测试与证据，无后端改动或新增 Docker 资源。新提交的远程三门禁另行核验。
