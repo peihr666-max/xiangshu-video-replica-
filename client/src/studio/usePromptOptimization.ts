@@ -9,6 +9,48 @@ import {
   type PromptOptimizeResult,
 } from "../api";
 
+type AppliedOptimization = {
+  context: PromptGenerationContext;
+  text: string;
+  optimization_task_id: string;
+  context_hash: string;
+};
+const applied = new Map<string, AppliedOptimization>();
+export function readAppliedOptimization(
+  scope: string,
+  text: string,
+  source?: { script_version_id?: string; shot_card_version_id?: string },
+) {
+  let receipt = applied.get(scope);
+  if (!receipt) {
+    try {
+      receipt = JSON.parse(
+        localStorage.getItem(`h3.applied:${scope}`) || "null",
+      );
+    } catch {
+      /* unavailable storage */
+    }
+  }
+  if (
+    source &&
+    Object.entries(source).some(
+      ([key, id]) =>
+        id !== undefined &&
+        receipt?.context?.[key as keyof PromptGenerationContext] !== id,
+    )
+  )
+    return {};
+  return receipt?.text === text &&
+    typeof receipt.optimization_task_id === "string" &&
+    typeof receipt.context_hash === "string"
+    ? {
+        source: "ai" as const,
+        optimization_task_id: receipt.optimization_task_id,
+        context_hash: receipt.context_hash,
+      }
+    : {};
+}
+
 export function usePromptOptimization(
   value: string,
   context: PromptGenerationContext,
@@ -43,6 +85,7 @@ export function usePromptOptimization(
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState<{
     text: string;
+    receipt: AppliedOptimization;
     key: string;
     sessionCurrent: () => boolean;
   } | null>(null);
@@ -77,7 +120,13 @@ export function usePromptOptimization(
     setUndo(null);
   }, [storageKey]);
 
-  const apply = (text: string) => {
+  const apply = (text: string, receipt: AppliedOptimization) => {
+    applied.set(scope, receipt);
+    try {
+      localStorage.setItem(`h3.applied:${scope}`, JSON.stringify(receipt));
+    } catch {
+      /* memory fallback */
+    }
     setUndo({
       before: latest.current.value,
       after: text,
@@ -146,17 +195,24 @@ export function usePromptOptimization(
         );
         return;
       }
+      const receipt = {
+        context,
+        text: result.result.prompt_text,
+        optimization_task_id: result.task_id,
+        context_hash: result.context_hash,
+      };
       if (
         latest.current.revision !== started.revision ||
         latest.current.value !== saved.input.prompt_text
       ) {
         setPending({
           text: result.result.prompt_text,
+          receipt,
           key: started.key,
           sessionCurrent,
         });
         setMessage("你已修改内容，优化结果未覆盖当前文字。");
-      } else apply(result.result.prompt_text);
+      } else apply(result.result.prompt_text, receipt);
     } catch (error) {
       const status = (error as { status?: number })?.status;
       if (
@@ -189,7 +245,7 @@ export function usePromptOptimization(
     pending: pending?.key === key && pending.sessionCurrent() ? pending : null,
     applyPending: () => {
       if (pending?.key === latest.current.key && pending.sessionCurrent())
-        apply(pending.text);
+        apply(pending.text, pending.receipt);
     },
     canUndo:
       undo !== null &&

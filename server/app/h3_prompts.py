@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 FORMATTER_VERSION = "h3-format.v1"
@@ -60,7 +61,110 @@ def digest(value: object) -> str:
 
 
 def mode_rules(mode: Mode) -> str:
-    return (RULES / f"{mode}.txt").read_text(encoding="utf-8")
+    common = (
+        "完整正文，不使用代码围栏。镜头依次标记 [Shot 1]、[Shot 2]；"
+        "仅真实切镜新增 Shot，切镜标记 At MM:SS.mmm，时间严格递增且小于目标时长。"
+        "对白只出现一次，使用 <d>[Chinese] 原文</d>；无口播时不写对白标签。\n"
+    )
+    if mode != "Ref2VA":
+        common += (
+            "依次输出三个基础段落，段落名必须位于行首：\n"
+            "integrated_multimodal_description:\noverall_soundscape:\nnon_diegetic_music:\n"
+        )
+    return common + (RULES / f"{mode}.txt").read_text(encoding="utf-8")
+
+
+def protected_dialogue(text: str) -> str | None:
+    """Legacy plain Chinese scripts remain protected before H3 tags exist."""
+    if "<d>" in text:
+        return dialogue(text)
+    parts = re.findall(r"(?m)^\s*(?:台词|口播|确认文案)[：:]\s*(.+)$", text)
+    return re.sub(r"\s", "", "".join(parts)) if parts else None
+
+
+def compile_replica_final_text(
+    *,
+    shot_payload: dict[str, Any],
+    script_text: str,
+    duration: int,
+    source_duration: float,
+    timeline_policy: str,
+    source_frame_time: float,
+    opening_action: str = "",
+) -> str:
+    """Deterministic final composition, after confirmed inputs; no paid model call."""
+
+    def conflict(code: str, message: str) -> None:
+        raise HTTPException(409, detail={"code": code, "message": message})
+
+    if source_duration > duration and timeline_policy != "scale_confirmed":
+        conflict(
+            "TIMELINE_CONFIRMATION_REQUIRED",
+            "源时间轴超过目标时长，请调整时长或明确确认压缩动作节奏。",
+        )
+    if (source_frame_time < 0 or source_frame_time > 0.25) and not opening_action.strip():
+        conflict(
+            "FIRST_FRAME_ALIGNMENT_REQUIRED",
+            "首帧来自视频中段或缺少开场时间记录，请选择开场帧或填写动作衔接方案。",
+        )
+    # Timing policy never discards a sentence. A conservative speaking estimate is
+    # surfaced as a conflict rather than silently accelerating the narration.
+    spoken_chars = len(re.sub(r"[\s，。！？、,.!?；;：:]", "", script_text))
+    if spoken_chars > duration * 6:
+        conflict("SCRIPT_DURATION_CONFLICT", "确认文案预计超过目标时长，请缩短文案或增加时长。")
+    if re.search(r"</?d>|<(?:Picture|Video|Audio)\s", script_text):
+        conflict("SCRIPT_TAG_INVALID", "确认文案请使用纯文本，不包含提示词标签。")
+    scale = duration / source_duration if timeline_policy == "scale_confirmed" else 1.0
+    lines = [
+        "Use <Picture 1> as the exact first frame. "
+        "Preserve its person identity, clothing, pose and scene at the opening.",
+        "",
+        "integrated_multimodal_description:",
+        "全片人物身份、服装和配饰以首帧为准，后续不得恢复源人物外观。",
+    ]
+    for key in ("visual_style", "color_tone", "pace", "camera_language"):
+        if shot_payload.get(key):
+            lines.append(f"{key}: {shot_payload[key]}")
+    shot_number = 0
+    for index, shot in enumerate(shot_payload["shots"]):
+        if index == 0 or shot.get("segment_kind") == "SHOT_CUT":
+            shot_number += 1
+            start = float(shot["start_time"]) * scale
+            timestamp = f"At {int(start // 60):02d}:{start % 60:06.3f} " if index else ""
+            lines.append(f"{timestamp}[Shot {shot_number}]")
+        lines.append(
+            f"阶段 {float(shot['start_time']) * scale:.3f}–{float(shot['end_time']) * scale:.3f} 秒"
+        )
+        for key in (
+            "shot_type",
+            "composition",
+            "scene",
+            "scene_dressing",
+            "scene_lighting",
+            "camera_motion",
+        ):
+            if shot.get(key):
+                lines.append(f"{key}: {shot[key]}")
+        if index == 0 and opening_action.strip():
+            lines.append(f"用户确认的开场衔接：{opening_action.strip()}")
+        else:
+            if shot.get("action"):
+                lines.append(f"动作：{shot['action']}")
+            if isinstance(shot.get("motion"), dict):
+                lines.extend(f"{key}: {value}" for key, value in shot["motion"].items() if value)
+    if script_text:
+        lines.append(
+            f"确认口播（按全文顺序说出一次，与人物口型同步）：<d>[Chinese] {script_text}</d>"
+        )
+    else:
+        lines.append("无口播，不添加台词或人声旁白。")
+    for header, key in (
+        ("overall_soundscape", "ambient_sound"),
+        ("non_diegetic_music", "music_style_hint"),
+    ):
+        values = list(dict.fromkeys(str(s[key]) for s in shot_payload["shots"] if s.get(key)))
+        lines.append(f"{header}: " + ("；".join(values) if values else "N/A"))
+    return "\n".join(lines)
 
 
 def prompt_issues(
@@ -115,7 +219,7 @@ def prompt_issues(
 
 def dialogue(text: str) -> str:
     return "".join(
-        re.sub(r"\[[^\]]+\]|<[^>]+>|\s", "", part)
+        re.sub(r"<[^>]+>|\s", "", re.sub(r"^\s*\[(?:Chinese|English|Mandarin)\]\s*", "", part))
         for part in re.findall(r"<d>(.*?)</d>", text, flags=re.S)
     )
 

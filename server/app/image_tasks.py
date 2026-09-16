@@ -837,9 +837,8 @@ def prepare_first_frame_task(
         raise _task_error(
             409, "FIRST_FRAME_RECEIPT_CHANGED", "原图像任务的服务或输入已变化，请联系管理员核对。"
         )
-    inspector = quality_inspector
-    if inspector is None and plan.project_appearance.appearance_source != "SCENE_LOOK":
-        inspector = quality_inspector_factory() if quality_inspector_factory else None
+    # Human review must not require an AI-inspector credential or network call.
+    inspector = None
     conn.commit()
     return FirstFrameTaskPrepared(
         lease=lease,

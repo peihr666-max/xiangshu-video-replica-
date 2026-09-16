@@ -5621,9 +5621,9 @@ export interface components {
       source_asset_id: string;
       /**
        * Source Kind
-       * @enum {string}
+       * @constant
        */
-      source_kind: "VIDEO" | "IMAGE";
+      source_kind: "VIDEO";
       /** Consent Id */
       consent_id: string;
       /** Idempotency Key */
@@ -6705,7 +6705,7 @@ export interface components {
       duration_seconds?: number | null;
       /**
        * Reuse Existing
-       * @default false
+       * @default true
        */
       reuse_existing: boolean;
       generation_context?: components["schemas"]["GenerationContext"] | null;
@@ -7194,7 +7194,7 @@ export interface components {
       prompt?: string | null;
       /**
        * Quantity
-       * @default 1
+       * @default 3
        */
       quantity: number;
       /** Aspect Ratio */
@@ -7308,7 +7308,7 @@ export interface components {
       prompt?: string | null;
       /**
        * Quantity
-       * @default 1
+       * @default 3
        */
       quantity: number;
       /** Aspect Ratio */
@@ -8488,6 +8488,17 @@ export interface components {
        * @enum {string}
        */
       ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
+      /**
+       * Timeline Policy
+       * @default preserve
+       * @enum {string}
+       */
+      timeline_policy: "preserve" | "scale_confirmed";
+      /**
+       * Opening Action
+       * @default
+       */
+      opening_action: string;
     };
     /** PromptContext */
     PromptContext: {
@@ -8507,6 +8518,8 @@ export interface components {
       optimization_task_id?: string | null;
       /** Context Hash */
       context_hash?: string | null;
+      /** Final Prompt Version Id */
+      final_prompt_version_id?: string | null;
     };
     /** PromptOptimizeRequest */
     PromptOptimizeRequest: {
@@ -9050,7 +9063,7 @@ export interface components {
        * Source
        * @enum {string}
        */
-      source: "original" | "custom";
+      source: "original" | "custom" | "no_narration";
       /** Text */
       text: string;
       /** Shot Card Version Id */
@@ -9068,6 +9081,26 @@ export interface components {
       target_audience: string;
       /** Expression Style */
       expression_style: string;
+      /**
+       * Audience Needs
+       * @default
+       */
+      audience_needs: string;
+      /**
+       * Factual Background
+       * @default
+       */
+      factual_background: string;
+      /**
+       * Sample Script
+       * @default
+       */
+      sample_script: string;
+      /**
+       * Forbidden Claims
+       * @default
+       */
+      forbidden_claims: string;
       /** Profile Version */
       profile_version: number;
     };
@@ -9078,6 +9111,11 @@ export interface components {
     ScriptRewriteRequest: {
       /** Text */
       text: string;
+      /**
+       * Instructions
+       * @default
+       */
+      instructions: string;
       /** Identity Id */
       identity_id?: string | null;
       /** Source Asset Id */
@@ -9114,6 +9152,11 @@ export interface components {
       source_asset_id: string | null;
       /** Source Text */
       source_text: string;
+      /**
+       * Instructions
+       * @default
+       */
+      instructions: string;
       /** Status */
       status: string;
       /** Attempt */
@@ -9186,6 +9229,14 @@ export interface components {
       target_audience: string;
       /** Expression Style */
       expression_style: string;
+      /** Audience Needs */
+      audience_needs?: string | null;
+      /** Factual Background */
+      factual_background?: string | null;
+      /** Sample Script */
+      sample_script?: string | null;
+      /** Forbidden Claims */
+      forbidden_claims?: string | null;
     };
     /** SimpleCharacterRegenerationResponse */
     SimpleCharacterRegenerationResponse: {
@@ -9260,6 +9311,26 @@ export interface components {
       target_audience: string;
       /** Expression Style */
       expression_style: string;
+      /**
+       * Audience Needs
+       * @default
+       */
+      audience_needs: string;
+      /**
+       * Factual Background
+       * @default
+       */
+      factual_background: string;
+      /**
+       * Sample Script
+       * @default
+       */
+      sample_script: string;
+      /**
+       * Forbidden Claims
+       * @default
+       */
+      forbidden_claims: string;
       /** Owner User Id */
       owner_user_id: string | null;
       /** Status */
@@ -9806,6 +9877,12 @@ export interface components {
       size_bytes: number;
       /** Sha256 */
       sha256?: string | null;
+      /**
+       * Purpose
+       * @default replica
+       * @enum {string}
+       */
+      purpose: "replica" | "script";
     };
     /** UploadIntentResponse */
     UploadIntentResponse: {

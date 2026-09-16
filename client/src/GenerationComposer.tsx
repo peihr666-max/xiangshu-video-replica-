@@ -1,5 +1,6 @@
 import type { GenerationBatch } from "./api";
 import { GenerationLauncher } from "./GenerationLauncher";
+import { ReplicaFinalPromptControls } from "./studio/PromptEditor";
 import type { GenerationDrafts } from "./useGenerationDrafts";
 
 type GenerationComposerProps = {
@@ -58,6 +59,17 @@ export function GenerationComposer({
       ) : null}
 
       <GenerationLauncher
+        finalControls={
+          <ReplicaFinalPromptControls
+            input={drafts.finalInput}
+            value={drafts.promptText}
+            snapshot={drafts.finalSnapshot}
+            onPrepared={drafts.setFinalSnapshot}
+            onChange={drafts.setPromptText}
+            readOnly={readOnly || Boolean(drafts.busyAction)}
+          />
+        }
+        scriptVersionId={drafts.finalSnapshot?.scriptVersionId}
         projectId={drafts.projectId}
         promptScope={drafts.promptScope}
         analysisVersionId={analysisVersionId}

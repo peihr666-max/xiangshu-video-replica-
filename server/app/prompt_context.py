@@ -43,6 +43,19 @@ def resolve_context(
             row = conn.execute("SELECT * FROM versions WHERE id = %s", (data[key],)).fetchone()
             if row is None or row["kind"] != kind or row["project_id"] != request.project_id:
                 raise HTTPException(404, detail={"code": "PROMPT_SOURCE_NOT_FOUND"})
+            latest = conn.execute(
+                "SELECT id FROM versions WHERE project_id=%s AND kind=%s "
+                "ORDER BY version_number DESC LIMIT 1",
+                (request.project_id, kind),
+            ).fetchone()
+            if latest is None or str(latest["id"]) != data[key]:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "PROMPT_SOURCE_STALE",
+                        "message": "分析、分镜或文案已更新，请重新合成最终提示词。",
+                    },
+                )
     if request.source_asset_id:
         require_asset_access(
             conn, actor=actor, asset_id=request.source_asset_id, action="prompt.context"

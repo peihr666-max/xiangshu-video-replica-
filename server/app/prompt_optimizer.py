@@ -93,6 +93,15 @@ def enqueue(
         "input_context": request.context().model_dump(),
         "context": context,
     }
+    from app.h3_prompts import protected_dialogue
+
+    sources = context_source_data(conn, context)
+    script = sources.get("script_version_id")
+    snapshot["protected_dialogue"] = (
+        str(script["full_text"])
+        if isinstance(script, dict)
+        else protected_dialogue(request.prompt_text)
+    )
     task_id = str(uuid4())
     cursor = conn.execute(
         """INSERT INTO prompt_optimization_receipts
@@ -147,7 +156,10 @@ def validate_result(text: str, *, snapshot: dict[str, Any]) -> tuple[dict[str, A
         duration=context["duration_seconds"],
         labels=[a["label"] for a in context["generation_assets"]],
     )
-    if dialogue(snapshot["prompt_text"]) and dialogue(snapshot["prompt_text"]) != dialogue(prompt):
+    from app.h3_prompts import protected_dialogue
+
+    protected = snapshot.get("protected_dialogue", protected_dialogue(snapshot["prompt_text"]))
+    if protected is not None and "".join(str(protected).split()) != dialogue(prompt):
         issues.append(Issue(code="DIALOGUE_CHANGED", message="优化结果修改了原台词，请核对。"))
     if issues:
         return {
@@ -267,6 +279,7 @@ def run_prompt_task(
                                             "prompt_text": snapshot["prompt_text"],
                                             "context": current,
                                             "sources": sources,
+                                            "protected_text": snapshot.get("protected_dialogue"),
                                             "max_prompt_chars": 7000,
                                         },
                                         ensure_ascii=False,

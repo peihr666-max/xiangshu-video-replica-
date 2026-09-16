@@ -25,13 +25,8 @@ vi.mock("../api", async (original) => ({
   capturePromptSession: () => () => true,
 }));
 
-import {
-  ReplicaNarration,
-  ReplicaPromptResult,
-  replicaPromptBasis,
-} from "./ReplicaPreparation";
+import { ReplicaNarration } from "./ReplicaPreparation";
 
-let latest: StudioDraft;
 function Harness() {
   const [draft, setDraft] = useState({
     ...createDraft(),
@@ -40,7 +35,6 @@ function Harness() {
     replicaSourcePrompt: "原始动作与旧台词",
     script: { ...createDraft().script, text: "当前口播" },
   });
-  latest = draft;
   mocks.useStudio.mockReturnValue({
     state: { draft },
     user: { id: "u1", role: "customer" },
@@ -51,7 +45,6 @@ function Harness() {
   return (
     <>
       <ReplicaNarration />
-      <ReplicaPromptResult />
       <button
         type="button"
         onClick={() =>
@@ -115,54 +108,6 @@ it.each(["edit", "project"])(
     );
   },
 );
-it("新提示词使用当前文案并在文案修改后失效", async () => {
-  mocks.optimize.mockResolvedValue({
-    task_id: "op1",
-    status: "SUCCEEDED",
-    result: {
-      prompt_text: "新提示词：当前口播",
-      validation_status: "valid",
-      warnings: [],
-    },
-  });
-  render(<Harness />);
-  fireEvent.click(screen.getByRole("button", { name: "生成新提示词" }));
-  await waitFor(() => expect(latest.prompt).toBe("新提示词：当前口播"));
-  expect(mocks.optimize.mock.calls[0][0].prompt_text).toContain("当前口播");
-  expect(latest.replicaPromptBasis).toBe(replicaPromptBasis(latest));
-  fireEvent.change(screen.getByLabelText("口播文案"), {
-    target: { value: "更新稿" },
-  });
-  expect(
-    screen.getByText("文案或拆解已修改，请重新生成新提示词。"),
-  ).toBeInTheDocument();
-});
-
-it("生成后清空最终提示词仍可重新编辑，不锁死编辑框", async () => {
-  mocks.optimize.mockResolvedValue({
-    task_id: "op1",
-    status: "SUCCEEDED",
-    result: {
-      prompt_text: "新提示词",
-      validation_status: "valid",
-      warnings: [],
-    },
-  });
-  render(<Harness />);
-  fireEvent.click(screen.getByRole("button", { name: "生成新提示词" }));
-  await waitFor(() => expect(latest.prompt).toBe("新提示词"));
-  fireEvent.change(screen.getByLabelText("新的复刻提示词"), {
-    target: { value: "" },
-  });
-  expect(screen.getByLabelText("新的复刻提示词")).not.toHaveAttribute(
-    "readonly",
-  );
-  fireEvent.change(screen.getByLabelText("新的复刻提示词"), {
-    target: { value: "重新填写" },
-  });
-  expect(latest.prompt).toBe("重新填写");
-});
-
 it("准备内容变更后拦截生成，只有显式双素材交接可解除", () => {
   const draft = { ...createDraft(), projectId: "p", sourceAssetId: "s" };
   const prepared = patchStudioDraft(draft, { replicaSourcePrompt: "拆解" });

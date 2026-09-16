@@ -563,6 +563,8 @@ export function WorkbenchPage() {
         );
       },
       abortController.signal,
+      // 首页上传尚未选择复刻或文案提取；只存素材，复刻入口再恢复/启动视觉分析。
+      "script",
     )
       .then((uploaded) => {
         if (
@@ -580,6 +582,10 @@ export function WorkbenchPage() {
           projectId,
           sourceId: assetId,
           sourceAssetId: assetId,
+          analysisTaskId: uploaded.analysisTaskId,
+          analysisTaskStatus: uploaded.analysisTaskStatus,
+          firstFrameId: undefined,
+          firstFrameSelectionVersionId: undefined,
         });
         if (uploaded.project || uploaded.asset) {
           updateData((current) => ({

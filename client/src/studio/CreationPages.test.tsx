@@ -7,7 +7,6 @@ import {
 } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { replicaPromptBasis } from "./ReplicaPreparation";
 import type { StudioAsset, StudioContextValue } from "./types";
 
 const { useStudio } = vi.hoisted(() => ({
@@ -35,6 +34,8 @@ const replicaApi = vi.hoisted(() => ({
   getLatestProjectFirstFrameSelection: vi.fn(),
   getGenerationPriceQuote: vi.fn(),
   saveGenerationPrompt: vi.fn(),
+  createScriptVersion: vi.fn(),
+  compileGenerationPrompt: vi.fn(),
   saveShotCards: vi.fn(),
 }));
 const replicaLive = vi.hoisted(() => ({
@@ -1185,16 +1186,13 @@ describe("V1.4 创作页面", () => {
     expect(screen.getByText(/先在视频复刻中准备好项目/)).toBeInTheDocument();
   });
 
-  it("人物替换：确认置换首帧后置位草稿并可跳转视频生成", async () => {
+  it("人物替换：无需预生成提示词，确认首帧后进入最终合成", async () => {
     const value = replacementStudio();
     replicaApi.selectCharacterReferences.mockResolvedValue({
       id: "crs-1",
       payload: {},
     });
-    value.state.draft.replicaSourcePrompt = "拆解原稿";
-    value.state.draft.replicaPromptBasis = replicaPromptBasis(
-      value.state.draft,
-    );
+    value.state.draft.prompt = "";
     useStudio.mockReturnValue(value);
     render(<ReplacementPage />);
 
@@ -1218,8 +1216,10 @@ describe("V1.4 创作页面", () => {
         frameConfirmed: true,
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "带入视频生成" }));
-    expect(value.navigate).toHaveBeenCalledWith("video");
+    fireEvent.click(
+      screen.getByRole("button", { name: "下一步：合成最终提示词" }),
+    );
+    expect(value.navigate).toHaveBeenCalledWith("replica");
   });
 
   it("人物替换：同资产新确认版本会更新，撤销后清空交接", async () => {
@@ -2526,6 +2526,7 @@ describe("V1.4 创作页面", () => {
 describe("视频复刻（模块①）", () => {
   beforeEach(() => {
     useStudio.mockReset();
+    replicaApi.startVideoAnalysis.mockClear();
     replicaApi.getLatestProjectShotCards.mockReset();
     replicaApi.getLatestProjectAnalysis.mockReset();
     replicaApi.getLatestGenerationPrompt.mockReset();
@@ -2609,18 +2610,14 @@ describe("视频复刻（模块①）", () => {
       id: "task-1",
       status: "SUCCEEDED",
     });
-    replicaApi.getLatestProjectShotCards.mockResolvedValue(
-      options.existingShotCards
-        ? {
-            id: "scv-existing",
-            payload: {
-              source_analysis_version_id: "av-1",
-              duration_seconds: 8,
-              shots: [shot],
-            },
-          }
-        : null,
-    );
+    replicaApi.getLatestProjectShotCards.mockResolvedValue({
+      id: options.existingShotCards ? "scv-existing" : "scv-1",
+      payload: {
+        source_analysis_version_id: "av-1",
+        duration_seconds: 8,
+        shots: [shot],
+      },
+    });
     replicaApi.getLatestProjectAnalysis.mockResolvedValue({
       id: "av-1",
       payload: {
@@ -2641,6 +2638,72 @@ describe("视频复刻（模块①）", () => {
       },
     });
   }
+
+  async function prepareFinalReplica() {
+    replicaApi.createScriptVersion.mockResolvedValue({ id: "script-final" });
+    replicaApi.compileGenerationPrompt.mockResolvedValue({
+      id: "prompt-final",
+      payload: { prompt_text: "最终新稿" },
+    });
+    fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
+    await waitFor(() =>
+      expect(replicaApi.compileGenerationPrompt).toHaveBeenCalled(),
+    );
+    const adopt = screen.queryByRole("button", { name: "采用这份最终稿" });
+    if (adopt) fireEvent.click(adopt);
+    await waitFor(() =>
+      expect(screen.getByText(/最终稿来源已绑定/)).toBeInTheDocument(),
+    );
+  }
+
+  it("离开内容配置后迟到拆解回执不写入当前草稿", async () => {
+    const value = replicaStudio();
+    mockAnalysisSuccess();
+    let finish!: (result: unknown) => void;
+    replicaApi.waitForAnalysisTask.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    useStudio.mockReturnValue(value);
+    const view = render(<ReplicaPage />);
+    await screen.findByRole("button", { name: "重新拆解" });
+    fireEvent.click(screen.getByRole("button", { name: "重新拆解" }));
+    await waitFor(() => expect(finish).toBeDefined());
+    view.unmount();
+    vi.mocked(value.patchDraft).mockClear();
+    finish({ id: "task-1", status: "SUCCEEDED" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(value.patchDraft).not.toHaveBeenCalled();
+  });
+
+  it("首帧置换前只准备文案与分镜，选定首帧后才展示最终合成", async () => {
+    const value = replicaStudio();
+    value.state.draft.firstFrameId = undefined;
+    mockAnalysisSuccess();
+    useStudio.mockReturnValue(value);
+    const view = render(<ReplicaPage />);
+    const next = screen.getByRole("button", { name: "下一步：首帧置换" });
+    await waitFor(() => expect(next).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "合成最终提示词" })).toBeNull();
+    expect(screen.queryByLabelText("最终提示词")).toBeNull();
+    fireEvent.click(next);
+    expect(value.navigate).toHaveBeenCalledWith("replacement");
+    value.state.draft = {
+      ...value.state.draft,
+      firstFrameId: "confirmed-frame",
+    };
+    view.rerender(<ReplicaPage />);
+    expect(
+      screen.getByRole("button", { name: "合成最终提示词" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "确认费用并送生成" }),
+    ).toBeDisabled();
+  });
 
   function mockSavedReplicaVersions() {
     replicaApi.getLatestProjectShotCards.mockResolvedValue({
@@ -2695,7 +2758,7 @@ describe("视频复刻（模块①）", () => {
     render(<ReplicaPage />);
 
     expect(await screen.findByText(/院落/)).toBeInTheDocument();
-    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue(
+    expect(screen.getByLabelText("最终提示词")).toHaveValue(
       "保存的复刻 Prompt",
     );
     expect(value.patchDraft).toHaveBeenCalledWith(
@@ -2732,7 +2795,7 @@ describe("视频复刻（模块①）", () => {
     render(<ReplicaPage />);
 
     expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
-    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue(
+    expect(screen.getByLabelText("最终提示词")).toHaveValue(
       "尚未保存的 Prompt 编辑",
     );
     expect(value.patchDraft).toHaveBeenCalledWith(
@@ -2742,33 +2805,6 @@ describe("视频复刻（模块①）", () => {
           text: "尚未保存的文案编辑",
           version: 7,
         }),
-      }),
-    );
-  });
-
-  it("返回复刻准备时分别恢复拆解依据和新提示词，保留最新口播", async () => {
-    const value = replicaStudio();
-    value.state.draft.replicaSourcePrompt = "当前拆解依据";
-    value.state.draft.prompt = "已按最新口播生成的新提示词";
-    value.state.draft.script.text = "最新口播";
-    value.state.draft.scriptEdited = true;
-    value.state.draft.replicaPromptBasis = replicaPromptBasis(
-      value.state.draft,
-    );
-    mockSavedReplicaVersions();
-    useStudio.mockReturnValue(value);
-    render(<ReplicaPage />);
-
-    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
-    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue("当前拆解依据");
-    expect(screen.getByLabelText("新的复刻提示词")).toHaveValue(
-      "已按最新口播生成的新提示词",
-    );
-    expect(value.patchDraft).toHaveBeenCalledWith(
-      expect.objectContaining({
-        replicaSourcePrompt: "当前拆解依据",
-        prompt: "已按最新口播生成的新提示词",
-        script: expect.objectContaining({ text: "最新口播" }),
       }),
     );
   });
@@ -2819,7 +2855,7 @@ describe("视频复刻（模块①）", () => {
     useStudio.mockReturnValue(value);
     render(<ReplicaPage />);
 
-    const textarea = screen.getByLabelText("拆解 Prompt");
+    const textarea = screen.getByLabelText("最终提示词");
     fireEvent.change(textarea, { target: { value: "加载期间的编辑" } });
     fireEvent.change(textarea, { target: { value: "" } });
     resolveShots?.({
@@ -2842,11 +2878,12 @@ describe("视频复刻（模块①）", () => {
     const first = replicaStudio();
     useStudio.mockReturnValue(first);
     const firstView = render(<ReplicaPage />);
-    const textarea = screen.getByLabelText("拆解 Prompt");
+    const textarea = screen.getByLabelText("最终提示词");
     fireEvent.change(textarea, { target: { value: "准备清空" } });
     fireEvent.change(textarea, { target: { value: "" } });
     expect(first.patchDraft).toHaveBeenLastCalledWith({
-      replicaSourcePrompt: "",
+      prompt: "",
+      promptEdited: true,
     });
     firstView.unmount();
 
@@ -2864,7 +2901,7 @@ describe("视频复刻（模块①）", () => {
     render(<ReplicaPage />);
 
     expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
-    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue("");
+    expect(screen.getByLabelText("最终提示词")).toHaveValue("");
     expect(reopened.patchDraft).toHaveBeenCalledWith(
       expect.objectContaining({ prompt: "", promptEdited: true }),
     );
@@ -2950,7 +2987,7 @@ describe("视频复刻（模块①）", () => {
     });
 
     expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
-    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue(
+    expect(screen.getByLabelText("最终提示词")).toHaveValue(
       "云端迟到的本地编辑稿",
     );
     expect(current.patchDraft).toHaveBeenCalledWith(
@@ -3179,7 +3216,7 @@ describe("视频复刻（模块①）", () => {
     expect(current.patchDraft).not.toHaveBeenCalledWith(
       expect.objectContaining({ projectId: "project-1" }),
     );
-    expect(screen.getByLabelText("拆解 Prompt")).toHaveValue("");
+    expect(screen.getByLabelText("最终提示词")).toHaveValue("");
   });
 
   it("选择已有项目后忽略仍在上传的旧来源", async () => {
@@ -3249,28 +3286,21 @@ describe("视频复刻（模块①）", () => {
     );
   });
 
-  it("启动 AI 拆解后生成分镜行与逐镜头 Prompt", async () => {
-    const value = await openReplicaAndAnalyze();
-
+  it("拆解只保存事实，最终提示词等待确认首帧和文案", async () => {
+    await openReplicaAndAnalyze();
     expect(screen.getAllByText(/院落/).length).toBeGreaterThan(0);
-    const textarea = screen.getByLabelText(
-      "拆解 Prompt",
-    ) as HTMLTextAreaElement;
-    expect(textarea.value).toContain("【镜头 1】");
-    expect(textarea.value).toContain("【原片口播稿】");
-    expect(value.patchDraft).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prompt: expect.stringContaining("【镜头 1】"),
-        promptEdited: false,
-      }),
-    );
+    expect(screen.getByLabelText("最终提示词")).toHaveValue("");
+    expect(
+      screen.getByRole("button", { name: "确认费用并送生成" }),
+    ).toBeDisabled();
+    expect(replicaLive.runReplicaGeneration).not.toHaveBeenCalled();
   });
 
   it("编辑后的 Prompt 可保存为用户自定义提示词", async () => {
     const value = await openReplicaAndAnalyze();
     replicaApi.saveGenerationPrompt.mockResolvedValue({ id: "sp-1" });
 
-    const textarea = screen.getByLabelText("拆解 Prompt");
+    const textarea = screen.getByLabelText("最终提示词");
     fireEvent.change(textarea, { target: { value: "我改过的复刻提示词" } });
     fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
     fireEvent.change(screen.getByLabelText("自定义提示词名称"), {
@@ -3304,7 +3334,7 @@ describe("视频复刻（模块①）", () => {
     useStudio.mockReturnValue(value);
     render(<ReplicaPage />);
 
-    const textarea = screen.getByLabelText("拆解 Prompt");
+    const textarea = screen.getByLabelText("最终提示词");
     fireEvent.change(textarea, { target: { value: "准备保存的 A" } });
     fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
     fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
@@ -3340,13 +3370,14 @@ describe("视频复刻（模块①）", () => {
     useStudio.mockReturnValue(value);
     render(<ReplicaPage />);
 
-    const textarea = screen.getByLabelText("拆解 Prompt");
+    const textarea = screen.getByLabelText("最终提示词");
     fireEvent.change(textarea, { target: { value: "刚保存的新 Prompt" } });
     fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
     fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
     await waitFor(() =>
       expect(value.patchDraft).toHaveBeenCalledWith({
-        replicaSourcePrompt: "刚保存的新 Prompt",
+        prompt: "刚保存的新 Prompt",
+        promptEdited: true,
       }),
     );
 
@@ -3432,39 +3463,126 @@ describe("视频复刻（模块①）", () => {
     expect(value.patchDraft).not.toHaveBeenCalledWith({ promptEdited: false });
   });
 
-  it("内容准备不报价、不建视频批次，必须先生成最新提示词", async () => {
-    const value = await openReplicaAndAnalyze();
-    expect(screen.queryByLabelText("复刻单条时长")).toBeNull();
+  it("送生成：未合成最终稿时不允许付费提交", async () => {
+    await openReplicaAndAnalyze();
     expect(
-      screen.queryByRole("button", { name: "确认费用并送生成" }),
-    ).toBeNull();
-    expect(replicaApi.getGenerationPriceQuote).not.toHaveBeenCalled();
-    expect(replicaLive.runReplicaGeneration).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: "下一步：首帧置换" }),
+      screen.getByRole("button", { name: "确认费用并送生成" }),
     ).toBeDisabled();
-    expect(value.navigate).not.toHaveBeenCalledWith("tasks");
+    expect(screen.getByText(/最终稿待合成或更新/)).toBeInTheDocument();
+    expect(replicaLive.runReplicaGeneration).not.toHaveBeenCalled();
   });
 
-  it("提示词与当前稿一致时进入首帧置换，修改文案后禁用下一步", () => {
+  it("送生成：报价失败时禁止建批并可重试取得当前参数报价", async () => {
+    replicaApi.getGenerationPriceQuote
+      .mockRejectedValueOnce(new Error("复刻报价暂不可用"))
+      .mockResolvedValueOnce({
+        resolution: "768P",
+        duration_seconds: 4,
+        quantity: 1,
+        unit_price_fen_per_second: 120,
+        estimated_seconds: 4,
+        estimated_price_fen: 480,
+      });
+    await openReplicaAndAnalyze();
+    await prepareFinalReplica();
+
+    expect(await screen.findByText("复刻报价暂不可用")).toBeInTheDocument();
+    const submit = screen.getByRole("button", {
+      name: "确认费用并送生成",
+    });
+    expect(submit).toBeDisabled();
+    expect(replicaLive.runReplicaGeneration).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新获取复刻报价" }));
+
+    expect(await screen.findByText(/4\.80 元/)).toBeInTheDocument();
+    expect(submit).toBeEnabled();
+    expect(replicaApi.getGenerationPriceQuote).toHaveBeenCalledTimes(2);
+  });
+
+  it("送生成准备期间离开页面后不再发起旧项目付费请求", async () => {
     const value = replicaStudio();
-    value.state.draft.prompt = "已生成的新提示词";
-    value.state.draft.replicaSourcePrompt = "拆解原稿";
-    value.state.draft.replicaPromptBasis = replicaPromptBasis(
-      value.state.draft,
+    mockAnalysisSuccess();
+    let resolveSelection:
+      | ((value: {
+          version: {
+            payload: {
+              first_frame_candidates_version_id: string;
+              first_frame_asset_id: string;
+            };
+          };
+          stale: boolean;
+        }) => void)
+      | undefined;
+    replicaApi.getLatestProjectFirstFrameSelection.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSelection = resolve;
+        }),
     );
     useStudio.mockReturnValue(value);
     const view = render(<ReplicaPage />);
-    fireEvent.click(screen.getByRole("button", { name: "下一步：首帧置换" }));
-    expect(value.navigate).toHaveBeenCalledWith("replacement");
-    value.state.draft = {
-      ...value.state.draft,
-      script: { ...value.state.draft.script, text: "新稿" },
-    };
-    view.rerender(<ReplicaPage />);
-    expect(
-      screen.getByRole("button", { name: "下一步：首帧置换" }),
-    ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
+    await screen.findAllByText(/院落/);
+    await prepareFinalReplica();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认费用并送生成" }),
+    );
+    await waitFor(() =>
+      expect(replicaApi.getLatestProjectFirstFrameSelection).toHaveBeenCalled(),
+    );
+
+    view.unmount();
+    resolveSelection?.({
+      version: {
+        payload: {
+          first_frame_candidates_version_id: "cand-old",
+          first_frame_asset_id: "ff-old",
+        },
+      },
+      stale: false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(replicaLive.runReplicaGeneration).not.toHaveBeenCalled();
+    expect(value.navigate).not.toHaveBeenCalledWith("tasks");
+  });
+
+  it("送生成：有确认首帧时走完整管线建批", async () => {
+    const value = await openReplicaAndAnalyze();
+    await prepareFinalReplica();
+    replicaApi.getLatestProjectFirstFrameSelection.mockResolvedValue({
+      version: {
+        payload: {
+          first_frame_candidates_version_id: "cand-1",
+          first_frame_asset_id: "frame-1",
+        },
+      },
+      stale: false,
+    });
+    replicaLive.runReplicaGeneration.mockResolvedValue({
+      id: "batch-9",
+      status: "QUEUED",
+    });
+
+    const submit = await screen.findByRole("button", {
+      name: "确认费用并送生成",
+    });
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+
+    await waitFor(() =>
+      expect(replicaLive.runReplicaGeneration).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({
+          shotCardVersionId: "scv-1",
+          firstFrameAssetId: "frame-1",
+          confirmedScriptText: "已确认的乡墅口播终稿",
+        }),
+      ),
+    );
+    expect(value.navigate).toHaveBeenCalledWith("tasks");
   });
 
   it("审计员人物替换链路只读且不自动写入参考选择", async () => {
@@ -3510,7 +3628,7 @@ describe("视频复刻（模块①）", () => {
       await screen.findByRole("button", { name: "stub-确认置换首帧" }),
     );
     expect(
-      screen.getByRole("button", { name: "带入视频生成" }),
+      screen.getByRole("button", { name: "下一步：合成最终提示词" }),
     ).toBeInTheDocument();
     expect(value.patchDraft).not.toHaveBeenCalled();
     expect(replicaApi.selectCharacterReferences).not.toHaveBeenCalled();

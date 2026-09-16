@@ -230,6 +230,8 @@ export type StudioDraft = {
   sourceId?: string;
   /** 上传来源视频的资产 id：提取文案（script-from-audio）管线输入。 */
   sourceAssetId?: string;
+  analysisTaskId?: string;
+  analysisTaskStatus?: string;
   projectId?: string;
   selectedShotId: string;
   originalImageId?: string;

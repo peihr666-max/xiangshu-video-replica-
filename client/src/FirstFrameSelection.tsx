@@ -13,6 +13,7 @@ import {
   getLatestProjectFirstFrameSelection,
   getLatestProjectFirstFrames,
   getProjectFirstFrameHistory,
+  getWorkspacePricing,
   readFirstFrameCandidates,
   readFirstFrameSelectionPayload,
   resumeFirstFrameGeneration,
@@ -55,7 +56,28 @@ export function FirstFrameSelection({
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [model, setModel] = useState<FirstFrameModel>("gpt-image-2");
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
-  const [quantity, setQuantity] = useState(1);
+  const quantity = 3;
+  const [batchCredits, setBatchCredits] = useState<number | null>(null);
+  const [pricingError, setPricingError] = useState("");
+  useEffect(() => {
+    let active = true;
+    if (!readOnly) {
+      void getWorkspacePricing()
+        .then((pricing) => {
+          const price = pricing.prices.find(
+            (item) => item.subject === "first_frame",
+          );
+          if (active && price) setBatchCredits(price.unit_credits * quantity);
+          else if (active) setPricingError("首帧报价暂不可用，请刷新后重试。");
+        })
+        .catch(() => {
+          if (active) setPricingError("首帧报价暂不可用，请刷新后重试。");
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [readOnly]);
   const [replaceScene, setReplaceScene] = useState(false);
   const [aspectRatio, setAspectRatio] = useState<
     NonNullable<GenerateFirstFramesInput["aspect_ratio"]> | "source"
@@ -71,8 +93,6 @@ export function FirstFrameSelection({
   const [generationTask, setGenerationTask] = useState<FirstFrameTask | null>(
     null,
   );
-  // 质检未通过的候选需要两次点击：第一次是“知情”，第二次才真正确认。
-  const [overrideArmed, setOverrideArmed] = useState(false);
   const loadRequestId = useRef(0);
   const currentCandidateVersionId = useRef<string | null>(null);
   const previewRetryCounts = useRef(new Map<string, number>());
@@ -147,7 +167,6 @@ export function FirstFrameSelection({
         setPreviewUrls({});
         previewRetryCounts.current.clear();
         // 换版本后，未完成的两段式覆盖确认必须重新开始。
-        setOverrideArmed(false);
         if (!displayVersion) {
           setSelectedAssetId("");
           setStatus(
@@ -389,9 +408,6 @@ export function FirstFrameSelection({
         payload.character_reference_asset_ids?.length &&
         payload.character_reference_asset_ids.every((id) => previewUrls[id]),
     );
-  const selectedCandidate = payload?.candidates.find(
-    (candidate) => candidate.asset_id === selectedAssetId,
-  );
 
   async function handlePreviewError(assetId: string) {
     setPreviewUrls((current) =>
@@ -418,10 +434,6 @@ export function FirstFrameSelection({
     }
     if (!canGenerate) {
       setError("请先确认当前源画面和人物参考图，再生成新的置换首帧。");
-      return;
-    }
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 3) {
-      setError("候选数量必须是 1–3 的整数。");
       return;
     }
     const binding = referenceSelection
@@ -465,16 +477,6 @@ export function FirstFrameSelection({
       setError("请先加载并查看最新候选首帧预览，再进行确认。");
       return;
     }
-    const needsOverride =
-      payload?.review_mode !== "HUMAN_CONFIRMATION" &&
-      selectedCandidate?.quality?.passed !== true;
-    if (needsOverride && !overrideArmed) {
-      setOverrideArmed(true);
-      setStatus(
-        "该候选未通过自动质检。再次点击确认按钮，表示你已查看并接受此首帧。",
-      );
-      return;
-    }
     const submittedBindingKey = confirmationBindingKey;
     const submittedLifecycleId = confirmationLifecycleId.current;
     const isCurrentConfirmation = () =>
@@ -484,11 +486,7 @@ export function FirstFrameSelection({
     setIsSubmitting(true);
     setError("");
     try {
-      const selection = needsOverride
-        ? await confirmFirstFrame(projectId, selectedAssetId, {
-            allowUnverified: true,
-          })
-        : await confirmFirstFrame(projectId, selectedAssetId);
+      const selection = await confirmFirstFrame(projectId, selectedAssetId);
       if (!isCurrentConfirmation()) {
         return;
       }
@@ -552,7 +550,7 @@ export function FirstFrameSelection({
               disabled={readOnly || isSubmitting || !canGenerate}
               max="3"
               min="1"
-              onChange={(event) => setQuantity(Number(event.target.value))}
+              readOnly
               type="number"
               value={quantity}
             />
@@ -572,6 +570,15 @@ export function FirstFrameSelection({
         </label>
       ) : null}
       <div className="source-frame-actions">
+        <p>
+          每批生成3张，选1张确认采用。不满意可重新生成一批，不做 AI
+          质检或自动重生成。
+        </p>
+        <p>
+          {batchCredits === null
+            ? pricingError || "正在读取本批费用…"
+            : `本批预计 ${batchCredits} 积分；再次生成按新一批计费。`}
+        </p>
         {simplified && (
           <label>
             场景设置
@@ -609,15 +616,17 @@ export function FirstFrameSelection({
           </select>
         </label>
         <button
-          disabled={readOnly || isSubmitting || !canGenerate}
+          disabled={
+            readOnly || isSubmitting || !canGenerate || batchCredits === null
+          }
           onClick={handleGenerate}
           type="button"
         >
           {isSubmitting
             ? "正在生成"
             : payload
-              ? "重新生成候选首帧"
-              : "生成人物置换首帧"}
+              ? "不满意，再生成一批（3张）"
+              : "生成3张置换首帧"}
         </button>
         <button
           className="secondary-button"
@@ -633,9 +642,7 @@ export function FirstFrameSelection({
           onClick={handleConfirm}
           type="button"
         >
-          {overrideArmed
-            ? "质检未通过，仍要使用此首帧"
-            : "确认用于视频生成的首帧"}
+          满意，确认使用这张
         </button>
       </div>
       {payload && !aspectMatchesVersion && !isSubmitting ? (
@@ -741,7 +748,6 @@ export function FirstFrameSelection({
             {payload.candidates.map((candidate, index) => (
               <FirstFrameOption
                 candidate={candidate}
-                manualReview={payload.review_mode === "HUMAN_CONFIRMATION"}
                 checked={selectedAssetId === candidate.asset_id}
                 disabled={
                   readOnly ||
@@ -754,7 +760,6 @@ export function FirstFrameSelection({
                 onSelect={() => {
                   setSelectedAssetId(candidate.asset_id);
                   // 换候选后，未完成的两段式覆盖确认必须重新开始。
-                  setOverrideArmed(false);
                 }}
                 onPreviewError={() =>
                   void handlePreviewError(candidate.asset_id)
@@ -808,7 +813,7 @@ function firstFrameTaskStageLabel(task: FirstFrameTask | null): string {
     case "GENERATING":
       return "正在调用图片模型生成首帧";
     case "VERIFYING":
-      return "图片已生成，正在进行 AI 质量检测";
+      return "图片已生成，正在归档并准备预览";
     case "SUCCEEDED":
       return "首帧已生成，正在加载结果";
     case "FAILED":
@@ -822,7 +827,6 @@ function firstFrameTaskStageLabel(task: FirstFrameTask | null): string {
 
 function FirstFrameOption({
   candidate,
-  manualReview = false,
   checked,
   disabled,
   index,
@@ -832,7 +836,6 @@ function FirstFrameOption({
   readOnly,
 }: {
   candidate: FirstFrameCandidate;
-  manualReview?: boolean;
   checked: boolean;
   disabled: boolean;
   index: number;
@@ -867,27 +870,7 @@ function FirstFrameOption({
       <span>
         <strong>首帧候选 {index + 1}</strong>
         <small>{candidate.content_type}</small>
-        {candidate.quality?.passed ? (
-          <small className="first-frame-quality-pass">
-            整身人物质检通过
-            {candidate.quality.attempt > 1
-              ? ` · 自动修正 ${candidate.quality.attempt - 1} 次`
-              : ""}
-          </small>
-        ) : null}
-        {!candidate.quality ? (
-          <small className="first-frame-quality-fail">
-            {manualReview
-              ? "待人工确认：请对照场景形象核对替换效果"
-              : "自动质检未完成，请查看图片后人工确认"}
-          </small>
-        ) : null}
-        {candidate.quality && !candidate.quality.passed ? (
-          <small className="first-frame-quality-fail">
-            质检未通过：
-            {candidate.quality.issue_codes.join("、") || "详见任务记录"}
-          </small>
-        ) : null}
+        <small>请人工检查人物、服装、肢体和画面；满意后确认采用。</small>
       </span>
     </label>
   );

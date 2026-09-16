@@ -26,6 +26,7 @@ from app.analysis import (
     create_shot_card_version,
     enqueue_analysis_task,
     find_analysis_version_for_asset,
+    find_latest_analysis_task,
     get_version,
     validate_shot_cards,
 )
@@ -48,7 +49,7 @@ from app.permissions import (
     require_project_access,
     write_audit,
 )
-from app.prompt_context import attach_context_media, resolve_context
+from app.prompt_context import attach_context_media
 from app.settings import SettingsRepository, SettingsUnavailableError
 from app.storage import (
     StorageAdapter,
@@ -145,7 +146,7 @@ class CreateAnalysisRequest(BaseModel):
     # Reference videos are capped at 15s plus the upload rounding tolerance;
     # keep the analysis time axis bounded by the same contract.
     duration_seconds: float | None = Field(default=None, gt=0, le=MAX_ANALYSIS_DURATION_SECONDS)
-    reuse_existing: bool = False
+    reuse_existing: bool = True
     generation_context: GenerationContext | None = None
 
 
@@ -380,6 +381,12 @@ def create_project_analysis_task(
             project_id=project_id,
             request=request,
         )
+        if request.reuse_existing:
+            existing = find_latest_analysis_task(
+                conn, project_id=project_id, asset_id=request.asset_id
+            )
+            if existing is not None:
+                return analysis_task_response(existing)
         provider = get_video_analysis_provider(conn)
         if provider.requires_https_video_url and str(asset["storage_uri"]).startswith("local://"):
             raise HTTPException(
@@ -389,33 +396,12 @@ def create_project_analysis_task(
                     "message": "当前视频位于本地，云端分析无法读取。请配置云端素材存储后重新上传。",
                 },
             )
-        target = request.generation_context or GenerationContext(
-            project_id=project_id, source_asset_id=request.asset_id
-        )
-        if target.project_id not in (None, project_id):
-            raise HTTPException(422, detail={"code": "PROMPT_PROJECT_MISMATCH"})
-        target = target.model_copy(
-            update={"project_id": project_id, "source_asset_id": request.asset_id}
-        )
-        context = resolve_context(conn, actor=actor, request=target)
-        metadata = json.loads(str(asset["metadata_json"] or "{}"))
-        context["media_info"] = {
-            key: metadata[key] for key in ("fps", "resolution", "aspect_ratio") if key in metadata
-        }
-        if len(context["media_info"]) != 3:
-            context["issues"].append(
-                {
-                    "code": "MEDIA_METADATA_REQUIRED",
-                    "message": "视频元数据不完整，请重新上传探测后生成。",
-                }
-            )
         row, created = enqueue_analysis_task(
             conn,
             project_id=project_id,
             asset_id=request.asset_id,
             created_by_user_id=actor.id,
             duration_seconds=measured_duration,
-            generation_context=context,
         )
         if not created:
             return analysis_task_response(row)
@@ -897,6 +883,16 @@ def complete_analysis_task(
         asset_uri=work.asset_uri,
         created_by_user_id=work.lease.created_by_user_id,
         result=result,
+        commit=False,
+    )
+    # Publish facts, initial editable shots and the task receipt atomically.
+    # The task lease lock serializes completion; an abandoned tab is irrelevant.
+    create_shot_card_version(
+        conn,
+        analysis_version=row,
+        created_by_user_id=work.lease.created_by_user_id,
+        shots=result.analysis.shots,
+        commit=False,
     )
     now_text = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
@@ -922,6 +918,7 @@ def complete_analysis_task(
             "asset_id": work.lease.asset_id,
             "version_id": str(row["id"]),
         },
+        commit=False,
     )
     from app.usage_billing import finish_source
 

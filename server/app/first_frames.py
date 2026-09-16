@@ -1858,154 +1858,59 @@ def perform_first_frame_generation(
     provider_submission: dict[str, object] | None = None,
     save_provider_submission: Callable[[dict[str, object]], None] | None = None,
 ) -> list[GeneratedImage]:
-    """Generate candidates outside the DB fence and label them with quality verdicts.
+    """Deliver one paid batch directly for human review, without AI inspection.
 
-    Every generated candidate is returned — including ones that failed
-    inspection — so paid provider output always reaches archiving and
-    publication. Quality verdicts travel with each candidate as annotations;
-    the human confirmation step owns the final gate.
+    Durable candidates/receipts are reused after interruption. A new provider
+    request is only made for a new task; quality never triggers regeneration.
     """
-
-    manual_review = work.project_appearance.appearance_source == "SCENE_LOOK"
-    inspector = (
-        None
-        if manual_review
-        else bounded_first_frame_quality_inspector(
-            quality_inspector or FakeFirstFrameQualityInspector()
-        )
-    )
-    # Durable candidates prove the unchanged source already passed inspection.
-    if not manual_review and not resumed_candidates:
-        assert inspector is not None
-        try:
-            if heartbeat is not None:
-                heartbeat()
-            source_inspection = inspector.inspect_source(work.source_image)
-        except FirstFrameQualityInspectorFailed as exc:
-            raise first_frame_error(
-                503,
-                "FIRST_FRAME_QUALITY_INSPECTOR_UNAVAILABLE",
-                "首帧自动质检暂时不可用，请稍后重试。",
-            ) from exc
-        if source_inspection.person_count != 1:
-            raise first_frame_error(
-                422,
-                "SINGLE_PERSON_SOURCE_REQUIRED",
-                "当前版本仅支持单人视频；所选源画面必须且只能包含一名真实人物。",
-            )
-
     candidates = list(resumed_candidates or [])
-    retry_issue_codes: list[str] = []
-    for quality_attempt in range(1, MAX_FIRST_FRAME_QUALITY_ATTEMPTS + 1):
-        attempt_candidates = [
-            candidate for candidate in candidates if candidate.quality_attempt == quality_attempt
-        ]
-        passed_count = sum(
-            1
-            for candidate in candidates
-            if candidate.quality is not None and candidate.quality.passed
+    if candidates:
+        return candidates
+
+    def before_paid_call() -> None:
+        if heartbeat is not None:
+            heartbeat()
+        if before_provider_call is not None:
+            before_provider_call()
+
+    if isinstance(provider, ApilioImageProvider) and save_provider_submission:
+        generated = generate_scene_async(
+            work,
+            provider=provider,
+            submission=provider_submission,
+            save_submission=save_provider_submission,
+            before_paid_call=before_paid_call,
+            heartbeat=heartbeat,
         )
-        remaining = work.quantity - (len(candidates) if manual_review else passed_count)
-        if remaining <= 0:
-            return candidates
-        if not attempt_candidates:
-            prompt = quality_retry_prompt(
-                work.effective_prompt,
-                retry_issue_codes,
-                quality_attempt,
-            )
-
-            def before_paid_call() -> None:
-                if heartbeat is not None:
-                    heartbeat()
-                if before_provider_call is not None:
-                    before_provider_call()
-
-            if (
-                manual_review
-                and isinstance(provider, ApilioImageProvider)
-                and save_provider_submission
-            ):
-                generated = generate_scene_async(
-                    work,
-                    provider=provider,
-                    submission=provider_submission,
-                    save_submission=save_provider_submission,
-                    before_paid_call=before_paid_call,
-                    heartbeat=heartbeat,
-                )
-            else:
-                generated = edit_once_with_retry(
-                    provider,
-                    model=work.model,
-                    prompt=prompt,
-                    source_image=work.source_image,
-                    character_reference_images=work.reference_images,
-                    quantity=remaining,
-                    max_attempts=1 if manual_review else 2,
-                    aspect_ratio=getattr(work, "aspect_ratio", None),
-                    before_provider_call=before_paid_call,
-                    after_provider_call=after_provider_call,
-                )
-            if on_generated_images is not None:
-                on_generated_images(len(generated))
-            if len(generated) != remaining or any(
-                not item.content or item.content_type not in FIRST_FRAME_IMAGE_CONTENT_TYPES
-                for item in generated
-            ):
-                raise first_frame_error(
-                    502,
-                    "FIRST_FRAME_PROVIDER_RESPONSE_INVALID",
-                    "The image provider did not return the requested candidates.",
-                )
-            attempt_candidates = [
-                replace(candidate, quality_attempt=quality_attempt) for candidate in generated
-            ]
-            if archive_generated is not None:
-                attempt_candidates = archive_generated(attempt_candidates, quality_attempt)
-            candidates.extend(attempt_candidates)
-            if checkpoint_candidates is not None:
-                checkpoint_candidates(candidates)
-
-        if manual_review:
-            return candidates
-        assert inspector is not None
-        retry_issue_codes = []
-        for candidate in attempt_candidates:
-            if candidate.quality is not None:
-                if not candidate.quality.passed:
-                    retry_issue_codes.extend(candidate.quality.issue_codes)
-                continue
-            try:
-                renew_quality = quality_heartbeat or heartbeat
-                if renew_quality is not None:
-                    renew_quality()
-                inspection = inspector.inspect_candidate(
-                    source_image=work.source_image,
-                    character_reference_images=work.reference_images,
-                    candidate=candidate,
-                    expected_outfit=work.project_appearance.outfit_description,
-                )
-            except FirstFrameQualityInspectorFailed:
-                # Paid output is already checkpointed. Deliver it as unverified;
-                # never retry generation merely because the inspector is down.
-                return candidates
-            quality = evaluate_first_frame_candidate_quality(
-                inspection,
-                attempt=quality_attempt,
-            )
-            inspected = replace(candidate, quality=quality)
-            candidate_position = next(
-                index for index, value in enumerate(candidates) if value is candidate
-            )
-            candidates[candidate_position] = inspected
-            if checkpoint_candidates is not None:
-                checkpoint_candidates(candidates)
-            if not quality.passed:
-                retry_issue_codes.extend(quality.issue_codes)
-
-    # 轮次用完仍未凑满通过数量：返回全部候选而不是丢弃。图已付费，质检
-    # 结论作为标注随候选发布，是否采用由人工确认决定。
+    else:
+        generated = edit_once_with_retry(
+            provider,
+            model=work.model,
+            prompt=work.effective_prompt,
+            source_image=work.source_image,
+            character_reference_images=work.reference_images,
+            quantity=work.quantity,
+            max_attempts=1,
+            aspect_ratio=getattr(work, "aspect_ratio", None),
+            before_provider_call=before_paid_call,
+            after_provider_call=after_provider_call,
+        )
+    if on_generated_images is not None:
+        on_generated_images(len(generated))
+    if len(generated) != work.quantity or any(
+        not item.content or item.content_type not in FIRST_FRAME_IMAGE_CONTENT_TYPES
+        for item in generated
+    ):
+        raise first_frame_error(
+            502,
+            "FIRST_FRAME_PROVIDER_RESPONSE_INVALID",
+            "The image provider did not return the requested candidates.",
+        )
+    candidates = [replace(candidate, quality_attempt=1, quality=None) for candidate in generated]
+    if archive_generated is not None:
+        candidates = archive_generated(candidates, 1)
+    if checkpoint_candidates is not None:
+        checkpoint_candidates(candidates)
     return candidates
 
 
@@ -2198,11 +2103,7 @@ def complete_first_frame_generation(
             "aspect_ratio": work.aspect_ratio,
             "replace_scene": work.replace_scene,
             "prompt": work.effective_prompt,
-            "review_mode": (
-                "HUMAN_CONFIRMATION"
-                if work.project_appearance.appearance_source == "SCENE_LOOK"
-                else "AUTOMATIC_QUALITY"
-            ),
+            "review_mode": "HUMAN_CONFIRMATION",
             "reconstruction_mode": FIRST_FRAME_RECONSTRUCTION_MODE,
             "character_contract": {
                 **first_frame_character_contract(work.character_inputs),
@@ -2250,53 +2151,6 @@ def complete_first_frame_generation(
     return row
 
 
-def generate_first_frame_candidates(
-    conn: BusinessConnection,
-    *,
-    project_id: str,
-    actor: CurrentUser,
-    storage: StorageAdapter,
-    provider: ImageProvider,
-    model: FirstFrameModel,
-    prompt: str | None,
-    quantity: int,
-    character_version_id: str | None = None,
-    character_reference_selection_id: str | None = None,
-) -> sqlite3.Row:
-    """Compatibility wrapper for the internal SQLite lane and unit tests."""
-
-    plan = prepare_first_frame_generation(
-        conn,
-        project_id=project_id,
-        actor=actor,
-        model=model,
-        prompt=prompt,
-        quantity=quantity,
-        character_version_id=character_version_id,
-        character_reference_selection_id=character_reference_selection_id,
-    )
-    work = load_first_frame_generation_work(plan, storage=storage)
-    generated = perform_first_frame_generation(work, provider=provider)
-    stored = store_first_frame_generation(work, storage=storage, generated=generated)
-    try:
-        return complete_first_frame_generation(
-            conn,
-            work=work,
-            provider=provider,
-            stored=stored,
-        )
-    except HTTPException:
-        delete_created_first_frames(storage, stored.created_assets, actor_id=actor.id)
-        raise
-    except sqlite3.Error as exc:
-        delete_created_first_frames(storage, stored.created_assets, actor_id=actor.id)
-        raise first_frame_error(
-            500,
-            "FIRST_FRAME_PERSIST_FAILED",
-            "First-frame candidates could not be saved. Generate them again.",
-        ) from exc
-
-
 def confirm_first_frame(
     conn: BusinessConnection,
     *,
@@ -2332,17 +2186,6 @@ def confirm_first_frame(
         raise first_frame_error(
             422, "FIRST_FRAME_CANDIDATE_NOT_FOUND", "Select a candidate from the latest set."
         )
-    quality = candidate.get("quality")
-    quality_passed = isinstance(quality, dict) and quality.get("passed") is True
-    manual_review = payload.get("review_mode") == "HUMAN_CONFIRMATION"
-    if not quality_passed and not allow_unverified and not manual_review:
-        # 质检未通过或未质检的候选仍可确认，但必须显式携带覆盖标记——
-        # 人工决策要留下与自动质检同级的证据。
-        raise first_frame_error(
-            409,
-            "FIRST_FRAME_QUALITY_NOT_VERIFIED",
-            "该首帧没有通过当前版本自动质检；如需采用，请在确认时显式覆盖。",
-        )
     asset = require_asset_access(
         conn,
         actor=actor,
@@ -2359,11 +2202,8 @@ def confirm_first_frame(
         "first_frame_candidates_version_id": str(candidate_version["id"]),
         "first_frame_asset_id": first_frame_asset_id,
     }
-    if manual_review:
-        selection_payload["review_mode"] = "HUMAN_CONFIRMATION"
-        selection_payload["reviewed_by_user_id"] = actor.id
-    elif not quality_passed:
-        selection_payload["quality_override"] = True
+    selection_payload["review_mode"] = "HUMAN_CONFIRMATION"
+    selection_payload["reviewed_by_user_id"] = actor.id
     row = insert_version(
         conn,
         project_id=project_id,
