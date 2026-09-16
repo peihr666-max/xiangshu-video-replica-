@@ -1,5 +1,7 @@
 /// <reference types="node" />
 // @vitest-environment node
+
+import { createHash } from "node:crypto";
 import { copyFileSync, readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import viteConfig from "../vite.config";
@@ -10,6 +12,50 @@ vi.mock("node:fs", async (importOriginal) => ({
   cpSync: vi.fn(),
   mkdirSync: vi.fn(),
 }));
+
+it("生产品牌资源通过校验，缺失、篡改图形或混入审核图仍被拒绝", async () => {
+  const { assertProductionPublicAssets } = await import(
+    new URL("../../scripts/verify_customer_bundle.mjs", import.meta.url).href
+  );
+  const manifest = [
+    "favicon.svg",
+    "favicon.png",
+    "favicon.ico",
+    "studio/brand.png",
+    "studio/logo-mark.svg",
+    "platforms/douyin.ico",
+    "platforms/wechat_channels.ico",
+    "platforms/xiaohongshu.ico",
+  ].map((rel) => {
+    const content = readFileSync(new URL(`../public/${rel}`, import.meta.url));
+    return {
+      rel,
+      bytes: content.length,
+      sha256: createHash("sha256").update(content).digest("hex"),
+    };
+  });
+  expect(() => assertProductionPublicAssets(manifest)).not.toThrow();
+  expect(() =>
+    assertProductionPublicAssets(
+      manifest.filter((item) => item.rel !== "studio/logo-mark.svg"),
+    ),
+  ).toThrow(/missing or changed/);
+  expect(() =>
+    assertProductionPublicAssets(
+      manifest.map((item) =>
+        item.rel === "studio/logo-mark.svg"
+          ? { ...item, sha256: "wrong" }
+          : item,
+      ),
+    ),
+  ).toThrow(/missing or changed/);
+  expect(() =>
+    assertProductionPublicAssets([
+      ...manifest,
+      { rel: "studio/review-only.png", bytes: 1, sha256: "test" },
+    ]),
+  ).toThrow(/Review-only assets/);
+});
 
 it("客户正式构建复制侧栏图形与浏览器图标", () => {
   const plugin = viteConfig.plugins

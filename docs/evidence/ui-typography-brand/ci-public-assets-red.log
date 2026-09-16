@@ -1,0 +1,44 @@
+
+> @video-replica/client@2.0.0 test
+> vitest run src/entryContract.test.ts
+
+
+ RUN  v4.1.10 E:/众墅之家爆款短视频创作/.worktrees/UI-TYPOGRAPHY-BRAND-20260916/client
+
+ ❯ src/entryContract.test.ts (14 tests | 1 failed) 26ms
+   × 生产品牌资源通过校验，缺失、篡改图形或混入审核图仍被拒绝 18ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/entryContract.test.ts > 生产品牌资源通过校验，缺失、篡改图形或混入审核图仍被拒绝
+AssertionError: expected [Function] to not throw an error but 'Error: Review-only assets in customer…' was thrown
+
+- Expected:
+undefined
+
++ Received:
+"Error: Review-only assets in customer bundle: studio/logo-mark.svg"
+
+ ❯ src/entryContract.test.ts:37:60
+     35|     };
+     36|   });
+     37|   expect(() => assertProductionPublicAssets(manifest)).not.toThrow();
+       |                                                            ^
+     38|   expect(() =>
+     39|     assertProductionPublicAssets(
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 13 passed (14)
+   Start at  21:39:53
+   Duration  412ms (transform 49ms, setup 160ms, import 111ms, tests 26ms, environment 0ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path E:\众墅之家爆款短视频创作\.worktrees\UI-TYPOGRAPHY-BRAND-20260916\client
+npm error workspace @video-replica/client@2.0.0
+npm error location E:\众墅之家爆款短视频创作\.worktrees\UI-TYPOGRAPHY-BRAND-20260916\client
+npm error command failed
+npm error command C:\windows\system32\cmd.exe /d /s /c vitest run src/entryContract.test.ts

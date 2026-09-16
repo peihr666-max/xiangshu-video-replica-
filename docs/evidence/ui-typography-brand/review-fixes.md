@@ -32,3 +32,11 @@
 代码层四项问题均已修复并通过本地相关自动化验证。未推送、未合并、未部署、未更新已安装桌面软件；Windows NSIS、正式生产构建和远程CI仍待执行，不宣称发布验收完成。此前远程操作授权/凭据阻碍未在本轮绕过。
 
 测试资源仅本任务 `ui-ip-fix-*`，全部使用 `--rm`，未创建命名卷或新镜像；结束后停止并检查无本任务容器残留。原5206预览服务保留。
+
+## PR #124 远程构建复验
+
+用户随后明确授权推送、创建PR并合并主分支。分支已推送并创建 https://github.com/peihr666-max/xiangshu-video-replica-/pull/124 。首轮提交317366f1的CI运行35101461281：Windows Tauri/NSIS与秘密扫描通过；Linux前端1600、PG四分片2408 passed/1既有skip、浏览器E2E4、Rust18通过，但最终客户产物校验失败。
+
+失败原因：`assertProductionPublicAssets` 的旧审核图排除规则只允许 `studio/brand.png`，错误拒绝新增的正式 `studio/logo-mark.svg`。修复为正式资源清单同时校验SVG图形、PNG/ICO favicon的源文件SHA256，studio目录仍只接受正式清单，其他审核图继续拒绝。保留客户/管理代码隔离及所有既有CI门禁，未绕过检查。
+
+新增直接执行实际断言的回归，修复前复现相同错误；修复后14项入口/构建契约通过，TypeScript、秘密扫描及JS语法检查通过。原始结果见 `ci-public-assets-red.log`、`ci-public-assets-green.log`。最终合并取新head完整CI结果，不沿用旧head的通过状态。主目录main有其他任务未提交改动，不直接覆盖同步。
