@@ -42,6 +42,37 @@ def test_customer_git_rollout_builds_web_and_preserves_database_rollback_evidenc
     assert "VIDEO_REPLICA_SETTINGS_KEY" not in script
 
 
+def test_customer_git_rollout_injects_the_cloud_admin_origin() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert 'PUBLIC_ORIGIN="https://video.zszhj.cn"' in script
+    assert '-e "VITE_CLOUD_ADMIN_ORIGIN=$PUBLIC_ORIGIN"' in script
+
+
+def test_customer_git_rollout_only_rolls_optional_services_when_configured() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert "OPTIONAL_SERVICES=(worker-viral)" in script
+    assert (
+        'mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)'
+    ) in script
+    assert 'SERVICES+=("$service")' in script
+    assert 'WORKER_SERVICES+=("$service")' in script
+    assert 'for service in "${WORKER_SERVICES[@]}"; do' in script
+
+
+def test_customer_git_rollout_allows_retry_after_forward_compatible_rollback() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert (
+        '"$CURRENT_HEAD_BEFORE" != "$OLD_IMAGE_DB_HEAD" '
+        '&& "$CURRENT_HEAD_BEFORE" != "$EXPECTED_DB_HEAD"'
+    ) in script
+    assert (
+        "database revision is neither the active image head nor the target release head" in script
+    )
+
+
 def test_customer_git_rollout_ignores_only_root_package_version_metadata() -> None:
     script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
 

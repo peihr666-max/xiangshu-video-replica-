@@ -15,7 +15,7 @@ def upgrade() -> None:
         batch_op.drop_constraint("ck_provider_settings_supported_provider", type_="check")
         batch_op.create_check_constraint(
             "ck_provider_settings_supported_provider",
-            "provider IN ('apilio', 'metaso', 'cos', 'deepseek', 'hifly')",
+            "provider IN ('apilio', 'metaso', 'cos', 'deepseek', 'zpay', 'hifly')",
         )
 
 
@@ -25,5 +25,5 @@ def downgrade() -> None:
         batch_op.drop_constraint("ck_provider_settings_supported_provider", type_="check")
         batch_op.create_check_constraint(
             "ck_provider_settings_supported_provider",
-            "provider IN ('apilio', 'metaso', 'cos', 'deepseek')",
+            "provider IN ('apilio', 'metaso', 'cos', 'deepseek', 'zpay')",
         )

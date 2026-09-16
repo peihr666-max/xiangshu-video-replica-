@@ -22,7 +22,7 @@ _WIDENED_LIST = (
     "provider IN ('apilio', 'metaso', 'cos', 'deepseek', 'zpay', "
     "'hifly', 'tikhub', 'dashscope', 'douyidou')"
 )
-_PREVIOUS_LIST = "provider IN ('apilio', 'metaso', 'cos', 'deepseek', 'hifly')"
+_PREVIOUS_LIST = "provider IN ('apilio', 'metaso', 'cos', 'deepseek', 'zpay', 'hifly')"
 
 
 def upgrade() -> None:
