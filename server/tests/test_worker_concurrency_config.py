@@ -54,18 +54,14 @@ def test_worker_concurrency_floors_invalid_env(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.parametrize("raw", ["0", "-3"])
-def test_worker_concurrency_never_below_one(
-    monkeypatch: pytest.MonkeyPatch, raw: str
-) -> None:
+def test_worker_concurrency_never_below_one(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     monkeypatch.setenv(_WORKER_CONCURRENCY_ENV, raw)
     assert generation_worker._worker_concurrency() == 1
 
 
 def test_reconcile_interval_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(_RECONCILE_INTERVAL_ENV, raising=False)
-    assert (
-        generation_worker._reconcile_interval_seconds() == _DEFAULT_RECONCILE_INTERVAL_SECONDS
-    )
+    assert generation_worker._reconcile_interval_seconds() == _DEFAULT_RECONCILE_INTERVAL_SECONDS
 
 
 def test_reconcile_interval_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,9 +71,7 @@ def test_reconcile_interval_env_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_reconcile_interval_floors_invalid_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_RECONCILE_INTERVAL_ENV, "abc")
-    assert (
-        generation_worker._reconcile_interval_seconds() == _DEFAULT_RECONCILE_INTERVAL_SECONDS
-    )
+    assert generation_worker._reconcile_interval_seconds() == _DEFAULT_RECONCILE_INTERVAL_SECONDS
 
 
 def test_reconcile_due_throttles_within_window(monkeypatch: pytest.MonkeyPatch) -> None:
