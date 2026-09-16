@@ -84,3 +84,7 @@ Windows 本机、四个独立 PostgreSQL 容器（`CI_SHARD_BASE_PORT=5560`，`c
 | 合计 | **2452 passed / 34 failed / 1 skipped**（107 个测试文件全覆盖） |
 
 34 项失败全部为本机 Windows 环境既有失败、与本任务无关：`test_cw033_pitr_drill_validation`（21，驱动 bash 演练脚本）、`test_cw043_viral_import_pg::test_cached_local_media_moves_to_cos_*`（6 个参数化，`ViralMediaBusy`；在未改动的主检出 `xiangshu-video-replica-` 上以同一 fixture 复现同样 6 失败）、`test_cw009_security_matrix_export`（4）、`test_security_contracts::test_no_sentry_sdk_enters_the_server_runtime`（1）、`test_pg_test_kit::test_shared_suite_lock_is_exclusive`（1，Windows `fcntl` 垫片产物）。首轮全量曾暴露两项本任务引入的红：`test_cw057_cli_pg_entry::test_every_deployed_unit_is_classified`（新增 systemd 单元未分类）与 `test_sqlite_to_postgres` 6 项（`publish_records` 未登记 PG-only 表），均已修复并复验（70 passed）。原始日志保存在工作区根（仓库外）`outputs/publish-delivery-20260917/final/ci-shard-{0..3}.log`、`run-pytest-shards.log`、`check-static.log`；首轮日志同目录上一层。Linux 门禁以 PR CI 为准，本地 Windows 结果不替代。
+
+### 合并 origin/main 后复验
+
+推送前 `origin/main` 前进到 `1f1c1989`（#128，重叠文件仅 `client/src/api.ts`、`client/src/studio/types.ts`，无冲突）；在同一分支 `git merge origin/main`（`fb517c3d`）后复验：`npm run check:static` 通过（前端 107 文件 / 1634 passed，ruff/format/mypy 159 文件），发布/迁移/部署契约专项 164 passed，`build-test-shards.py --check-coverage` 与 `migration_manifest.py --check` OK。全量四分片结果沿用合并前记录；Linux 全量以 PR CI 为准。
